@@ -11,8 +11,20 @@
 //// bootstrap or creation request cannot reactivate a revoked credential.
 //// Authorization here is internal data access, not a gateway policy or an
 //// invitation endpoint. Callers must authenticate before using these mutations.
+////
+//// A member invited or rotated with a claim (protocol-change/053) has no
+//// credential at all until the claim is redeemed. The claim's digest lives in
+//// `access_claims` and never in `access_credentials`, so `authenticate` cannot
+//// find it: a claim token authenticates nothing. `claim` binds the invitee's
+//// own credential digest to the claim exactly once, in one transaction, and a
+//// claim row is never deleted, so a spent or voided claim cannot be bound
+//// again. A member has either one open claim and no active credential, or no
+//// open claim; rotation and revocation void the open claim before they touch
+//// credentials, which keeps that true.
 
+import gleam/bool
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import storage/catalogue.{type Catalogue, type Error, Conflict, Invalid, Missing}
@@ -21,6 +33,86 @@ import storage/sql
 /// A validated lowercase hexadecimal SHA-256 credential digest.
 pub opaque type Digest {
   Digest(value: String)
+}
+
+/// A validated lowercase hexadecimal SHA-256 digest of a claim token.
+///
+/// It is a separate type from `Digest` so that no caller can hand a claim to
+/// `authenticate`: the two digests name different tables, and only a
+/// credential digest ever authorizes a connection.
+pub opaque type ClaimDigest {
+  ClaimDigest(value: String)
+}
+
+/// How an invited or rotated member comes to hold a credential.
+pub type Enrollment {
+  /// An open claim that expires at `expires_at_ms`, a wall-clock instant in
+  /// Unix milliseconds. The member has no credential until the claim is
+  /// redeemed with `claim`.
+  ClaimEnrollment(claim: ClaimDigest, expires_at_ms: Int)
+
+  /// The digest of a credential the invitee drew for itself, bound at once
+  /// with no claim (enrollment by digest in protocol-change/053).
+  DigestEnrollment(credential: Digest)
+}
+
+/// One session membership, as the claim reply reports it.
+pub type Membership {
+  Membership(
+    /// Canonical session identity.
+    session_id: String,
+    /// The role this membership grants.
+    role: Role,
+  )
+}
+
+/// The outcome of a successful claim, identical on every repetition with the
+/// same credential digest.
+pub type Claimed {
+  Claimed(
+    /// The member the claim names, with its current display name.
+    principal: Principal,
+    /// At most `claim_membership_limit` memberships, in session-ID order.
+    memberships: List(Membership),
+  )
+}
+
+/// Why a claim was refused. None of them carries a digest or a token.
+pub type ClaimRefusal {
+  /// No such claim, a voided one, or a claimed one whose credential is no
+  /// longer active.
+  UnknownClaim
+
+  /// The claim was still open when its expiry instant passed.
+  ExpiredClaim
+
+  /// The claim is bound to another credential, the presented digest is
+  /// already a credential, the member already holds an active credential, or
+  /// the presented digest is the claim's own.
+  ConflictingClaim
+
+  /// The catalogue could not answer or refused the write.
+  ClaimStore(error: Error)
+}
+
+/// The most memberships a claim reply lists; the member's own session listing
+/// returns the rest. The claim-memberships query carries the same bound.
+pub const claim_membership_limit = 16
+
+// The three persisted claim states, decoded totally from the row.
+type ClaimState {
+  OpenClaim
+  ClaimedBy(credential: Digest)
+  VoidClaim
+}
+
+type ClaimRow {
+  ClaimRow(
+    claim: ClaimDigest,
+    principal_id: String,
+    expires_at_ms: Int,
+    state: ClaimState,
+  )
 }
 
 /// Principal identity does not change when its credentials rotate.
@@ -84,6 +176,22 @@ pub fn credential_digest(value: String) -> Result(Digest, Error) {
   case string.byte_size(value) == 64 && ascii_in(value, "0123456789abcdef") {
     True -> Ok(Digest(value))
     False -> Error(Invalid("credential digest must be 64 lowercase hex bytes"))
+  }
+}
+
+/// Validates a claim-token digest. Like `credential_digest`, this checks the
+/// representation only; the caller hashes the whole `loomclaim_` string.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.claim_digest(sha256_hex("loomclaim_" <> random_hex))
+/// ```
+@internal
+pub fn claim_digest(value: String) -> Result(ClaimDigest, Error) {
+  case string.byte_size(value) == 64 && ascii_in(value, "0123456789abcdef") {
+    True -> Ok(ClaimDigest(value))
+    False -> Error(Invalid("claim digest must be 64 lowercase hex bytes"))
   }
 }
 
@@ -176,70 +284,80 @@ fn insert_principal(store: Catalogue, proposed: Principal, digest: Digest) {
   Ok(proposed)
 }
 
-/// Creates one member, credential and membership in one transaction.
+/// Creates one member, its enrollment and one membership in one transaction.
 ///
-/// A duplicate principal is a conflict, never a retry that issues another
-/// credential. The caller's stable principal ID permits explicit recovery by
-/// member rotation if the successful invitation reply was lost.
+/// Under `ClaimEnrollment` the member gets an open claim and no credential;
+/// under `DigestEnrollment` it gets that credential and no claim. A duplicate
+/// principal is a conflict, never a retry that issues another claim. The
+/// caller's stable principal ID permits explicit recovery by member rotation
+/// if the successful invitation reply was lost.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // access.invite_member(store, "alice", "Alice", digest, session_id, Operator)
+/// // access.invite_member(store, "alice", "Alice", enrollment, session_id, Operator)
 /// ```
 @internal
 pub fn invite_member(
   store: Catalogue,
   id: String,
   name: String,
-  digest: Digest,
+  enrollment: Enrollment,
   session_id: String,
   role: Role,
 ) -> Result(Principal, Error) {
   use proposed <- result.try(principal(id, name, "member"))
   catalogue.atomic(store, fn() {
     use _ <- result.try(catalogue.get(store, session_id))
-    use created <- result.try(insert_principal(store, proposed, digest))
+    use Nil <- result.try(absent(get(store, proposed.id)))
+    use Nil <- result.try(catalogue.statement(
+      store,
+      sql.insert_access_principal(
+        proposed.id,
+        proposed.display_name,
+        kind(proposed.kind),
+      ),
+    ))
+    use Nil <- result.try(enroll(store, id, enrollment))
     use Nil <- result.try(grant_changed(store, id, session_id, role))
-    Ok(created)
+    Ok(proposed)
   })
 }
 
-/// Replaces every active credential of one member, preserving all tombstones.
+/// Replaces a member's enrollment, preserving every tombstone.
 ///
-/// Owner credentials are excluded because the daemon's owner file has a
-/// separate lifetime. A failed insertion rolls back all revocations.
+/// The open claim, if any, is voided and every active credential revoked
+/// before the new claim or credential is inserted, so a claim delivered
+/// earlier stops redeeming and a credential bound earlier stops
+/// authenticating in the same commit. Owner credentials are excluded because
+/// the daemon's owner file has a separate lifetime. A failed insertion rolls
+/// back the voiding and the revocations.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // access.rotate_member(store, "alice", replacement_digest)
+/// // access.rotate_member(store, "alice", enrollment)
 /// ```
 @internal
 pub fn rotate_member(
   store: Catalogue,
   id: String,
-  replacement: Digest,
+  enrollment: Enrollment,
 ) -> Result(Principal, Error) {
   catalogue.atomic(store, fn() {
     use found <- result.try(member(store, id))
-    use Nil <- result.try(absent(credential(store, replacement)))
-    use Nil <- result.try(catalogue.statement(
-      store,
-      sql.revoke_member_credentials(id),
-    ))
-    use Nil <- result.try(catalogue.statement(
-      store,
-      sql.insert_access_credential(replacement.value, id),
-    ))
+    use Nil <- result.try(withdraw(store, id))
+    use Nil <- result.try(enroll(store, id, enrollment))
     Ok(found)
   })
 }
 
-/// Revokes a member's active credentials without deleting its identity or grants.
+/// Revokes a member's active credentials and voids its open claim, without
+/// deleting its identity or grants.
 ///
 /// Repeating this operation is idempotent. Explicit rotation can recover the
-/// stable member later; no revoked bearer is ever reactivated.
+/// stable member later; no revoked bearer is ever reactivated and no voided
+/// claim is ever redeemed.
 ///
 /// ## Examples
 ///
@@ -250,12 +368,239 @@ pub fn rotate_member(
 pub fn revoke_member(store: Catalogue, id: String) -> Result(Principal, Error) {
   catalogue.atomic(store, fn() {
     use found <- result.try(member(store, id))
-    use Nil <- result.try(catalogue.statement(
-      store,
-      sql.revoke_member_credentials(id),
-    ))
+    use Nil <- result.try(withdraw(store, id))
     Ok(found)
   })
+}
+
+// Removes everything a member could authenticate with, or come to, in the
+// caller's transaction: the open claim is voided and every active credential
+// revoked. Both rows stay as tombstones.
+fn withdraw(store: Catalogue, id: String) -> Result(Nil, Error) {
+  use Nil <- result.try(catalogue.statement(store, sql.void_member_claims(id)))
+  catalogue.statement(store, sql.revoke_member_credentials(id))
+}
+
+// Inserts the one thing an enrollment grants. A claim digest already present,
+// or a credential digest already present in any state, is a conflict: rows are
+// never deleted, so presence means an earlier claim or a tombstone.
+fn enroll(
+  store: Catalogue,
+  id: String,
+  enrollment: Enrollment,
+) -> Result(Nil, Error) {
+  case enrollment {
+    ClaimEnrollment(claim:, expires_at_ms:) -> {
+      use Nil <- result.try(absent(claim_row(store, claim.value)))
+      catalogue.statement(
+        store,
+        sql.insert_access_claim(claim.value, id, expires_at_ms),
+      )
+    }
+    DigestEnrollment(credential: digest) -> {
+      use Nil <- result.try(absent(credential(store, digest)))
+      catalogue.statement(store, sql.insert_access_credential(digest.value, id))
+    }
+  }
+}
+
+/// Answers whether a claim row with this digest exists and is not void.
+///
+/// This is the `/v2/claim` upgrade's filter, not its decision: an expired or
+/// already claimed row passes, and `claim` then refuses it with the specific
+/// reason. `Missing` covers both an unknown and a voided claim.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.claim_known(store, claim)
+/// ```
+@internal
+pub fn claim_known(store: Catalogue, claim: ClaimDigest) -> Result(Nil, Error) {
+  use row <- result.try(claim_row(store, claim.value))
+  case row.state {
+    OpenClaim | ClaimedBy(_) -> Ok(Nil)
+    VoidClaim -> Error(Missing)
+  }
+}
+
+/// Binds a credential digest to an open claim, once, in one transaction.
+///
+/// The checks run in this order, and every refusal precedes every write: the
+/// claim must exist and not be void; an already claimed row answers the same
+/// success again only for the credential it bound, and only while that
+/// credential is active; an open claim must not have expired at `now_ms`; the
+/// presented digest must not be the claim's own digest, which would turn the
+/// claim string, already sitting in a chat log, into a durable bearer; it must
+/// be absent from `access_credentials` in every state; and the member must
+/// hold no active credential. Then the credential is inserted and the claim
+/// marked claimed at `now_ms`, a wall-clock instant in Unix milliseconds.
+///
+/// `equal` compares two digests. The daemon passes a constant-time
+/// comparison; this package has no cryptographic dependency of its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.claim(store, claim, credential, now_ms, constant_time_equal)
+/// ```
+@internal
+pub fn claim(
+  store: Catalogue,
+  claim: ClaimDigest,
+  presented: Digest,
+  now_ms: Int,
+  equal: fn(String, String) -> Bool,
+) -> Result(Claimed, ClaimRefusal) {
+  let outcome =
+    catalogue.atomic(store, fn() {
+      // A refusal commits an empty transaction, since every refusal precedes
+      // every write. A store failure rolls back whatever had been written.
+      case redeem(store, claim, presented, now_ms, equal) {
+        Ok(claimed) -> Ok(Ok(claimed))
+        Error(ClaimStore(error)) -> Error(error)
+        Error(UnknownClaim) -> Ok(Error(UnknownClaim))
+        Error(ExpiredClaim) -> Ok(Error(ExpiredClaim))
+        Error(ConflictingClaim) -> Ok(Error(ConflictingClaim))
+      }
+    })
+  case outcome {
+    Ok(answer) -> answer
+    Error(error) -> Error(ClaimStore(error))
+  }
+}
+
+fn redeem(
+  store: Catalogue,
+  claim: ClaimDigest,
+  presented: Digest,
+  now_ms: Int,
+  equal: fn(String, String) -> Bool,
+) -> Result(Claimed, ClaimRefusal) {
+  use row <- result.try(case claim_row(store, claim.value) {
+    Ok(row) -> Ok(row)
+    Error(Missing) -> Error(UnknownClaim)
+    Error(error) -> Error(ClaimStore(error))
+  })
+  case row.state {
+    VoidClaim -> Error(UnknownClaim)
+
+    // A lost reply is recovered by presenting the same claim and digest
+    // again. The credential bound before is the only one that repeats the
+    // success, and only while it still authenticates.
+    ClaimedBy(bound) -> {
+      use found <- result.try(stored(credential(store, bound)))
+      case found.state, equal(bound.value, presented.value) {
+        Revoked, _ -> Error(UnknownClaim)
+        Active, True -> claimed(store, row.principal_id)
+        Active, False -> Error(ConflictingClaim)
+      }
+    }
+
+    OpenClaim -> bind(store, row, presented, now_ms, equal)
+  }
+}
+
+fn bind(
+  store: Catalogue,
+  row: ClaimRow,
+  presented: Digest,
+  now_ms: Int,
+  equal: fn(String, String) -> Bool,
+) -> Result(Claimed, ClaimRefusal) {
+  use <- bool.guard(
+    when: now_ms >= row.expires_at_ms,
+    return: Error(ExpiredClaim),
+  )
+  use <- bool.guard(
+    when: equal(presented.value, row.claim.value),
+    return: Error(ConflictingClaim),
+  )
+  use Nil <- result.try(
+    absent(credential(store, presented)) |> result.map_error(refusal),
+  )
+  use Nil <- result.try(
+    no_active_credential(store, row.principal_id) |> result.map_error(refusal),
+  )
+
+  // The credential row first: the claim's `credential_digest` references it.
+  use Nil <- result.try(
+    stored(catalogue.statement(
+      store,
+      sql.insert_access_credential(presented.value, row.principal_id),
+    )),
+  )
+  use Nil <- result.try(
+    stored(catalogue.statement(
+      store,
+      sql.bind_access_claim(
+        Some(presented.value),
+        Some(now_ms),
+        row.claim.value,
+      ),
+    )),
+  )
+  claimed(store, row.principal_id)
+}
+
+fn claimed(store: Catalogue, id: String) -> Result(Claimed, ClaimRefusal) {
+  use found <- result.try(stored(member(store, id)))
+  use rows <- result.try(
+    stored(catalogue.query(store, sql.claim_memberships(id))),
+  )
+  use memberships <- result.try(
+    list.try_map(rows, fn(row) {
+      use role <- result.map(role_from(row.role))
+      Membership(row.session_id, role)
+    })
+    |> stored,
+  )
+  Ok(Claimed(found, memberships))
+}
+
+// A conflict from a presence check is the claim's conflict; anything else is
+// the store's.
+fn refusal(error: Error) -> ClaimRefusal {
+  case error {
+    Conflict -> ConflictingClaim
+    Missing | catalogue.Unsupported | Invalid(_) | catalogue.Database(_) ->
+      ClaimStore(error)
+  }
+}
+
+fn stored(result: Result(a, Error)) -> Result(a, ClaimRefusal) {
+  result.map_error(result, ClaimStore)
+}
+
+fn no_active_credential(store: Catalogue, id: String) -> Result(Nil, Error) {
+  use rows <- result.try(catalogue.query(
+    store,
+    sql.active_member_credentials(id),
+  ))
+  case rows {
+    [] -> Ok(Nil)
+    [_, ..] -> Error(Conflict)
+  }
+}
+
+// Decodes a claim row totally. The schema's CHECKs make a claimed row carry
+// both its credential and its instant; a row that does not is corrupt, never
+// an open claim.
+fn claim_row(store: Catalogue, value: String) -> Result(ClaimRow, Error) {
+  use rows <- result.try(catalogue.query(store, sql.access_claim(value)))
+  use row <- result.try(one(rows))
+  use claim <- result.try(claim_digest(row.digest))
+  use Nil <- result.try(valid_id(row.principal_id))
+  use state <- result.try(
+    case row.state, row.credential_digest, row.claimed_at_ms {
+      "open", None, None -> Ok(OpenClaim)
+      "void", None, None -> Ok(VoidClaim)
+      "claimed", Some(bound), Some(_) ->
+        credential_digest(bound) |> result.map(ClaimedBy)
+      _, _, _ -> Error(Invalid("invalid persisted claim state"))
+    },
+  )
+  Ok(ClaimRow(claim, row.principal_id, row.expires_at_ms, state))
 }
 
 fn member(store: Catalogue, id: String) {
@@ -486,7 +831,11 @@ fn membership(store: Catalogue, principal_id: String, session_id: String) {
     sql.access_membership(principal_id, session_id),
   ))
   use row <- result.try(one(rows))
-  case row.role {
+  role_from(row.role)
+}
+
+fn role_from(text: String) -> Result(Role, Error) {
+  case text {
     "operator" -> Ok(Operator)
     "observer" -> Ok(Observer)
     _ -> Error(Invalid("unknown persisted membership role"))

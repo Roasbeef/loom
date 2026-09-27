@@ -12,8 +12,10 @@ import gleam/result
 import gleam/string
 import simplifile
 import sqlight
+import storage/access
 import storage/catalogue
 import storage/catalogue_archives_schema
+import storage/catalogue_claims_schema
 import storage/catalogue_names_schema
 import storage/sql
 import storage/sql_schema
@@ -31,6 +33,69 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(archives) = simplifile.read("sql/catalogue_archives.sql")
     as "archive migration is checked in"
   assert catalogue_archives_schema.schema == archives
+  let assert Ok(claims) = simplifile.read("sql/catalogue_claims.sql")
+    as "claim migration is checked in"
+  assert catalogue_claims_schema.schema == claims
+}
+
+pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() {
+  let path = fresh_path("claim-migration")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  let record = registration(894)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(owner_digest) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest is valid"
+  let assert Ok(member_digest) =
+    access.credential_digest(string.repeat("b", 64))
+    as "member digest is valid"
+  let assert Ok(owner) =
+    access.bootstrap_owner(store, "owner", "Owner", owner_digest)
+    as "the owner predates the migration"
+  let assert Ok(member) =
+    access.invite_member(
+      store,
+      "member",
+      "Member",
+      access.DigestEnrollment(member_digest),
+      record.id,
+      access.Operator,
+    )
+    as "a version-three member predates the migration"
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
+  assert sqlight.exec(
+      "DROP TABLE access_claims; PRAGMA user_version=3",
+      on: old,
+    )
+    == Ok(Nil)
+  assert sqlight.close(old) == Ok(Nil)
+
+  // The migration adds the claim table and moves the version in one step,
+  // leaving every principal, credential and membership as it was.
+  let assert Ok(migrated) = catalogue.open(path) as "version three migrates"
+  assert access.authenticate(migrated, owner_digest) == Ok(owner)
+  assert access.authenticate(migrated, member_digest) == Ok(member)
+  assert access.authorization(migrated, member.id, record.id)
+    == Ok(access.Participant(access.Operator))
+  let assert Ok(claim) = access.claim_digest(string.repeat("c", 64))
+    as "claim digest is valid"
+  assert access.rotate_member(
+      migrated,
+      member.id,
+      access.ClaimEnrollment(claim, 1000),
+    )
+    == Ok(member)
+  assert access.claim_known(migrated, claim) == Ok(Nil)
+  assert catalogue.close(migrated) == Ok(Nil)
+  let assert Ok(check) = sqlight.open(path) as "version is readable"
+  assert sqlight.query(
+      "PRAGMA user_version",
+      on: check,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+    == Ok([4])
+  assert sqlight.close(check) == Ok(Nil)
 }
 
 pub fn generated_queries_match_the_sqlc_input_test() {
@@ -119,7 +184,7 @@ pub fn version_one_catalogue_migrates_without_losing_creation_test() {
   let assert Ok(old) = sqlight.open(path)
     as "fixture downgrades only its new empty table"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      "DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
       on: old,
     )
     == Ok(Nil)
@@ -490,7 +555,7 @@ pub fn version_two_catalogue_migrates_archive_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
+      "DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
       on: old,
     )
     == Ok(Nil)
