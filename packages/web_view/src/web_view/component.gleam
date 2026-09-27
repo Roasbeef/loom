@@ -521,6 +521,31 @@ fn captured(
   cut: snapshot.Captured,
   view: snapshot_view.View,
 ) -> Model(socket) {
+  case model.shown == Some(#(cut, view)) {
+    True -> recaptured(model, cut.next_seq)
+    False -> fresh(model, cut, view)
+  }
+}
+
+// The lane refreshes an idle page every 250 ms, and a refresh of a session
+// where nothing moved brings back the capture already drawn. Comparing it
+// with the one shown costs a walk of the two terms; projecting it again
+// would cost the agent rows, the lane and the strip for nothing. Only the
+// cache ledger can still move, since a held usage row may be covered now.
+fn recaptured(model: Model(socket), next_seq: Int) -> Model(socket) {
+  let settled = settle_cache(model, next_seq)
+  case settled.notices == model.notices, settled.cache == model.cache {
+    True, True -> settled
+    True, False -> restripped(settled)
+    False, _ -> relaned(settled)
+  }
+}
+
+fn fresh(
+  model: Model(socket),
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+) -> Model(socket) {
   let previous = option.map(model.shown, fn(shown) { shown.1 })
   let reviewers = reviewer_status.observe(model.reviewers, cut.window, view)
   Model(
