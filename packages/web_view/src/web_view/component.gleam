@@ -255,8 +255,8 @@ pub opaque type Model(socket) {
     /// The escalations of `shown`, and the settled ones kept beside them.
     approvals: List(approval.Review),
     status: Status,
-    /// The latest clock reading a message carried, which a command takes
-    /// its deadline from.
+    /// The latest clock reading: the one a message carried, or the one a
+    /// command read for itself, which its deadline is measured from.
     clock: Int,
     /// The timer's subject, once the tick selector is armed.
     timer: Option(Subject(Nil)),
@@ -941,7 +941,10 @@ fn commanded(
       String,
     ),
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  let model = drained(model)
+  // A command reads the host's clock itself. The last message's reading can
+  // be a whole idle refresh old, five seconds on a pushing lane, and the
+  // request's deadline and the timer armed for it are measured from here.
+  let model = drained(Model(..model, clock: model.transport.now()))
   case model.lane {
     None -> #(
       Model(..model, notice: Warned("The page is not connected yet.")),
