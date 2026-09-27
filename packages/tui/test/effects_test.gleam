@@ -57,7 +57,8 @@ pub fn a_mouse_copy_queues_one_clipboard_write_test() {
 // close before the attempt's, as it always has. Each job is cancelled by
 // the key its slot held, the control job first, then the relaunch, then
 // the activity poll, and each slot is cleared in the same step so nothing
-// the cancelled jobs send afterwards is admitted.
+// the cancelled jobs send afterwards is admitted. The provisional attempt's
+// job is cancelled by its key just ahead of the attempt's own cleanup.
 pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let socket = socket_on(owner)
@@ -72,11 +73,14 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   let #(model, request) = tui_model.allocate_job(quiet_model())
   let #(model, relaunch) = tui_model.allocate_job(model)
   let #(model, poll) = tui_model.allocate_job(model)
+  let #(model, replacement) = tui_model.allocate_job(model)
+  let attempt = attachment.opening(replacement, None)
   let model =
     tui_model.Model(
       ..model,
       peer: tui_model.Attached(socket),
       channel: Some(channel),
+      candidate: attempt,
       daemon_host: Some(host),
       control_request: Some(tui_model.ControlRequest(
         job: job.awaiting(request),
@@ -92,7 +96,8 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   assert effects
     == [
       effect.Channel(session_channel.Shut(socket)),
-      effect.Attachment(attachment.Abandon(attachment.idle())),
+      effect.CancelJob(replacement),
+      effect.Attachment(attachment.Abandon(attempt)),
       effect.CancelJob(request),
       effect.CancelJob(relaunch),
       effect.CancelJob(poll),
@@ -101,6 +106,7 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   assert quit.control_request == None
   assert quit.reconnect == tui_model.ReconnectSpent
   assert quit.activity_poll == tui_model.ActivityDue
+  assert !attachment.busy(quit.candidate)
   assert process.receive(owner, 0) == Error(Nil)
     as "the step closed nothing itself"
 
