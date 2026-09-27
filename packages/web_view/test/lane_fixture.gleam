@@ -77,8 +77,9 @@ pub fn main_op() -> String {
   op(3)
 }
 
-/// The Unix millisecond instant every fixture operation started at.
-pub const started_at = 1_700_000_000_000
+/// The Unix millisecond instant every fixture operation started at: a
+/// realistic one, in September 2026.
+pub const started_at = 1_790_000_000_000
 
 fn id(seq: Int) -> ids.EntryId {
   ids.mint_entry(ids.generator(clock.fixed(1000), seq)).0

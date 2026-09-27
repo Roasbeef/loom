@@ -16,6 +16,7 @@ import lane_fixture
 import lustre/dev/query
 import lustre/element
 import page_fixture
+import session_view/agent_roster
 import session_view/transcript_lines
 import session_view/turns
 import web_view/component
@@ -101,6 +102,31 @@ pub fn a_settled_strand_folds_into_a_count_test() {
   assert string.contains(drawn, "<li class=\"chip settled\">")
   assert string.contains(drawn, "+1 settled")
   assert !string.contains(drawn, ">tests<")
+}
+
+// A chip's elapsed time is a duration the roster measured from the
+// daemon's own records (the glance was written seven seconds into the
+// operation), never the daemon's start instant set against the page's
+// clock. A page whose clock reads the start instant, one that reads the
+// Unix epoch, and one that is three years ahead all draw the same seven
+// seconds, which the browser shows as the terminal would.
+pub fn a_chip_counts_a_measured_duration_whatever_the_clock_test() {
+  let offset = fn(now: Int) {
+    let drawn =
+      component.new(page_fixture.start())
+      |> at(now)
+      |> component.apply([lane_fixture.captured(10, None)])
+      |> html
+    let assert Ok(#(_, after)) =
+      string.split_once(drawn, "<loom-elapsed class=\"elapsed\" offset=\"")
+    let assert Ok(#(value, _)) = string.split_once(after, "\"")
+    value
+  }
+  let three_years = 3 * 365 * 24 * 3_600_000
+  assert offset(lane_fixture.started_at + 7000) == "7000"
+  assert offset(0) == "7000"
+  assert offset(lane_fixture.started_at + three_years) == "7000"
+  assert agent_roster.duration(7) == "7s"
 }
 
 pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
