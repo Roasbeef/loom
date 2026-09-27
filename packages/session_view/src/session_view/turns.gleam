@@ -422,9 +422,11 @@ fn entry_kind(
       }
     }
 
-    // A result is drawn with its call when the window holds the call; a
-    // wait's ready results still become cards where they arrived. A result
-    // whose call is outside the window is drawn as it is.
+    // A result is drawn with its call when the window holds the call, and
+    // that includes a wait's ready results: the call side already made
+    // their cards from the joined result, so the result's own block draws
+    // nothing. A result whose call is outside the window is drawn as it is,
+    // a wait's with its cards.
     _,
       entry.MessageEntry(
         message: message.ToolResultMessage(
@@ -446,7 +448,6 @@ fn entry_kind(
         False -> details
       }
       case dict.has_key(joined.asked, tool_call_id), tool_name {
-        True, "agent_wait" -> returned(block.key, details, strands)
         True, _ -> []
         False, "agent_spawn" -> [
           Outside(spawned(block.key, None, details, outcome, strands)),

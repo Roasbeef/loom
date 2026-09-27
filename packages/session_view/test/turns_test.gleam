@@ -399,3 +399,37 @@ pub fn hues_follow_strand_position_test() {
   assert turns.hue(strands(), child) == turns.Sub(0)
   assert turns.hue(strands(), "sub:elsewhere") == turns.Unplaced
 }
+
+// A wait preceded by reasoning makes its message a narrative, whose result
+// arrives as a block of its own. The call side already draws the child's
+// card from the joined result, so the result's block draws nothing more.
+pub fn a_narrative_wait_draws_each_result_once_test() {
+  let reasoned =
+    list.map(items(), fn(listed) {
+      case listed {
+        snapshot.Loaded(entry.MessageEntry(seq: 6, ..), _) ->
+          item(
+            6,
+            15_000,
+            assistant([
+              message.AssistantThinking("wait on the reviewer", None, False),
+              call(
+                "c4",
+                "agent_wait",
+                json.Object([#("handles", json.Array([json.String("h")]))]),
+              ),
+            ]),
+          )
+        _ -> listed
+      }
+    })
+  let returned =
+    pieces_of(reasoned, [])
+    |> list.count(fn(piece) {
+      case piece {
+        turns.Returned(..) -> True
+        _ -> False
+      }
+    })
+  assert returned == 1
+}
