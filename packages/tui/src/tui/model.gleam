@@ -72,6 +72,7 @@ import tui/focused_goal_panel
 import tui/herdr
 import tui/job
 import tui/job_runner
+import tui/live_tail
 import tui/model_selector
 import tui/msg
 import tui/note_panel
@@ -640,6 +641,9 @@ pub type Model {
     rendered_anchors: List(Option(transcript_anchor.Row)),
     /// Copy gutters aligned with `rendered_rows`, built in the same pass.
     rendered_gutters: List(Int),
+    /// What the last projection decided about the live answer's rows, so
+    /// the next one reprocesses only the text that arrived since.
+    live_tail: live_tail.Cache,
     record_rows: List(span.Line),
     /// Durable copy gutters, aligned with `record_rows`.
     record_gutters: List(Int),

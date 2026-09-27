@@ -1598,6 +1598,45 @@ fn trim_span_start(
   }
 }
 
+/// The line a paragraph draws when a soft line break joins text whose line
+/// is `head` to text whose first line is `next`.
+///
+/// A paragraph's lines are its inline parts in order, one span each, and a
+/// soft break is a single space in the paragraph's plain style; nothing
+/// merges the spans on either side of it. Mork trims the trailing
+/// whitespace of the plain text a line ends with when a soft break follows,
+/// and keeps it when the paragraph ends there, so `head`'s last span, which
+/// was parsed as the end of a paragraph, is trimmed the same way and dropped
+/// if nothing is left. So when neither side's parse can reach into the
+/// other, the paragraph's line is `head`'s spans so trimmed, the space, then
+/// `next`'s. The live tail uses this to add the lines that just arrived to a
+/// long paragraph without parsing its start again, and it is the only place
+/// that knows what a soft break draws as.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let joined =
+///   markdown.join_soft_break(span.line_plain("one "), span.line_plain("two"))
+/// // "one", " ", "two"
+/// ```
+@internal
+pub fn join_soft_break(head: span.Line, next: span.Line) -> span.Line {
+  let plain = style.default_style()
+  let kept = case list.reverse(head.spans) {
+    [last, ..before] if last.style == plain && last.link == "" ->
+      case string.trim_end(last.content) {
+        "" -> list.reverse(before)
+        trimmed -> list.reverse([span.Span(..last, content: trimmed), ..before])
+      }
+    _ -> head.spans
+  }
+  span.Line(
+    ..head,
+    spans: list.append(kept, [span.span_styled(" ", plain), ..next.spans]),
+  )
+}
+
 fn inline_lines(
   document: Document,
   inlines: List(Inline),

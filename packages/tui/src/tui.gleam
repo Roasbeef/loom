@@ -81,6 +81,7 @@ import tui/internal/ffi_terminal
 import tui/job
 import tui/job_runner
 import tui/layout
+import tui/live_tail
 import tui/model.{
   type Model, DiffAutomatic, Disconnected, HoldGoalReport, Model, Newer,
   NoClipboard, NoOverlay, Older, Preview, PromptNext, ReconnectIdle, Replaying,
@@ -587,6 +588,7 @@ pub fn new_model_with_clock(
     revealed_rows: 0,
     rendered_anchors: [],
     rendered_gutters: [],
+    live_tail: live_tail.new(),
     record_rows: [],
     record_gutters: [],
     record_line_cache: dict.new(),

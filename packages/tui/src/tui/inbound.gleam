@@ -68,6 +68,7 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/job
 import tui/layout
+import tui/live_tail
 import tui/model.{
   type Interrupt, type Model, type Peer, type Reconnect, type StrandWorkspace,
   type UnconfirmedSubmission, AgentInspector, ApprovalInspector, Attached,
@@ -1298,17 +1299,30 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       // finds it unset is the fallback, for a phase sequence that never
       // said so. Later fragments, and other strands, leave it alone.
       let generation_started_ms = generation_clock(model, strand)
+      let streams =
+        receive_stream(
+          streams_before_end(model, strand, operation, generation, kind),
+          strand,
+          operation,
+          generation,
+          kind,
+          text,
+        )
+
+      // The live tail's cache holds the fragment list it last drew. A
+      // fragment that starts a stream over, or collapses it to its newest
+      // bytes, leaves that list describing text the model no longer has, so
+      // the cache is dropped here rather than kept alive beside the new
+      // list until the next projection finds it stale.
+      let live_tail = case continues(model.streams, streams, strand, kind) {
+        True -> model.live_tail
+        False -> live_tail.new()
+      }
       let updated =
         Model(
           ..model,
-          streams: receive_stream(
-            streams_before_end(model, strand, operation, generation, kind),
-            strand,
-            operation,
-            generation,
-            kind,
-            text,
-          ),
+          streams:,
+          live_tail:,
           generation_started_ms:,
           notice: case kind {
             "end" -> "request finished"
@@ -1702,6 +1716,30 @@ fn receive_stream(
         })
       append_stream(retained, strand, operation, generation, kind, text)
     }
+  }
+}
+
+// Whether the fragment just received extended the `strand` stream of this
+// `kind` rather than replacing it: the new fragment list is the old one with
+// one more fragment in front. An append prepends to the very list the
+// stream held, so the comparison is the identity of that list and costs
+// nothing; a reset or a collapse builds a new list, which differs at once.
+// A kind with no stream on either side has nothing cached to go stale.
+fn continues(
+  before: List(Stream),
+  after: List(Stream),
+  strand: String,
+  kind: String,
+) -> Bool {
+  let find = fn(streams: List(Stream)) {
+    list.find(streams, fn(stream) {
+      stream.strand == strand && stream.kind == kind
+    })
+  }
+  case find(after), find(before) {
+    Ok(Stream(fragments: [_, ..rest], ..)), Ok(old) -> rest == old.fragments
+    Ok(Stream(fragments: [], ..)), Ok(_) -> False
+    Ok(_), Error(Nil) | Error(Nil), _ -> True
   }
 }
 

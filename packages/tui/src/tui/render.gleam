@@ -42,8 +42,8 @@ import session_view/queued_input
 import session_view/snapshot_view
 import session_view/text_hygiene
 import session_view/transcript_line.{
-  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
-  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  type Line, type Speaker, Assistant, Failure, Line, Reasoning, ReasoningDigest,
+  Spacer, SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
   ToolFailure, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines
@@ -60,6 +60,7 @@ import tui/context_panel
 import tui/diff_panel
 import tui/focused_goal_panel
 import tui/layout
+import tui/live_tail
 import tui/markdown
 import tui/model.{
   type Model, AgentInspector, ApprovalInspector, DaemonSelector, Disconnected,
@@ -655,7 +656,7 @@ fn transcript_content(lines: List(Line), width: Int) -> span.Text {
 ///
 /// The wrapping lives here rather than at the call sites because only this
 /// function knows which bodies arrive already wrapped. A Markdown body is
-/// wrapped inside `marked_markdown_rows`, at the room the mark leaves rather
+/// wrapped at `markdown_room`, the room the mark leaves rather
 /// than at the full pane, which is what seats a continuation row at the
 /// gutter instead of the left margin; prefixing the mark brings those rows
 /// back to exactly `width`. A second pass over them would re-measure every
@@ -686,12 +687,100 @@ pub fn render_line(line: Line, width: Int) -> List(span.Line) {
   }
 }
 
-// The rows one speaker's body occupies, before any wrapping the speaker did
-// not already do for itself. Every arm ends by handing its mark to
-// `prefix_rendered_lines` or drawing it inline, so the mark and the gutter
-// beneath it are decided in one place.
-fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
-  let #(mark, mark_style) = case line.speaker {
+/// The cells a Markdown body of `speaker` is wrapped to inside a pane of
+/// `width`: the pane less the speaker's mark, and never less than one.
+///
+/// The live tail wraps an answer in pieces, and every piece must be wrapped
+/// at the width `render_line` would have used for the whole of it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert render.markdown_room(transcript_line.Assistant, 80) == 78
+/// ```
+@internal
+pub fn markdown_room(speaker: Speaker, width: Int) -> Int {
+  // Markdown is wrapped to this room rather than to the pane because the
+  // wrap width and the prefix are a single decision. Row zero pays for the
+  // whole mark and every later row pays for `speaker_gutter`, so a body
+  // measured against the bare pane would overrun row zero, and a wrapper run
+  // afterwards would answer that overrun by dropping the spilled words to
+  // column zero — which is the two-left-edges bug itself. Measuring every row
+  // against the widest of the two prefixes is what the fix costs: a
+  // continuation row stops a few cells short of the pane, in exchange for one
+  // left edge shared by a wrapped paragraph, a list and a fence alike.
+  let #(mark, _) = speaker_mark(speaker, "")
+
+  // The mark is measured in cells rather than codepoints for the same reason
+  // `digest_row` measures it that way: a two-cell glyph counted as one would
+  // leave row zero a cell short of the room it was promised and spill.
+  int.max(1, width - text.cell_width(mark))
+}
+
+/// Turns wrapped Markdown rows of `speaker` into the rows `render_line`
+/// paints, less the blank row that opens the line.
+///
+/// The first row of the line carries the speaker's mark and every other row
+/// the gutter; an answer's rows are also shaded. `run` says whether `rows`
+/// begin the line or continue rows already finished, which is what lets the
+/// live tail finish the settled part of an answer once and the rest of it on
+/// every frame. Every row is finished on its own, so finishing a list in two
+/// runs gives the rows finishing it in one would.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows =
+///   markdown.render("hello", 78)
+///   |> markdown.wrap_lines(78)
+///   |> render.finish_markdown_rows(transcript_line.Assistant, _, live_tail.OpensLine)
+/// ```
+@internal
+pub fn finish_markdown_rows(
+  speaker: Speaker,
+  rows: List(span.Line),
+  run: live_tail.RowRun,
+) -> List(span.Line) {
+  let #(mark, mark_style) = speaker_mark(speaker, "")
+  let first = case run {
+    live_tail.OpensLine -> mark
+    live_tail.ContinuesLine -> speaker_gutter
+  }
+  let marked =
+    list.index_map(rows, fn(line, index) {
+      let span.Line(spans:, alignment:) = line
+      let prefix = case index == 0 {
+        True -> first
+        False -> speaker_gutter
+      }
+      span.Line(
+        spans: [span.span_styled(prefix, mark_style), ..spans],
+        alignment:,
+      )
+    })
+  case speaker {
+    Assistant -> assistant_rows(marked)
+    Reasoning
+    | System
+    | User
+    | ReasoningDigest
+    | SummarizedReasoning
+    | SummarizedAdvice
+    | ToolCall
+    | ToolResult
+    | ToolDetail
+    | ToolPatch
+    | ToolFailure
+    | Failure
+    | Spacer -> marked
+  }
+}
+
+// The mark that opens a speaker's first row and the style it is drawn in. A
+// tool call's mark depends on its text, which is the only reason the text is
+// an argument; every other speaker's mark is fixed.
+fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
+  case speaker {
     System -> #("◇ ", theme.quiet_text())
     User -> #("› ", theme.signal_bold())
     Assistant -> #("◆ ", theme.current_bold())
@@ -700,7 +789,7 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     SummarizedReasoning -> #(summarized_mark, theme.quiet_text())
     SummarizedAdvice -> #("◇ ", theme.quiet_text())
     ToolCall ->
-      case string.starts_with(line.text, "✓ ") {
+      case string.starts_with(text, "✓ ") {
         True -> #("✓ ", theme.success_text())
         False -> #("● ", theme.current_bold())
       }
@@ -710,6 +799,14 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     Failure -> #("! error ", theme.danger_text())
     Spacer -> #("", theme.quiet_text())
   }
+}
+
+// The rows one speaker's body occupies, before any wrapping the speaker did
+// not already do for itself. Every arm ends by handing its mark to
+// `prefix_rendered_lines` or drawing it inline, so the mark and the gutter
+// beneath it are decided in one place.
+fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
+  let #(mark, mark_style) = speaker_mark(line.speaker, line.text)
   let body = case
     line.speaker == ToolCall && string.starts_with(line.text, "✓ ")
   {
@@ -738,15 +835,18 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
         |> list.append([span.line_plain("")])
       ]
     }
-    Assistant -> [
-      span.line_plain(""),
-      ..marked_markdown_rows(line.text, mark, mark_style, width)
-      |> assistant_rows
-    ]
-    Reasoning -> [
-      span.line_plain(""),
-      ..marked_markdown_rows(line.text, mark, mark_style, width)
-    ]
+
+    // The live tail builds these rows in pieces from the same three calls
+    // (`live_tail`), so they are the only way an answer becomes rows.
+    Assistant | Reasoning -> {
+      let room = markdown_room(line.speaker, width)
+      [
+        span.line_plain(""),
+        ..markdown.render(line.text, room)
+        |> markdown.wrap_lines(room)
+        |> finish_markdown_rows(line.speaker, _, live_tail.OpensLine)
+      ]
+    }
     ToolPatch -> markdown.diff(line.text)
 
     // The spacer is a row and nothing else: the fold that placed it has
@@ -933,31 +1033,6 @@ fn digest_row(
 // space, so two cells is the one column all of them can share, and a list's
 // own nesting is then measured from it.
 const speaker_gutter = "  "
-
-// Markdown is wrapped here rather than left to the caller because the wrap
-// width and the prefix are a single decision. Row zero pays for the whole
-// mark and every later row pays for `speaker_gutter`, so a body measured
-// against the bare pane would overrun row zero, and the wrapper the caller
-// runs afterwards would answer that overrun by dropping the spilled words to
-// column zero — which is the two-left-edges bug itself. Measuring every row
-// against the widest of the two prefixes is what the fix costs: a
-// continuation row stops a few cells short of the pane, in exchange for one
-// left edge shared by a wrapped paragraph, a list and a fence alike.
-fn marked_markdown_rows(
-  body: String,
-  mark: String,
-  mark_style: style.Style,
-  width: Int,
-) -> List(span.Line) {
-  // The mark is measured in cells rather than codepoints for the same reason
-  // `digest_row` measures it that way: a two-cell glyph counted as one would
-  // leave row zero a cell short of the room it was promised and spill.
-  let room = int.max(1, width - text.cell_width(mark))
-
-  markdown.render(body, room)
-  |> markdown.wrap_lines(room)
-  |> prefix_rendered_lines(mark, mark_style)
-}
 
 fn prefix_rendered_lines(
   lines: List(span.Line),
