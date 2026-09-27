@@ -728,6 +728,10 @@ pub type State(view) {
     last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,
+    /// Whether the last connection drain stopped at its batch rather than
+    /// at an empty buffer, so the mailbox may still hold frames whose wakes
+    /// were already spent on earlier ticks (`inbound.drain_connection`).
+    connection_backlog: ConnectionBacklog,
     /// The open `--record` file, when the launch asked for one. Present in
     /// the model because the reducers that decide recording lines, input
     /// and channelless messages alike, name it in the effects they queue.
@@ -768,6 +772,25 @@ pub type State(view) {
     /// The host's view state: for the terminal, its etui render caches.
     view: view,
   )
+}
+
+/// What the last connection drain says about the mailbox behind it.
+///
+/// The socket wakes the loop after the frames it files, one wake per
+/// `connection.wake_interval_ms`, so a burst of more frames than one drain
+/// takes can outrun its wakes: two wakes, two batches, and the rest of the
+/// burst left in the mailbox with no wake behind it. A drain that stopped at
+/// its batch records that here, and the loop keeps its own short poll until
+/// a drain finds the buffer empty.
+@internal
+pub type ConnectionBacklog {
+  /// The last drain emptied the buffer before its batch ran out, so the
+  /// mailbox held nothing more when the step began; anything filed since
+  /// has a wake of its own behind it.
+  MailboxDrained
+
+  /// The last drain took a whole batch, so the mailbox may hold more.
+  MailboxMayHoldMore
 }
 
 /// The most connection messages one step reduces: a tick's drain, and the

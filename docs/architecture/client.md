@@ -124,8 +124,9 @@ by different code in the two hosts:
 | What the host does | Terminal (`tui`) | Web view (`web_view`, `client/daemon/ui_*`) |
 |---|---|---|
 | Reads the clock | `runtime.message` stamps each input once (`msg.Stamp`) | the component's selector mappings read it when a frame or the timer message is received |
-| Reads socket traffic | `runtime.receive` tops up `tui/buffered` inboxes up to their room, and `tui/admission` files them | a Lustre selector delivers `Arrived`, filed into a `session_view/inbox` |
-| Decides when to reduce | a tick or a key, in `tick.update_tick`'s fixed drain order | a 250 ms `Ticked`, or at once when the lane has a request in flight |
+| Reads socket traffic | `runtime.receive` tops up `tui/buffered` inboxes up to their room, and `tui/admission` files them | a Lustre selector drains up to 64 waiting frames into one `Arrived`, filed into a `session_view/inbox` |
+| Learns that traffic arrived | the socket actor sends etui's wake after it files a frame, paced to one per 16 ms (`connection.connect_waking`), and etui hands the wake over as a tick | the selector matching a frame is the wake |
+| Decides when to reduce | a tick or a key, in `tick.update_tick`'s fixed drain order; the poll timeout is the lane's `next_due`, or the paced poll while something moves with time | at once, on each `Arrived`; and on `Ticked`, the one timer armed for the lane's `next_due` |
 | Runs blocking work | `effect.StartJob`, started as a weft run by `tui/job_runner` | the relay process, `ui_relay`, makes the blocking gateway calls |
 | Writes and closes | `terminal_lane.perform` on `Transmit`, `Shut` and `Note` | `component.perform`, one `effect.from` over `Transmit` and `Shut`, through `ui_relay` |
 | Records | `effect.Record` and `recording.append` | nothing; the recorder type is `Nil` |
@@ -165,10 +166,12 @@ no step of its own yet. Its component holds the lane, an inbox and the
 rows projected from the last capture, and calls the engine directly:
 `operator.drain` to hand the lane what arrived, `session_channel.tick`,
 `operator.submit` and `operator.decide` for an operator's commands, and
-`transcript.project_rows` when a capture completes. Both hosts keep
-ADR-013's option C: arrivals are filed, and reduction happens at fixed
-points. `client/web_view_parity_test` holds the two hosts to the same
-transcript lines for the same capture.
+`transcript.project_rows` when a capture completes. Both hosts deliver
+traffic as it arrives and wake for the lane's own deadlines only when
+`session_channel.next_due` says one is due, which revises ADR-013's
+option C (ADR-013, the addendum on event-driven delivery;
+[delivery.md](delivery.md)). `client/web_view_parity_test` holds the two
+hosts to the same transcript lines for the same capture.
 
 ## Current default: one daemon, multiple sessions
 

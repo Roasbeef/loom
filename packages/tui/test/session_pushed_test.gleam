@@ -34,6 +34,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/recording
 import tui/workspace
+import tui_test/pushed
 
 fn metadata() {
   json.to_string(
@@ -252,6 +253,90 @@ pub fn a_notice_in_ready_issues_its_catch_up_before_the_idle_refresh_test() {
   let #(_, updates) = feed(notified, transfer(4, "1:2", "catch_up", 12))
   assert list.map(updates, provenance) == [Ok(session_channel.Notified)]
     as "the capture that paints the answer is the notice's, not a refresh's"
+}
+
+fn feed_at(channel, messages, now) {
+  list.fold(messages, #(channel, []), fn(acc, message) {
+    let #(channel, updates) = session_channel.receive(acc.0, message, now:)
+    #(channel, list.append(acc.1, updates))
+  })
+}
+
+// A lane that has seen no push cannot tell a quiet session from a daemon
+// that never pushes, so it keeps the 250 ms refresh. The first pushed frame
+// is the evidence that commits will be announced, and from the next capture
+// on the refresh runs every `pushing_refresh_ms`, to repair a lost final
+// notice and catch what the daemon does not announce.
+pub fn the_idle_refresh_lengthens_once_the_daemon_has_pushed_test() {
+  let fresh =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  let #(ready, _) = feed_at(fresh, transfer(1, "1:1", "recent", 10), 100)
+  assert session_channel.next_due(ready)
+    == Some(100 + session_channel.polling_refresh_ms)
+    as "a lane that has heard no push refreshes at the polling interval"
+
+  // The refresh runs, and its capture completes with nothing pushed yet.
+  let #(refreshing, _) = session_channel.tick(ready, now: 350)
+  assert session_channel.next_due(refreshing) == Some(350 + 30_000)
+    as "a capture in flight is due at its deadline"
+  let #(polled, _) =
+    feed_at(refreshing, transfer(4, "1:2", "catch_up", 10), 360)
+  assert session_channel.next_due(polled) == Some(360 + 250)
+
+  // A delta is a push like any other. It moves no instant already set.
+  let #(pushed, _) =
+    session_channel.receive(polled, delta("main", "o", "x"), now: 400)
+  assert session_channel.next_due(pushed) == Some(610)
+    as "the first push does not move the refresh already scheduled"
+
+  let #(refreshing, _) = session_channel.tick(pushed, now: 610)
+  let #(settled, _) =
+    feed_at(refreshing, transfer(7, "1:3", "catch_up", 10), 620)
+  assert session_channel.next_due(settled)
+    == Some(620 + session_channel.pushing_refresh_ms)
+    as "the capture after a push schedules the pushing interval"
+  let refresh_at = 620 + session_channel.pushing_refresh_ms
+  let #(early, updates) = session_channel.tick(settled, now: refresh_at - 1)
+  assert updates == [] && !session_channel.in_flight(early)
+    as "nothing happens before the refresh instant"
+  let #(due, _) = session_channel.tick(settled, now: refresh_at)
+  assert session_channel.in_flight(due) as "the refresh runs at its instant"
+}
+
+// A closed lane and a lane waiting on its first cut have nothing a tick can
+// do, so a host arms no wake-up for either.
+pub fn a_lane_with_nothing_a_tick_can_do_names_no_due_reading_test() {
+  let fresh =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  assert session_channel.next_due(fresh) == Some(30_000)
+    as "the initial subscribe is in flight from the start"
+  let closed = session_channel.close(fresh)
+  assert session_channel.next_due(closed) == None
+}
+
+// A peer's configuration change reaches every other subscriber as a pushed
+// configuration board, with no commit notice behind it. The board is not
+// what the lane draws from, but it says the cut's configuration moved, so a
+// ready lane catches up on it rather than waiting for its idle refresh.
+pub fn a_pushed_configuration_board_catches_up_test() {
+  let ready = quiet(synchronized())
+  let board =
+    pushed.push([
+      #("event", json.String("snapshot")),
+      #(
+        "body",
+        json.Object([
+          #("mode", json.String("config")),
+          #("config", json.Object([#("model_name", json.String("m"))])),
+        ]),
+      ),
+    ])
+  let #(caught, updates) = session_channel.receive(ready, board, now: 0)
+  assert updates == []
+  assert session_channel.in_flight(caught)
+    as "the configuration push starts the catch-up the refresh would"
+  assert requests(caught)
+    == [attempt.Request(4, "catch_up", attempt.Cursor(10))]
 }
 
 pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {

@@ -961,9 +961,28 @@ pub fn decide(model: Model, id: String, choice: operator.Choice) -> Model {
 /// Each message is taken from whatever inbox the model holds at that
 /// moment, so a drain that follows an adoption in the same step reads the
 /// adopted inbox and never the one it replaced.
+///
+/// It also records whether it stopped at its batch
+/// (`Model.connection_backlog`), which is what keeps the loop polling on
+/// its own while a burst larger than one batch is still in the mailbox.
 @internal
 pub fn drain_connection(model: Model, remaining: Int) -> Model {
-  operator.drain(model, remaining, take_connection, handle_connection_message)
+  // The runtime tops the buffer up to one batch before the step, so a buffer
+  // holding at least what this drain may take is one whose read filled its
+  // room and may have left frames in the mailbox.
+  let connection_backlog = case buffered.held(model.inbox) >= remaining {
+    True -> tui_model.MailboxMayHoldMore
+    False -> tui_model.MailboxDrained
+  }
+  let drained =
+    operator.drain(model, remaining, take_connection, handle_connection_message)
+
+  // The model is a wide record, so it is copied only when the answer moved,
+  // which keeps an idle tick's allocation where it was.
+  case drained.connection_backlog == connection_backlog {
+    True -> drained
+    False -> Model(..drained, connection_backlog:)
+  }
 }
 
 // The oldest message the adopted inbox holds, taken from whatever inbox the

@@ -373,7 +373,10 @@ fun chanExpire(c: tChan): tChan {
   return c;
 }
 
-// session_channel.tick when the 250 ms idle refresh has fallen due.
+// session_channel.tick when the idle refresh has fallen due: next_due's
+// reading for a ready lane, 250 ms after a capture until the lane has been
+// pushed to and 5 s after. The interval is time, which the model does not
+// have, so any refresh the operator chooses stands for both.
 fun chanRefresh(c: tChan): tChan {
   if (c.phase == READY && c.hasCut) {
     return chanCaptureAgain(c);

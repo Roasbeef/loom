@@ -6,9 +6,13 @@
 //// only a program that owns a terminal wants: silencing the logger that would
 //// otherwise write over the alternate screen, running a child whose output
 //// *is* this program's output, asking the person in front of it a question,
-//// and exiting the VM with that child's status.
+//// and exiting the VM with that child's status. One more acts on the loop
+//// that owns the terminal: waking its input wait when socket traffic
+//// arrives.
 //// None has an expression in `gleam_stdlib`, `gleam_erlang`,
 //// `gleam_otp` or weft, which is why they are `@external` at all.
+
+import gleam/erlang/process
 
 /// Stops every OTP logger handler from writing to the terminal.
 ///
@@ -76,3 +80,15 @@ pub fn halt(code: Int) -> anything
 /// before creating a daemon or entering the alternate screen.
 @external(erlang, "tui_ffi", "require_terminal")
 pub fn require_terminal() -> Result(Nil, String)
+
+/// Wakes the etui loop running in `owner`: its input wait ends at once and
+/// the loop hands the client a `Tick`.
+///
+/// Calls etui's own `etui_terminal_ffi:wake/1`, so the shape of the wake
+/// message lives in the library that receives it. `gleam_erlang` sends only
+/// through a `Subject`, which wraps every message in a tag etui's receive
+/// does not match, and the loop's receive is etui's rather than a subject
+/// this client could create, so there is no way to express the send without
+/// an external.
+@external(erlang, "etui_terminal_ffi", "wake")
+pub fn wake_loop(owner: process.Pid) -> Nil

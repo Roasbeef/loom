@@ -34,6 +34,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/msg
 import tui/runtime
+import tui/tick
 import tui/workspace
 import tui_test/pushed
 import weft
@@ -110,6 +111,36 @@ pub fn escape_holds_one_batch_and_ticks_drain_it_in_order_test() {
 
   let second = tui.update(backend.Tick, first)
   assert faults(second) == numbered(0, 100)
+}
+
+// ADR-010 under event-driven delivery. A socket wakes the loop after it files
+// a frame, and etui hands the wake over as a tick. Queued behind an Escape,
+// the wake is a separate event: the Escape's step cancels the waiting
+// command before any traffic is reduced and holds what it received, and the
+// wake's tick then reduces the held frames in the order they arrived. etui
+// may instead end the Escape's input burst on the wake and not deliver it;
+// the held frames then keep the loop on its short poll rather than the idle
+// ceiling, so the tick that drains them still comes.
+pub fn a_wake_behind_an_escape_reduces_traffic_only_after_the_cancel_test() {
+  let model = waiting(fresh())
+  list.each(["0", "1", "2"], fn(label) {
+    process.send(
+      buffered.sender(model.inbox),
+      connection_event.NetworkFault(label),
+    )
+  })
+
+  let escaped = tui.update(backend.KeyPress("esc"), model)
+  assert escaped.pending_submission == None
+    as "the Escape cancelled the waiting command"
+  assert faults(escaped) == [] as "no traffic was reduced before the cancel"
+  assert buffered.held(escaped.inbox) == 3
+  assert tick.terminal_poll_timeout(escaped) < tick.idle_poll_ceiling_ms
+    as "held frames keep the loop polling even if the wake is swallowed"
+
+  let woken = tui.update(backend.Tick, escaped)
+  assert faults(woken) == ["0", "1", "2"]
+  assert buffered.held(woken.inbox) == 0
 }
 
 // The swap in `candidate_outcome` replaces the whole inbox value. Commit
