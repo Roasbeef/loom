@@ -29,6 +29,13 @@
 ////   (`markdown.join_soft_break`). The conditions that make the join exact
 ////   are on `Head`.
 ////
+//// The sanitizing shortcut, and every shortcut after it, stops at the first
+//// byte the hygiene pass rewrites. From there on `unchanged_to` never
+//// advances, so for the rest of that stream the tail is sanitized, parsed and
+//// wrapped from the last settled block on every frame, as before this cache
+//// existed. A tab is enough to trigger it, so a fenced Go block or Makefile
+//// in an answer turns the shortcuts off for everything after it.
+////
 //// The result must be byte for byte the rows `render_line` would give, since
 //// replay goldens compare frames exactly. Each part has its reason for being
 //// exact written where the part is built, and `test/live_tail_test.gleam`
@@ -112,6 +119,9 @@ type Slot {
     // conditions a checkpoint needs, and whether they still hold there.
     plain_to: Int,
     plain: Plain,
+    // How many frames in a row have continued this slot rather than
+    // starting it over. Nothing reads it but `shortcuts`.
+    carried: Int,
   )
 }
 
@@ -183,6 +193,31 @@ pub fn begin(cache: Cache) -> Pass {
   Pass(previous: cache.slots, used: [])
 }
 
+/// What the cache is holding, for tests that must show a shortcut was
+/// taken: the settled rows across its slots, the furthest paragraph
+/// checkpoint as a byte offset (zero when no slot has one), and the most
+/// frames in a row any slot was continued rather than started over.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(settled, checkpoint, carried) = live_tail.shortcuts(cache)
+/// ```
+@internal
+pub fn shortcuts(cache: Cache) -> #(Int, Int, Int) {
+  list.fold(cache.slots, #(0, 0, 0), fn(acc, slot) {
+    let at = case slot.head {
+      Head(at:, ..) -> at
+      NoHead -> 0
+    }
+    #(
+      acc.0 + list.length(slot.settled),
+      int.max(acc.1, at),
+      int.max(acc.2, slot.carried),
+    )
+  })
+}
+
 /// Ends a pass, keeping the slots it used.
 ///
 /// ## Examples
@@ -220,7 +255,7 @@ pub fn rows(
     list.find(pass.previous, fn(slot) { slot.speaker == speaker })
     |> result.try(fn(slot) {
       case slot.room == layout.room && extends(fragments, count, slot) {
-        True -> Ok(Slot(..slot, fragments:, count:))
+        True -> Ok(Slot(..slot, fragments:, count:, carried: slot.carried + 1))
         False -> Error(Nil)
       }
     })
@@ -262,6 +297,7 @@ fn fresh(
     head: NoHead,
     plain_to: 0,
     plain: Readable,
+    carried: 0,
   )
 }
 
@@ -505,15 +541,16 @@ fn settle_from(
   layout: Layout,
   attempts: Int,
 ) -> Slot {
-  let from = int.max(slot.scanned, slot.tail_from + 2)
-  let complete = last_line_feed(bits, slot.unchanged_to - 1, from)
   case attempts {
     0 -> slot
-    _ ->
+    _ -> {
+      let from = int.max(slot.scanned, slot.tail_from + 2)
+      let complete = last_line_feed(bits, slot.unchanged_to - 1, from)
       case cut_point(bits, from, complete) {
         Error(Nil) -> Slot(..slot, scanned: int.max(slot.scanned, complete))
         Ok(at) -> settle_at(slot, bits, at, layout, attempts)
       }
+    }
   }
 }
 
@@ -587,6 +624,9 @@ fn cut_point(bits: BitArray, index: Int, limit: Int) -> Result(Int, Nil) {
   }
 }
 
+// The one scan here that repeats across frames: it reads back over the open
+// last line every frame, so its cost is that line's length, not the answer's.
+//
 // The byte just past the last line feed at or before `index`, or `floor`
 // when there is none at or after it. It scans backwards and stops at
 // `floor`, so it reads at most the text a cut could still be found in.
@@ -665,8 +705,14 @@ fn moved(
       one_paragraph(markdown.render_sanitized(passed, layout.room)),
     )
     case slot.head {
+      // The passed lines must also be free of a setext underline and a
+      // table row on their own, so the checkpoint's safety does not rest
+      // on `tail_lines` having checked them on an earlier frame.
       Head(line: head, ..) ->
-        Ok(Head(at:, line: markdown.join_soft_break(head, line)))
+        case keeps_paragraph(passed) {
+          True -> Ok(Head(at:, line: markdown.join_soft_break(head, line)))
+          False -> Error(Nil)
+        }
       NoHead -> {
         use rest <- result.try(open_text(slot, text, bits, at))
         let parsed = markdown.render_sanitized(rest, layout.room)

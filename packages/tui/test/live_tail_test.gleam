@@ -19,6 +19,7 @@
 //// word wrapper sees. And one test runs deltas through the model and the
 //// projection and compares its rows with a projection that kept nothing.
 
+import core/json
 import etui/backend
 import etui/span
 import etui/style
@@ -26,6 +27,7 @@ import gleam/int
 import gleam/list
 import gleam/string
 import host/bootstrap
+import session_view/connection_event
 import session_view/transcript_line.{type Speaker, Assistant, Line, Reasoning}
 import tui
 import tui/inbound
@@ -265,44 +267,65 @@ fn setting(name: String, default: Int) -> Int {
 }
 
 // Every delta of `text` fed at `width`, one character at a time, except
-// that the width becomes `resized` at frame `at`.
-fn feed_characters(text: String, width: Int, resized: Int, at: Int) -> Nil {
+// that the width becomes `resized` at frame `at`. The answer is the settled
+// rows the cache holds at the end and the furthest paragraph checkpoint it
+// held on any frame, so a test can show its shortcut was taken rather than
+// passing because every frame fell back to a full render. Either is counted
+// only while the slot has been carried from frame to frame, which is what
+// makes it a shortcut: a slot started over on every frame settles and
+// checkpoints too, and reuses none of it.
+fn feed_characters(
+  text: String,
+  width: Int,
+  resized: Int,
+  at: Int,
+) -> #(Int, Int) {
   let cut =
     string.to_utf_codepoints(text)
     |> list.map(fn(codepoint) { string.from_utf_codepoints([codepoint]) })
-  list.index_fold(
-    cut,
-    #(Stream([], "", width), live_tail.new()),
-    fn(acc, delta, index) {
-      let #(stream, cache) = acc
-      let width = case index >= at {
-        True -> resized
-        False -> width
-      }
-      let stream =
-        Stream(
-          fragments: [delta, ..stream.fragments],
-          text: stream.text <> delta,
-          width:,
-        )
-      let #(rows, pass) =
-        live_tail.rows(
-          live_tail.begin(cache),
-          Assistant,
-          stream.text,
-          stream.fragments,
-          layout(Assistant, width),
-        )
-      assert rows == render.render_line(Line(Assistant, stream.text), width)
-        as {
-          "character "
-          <> int.to_string(index)
-          <> " drew what a full render draws"
+  let #(_, cache, furthest) =
+    list.index_fold(
+      cut,
+      #(Stream([], "", width), live_tail.new(), 0),
+      fn(acc, delta, index) {
+        let #(stream, cache, furthest) = acc
+        let width = case index >= at {
+          True -> resized
+          False -> width
         }
-      #(stream, live_tail.finish(pass))
-    },
-  )
-  Nil
+        let stream =
+          Stream(
+            fragments: [delta, ..stream.fragments],
+            text: stream.text <> delta,
+            width:,
+          )
+        let #(rows, pass) =
+          live_tail.rows(
+            live_tail.begin(cache),
+            Assistant,
+            stream.text,
+            stream.fragments,
+            layout(Assistant, width),
+          )
+        assert rows == render.render_line(Line(Assistant, stream.text), width)
+          as {
+            "character "
+            <> int.to_string(index)
+            <> " drew what a full render draws"
+          }
+        let cache = live_tail.finish(pass)
+        let checkpoint = case live_tail.shortcuts(cache) {
+          #(_, checkpoint, carried) if carried > 1 -> checkpoint
+          _ -> 0
+        }
+        #(stream, cache, int.max(furthest, checkpoint))
+      },
+    )
+  let settled = case live_tail.shortcuts(cache) {
+    #(settled, _, carried) if carried > 1 -> settled
+    _ -> 0
+  }
+  #(settled, furthest)
 }
 
 // A resize changes every row, so the settled rows and the tail's wrap must
@@ -312,8 +335,10 @@ pub fn a_resize_mid_stream_rebuilds_every_row_test() {
     "The first paragraph is long enough to wrap onto several rows here.\n\n"
     <> "A second paragraph settles once the third begins, at either width.\n\n"
     <> "Third paragraph, still streaming when the pane changes its width."
-  feed_characters(paragraphs, 40, 23, 90)
-  feed_characters(paragraphs, 23, 40, 140)
+  let #(settled, _) = feed_characters(paragraphs, 40, 23, 90)
+  assert settled > 0 as "the first paragraph settled at the new width"
+  let #(settled, _) = feed_characters(paragraphs, 23, 40, 140)
+  assert settled > 0 as "and at the other"
 }
 
 // A long paragraph is parsed from its checkpoint on each frame, and a line
@@ -327,29 +352,37 @@ pub fn a_long_paragraph_joins_at_its_checkpoint_test() {
     "Plain words run on for a while here\n"
     <> "and continue onto a second line of it\n"
     <> "then a third line that keeps going on\n"
-  feed_characters(lines <> "and a last line\n===\nAfter it", 40, 40, 0)
-  feed_characters(lines <> "cell one | cell two\n---|---\nx | y\n", 40, 40, 0)
-  feed_characters(
+  checkpointed(lines <> "and a last line\n===\nAfter it", 40, 40, 0)
+  checkpointed(lines <> "cell one | cell two\n---|---\nx | y\n", 40, 40, 0)
+  checkpointed(
     lines <> "then *emphasis that\nruns over lines* and ends\nplain again\n",
     40,
     40,
     0,
   )
-  feed_characters(lines <> "a hard break  \nfollows and\nmore words", 40, 40, 0)
-  feed_characters(lines <> "an entity &amp;\nat the end\nand more", 40, 40, 0)
-  feed_characters(lines <> "   indented lazy line\nnext line\nmore", 40, 40, 0)
+  checkpointed(lines <> "a hard break  \nfollows and\nmore words", 40, 40, 0)
+  checkpointed(lines <> "an entity &amp;\nat the end\nand more", 40, 40, 0)
+  checkpointed(lines <> "   indented lazy line\nnext line\nmore", 40, 40, 0)
+}
+
+// Feeds a long paragraph and requires that a checkpoint was placed in it
+// on some frame, so the join was exercised and not merely skipped.
+fn checkpointed(text: String, width: Int, resized: Int, at: Int) -> Nil {
+  let #(_, furthest) = feed_characters(text, width, resized, at)
+  assert furthest > 0 as "the paragraph was parsed from a checkpoint"
 }
 
 // A blank line inside an open fence is not a place to cut: the letter after
 // it is code, and settling there would draw it as prose. The fence opens and
 // closes across deltas, and the text after it settles once it is closed.
 pub fn a_fence_open_across_deltas_is_not_cut_test() {
-  feed_characters(
-    "Intro line\n\n```gleam\nlet x = 1\n\nfoo bar\n\nbaz\n```\n\nAfter the fence\n\nMore",
-    30,
-    30,
-    0,
-  )
+  let _ =
+    feed_characters(
+      "Intro line\n\n```gleam\nlet x = 1\n\nfoo bar\n\nbaz\n```\n\nAfter the fence\n\nMore",
+      30,
+      30,
+      0,
+    )
 }
 
 // Wide and combining characters, flags and emoji with modifiers, cut
@@ -359,8 +392,8 @@ pub fn wide_and_combining_characters_wrap_the_same_test() {
   let text =
     "漢字漢字漢字 e\u{301}e\u{301} 🇺🇸🇺🇸 👍🏽👍🏽 naïve wörd 漢字 🇺🇸 e\u{301}\n"
     <> "next line 漢字漢字漢字漢字漢字 👍🏽 end\n\nPara 🇺🇸🇺🇸🇺🇸 漢"
-  feed_characters(text, 7, 7, 0)
-  feed_characters(text, 5, 12, 60)
+  let _ = feed_characters(text, 7, 7, 0)
+  let _ = feed_characters(text, 5, 12, 60)
 }
 
 // Random styled spans, a prefix of them cut inside a span, and the full
@@ -481,4 +514,44 @@ pub fn a_projection_keeping_the_cache_matches_one_that_kept_nothing_test() {
     }
   })
   Nil
+}
+
+// A tool call's stream is replaced by its newest fragment on every delta,
+// so its fragment list never continues. The live tail does not cache tool
+// calls, so their deltas must leave the answer's cache alone rather than
+// drop it on every streamed argument chunk.
+pub fn a_tool_call_delta_keeps_the_answers_cache_test() {
+  let answer =
+    "First paragraph of the answer.\n\nSecond paragraph follows it.\n\nThird"
+  let model =
+    list.fold(string.to_graphemes(answer), pushed.attached(), fn(model, piece) {
+      inbound.accept_connection_message(
+        model,
+        pushed.delta("main", "op-1", piece),
+      )
+    })
+  let painted = tui.update(backend.Resize(model.width, model.height), model)
+  let #(settled, _, _) = live_tail.shortcuts(painted.live_tail)
+  assert settled > 0 as "the answer's first paragraphs settled"
+  let called =
+    list.fold(["{\"pa", "th\":", "\"x\"}"], painted, fn(model, chunk) {
+      inbound.accept_connection_message(model, tool_call_delta(chunk))
+    })
+  let #(kept, _, _) = live_tail.shortcuts(called.live_tail)
+  assert kept == settled as "tool call deltas left the cache in place"
+}
+
+fn tool_call_delta(text: String) -> connection_event.Message {
+  pushed.push([
+    #("event", json.String("stream_delta")),
+    #(
+      "body",
+      json.Object([
+        #("strand", json.String("main")),
+        #("op", json.String("op-1")),
+        #("kind", json.String("tool_call")),
+        #("text", json.String(text)),
+      ]),
+    ),
+  ])
 }

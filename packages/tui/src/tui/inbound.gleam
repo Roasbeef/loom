@@ -1725,12 +1725,19 @@ fn receive_stream(
 // stream held, so the comparison is the identity of that list and costs
 // nothing; a reset or a collapse builds a new list, which differs at once.
 // A kind with no stream on either side has nothing cached to go stale.
+//
+// A tool call's stream is replaced by its latest fragment on every delta,
+// so its list never continues. The live tail caches only text and
+// reasoning streams, so a tool call's delta leaves the cache alone; judging
+// it by its list would drop a long answer's cache on every streamed
+// argument chunk.
 fn continues(
   before: List(Stream),
   after: List(Stream),
   strand: String,
   kind: String,
 ) -> Bool {
+  use <- bool.guard(kind == "tool_call", True)
   let find = fn(streams: List(Stream)) {
     list.find(streams, fn(stream) {
       stream.strand == strand && stream.kind == kind
