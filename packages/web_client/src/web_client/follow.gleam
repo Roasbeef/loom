@@ -18,6 +18,14 @@
 //// `Reading`, it does nothing. Scrolling back to the bottom is a scroll
 //// like any other, so it resumes following with no control to press.
 ////
+//// A fold the reader opens also grows the lane. Scrolling to the bottom
+//// then would carry the page past the divider they just pressed, to the
+//// end of the work it revealed. So `<loom-fold>` announces each toggle
+//// with an event that bubbles to this element's slot, and the element
+//// takes it as the reader's own move: it becomes `Reading`, the growth
+//// that follows scrolls nothing, and the reader's next scroll to the
+//// bottom resumes following.
+////
 //// The element takes no attribute and renders nothing of its own: its
 //// shadow root holds one default slot, through which the server's lane is
 //// shown as the server rendered and escaped it. It reads no text, handles
@@ -25,11 +33,14 @@
 //// and the composer are outside it, in the dock, so neither its scrolling
 //// nor its size observation touches them.
 
+import gleam/dynamic/decode
 import gleam/option.{type Option, None, Some}
 import lustre
 import lustre/component
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
+import lustre/event
+import web_client/fold
 import web_client/internal/ffi_follow
 
 /// The element's tag.
@@ -72,6 +83,9 @@ pub type Msg {
 
   /// The lane changed size: a row landed, or a fold opened or closed.
   Resized
+
+  /// A fold in the lane opened or closed at the reader's hand.
+  Folded
 }
 
 /// Registers the element with the browser.
@@ -119,11 +133,11 @@ pub fn position(gap: Int) -> Position {
 /// ```
 pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
-    // Connecting starts one watch; a watch left from an earlier connection
-    // is stopped first, so moving the element never runs two. The watch
-    // needs the element's shadow root, which an effect is handed only once
-    // the element has rendered.
-    Connected -> #(model, effect.batch([stop(model.watching), start()]))
+    // Connecting starts one watch. Disconnecting stopped the one before, so
+    // moving the element never runs two. The watch needs the element's
+    // shadow root, which an effect is handed only once the element has
+    // rendered.
+    Connected -> #(model, start())
     Watched(watching:) -> #(
       Model(..model, watching: Some(watching)),
       effect.none(),
@@ -139,6 +153,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Following -> #(model, to_bottom())
         Reading -> #(model, effect.none())
       }
+
+    // The fold's event arrives in the turn of the fold's own update, a frame
+    // before the render that resizes the lane, so that resize finds
+    // `Reading`.
+    Folded -> #(Model(..model, position: Reading), effect.none())
   }
 }
 
@@ -166,6 +185,11 @@ fn to_bottom() -> Effect(Msg) {
   ffi_follow.to_bottom()
 }
 
+// The slot is where an event from a slotted `<loom-fold>` passes on its
+// way up, so the fold's toggle is heard here.
 fn view(_: Model) -> Element(Msg) {
-  component.default_slot([], [])
+  component.default_slot(
+    [event.on(fold.toggled_event, decode.success(Folded))],
+    [],
+  )
 }

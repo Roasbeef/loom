@@ -24,7 +24,7 @@ client components inside a server component, because 051 keeps the session
 on the BEAM (`docs/lustre.md`).
 
 The package targets JavaScript only (`target = "javascript"`) and depends on
-`lustre == 5.7.1` and `gleam_stdlib`. `make gen-client` bundles it with
+`lustre == 5.7.1`, `gleam_stdlib` and `gleam_json`. `make gen-client` bundles it with
 `lustre_dev_tools` (a dev dependency here and nowhere else) into
 `packages/web_view/priv/static/web_client.mjs`, together with the page's
 stylesheet, which Tailwind builds from `src/web_client.css`, and the two
@@ -44,14 +44,16 @@ time builds anything.
   browser's clock. `elapsed.duration` is the terminal strip's format.
 - `fold.Model` (`Closed` | `Opened`) and `fold.Msg` (`Toggled`): the fold's
   shadow root holds one button carrying the `summary` slot and, while open,
-  the default slot.
+  the default slot. Each toggle emits `fold.toggled_event`
+  (`loom-fold-toggled`, bubbling and composed, no data).
 - `follow.Model(position, watching)`, `follow.Position` (`Following` |
   `Reading`) and `follow.Msg` (`Connected`, `Disconnected`, `Watched`,
-  `Scrolled(gap)`, `Resized`): a scroll sets the position from the gap
+  `Scrolled(gap)`, `Resized`, `Folded`): a scroll sets the position from the gap
   between the viewport's bottom and the page's (`follow.position`, within
   `follow.slack` pixels is `Following`); a resize of the lane scrolls to
-  the bottom only while `Following`. The shadow root holds one default
-  slot.
+  the bottom only while `Following`; a fold's toggle event, heard on the
+  slot, sets `Reading`, so opening a fold never scrolls past it. The shadow
+  root holds one default slot.
 - `internal/ffi_clock`: `now` (`Date.now`), `every` (`setInterval`) and
   `cancel` (`clearInterval`), in `clock.mjs`.
 - `internal/ffi_follow`: `watch` (a passive `scroll` listener on the window
@@ -62,7 +64,8 @@ time builds anything.
 ## Relationships
 
 - **Depends on**: `lustre` (client components, `lustre.register`),
-  `gleam_stdlib`. Dev only: `lustre_dev_tools`, for `make gen-client`.
+  `gleam_stdlib`, `gleam_json` (the fold event's empty payload). Dev only:
+  `lustre_dev_tools`, for `make gen-client`.
 - **Depended on by**: nothing at compile time. `packages/web_view` renders
   its elements by tag name, and `packages/client` serves its bundle from
   `web_view`'s `priv/static` (`ui_http.Client`).
