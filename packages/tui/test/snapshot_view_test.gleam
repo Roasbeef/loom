@@ -505,6 +505,29 @@ pub fn question_whose_register_disappears_closes_its_dialog_test() {
     as "a request that is no longer pending anywhere cannot stay on screen"
 }
 
+pub fn lookup_reporting_the_question_resolved_closes_its_dialog_test() {
+  let opened = capture_permission(pushed.attached(), pending_permission_cut(81))
+  let assert tui_model.ApprovalInspector(_) = opened.overlay
+    as "the pending question must be on screen first"
+
+  // The lookup reply is the first thing to report the decision; no cut
+  // arrives in between to close the panel.
+  let resolved =
+    capture_permission(
+      pushed.attached(),
+      permission_cut(82, "approved", author("Bob")),
+    )
+  let settled =
+    inbound.apply_channel_update(
+      opened,
+      session_channel.LookedUp(resolved.approvals, []),
+    )
+  assert settled.overlay == tui_model.NoOverlay
+    as "a lookup that shows the question resolved must close its dialog"
+  assert settled.notice
+    == "Approval permission (fs_write) was settled elsewhere by Bob; its dialog is closed."
+}
+
 pub fn deliberate_inspection_of_a_resolved_decision_stays_open_test() {
   let resolved = permission_cut(71, "approved", author("Alice"))
   let captured = capture_permission(pushed.attached(), resolved)

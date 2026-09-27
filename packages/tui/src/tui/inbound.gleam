@@ -252,8 +252,15 @@ pub fn apply_channel_update(
           ..inspected,
           approvals: approval.decisions(model.approvals, records, missing),
         )
+
+      // A lookup can be the first to report the open question resolved, for
+      // instance when another client answered it, so the reply settles the
+      // dialog the same way a cut does rather than waiting for the next one.
       let updated = case updated.captured {
-        Some(#(cut, view)) -> render_cut(updated, cut, view, updated.approvals)
+        Some(#(cut, view)) ->
+          render_cut(updated, cut, view, updated.approvals)
+          |> close_settled_approval
+          |> present_pending_approval
         None -> updated
       }
       case missing {
@@ -519,48 +526,52 @@ fn close_settled_approval(model: Model) -> Model {
   case model.overlay {
     ApprovalInspector(panel) -> {
       let asked = approval_panel.review(panel)
-      let pending =
-        list.any(model.approvals, fn(record) {
-          record.id == asked.id && record.status == approval.Pending
-        })
-      case asked.status, pending {
-        approval.Pending, False ->
-          tui_model.append_system(
-            Model(..model, overlay: NoOverlay),
-            settled_elsewhere(model.approvals, asked),
-          )
-        approval.Pending, True
+
+      // Both projections keep one record per escalation ID, so the first
+      // match is the only one.
+      let current =
+        list.find(model.approvals, fn(record) { record.id == asked.id })
+      case asked.status, current {
+        approval.Pending, Ok(approval.Review(status: approval.Pending, ..))
         | approval.Approved, _
         | approval.Rejected, _
         | approval.Consumed, _
         -> model
+
+        // The resolved register names its decider when it carries one. A
+        // register that has gone names nobody yet; the decision lookup the
+        // cut starts adds the author to the approval lines when it returns.
+        approval.Pending, Ok(approval.Review(origin: Some(author), ..)) ->
+          settle_elsewhere(model, asked, " by " <> origin.display_label(author))
+        approval.Pending, Ok(approval.Review(origin: None, ..))
+        | approval.Pending, Error(Nil)
+        -> settle_elsewhere(model, asked, "")
       }
     }
-    _ -> model
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | DaemonSelector(_)
+    | PeerLinkManager(_) -> model
   }
 }
 
-// The resolved register names its decider when the cut still carries it. A
-// register that has gone names nobody yet; the decision lookup the cut starts
-// will add the author to the approval lines when it returns.
-fn settled_elsewhere(
-  approvals: List(approval.Review),
+fn settle_elsewhere(
+  model: Model,
   asked: approval.Review,
-) -> String {
-  let decider =
-    list.find_map(approvals, fn(record) {
-      case record.id == asked.id, record.origin {
-        True, Some(author) -> Ok(" by " <> origin.display_label(author))
-        True, None | False, _ -> Error(Nil)
-      }
-    })
-  "Approval "
-  <> asked.id
-  <> " ("
-  <> asked.tool
-  <> ") was settled elsewhere"
-  <> result.unwrap(decider, "")
-  <> "; its dialog is closed."
+  decider: String,
+) -> Model {
+  tui_model.append_system(
+    Model(..model, overlay: NoOverlay),
+    "Approval "
+      <> asked.id
+      <> " ("
+      <> asked.tool
+      <> ") was settled elsewhere"
+      <> decider
+      <> "; its dialog is closed.",
+  )
 }
 
 // A question is offered once per exact sequence. Deferring one leaves it in
