@@ -104,13 +104,20 @@ Follow-ups, in order:
    quiet session stays `Polling` at 250 ms, and a page in that state
    renders more often than before the change (15 renders and 3.8
    catch-ups a second, against 10 and 2), and peers already attached see
-   a newcomer only at their next refresh, up to five seconds. Publishing
-   the roster to every subscriber, the newcomer included, in
-   `gateway.network_command`'s `Subscribe` arm fixes both;
-   it moves the push order nine client tests pin, several of which count
-   authorization checks, so it needs its own change. Exit: a client
-   attached to a quiet session refreshes every five seconds, and those
-   tests state the new order.
+   a newcomer only at their next refresh, up to five seconds. This is the
+   whole of `tui_shipped_multiplayer_test`'s slowdown: every one of its
+   80 waits is unchanged except the one where Alice waits to see Bob
+   rejoin, which went from 231 ms to 4,979 ms (median of five). Bob's
+   departure is pushed, so Alice's lane captures and schedules its next
+   refresh five seconds out, and his rejoin a few milliseconds later
+   produces no frame at all. Publishing the roster to every subscriber,
+   the newcomer included, in `gateway.network_command`'s `Subscribe` arm
+   fixes both, but protocol-change/018 rules that "a join is not
+   announced by a push", so it needs a protocol change amending 018. It
+   also moves the push order nine client tests pin, several of which
+   count authorization checks. Exit: 018 is amended, a client attached to
+   a quiet session refreshes every five seconds, a join reaches attached
+   peers without a refresh, and those tests state the new order.
 3. **Wake etui's loop on SIGWINCH.** With a resize announced, the
    terminal's one-second idle ceiling can rise to the lane's refresh.
    Exit: an idle terminal wakes only for its lane, and a resize repaints

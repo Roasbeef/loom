@@ -1426,7 +1426,11 @@ mutation table is unchanged.
   departure but not a join, so the peers already attached see a newcomer
   at their next refresh. The shipped multiplayer fixture, which waits for
   exactly that after Bob rejoins, took 12.4 s instead of 7.7 s (median of
-  five runs each, with twelve of sixteen cores busy).
+  five runs each, with twelve of sixteen cores busy). Timing each of its
+  80 waits puts all of the difference in that one: Alice's wait for Bob's
+  new attachment went from 231 ms to 4,979 ms, and no other wait moved by
+  more than 30 ms. Pushing the join is the fix, and it amends
+  protocol-change/018, which rules that a join is not announced.
   The `client/` context cell ([models.md](../architecture/models.md)) is
   another; its figure reaches the agent strip sooner through the usage
   row's own push. A lost final notice has the same bound.
