@@ -616,6 +616,7 @@ pub fn new_model_with_clock(
     last_frame_ms: stamp.now_ms,
     activity_revision: 0,
     quiet_for_ms: pacing.quiet_after_ms,
+    connection_backlog: tui_model.MailboxDrained,
     recorder: None,
     herdr_reporter: None,
     herdr_published: None,

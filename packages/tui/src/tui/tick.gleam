@@ -29,6 +29,7 @@ import tui/effect
 import tui/herdr
 import tui/inbound
 import tui/interaction
+import tui/job_runner
 import tui/layout
 import tui/model.{type Model, FrameCache, Model, Replaying, View} as tui_model
 import tui/pacing
@@ -456,7 +457,50 @@ fn advance_viewport(model: Model) -> Model {
   }
 }
 
+/// The longest the loop waits for input when nothing is due sooner, in
+/// milliseconds.
+///
+/// Socket traffic wakes the loop itself (`connection.connect_waking`) and
+/// the lane names its own next deadline (`session_channel.next_due`), so
+/// this ceiling is not what delivers either. It bounds what nothing else
+/// announces: etui notices a resized window only when its loop runs, and a
+/// time-driven label with nothing live under it, such as a cache countdown,
+/// moves only on a tick. A second keeps both within a second while an idle
+/// terminal wakes once a second instead of four times.
+pub const idle_poll_ceiling_ms = 1000
+
+/// The longest the loop waits while it `wakes_itself`, in milliseconds.
+///
+/// It is the cap the loop had on every wait before socket traffic woke
+/// it, so what moves with time keeps the cadence it had: the activity
+/// glyph advances one step per tick, and a strand running with no traffic
+/// would otherwise animate at the 400 ms quiet poll. Job replies keep the
+/// latency they had for the same reason.
+pub const self_wake_ceiling_ms = 250
+
 /// The wait this model would ask a terminal for before its next poll.
+///
+/// Arriving frames do not need the poll: the socket wakes the loop after it
+/// files them, and the wake ends etui's input wait with a `Tick`. What the
+/// poll is for is everything a wake does not announce, and its answer is the
+/// first of these that applies:
+///
+/// - A drain that stopped at its batch polls at once, since the mailbox
+///   holds frames whose wakes were spent on the ticks before.
+/// - A viewport walking toward its newest row polls at the frame interval,
+///   one row a frame.
+/// - A lane with a request in flight polls at 8 ms. Its reply usually lands
+///   within a wake interval of the wake that let the loop send the request,
+///   so the socket holds that reply's wake to the interval's end; the short
+///   poll takes the reply as soon as it did before wakes existed.
+/// - A model that wakes itself (`wakes_itself`: something drawn moves with
+///   time, a job is running, or frames are held) takes the paced poll,
+///   capped at `self_wake_ceiling_ms` and by the lane's next deadline.
+/// - Anything else sleeps until the lane's next deadline or refresh
+///   (`session_channel.next_due`), capped at `idle_poll_ceiling_ms`.
+///
+/// A loading attachment candidate keeps its 8 ms wait throughout, because
+/// it reads from disk as well as from its socket.
 ///
 /// ## Examples
 ///
@@ -474,6 +518,12 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
     True -> int.min(ordinary, 8)
     False -> ordinary
   }
+
+  // A drain that stopped at its batch left frames in the mailbox whose
+  // wakes were spent on the ticks before, so the next batch is taken at
+  // once. The ticks this costs are the batches the burst needs anyway, and
+  // frame pacing still paints at most one frame per interval.
+  use <- bool.guard(model.connection_backlog == tui_model.MailboxMayHoldMore, 0)
   case viewport_pacing(model) {
     // A backlog is work the loop owes the screen with nothing left to wake
     // it: the deltas that produced those rows are already drained. One row
@@ -482,16 +532,77 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
     // not taken — draining the socket sooner would only lengthen a backlog
     // the viewport has yet to show.
     pacing.ViewportCatchingUp -> int.min(ordinary, pacing.frame_interval_ms)
-    pacing.ViewportSettled ->
-      case model.channel {
-        Some(channel) ->
-          case session_channel.in_flight(channel) {
-            True -> int.min(ordinary, 8)
-            False -> int.min(ordinary, 250)
+    pacing.ViewportSettled -> {
+      let lane = lane_wait(model)
+      case in_flight(model), wakes_itself(model) {
+        True, _ -> int.min(ordinary, 8)
+        False, True -> int.min(ordinary, int.min(lane, self_wake_ceiling_ms))
+        False, False ->
+          case attachment.busy(model.candidate) {
+            True -> int.min(ordinary, lane)
+            False -> lane
           }
-        None -> ordinary
       }
+    }
   }
+}
+
+fn in_flight(model: Model) -> Bool {
+  case model.channel {
+    Some(channel) -> session_channel.in_flight(channel)
+    None -> False
+  }
+}
+
+// How long until the adopted lane next has something for `tick` to do,
+// measured from the step's transport reading, which is the clock the lane's
+// deadlines are set on. A lane already due answers zero, and one with
+// nothing due, or no lane at all, answers the ceiling.
+fn lane_wait(model: Model) -> Int {
+  let due = case model.channel {
+    Some(channel) -> session_channel.next_due(channel)
+    None -> None
+  }
+  case due {
+    Some(due) ->
+      int.clamp(
+        due - model.stamp.transport_ms,
+        min: 0,
+        max: idle_poll_ceiling_ms,
+      )
+    None -> idle_poll_ceiling_ms
+  }
+}
+
+/// Whether the loop must keep its paced poll rather than sleep until the
+/// lane's next deadline.
+///
+/// Each clause is a thing that changes with time, or waits on a message,
+/// without a socket wake to announce it:
+///
+/// - A strand running anywhere: the activity glyph, the generation clock
+///   and the strip's elapsed times advance on ticks.
+/// - A deferred frame: the tick after a burst is where it is painted.
+/// - A running job: its replies arrive on the job's own subjects, which
+///   wake nothing, and a tick is where they are taken.
+/// - Frames the buffer still holds, as it does after an Escape that
+///   cancelled before draining, or a drain that stopped at its batch
+///   (`Model.connection_backlog`): their wakes may already have been spent
+///   on earlier ticks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tick.wakes_itself(idle_attached_model) == False
+/// ```
+@internal
+pub fn wakes_itself(model: Model) -> Bool {
+  list.any(model.strands, fn(strand) { strand.live_phase != None })
+  || tui_model.active_strand_live(model)
+  || model.frame_debt == pacing.FrameDeferred
+  || job_runner.size(model.running) > 0
+  || buffered.held(model.inbox) > 0
+  || model.connection_backlog == tui_model.MailboxMayHoldMore
 }
 
 fn drain_candidate(model: Model) -> Model {

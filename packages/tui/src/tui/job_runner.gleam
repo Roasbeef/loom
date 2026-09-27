@@ -586,7 +586,11 @@ fn attach(
   prepared: Subject(job.Prepared),
 ) -> Result(Nil, String) {
   use target <- result.try(resolve())
-  use socket <- result.try(connection.connect(
+
+  // The frames inbox belongs to the terminal's loop, which `start_attach`
+  // runs in, so the socket wakes that loop when a frame arrives rather than
+  // leaving it for the next poll timeout (`connection.connect_waking`).
+  use socket <- result.try(connection.connect_waking(
     target.address,
     target.token,
     frames,
