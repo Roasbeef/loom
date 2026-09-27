@@ -194,6 +194,14 @@ Metadata refreshes cannot replace that question before a decision. The terminal
 tracks presented questions by ID and sequence, so dismissal does not reopen the
 same question and a reopened request with a new sequence is offered again.
 
+Another attached client, such as the web view, can answer the question first.
+When a cut holds no pending record with the panel's ID, the panel closes, a
+system line says the request was settled elsewhere (naming the decider when the
+resolved register carries one), and the next unseen pending question opens in
+the same step. A panel opened on an already resolved record through
+`/approvals <id>` is a deliberate inspection and stays open until the operator
+closes it.
+
 The three choices remain vertical at every width, including the 40×12 fallback.
 No action is selected on opening. Up/down, left/right, or Tab explicitly selects
 Allow once, Allow for session, or Deny; Enter confirms and Escape defers. A
