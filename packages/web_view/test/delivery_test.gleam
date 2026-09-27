@@ -10,7 +10,7 @@
 //// patch. The second is the deadline timer: the component arms one timer
 //// for the lane's next due reading, so a lane that has heard no push
 //// refreshes a quarter of a second after its capture, and a lane that has
-//// heard one waits five seconds and the page does no work in between.
+//// heard one waits `pushing_refresh_ms` and the page does no work in between.
 ////
 //// A burst is made deterministic by suspending the component while the
 //// frames are sent, which is the moment a burst reaches a busy component in
@@ -26,6 +26,7 @@ import lustre
 import lustre/server_component
 import page_fixture
 import session_view/connection_event
+import session_view/session_channel
 import session_view/snapshot
 import web_view/component
 
@@ -92,12 +93,19 @@ fn settle(renders: Subject(Nil), quiet_ms: Int) -> Int {
 
 // Delivers `frames` while the component is suspended, so all of them are in
 // its mailbox when it resumes, and counts the patches they cost.
+//
+// The lane's idle refresh is a second out, and a slow run can reach it
+// inside the window. A refresh is one render and one catch-up on the wire,
+// so the renders it caused are taken back out and the count is the burst's
+// alone.
 fn burst(page: Page, frames: List(connection_event.Message)) -> Int {
   let pid = server_component.pid(page.runtime)
   system.suspend(pid)
   list.each(frames, process.send(page.inbox, _))
   system.resume(pid)
-  settle(page.renders, 200)
+  let renders = settle(page.renders, 200)
+
+  renders - catch_ups(written(page.wire, 0))
 }
 
 fn delta(n: Int) -> connection_event.Message {
@@ -128,7 +136,8 @@ fn catch_ups(frames: List(String)) -> Int {
 }
 
 // A page that has taken its first capture after hearing a push, so its lane
-// is `Pushing`, its refresh is five seconds out, and nothing is in flight.
+// is `Pushing`, its refresh is `pushing_refresh_ms` out, and nothing is in
+// flight.
 fn following_pushed() -> Page {
   let page = started()
   process.send(page.inbox, delta(0))
@@ -150,10 +159,12 @@ pub fn a_burst_costs_one_render_per_batch_test() {
 }
 
 // An idle page does no work between refreshes: with the lane pushing, the
-// next refresh is five seconds away and no timer fires before it.
+// next refresh is `pushing_refresh_ms` away and no timer fires before it.
+// Half that interval is still twice the polling interval, so a page that
+// kept polling would render inside the window.
 pub fn an_idle_pushing_page_renders_nothing_test() {
   let page = following_pushed()
-  assert settle(page.renders, 1000) == 0
+  assert settle(page.renders, session_channel.pushing_refresh_ms / 2) == 0
   assert catch_ups(written(page.wire, 0)) == 0
 }
 

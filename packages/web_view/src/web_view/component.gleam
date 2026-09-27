@@ -942,7 +942,7 @@ fn commanded(
     ),
 ) -> #(Model(socket), Effect(Msg(socket))) {
   // A command reads the host's clock itself. The last message's reading can
-  // be a whole idle refresh old, five seconds on a pushing lane, and the
+  // be a whole idle refresh old, `pushing_refresh_ms` on a pushing lane, and the
   // request's deadline and the timer armed for it are measured from here.
   let model = drained(Model(..model, clock: model.transport.now()))
   case model.lane {

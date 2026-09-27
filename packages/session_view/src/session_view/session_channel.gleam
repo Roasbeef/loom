@@ -26,14 +26,15 @@
 //// because until a frame has been pushed to it the refresh is the only way
 //// it learns that the session moved. The first pushed frame moves it to
 //// `Pushing` for the rest of its life, and from then on an idle cut is
-//// refreshed every `pushing_refresh_ms` (5 s). The hello is not used for
+//// refreshed every `pushing_refresh_ms` (1 s for now; the constant's doc
+//// says why it is not yet 5 s). The hello is not used for
 //// this: it carries no push capability, and a lane that reconnects may be
 //// talking to an older daemon than the one that pushed before.
 ////
 //// No gap detection is needed for the longer interval. A notice carries
 //// only a sequence, and a notice at or above the cut's `next_seq` catches
 //// up from `cut.next_seq`, so a lost notice followed by any later one loses
-//// nothing: the later catch-up fetches both commits. What the 5 s refresh
+//// nothing: the later catch-up fetches both commits. What the longer refresh
 //// covers is a lost *final* notice, the last commit before the session goes
 //// quiet, which no later notice will repair. That case, and a daemon that
 //// stops pushing after it started, cost at most one refresh interval of
@@ -232,10 +233,17 @@ pub const polling_refresh_ms = 250
 /// again, in milliseconds.
 ///
 /// Once the daemon has pushed, every commit it makes is announced, so the
-/// refresh only repairs a lost final notice. Five seconds bounds that
-/// staleness while an idle client asks for one capture where it used to
-/// ask for twenty.
-pub const pushing_refresh_ms = 5000
+/// refresh repairs a lost final notice and catches what the daemon does not
+/// announce.
+///
+/// One second is an interim value. A peer joining the session is not
+/// announced: protocol-change/018 has the hub push `presence` on a
+/// departure and not on a join, so a lane learns of a newcomer only at its
+/// next capture, and this refresh is what bounds that wait. The intended
+/// value is five seconds, which an idle client can afford once the join is
+/// pushed; `protocol-change/054-roster-push-on-subscribe.md` proposes that
+/// push, and this constant returns to 5000 when it lands.
+pub const pushing_refresh_ms = 1000
 
 /// Whether this lane has evidence that its daemon pushes.
 ///

@@ -265,7 +265,8 @@ fn feed_at(channel, messages, now) {
 // A lane that has seen no push cannot tell a quiet session from a daemon
 // that never pushes, so it keeps the 250 ms refresh. The first pushed frame
 // is the evidence that commits will be announced, and from the next capture
-// on the refresh only repairs a lost final notice, every five seconds.
+// on the refresh runs every `pushing_refresh_ms`, to repair a lost final
+// notice and catch what the daemon does not announce.
 pub fn the_idle_refresh_lengthens_once_the_daemon_has_pushed_test() {
   let fresh =
     session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
@@ -294,10 +295,11 @@ pub fn the_idle_refresh_lengthens_once_the_daemon_has_pushed_test() {
   assert session_channel.next_due(settled)
     == Some(620 + session_channel.pushing_refresh_ms)
     as "the capture after a push schedules the pushing interval"
-  let #(early, updates) = session_channel.tick(settled, now: 5619)
+  let refresh_at = 620 + session_channel.pushing_refresh_ms
+  let #(early, updates) = session_channel.tick(settled, now: refresh_at - 1)
   assert updates == [] && !session_channel.in_flight(early)
     as "nothing happens before the refresh instant"
-  let #(due, _) = session_channel.tick(settled, now: 5620)
+  let #(due, _) = session_channel.tick(settled, now: refresh_at)
   assert session_channel.in_flight(due) as "the refresh runs at its instant"
 }
 

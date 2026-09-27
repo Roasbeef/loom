@@ -71,7 +71,7 @@ pub fn an_idle_terminal_sleeps_until_its_lane_is_due_test() {
   assert tick.terminal_poll_timeout(attached(polling, 900)) == 0
 }
 
-// A lane that has heard a push refreshes five seconds out, and the loop
+// A lane that has heard a push refreshes `pushing_refresh_ms` out, and the loop
 // still wakes at the idle ceiling, which bounds how late it notices a
 // resized window. A terminal with no lane sleeps to the ceiling too.
 pub fn a_pushing_lane_sleeps_to_the_idle_ceiling_test() {
