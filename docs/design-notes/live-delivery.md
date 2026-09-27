@@ -77,7 +77,8 @@ what the terminal's decoder accepts.
 `send_to` with no `reply_to` when a peer departs; under `Network` that now
 reaches `deliver` instead of being dropped. A join is not pushed, since every
 pushed frame costs one authority check per peer and the joiner's capture
-already carries the roster.
+already carries the roster. (Protocol-change/054 later reversed this: once
+clients stopped polling every 250 ms, a join needed a push of its own.)
 
 ## Ruling 2: the delivery path
 

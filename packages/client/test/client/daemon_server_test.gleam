@@ -224,6 +224,11 @@ pub fn send(socket, id, command, body, within_ms within_ms: Int) {
 /// wherever a fixture commits between two requests; `send` stays the raw
 /// "next frame" for a fixture asserting on the pushes themselves.
 ///
+/// A socket nobody reads between requests collects every push meanwhile:
+/// a roster for each peer that joins (`protocol-change/054`), and a notice
+/// and deltas for each commit. The skip is bounded at `push_backlog` so a
+/// reply that never comes fails the fixture rather than reading forever.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -231,8 +236,19 @@ pub fn send(socket, id, command, body, within_ms within_ms: Int) {
 /// ```
 @internal
 pub fn reply(socket, id, command, body, within_ms within_ms: Int) {
-  answered(socket, send(socket, id, command, body, within_ms:), 16, within_ms)
+  answered(
+    socket,
+    send(socket, id, command, body, within_ms:),
+    push_backlog,
+    within_ms,
+  )
 }
+
+// How many unread pushes a fixture socket may skip before the frame it is
+// waiting for. It bounds a read loop, not a protocol limit, so it is sized
+// for the busiest fixture: several peers joining and a whole provider turn
+// pushed to a socket that is only read again at its next request.
+const push_backlog = 64
 
 fn answered(socket, value, remaining: Int, within_ms: Int) {
   assert remaining > 0 as "the reply arrives within a bounded run of notices"
@@ -241,6 +257,62 @@ fn answered(socket, value, remaining: Int, within_ms: Int) {
     Ok(_) -> value
     Error(Nil) ->
       answered(socket, frame(socket, within_ms:), remaining - 1, within_ms)
+  }
+}
+
+/// Subscribes to a session and answers the reply, having also read the
+/// roster the hub pushes to the newcomer.
+///
+/// Since `protocol-change/054` a successful subscribe hands the socket two
+/// frames: the reply, and the subscriber's own copy of the `presence`
+/// roster that every subscribed peer is pushed when one joins. They leave
+/// the hub by different paths, so either may be written first. This reads
+/// until it holds both, skipping any other push as `reply` does, so a test
+/// that goes on reading the socket starts after the join. A subscribe that
+/// is refused pushes no roster; read its answer with `reply`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // daemon_server_test.subscribe(socket, 1, session, within_ms: 1000)
+/// ```
+@internal
+pub fn subscribe(socket, id, session: String, within_ms within_ms: Int) {
+  let first =
+    send(
+      socket,
+      id,
+      "subscribe",
+      json.Object([#("session", json.String(session))]),
+      within_ms:,
+    )
+  joined(socket, first, None, None, push_backlog, within_ms)
+}
+
+// The reply and the roster, collected in whichever order they arrive. The
+// roster is recognised by its event name on a frame with no `reply_to`.
+fn joined(socket, value, reply, roster, remaining: Int, within_ms: Int) {
+  assert remaining > 0 as "the reply and the join arrive within a bounded run"
+  let assert json.Object(fields) = value as "the wire value is an object"
+  let #(reply, roster) = case
+    list.key_find(fields, "reply_to"),
+    list.key_find(fields, "event")
+  {
+    Ok(_), _ -> #(Some(value), roster)
+    Error(Nil), Ok(json.String("presence")) -> #(reply, Some(value))
+    Error(Nil), _ -> #(reply, roster)
+  }
+  case reply, roster {
+    Some(reply), Some(_) -> reply
+    _, _ ->
+      joined(
+        socket,
+        frame(socket, within_ms:),
+        reply,
+        roster,
+        remaining - 1,
+        within_ms,
+      )
   }
 }
 

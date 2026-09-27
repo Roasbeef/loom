@@ -460,6 +460,25 @@ pub fn nested_list_indentation_survives_word_wrapping_test() {
   assert list.contains(rows, "  • publish")
 }
 
+// Nesting narrows the budget etui's word wrapper is given: the indent is
+// capped at one cell short of the pane, so the fourth level of a list in a
+// six-cell pane reaches the wrapper at a width of 1. A two-cell glyph fits
+// nowhere at that width, and etui's `pack` used to requeue it forever,
+// hanging the terminal on one CJK character or flag. It now gives such a
+// glyph a row of its own, one cell over the width, so this returns at all,
+// and each glyph comes back whole under the five-cell indent.
+pub fn a_wide_glyph_deep_in_a_narrow_list_still_wraps_test() {
+  let rows =
+    markdown.render("- a\n  - b\n    - c\n      - 中文 🇯🇵", 6)
+    |> markdown.wrap_lines(6)
+    |> list.map(line_text)
+  assert rows
+    == [
+      "• a", "", "  • b", "", "    •", "    c", "", "     •", "     中", "     文",
+      "     🇯🇵", "",
+    ]
+}
+
 // The indent is re-applied as a span copied from the row's first span, so on
 // a row with no text those cells would paint that span's background as a
 // short bar where the source had a blank line.

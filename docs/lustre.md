@@ -267,7 +267,7 @@ What the client runtime does, from
   arm in `mist/internal/websocket.gleam`), so a page Loom closes stays
   closed. A connection that drops without a close frame (the daemon
   restarted) is retried, and each retry is refused with a `401` until the
-  person runs `loom --ui` again.
+  person runs `loom ui` again.
 
 ### The wire format
 
@@ -435,7 +435,7 @@ render when the model did not change. So:
   not in `view`, where it runs once per message (section 4).
 - An idle page receives a `Reconcile` per message. With event-driven
   delivery that is one per idle refresh, every `pushing_refresh_ms` once
-  the daemon has pushed (1 s for now, 5 s once protocol-change/054 lands), plus one per reply to that refresh; with the old
+  the daemon has pushed (5 s), plus one per reply to that refresh; with the old
   250 ms tick it was four a second before any reply.
 - A `Mount` serializes the whole tree, and the runtime holds the whole last
   tree and its handler map. Per-page memory grows with what the page

@@ -206,7 +206,7 @@ daemon:
 stateDiagram-v2
     direction LR
     Polling: Polling<br/>refresh 250 ms
-    Pushing: Pushing<br/>refresh 1 s (interim)
+    Pushing: Pushing<br/>refresh 5 s
     [*] --> Polling: lane starts
     Polling --> Pushing: first pushed frame (apply_pushed)
 ```
@@ -218,23 +218,25 @@ lost final notice and catches what the daemon does not announce. The hello
 is not used as that evidence: it names no push capability, and a lane that
 reconnects may face an older daemon.
 
-The `Pushing` interval, `session_channel.pushing_refresh_ms`, is 1 s for
-now. The intended value is 5 s, but one change a peer's screen depends on
-is not pushed: a peer joining the session. protocol-change/018 has the hub
-push `presence` when a peer departs and not when one subscribes, so the
-peers already attached see a newcomer only at their next capture. With a
-5 s refresh that took up to five seconds, and the shipped multiplayer
-fixture spent 4.7 s of its 12.2 s waiting for it. The 1 s value bounds the
-wait to a second. [protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)
-proposes pushing the roster on subscribe, and the constant returns to 5 s
-when that lands.
+The `Pushing` interval, `session_channel.pushing_refresh_ms`, is 5 s. It
+can be that long because no change a peer's screen depends on waits for
+it. The last one that did was a peer joining the session: protocol-change/018
+had the hub push `presence` when a peer departed and not when one
+subscribed, so the peers already attached saw a newcomer only at their
+next capture, and with a 5 s refresh the shipped multiplayer fixture spent
+4.7 s of its 12.2 s waiting for it. The constant was 1 s while that was
+so. [protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)
+has the hub push the roster to every subscriber when a network peer
+subscribes, so a join now reaches the other peers as a pushed frame.
 
-One consequence is worth knowing when reading counters. The gateway pushes
-nothing to a network subscriber when it subscribes, so a client attached
-to a session where nothing happens stays `Polling` until the first commit,
-stream or presence change reaches it, and keeps the 250 ms refresh until
-then. Protocol-change/054 would fix this as well: the newcomer's own copy
-of the roster is its first push.
+The newcomer receives its own copy of that roster, and that copy is the
+first frame pushed to it. A client that attaches to a session where
+nothing happens therefore moves to `Pushing` at attach and refreshes
+every 5 s, rather than staying `Polling` at 250 ms until the first commit,
+stream or departure reaches it. The roster and the reply to `subscribe`
+leave the hub by different paths, so either may arrive first; a roster
+that arrives before the lane has a cut marks the lane pushed and captures
+nothing.
 
 ## Four timelines
 
@@ -265,8 +267,7 @@ view a row per frame. On the web the 500 frames become eight
 **An idle session.** Nothing is running and the daemon has pushed to the
 lane before.
 The terminal sleeps up to one second at a time (the idle ceiling), and
-every `pushing_refresh_ms` (1 s for now, 5 s once protocol-change/054
-lands) its lane is due: the tick issues `catch_up`, the loop polls at
+every `pushing_refresh_ms` (5 s) its lane is due: the tick issues `catch_up`, the loop polls at
 8 ms while it is in flight, and the reply's frames wake it. A capture that
 brings back the cut already drawn repaints nothing. The page sleeps until
 its timer fires at the lane's refresh, `pushing_refresh_ms` after the last

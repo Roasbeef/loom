@@ -271,14 +271,7 @@ pub fn drain(
 /// ```
 @internal
 pub fn begin(socket, id, within_ms within_ms: Int) {
-  let frame =
-    request(
-      socket,
-      1,
-      "subscribe",
-      json.Object([#("session", json.String(id))]),
-      within_ms:,
-    )
+  let frame = wire.subscribe(socket, 1, id, within_ms:)
   let body = field(frame, "body")
   let assert json.String(snapshot_id) = field(body, "snapshot_id")
     as "begin identifies its transfer"
@@ -710,14 +703,7 @@ pub fn real_session_upgrade_carries_authoritative_identity_test() {
     let #(socket, headers) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
     assert string.contains(headers, "101 Switching Protocols")
-    let metadata =
-      request(
-        socket,
-        1,
-        "subscribe",
-        json.Object([#("session", json.String(id))]),
-        within_ms: 1000,
-      )
+    let metadata = wire.subscribe(socket, 1, id, within_ms: 1000)
     assert field(metadata, "v") == json.Int(2)
     assert field(metadata, "event") == json.String("snapshot_begin")
     let body = field(metadata, "body")
@@ -739,14 +725,7 @@ pub fn original_gateway_death_closes_real_socket_test() {
     let #(socket, headers) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
     assert string.contains(headers, "101 Switching Protocols")
-    let _ =
-      request(
-        socket,
-        1,
-        "subscribe",
-        json.Object([#("session", json.String(id))]),
-        within_ms: 1000,
-      )
+    let _ = wire.subscribe(socket, 1, id, within_ms: 1000)
     // The test host attachment exposes no restartable network handle. Killing
     // this original actor must terminate the upgraded connection immediately.
     let assert Ok(subject) = registry.lookup(harness.hub.name)

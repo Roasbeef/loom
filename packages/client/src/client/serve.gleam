@@ -132,6 +132,7 @@ import simplifile
 import storage/catalogue
 import storage/domain
 import storage/sqlite
+import storage/storage.{type StorageError}
 import telemetry/field
 import telemetry/log.{type Logger}
 import tom
@@ -470,6 +471,8 @@ pub type Booted {
     token_path: String,
     /// The interface reported in the startup banner.
     bind_host: String,
+    /// The process that owns this stack's teardown; `shutdown` asks it.
+    host: host.Host,
   )
 }
 
@@ -1733,9 +1736,9 @@ pub fn boot_with(
   logger logger: Logger,
 ) -> Result(Booted, String) {
   host.adopt(
-    boot: fn(stops) { assemble(settings, logger, stops) },
+    boot: fn(stops, owner) { assemble(settings, logger, stops, owner) },
     fatal: fatal_children,
-    teardown: shutdown,
+    teardown: tear_down,
   )
 }
 
@@ -1744,6 +1747,17 @@ pub fn boot_with(
 /// Each call creates its own runtime, gateway and reclaimable service
 /// namespace. It installs no signal handler and does not choose a daemon
 /// singleton. The caller must close the returned instance.
+///
+/// The caller's `close_instance` and the host's teardown both run, and
+/// that is safe here only because of order. Nothing the caller's close
+/// stops before the runtime is a fatal child, so the caller captures the
+/// drain witness before any death can start the host, and the caller is
+/// the one that releases the lease before it returns. Two facts carry
+/// that: `hub.drain_held` stops no process, and
+/// `runtime/supervisor.shutdown` monitors the drain ledger before it
+/// terminates the root, whose death is the first the host can see. `boot` has a
+/// listener to stop first and so cannot rely on that; it goes through
+/// `host.retire` instead.
 ///
 /// This is an assembly seam, not daemon admission: the host still lacks
 /// partial-boot and owner-death custody. A manager must not use it until
@@ -1761,7 +1775,7 @@ pub fn open_instance(
   logger: Logger,
 ) -> Result(Instance, String) {
   host.adopt(
-    boot: fn(stops) { assemble_instance(settings, logger, stops) },
+    boot: fn(stops, _host) { assemble_instance(settings, logger, stops) },
     fatal: instance_children,
     teardown: close_instance,
   )
@@ -2409,6 +2423,7 @@ fn assemble(
   settings: Settings,
   logger: Logger,
   stops: Subject(host.Stop),
+  owner: host.Host,
 ) -> Result(Booted, String) {
   use instance <- result.try(assemble_instance(settings, logger, stops))
   use served <- result.try(
@@ -2423,6 +2438,7 @@ fn assemble(
     served:,
     token_path: settings.token_path,
     bind_host: settings.bind_host,
+    host: owner,
   ))
 }
 
@@ -2520,6 +2536,84 @@ fn assemble_owned_with(settings, reserved, logger, owner, services) {
     Some(#(owner, reserved)),
     services,
   )
+}
+
+/// The event logged when a session open finds a distillation harvest holding
+/// the session file's lease and waits for the harvest to let go.
+@internal
+pub const harvest_wait_event = "session.harvest_wait"
+
+// How often a waiting open asks again. A harvest reads one file and closes
+// it, so the lease is normally free within a few of these.
+const harvest_poll_ms = 10
+
+// Opens the session file under this incarnation's lease.
+//
+// A distillation harvest (`client/distill.harvest_one`) opens every source
+// session under the ordinary writer lease, owner `distill.distill_owner`, to
+// read it, and the daemon starts one beside session admission by design: a
+// domain's first pass begins as the domain is built, and its sources are the
+// sessions the domain is about to open. The harvest skips a file whose lease
+// a session holds, but a session opening while the harvest holds the lease
+// used to fail its start outright. That lease is a reader's, short and
+// bounded by `memory.lease_ttl_ms`, so the open waits it out instead: until
+// the harvest closes, or at the latest until its lease expires and the claim
+// takes it over. Every other holder is refused at once, as before, because
+// a writer that is still alive renews its lease and waiting for the expiry
+// would only delay the same refusal.
+//
+// Single-writer safety does not rest on the wait. Each attempt is the
+// ordinary atomic claim, and the harvest never commits to a source.
+fn open_session_file(
+  path: String,
+  owner: String,
+  clock: Clock,
+  logger: Logger,
+) -> Result(
+  #(
+    session.Session,
+    fn() -> Result(Nil, StorageError),
+    fn() -> Result(Pid, StorageError),
+  ),
+  session.OpenError,
+) {
+  let open = fn() {
+    session.open_sqlite_custody(path:, owner:, lease_ttl_ms: 60_000, clock:)
+  }
+  case open() {
+    Error(session.SqliteOpenFailed(sqlite.LeaseHeld(
+      owner: holder,
+      expires_at_ms:,
+    ))) as refused
+      if holder == distill.distill_owner
+    -> {
+      let #(now, _clock) = clock.read(clock)
+      let remaining = int.clamp(expires_at_ms - now, 0, memory.lease_ttl_ms)
+      log.info(logger, harvest_wait_event, [
+        field.count(key: "lease_expires_at_ms", value: expires_at_ms),
+      ])
+      let waited =
+        poll.until(
+          within: remaining + harvest_poll_ms,
+          every: harvest_poll_ms,
+          attempt: fn() {
+            case open() {
+              Ok(opened) -> poll.Done(opened)
+              Error(session.SqliteOpenFailed(sqlite.LeaseHeld(owner: holder, ..)))
+                if holder == distill.distill_owner
+              -> poll.Retry
+              Error(error) -> poll.Fail(error)
+            }
+          },
+        )
+      case waited {
+        poll.Answered(opened) -> Ok(opened)
+        poll.Failed(error) -> Error(error)
+        poll.Expired -> refused
+      }
+    }
+    opened -> opened
+  }
 }
 
 /// Renders a storage open refusal as the message the daemon classifier reads.
@@ -2622,12 +2716,7 @@ fn assemble_in(
   let random_bytes = token.production_entropy()
   let lease_owner = "loomd-" <> bit_array.base16_encode(random_bytes(32))
   use #(opened, retire, transfer) <- result.try(
-    session.open_sqlite_custody(
-      path: settings.session_path,
-      owner: lease_owner,
-      lease_ttl_ms: 60_000,
-      clock:,
-    )
+    open_session_file(settings.session_path, lease_owner, clock, logger)
     |> result.map_error(storage_open_refusal),
   )
   use Nil <- result.try(
@@ -3788,19 +3877,18 @@ fn owned_retirement(
   |> result.flatten
 }
 
-/// Takes a booted server apart, front to back: the listener first so no
-/// new client arrives mid-teardown, then the runtime — whose close
-/// stops the strand drivers before the writer they commit through and
-/// releases the session lease while its drain witness is still observable —
-/// then the service supervisor and finally the effect plane, broker
-/// before pool because the broker is what holds helpers out on loan.
+/// Takes a booted server apart and returns once it is gone, with the
+/// session lease released or deliberately retained.
 ///
-/// Idempotent and callable from any process, which both paths need: the
-/// entry point runs it on `SIGTERM`, and the host runs it from its own
-/// process when a fatal child dies. An error closing the session is
-/// swallowed deliberately — it means the lease release did not commit,
-/// which only the TTL can now mop up, and there is nothing left to
-/// abandon.
+/// The teardown itself runs on the boot's host process (`tear_down`
+/// below), and this only asks for it and waits. Running it here as well
+/// would make two teardowns: the listener's death starts the host's, and
+/// only one of the two can hold the drain witness that authorizes the
+/// lease release. The loser used to return before the winner had
+/// released, so an immediate reopen found the old incarnation's lease.
+///
+/// Idempotent and callable from any process. After a fault the host has
+/// already torn down and exited, so this returns at once.
 ///
 /// ## Examples
 ///
@@ -3809,6 +3897,19 @@ fn owned_retirement(
 /// ```
 ///
 pub fn shutdown(booted: Booted) -> Nil {
+  host.retire(booted.host)
+}
+
+// The teardown the host runs, front to back: the listener first so no new
+// client arrives mid-teardown, then the runtime — whose close stops the
+// strand drivers before the writer they commit through and releases the
+// session lease while its drain witness is still observable — then the
+// service supervisor and finally the effect plane, broker before pool
+// because the broker is what holds helpers out on loan. An error closing
+// the session is swallowed deliberately: it means the lease release did not
+// commit, which only the TTL can now mop up, and there is nothing left to
+// abandon.
+fn tear_down(booted: Booted) -> Nil {
   server.stop(booted.served)
   close_instance(booted.instance)
 }

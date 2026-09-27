@@ -31,16 +31,24 @@
 //// exactly that: a service supervisor over the pieces that can be
 //// replaced in place, and everything else linked to the host.
 ////
-//// ## A shutdown the caller runs looks like a fault from here
+//// ## The host is the only process that tears down
 ////
-//// Nothing distinguishes "a child died" from "somebody stopped the
-//// server", so a `SIGTERM` shutdown — or a test taking its own server
-//// apart — makes the host tear down a second time and report a
-//// `Faulted` nobody reads. Both are harmless: the teardown is
-//// idempotent by construction (every stop is a send or is guarded on
-//// liveness), and in production the entry point has already finished by
-//// the time the second one runs. Buying the distinction would mean a
-//// channel into the host, which is more surface than the wart is worth.
+//// A caller that wants the stack gone asks the host with `retire` and
+//// waits for the host to exit; it never runs the teardown itself. The
+//// teardown therefore runs exactly once, on this process, whether a
+//// fault or a request started it.
+////
+//// Two teardowns used to run instead. A caller's own teardown stopped
+//// the listener first, the host read that death as a fault, and both
+//// then closed the runtime at once. Only one of them can hold the drain
+//// witness that authorizes releasing the writer lease, and the other
+//// returned as soon as it found the witness gone. When the caller was
+//// the one that lost, its shutdown returned while the host was still on
+//// its way to the release, and a reopen straight afterwards was refused
+//// with the old incarnation's lease. Idempotent steps did not make the
+//// two teardowns safe; a caller must return only after the one teardown
+//// that releases the lease has finished, and waiting on the host's exit
+//// is what gives it that.
 ////
 //// ## What the host cannot cover
 ////
@@ -72,33 +80,46 @@ pub type Stop {
   Faulted(child: String, reason: String)
 }
 
+/// The process that owns one boot's teardown, and the one door a caller
+/// uses to ask for it.
+///
+/// Constructor invariants: `pid` is the host process `adopt` spawned, and
+/// `retirement` is a subject that process created and selects on.
+pub opaque type Host {
+  Host(pid: Pid, retirement: Subject(Nil))
+}
+
 /// Runs `boot` on a dedicated exit-trapping host process and hands its
 /// result back, so that everything `boot` links to is linked to the host
 /// rather than to the caller.
 ///
-/// After a successful boot the host stays alive watching the stack. The
-/// first fatal death — a trapped exit from anything the boot linked, or
-/// a `Down` from one of the pids `fatal` names — runs `teardown` and then
-/// sends `Faulted` on the `Stop` subject `boot` was given. A linked
-/// process exiting `Normal` is not a fault and is ignored.
+/// After a successful boot the host stays alive watching the stack until
+/// one of two things ends it, and then runs `teardown` once and exits.
+/// The first fatal death — a trapped exit from anything the boot linked,
+/// or a `Down` from one of the pids `fatal` names — also sends `Faulted`
+/// on the `Stop` subject `boot` was given. A `retire` request sends
+/// nothing, because its caller is waiting on the host's exit rather than
+/// on that subject. A linked process exiting `Normal` is not a fault and
+/// is ignored.
 ///
-/// The `Stop` subject is created here and owned by the *caller*, so the
-/// caller is the process that must receive on it. A boot that fails, or
-/// that dies with its host, comes back as `Error` with the reason
-/// already worded.
+/// `boot` receives the `Host` it runs on so that it can keep the handle
+/// beside what it builds; `retire` needs it later. The `Stop` subject is
+/// created here and owned by the *caller*, so the caller is the process
+/// that must receive on it. A boot that fails, or that dies with its
+/// host, comes back as `Error` with the reason already worded.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // host.adopt(
-/// //   boot: fn(stops) { assemble(settings, stops) },
+/// //   boot: fn(stops, host) { assemble(settings, stops, host) },
 /// //   fatal: fn(booted) { [#("the session tree", booted.tree)] },
-/// //   teardown: shutdown,
+/// //   teardown: tear_down,
 /// // )
 /// ```
 ///
 pub fn adopt(
-  boot boot: fn(Subject(Stop)) -> Result(booted, String),
+  boot boot: fn(Subject(Stop), Host) -> Result(booted, String),
   fatal fatal: fn(booted) -> List(#(String, Pid)),
   teardown teardown: fn(booted) -> Nil,
 ) -> Result(booted, String) {
@@ -107,11 +128,15 @@ pub fn adopt(
   let host =
     process.spawn_unlinked(fn() {
       process.trap_exits(True)
-      case boot(stops) {
+
+      // The request subject must belong to this process, which is the
+      // only one that ever selects on it.
+      let retirement = process.new_subject()
+      case boot(stops, Host(pid: process.self(), retirement:)) {
         Error(reason) -> process.send(replies, Error(reason))
         Ok(booted) -> {
           process.send(replies, Ok(booted))
-          watch(fatal(booted), teardown, booted, stops)
+          watch(fatal(booted), retirement, teardown, booted, stops)
         }
       }
     })
@@ -128,6 +153,50 @@ pub fn adopt(
   let outcome = process.selector_receive_forever(from: selector)
   process.demonitor_process(monitor)
   outcome
+}
+
+/// Asks the host to tear the stack down and returns once it has.
+///
+/// The host runs the teardown itself and exits when it finishes, so the
+/// host's `Down` is the completion signal: after `retire` returns, the
+/// writer lease has been released, or retained on purpose because its
+/// drain could not be proved. A host that a fault already ended answers
+/// at once, since its teardown ran before it exited. The wait is not
+/// bounded, because the teardown's own drain is not.
+///
+/// Callable from any process except the host itself, and any number of
+/// times: every caller waits on the same exit, and the teardown still
+/// runs once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // host.retire(booted.host)
+/// ```
+///
+pub fn retire(host: Host) -> Nil {
+  // Monitor before asking, so a host that exits between the two steps is
+  // still observed rather than waited on forever.
+  let watch = process.monitor(host.pid)
+  process.send(host.retirement, Nil)
+  let _down =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive_forever()
+  Nil
+}
+
+/// The host process itself, for a test that must observe it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // process.is_alive(host.pid(booted.host))
+/// ```
+///
+@internal
+pub fn pid(host: Host) -> Pid {
+  host.pid
 }
 
 /// Relays `SIGTERM` into a `Stop` subject from a process of its own, so
@@ -157,11 +226,18 @@ pub fn relay_sigterm(
   Nil
 }
 
-// Waits for the first fatal death, tears the stack down, and reports.
-// Monitors go on the pids that unlinked themselves from their starter;
-// everything else the boot linked arrives through the exit trap.
+// What ends the watch: a death the host observed, or a caller's request.
+type Event {
+  Died(child: String, reason: process.ExitReason)
+  Retire
+}
+
+// Waits for the first fatal death or a retirement request, and tears the
+// stack down. Monitors go on the pids that unlinked themselves from their
+// starter; everything else the boot linked arrives through the exit trap.
 fn watch(
   watched: List(#(String, Pid)),
+  retirement: Subject(Nil),
   teardown: fn(booted) -> Nil,
   booted: booted,
   stops: Subject(Stop),
@@ -174,32 +250,38 @@ fn watch(
         process.monitor(entry.1),
         fn(down) {
           case down {
-            ProcessDown(pid:, reason:, ..) -> #(named(by_pid, pid), reason)
-            PortDown(reason:, ..) -> #("a port the server held", reason)
+            ProcessDown(pid:, reason:, ..) -> Died(named(by_pid, pid), reason)
+            PortDown(reason:, ..) -> Died("a port the server held", reason)
           }
         },
       )
     })
     |> process.select_trapped_exits(fn(exit) {
       let ExitMessage(pid:, reason:) = exit
-      #(named(by_pid, pid), reason)
+      Died(named(by_pid, pid), reason)
     })
-  await_fault(selector, teardown, booted, stops)
+    |> process.select_map(retirement, fn(_request) { Retire })
+  await_end(selector, teardown, booted, stops)
 }
 
-fn await_fault(
-  selector: process.Selector(#(String, process.ExitReason)),
+fn await_end(
+  selector: process.Selector(Event),
   teardown: fn(booted) -> Nil,
   booted: booted,
   stops: Subject(Stop),
 ) -> Nil {
-  let #(child, reason) = process.selector_receive_forever(from: selector)
-  case reason {
+  case process.selector_receive_forever(from: selector) {
     // A linked process that finished its work is not a fault. Boot
     // spawns short-lived helpers, and one of them retiring must not read
     // as the server falling over.
-    Normal -> await_fault(selector, teardown, booted, stops)
-    _ -> {
+    Died(reason: Normal, ..) -> await_end(selector, teardown, booted, stops)
+
+    // A caller asked. The deaths the teardown itself causes are never
+    // read: the host returns afterwards, and its exit is what the caller
+    // in `retire` is waiting on.
+    Retire -> teardown(booted)
+
+    Died(child:, reason:) -> {
       teardown(booted)
       process.send(stops, Faulted(child:, reason: describe(reason)))
     }

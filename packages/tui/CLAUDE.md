@@ -194,6 +194,14 @@ Metadata refreshes cannot replace that question before a decision. The terminal
 tracks presented questions by ID and sequence, so dismissal does not reopen the
 same question and a reopened request with a new sequence is offered again.
 
+Another attached client, such as the web view, can answer the question first.
+When a cut holds no pending record with the panel's ID, the panel closes, a
+system line says the request was settled elsewhere (naming the decider when the
+resolved register carries one), and the next unseen pending question opens in
+the same step. A panel opened on an already resolved record through
+`/approvals <id>` is a deliberate inspection and stays open until the operator
+closes it.
+
 The three choices remain vertical at every width, including the 40×12 fallback.
 No action is selected on opening. Up/down, left/right, or Tab explicitly selects
 Allow once, Allow for session, or Deny; Enter confirms and Escape defers. A
@@ -248,9 +256,9 @@ one normal resolver launch. Polling and startup share the deadline, and session
 open remains outside that polling loop. Held prompt returns restore text in the
 composer; image bytes must be reattached by the operator.
 
-## Web view link (`loom --ui`)
+## Web view link (`loom ui`)
 
-`loom --ui --session <id> [--operate]` (`tui.run_view`) resolves the daemon through
+`loom ui --session <id> [--operate]` (`tui.run_view`) resolves the daemon through
 `bootstrap.resolve_viewing_daemon`, which adds `--ui` to the launch
 arguments only when it starts one. A running daemon whose `hello` has
 `view: NoWebView` is refused by `view_served` with status 1 and never
@@ -261,7 +269,10 @@ the listener's http origin. `UiLink(session_id, page)` carries a
 wire, and `OperatorPage` with `--operate`, which sends `page:"operator"`.
 The page is a ceiling the daemon caps the principal's membership with; it
 never grants a role (protocol-change/051, the operator addendum).
-`tui.view_request` parses the words after `--ui` into a `ViewRequest`
+`parse_launch` routes `ui` in first position, or `--ui` anywhere in argv
+(the older spelling, taken out with `take_switch`), to the one parser
+`tui.view_request`; `tui.launch_view` is the test seam over that routing.
+`tui.view_request` parses the remaining words into a `ViewRequest`
 carrying that `page` and a `delivery`, which is `view_link.PrintLink` or,
 with `--open`, `view_link.OpenInBrowser`. `view_link.deliver` always emits
 the link first, then runs the opener when asked; a failed opener is a
@@ -923,7 +934,7 @@ boundaries and the split's measurements under Invariants.
   It admits one request at a time, grants one snapshot fragment per reply, and
   reconciles while idle every 250 ms until a frame has been pushed to it and
   every `pushing_refresh_ms` after (`Delivery`: `Polling` then `Pushing`;
-  1 s until protocol-change/054 pushes a join, then 5 s); `next_due` names
+  5 s, and the first push is the roster at subscribe, protocol-change/054); `next_due` names
   the reading the next `tick` can act at, which is what the poll timeout
   sleeps until. It holds no clock: `tick`, `receive`,
   `submit`, `lookup`, `history`, `replay_issued` and the `start`
@@ -1106,14 +1117,17 @@ boundaries and the split's measurements under Invariants.
 - **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `c3b66c3ba51af12c3eb1caf178adc9e0ca1346b9` (the fork's `wake-clause`
-  branch, two commits on `main`) with bounded input bursts,
+  `58d0cbd775aad61b2a42830eb818a83e1a0ad1d8` (the fork's
+  `fix/pack-overwide-grapheme` branch, one commit on `main`) with bounded
+  input bursts,
   POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
   frames, full-screen scroll-region presentation, closed-input EOF,
   scrollback-safe styled lines (`buffer.to_ansi_lines`), and the
   `{etui_wake}` message that ends the loop's input wait with a `Tick`
   (`etui_terminal_ffi:wake/1`), and a 40 ms bound on a lone escape byte's
-  wait, so Escape does not wait for the idle poll; Mork
+  wait, so Escape does not wait for the idle poll, and a styled wrap that
+  gives a grapheme wider than the row a row of its own rather than looping;
+  Mork
   1.12.x for CommonMark;
   and small Gleam utility packages. Stratus is a host dependency, not a direct
   TUI dependency. Etui is pinned
@@ -2068,8 +2082,8 @@ untouched.
   capture. The idle refresh is the recovery path for a lost notice and
   the only path on a daemon that pushes nothing; it runs every 250 ms until
   the lane has been pushed to and every `pushing_refresh_ms` after, because
-  a lost notice is repaired by any later one and only a lost final notice,
-  or a join (not pushed; protocol-change/054), waits for it.
+  a lost notice is repaired by any later one and only a lost final notice
+  waits for it (a join is pushed; protocol-change/054).
 - **Provider requests own live fragments.** Modern streams carry operation
   and generation identity. A new generation replaces every prior kind on its
   strand; `end` replaces only its own generation with an empty marker. A late

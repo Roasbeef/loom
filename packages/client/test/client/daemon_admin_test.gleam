@@ -371,15 +371,7 @@ pub fn owner_role_change_closes_original_member_attachment_test() {
       )
     assert string.contains(response, "101 Switching Protocols")
     let begin =
-      daemon_server_test.send(
-        socket,
-        1,
-        "subscribe",
-        json.Object([
-          #("session", json.String(session)),
-        ]),
-        within_ms: 1000,
-      )
+      daemon_server_test.subscribe(socket, 1, session, within_ms: 1000)
     assert field(field(begin, "body"), "role") == json.String("observer")
     let assert Ok(_) =
       admin.exchange(

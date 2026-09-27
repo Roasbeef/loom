@@ -64,7 +64,7 @@ pub type Grant {
     /// session a redemption ends.
     principal: String,
     /// The most the page may do, chosen when the link was minted: observer
-    /// unless `loom --ui --operate` asked for operator. It caps the
+    /// unless `loom ui --operate` asked for operator. It caps the
     /// membership role and never grants one (`ui_relay.capped`).
     ceiling: access.Role,
   )

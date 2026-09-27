@@ -216,7 +216,7 @@ fn link(port: Int, credential: String, session: String) -> String {
   link_for(port, credential, session, [])
 }
 
-// A ticket for an operator's page, as `loom --ui --operate` asks for one.
+// A ticket for an operator's page, as `loom ui --operate` asks for one.
 fn operate(port: Int, credential: String, session: String) -> String {
   link_for(port, credential, session, [#("page", json.String("operator"))])
 }

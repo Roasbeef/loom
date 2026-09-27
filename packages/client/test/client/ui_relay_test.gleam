@@ -113,6 +113,35 @@ fn next_text(inbox: Subject(connection_event.Message)) -> String {
   }
 }
 
+// A subscribe hands the page two frames: the reply, and the roster the hub
+// pushes to every subscribed peer when one joins, the page included
+// (`protocol-change/054`). They leave the gateway by different paths, so
+// either may come first. Answers the reply, after checking that the other
+// frame is a roster with no `reply_to` that names this page.
+fn subscribed(inbox: Subject(connection_event.Message)) -> String {
+  let first = next_text(inbox)
+  let second = next_text(inbox)
+  let #(reply, roster) = case is_roster(first) {
+    True -> #(second, first)
+    False -> #(first, second)
+  }
+  let assert Ok(protocol.EventEnvelope(
+    reply_to: None,
+    event: protocol.PresenceEvent(_),
+    ..,
+  )) = protocol.decode_event(roster)
+    as "a subscribe pushes the page its own join"
+  assert string.contains(roster, "\"page-alice\"")
+  reply
+}
+
+fn is_roster(text: String) -> Bool {
+  case protocol.decode_event(text) {
+    Ok(protocol.EventEnvelope(event: protocol.PresenceEvent(_), ..)) -> True
+    Ok(_) | Error(_) -> False
+  }
+}
+
 // Whether the process exits within three seconds.
 fn gone(pid: process.Pid) -> Bool {
   let watch = process.monitor(pid)
@@ -173,7 +202,7 @@ pub fn an_operators_page_reaches_the_session_test() {
     start(attach_under(harness, operator, access.Operator), inbox, fn(_) { Nil })
     as "the relay attaches"
   ui_relay.transmit(relay, subscribe(harness, 1))
-  let _snapshot = next_text(inbox)
+  let _snapshot = subscribed(inbox)
   ui_relay.transmit(relay, frame(2, protocol.Prompt("main", "hello")))
   let answered = next_text(inbox)
   assert !string.contains(answered, "forbidden")
@@ -190,7 +219,7 @@ pub fn an_owners_page_is_an_operators_and_stays_open_test() {
     start(attach_under(harness, owner, access.Operator), inbox, fn(_) { Nil })
     as "the relay attaches"
   ui_relay.transmit(relay, subscribe(harness, 1))
-  let snapshot = next_text(inbox)
+  let snapshot = subscribed(inbox)
   assert string.contains(snapshot, "\"role\":\"operator\"")
   ui_relay.shut(relay)
 }
@@ -235,7 +264,7 @@ pub fn a_page_is_an_observer_whatever_its_membership_test() {
   // A read is served; a mutation is refused by the gateway, because the
   // attachment it holds is an observer's even though the check says operator.
   ui_relay.transmit(relay, subscribe(harness, 1))
-  let _snapshot = next_text(inbox)
+  let _snapshot = subscribed(inbox)
   ui_relay.transmit(relay, frame(2, protocol.Prompt("main", "hello")))
   let refused = next_text(inbox)
   assert string.contains(refused, "\"error\"")

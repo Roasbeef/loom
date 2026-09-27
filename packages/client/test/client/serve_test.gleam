@@ -16,6 +16,7 @@ import client/daemon/manager
 import client/daemon/root as daemon_root
 import client/daemon/session_socket
 import client/daemon_server_test as wire
+import client/distill
 import client/distillpass
 import client/host
 import client/internal/ffi_os
@@ -57,7 +58,9 @@ import storage/sqlite
 import support/addresses
 import support/internal/ffi_ws
 import support/provider as provider_test
+import telemetry/level
 import telemetry/log
+import telemetry/record
 import tui/connection
 import weft
 import weft/poll
@@ -1339,6 +1342,139 @@ fn settled_hub_pid(
       }
   }
 }
+
+/// `shutdown` returns only once the teardown that releases the writer lease
+/// has finished, even when a fault started that teardown first.
+///
+/// This is the interleaving behind a hosted failure where a boot straight
+/// after `shutdown` found the old incarnation's lease. Stopping the listener
+/// is a fatal death, so the host begins its teardown, and with the storage
+/// actor suspended that teardown gets past the drain witness but cannot reach
+/// the release. A shutdown that ran a second teardown of its own found the
+/// witness gone and returned at once, lease still held. A shutdown that asks
+/// the host waits on the one teardown there is.
+pub fn a_shutdown_beside_the_hosts_teardown_returns_after_the_release_test() {
+  let race_root = "build/serve-test-shutdown-race"
+  let _stale = simplifile.delete(race_root)
+  let assert Ok(booted) = serve.boot(settings_under(race_root))
+    as "the server must boot"
+  let storage = booted.instance.storage_owner
+  let assert Ok(ledger) =
+    process.subject_owner(booted.instance.runtime.tree.drains)
+  let root_down = process.monitor(booted.instance.runtime.tree.supervisor)
+  let ledger_down = process.monitor(ledger)
+
+  // The root and its ledger are gone once the host holds the witness, and
+  // from then on its teardown is parked on the suspended storage actor
+  // with the lease row still in the file.
+  let assert True = suspend(storage)
+  server.stop(booted.served)
+  let assert Ok(_) = await_down(root_down)
+    as "the host's teardown must stop the session tree"
+  let assert Ok(_) = await_down(ledger_down)
+    as "the host's teardown must retire the drain ledger"
+
+  // The caller asks from a process of its own, so this one stays free to
+  // watch it and to release the storage actor afterwards.
+  let returned = process.new_subject()
+  let caller =
+    process.spawn(fn() {
+      serve.shutdown(booted)
+      process.send(returned, Nil)
+    })
+  let owner = host.pid(booted.host)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 10_000, every: 5, attempt: fn() {
+      case list.contains(monitored_by(owner), caller) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the shutdown must wait on the host rather than tear down itself"
+
+  // The release is still unreachable, so a caller that is waiting on the
+  // host cannot have returned yet.
+  assert process.receive(returned, within: 0) == Error(Nil)
+  let assert True = resume(storage)
+  let assert Ok(Nil) = process.receive(returned, within: 10_000)
+    as "the shutdown must return once the host's teardown finishes"
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path: race_root <> "/session.db",
+      owner: "probe",
+      lease_ttl_ms: 60_000,
+      clock: clock.fixed(at: 0),
+    )
+    as "the lease must be released by the time shutdown returns"
+  let _sealed = session.close(reopened)
+}
+
+fn await_down(monitor: process.Monitor) -> Result(process.Down, Nil) {
+  process.new_selector()
+  |> process.select_specific_monitor(monitor, fn(down) { down })
+  |> process.selector_receive(10_000)
+}
+
+/// A boot that finds a distillation harvest holding its session file's
+/// lease waits for the harvest instead of failing.
+///
+/// The daemon starts a domain's first distillation pass as it builds the
+/// domain, and that pass harvests the very sessions the domain is about to
+/// open, each under the ordinary writer lease. A reopen after `loomd access
+/// isolate` builds a fresh domain and so raced its own harvest; the loser
+/// failed its start with `daemon.session_start_failed`. The harvest here is
+/// held open by the test and closed only once the boot has said it is
+/// waiting, so the ordering is fixed rather than timed.
+pub fn a_boot_outwaits_a_distillation_harvest_of_its_session_test() {
+  let harvest_root = "build/serve-test-harvest-wait"
+  let _stale = simplifile.delete(harvest_root)
+  let assert Ok(Nil) = simplifile.create_directory_all(harvest_root)
+  let assert Ok(harvest) =
+    session.open_sqlite(
+      path: harvest_root <> "/session.db",
+      owner: distill.distill_owner,
+      lease_ttl_ms: 60_000,
+      clock: clock.from_function(ffi_os.system_time_ms),
+    )
+
+  // The closer owns the log subject, because this process is inside the
+  // boot for as long as the boot waits.
+  let handoff = process.new_subject()
+  let _closer =
+    process.spawn(fn() {
+      let records = process.new_subject()
+      process.send(handoff, records)
+      await_event(records, serve.harvest_wait_event)
+      let _closed = session.close(harvest)
+      Nil
+    })
+  let assert Ok(records) = process.receive(handoff, within: 5000)
+  let assert Ok(booted) =
+    serve.boot_with(
+      settings_under(harvest_root),
+      logger: log.new(sink: log.to_subject(records), threshold: level.Info),
+    )
+    as "a boot beside a harvest must wait for it rather than fail"
+  serve.shutdown(booted)
+}
+
+fn await_event(records: Subject(record.Record), event: String) -> Nil {
+  let assert Ok(logged) = process.receive(records, within: 30_000)
+    as "the boot must log the event it waits under"
+  case logged.event == event {
+    True -> Nil
+    False -> await_event(records, event)
+  }
+}
+
+@external(erlang, "erlang", "suspend_process")
+fn suspend(pid: process.Pid) -> Bool
+
+@external(erlang, "erlang", "resume_process")
+fn resume(pid: process.Pid) -> Bool
+
+@external(erlang, "client_test_ffi", "monitored_by")
+fn monitored_by(pid: process.Pid) -> List(process.Pid)
 
 // --- the base policy the server refuses to boot on -------------------------
 

@@ -1910,13 +1910,19 @@ fn network_command(
     protocol.Subscribe(session_id, _) -> {
       let canonical = ids.session_id_to_string(api.session_id(state.runtime))
       case session_id == canonical {
-        True ->
-          begin_transfer(
-            mark_subscribed(state, connection),
-            connection,
-            id,
-            transfer.Recent,
-          )
+        // A join is announced to every subscribed peer, the newcomer
+        // included, and each copy leaves through `deliver`'s per-peer
+        // authority check (`protocol-change/054`). The newcomer's own copy
+        // is also what moves its lane from polling to pushed at once on a
+        // quiet session. The roster and the reply to this `subscribe` take
+        // different paths out, so either may reach the socket first; a
+        // pushed frame is order-free (`protocol-change/018`).
+        True -> {
+          let before = subscription_of(state, connection)
+          let state = mark_subscribed(state, connection)
+          announce_join(state, before)
+          begin_transfer(state, connection, id, transfer.Recent)
+        }
         False -> {
           reply_error(
             state,
@@ -4416,6 +4422,26 @@ fn subscribe(
       reply(state, connection, id, connection_snapshot(state, connection))
       state
     }
+  }
+}
+
+// A connection the hub no longer holds reads as subscribed, so that nothing
+// is announced for it.
+fn subscription_of(state: State, connection: Int) -> Subscription {
+  dict.get(state.connections, connection)
+  |> result.map(fn(link) { link.subscription })
+  |> result.unwrap(Subscribed)
+}
+
+// Only the move from unsubscribed to subscribed is a join. A second
+// `subscribe` on a subscribed network connection restarts its transfer and
+// changes nothing about who is here, so it pushes nothing; announcing it
+// would let any attachment, an observer included, make the hub push a roster
+// to every peer, and every peer's lane catch up, once per request.
+fn announce_join(state: State, before: Subscription) -> Nil {
+  case before {
+    Unsubscribed -> publish_presence(state)
+    Subscribed -> Nil
   }
 }
 

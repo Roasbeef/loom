@@ -697,7 +697,7 @@ fn run(
       case config.view {
         ViewOn ->
           io.println(
-            "loomd: web view on; run `loom --ui --session <id>` for a link",
+            "loomd: web view on; run `loom ui --session <id>` for a link",
           )
         ViewOff -> Nil
       }

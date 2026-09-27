@@ -264,7 +264,7 @@ A control socket then sends a `hello` event carrying the protocol version,
 the daemon epoch, the principal ID, the daemon's build version and commit,
 and its limits, and, only when the web view is on, a `ui` field naming its
 route prefix. Clients compare the epoch against the endpoint record and
-the build against their own, and `loom --ui` reads the `ui` field to tell
+the build against their own, and `loom ui` reads the `ui` field to tell
 whether the running daemon serves the view.
 
 ## Opening a session
@@ -333,6 +333,11 @@ In more detail:
    masks to the sandbox policy. It attaches a peer directory, then calls
    `serve.assemble_in_domain`, which builds the session's storage, broker,
    helper pool, services, gateway and runtime tree under the custody owner.
+   The domain's first distillation pass starts in step 4 and harvests the
+   domain's sessions under their ordinary writer leases, so it can hold
+   this very session's lease when the storage opens. The open waits that
+   harvest out, until it closes or its short lease expires, and logs
+   `session.harvest_wait`; any other lease holder refuses the open at once.
    The result is projected to `serve.Resident`, which holds only the
    gateway's address, the peer endpoint, the fatal process list and a drain
    handle. The registry therefore never copies a whole session graph.

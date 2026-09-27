@@ -5,7 +5,7 @@ starts the local `loomd`, authenticates on the daemon's control socket,
 lets the operator pick a session, attaches to that session's websocket,
 and draws the session live with etui. The same binary also carries the
 non-interactive commands: `loom sessions`, `loom replay`, `loom update`,
-`loom version`, `loom ext` (passed through to `loomd`) and `loom --ui`,
+`loom version`, `loom ext` (passed through to `loomd`) and `loom ui`,
 which prints a link to the daemon's web view of a session.
 
 The package is the terminal's host for the client engine. Session logic
@@ -261,7 +261,7 @@ so a network failure becomes a `Closed` notice instead of killing the
 terminal. After a lost connection a local terminal makes one bounded
 reconnect attempt, and a held prompt returns to the composer.
 
-`loom --ui --session <id>` prints a link to the daemon's web view of that
+`loom ui --session <id>` prints a link to the daemon's web view of that
 session (`protocol-change/051`). The page is read-only unless `--operate`
 asks for an operator's page, and `--open` also starts the platform's
 browser opener. A running daemon started without `--ui` is refused with
@@ -311,7 +311,7 @@ needs them:
 - `tui/recording`, `tui/virtual_backend`, `tui/frame`: `--record` files,
   the scripted backend `loom replay` and the golden tests drive the loop
   through, and the frame-to-text rendering both of them print.
-- `tui/view_link`, `tui/update/*`, `tui/herdr`: `loom --ui`, `loom
+- `tui/view_link`, `tui/update/*`, `tui/herdr`: `loom ui`, `loom
   update`, and the Herdr pane reporter.
 
 ## Testing

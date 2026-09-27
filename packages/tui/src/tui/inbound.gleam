@@ -252,8 +252,15 @@ pub fn apply_channel_update(
           ..inspected,
           approvals: approval.decisions(model.approvals, records, missing),
         )
+
+      // A lookup can be the first to report the open question resolved, for
+      // instance when another client answered it, so the reply settles the
+      // dialog the same way a cut does rather than waiting for the next one.
       let updated = case updated.captured {
-        Some(#(cut, view)) -> render_cut(updated, cut, view, updated.approvals)
+        Some(#(cut, view)) ->
+          render_cut(updated, cut, view, updated.approvals)
+          |> close_settled_approval
+          |> present_pending_approval
         None -> updated
       }
       case missing {
@@ -426,7 +433,10 @@ fn reconcile_cut(
   case model.captured {
     Some(#(previous, _))
       if previous.next_seq == cut.next_seq && previous.metadata == cut.metadata
-    -> present_pending_approval(Model(..model, captured: Some(#(cut, view))))
+    ->
+      Model(..model, captured: Some(#(cut, view)))
+      |> close_settled_approval
+      |> present_pending_approval
     Some(_) | None -> {
       let updated = apply_cut(Model(..model, last_capture: trigger), cut, view)
       let updated = case model.captured {
@@ -497,7 +507,71 @@ pub fn apply_cut(
     Ok(current) -> approval.project(model.approvals, current)
     Error(_) -> []
   }
-  render_cut(model, cut, view, reviews) |> present_pending_approval
+  render_cut(model, cut, view, reviews)
+  |> close_settled_approval
+  |> present_pending_approval
+}
+
+// Another client attached to the same session can answer the question this
+// panel is showing, and nothing the operator does here would then be
+// meaningful: the request is no longer pending. The panel closes once the cut
+// holds no pending record with its ID, whether the register now reads as
+// resolved or has gone. The check is by ID rather than by exact sequence
+// because a pending request whose sequence moved is still the question on
+// screen, and the panel deliberately keeps the revision it captured. A panel
+// opened on a record that was already resolved is a deliberate inspection
+// through /approvals, and it stays open whatever the cut says. Closing runs
+// before presentation so that the next unseen question opens in the same step.
+fn close_settled_approval(model: Model) -> Model {
+  case model.overlay {
+    ApprovalInspector(panel) -> {
+      let asked = approval_panel.review(panel)
+
+      // Both projections keep one record per escalation ID, so the first
+      // match is the only one.
+      let current =
+        list.find(model.approvals, fn(record) { record.id == asked.id })
+      case asked.status, current {
+        approval.Pending, Ok(approval.Review(status: approval.Pending, ..))
+        | approval.Approved, _
+        | approval.Rejected, _
+        | approval.Consumed, _
+        -> model
+
+        // The resolved register names its decider when it carries one. A
+        // register that has gone names nobody yet; the decision lookup the
+        // cut starts adds the author to the approval lines when it returns.
+        approval.Pending, Ok(approval.Review(origin: Some(author), ..)) ->
+          settle_elsewhere(model, asked, " by " <> origin.display_label(author))
+        approval.Pending, Ok(approval.Review(origin: None, ..))
+        | approval.Pending, Error(Nil)
+        -> settle_elsewhere(model, asked, "")
+      }
+    }
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | DaemonSelector(_)
+    | PeerLinkManager(_) -> model
+  }
+}
+
+fn settle_elsewhere(
+  model: Model,
+  asked: approval.Review,
+  decider: String,
+) -> Model {
+  tui_model.append_system(
+    Model(..model, overlay: NoOverlay),
+    "Approval "
+      <> asked.id
+      <> " ("
+      <> asked.tool
+      <> ") was settled elsewhere"
+      <> decider
+      <> "; its dialog is closed.",
+  )
 }
 
 // A question is offered once per exact sequence. Deferring one leaves it in

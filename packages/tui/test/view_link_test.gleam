@@ -74,6 +74,51 @@ pub fn view_page_and_delivery_parse_together_test() {
   assert swapped.session == "s"
 }
 
+// `loom ui` is the command and `--ui` its older spelling. Both reach the one
+// parser, so each takes the daemon options in any order around it.
+pub fn ui_subcommand_routes_to_the_view_test() {
+  let assert Ok(plain) = tui.launch_view(["ui", "--session", "x"])
+  assert plain.session == "x"
+  assert plain.page == control_protocol.ObserverPage
+  assert plain.delivery == view_link.PrintLink
+
+  let assert Ok(operated) =
+    tui.launch_view(["ui", "--state-dir", "/s", "--session", "x", "--operate"])
+  assert operated.session == "x"
+  assert operated.options.state_directory == "/s"
+  assert operated.page == control_protocol.OperatorPage
+
+  let assert Error(reason) = tui.launch_view(["ui", "--state-dir", "/s"])
+    as "a link names a session"
+  assert string.contains(reason, "loom ui needs --session")
+}
+
+pub fn ui_alias_reads_options_in_any_order_test() {
+  let assert Ok(first) = tui.launch_view(["--ui", "--session", "x"])
+  assert first.session == "x"
+
+  // The live drive that motivated the subcommand: the daemon options came
+  // before `--ui`, and the launcher refused `--ui` as an unknown local option.
+  let assert Ok(late) =
+    tui.launch_view([
+      "--state-dir", "/s", "--config", "/s/loom.toml", "--ui", "--session", "x",
+    ])
+  assert late.session == "x"
+  assert late.options.state_directory == "/s"
+  assert late.options.config == "/s/loom.toml"
+
+  let assert Ok(opened) =
+    tui.launch_view(["--session", "x", "--open", "--ui", "--operate"])
+  assert opened.delivery == view_link.OpenInBrowser
+  assert opened.page == control_protocol.OperatorPage
+
+  let assert Error(reason) = tui.launch_view(["--state-dir", "/s", "--ui"])
+  assert string.contains(reason, "needs --session")
+
+  let assert Error(_) = tui.launch_view(["--state-dir", "/s", "--session", "x"])
+    as "without ui or --ui the launch is the terminal's, not the view's"
+}
+
 pub fn opener_is_chosen_per_platform_test() {
   assert view_link.opener_for(Ok("macos-arm64")) == Ok("open")
   assert view_link.opener_for(Ok("macos-x86_64")) == Ok("open")

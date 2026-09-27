@@ -71,20 +71,17 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
 
     // Start one real periodic catch-up, then withhold only its actual final
     // response. No synthetic snapshot or direct runtime submission is used.
-    let assert poll.Answered(channel) =
-      poll.until(within: 1000, every: 5, attempt: fn() {
-        let #(next, _) =
-          session_channel.tick(channel, now: host_bootstrap.monotonic_time_ms())
-        case session_channel.in_flight(next) {
-          True -> {
-            let #(next, outputs) = session_channel.take_outputs(next)
-            list.each(outputs, terminal_lane.perform)
-            poll.Done(next)
-          }
-          False -> poll.Retry
-        }
-      })
-      as "one catch-up becomes due under a finite deadline"
+    // The lane is ticked at the reading it names itself rather than slept
+    // up to. The daemon pushes the roster on subscribe (protocol-change/054),
+    // so this lane refreshes at the pushed interval of five seconds, and the
+    // lane reads no clock, so the reading it names is the one it acts at.
+    let assert Some(due) = session_channel.next_due(channel)
+      as "an idle lane with a cut names its next refresh"
+    let #(channel, _) = session_channel.tick(channel, now: due)
+    assert session_channel.in_flight(channel)
+      as "one catch-up becomes due at the lane's own reading"
+    let #(channel, outputs) = session_channel.take_outputs(channel)
+    list.each(outputs, terminal_lane.perform)
     let #(waiting, ending) =
       hold_snapshot_end(tui_model.Model(..initial, channel: Some(channel)), 32)
     let waiting = tui.update(backend.Paste("queued reply prompt"), waiting)

@@ -144,6 +144,21 @@ pub fn with_context(state: State, context: RequestContext) -> State {
   State(..state, context:)
 }
 
+/// The exact record captured when the panel opened.
+///
+/// The status tells an open question (`Pending`) from a deliberate inspection
+/// of a decision that was already made, which is how the client knows whether
+/// a later resolution by another client has made the panel stale.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval_panel.review(panel).status == approval.Pending
+/// ```
+pub fn review(state: State) -> approval.Review {
+  state.review
+}
+
 /// Scrolls the authority or selects a decision before explicitly confirming it.
 ///
 /// ## Examples

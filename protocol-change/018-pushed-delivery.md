@@ -161,3 +161,15 @@ durable object whose only reader is a convenience. The reply says
 `queued` and not `admitted` precisely so that dropping the queue on a
 restart is a behaviour a client is written against rather than a lost
 write. Recorded as open in `docs/design-notes/live-delivery.md`.
+
+## Addendum, 2026-09-27: a join is pushed (protocol-change/054)
+
+The second proposal above says the hub pushes `presence` on a departure
+and not on a join. [protocol-change/054](054-roster-push-on-subscribe.md)
+amends it: the hub pushes `presence` when a peer subscribes and when a
+peer departs. The event, its body and its size bound are unchanged, and
+every copy still leaves through `deliver` and its per-peer
+`check_binding`. The reason for the change is that clients stopped
+polling every 250 ms in PR #567, after which a join that produced no
+frame reached the peers already attached only at their next idle
+refresh.
