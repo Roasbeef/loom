@@ -45,13 +45,16 @@ type Signal {
   // One message from the component for the browser's client runtime.
   Client(server_component.ClientMessage(Page))
 
-  // The relay ended from the gateway's side; the page closes.
+  // The relay ended from the gateway's side; the page closes shortly.
   Ended(reason: String)
+
+  // The delayed close after `Ended`, once the component has drawn its end.
+  Stop
 }
 
 type Phase {
   Pending(signals: process.Subject(Signal))
-  Serving(runtime: lustre.Runtime(Page))
+  Serving(runtime: lustre.Runtime(Page), signals: process.Subject(Signal))
 }
 
 /// Upgrades one checked page request to the component's socket.
@@ -130,41 +133,51 @@ pub fn upgrade(
           | Pending(_), mist.Shutdown
           | Pending(_), mist.Custom(Client(_))
           | Pending(_), mist.Custom(Ended(_))
+          | Pending(_), mist.Custom(Stop)
           -> mist.stop()
 
           // The browser's client runtime speaks Lustre's protocol. A frame
           // that does not decode is dropped, as Lustre's own servers do; the
           // component has no handler a decoded event could reach anyway.
-          Serving(runtime), mist.Text(text) -> {
+          Serving(runtime, signals), mist.Text(text) -> {
             case json.parse(text, server_component.runtime_message_decoder()) {
               Ok(message) -> lustre.send(runtime, message)
               Error(_) -> Nil
             }
-            mist.continue(Serving(runtime))
+            mist.continue(Serving(runtime, signals))
           }
 
-          Serving(runtime), mist.Custom(Client(message)) ->
+          Serving(runtime, signals), mist.Custom(Client(message)) ->
             case
               mist.send_text_frame(
                 socket,
                 json.to_string(server_component.client_message_to_json(message)),
               )
             {
-              Ok(Nil) -> mist.continue(Serving(runtime))
+              Ok(Nil) -> mist.continue(Serving(runtime, signals))
               Error(_) -> mist.stop()
             }
 
-          Serving(_), mist.Custom(Ended(_))
-          | Serving(_), mist.Binary(_)
-          | Serving(_), mist.Closed
-          | Serving(_), mist.Shutdown
-          | Serving(_), mist.Custom(Admit)
+          // The gateway ended the page. The relay has already told the
+          // component, whose next tick draws the ended state; closing now
+          // would drop that last patch. Two ticks is enough for the tick
+          // that reduces the close and the patch it sends.
+          Serving(runtime, signals), mist.Custom(Ended(_)) -> {
+            process.send_after(signals, 2 * component.tick_ms, Stop)
+            mist.continue(Serving(runtime, signals))
+          }
+
+          Serving(..), mist.Custom(Stop)
+          | Serving(..), mist.Binary(_)
+          | Serving(..), mist.Closed
+          | Serving(..), mist.Shutdown
+          | Serving(..), mist.Custom(Admit)
           -> mist.stop()
         }
       },
       on_close: fn(phase) {
         case phase {
-          Serving(runtime) -> lustre.send(runtime, lustre.shutdown())
+          Serving(runtime, _) -> lustre.send(runtime, lustre.shutdown())
           Pending(_) -> Nil
         }
       },
@@ -221,7 +234,7 @@ fn admit(
       // socket owns, and are written from this process's own turns.
       let client = process.new_subject()
       lustre.send(runtime, server_component.register_subject(client))
-      mist.continue(Serving(runtime))
+      mist.continue(Serving(runtime, signals))
       |> mist.with_selector(
         process.new_selector()
         |> process.select(signals)

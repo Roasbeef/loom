@@ -179,3 +179,25 @@ pub fn a_tick_before_the_transport_opens_keeps_what_was_filed_test() {
   let ticked = simulate.message(opened, component.Ticked(0))
   assert component.status(simulate.model(ticked)) == component.Following
 }
+
+pub fn a_closed_connection_is_drawn_at_the_next_tick_test() {
+  // The relay tells the component its connection ended before it tells the
+  // page's socket, which closes two ticks later. The ended state is drawn
+  // by the first of them.
+  let ticked =
+    simulate.message(simulation(), component.Opened(Nil, 0))
+    |> arrive(transfer())
+    |> simulate.message(component.Ticked(0))
+  let closed =
+    simulate.message(
+      ticked,
+      component.Arrived(connection_event.Closed("access was revoked")),
+    )
+  assert component.status(simulate.model(closed)) == component.Following
+
+  let drawn = simulate.message(closed, component.Ticked(250))
+  assert string.contains(
+    element.to_string(simulate.view(drawn)),
+    "disconnected",
+  )
+}
