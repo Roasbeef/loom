@@ -213,8 +213,8 @@ subscribes ([protocol-change/054](../../protocol-change/054-roster-push-on-subsc
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:3354`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:3427`). Both paths call
-`check_binding` (`client/gateway.gleam:2447`) immediately before the
+through `deliver` (`client/gateway.gleam:3433`). Both paths call
+`check_binding` (`client/gateway.gleam:2453`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -293,8 +293,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:5351`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2730`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:5377`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:2736`) after `state.live` has
 been refreshed from the registers and before any frame leaves.
 
 Ordinarily the drain submits only the head of the queue. Natural
