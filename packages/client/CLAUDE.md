@@ -2326,13 +2326,17 @@ catalogue without opening runtimes. Explicit admission invokes
   instance. This is not yet daemon admission: partial-boot and owner-death
   custody remain unfinished, and `close_instance` still discards the runtime
   drain result instead of returning a reservation-release verdict.
-- `client/host.{Stop, adopt, relay_sigterm}` — the root of the server's
-  process tree. `adopt` runs a boot on a dedicated exit-trapping process
-  so every link an `actor.start` forms lands there rather than on the
-  caller; the first fatal death runs the teardown *first* — releasing
-  the session lease — and reports `Faulted` afterwards, leaving the exit
-  status to the entry point. `relay_sigterm` puts the signal on the same
-  subject, so one receive covers both ways the server stops.
+- `client/host.{Stop, Host, adopt, retire, relay_sigterm}` — the root of
+  the server's process tree. `adopt` runs a boot on a dedicated
+  exit-trapping process so every link an `actor.start` forms lands there
+  rather than on the caller, and hands the boot the `Host` it runs on;
+  the first fatal death runs the teardown *first* — releasing the session
+  lease — and reports `Faulted` afterwards, leaving the exit status to
+  the entry point. `retire(host)` asks the host for the same teardown and
+  returns when the host has exited, so the teardown runs once, on the
+  host, however it was started; `serve.shutdown` is exactly that call.
+  `relay_sigterm` puts the signal on the same subject, so one receive
+  covers both ways the server stops.
 - `client/serve.boot_with(settings, logger:)` (`@internal`, like `boot`;
   both start the legacy listener above) — `boot` with an injected
   `telemetry/log.Logger`, which is what `main` calls once it has
@@ -4185,6 +4189,14 @@ these forks because they define the same modules.
   exits nonzero afterwards. The one case this cannot cover is the
   storage actor's own death, because it is the connection that would
   delete the lease row.
+- **Only the host tears a booted stack down.** `serve.shutdown` asks the
+  host (`host.retire`) and waits for its exit; it never runs a teardown of
+  its own. Two concurrent teardowns cannot both hold the runtime's drain
+  witness, and the one without it returns before the other has released
+  the lease, which is how a boot straight after `shutdown` once found the
+  old incarnation's lease. `open_instance` still leaves the close to its
+  caller, which is safe only because nothing that close stops before the
+  runtime is a fatal child.
 - **The entry point has two output channels, and the split is
   deliberate** (§3.4). **stdout** carries the startup banner and nothing
   else — the ephemeral port, the token path, the prompt digest — because

@@ -1340,6 +1340,87 @@ fn settled_hub_pid(
   }
 }
 
+/// `shutdown` returns only once the teardown that releases the writer lease
+/// has finished, even when a fault started that teardown first.
+///
+/// This is the interleaving behind a hosted failure where a boot straight
+/// after `shutdown` found the old incarnation's lease. Stopping the listener
+/// is a fatal death, so the host begins its teardown, and with the storage
+/// actor suspended that teardown gets past the drain witness but cannot reach
+/// the release. A shutdown that ran a second teardown of its own found the
+/// witness gone and returned at once, lease still held. A shutdown that asks
+/// the host waits on the one teardown there is.
+pub fn a_shutdown_beside_the_hosts_teardown_returns_after_the_release_test() {
+  let race_root = "build/serve-test-shutdown-race"
+  let _stale = simplifile.delete(race_root)
+  let assert Ok(booted) = serve.boot(settings_under(race_root))
+    as "the server must boot"
+  let storage = booted.instance.storage_owner
+  let assert Ok(ledger) =
+    process.subject_owner(booted.instance.runtime.tree.drains)
+  let root_down = process.monitor(booted.instance.runtime.tree.supervisor)
+  let ledger_down = process.monitor(ledger)
+
+  // The root and its ledger are gone once the host holds the witness, and
+  // from then on its teardown is parked on the suspended storage actor
+  // with the lease row still in the file.
+  let assert True = suspend(storage)
+  server.stop(booted.served)
+  let assert Ok(_) = await_down(root_down)
+    as "the host's teardown must stop the session tree"
+  let assert Ok(_) = await_down(ledger_down)
+    as "the host's teardown must retire the drain ledger"
+
+  // The caller asks from a process of its own, so this one stays free to
+  // watch it and to release the storage actor afterwards.
+  let returned = process.new_subject()
+  let caller =
+    process.spawn(fn() {
+      serve.shutdown(booted)
+      process.send(returned, Nil)
+    })
+  let owner = host.pid(booted.host)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 10_000, every: 5, attempt: fn() {
+      case list.contains(monitored_by(owner), caller) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the shutdown must wait on the host rather than tear down itself"
+
+  // The release is still unreachable, so a caller that is waiting on the
+  // host cannot have returned yet.
+  assert process.receive(returned, within: 0) == Error(Nil)
+  let assert True = resume(storage)
+  let assert Ok(Nil) = process.receive(returned, within: 10_000)
+    as "the shutdown must return once the host's teardown finishes"
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path: race_root <> "/session.db",
+      owner: "probe",
+      lease_ttl_ms: 60_000,
+      clock: clock.fixed(at: 0),
+    )
+    as "the lease must be released by the time shutdown returns"
+  let _sealed = session.close(reopened)
+}
+
+fn await_down(monitor: process.Monitor) -> Result(process.Down, Nil) {
+  process.new_selector()
+  |> process.select_specific_monitor(monitor, fn(down) { down })
+  |> process.selector_receive(10_000)
+}
+
+@external(erlang, "erlang", "suspend_process")
+fn suspend(pid: process.Pid) -> Bool
+
+@external(erlang, "erlang", "resume_process")
+fn resume(pid: process.Pid) -> Bool
+
+@external(erlang, "client_test_ffi", "monitored_by")
+fn monitored_by(pid: process.Pid) -> List(process.Pid)
+
 // --- the base policy the server refuses to boot on -------------------------
 
 pub fn a_base_policy_the_sandbox_can_enforce_boots_test() {

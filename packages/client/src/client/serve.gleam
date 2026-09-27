@@ -470,6 +470,8 @@ pub type Booted {
     token_path: String,
     /// The interface reported in the startup banner.
     bind_host: String,
+    /// The process that owns this stack's teardown; `shutdown` asks it.
+    host: host.Host,
   )
 }
 
@@ -1733,9 +1735,9 @@ pub fn boot_with(
   logger logger: Logger,
 ) -> Result(Booted, String) {
   host.adopt(
-    boot: fn(stops) { assemble(settings, logger, stops) },
+    boot: fn(stops, owner) { assemble(settings, logger, stops, owner) },
     fatal: fatal_children,
-    teardown: shutdown,
+    teardown: tear_down,
   )
 }
 
@@ -1744,6 +1746,14 @@ pub fn boot_with(
 /// Each call creates its own runtime, gateway and reclaimable service
 /// namespace. It installs no signal handler and does not choose a daemon
 /// singleton. The caller must close the returned instance.
+///
+/// The caller's `close_instance` and the host's teardown both run, and
+/// that is safe here only because of order. Nothing the caller's close
+/// stops before the runtime is a fatal child, so the caller captures the
+/// drain witness before any death can start the host, and the caller is
+/// the one that releases the lease before it returns. `boot` has a
+/// listener to stop first and so cannot rely on that; it goes through
+/// `host.retire` instead.
 ///
 /// This is an assembly seam, not daemon admission: the host still lacks
 /// partial-boot and owner-death custody. A manager must not use it until
@@ -1761,7 +1771,7 @@ pub fn open_instance(
   logger: Logger,
 ) -> Result(Instance, String) {
   host.adopt(
-    boot: fn(stops) { assemble_instance(settings, logger, stops) },
+    boot: fn(stops, _host) { assemble_instance(settings, logger, stops) },
     fatal: instance_children,
     teardown: close_instance,
   )
@@ -2409,6 +2419,7 @@ fn assemble(
   settings: Settings,
   logger: Logger,
   stops: Subject(host.Stop),
+  owner: host.Host,
 ) -> Result(Booted, String) {
   use instance <- result.try(assemble_instance(settings, logger, stops))
   use served <- result.try(
@@ -2423,6 +2434,7 @@ fn assemble(
     served:,
     token_path: settings.token_path,
     bind_host: settings.bind_host,
+    host: owner,
   ))
 }
 
@@ -3788,19 +3800,18 @@ fn owned_retirement(
   |> result.flatten
 }
 
-/// Takes a booted server apart, front to back: the listener first so no
-/// new client arrives mid-teardown, then the runtime — whose close
-/// stops the strand drivers before the writer they commit through and
-/// releases the session lease while its drain witness is still observable —
-/// then the service supervisor and finally the effect plane, broker
-/// before pool because the broker is what holds helpers out on loan.
+/// Takes a booted server apart and returns once it is gone, with the
+/// session lease released or deliberately retained.
 ///
-/// Idempotent and callable from any process, which both paths need: the
-/// entry point runs it on `SIGTERM`, and the host runs it from its own
-/// process when a fatal child dies. An error closing the session is
-/// swallowed deliberately — it means the lease release did not commit,
-/// which only the TTL can now mop up, and there is nothing left to
-/// abandon.
+/// The teardown itself runs on the boot's host process (`tear_down`
+/// below), and this only asks for it and waits. Running it here as well
+/// would make two teardowns: the listener's death starts the host's, and
+/// only one of the two can hold the drain witness that authorizes the
+/// lease release. The loser used to return before the winner had
+/// released, so an immediate reopen found the old incarnation's lease.
+///
+/// Idempotent and callable from any process. After a fault the host has
+/// already torn down and exited, so this returns at once.
 ///
 /// ## Examples
 ///
@@ -3809,6 +3820,19 @@ fn owned_retirement(
 /// ```
 ///
 pub fn shutdown(booted: Booted) -> Nil {
+  host.retire(booted.host)
+}
+
+// The teardown the host runs, front to back: the listener first so no new
+// client arrives mid-teardown, then the runtime — whose close stops the
+// strand drivers before the writer they commit through and releases the
+// session lease while its drain witness is still observable — then the
+// service supervisor and finally the effect plane, broker before pool
+// because the broker is what holds helpers out on loan. An error closing
+// the session is swallowed deliberately: it means the lease release did not
+// commit, which only the TTL can now mop up, and there is nothing left to
+// abandon.
+fn tear_down(booted: Booted) -> Nil {
   server.stop(booted.served)
   close_instance(booted.instance)
 }
