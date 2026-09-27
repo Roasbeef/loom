@@ -72,6 +72,7 @@ import tui/inbound
 import tui/interaction
 import tui/internal/ffi_terminal
 import tui/job
+import tui/job_runner
 import tui/layout
 import tui/model.{
   type Model, Assistant, DiffAutomatic, Disconnected, HoldGoalReport, Line,
@@ -601,7 +602,7 @@ pub fn new_model_with_clock(
     herdr_published: None,
     outbox: [],
     next_job: job.first(),
-    running: runtime.no_jobs(),
+    running: job_runner.new(),
     selection: None,
     selection_frame: None,
     selection_gutters: [],

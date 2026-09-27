@@ -23,6 +23,7 @@ import tui/connection
 import tui/daemon/selection as daemon_selection
 import tui/effect.{type Effect}
 import tui/job
+import tui/job_runner
 import tui/model as tui_model
 import tui/protocol
 import tui/runtime
@@ -107,7 +108,7 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
 
   // Performing them is what reaches the handles: one socket close and one
   // control close, both addressed to the handles the step was given.
-  let _running = runtime.perform(effects, runtime.no_jobs())
+  let _running = runtime.perform(effects, job_runner.new())
   let assert Ok(_) = process.receive(owner, 100)
   let assert Ok(_) = process.receive(owner, 100)
   assert process.receive(owner, 0) == Error(Nil)
@@ -173,7 +174,7 @@ pub fn a_channelless_socket_queues_one_direct_write_test() {
   assert process.receive(owner, 0) == Error(Nil)
     as "the step wrote nothing itself"
 
-  let _running = runtime.perform(effects, runtime.no_jobs())
+  let _running = runtime.perform(effects, job_runner.new())
   let assert Ok(_) = process.receive(owner, 100)
     as "performing the effect is what reaches the socket"
 }

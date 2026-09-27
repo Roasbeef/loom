@@ -187,20 +187,6 @@ fn hold_activity(
   }
 }
 
-/// The job table of a model that has started nothing.
-///
-/// A model is built with this, so the only module that names the job
-/// runner is the runtime.
-///
-/// ## Examples
-///
-/// ```gleam
-/// Model(..model, running: runtime.no_jobs())
-/// ```
-pub fn no_jobs() -> job_runner.Running {
-  job_runner.new()
-}
-
 /// Reads the presentation and transport clocks it is given and the host's
 /// wall clock, once each.
 ///
