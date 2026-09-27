@@ -2,13 +2,23 @@
 //// server component, which drives the session's lane through a relay
 //// (protocol-change/051).
 ////
-//// `client/daemon/server` has already checked the request's host, origin and
-//// cookie, re-authenticated the credential that minted the page's ticket,
-//// resolved the resident session and reserved an observer's parser permit.
-//// This module does what `session_socket` does for a terminal with the rest:
-//// it takes the permit's custody in the socket's first handler turn, and
-//// then, instead of serving v2 frames, it starts the component and carries
-//// Lustre's messages in both directions.
+//// `client/daemon/server` has already checked the request's host, origin,
+//// cookie, page key and nonce, re-authenticated the credential that minted
+//// the page's ticket, resolved the resident session with the page's capped
+//// role, and reserved the parser permit for that role. This module does what
+//// `session_socket` does for a terminal with the rest: it takes the permit's
+//// custody in the socket's first handler turn, and then, instead of serving
+//// v2 frames, it starts the component and carries Lustre's messages in both
+//// directions.
+////
+//// Which component it starts is decided by the admitted role: an
+//// observer's page is `web_view/component`, whose messages hold no command,
+//// and an operator's is `web_view/operator_page` (protocol-change/051, the
+//// operator addendum). The role also bounds what the browser may send. An
+//// observer's page attaches no handler, so every browser message is dropped
+//// here before it costs the component a render. An operator's page takes
+//// only the events it attaches, a click and a submit; anything else is
+//// dropped here too.
 ////
 //// One component per connection. It is started from this socket's process
 //// and linked to it, and the socket shuts it down when the browser goes
@@ -22,10 +32,12 @@ import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_relay
 import client/gateway
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/json
+import gleam/list
 import gleam/option.{Some}
 import gleam/result
 import host/bootstrap
@@ -33,17 +45,22 @@ import lustre
 import lustre/server_component
 import mist
 import session_view/snapshot
+import storage/access
 import web_view/component
+import web_view/operator_page
 
-type Page =
-  component.Msg(ui_relay.Relay)
+/// The inbound frame limit on an operator's page socket: a text prompt fits,
+/// a pasted image does not, and a browser's events are far smaller than the
+/// terminal's 32 MiB (protocol-change/051, the operator addendum).
+pub const operator_frame_limit = 1_048_576
 
 type Signal {
   // The self-addressed message that runs admission, queued by `on_init`.
   Admit
 
-  // One message from the component for the browser's client runtime.
-  Client(server_component.ClientMessage(Page))
+  // One message from the component for the browser's client runtime,
+  // already encoded, so the socket's state names no component's type.
+  Client(frame: json.Json)
 
   // The relay ended from the gateway's side; the page closes shortly.
   Ended(reason: String)
@@ -52,9 +69,62 @@ type Signal {
   Stop
 }
 
+// A serving page is the two things the socket does with its component:
+// hand it a browser frame (or drop it), and shut it down.
 type Phase {
   Pending(signals: process.Subject(Signal))
-  Serving(runtime: lustre.Runtime(Page), signals: process.Subject(Signal))
+  Serving(
+    forward: fn(String) -> Nil,
+    shutdown: fn() -> Nil,
+    signals: process.Subject(Signal),
+  )
+}
+
+/// The browser messages an observer's page takes: none. Its view attaches
+/// no handler, so nothing a browser sends could reach its `update`, and a
+/// message dropped here costs the component no render.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !ui_socket.observer_accepts("{\"kind\":1,\"name\":\"click\"}")
+/// ```
+pub fn observer_accepts(_frame: String) -> Bool {
+  False
+}
+
+/// The browser messages an operator's page takes: Lustre's `EventFired` for
+/// the events its view attaches, a `click` and a `submit`, alone or batched.
+/// Every other message is dropped before it reaches the component.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.operator_accepts("{\"kind\":1,\"name\":\"click\"}")
+/// ```
+pub fn operator_accepts(frame: String) -> Bool {
+  case json.parse(frame, accepted()) {
+    Ok(accepted) -> accepted
+    Error(_) -> False
+  }
+}
+
+fn accepted() -> decode.Decoder(Bool) {
+  use kind <- decode.field("kind", decode.int)
+  case kind {
+    1 -> {
+      use name <- decode.field("name", decode.string)
+      decode.success(name == "click" || name == "submit")
+    }
+    3 -> {
+      use messages <- decode.field(
+        "messages",
+        decode.list(decode.recursive(accepted)),
+      )
+      decode.success(messages != [] && list.all(messages, fn(ok) { ok }))
+    }
+    _ -> decode.success(False)
+  }
 }
 
 /// Upgrades one checked page request to the component's socket.
@@ -70,8 +140,13 @@ pub fn upgrade(
   attachment: server.Attachment(instance),
   hub: gateway.Gateway,
   open: fn() -> Result(Nil, Nil),
+  ceiling: access.Role,
 ) -> Response(mist.ResponseData) {
-  let limit = root.message_limit(root.Observer)
+  let role = role_of(attachment.authority)
+  let limit = case role {
+    Observing -> root.message_limit(root.Observer)
+    Operating -> operator_frame_limit
+  }
   let attach =
     ui_relay.Attach(
       hub:,
@@ -85,6 +160,7 @@ pub fn upgrade(
         digest: attachment.digest,
       ),
       check: ui_relay.while_open(fn() { authorize(attachment) }, open),
+      ceiling:,
       failed_reader: fn() {
         let _ =
           manager.stop_if_incarnation(
@@ -136,25 +212,16 @@ pub fn upgrade(
           | Pending(_), mist.Custom(Stop)
           -> mist.stop()
 
-          // The browser's client runtime speaks Lustre's protocol. A frame
-          // that does not decode is dropped, as Lustre's own servers do; the
-          // component has no handler a decoded event could reach anyway.
-          Serving(runtime, signals), mist.Text(text) -> {
-            case json.parse(text, server_component.runtime_message_decoder()) {
-              Ok(message) -> lustre.send(runtime, message)
-              Error(_) -> Nil
-            }
-            mist.continue(Serving(runtime, signals))
+          // The browser's client runtime speaks Lustre's protocol. What the
+          // page's role lets through is decided by `forward`.
+          Serving(forward, _, _) as serving, mist.Text(text) -> {
+            forward(text)
+            mist.continue(serving)
           }
 
-          Serving(runtime, signals), mist.Custom(Client(message)) ->
-            case
-              mist.send_text_frame(
-                socket,
-                json.to_string(server_component.client_message_to_json(message)),
-              )
-            {
-              Ok(Nil) -> mist.continue(Serving(runtime, signals))
+          Serving(..) as serving, mist.Custom(Client(frame)) ->
+            case mist.send_text_frame(socket, json.to_string(frame)) {
+              Ok(Nil) -> mist.continue(serving)
               Error(_) -> mist.stop()
             }
 
@@ -162,9 +229,9 @@ pub fn upgrade(
           // component, whose next tick draws the ended state; closing now
           // would drop that last patch. Two ticks is enough for the tick
           // that reduces the close and the patch it sends.
-          Serving(runtime, signals), mist.Custom(Ended(_)) -> {
+          Serving(signals:, ..) as serving, mist.Custom(Ended(_)) -> {
             process.send_after(signals, 2 * component.tick_ms, Stop)
-            mist.continue(Serving(runtime, signals))
+            mist.continue(serving)
           }
 
           Serving(..), mist.Custom(Stop)
@@ -177,7 +244,7 @@ pub fn upgrade(
       },
       on_close: fn(phase) {
         case phase {
-          Serving(runtime, _) -> lustre.send(runtime, lustre.shutdown())
+          Serving(shutdown:, ..) -> shutdown()
           Pending(_) -> Nil
         }
       },
@@ -192,10 +259,28 @@ pub fn upgrade(
   response
 }
 
+// Whether the admitted page is an observer's or an operator's.
+type Role {
+  Observing
+  Operating
+}
+
+// The role the admitted authority gives the page. The router has already
+// capped it, so `Owner` does not reach here from a page; it is read as an
+// operator's for totality.
+fn role_of(authority: access.Authority) -> Role {
+  case authority {
+    access.Participant(access.Observer) -> Observing
+    access.Owner | access.Participant(access.Operator) -> Operating
+  }
+}
+
 // Takes the permit in the socket's first handler turn, then starts the
-// component with a transport whose `connect` starts the relay. `connect`
-// runs in the component's process, so the relay monitors the component and
-// the inbox it delivers to belongs to the component.
+// component the page's role calls for, with a transport whose `connect`
+// starts the relay and returns at once. `connect` runs in the component's
+// process, so the relay monitors the component and the subjects it answers
+// on belong to the component; the gateway's attach runs in the relay, after
+// the component's start has returned.
 fn admit(
   daemon: root.Root(instance),
   attachment: server.Attachment(instance),
@@ -206,40 +291,103 @@ fn admit(
 ) -> mist.Next(Phase, Signal) {
   let transferred = root.transfer(daemon, attachment.permit, within: 1000)
   process.send(settled, Nil)
-  let started = {
-    use Nil <- result.try(
-      transferred |> result.replace_error("the page's permit was refused"),
+  let transport =
+    component.Transport(
+      connect: fn(inbox, opened) {
+        ui_relay.start(attach, inbox, process.self(), opened, fn(reason) {
+          process.send(signals, Ended(reason))
+        })
+      },
+      transmit: ui_relay.transmit,
+      shut: ui_relay.shut,
+      now: bootstrap.monotonic_time_ms,
     )
-    let transport =
-      component.Transport(
-        connect: fn(inbox) {
-          ui_relay.start(attach, inbox, fn(reason) {
-            process.send(signals, Ended(reason))
-          })
-        },
-        transmit: ui_relay.transmit,
-        shut: ui_relay.shut,
-        now: bootstrap.monotonic_time_ms,
-      )
-    lustre.start_server_component(
-      component.app(),
-      component.Start(attachment.session_id, expected, transport),
-    )
-    |> result.replace_error("the page's component did not start")
+  let start = component.Start(attachment.session_id, expected, transport)
+  let started = case transferred {
+    Error(_) -> Error(Nil)
+    Ok(Nil) -> start_page(attachment.authority, start)
   }
   case started {
-    Error(_) -> mist.stop()
+    Error(Nil) -> mist.stop()
+    Ok(Page(forward:, shutdown:, frames:)) ->
+      mist.continue(Serving(forward, shutdown, signals))
+      |> mist.with_selector(
+        process.new_selector()
+        |> process.select(signals)
+        |> process.merge_selector(process.map_selector(frames, Client)),
+      )
+  }
+}
+
+/// A started page, as its socket holds it: how a browser frame reaches the
+/// component, how to shut the component down, and a selector over what the
+/// component sends the browser, each message already encoded.
+pub type Page {
+  Page(
+    /// Hands one browser frame to the component, or drops it.
+    forward: fn(String) -> Nil,
+    /// Shuts the component down.
+    shutdown: fn() -> Nil,
+    /// The component's messages for the browser, as JSON.
+    frames: process.Selector(json.Json),
+  )
+}
+
+/// Starts the component an attachment with `authority` gets: an observer's
+/// page, which takes no browser message, or an operator's, which takes only
+/// the events its view attaches. Called from the socket's own process, which
+/// then owns the subject the component's messages arrive on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.start_page(access.Participant(access.Observer), start)
+/// ```
+@internal
+pub fn start_page(
+  authority: access.Authority,
+  start: component.Start(ui_relay.Relay),
+) -> Result(Page, Nil) {
+  case role_of(authority) {
+    Observing -> serve(component.app(), start, observer_accepts)
+    Operating -> serve(operator_page.app(), start, operator_accepts)
+  }
+}
+
+// Starts one component and returns what the socket needs of it: how a
+// browser frame reaches it, how to shut it down, and a selector over the
+// subject its client messages arrive on, encoding each as it is received.
+// `admits` says which browser frames reach it.
+fn serve(
+  app: lustre.App(component.Start(ui_relay.Relay), model, message),
+  start: component.Start(ui_relay.Relay),
+  admits: fn(String) -> Bool,
+) -> Result(Page, Nil) {
+  case lustre.start_server_component(app, start) {
+    Error(_) -> Error(Nil)
     Ok(runtime) -> {
       // The component's messages for the browser arrive on a subject this
       // socket owns, and are written from this process's own turns.
       let client = process.new_subject()
       lustre.send(runtime, server_component.register_subject(client))
-      mist.continue(Serving(runtime, signals))
-      |> mist.with_selector(
+      let encoded =
         process.new_selector()
-        |> process.select(signals)
-        |> process.select_map(client, Client),
-      )
+        |> process.select_map(client, server_component.client_message_to_json)
+      let forward = fn(text) {
+        case admits(text) {
+          False -> Nil
+          True ->
+            case json.parse(text, server_component.runtime_message_decoder()) {
+              Ok(message) -> lustre.send(runtime, message)
+              Error(_) -> Nil
+            }
+        }
+      }
+      Ok(Page(
+        forward:,
+        shutdown: fn() { lustre.send(runtime, lustre.shutdown()) },
+        frames: encoded,
+      ))
     }
   }
 }

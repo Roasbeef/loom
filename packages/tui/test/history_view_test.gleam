@@ -568,9 +568,12 @@ pub fn metadata_refresh_reuses_frozen_history_anchors_test() {
       session_channel.Refreshed,
     ))
     |> tui.update(backend.Tick, _)
-  assert refreshed.rendered_rows == reading.rendered_rows
+  assert refreshed.view.rendered_rows == reading.view.rendered_rows
   assert refreshed.scroll_offset == reading.scroll_offset
-  assert ffi_term.same_term(reading.record_rows, refreshed.record_rows)
+  assert ffi_term.same_term(
+    reading.view.record_rows,
+    refreshed.view.record_rows,
+  )
     as "the durable row cache stays valid across metadata-only refreshes"
   assert ffi_term.same_term(
     reading.rendered_anchors,
@@ -595,7 +598,7 @@ pub fn streamed_output_reuses_frozen_history_anchors_test() {
     as "live output must still be consumed while reading history"
   assert streamed.render_revision > reading.render_revision
     as "the test must reach a transcript refresh"
-  assert streamed.rendered_rows == reading.rendered_rows
+  assert streamed.view.rendered_rows == reading.view.rendered_rows
   assert streamed.scroll_offset == reading.scroll_offset
   assert ffi_term.same_term(reading.rendered_anchors, streamed.rendered_anchors)
     as "live fragments cannot rebuild the unchanged durable anchor projection"
@@ -643,7 +646,7 @@ pub fn cached_anchors_match_fresh_anchors_after_layout_changes_test() {
             rendered_anchors: [],
           )
           |> tui.update(backend.Resize(changed.width, changed.height), _)
-        assert changed.rendered_rows == fresh.rendered_rows
+        assert changed.view.rendered_rows == fresh.view.rendered_rows
         assert changed.rendered_anchors == fresh.rendered_anchors
         changed
       },

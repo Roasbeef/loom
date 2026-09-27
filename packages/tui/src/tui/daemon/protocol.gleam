@@ -73,6 +73,17 @@ pub type PeerWake {
 }
 
 /// Requests are explicit; metadata reads never imply an open.
+/// What a web page may do: the ceiling `ui.link` asks for. An operator's
+/// page is asked for only with `loom --ui --operate`.
+pub type WebPage {
+  /// A page that follows the session and sends nothing.
+  ObserverPage
+
+  /// A page with a composer and approval buttons, for a principal whose
+  /// membership is an operator's or the owner's.
+  OperatorPage
+}
+
 pub type Command {
   /// Renames the active session without changing its identity or lifetime.
   RenameSession(
@@ -124,6 +135,9 @@ pub type Command {
   UiLink(
     /// Canonical authorized session identity.
     session_id: String,
+    /// The most the page may do. It caps the principal's membership role in
+    /// the session and never grants one.
+    page: WebPage,
   )
 
   /// Looks up a workspace selection without starting it.
@@ -597,7 +611,16 @@ fn command_fields(command: Command, epoch: Epoch) {
       })
       Ok([#("after", json.String(after)), ..extra])
     }
-    GetSession(id) | UiLink(id) -> identity_fields(id)
+    GetSession(id) | UiLink(id, ObserverPage) -> identity_fields(id)
+
+    // An observer's page is the default, and its request is the one this
+    // launcher sent before the field existed; only an operator's page names
+    // it, which a daemon that predates the field ignores and serves as an
+    // observer's (protocol-change/051, the operator addendum).
+    UiLink(id, OperatorPage) -> {
+      use fields <- result.map(identity_fields(id))
+      list.append(fields, [#("page", json.String("operator"))])
+    }
     WorkspaceDefault(workspace) ->
       text_fields([#("workspace", workspace, 4096)])
     RenameSession(id, name) -> {

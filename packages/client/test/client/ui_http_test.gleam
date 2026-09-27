@@ -43,6 +43,19 @@ pub fn only_loopback_names_pass_the_host_check_test() {
   assert ui_http.loopback_host(get("/ui/sessions/s", [])) == Error(Nil)
 }
 
+pub fn only_a_first_party_navigation_may_open_a_keyed_page_test() {
+  let site = fn(value) {
+    ui_http.navigation_allowed(
+      get("/ui/p/k/sessions/s", [#("sec-fetch-site", value)]),
+    )
+  }
+  assert site("none")
+  assert site("same-origin")
+  assert !site("same-site")
+  assert !site("cross-site")
+  assert !ui_http.navigation_allowed(get("/ui/p/k/sessions/s", []))
+}
+
 pub fn only_a_first_party_navigation_may_exchange_a_ticket_test() {
   let site = fn(value) {
     ui_http.exchange_allowed(
@@ -70,13 +83,29 @@ pub fn the_socket_needs_this_origin_test() {
   assert !ui_http.origin_matches(get("/ui/sessions/s/ws", []), "127.0.0.1:4000")
 }
 
+// Only the exchange lives at the unkeyed session path; the page and its
+// socket live under the page key, which the cookie's path is scoped to
+// (protocol-change/051, the operator addendum).
 pub fn routes_are_gets_under_ui_test() {
-  assert ui_http.route(get("/ui/sessions/abc", [])) == ui_http.Page("abc")
-  assert ui_http.route(get("/ui/sessions/abc/ws", [])) == ui_http.Socket("abc")
+  assert ui_http.route(get("/ui/sessions/abc", [])) == ui_http.Unknown
+  assert ui_http.route(get("/ui/sessions/abc/ws", [])) == ui_http.Unknown
   assert ui_http.route(
       get("/ui/sessions/abc", []) |> request.set_query([#("ticket", "t")]),
     )
     == ui_http.Exchange("abc", "t")
+  assert ui_http.route(get("/ui/p/k1/sessions/abc", []))
+    == ui_http.Page("k1", "abc")
+  assert ui_http.route(get("/ui/p/k1/sessions/abc/ws", []))
+    == ui_http.Socket("k1", "abc", None)
+  assert ui_http.route(
+      get("/ui/p/k1/sessions/abc/ws", [])
+      |> request.set_query([#("csrf-token", "n1")]),
+    )
+    == ui_http.Socket("k1", "abc", Some("n1"))
+  assert ui_http.route(get("/ui/assets/web_view_enter.js", []))
+    == ui_http.Asset(ui_http.EnterScript)
+  assert ui_http.route(get("/ui/assets/web_view_page.js", []))
+    == ui_http.Asset(ui_http.PageScript)
   assert ui_http.route(get("/ui/assets/web_view.css", []))
     == ui_http.Asset(ui_http.Stylesheet)
   assert ui_http.route(get("/ui/assets/other.js", [])) == ui_http.Unknown
@@ -87,16 +116,32 @@ pub fn routes_are_gets_under_ui_test() {
 }
 
 pub fn the_cookie_is_read_and_set_with_its_attributes_test() {
-  assert ui_http.session_cookie(
+  assert ui_http.session_cookies(
       get("/ui/sessions/s", [#("cookie", "other=1; loom_ui=abc")]),
     )
-    == Some("abc")
-  assert ui_http.session_cookie(get("/ui/sessions/s", [])) == None
-  let set = ui_http.set_cookie("abc")
+    == ["abc"]
+  assert ui_http.session_cookies(get("/ui/sessions/s", [])) == []
+
+  // Every value is kept, in the order the browser sent them, so a value
+  // planted under a longer path cannot shadow the real one; the count is
+  // bounded.
+  assert ui_http.session_cookies(
+      get("/ui/p/k/sessions/s", [
+        #("cookie", "loom_ui=planted; loom_ui=real; other=2"),
+      ]),
+    )
+    == ["planted", "real"]
+  assert ui_http.session_cookies(
+      get("/ui/p/k/sessions/s", [
+        #("cookie", "loom_ui=a; loom_ui=b; loom_ui=c; loom_ui=d; loom_ui=e"),
+      ]),
+    )
+    == ["a", "b", "c", "d"]
+  let set = ui_http.set_cookie("abc", "k1")
   assert string.starts_with(set, "loom_ui=abc;")
   assert string.contains(set, "HttpOnly")
   assert string.contains(set, "SameSite=Strict")
-  assert string.contains(set, "Path=/ui")
+  assert string.ends_with(set, "; Path=/ui/p/k1")
 }
 
 pub fn every_ui_response_carries_the_policy_test() {

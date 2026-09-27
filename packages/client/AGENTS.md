@@ -45,48 +45,61 @@ See `protocol-change/036-stream-response-handoff.md`.
 
 ## Web view (`loomd --ui`)
 
-`protocol-change/051` and ADR-014. `daemon/main` parses `--ui` into
-`Config.view` (`ViewOff | ViewOn`). With it, `run` starts
-`daemon/ui_sessions` and passes `server.Ui(sessions, upgrade)` to
+`protocol-change/051`, its operator addendum, and ADR-014. `daemon/main`
+parses `--ui` into `Config.view` (`ViewOff | ViewOn`). With it, `run`
+starts `daemon/ui_sessions` and passes `server.Ui(sessions, upgrade)` to
 `listen_serving`; without it `server.Config.ui` is `None`, every `/ui` path
 is a 404, the control `hello` has no `ui` field and `ui.link` answers
 `unavailable`.
 
 - `daemon/ui_sessions`: one `weft/actor` owning the ticket table (60 s,
   single use) and the UI-session table (8 h), both keyed by the SHA-256 of
-  the secret. Redemption is one message, so a ticket cannot succeed twice.
-  `redeem` takes the path's session and answers `UnknownTicket` or
-  `OtherSession`; only a live ticket for that session replaces the
-  browser's UI session, and a refused one leaves it alone (a ticket for
-  another session is spent). `still_open` is the check an open page runs
-  with every frame. `actor.periodic` sweeps; every read checks the
-  deadline itself.
-- `daemon/ui_http`: pure checks. `loopback_host` (Host is `127.0.0.1`,
-  `[::1]` or `localhost`, any port), `exchange_allowed` (`Sec-Fetch-Site`
-  is `none` or `same-origin`), `origin_matches` (the socket's `Origin` is
-  `http://` and the host), the `loom_ui` cookie (`HttpOnly`,
-  `SameSite=Strict`, `Path=/ui`) and `secured`, the headers every `/ui`
-  response carries.
-- `daemon/server`: `web_view` routes `/ui/sessions/<id>` (page, or the
-  ticket exchange with `?ticket=`), `/ui/sessions/<id>/ws` and three fixed
-  assets, in 051's order of checks. `page_grant` re-checks the cookie, its
-  session, and `manager.authenticate` and `session_authority` for the
-  minting credential on every request. The socket goes through
-  `resident_upgrade` with `ObserverRole`, which caps the attachment's
-  authority and parser permit to observer. `UiLink` mints a ticket for a
-  member of the session.
+  the secret. A `Grant` carries the session, the minting credential's
+  digest, the principal and the page's `ceiling` (`Observer` unless
+  `ui.link` named `page:"operator"`). Redemption is one message: it spends
+  the ticket, answers `UnknownTicket` or `OtherSession`, ends every other
+  UI session of the same principal for the same session, and mints three
+  secrets, the cookie, the page key and the nonce, keeping only their
+  digests in an opaque `Page`. `keyed` and `admits` compare a presented
+  key or nonce by digest in constant time. `still_open` is the check an
+  open page runs with every frame. `actor.periodic` sweeps; every read
+  checks the deadline itself.
+- `daemon/ui_http`: pure checks. `route` (the exchange at
+  `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
+  its socket at `.../ws` with the `csrf-token` query, and four assets),
+  `loopback_host`, `exchange_allowed` and `navigation_allowed`
+  (`Sec-Fetch-Site` is `none` or `same-origin`), `origin_matches`, the
+  `loom_ui` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/ui/p/<key>`) and
+  `secured`, whose `Referrer-Policy: no-referrer` is load-bearing.
+- `daemon/server`: routes in 051's order of checks. The exchange answers
+  200 with the keyed path and the nonce in the body, never a redirect.
+  `page_grant` re-checks the cookie, its key, its session, and
+  `manager.authenticate` and `session_authority` for the minting
+  credential on every request. The socket also requires the nonce, then
+  goes through `resident_upgrade` with `PageRole(ceiling)`, which caps the
+  attachment's authority with `ui_relay.capped` and admits it with that
+  role's parser permit. `UiLink` mints a ticket for a member of the
+  session.
 - `daemon/ui_socket`: the page's mist socket. It transfers the permit in
-  its first handler turn, starts one `web_view/component` per connection
-  with a transport over `ui_relay`, carries Lustre's messages both ways,
-  closes on the relay's `Ended`, and shuts the component down on close.
-- `daemon/ui_relay`: the page's stand-in for a session socket. It attaches
-  with `attach_authenticated_flushing`, its own pid as the socket, a
-  binding and `check` capped to `Participant(Observer)`, and the check is
-  `while_open(frame_authority, still_open)`: the minting credential's
-  digest and the page's UI session, so revocation, expiry and replacement
-  all end the page. It ends on `Shut`, the component's exit, the gateway's
-  exit and the gateway's `close`, detaching in each; `ui_socket` closes two
-  component ticks after the gateway's end so the ended state is drawn.
+  its first handler turn and starts `web_view/component` for an observer's
+  attachment or `web_view/operator_page` for an operator's, with a
+  transport over `ui_relay` whose `connect` returns at once. An observer's
+  socket drops every browser message; an operator's forwards only the
+  click and submit events its page attaches (`operator_accepts`) and takes
+  frames up to `operator_frame_limit` (1 MiB). It closes on the relay's
+  `Ended` and shuts the component down on close.
+- `daemon/ui_relay`: the page's stand-in for a session socket. `start`
+  returns before the attach, which runs as the relay's first message and
+  answers on the component's `opened` subject, so a slow gateway cannot
+  hold Lustre's one-second start. It attaches with
+  `attach_authenticated_flushing`, its own pid as the socket, and a binding
+  and `check` capped by `capped(membership, ceiling)`: the least of the
+  membership, the ceiling and Operator, never Owner. The check is
+  `while_open(frame_authority, still_open)`, so revocation, expiry,
+  replacement and a role change all end the page. It ends on `Shut`, the
+  component's exit, the gateway's exit and the gateway's `close`,
+  detaching in each; `ui_socket` closes two component ticks after the
+  gateway's end so the ended state is drawn.
 
 ## Purpose
 

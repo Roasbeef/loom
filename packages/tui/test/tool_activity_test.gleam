@@ -362,8 +362,8 @@ pub fn diff_and_conversation_scroll_independently_test() {
   let closed = tui.update(backend.KeyPress("esc"), patch_paged)
   assert closed.diff_view == tui_model.DiffHidden
   assert closed.scroll_offset == paged.scroll_offset
-  assert closed.diff_rows == []
-  assert dict.is_empty(closed.diff_line_cache)
+  assert closed.view.diff_rows == []
+  assert dict.is_empty(closed.view.diff_line_cache)
 }
 
 pub fn replacement_history_releases_the_open_diffs_old_layout_test() {
@@ -378,7 +378,7 @@ pub fn replacement_history_releases_the_open_diffs_old_layout_test() {
     )
     |> painted_buffer(160)
   assert !string.contains(frame.buffer_to_text(drawn), "DISCARDED_DIFF_MARKER")
-  assert !list.any(dict.keys(replaced.diff_line_cache), fn(line) {
+  assert !list.any(dict.keys(replaced.view.diff_line_cache), fn(line) {
     string.contains(line.text, "DISCARDED_DIFF_MARKER")
   })
     as "replacement history cannot keep the old diff reachable through layout hints"
@@ -768,8 +768,8 @@ pub fn compact_code_mode_summarizes_success_and_keeps_exact_expansion_test() {
 
   // The compact result replaces source bulk; the durable program is still
   // available above through the ordinary expanded-history path.
-  assert list.length(pending.rendered_rows)
-    > list.length(completed.rendered_rows)
+  assert list.length(pending.view.rendered_rows)
+    > list.length(completed.view.rendered_rows)
   let #(_, failed) =
     pending |> received(code_outcome(2, "code", True)) |> painted
   assert string.contains(failed, "import cap/report")

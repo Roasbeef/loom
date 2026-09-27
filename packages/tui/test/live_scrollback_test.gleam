@@ -45,14 +45,14 @@ pub fn scrolling_inside_a_live_answer_freezes_until_end_test() {
   let arrived = deliver(reading, "\n\nNew output below.\n\nMore output.")
   assert arrived.streams != reading.streams
     as "the actual live stream keeps collecting"
-  assert arrived.rendered_rows == reading.rendered_rows
+  assert arrived.view.rendered_rows == reading.view.rendered_rows
     as "incoming fragments cannot reflow the reader's text"
   assert arrived.scroll_offset == reading.scroll_offset
 
   let resumed = tui.update(backend.KeyPress("end"), arrived)
   assert resumed.scroll_offset == 0
   assert resumed.reading_lines == None
-  assert resumed.rendered_rows != reading.rendered_rows
+  assert resumed.view.rendered_rows != reading.view.rendered_rows
     as "returning to the bottom reveals the accumulated output"
 }
 
@@ -112,7 +112,10 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
   let drafting = tui.update(backend.KeyPress("x"), arrived)
   let shown =
     render.view(
-      tui_model.Model(..drafting, frame_cache: None),
+      tui_model.Model(
+        ..drafting,
+        view: tui_model.View(..drafting.view, frame_cache: None),
+      ),
       geometry.rect_new(0, 0, drafting.width, drafting.height),
     ).0
   let assert Ok(#(_, y)) =
@@ -198,5 +201,5 @@ pub fn switching_agents_restores_the_frozen_reader_without_crossing_streams_test
   assert returned.active_strand == "main"
   assert returned.reading_lines == reading.reading_lines
   assert returned.scroll_offset == reading.scroll_offset
-  assert returned.rendered_rows == reading.rendered_rows
+  assert returned.view.rendered_rows == reading.view.rendered_rows
 }

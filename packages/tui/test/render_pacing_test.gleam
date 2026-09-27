@@ -335,13 +335,19 @@ pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
 
   let before =
     render.view(
-      tui_model.Model(..backlogged, frame_cache: None),
+      tui_model.Model(
+        ..backlogged,
+        view: tui_model.View(..backlogged.view, frame_cache: None),
+      ),
       geometry.rect_new(0, 0, 84, 24),
     ).0
   let scrolled = tui.update(backend.MouseScroll(5, 5, True), backlogged)
   let after =
     render.view(
-      tui_model.Model(..scrolled, frame_cache: None),
+      tui_model.Model(
+        ..scrolled,
+        view: tui_model.View(..scrolled.view, frame_cache: None),
+      ),
       geometry.rect_new(0, 0, 84, 24),
     ).0
 
@@ -402,7 +408,10 @@ pub fn the_idle_strand_snap_reveals_the_trailing_frame_test() {
 
   let #(buffer, _) =
     render.view(
-      tui_model.Model(..settled, frame_cache: None),
+      tui_model.Model(
+        ..settled,
+        view: tui_model.View(..settled.view, frame_cache: None),
+      ),
       geometry.rect_new(0, 0, 84, 24),
     )
   let assert Ok(_) =

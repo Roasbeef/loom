@@ -246,13 +246,17 @@ composer; image bytes must be reattached by the operator.
 
 ## Web view link (`loom --ui`)
 
-`loom --ui --session <id>` (`tui.run_view`) resolves the daemon through
+`loom --ui --session <id> [--operate]` (`tui.run_view`) resolves the daemon through
 `bootstrap.resolve_viewing_daemon`, which adds `--ui` to the launch
 arguments only when it starts one. A running daemon whose `hello` has
 `view: NoWebView` is refused by `view_served` with status 1 and never
 stopped or relaunched. Otherwise the session is opened through
 `daemon_selection.open` and the path `UiLink` returns is printed joined to
-the listener's http origin. `daemon/protocol.Hello.view` is `NoWebView`
+the listener's http origin. `UiLink(session_id, page)` carries a
+`WebPage`: `ObserverPage` by default, which names no `page` field on the
+wire, and `OperatorPage` with `--operate`, which sends `page:"operator"`.
+The page is a ceiling the daemon caps the principal's membership with; it
+never grants a role (protocol-change/051, the operator addendum). `daemon/protocol.Hello.view` is `NoWebView`
 or `WebViewAt(path)` from the optional `ui` field
 (`protocol-change/051`). `projection.record_projection` names the call the
 record cache makes for durable lines, so the web view's parity test can
@@ -302,7 +306,11 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   modules whose handles its variants carry (`attachment`, `connection`,
   `daemon`, `herdr`, `job`, `recording`, `terminal_lane`) and nothing that
   imports the model.
-- `tui/model`: the `Model` record, the types it names, and the helpers every
+- `tui/model`: the `Model` record (`State(view)` with the terminal's etui
+  render caches, `View`, as its `view`: the rendered, record and diff rows,
+  their line caches, the frame cache and the selection's frame; a reducer
+  that empties the transcript bumps `record_cache_epoch` and the projection
+  drops the record rows), the types it names, and the helpers every
   reducer shares (`append_system`, `append_error`, `invalidate_frame`,
   `invalidate_transcript`, `mark_activity`, `queue_owner`,
   `active_strand_phase`). Importers alias it as `tui_model`, because `model`
@@ -351,11 +359,15 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/job`: background jobs as data, and pure. `Key` is allocated from
   `Model.next_job` and never reused; `Awaiting(reply)` is a slot's key and
   the replies received for it, and `admit` accepts a reply only under that
-  key; `Spec` is `Control(host, ControlJob)`, `Reconnect(options)`,
-  `Activity(host, ids)`, `Attach(route, within_ms)` or
+  key; `Spec` is `Control(control, ControlJob)`, `Reconnect(options)`,
+  `Activity(control, ids)`, `Attach(route, within_ms)` or
   `Configure(options)`, which resolves a new session's configuration from
-  the local launch options; `Arrival` is one
-  job message tagged with its key. An attachment job's messages are
+  the local launch options; `Arrival(control)` is one
+  job message tagged with its key. A daemon control connection is named by
+  a `ControlKey` the runtime allocates, and the step holds it as `Daemon`,
+  the key with the build the daemon's `hello` named (`Model.daemon_host`);
+  a relaunch's reply arrives as `Arrival(daemon_selection.Host)` and is
+  filed as `Arrival(Daemon)`. An attachment job's messages are
   `Published(Prepared)`, the worker's socket together with the frames
   subject it delivers to, `Settled(reply)`, the relay's account, and
   `Finished(SocketLiveness)`, the relay's end with the host's read of
@@ -363,7 +375,11 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `ControlOutcome` and `Removal` live here.
 - `tui/job_runner`: the impure half of jobs, called only by the runtime.
   `Running`, the opaque table on `Model.running`, maps each key to its
-  cancel signal and a selector over its reply subject. `start` turns a
+  cancel signal and a selector over its reply subject, and each
+  `ControlKey` to its control connection: `adopt_control` adds one,
+  `file` adds a relaunch's as it files the reply, `close_control` closes
+  and forgets one, and `start` resolves a spec's key when it starts the
+  job. `start` turns a
   spec into a one-task weft run (`start_task` takes the work as a
   function, for tests), `cancel` cancels by key, `receive` reads every
   running job's messages, `observed` drops a job after its last message,
@@ -374,7 +390,8 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   job, through `dropped`, which also closes a drained relaunch outcome's
   control. The control, relaunch, activity and
   attachment worker bodies live here.
-- `tui/buffered`: `Inbox(a)`, a terminal-owned subject with the messages
+- `tui/buffered`: `Inbox(a)`, `session_view/inbox`'s buffer with a
+  terminal-owned subject as its source: the subject and the messages
   already received from it, oldest first. `discard` empties a subject the
   model has stopped reading, as the `Discard` effect and an abandoned
   attempt's cleanup. `waiting` is the only read of the mailbox for a

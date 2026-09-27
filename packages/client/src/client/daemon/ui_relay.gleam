@@ -17,15 +17,25 @@
 //// gateway monitors the relay: when the relay exits, however it exits, the
 //// gateway drops the attachment and its presence.
 ////
-//// ## Read-only by role
+//// ## The page's role
 ////
-//// Whatever the principal's membership says, the relay's binding carries
-//// `Participant(Observer)`, and its `check` caps every answer to the same.
-//// The gateway refuses every command outside its read-only list for an
-//// observer, so a mutation frame from this relay is refused by the daemon
-//// however the frame was produced. When a later phase lets an operator act
-//// from the page, it removes the cap wholesale, so the membership record
-//// stays the only source of a person's role.
+//// The page acts with the smallest of the principal's membership role, the
+//// ceiling its link was minted with, and Operator (`capped`;
+//// protocol-change/051, the operator addendum). The binding the relay
+//// attaches with carries that role, and its `check` answers with the same
+//// minimum of the current record, so the gateway's equality check closes the
+//// attachment the moment the capped role changes. An observer's page is
+//// therefore an observer's attachment, refused every mutation by the
+//// gateway; no page ever carries `Owner`.
+////
+//// ## Opening without blocking
+////
+//// The relay is started from inside the component's own start, which Lustre
+//// bounds at one second, and the gateway's attach can take longer. So
+//// `start` returns as soon as the relay's process exists, and the attach runs
+//// as the relay's first message: the outcome is sent to the `opened` subject
+//// the component selects, `Ok` with the relay's handle or `Error` with why the
+//// gateway refused it.
 ////
 //// ## How it ends
 ////
@@ -46,26 +56,57 @@
 //// writes.
 
 import client/gateway
-import gleam/erlang/process.{type Subject}
-import gleam/otp/actor as otp_actor
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/result
 import session_view/connection_event
 import storage/access
 import weft/actor
 
-/// What the relay needs to attach: the gateway, the binding, and the
-/// capabilities the gateway calls back into.
+/// What the relay needs to attach: the gateway, the binding, the page's
+/// ceiling, and the capabilities the gateway calls back into.
 pub type Attach {
   Attach(
     /// The session's gateway, resolved from the resident instance.
     hub: gateway.Gateway,
-    /// The attachment's identity. Its authority is replaced by observer.
+    /// The attachment's identity, with the membership authority the page
+    /// was admitted under. The relay caps it with `ceiling`.
     binding: gateway.Binding,
-    /// Re-authorizes the attachment. The relay caps its answer to observer.
+    /// Re-authorizes the attachment against the membership record. The
+    /// relay caps its answer with `ceiling`.
     check: fn() -> Result(#(access.Principal, access.Authority), String),
+    /// The most the page may do, from its UI session.
+    ceiling: access.Role,
     /// Asks the registry to stop an incarnation whose reader failed.
     failed_reader: fn() -> Nil,
   )
+}
+
+/// The authority a page acts with: the smallest of the membership
+/// `authority`, the page's `ceiling`, and Operator.
+///
+/// The ceiling caps and never grants, so an observer asking for an
+/// operator's page gets an observer's; and no page carries `Owner`, whose
+/// one power in a session beyond an operator's, the worktree bytes, a page
+/// never needs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_relay.capped(access.Owner, access.Operator)
+///   == access.Participant(access.Operator)
+/// ```
+pub fn capped(
+  authority: access.Authority,
+  ceiling: access.Role,
+) -> access.Authority {
+  case authority, ceiling {
+    _, access.Observer -> access.Participant(access.Observer)
+    access.Participant(access.Observer), access.Operator ->
+      access.Participant(access.Observer)
+    access.Owner, access.Operator
+    | access.Participant(access.Operator), access.Operator
+    -> access.Participant(access.Operator)
+  }
 }
 
 /// A page's authorization: `check`, refused once `open` says the page's UI
@@ -99,6 +140,10 @@ pub opaque type Relay {
 }
 
 type Message {
+  // The relay's first message: attach to the gateway now, in the relay's own
+  // process, so the gateway monitors the relay as the attachment's socket.
+  Attaching
+
   // One frame the lane transmitted.
   Transmit(frame: String)
 
@@ -119,7 +164,17 @@ type Message {
   ComponentDown(process.Down)
 }
 
+// Before the attach, the relay holds what it needs to attach and to answer
+// the component; after it, the attachment it carries frames over.
 type State {
+  Waiting(
+    attach: Attach,
+    self: Subject(Message),
+    component: process.Monitor,
+    inbox: Subject(connection_event.Message),
+    opened: Subject(Result(Relay, String)),
+    ended: fn(String) -> Nil,
+  )
   State(
     connection: gateway.ConnectionHandle,
     inbox: Subject(connection_event.Message),
@@ -127,60 +182,91 @@ type State {
   )
 }
 
-/// Starts a relay for the calling process, which it monitors as the
-/// component, delivering every frame to `inbox`. `ended` is called when the
-/// gateway ends the attachment, so the page's socket can close.
+/// Starts a relay for the page's `component` and returns at once. Every
+/// frame goes to `inbox`; the attach's outcome goes to `opened`, once: the
+/// relay's handle, or why the gateway refused it. `ended` is called when
+/// the gateway ends the attachment, so the page's socket can close.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_relay.start(attach, inbox, fn(reason) { close_page(reason) })
+/// // ui_relay.start(attach, inbox, process.self(), opened, close_page)
 /// ```
 pub fn start(
   attach: Attach,
   inbox: Subject(connection_event.Message),
+  component: Pid,
+  opened: Subject(Result(Relay, String)),
   ended: fn(String) -> Nil,
-) -> Result(Relay, String) {
-  let component = process.self()
-  actor.new_with_initialiser(7000, fn(subject) {
-    // The attach runs here, in the relay's own process, so the pid the
-    // gateway monitors as the attachment's socket is the relay's.
-    let observer = access.Participant(access.Observer)
-    use connection <- result.try(gateway.attach_authenticated_flushing(
-      attach.hub,
-      gateway.Binding(..attach.binding, authority: observer),
-      fn() {
-        attach.check()
-        |> result.map(fn(answer) { #(answer.0, observer) })
-      },
-      fn(frame) { process.send(subject, Push(frame)) },
-      fn() { process.send(subject, Closed) },
-      attach.failed_reader,
-      fn(reply) { process.send(subject, Flush(reply)) },
-      process.self(),
-    ))
-    let component_watch = process.monitor(component)
-    let gateway_watch = process.monitor(gateway.connection_pid(connection))
-    actor.initialised(State(connection:, inbox:, ended:))
-    |> actor.selecting(
-      process.new_selector()
-      |> process.select(subject)
-      |> process.select_specific_monitor(component_watch, ComponentDown)
-      |> process.select_specific_monitor(gateway_watch, GatewayDown),
-    )
-    |> actor.returning(subject)
-    |> Ok
-  })
-  |> actor.on_message(handle)
-  |> actor.start
-  |> result.map(fn(started) { Relay(started.data) })
-  |> result.map_error(fn(error) {
-    case error {
-      otp_actor.InitFailed(reason) -> reason
-      otp_actor.InitTimeout | otp_actor.InitExited(_) ->
-        "the session's gateway did not admit the page"
+) -> Nil {
+  let started =
+    actor.new_with_initialiser(1000, fn(subject) {
+      let watch = process.monitor(component)
+
+      // The attach is the first message, so it runs after this initialiser
+      // has returned and the component's start is not held by it.
+      process.send(subject, Attaching)
+      actor.initialised(Waiting(attach, subject, watch, inbox, opened, ended))
+      |> actor.selecting(
+        process.new_selector()
+        |> process.select(subject)
+        |> process.select_specific_monitor(watch, ComponentDown),
+      )
+      |> actor.returning(subject)
+      |> Ok
+    })
+    |> actor.on_message(handle)
+    |> actor.start
+  case started {
+    Ok(_) -> Nil
+    Error(_) -> process.send(opened, Error("the page's relay did not start"))
+  }
+}
+
+// Attaches in the relay's own process, so the pid the gateway monitors as
+// the attachment's socket is the relay's. The binding and every later check
+// carry the capped role.
+fn attached(state: State) -> actor.Next(State, Message) {
+  case state {
+    State(..) -> actor.continue(state)
+    Waiting(attach:, self:, component:, inbox:, opened:, ended:) -> {
+      let authority = capped(attach.binding.authority, attach.ceiling)
+      let connection =
+        gateway.attach_authenticated_flushing(
+          attach.hub,
+          gateway.Binding(..attach.binding, authority:),
+          fn() {
+            attach.check()
+            |> result.map(fn(answer) {
+              #(answer.0, capped(answer.1, attach.ceiling))
+            })
+          },
+          fn(frame) { process.send(self, Push(frame)) },
+          fn() { process.send(self, Closed) },
+          attach.failed_reader,
+          fn(reply) { process.send(self, Flush(reply)) },
+          process.self(),
+        )
+      case connection {
+        Error(reason) -> {
+          process.send(opened, Error(reason))
+          actor.stop()
+        }
+        Ok(connection) -> {
+          let gateway_watch =
+            process.monitor(gateway.connection_pid(connection))
+          process.send(opened, Ok(Relay(self)))
+          actor.continue(State(connection:, inbox:, ended:))
+          |> actor.with_selector(
+            process.new_selector()
+            |> process.select(self)
+            |> process.select_specific_monitor(component, ComponentDown)
+            |> process.select_specific_monitor(gateway_watch, GatewayDown),
+          )
+        }
+      }
     }
-  })
+  }
 }
 
 /// Writes one frame for the lane.
@@ -218,24 +304,37 @@ pub fn pid(relay: Relay) -> Result(process.Pid, Nil) {
 }
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
-  case message {
+  case state, message {
+    _, Attaching -> attached(state)
+
+    // Nothing but the component's end or its own shut can reach a relay that
+    // has not attached: the component holds no handle until `opened` says
+    // the attach succeeded, and the gateway knows no relay before it.
+    Waiting(..), Shut | Waiting(..), ComponentDown(_) -> actor.stop()
+    Waiting(..), Transmit(_)
+    | Waiting(..), Push(_)
+    | Waiting(..), Flush(_)
+    | Waiting(..), Closed
+    | Waiting(..), GatewayDown(_)
+    -> actor.continue(state)
+
     // One request at a time, as a terminal socket admits them. A missing
     // reply is an unknown outcome, so the relay ends rather than retrying.
-    Transmit(frame:) ->
-      case gateway.connection_request(state.connection, frame) {
+    State(connection:, inbox:, ..), Transmit(frame:) ->
+      case gateway.connection_request(connection, frame) {
         Ok(reply) -> {
-          process.send(state.inbox, connection_event.Incoming(reply))
+          process.send(inbox, connection_event.Incoming(reply))
           actor.continue(state)
         }
         Error(reason) -> end(state, reason)
       }
 
-    Push(frame:) -> {
-      process.send(state.inbox, connection_event.Incoming(frame))
+    State(inbox:, ..), Push(frame:) -> {
+      process.send(inbox, connection_event.Incoming(frame))
       actor.continue(state)
     }
 
-    Flush(reply:) -> {
+    State(..), Flush(reply:) -> {
       process.send(reply, Nil)
       actor.continue(state)
     }
@@ -243,21 +342,26 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // The two ends that come from the page's side: the lane closed, or the
     // component is gone. Nothing needs telling; the relay detaches and
     // exits.
-    Shut | ComponentDown(_) -> {
-      gateway.connection_detach(state.connection)
+    State(connection:, ..), Shut | State(connection:, ..), ComponentDown(_) -> {
+      gateway.connection_detach(connection)
       actor.stop()
     }
 
     // The two ends that come from the gateway's side. The page's socket is
     // told, so it closes and shuts the component down.
-    GatewayDown(_) -> end(state, "the session ended")
-    Closed -> end(state, "access was revoked")
+    State(..), GatewayDown(_) -> end(state, "the session ended")
+    State(..), Closed -> end(state, "access was revoked")
   }
 }
 
 fn end(state: State, reason: String) -> actor.Next(State, Message) {
-  process.send(state.inbox, connection_event.Closed(reason))
-  state.ended(reason)
-  gateway.connection_detach(state.connection)
-  actor.stop()
+  case state {
+    Waiting(..) -> actor.stop()
+    State(connection:, inbox:, ended:) -> {
+      process.send(inbox, connection_event.Closed(reason))
+      ended(reason)
+      gateway.connection_detach(connection)
+      actor.stop()
+    }
+  }
 }

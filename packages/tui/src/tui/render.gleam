@@ -95,7 +95,7 @@ pub fn view(
   model: Model,
   screen: Rect,
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
-  case model.frame_cache {
+  case model.view.frame_cache {
     Some(FrameCache(screen: cached_screen, rendered:, ..)) ->
       cached_frame(rendered, cached_screen, screen, fn() {
         render_frame(model, screen)
@@ -241,7 +241,7 @@ pub fn render_frame(
         |> list.find(fn(area) { area.position == selected.area.position })
         |> result.unwrap(selected.area)
       case
-        model.selection_frame,
+        model.view.selection_frame,
         geometry.intersect(selected.area, current_area)
       {
         Some(original), Ok(area) ->
@@ -586,7 +586,7 @@ fn render_transcript(
       render_rows(
         buf,
         area,
-        model.rendered_rows,
+        model.view.rendered_rows,
         model.scroll_offset + tui_model.viewport_backlog(model),
       )
   }
@@ -2231,7 +2231,7 @@ fn render_diff_view(
   |> paragraph.render_styled(panel.selected, [
     diff_selected_header(model.worktree, panel.selected.size.width),
   ])
-  |> render_rows(panel.patch, model.diff_rows, model.diff_scroll_offset)
+  |> render_rows(panel.patch, model.view.diff_rows, model.diff_scroll_offset)
 }
 
 fn diff_heading_lines(

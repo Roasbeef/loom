@@ -686,6 +686,86 @@ pub fn record_lines(
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
 ) {
+  let #(blocks, calls, narratives) =
+    record_blocks(records, presentation, notices, advisor)
+  #(
+    blocks
+      |> list.map(fn(block) { block.1 })
+      |> separated_tool_groups(BetweenEntries),
+    calls,
+    narratives,
+  )
+}
+
+/// The rows of the durable records of the active strand, each keyed by the
+/// durable sequence it was drawn from, for a host whose view matches rows
+/// by identity rather than by position.
+///
+/// The rows are exactly `record_lines`' rows, in the same order: the blocks
+/// are the same, and the spacers between tool groups come from the same
+/// fold. A row's key is the sequence of the entry or group that drew it,
+/// which of the blocks at that sequence it belongs to (a notice spliced
+/// after an entry shares its sequence), and its index within the block. A
+/// spacer takes the key of the block above it. The history window drops
+/// rows at its head as it moves, and a key built this way names the same
+/// row across captures, so a host can drop the vanished rows instead of
+/// rewriting every row after them. Keys hold digits, `.`, `:` and `~`
+/// only.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.keyed_record_lines(records, presentation, [], advisor)
+/// //   == [#("7.0:0", Line(User, "hello")), ..]
+/// ```
+@internal
+pub fn keyed_record_lines(
+  records: List(protocol.EntryRecord),
+  presentation: Presentation,
+  notices: List(CacheNotice),
+  advisor: advisor_history.Board,
+) -> List(#(String, Line)) {
+  let #(blocks, _, _) = record_blocks(records, presentation, notices, advisor)
+  let #(keyed, _) =
+    list.fold(blocks, #([], dict.new()), fn(acc, block) {
+      let #(keyed, seen) = acc
+      let #(seq, lines) = block
+      let occurrence = dict.get(seen, seq) |> result.unwrap(0)
+      let key = int.to_string(seq) <> "." <> int.to_string(occurrence)
+      #([#(key, lines), ..keyed], dict.insert(seen, seq, occurrence + 1))
+    })
+  keyed
+  |> list.reverse
+  |> separated_tool_blocks(BetweenEntries)
+  |> list.fold(#([], ""), fn(acc, block) {
+    let #(rows, above) = acc
+    let key = case block.0 {
+      "" -> above <> "~"
+      key -> key
+    }
+    let rows =
+      list.index_fold(block.1, rows, fn(rows, line, index) {
+        [#(key <> ":" <> int.to_string(index), line), ..rows]
+      })
+    #(rows, key)
+  })
+  |> fn(folded) { list.reverse(folded.0) }
+}
+
+// The durable records of the active strand as blocks, each the rows one
+// entry, tool group, spliced notice or advisor block draws, tagged with its
+// durable sequence and in sequence order. `record_lines` flattens them and
+// `keyed_record_lines` keys them.
+fn record_blocks(
+  records: List(protocol.EntryRecord),
+  presentation: Presentation,
+  notices: List(CacheNotice),
+  advisor: advisor_history.Board,
+) -> #(
+  List(#(Int, List(Line))),
+  Dict(tool_activity.Call, List(Line)),
+  Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
+) {
   let entries = strand_entries(records, presentation.active_strand)
   let sequences = entry_sequences(entries)
   let owner = solo_owner(presentation.captured)
@@ -704,9 +784,7 @@ pub fn record_lines(
             expanded_lines(item, owner, presentation.summaries),
           )
         })
-        |> merge_sequence_blocks(advisor_history_blocks(advisor))
-        |> list.map(fn(block) { block.1 })
-        |> separated_tool_groups(BetweenEntries),
+        |> merge_sequence_blocks(advisor_history_blocks(advisor)),
       dict.new(),
       dict.new(),
     )
@@ -740,9 +818,7 @@ pub fn record_lines(
       #(
         reversed
           |> list.reverse
-          |> merge_sequence_blocks(advisor_history_blocks(advisor))
-          |> list.map(fn(block) { block.1 })
-          |> separated_tool_groups(BetweenEntries),
+          |> merge_sequence_blocks(advisor_history_blocks(advisor)),
         calls,
         narratives,
       )

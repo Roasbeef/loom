@@ -92,7 +92,7 @@ fn admit_frame(
 // reply's key. Otherwise it belongs to a job no reducer waits for any more,
 // one that was cancelled or whose slot moved on; that comparison of keys is
 // the only fence a job reply passes.
-fn admit_reply(model: Model, arrival: job.Arrival) -> Model {
+fn admit_reply(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
   let admitted = case arrival {
     job.ControlArrived(key:, reply:) -> admit_control(model, key, reply)
     job.ReconnectArrived(key:, reply:) -> admit_reconnect(model, key, reply)
@@ -130,7 +130,7 @@ fn admit_control(
 fn admit_reconnect(
   model: Model,
   key: job.Key,
-  reply: job.ReconnectReply,
+  reply: job.ReconnectReply(job.Daemon),
 ) -> Result(Model, Nil) {
   case model.reconnect {
     ReconnectIdle | ReconnectSpent -> Error(Nil)

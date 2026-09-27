@@ -25,7 +25,6 @@ import session_view/attempt
 import tui/agents
 import tui/attachment
 import tui/daemon/protocol as control_protocol
-import tui/daemon/selection as daemon_selection
 import tui/inbound
 import tui/job.{
   PageLoaded, PeerInspectionLoaded, PeerOperationCompleted, PeerSessionsLoaded,
@@ -82,9 +81,16 @@ pub fn drain_reconnect(model: Model) -> Model {
 // Once the attempt has an outcome the slot is spent, so the relay's
 // `AllDelivered` that follows finds no slot naming its key and the runtime
 // drops it.
-fn apply_reconnect_reply(model: Model, reply: job.ReconnectReply) -> Model {
+fn apply_reconnect_reply(
+  model: Model,
+  reply: job.ReconnectReply(job.Daemon),
+) -> Model {
   case reply {
     weft.NotYet -> model
+
+    // The connection of the daemon that died stays in the runtime's table,
+    // as it stayed unclosed on the model before control keys. It is one
+    // entry per daemon death, and the reconnect is offered once per death.
     weft.PulledOutcome(weft.Completed(value: host, ..)) -> {
       let model = Model(..model, reconnect: ReconnectSpent)
       let model = Model(..model, daemon_host: Some(host))
@@ -152,7 +158,7 @@ pub fn begin_open(model: Model, session: String) -> Model {
       let #(model, key) =
         tui_model.start_job(
           model,
-          job.Attach(job.OpenSession(host, session), attach_timeout_ms),
+          job.Attach(job.OpenSession(host.control, session), attach_timeout_ms),
         )
       Model(
         ..model,
@@ -214,10 +220,11 @@ pub fn load_catalogue_collection(
 // replaces nothing.
 fn start_control(
   model: Model,
-  host: daemon_selection.Host,
+  host: job.Daemon,
   request: job.ControlJob,
 ) -> Model {
-  let #(model, key) = tui_model.start_job(model, job.Control(host, request))
+  let #(model, key) =
+    tui_model.start_job(model, job.Control(host.control, request))
   Model(..model, control_request: Some(ControlRequest(job.awaiting(key), None)))
 }
 
@@ -570,7 +577,7 @@ fn create_session_configured(model: Model, config: String) -> Model {
 
       let route =
         job.CreateSession(
-          host,
+          host.control,
           key,
           model.workspace.path,
           workspace.session_name(model.workspace),
@@ -978,12 +985,9 @@ fn activity_due(model: Model) -> Bool {
   }
 }
 
-fn start_activity(
-  model: Model,
-  host: daemon_selection.Host,
-  ids: List(String),
-) -> Model {
-  let #(model, key) = tui_model.start_job(model, job.Activity(host, ids))
+fn start_activity(model: Model, host: job.Daemon, ids: List(String)) -> Model {
+  let #(model, key) =
+    tui_model.start_job(model, job.Activity(host.control, ids))
 
   // Closing the picker does not cancel this job: its deadline and its own
   // connection bound what it can hold, and its answer is dropped by

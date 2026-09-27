@@ -38,6 +38,12 @@ read, takes the lane's outputs and performs them.
   the others are submissions, history pages, lookups, refusals, pushed
   stream fragments and tool tails, commit notices, acknowledgements, lost
   replies and failure.
+- `inbox.Inbox(source, a)` (opaque): what a host received from one
+  source and has not reduced, oldest first, with the host's name for the
+  source. `push` files behind the held messages and `take` returns the
+  oldest; reading a mailbox stays with the host (`tui/buffered` over an
+  Erlang subject). An adoption replaces the whole value, so a replaced
+  source's held messages cannot reach a reducer.
 - `connection_event.Message`: `Connected`, `Incoming(text)`,
   `Closed(reason)`, `NetworkFault(reason)`. The host's transport maps its
   own events into these.
@@ -63,6 +69,18 @@ read, takes the lane's outputs and performs them.
   `tui_model.presentation`.
 - `transcript.project(cut, view, strand)`: one strand's lines from one
   capture, for a host that keeps no presentation state between cuts.
+  `transcript.project_rows` gives the same lines as `Row(key, line)`, each
+  keyed by the durable sequence it was drawn from
+  (`transcript_lines.keyed_record_lines`), so a view that keys its list
+  drops the rows a moving window loses instead of rewriting the rest.
+- `operator`: what an operator's input becomes on the wire, shared by the
+  terminal and the web view. `submit(lane, id, strand, text, Delivery,
+  now)` sends a `Prompt` or a `Steer`; `decision` and `decide` encode an
+  answer (`Choice`: `AllowOnce`, `AllowForSession`, `Deny`) that echoes
+  the drawn escalation exactly; `drawn` finds a pending record only by its
+  identity and the sequence it was drawn at; `drain(state, budget, take,
+  handle)` is the bounded, oldest-first loop both hosts feed the lane
+  with.
 
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and
@@ -91,7 +109,7 @@ decodes the ClientGateway protocol (spec Part 1.6, `docs/client-protocol.md`)
 frames a host hands it, and the frames it asks the host to write are
 `subscribe`, `snapshot_next`, `catch_up`, `history`, `escalations_get` and,
 through `submit`, the session's mutations. A read-only host never calls
-`submit`.
+`submit`; the web view's operator page submits only through `operator`.
 
 ## Invariants
 

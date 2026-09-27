@@ -20,7 +20,10 @@ socket_on(Subject) ->
 
 %% `tui/daemon/selection.Host(control, address, token)` around a
 %% `tui/daemon.Connection(commands, pid, hello)`. Closing a control handle
-%% touches only `commands`, so the route, the credential and the greeting
-%% are placeholders nothing reads.
+%% touches only `commands`, so the route and the credential are placeholders
+%% nothing reads. The greeting is read once, when the runtime adopts the
+%% connection and records the build it names, so it is a greeting that
+%% names no build: `Hello(epoch, principal, control_bytes, None, NoWebView)`.
 host_on(Subject) ->
-    {host, {connection, Subject, self(), nil}, nil, <<>>}.
+    Hello = {hello, nil, <<"operator">>, 65536, none, no_web_view},
+    {host, {connection, Subject, self(), Hello}, nil, <<>>}.

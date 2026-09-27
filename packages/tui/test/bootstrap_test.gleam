@@ -399,10 +399,10 @@ fn run_real_server_lifecycle(server: String) -> Nil {
       // This draft is unassigned until the first session is adopted.
       session: "",
       local_options: Some(options),
-      daemon_host: Some(host),
       overlay: tui_model.DaemonSelector(session_selector.new(empty, "")),
       input: text_area.state_from_string("retained draft"),
     )
+    |> runtime.adopt_control(host)
 
   // A local path failure sends no creation request and retains no durable key.
   // Correcting the option must permit the same selector action immediately.

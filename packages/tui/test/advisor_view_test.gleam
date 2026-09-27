@@ -202,7 +202,7 @@ pub fn long_advisor_history_does_not_hide_the_live_primary_tail_test() {
     as "captured advisor rows precede the live primary tail"
   assert !string.contains(painted, "Captured review 1")
     as "old advisor rows belong in scrollback on a short viewport"
-  assert list.any(dict.keys(model.record_line_cache), fn(line) {
+  assert list.any(dict.keys(model.view.record_line_cache), fn(line) {
     string.contains(line.text, "Captured review 1")
   })
     as "the full advisor body is cached with settled history"
@@ -240,7 +240,10 @@ pub fn advisor_and_primary_rows_follow_durable_sequence_test() {
     )
     |> tui.update(backend.Resize(120, 40), _)
   let ordered =
-    shown.record_rows |> list.reverse |> list.map(row_text) |> string.join("\n")
+    shown.view.record_rows
+    |> list.reverse
+    |> list.map(row_text)
+    |> string.join("\n")
   let assert Ok(#(_, after_first)) = string.split_once(ordered, "primary first")
   let assert Ok(#(_, after_middle)) =
     string.split_once(after_first, "advisor middle")
@@ -297,12 +300,12 @@ pub fn stream_deltas_reuse_the_wrapped_advisor_history_test() {
     })
 
   assert after.record_cache_valid
-  assert after.record_rows == settled.record_rows
+  assert after.view.record_rows == settled.view.record_rows
     as "stream changes only the disposable tail, not settled wrapping"
-  assert after.record_line_cache == settled.record_line_cache
+  assert after.view.record_line_cache == settled.view.record_line_cache
     as "the advisor markdown stays in the reusable line cache"
-  assert dict.size(after.record_line_cache) > 0
-  assert list.any(dict.keys(after.record_line_cache), fn(line) {
+  assert dict.size(after.view.record_line_cache) > 0
+  assert list.any(dict.keys(after.view.record_line_cache), fn(line) {
     line.text == long_body
   })
 }
@@ -598,6 +601,6 @@ pub fn commentary_between_calls_keeps_anchors_parallel_to_rows_test() {
   assert !list.is_empty(reading.rendered_anchors)
     as "scrolling back must freeze anchors"
 
-  let rows = list.length(reading.record_rows)
+  let rows = list.length(reading.view.record_rows)
   assert list.length(reading.rendered_anchors) == rows
 }

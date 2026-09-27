@@ -113,8 +113,13 @@ type Launch {
   Local(bootstrap.Options, selected: String)
 
   // `loom --ui --session <id>` prints a link that opens the session's web
-  // view (protocol-change/051). It installs no terminal state.
-  View(options: bootstrap.Options, session: String)
+  // view (protocol-change/051), an observer's page unless `--operate` asks
+  // for an operator's. It installs no terminal state.
+  View(
+    options: bootstrap.Options,
+    session: String,
+    page: control_protocol.WebPage,
+  )
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
@@ -242,7 +247,7 @@ pub fn main() {
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
         Sessions(options:, command:) -> run_sessions(options, command)
-        View(options:, session:) -> run_view(options, session)
+        View(options:, session:, page:) -> run_view(options, session, page)
         Invalid(reason) -> rejected_launch(reason)
         Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
       }
@@ -516,8 +521,6 @@ pub fn new_model_with_clock(
     notes_open: False,
     diff_view: DiffAutomatic,
     diff_scroll_offset: 0,
-    diff_rows: [],
-    diff_line_cache: dict.new(),
     diff_row_count: 0,
     diff_worktree_source: #(None, 0),
     note_board: None,
@@ -583,13 +586,10 @@ pub fn new_model_with_clock(
     render_revision: 0,
     rendered_revision: -1,
     rendered_row_count: 0,
-    rendered_rows: [],
     revealed_rows: 0,
     rendered_anchors: [],
     rendered_gutters: [],
-    record_rows: [],
     record_gutters: [],
-    record_line_cache: dict.new(),
     compact_call_cache: dict.new(),
     compact_entry_cache: dict.new(),
     pending_records: [],
@@ -598,7 +598,6 @@ pub fn new_model_with_clock(
     record_cache_strand: "",
     record_cache_details: False,
     frame_revision: 0,
-    frame_cache: None,
     frame_debt: pacing.FrameSettled,
     monotonic_time_ms:,
     transport_time_ms: host_bootstrap.monotonic_time_ms,
@@ -615,9 +614,10 @@ pub fn new_model_with_clock(
     next_job: job.first(),
     running: job_runner.new(),
     selection: None,
-    selection_frame: None,
     selection_gutters: [],
     clipboard: NoClipboard,
+    record_cache_epoch: 0,
+    view: tui_model.empty_view(),
   )
 }
 
@@ -866,8 +866,15 @@ fn sessions_usage() -> String {
 // length of the command. Nothing is retained: the connection closes before
 // the exit status is chosen, so a refusal and a success leave the daemon in
 // the same state as far as this launcher is concerned.
-// `--ui` is followed by `--session <id>` and the shared local options.
+// `--ui` is followed by `--session <id>`, an optional `--operate`, and the
+// shared local options. `--operate` asks for an operator's page; the daemon
+// still caps it with the principal's membership.
 fn parse_view(arguments: List(String)) -> Launch {
+  let #(operate, arguments) = take_switch(arguments, "--operate")
+  let page = case operate {
+    True -> control_protocol.OperatorPage
+    False -> control_protocol.ObserverPage
+  }
   case session_control.flag_value(arguments, "--session") {
     Error(_) -> Invalid("loom --ui needs --session <id>\n" <> launch_usage())
     Ok(session) ->
@@ -877,7 +884,7 @@ fn parse_view(arguments: List(String)) -> Launch {
           default_bootstrap_options(),
         )
       {
-        Ok(options) -> View(options:, session:)
+        Ok(options) -> View(options:, session:, page:)
         Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
       }
   }
@@ -895,7 +902,11 @@ fn without_flag(arguments: List(String), flag: String) -> List(String) {
 // running daemon that does not serve the view, opens the session if it is
 // not resident, and prints the link its `ui.link` returns. It never stops
 // or relaunches a running daemon: other people's terminals may be on it.
-fn run_view(options: bootstrap.Options, session: String) -> Nil {
+fn run_view(
+  options: bootstrap.Options,
+  session: String,
+  page: control_protocol.WebPage,
+) -> Nil {
   let outcome = {
     use connected <- result.try(bootstrap.resolve_viewing_daemon(
       options,
@@ -913,7 +924,7 @@ fn run_view(options: bootstrap.Options, session: String) -> Nil {
       ))
       use _target <- result.try(daemon_selection.open(host, session))
       use reply <- result.try(
-        daemon.request(control, control_protocol.UiLink(session), 5000)
+        daemon.request(control, control_protocol.UiLink(session, page), 5000)
         |> result.map_error(daemon_selection.failure),
       )
       case reply {
@@ -1148,7 +1159,9 @@ fn launch_usage() -> String {
   <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"
-  <> "  --ui --session <id> Print a link to the session's read-only web view.\n"
+  <> "  --ui --session <id> [--operate]\n"
+  <> "                      Print a link to the session's web view; read-only\n"
+  <> "                      unless --operate, which lets an operator act.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
@@ -1431,7 +1444,7 @@ pub fn connect_remote(
   case connected {
     Error(reason) -> tui_model.append_error(base, reason)
     Ok(host) -> {
-      let model = Model(..base, daemon_host: Some(host))
+      let model = runtime.adopt_control(base, host)
 
       // The first request starts before the loop does, as it did when the
       // reducer started jobs itself: the flush performs the `StartJob` the
@@ -1488,11 +1501,14 @@ fn attach_daemon(
       tui_model.append_error(base, reason)
     }
     Ok(host) -> {
+      let model = runtime.adopt_control(base, host)
       let model =
         Model(
-          ..base,
-          daemon_host: Some(host),
-          transcript: inbound.daemon_build_lines(Some(host), base.client_build),
+          ..model,
+          transcript: inbound.daemon_build_lines(
+            model.daemon_host,
+            base.client_build,
+          ),
         )
 
       // Flushed for the reason `connect_remote` gives: the first request
@@ -1616,8 +1632,8 @@ fn apply_input(event: msg.Event, model: Model) -> Model {
         width:,
         height:,
         selection: None,
-        selection_frame: None,
         selection_gutters: [],
+        view: tui_model.View(..model.view, selection_frame: None),
       )
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame

@@ -173,3 +173,61 @@ pub fn only_main_shows_the_advisor_board_test() {
     == 1
   assert mentions(transcript.project(captured, shown, "sub"), commentary) == 0
 }
+
+fn keys(rows: List(transcript.Row)) -> List(String) {
+  list.map(rows, fn(row) { row.key })
+}
+
+// The keyed rows are the projection's own lines, in its order, whatever the
+// strand, so a host that keys its list draws exactly what `project` draws.
+pub fn keyed_rows_are_the_projected_lines_test() {
+  let items = [
+    advised(4, 3, "Watch the edge case."),
+    said(3, Some(2), "third"),
+    said(2, Some(1), "second"),
+    said(1, None, "first"),
+  ]
+  let captured = cut(items)
+  let shown = view([#("main", 3), #("advisor", 4)])
+  list.each(["main", "advisor"], fn(strand) {
+    let rows = transcript.project_rows(captured, shown, strand)
+    assert list.map(rows, fn(row) { row.line })
+      == transcript.project(captured, shown, strand)
+    assert list.unique(keys(rows)) == keys(rows) as "every row has its own key"
+  })
+}
+
+// A window that has moved past its oldest entry drops that entry's rows,
+// and every row that remains keeps the key it had.
+pub fn a_row_keeps_its_key_when_the_head_is_dropped_test() {
+  let wide =
+    cut([
+      said(3, Some(2), "third"),
+      said(2, Some(1), "second"),
+      said(1, None, "first"),
+    ])
+  let narrow = cut([said(3, Some(2), "third"), said(2, Some(1), "second")])
+  let shown = view([#("main", 3)])
+  let before = transcript.project_rows(wide, shown, "main")
+  let after = transcript.project_rows(narrow, shown, "main")
+  assert after != []
+  assert list.all(after, fn(row) { list.contains(before, row) })
+    as "each remaining row has the key and line it had before"
+}
+
+// A key is a list key in the web view, whose event paths separate segments
+// with tab, carriage return and newline; a key holds none of them.
+pub fn a_key_holds_no_path_separator_test() {
+  let rows =
+    transcript.project_rows(
+      cut([said(2, Some(1), "a\tb\nc"), said(1, None, "first")]),
+      view([#("main", 2)]),
+      "main",
+    )
+  assert rows != []
+  assert list.all(keys(rows), fn(key) {
+    !string.contains(key, "\t")
+    && !string.contains(key, "\n")
+    && !string.contains(key, "\r")
+  })
+}

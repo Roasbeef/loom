@@ -41,6 +41,7 @@ import session_view/composer
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
+import session_view/operator
 import session_view/protocol.{Strand}
 import session_view/session_channel
 import session_view/snapshot
@@ -63,9 +64,7 @@ import tui/bootstrap
 import tui/buffered
 import tui/cache_miss
 import tui/completion_summary
-import tui/daemon
 import tui/daemon/protocol as control_protocol
-import tui/daemon/selection as daemon_selection
 import tui/job
 import tui/layout
 import tui/model.{
@@ -99,16 +98,12 @@ import tui/surfaces
 /// ```
 @internal
 pub fn daemon_build_lines(
-  host: Option(daemon_selection.Host),
+  host: Option(job.Daemon),
   ours: build_identity.Identity,
 ) -> List(Line) {
   case host {
     None -> []
-    Some(host) ->
-      build_mismatch_lines(
-        daemon.hello(daemon_selection.control(host)).build,
-        ours,
-      )
+    Some(host) -> build_mismatch_lines(host.build, ours)
   }
 }
 
@@ -920,13 +915,12 @@ pub fn decide_captured_approval(
   case outbound.mutation_refusal(model, command.Approve(record.id)) {
     Some(reason) -> tui_model.append_error(model, reason)
     None -> {
-      let encoded = case choice {
-        approval_panel.AllowOnce -> approval.approve(model.next_id, record)
-        approval_panel.AllowSession ->
-          approval.approve_for_session(model.next_id, record)
-        approval_panel.Deny -> approval.deny(model.next_id, record)
+      let choice = case choice {
+        approval_panel.AllowOnce -> operator.AllowOnce
+        approval_panel.AllowSession -> operator.AllowForSession
+        approval_panel.Deny -> operator.Deny
       }
-      case encoded {
+      case operator.decision(model.next_id, record, choice) {
         Error(reason) -> tui_model.append_error(model, reason)
         Ok(frame) ->
           outbound.send_frame(Model(..model, overlay: NoOverlay), frame)
@@ -939,11 +933,7 @@ pub fn decide_captured_approval(
 /// that is not on screen is refused, so the operator only answers what they
 /// have seen.
 @internal
-pub fn decide(
-  model: Model,
-  id: String,
-  encode: fn(Int, approval.Review) -> Result(String, String),
-) -> Model {
+pub fn decide(model: Model, id: String, choice: operator.Choice) -> Model {
   case list.find(model.approvals, fn(record) { record.id == id }) {
     Error(Nil) ->
       tui_model.append_error(
@@ -951,7 +941,7 @@ pub fn decide(
         "decision is not displayed; load /approvals " <> id <> " first",
       )
     Ok(record) ->
-      case encode(model.next_id, record) {
+      case operator.decision(model.next_id, record, choice) {
         Error(reason) -> tui_model.append_error(model, reason)
         Ok(frame) -> outbound.send_frame(model, frame)
       }
@@ -968,20 +958,16 @@ pub fn decide(
 /// adopted inbox and never the one it replaced.
 @internal
 pub fn drain_connection(model: Model, remaining: Int) -> Model {
-  // The budget is checked before taking, so a message beyond it stays held
-  // for the next step rather than being taken and lost.
-  case remaining <= 0 {
-    True -> model
-    False ->
-      case buffered.take(model.inbox) {
-        #(_, Error(Nil)) -> model
-        #(inbox, Ok(message)) ->
-          drain_connection(
-            handle_connection_message(Model(..model, inbox:), message),
-            remaining - 1,
-          )
-      }
-  }
+  operator.drain(model, remaining, take_connection, handle_connection_message)
+}
+
+// The oldest message the adopted inbox holds, taken from whatever inbox the
+// model holds now, so a drain that follows an adoption reads the new one.
+fn take_connection(
+  model: Model,
+) -> #(Model, Result(connection_event.Message, Nil)) {
+  let #(inbox, next) = buffered.take(model.inbox)
+  #(Model(..model, inbox:), next)
 }
 
 /// Applies an already selected socket message through the shipped reducer.
@@ -1081,9 +1067,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         records: list.reverse(entries),
         streams: [],
         tool_tails: [],
-        record_rows: [],
         record_gutters: [],
-        record_line_cache: dict.new(),
+        record_cache_epoch: model.record_cache_epoch + 1,
         compact_call_cache: dict.new(),
         compact_entry_cache: dict.new(),
         // The snapshot is the server's own account of the strand, so it
@@ -2500,7 +2485,9 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
     )
   case model.peer {
     Attached ->
-      outbound.send_frame(sent, protocol.prompt(model.next_id, strand, text))
+      outbound.send_via(sent, fn(lane, now) {
+        operator.submit(lane, model.next_id, strand, text, operator.Prompt, now)
+      })
 
     // The server echoed this turn back as an entry, and the recording has
     // it. Drawing a local copy here would show the operator's line twice.

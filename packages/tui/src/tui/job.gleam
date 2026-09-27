@@ -26,6 +26,16 @@
 //// Everything in this module is data and pure functions. Keys are
 //// allocated from a counter on the model (`tui_model.start_job`), never
 //// reused while the terminal runs, so a key names exactly one job.
+////
+//// A daemon control connection is named the same way. The runtime keeps
+//// each one in its table beside the jobs and gives the step a `Daemon`: a
+//// `ControlKey` and what the daemon's `hello` said about its build. A job
+//// that asks through the daemon's control route names the key, and the
+//// runtime resolves it when it starts the job, so the step holds no
+//// connection. A relaunch's worker returns a connection, so its replies
+//// arrive as `Arrival(daemon_selection.Host)`, and the runtime turns them
+//// into `Arrival(Daemon)` as it files them, adding the new connection to
+//// its table.
 
 import core/json
 import gleam/erlang/process.{type Subject}
@@ -36,7 +46,6 @@ import session_view/snapshot
 import tui/bootstrap
 import tui/connection
 import tui/daemon/protocol as control_protocol
-import tui/daemon/selection as daemon_selection
 import tui/session_selector
 import tui/workspace
 import weft
@@ -48,6 +57,39 @@ import weft
 /// job that key was given to.
 pub opaque type Key {
   Key(Int)
+}
+
+/// The name the runtime keeps one daemon control connection under.
+///
+/// The runtime allocates it when a connection enters its table, at launch
+/// or when a relaunch hands one back, and never reuses it, so a job or a
+/// close that names it reaches the connection it named when it was decided.
+pub opaque type ControlKey {
+  ControlKey(Int)
+}
+
+/// The control key the runtime allocates for its `n`th connection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let key = job.control_key(0)
+/// ```
+@internal
+pub fn control_key(n: Int) -> ControlKey {
+  ControlKey(n)
+}
+
+/// A daemon control connection as the step sees it: the key the runtime
+/// holds it under, and the build its `hello` named, which the build notice
+/// compares with the client's own.
+pub type Daemon {
+  Daemon(
+    /// The runtime's key for the connection.
+    control: ControlKey,
+    /// The daemon's build, when its `hello` named one.
+    build: Option(control_protocol.Build),
+  )
 }
 
 /// The first key a fresh model allocates.
@@ -254,7 +296,7 @@ pub type ControlJob {
 /// Which job to start. The runtime turns each variant into a weft task.
 pub type Spec {
   /// A daemon control request over the terminal's control route.
-  Control(host: daemon_selection.Host, request: ControlJob)
+  Control(control: ControlKey, request: ControlJob)
 
   /// The one bounded relaunch an unexpected daemon death earns, from the
   /// local launch options.
@@ -262,7 +304,7 @@ pub type Spec {
 
   /// The picker's activity poll for these resident identities, on a
   /// control connection the worker opens and closes itself.
-  Activity(host: daemon_selection.Host, ids: List(String))
+  Activity(control: ControlKey, ids: List(String))
 
   /// A provisional attachment: resolve the route through daemon control,
   /// connect a conversation socket, publish it as `Prepared`, and wait for
@@ -279,11 +321,11 @@ pub type Spec {
 /// How an attachment job resolves the session it connects to.
 pub type AttachRoute {
   /// Opens an existing catalogue session.
-  OpenSession(host: daemon_selection.Host, session: String)
+  OpenSession(control: ControlKey, session: String)
 
   /// Creates a session under a retained creation key, then opens it.
   CreateSession(
-    host: daemon_selection.Host,
+    control: ControlKey,
     key: String,
     workspace: String,
     name: String,
@@ -353,9 +395,11 @@ pub type SocketLiveness {
 pub type ControlReply =
   weft.Pulled(ControlOutcome, String)
 
-/// What the relaunch's relay sends.
-pub type ReconnectReply =
-  weft.Pulled(daemon_selection.Host, String)
+/// What the relaunch's relay sends: the relaunched daemon's control
+/// connection as the runtime receives it (`daemon_selection.Host`), or as
+/// the step holds it (`Daemon`).
+pub type ReconnectReply(control) =
+  weft.Pulled(control, String)
 
 /// What the activity poll's relay sends.
 pub type ActivityReply =
@@ -370,13 +414,15 @@ pub type ConfigurationReply =
 ///
 /// The runtime produces these from the job's own subject, and
 /// `runtime.hold` admits each into the slot of its kind when that slot
-/// holds the same key.
-pub type Arrival {
+/// holds the same key. `control` is how a relaunch's connection is held:
+/// the runtime receives `Arrival(daemon_selection.Host)` and files
+/// `Arrival(Daemon)`.
+pub type Arrival(control) {
   /// A reply from a daemon control job.
   ControlArrived(key: Key, reply: ControlReply)
 
   /// A reply from the relaunch.
-  ReconnectArrived(key: Key, reply: ReconnectReply)
+  ReconnectArrived(key: Key, reply: ReconnectReply(control))
 
   /// A reply from the activity poll.
   ActivityArrived(key: Key, reply: ActivityReply)
@@ -395,7 +441,7 @@ pub type Arrival {
 /// ```gleam
 /// job.arrival_key(job.ControlArrived(key, weft.AllDelivered))
 /// ```
-pub fn arrival_key(arrival: Arrival) -> Key {
+pub fn arrival_key(arrival: Arrival(control)) -> Key {
   arrival.key
 }
 
@@ -409,7 +455,7 @@ pub fn arrival_key(arrival: Arrival) -> Key {
 /// ```gleam
 /// assert job.is_last(job.ControlArrived(key, weft.AllDelivered))
 /// ```
-pub fn is_last(arrival: Arrival) -> Bool {
+pub fn is_last(arrival: Arrival(control)) -> Bool {
   case arrival {
     ControlArrived(reply:, ..) -> ends_run(reply)
     ReconnectArrived(reply:, ..) -> ends_run(reply)
