@@ -15,7 +15,8 @@ completion paths, including the visible command palette. The ordinary
 and a separately labelled worktree observation. A missing Git observation is
 never a clean-worktree claim. A `sub:` prefix is an identity convention, not evidence of a parent relation.
 
-`agent_view.Row` is projected from one coherent `snapshot_view.View` and window.
+`agent_view.Row` (`session_view/agent_view`, shared with the web view) is
+projected from one coherent `snapshot_view.View` and window.
 It reuses `reviewer_status` for accepted task excerpts and effect-pending tools,
 then decodes `op.state` and `strand.last_result` for waits and terminal outcomes.
 An idle strand with captured pending input is shown as halted; queued input on
@@ -101,9 +102,12 @@ rectangle and `layout.footer_split` divides the two, so no other hit-test
 or scroll path sees it. While it is drawn, the reviewer band above the
 composer steps aside.
 
+Which strands are listed, in what order, and what each row's words and
+figures are is `session_view/agent_roster`, which the web view's agent chips
+read too; `agent_strip` keeps the rows it paints and the keyboard focus.
 Each row joins the existing `agent_view.Row` with the daemon's glance
 (`core/glance`, `client/glance/{strand}`), decoded once per capture by
-`agent_strip.observe`. A glance is shown only while its `operation` is the
+`agent_strip.observe` (`agent_roster.observe`). A glance is shown only while its `operation` is the
 strand's current one. An empty or absent summary falls back to the row's
 deterministic activity, and an absent title to the accepted task excerpt.
 Elapsed time never subtracts a server timestamp from the terminal clock. A
@@ -983,10 +987,18 @@ boundaries and the split's measurements under Invariants.
   `tui/session_control`, which sends each inspection, link, or revocation over
   the owner-authenticated daemon control socket. `tui/model` holds the modal
   and its pending control outcome; `tui/render` paints the resulting state.
-- `tui/agent_strip.{State, Focus, Clock, Line, Outcome, StripKey}` is the
-  pinned per-agent strip under the footer (see "Agent strip"). `State` holds
-  keyboard focus, decoded glances, per-operation clocks and pushed context
-  sizes; `Model.strip` owns it and session replacement resets it.
+- `tui/agent_strip.{State, Focus, Line, Outcome, StripKey}` is the pinned
+  per-agent strip under the footer (see "Agent strip"). `State` holds
+  keyboard focus beside an `agent_roster.Roster` (decoded glances,
+  per-operation clocks and pushed context sizes); `Line` is
+  `agent_roster.Line`. `Model.strip` owns it and session replacement resets
+  it.
+- The prompt cache: `Model.cache` is a `session_view/cache_watch.Ledger`
+  (each strand's watch, the pushed-row cursor, held rows and model-switch
+  fences), which the reducer feeds through `admit`, `settle`, `capture`,
+  `observe` and `forget`; `session_view/cache_miss` detects a miss and
+  computes the outlook, and `cache_watch.shown` decides whether the footer
+  shows one. Both are shared with the web view.
 - `session_view/composer` separates editable prompt text from large pasted-text
   and validated image attachments. It owns the approximate token indicator,
   expands exact pasted text only at the gateway boundary, and keeps local

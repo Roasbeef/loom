@@ -88,6 +88,28 @@ read, takes the lane's outputs and performs them.
   the terminal's live tail uses it to sanitize a growing answer once
   rather than on every frame.
 
+- `turns.pieces(blocks, strands, latest)`: one strand's lane as turns for a
+  host that draws more than rows (the web view): `Plain` blocks, one `Work`
+  divider per turn (`Folded`, or `Open` while the strand runs or waits on an
+  approval; its `Worked` figures come from the records), `Spawned` and
+  `Returned` rows for sub-agents, `Nudged` for a delivered advisor frame,
+  `Peer` for another session's message, `Missed` for a cache notice and
+  `Commentary` for the advisor's board. It reads
+  `transcript_lines.keyed_record_blocks` (`transcript.blocks`), which tags
+  each block with its `Source`. `turns.hue` is a strand's colour from its
+  position, never its name.
+- `agent_view.Row`, `agent_activity` and `reviewer_status`: each strand's
+  status, task, activity and approvals from one capture, shared by the
+  terminal's agent rail and strip and the web view's chips.
+  `agent_roster.{Roster, Line, Chips}` is which strands a strip lists, in
+  what order, with elapsed time and context size (`lines`, `chips`,
+  `started_at`, `context`).
+- `cache_miss` (a miss reconstructed from two usage rows, and the TTL
+  outlook the rows prove) and `cache_watch.Ledger` (which rows may be
+  compared: `admit`, `settle`, `capture`, `observe`, `forget`, and `shown`,
+  which suppresses the outlook while a strand runs): the prompt-cache rules
+  both hosts draw.
+
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and
 `advisor_pending`, `block_summary` (summarizer labels), `command` and
@@ -102,9 +124,9 @@ attachment list), `context_view`, `file_read_view`, `goal_view`,
 - **Depends on**: `core` (json, codec, entries, messages, ids, todo_list),
   `machine` (`codec`, `operation`, `strand` for decoding register cells),
   `gleam_stdlib`. Nothing else, by R6.
-- **Depended on by**: `tui`, which is the terminal host. `client` takes it
-  as a dev dependency because its tests drive the terminal's lane. The
-  daemon's web view will be the second host.
+- **Depended on by**: `tui`, the terminal host, and `web_view`, the web
+  host. `client` takes it as a dev dependency because its tests drive the
+  terminal's lane.
 - **No module here imports `tui`**, and none may: the package is below the
   terminal in the dependency graph.
 

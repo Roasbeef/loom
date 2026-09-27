@@ -31,9 +31,15 @@ page keys and nonces, and the relay into the session's gateway.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived` (a
   frame, filed only) and `Ticked` (reduction). It holds no command.
 - `component.Model(socket)` (opaque): the lane, the filed frames
-  (`session_view/inbox`), the last capture, its projected keyed rows
-  (`transcript.Row`) and approvals, the connection `Status`, the operator
-  `Notice` and the sent-draft count.
+  (`session_view/inbox`), the last capture, its transcript blocks and the
+  turns laid out from them (`turns.Piece`), the agent rows, the roster, the
+  cache ledger and its miss notices, the agent `Strip`, the approvals, the
+  connection `Status`, the operator `Notice` and the sent-draft count.
+- `component.Strip` and `component.Chip`: the listed agents (`line`,
+  positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
+  label, and `since`, the daemon's start instant), the advisor's chip and
+  the settled count. `strip_view` and `lane_view` draw them, memoized;
+  `hue_class` and `ring_class` map a hue and an outlook to literal classes.
 - `component.{submit, decide}`: the two commands, through the engine's
   arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
   never offers remembering a grant for the session.
@@ -62,7 +68,12 @@ page keys and nonces, and the relay into the session's gateway.
   or `Refused`), `connection_event.Message`s from the transport (mapped to
   `Arrived`), and a `Nil` from its own timer every 250 ms (mapped to
   `Ticked`). Each source is one `server_component.select` from `init`, so
-  its subjects belong to the component's process.
+  its subjects belong to the component's process. Of the lane's updates,
+  `Captured` projects the page and `Auxiliary(UsageChanged)` feeds the cache
+  ledger and the roster.
+- The page renders `web_client`'s custom elements by tag:
+  `<loom-elapsed since>` in each chip and `<loom-fold>` around a settled
+  turn's work. They run in the browser and send the server nothing.
 - An operator's page also receives Lustre's `EventFired` for its two
   handlers: a click on an approval button and the composer form's submit.
 - Outputs leave through the transport only: `Transmit` and `Shut`, in the
@@ -71,8 +82,14 @@ page keys and nonces, and the relay into the session's gateway.
 ## Invariants
 
 - **No session logic here.** What a frame means, when to catch up, which
-  lines a capture becomes and what an operator's input becomes on the wire
-  are `session_view`'s. Logic that decides something about the session
+  lines a capture becomes, how a lane folds into turns, which agents a strip
+  lists, what the cache may claim and what an operator's input becomes on
+  the wire are `session_view`'s.
+- **Derive per capture, never per render or per tick.** A capture is
+  projected once into blocks, pieces and the strip, and an idle refresh
+  that brings back the capture already drawn projects nothing. A tick
+  rebuilds the strip only when a cache label changed; the browser counts
+  elapsed time. Logic that decides something about the session
   belongs there, where the terminal uses it too.
 - **Option C, waking on awaited replies.** `Arrived` files its frame;
   `Ticked` reduces every filed frame in arrival order and then runs the
