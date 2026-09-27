@@ -24,7 +24,7 @@ page keys and nonces, and the relay into the session's gateway.
 
 - `component.Start(socket)`: what the daemon supplies when it starts a
   component: the session ID, the catalogue's `Label(name, workspace)` for
-  the heading (or `None`), the `snapshot.Expected` attachment every cut
+  the heading (or `None`, which only tests pass), the `snapshot.Expected` attachment every cut
   must match, and a `Transport(socket)`. The heading shows the name (or
   `Session` and the ID's first eight characters) with the whole ID in a
   `title`, and the workspace's last segment with the whole path in a
