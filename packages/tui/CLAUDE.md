@@ -351,11 +351,15 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/job`: background jobs as data, and pure. `Key` is allocated from
   `Model.next_job` and never reused; `Awaiting(reply)` is a slot's key and
   the replies received for it, and `admit` accepts a reply only under that
-  key; `Spec` is `Control(host, ControlJob)`, `Reconnect(options)`,
-  `Activity(host, ids)`, `Attach(route, within_ms)` or
+  key; `Spec` is `Control(control, ControlJob)`, `Reconnect(options)`,
+  `Activity(control, ids)`, `Attach(route, within_ms)` or
   `Configure(options)`, which resolves a new session's configuration from
-  the local launch options; `Arrival` is one
-  job message tagged with its key. An attachment job's messages are
+  the local launch options; `Arrival(control)` is one
+  job message tagged with its key. A daemon control connection is named by
+  a `ControlKey` the runtime allocates, and the step holds it as `Daemon`,
+  the key with the build the daemon's `hello` named (`Model.daemon_host`);
+  a relaunch's reply arrives as `Arrival(daemon_selection.Host)` and is
+  filed as `Arrival(Daemon)`. An attachment job's messages are
   `Published(Prepared)`, the worker's socket together with the frames
   subject it delivers to, `Settled(reply)`, the relay's account, and
   `Finished(SocketLiveness)`, the relay's end with the host's read of
@@ -363,7 +367,11 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `ControlOutcome` and `Removal` live here.
 - `tui/job_runner`: the impure half of jobs, called only by the runtime.
   `Running`, the opaque table on `Model.running`, maps each key to its
-  cancel signal and a selector over its reply subject. `start` turns a
+  cancel signal and a selector over its reply subject, and each
+  `ControlKey` to its control connection: `adopt_control` adds one,
+  `file` adds a relaunch's as it files the reply, `close_control` closes
+  and forgets one, and `start` resolves a spec's key when it starts the
+  job. `start` turns a
   spec into a one-task weft run (`start_task` takes the work as a
   function, for tests), `cancel` cancels by key, `receive` reads every
   running job's messages, `observed` drops a job after its last message,

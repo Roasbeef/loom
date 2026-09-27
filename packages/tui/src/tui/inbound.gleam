@@ -63,9 +63,7 @@ import tui/bootstrap
 import tui/buffered
 import tui/cache_miss
 import tui/completion_summary
-import tui/daemon
 import tui/daemon/protocol as control_protocol
-import tui/daemon/selection as daemon_selection
 import tui/job
 import tui/layout
 import tui/model.{
@@ -99,16 +97,12 @@ import tui/surfaces
 /// ```
 @internal
 pub fn daemon_build_lines(
-  host: Option(daemon_selection.Host),
+  host: Option(job.Daemon),
   ours: build_identity.Identity,
 ) -> List(Line) {
   case host {
     None -> []
-    Some(host) ->
-      build_mismatch_lines(
-        daemon.hello(daemon_selection.control(host)).build,
-        ours,
-      )
+    Some(host) -> build_mismatch_lines(host.build, ours)
   }
 }
 

@@ -39,6 +39,7 @@ import tui
 import tui/attachment
 import tui/buffered
 import tui/connection
+import tui/daemon/selection
 import tui/frame
 import tui/inbound
 import tui/interaction
@@ -56,7 +57,7 @@ pub opaque type Message {
   Play(events: List(backend.InputEvent), reply: Subject(Sample))
   Inbound(message: connection_event.Message)
   Candidate(message: connection_event.Message)
-  Job(arrival: job.Arrival)
+  Job(arrival: job.Arrival(selection.Host))
   Stop
 }
 

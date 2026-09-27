@@ -29,7 +29,6 @@ import session_view/transcript_line.{
 import session_view/worktree_view
 import tui/agents
 import tui/attachment
-import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/inbound
 import tui/job
@@ -883,8 +882,7 @@ pub fn quit(model: Model) -> Model {
   }
   let model = case model.daemon_host {
     None -> model
-    Some(host) ->
-      tui_model.emit(model, effect.CloseControl(daemon_selection.control(host)))
+    Some(host) -> tui_model.emit(model, effect.CloseControl(host.control))
   }
   Model(..model, quit: True)
 }

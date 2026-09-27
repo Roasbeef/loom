@@ -24,6 +24,15 @@
 //// sends at most two messages, its outcome and then `AllDelivered` or
 //// `RunLost`, so reading everything a job sent is bounded.
 ////
+//// The daemon control connections live in the same table, under keys the
+//// runtime allocates (`job.ControlKey`). The step names a connection by its
+//// key, in a job's spec and in `effect.CloseControl`, and this module is
+//// the only place a key is turned back into the connection. A key is never
+//// reused, so it names at perform time the connection it named when the
+//// reducer decided. A connection enters the table at launch
+//// (`adopt_control`) or when a relaunch hands one back (`file`), and leaves
+//// it when the step closes it.
+////
 //// The worker bodies live here, not in the reducers that ask for them:
 //// `session_control` decides which request to make and what to do with its
 //// outcome, and this module is the only place the request is made.
@@ -55,12 +64,17 @@ import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
-import tui/job.{type Arrival, type Key}
+import tui/job.{type Arrival, type ControlKey, type Key}
 import weft
 
-/// The jobs this terminal has started and not yet heard the end of, by key.
+/// The jobs this terminal has started and not yet heard the end of, by
+/// key, and the daemon control connections the step names by key.
 pub opaque type Running {
-  Running(handles: Dict(Key, Handle))
+  Running(
+    handles: Dict(Key, Handle),
+    controls: Dict(ControlKey, daemon_selection.Host),
+    next_control: Int,
+  )
 }
 
 // What the runtime holds for one job: the signal that cancels it, a
@@ -71,7 +85,7 @@ pub opaque type Running {
 type Handle {
   Handle(
     cancel: weft.Cancel,
-    arrivals: Selector(Arrival),
+    arrivals: Selector(Arrival(daemon_selection.Host)),
     frames: Option(Subject(connection_event.Message)),
   )
 }
@@ -84,7 +98,142 @@ type Handle {
 /// let running = job_runner.new()
 /// ```
 pub fn new() -> Running {
-  Running(handles: dict.new())
+  Running(handles: dict.new(), controls: dict.new(), next_control: 0)
+}
+
+/// Adds a daemon control connection to the table and returns the step's
+/// name for it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(running, daemon) = job_runner.adopt_control(running, host)
+/// ```
+pub fn adopt_control(
+  running: Running,
+  host: daemon_selection.Host,
+) -> #(Running, job.Daemon) {
+  let key = job.control_key(running.next_control)
+  let build = daemon.hello(daemon_selection.control(host)).build
+  #(
+    Running(
+      ..running,
+      controls: dict.insert(running.controls, key, host),
+      next_control: running.next_control + 1,
+    ),
+    job.Daemon(control: key, build:),
+  )
+}
+
+/// The control connection a key names, while the table holds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(host) = job_runner.control(running, daemon.control)
+/// ```
+pub fn control(
+  running: Running,
+  key: ControlKey,
+) -> Result(daemon_selection.Host, Nil) {
+  dict.get(running.controls, key)
+}
+
+/// Closes the control connection a key names and forgets it. A key the
+/// table no longer holds was closed already.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let running = job_runner.close_control(running, daemon.control)
+/// ```
+pub fn close_control(running: Running, key: ControlKey) -> Running {
+  case dict.get(running.controls, key) {
+    Error(Nil) -> running
+    Ok(host) -> {
+      daemon.close(daemon_selection.control(host))
+      Running(..running, controls: dict.delete(running.controls, key))
+    }
+  }
+}
+
+/// Files one received arrival for the step: a relaunch's control
+/// connection enters the table and the arrival carries its key instead.
+/// Every other arrival carries no connection and passes unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(running, arrival) = job_runner.file(running, arrival)
+/// ```
+pub fn file(
+  running: Running,
+  arrival: Arrival(daemon_selection.Host),
+) -> #(Running, Arrival(job.Daemon)) {
+  case arrival {
+    job.ReconnectArrived(key:, reply:) -> {
+      let #(running, reply) = file_relaunch(running, reply)
+      #(running, job.ReconnectArrived(key:, reply:))
+    }
+    job.ControlArrived(key:, reply:) -> #(
+      running,
+      job.ControlArrived(key:, reply:),
+    )
+    job.ActivityArrived(key:, reply:) -> #(
+      running,
+      job.ActivityArrived(key:, reply:),
+    )
+    job.AttachArrived(key:, reply:) -> #(
+      running,
+      job.AttachArrived(key:, reply:),
+    )
+    job.ConfigurationArrived(key:, reply:) -> #(
+      running,
+      job.ConfigurationArrived(key:, reply:),
+    )
+  }
+}
+
+// The relaunch's outcome is the one reply that carries a connection. Every
+// other variant is rebuilt as it was, because its type names the connection
+// it does not carry.
+fn file_relaunch(
+  running: Running,
+  reply: job.ReconnectReply(daemon_selection.Host),
+) -> #(Running, job.ReconnectReply(job.Daemon)) {
+  case reply {
+    weft.PulledOutcome(weft.Completed(index:, value: host)) -> {
+      let #(running, daemon) = adopt_control(running, host)
+      #(running, weft.PulledOutcome(weft.Completed(index:, value: daemon)))
+    }
+    weft.PulledOutcome(weft.Failed(index:, error:)) -> #(
+      running,
+      weft.PulledOutcome(weft.Failed(index:, error:)),
+    )
+    weft.PulledOutcome(weft.Crashed(index:, reason:)) -> #(
+      running,
+      weft.PulledOutcome(weft.Crashed(index:, reason:)),
+    )
+    weft.PulledOutcome(weft.Abandoned(index:)) -> #(
+      running,
+      weft.PulledOutcome(weft.Abandoned(index:)),
+    )
+    weft.PulledOutcome(weft.NeverStarted(index:)) -> #(
+      running,
+      weft.PulledOutcome(weft.NeverStarted(index:)),
+    )
+    weft.PulledOutcome(weft.DrainProofLost(index:, reason:)) -> #(
+      running,
+      weft.PulledOutcome(weft.DrainProofLost(index:, reason:)),
+    )
+    weft.PulledOutcome(weft.CancellationUnconfirmed(index:)) -> #(
+      running,
+      weft.PulledOutcome(weft.CancellationUnconfirmed(index:)),
+    )
+    weft.AllDelivered -> #(running, weft.AllDelivered)
+    weft.NotYet -> #(running, weft.NotYet)
+    weft.RunLost(reason:) -> #(running, weft.RunLost(reason:))
+  }
 }
 
 // The bounded relaunch budget. It is the same ninety seconds the initial
@@ -115,11 +264,11 @@ const configuration_timeout_ms = 5000
 /// ```
 pub fn start(running: Running, key: Key, spec: job.Spec) -> Running {
   case spec {
-    job.Control(host:, request:) ->
+    job.Control(control:, request:) ->
       start_task(
         running,
         key,
-        control_work(host, request),
+        with_control(running, control, control_work(_, request)),
         control_deadline(request),
         job.ControlArrived,
       )
@@ -138,17 +287,17 @@ pub fn start(running: Running, key: Key, spec: job.Spec) -> Running {
       )
     }
 
-    job.Activity(host:, ids:) ->
+    job.Activity(control:, ids:) ->
       start_task(
         running,
         key,
-        fn() { activity(host, ids) },
+        with_control(running, control, fn(host) { fn() { activity(host, ids) } }),
         activity_timeout_ms,
         job.ActivityArrived,
       )
 
     job.Attach(route:, within_ms:) ->
-      start_attach(running, key, fn() { resolve(route) }, within_ms)
+      start_attach(running, key, resolve(running, route), within_ms)
 
     job.Configure(options:) ->
       start_task(
@@ -220,7 +369,7 @@ pub fn start_task(
   key: Key,
   work: fn() -> Result(a, e),
   within_ms: Int,
-  tag: fn(Key, weft.Pulled(a, e)) -> Arrival,
+  tag: fn(Key, weft.Pulled(a, e)) -> Arrival(daemon_selection.Host),
 ) -> Running {
   let cancel = weft.cancel_signal()
   let replies = process.new_subject()
@@ -236,7 +385,21 @@ pub fn start_task(
 }
 
 fn insert(running: Running, key: Key, handle: Handle) -> Running {
-  Running(handles: dict.insert(running.handles, key, handle))
+  Running(..running, handles: dict.insert(running.handles, key, handle))
+}
+
+// The work a job does through the control connection `key` names. A key the
+// table no longer holds names a connection the step already closed, and the
+// job fails with that reason rather than reaching for another connection.
+fn with_control(
+  running: Running,
+  key: ControlKey,
+  work: fn(daemon_selection.Host) -> fn() -> Result(a, String),
+) -> fn() -> Result(a, String) {
+  case control(running, key) {
+    Ok(host) -> work(host)
+    Error(Nil) -> fn() { Error("daemon control is closed") }
+  }
 }
 
 /// Cancels the job named `key`, if it is still running.
@@ -291,7 +454,7 @@ pub fn cancel(running: Running, key: Key) -> Running {
 /// ```gleam
 /// job_runner.dropped(job.AttachArrived(key, job.Published(prepared)))
 /// ```
-pub fn dropped(arrival: Arrival) -> Nil {
+pub fn dropped(arrival: Arrival(daemon_selection.Host)) -> Nil {
   case arrival {
     job.AttachArrived(reply: job.Published(prepared), ..) -> {
       connection.close(prepared.socket)
@@ -322,7 +485,7 @@ pub fn dropped(arrival: Arrival) -> Nil {
 /// ```gleam
 /// let arrivals = job_runner.receive(running)
 /// ```
-pub fn receive(running: Running) -> List(Arrival) {
+pub fn receive(running: Running) -> List(Arrival(daemon_selection.Host)) {
   // One pass over the mailbox for every job, rather than one per job. A
   // selective receive that matches nothing scans the whole mailbox, and this
   // runs before every event, so under a socket backlog each extra pass
@@ -352,9 +515,9 @@ pub fn receive(running: Running) -> List(Arrival) {
 // most two messages and an attachment's worker one more, so this ends after
 // at most three messages per job.
 fn drain(
-  arrivals: Selector(Arrival),
-  received: List(Arrival),
-) -> List(Arrival) {
+  arrivals: Selector(Arrival(daemon_selection.Host)),
+  received: List(Arrival(daemon_selection.Host)),
+) -> List(Arrival(daemon_selection.Host)) {
   case process.selector_receive(arrivals, 0) {
     Ok(arrival) -> drain(arrivals, [arrival, ..received])
     Error(Nil) -> received
@@ -368,10 +531,13 @@ fn drain(
 /// ```gleam
 /// let running = job_runner.observed(running, arrival)
 /// ```
-pub fn observed(running: Running, arrival: Arrival) -> Running {
+pub fn observed(running: Running, arrival: Arrival(control)) -> Running {
   case job.is_last(arrival) {
     True ->
-      Running(handles: dict.delete(running.handles, job.arrival_key(arrival)))
+      Running(
+        ..running,
+        handles: dict.delete(running.handles, job.arrival_key(arrival)),
+      )
     False -> running
   }
 }
@@ -388,7 +554,7 @@ pub fn observed(running: Running, arrival: Arrival) -> Running {
 /// ```gleam
 /// process.selector_receive(job_runner.selector(model.running), 1000)
 /// ```
-pub fn selector(running: Running) -> Selector(Arrival) {
+pub fn selector(running: Running) -> Selector(Arrival(daemon_selection.Host)) {
   dict.fold(running.handles, process.new_selector(), fn(merged, _key, handle) {
     process.merge_selector(merged, handle.arrivals)
   })
@@ -449,16 +615,25 @@ fn attach(
 
 // An attachment resolves through the terminal's control route, borrowed
 // while it lives or replaced for this one request.
-fn resolve(route: job.AttachRoute) -> Result(daemon_selection.Target, String) {
+fn resolve(
+  running: Running,
+  route: job.AttachRoute,
+) -> fn() -> Result(daemon_selection.Target, String) {
   case route {
-    job.OpenSession(host:, session:) -> {
-      use host <- daemon_selection.with_live_control(host)
-      daemon_selection.open(host, session)
-    }
-    job.CreateSession(host:, key:, workspace:, name:, config:) -> {
-      use host <- daemon_selection.with_live_control(host)
-      daemon_selection.create_named(host, key, workspace, name, config)
-    }
+    job.OpenSession(control:, session:) ->
+      with_control(running, control, fn(host) {
+        fn() {
+          use host <- daemon_selection.with_live_control(host)
+          daemon_selection.open(host, session)
+        }
+      })
+    job.CreateSession(control:, key:, workspace:, name:, config:) ->
+      with_control(running, control, fn(host) {
+        fn() {
+          use host <- daemon_selection.with_live_control(host)
+          daemon_selection.create_named(host, key, workspace, name, config)
+        }
+      })
   }
 }
 

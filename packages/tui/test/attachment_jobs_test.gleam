@@ -37,7 +37,8 @@ import weft
 pub fn opening_a_session_queues_one_attach_job_and_starts_nothing_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let host = host_on(owner)
-  let model = tui_model.Model(..blank(), daemon_host: Some(host))
+  let model = runtime.adopt_control(blank(), host)
+  let assert Some(daemon) = model.daemon_host
 
   let #(opening, effects) =
     runtime.take(session_control.begin_open(model, "target"))
@@ -45,7 +46,10 @@ pub fn opening_a_session_queues_one_attach_job_and_starts_nothing_test() {
     as "the attempt holds its job's key"
   assert list.filter(effects, is_job)
     == [
-      effect.StartJob(key, job.Attach(job.OpenSession(host, "target"), 90_000)),
+      effect.StartJob(
+        key,
+        job.Attach(job.OpenSession(daemon.control, "target"), 90_000),
+      ),
     ]
   assert job_runner.size(opening.running) == 0
     as "the step starts no job itself"

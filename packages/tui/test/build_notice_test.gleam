@@ -12,7 +12,6 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{Some}
 import gleam/string
 import host/build_identity
 import session_view/session_channel
@@ -20,6 +19,7 @@ import session_view/snapshot
 import tui/daemon/selection as daemon_selection
 import tui/inbound
 import tui/model as tui_model
+import tui/runtime
 import tui_test/pushed
 
 // A daemon whose build differs from the one the model was created with is
@@ -29,7 +29,7 @@ import tui_test/pushed
 pub fn the_notice_compares_with_the_build_read_at_creation_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let host = host_with_build(owner, "9.9.9", "feedface")
-  let base = tui_model.Model(..pushed.attached(), daemon_host: Some(host))
+  let base = runtime.adopt_control(pushed.attached(), host)
 
   let differing =
     tui_model.Model(

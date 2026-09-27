@@ -136,12 +136,12 @@ fn picker(options: bootstrap.Options) -> tui_model.Model {
   tui_model.Model(
     ..model(),
     local_options: Some(options),
-    daemon_host: Some(host_on(owner)),
     overlay: tui_model.DaemonSelector(session_selector.new(
       protocol.Page(0, [], None),
       "",
     )),
   )
+  |> runtime.adopt_control(host_on(owner))
 }
 
 fn is_job(requested: effect.Effect) -> Bool {
@@ -219,7 +219,13 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
 
   assert spec
     == job.Attach(
-      job.CreateSession(host, creation_key, "/work", "work", "/cfg/loom.toml"),
+      job.CreateSession(
+        host.control,
+        creation_key,
+        "/work",
+        "work",
+        "/cfg/loom.toml",
+      ),
       90_000,
     )
   assert attachment.job_key(created.candidate) == Some(attach_key)

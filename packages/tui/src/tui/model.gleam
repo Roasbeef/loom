@@ -66,7 +66,6 @@ import tui/bootstrap
 import tui/buffered
 import tui/cache_miss
 import tui/completion_summary
-import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/focused_goal_panel
 import tui/herdr
@@ -558,7 +557,7 @@ pub type Model {
     /// reaches this terminal.
     notices: Int,
     /// Terminal-owned daemon control, independent of the selected session.
-    daemon_host: Option(daemon_selection.Host),
+    daemon_host: Option(job.Daemon),
     /// One bounded metadata page request; no catalogue accumulation.
     control_request: Option(ControlRequest),
     /// The session picker's activity poll, separate from the control job.
@@ -754,7 +753,7 @@ pub type Reconnect {
   /// The terminal cancels it by its key when it quits.
   ReconnectAttempting(
     /// The job's key and the replies received for it.
-    job: job.Awaiting(job.ReconnectReply),
+    job: job.Awaiting(job.ReconnectReply(job.Daemon)),
   )
 
   /// This daemon death has had its one attempt. Nothing runs again until an
@@ -824,7 +823,7 @@ pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
 /// let model = tui_model.release(model, arrival)
 /// ```
 @internal
-pub fn release(model: Model, arrival: job.Arrival) -> Model {
+pub fn release(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
   case arrival {
     job.AttachArrived(reply: job.Published(prepared), ..) ->
       model
@@ -833,7 +832,7 @@ pub fn release(model: Model, arrival: job.Arrival) -> Model {
     job.ReconnectArrived(
       reply: weft.PulledOutcome(weft.Completed(value: host, ..)),
       ..,
-    ) -> emit(model, effect.CloseControl(daemon_selection.control(host)))
+    ) -> emit(model, effect.CloseControl(host.control))
     job.AttachArrived(reply: job.Settled(_), ..)
     | job.AttachArrived(reply: job.Finished(_), ..)
     | job.ReconnectArrived(..)
@@ -860,7 +859,7 @@ pub fn release(model: Model, arrival: job.Arrival) -> Model {
 @internal
 pub fn release_reconnect(
   model: Model,
-  awaiting: job.Awaiting(job.ReconnectReply),
+  awaiting: job.Awaiting(job.ReconnectReply(job.Daemon)),
 ) -> Model {
   list.fold(job.held(awaiting), model, fn(model, reply) {
     release(model, job.ReconnectArrived(job.key(awaiting), reply))

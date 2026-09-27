@@ -1431,7 +1431,7 @@ pub fn connect_remote(
   case connected {
     Error(reason) -> tui_model.append_error(base, reason)
     Ok(host) -> {
-      let model = Model(..base, daemon_host: Some(host))
+      let model = runtime.adopt_control(base, host)
 
       // The first request starts before the loop does, as it did when the
       // reducer started jobs itself: the flush performs the `StartJob` the
@@ -1488,11 +1488,14 @@ fn attach_daemon(
       tui_model.append_error(base, reason)
     }
     Ok(host) -> {
+      let model = runtime.adopt_control(base, host)
       let model =
         Model(
-          ..base,
-          daemon_host: Some(host),
-          transcript: inbound.daemon_build_lines(Some(host), base.client_build),
+          ..model,
+          transcript: inbound.daemon_build_lines(
+            model.daemon_host,
+            base.client_build,
+          ),
         )
 
       // Flushed for the reason `connect_remote` gives: the first request
