@@ -131,20 +131,28 @@ credential to anyone.
 act before being invited. Its property, that nothing secret crosses the
 channel, trades confidentiality for integrity: an attacker who can alter
 the chat substitutes their own digest. Chat gives neither property
-reliably. D composes with C, since `credentials.claim` already carries a
-digest, so an invite field that accepts a digest can be added later (see
-Open).
+reliably. D composes with C, since both bind a digest the invitee's
+client drew, so the invitation takes an optional `credential_digest` and
+D is offered alongside C. The owner confirms a digest's fingerprint with
+the invitee over a second channel, and D is the recommended form for an
+invitation that grants the operator role.
 
 **A claim redeemed by the wrong person.** Under C, the rightful invitee's
 claim is then refused with `conflict`, and `loom claim` tells them to
-contact the owner. The owner's listing shows a fingerprint of the bound
-credential, and `loom claim` printed the fingerprint of the invitee's
-own, so the two can be compared. The owner recovers with `rotate`, which
-revokes the credential the wrong person bound and issues a new claim. The
-wrong person held exactly the memberships the owner granted, from the
-claim until the rotation. A second code relayed on another channel (a PIN)
-was considered and not taken: it adds a second secret to deliver, for a
-case that the refused claim already makes visible.
+contact the owner. That signal depends on the invitee trying and on the
+invitee reporting the refusal; if the invitee never runs the claim, nobody
+learns of it. So the owner has two more checks. The owner's listing shows
+when the claim was redeemed (`claimed_at`) and a fingerprint of the bound
+credential, and `loom claim` prints the fingerprint of the invitee's own.
+The documentation tells the owner to confirm the fingerprint with the
+invitee out of band before relying on a new member, and recommends
+enrollment by digest (option D, below) when the invitation grants the
+operator role. The owner recovers with `rotate`, which revokes the
+credential the wrong person bound and issues a new claim. The wrong person
+held exactly the memberships the owner granted, from the claim until the
+rotation. A second code relayed on another channel (a PIN) was considered
+and not taken: it adds a second secret to deliver, and the fingerprint
+comparison already covers the same case without one.
 
 **C is chosen.**
 
@@ -196,7 +204,18 @@ gain nothing.
 - **No page.** The CLI plus a terminal overlay.
 - **An owner page with the CLI's full powers.**
 - **A loopback-only owner page that reads and reduces authority, with
-  grants confirmed in the terminal.**
+  grants proposed on the page and confirmed in the terminal.** The page
+  would lodge a proposal and show a code, and the owner would run `loom
+  access confirm <code>`, which prints the proposal and asks y/N. Rejected:
+  an agent that obtained the page's secrets could lodge its own proposal
+  and then put "run `loom access confirm <code>`" in front of the owner,
+  which is attack 4 of 051's operator addendum (trick the person into
+  approving, `051-web-view-route.md:468-470`). The confirmation step would
+  turn a page the agent took into a way to grant authority.
+- **A loopback-only owner page that reads and reduces authority, and
+  renders each grant as the `loom access` line for the owner to run.**
+  The owner copies the line into a terminal. The page holds no path to a
+  grant, so a page the agent took still yields only reductions.
 
 An owner page is worth more to an attacker than 051's operator page, in
 kind and not only in degree. An operator page's authority ends with its UI
@@ -220,8 +239,9 @@ table reads better than JSON lines. Removal is also the case where speed
 matters, and removal only reduces authority.
 
 The CLI and the terminal overlay are enough to provision users, and they
-come first. If a page is built, it is the third option. A page with the
-CLI's full powers is not built.
+come first. If a page is built, it is the fourth option. Neither a page
+with the CLI's full powers nor a page whose proposals the terminal
+confirms is built.
 
 ## Proposal
 
@@ -248,12 +268,20 @@ Five rules:
    same success. Presenting it with any other digest is `conflict`.
 3. A member has either one open claim and no active credential, or no open
    claim. `credentials.rotate` voids the open claim and revokes every
-   active credential before it inserts the new claim. `credentials.revoke`
+   active credential before it inserts the new claim, or, under enrollment
+   by digest (below), the new credential. `credentials.revoke`
    voids the open claim as well.
 4. A claim never authenticates anything. Its digest lives in
    `access_claims` and never in `access_credentials`, and `/v2/claim` is
-   the only route that reads `access_claims`.
+   the only route that redeems a claim. (The owner's listing reads the
+   table too, to report a claim's state.)
 5. After this change, no reply on the control endpoint carries a bearer.
+
+A claim never travels through a Loom session or page. A claim pasted into
+a composer becomes part of the transcript, of any terminal recording, and
+of the agent's context, where the agent can redeem it before the invitee
+does. The owner delivers it over a channel outside Loom, and the
+documentation says so where it describes `claim_command`.
 
 The table, with the catalogue moving from `user_version` 3 to 4 through
 the existing forward migration (`storage/catalogue.gleam:141-192`):
@@ -266,7 +294,10 @@ CREATE TABLE access_claims(
   expires_at_ms INTEGER NOT NULL,
   state TEXT NOT NULL CHECK(state IN ('open', 'claimed', 'void')),
   credential_digest TEXT REFERENCES access_credentials(digest),
-  CHECK((state = 'claimed') = (credential_digest IS NOT NULL))
+  claimed_at_ms INTEGER,
+  CHECK((state = 'claimed') = (credential_digest IS NOT NULL)),
+  CHECK((state = 'claimed') = (claimed_at_ms IS NOT NULL)),
+  CHECK(credential_digest IS NULL OR credential_digest != digest)
 );
 CREATE UNIQUE INDEX access_one_open_claim
   ON access_claims(principal_id) WHERE state = 'open';
@@ -280,9 +311,14 @@ principal has no row in `access_credentials` until the claim, and
 In `storage/access`, `invite_member` inserts the principal, the membership
 and an open claim, and no credential. `rotate_member` and `revoke_member`
 void the open claim. A new `claim` function performs rule 2 in one
-transaction: it checks the claim's state and expiry, checks that the
-digest is absent from `access_credentials` and that the principal has no
-active credential, inserts the credential, and marks the claim `claimed`.
+transaction: it checks the claim's state and expiry, refuses a
+credential digest equal to the claim's own digest, checks that the digest
+is absent from `access_credentials` and that the principal has no active
+credential, inserts the credential, and marks the claim `claimed`, with
+the instant as `claimed_at_ms`. The self-digest refusal keeps a careless
+or modified client from binding the SHA-256 of the claim string itself,
+which would turn the claim string, already sitting in a chat log, into a
+durable bearer.
 
 ### `sessions.invite` and `credentials.rotate`
 
@@ -308,6 +344,15 @@ unchanged too (`docs/client-protocol.md` §6.5): a client does not retry
 either command, and it recovers a lost invitation by rotating, which now
 voids the lost claim instead of revoking a lost bearer.
 
+**Enrollment by digest.** Either request may instead carry
+`credential_digest:"<64 lowercase hex>"`, the digest the invitee's `loom
+enroll` printed. Then no claim is created: the daemon inserts that digest
+as the principal's active credential in the same transaction, under the
+same checks as a claim (absent from `access_credentials`, and for
+`rotate`, after revoking the active credentials and voiding any open
+claim), and the reply is `{principal_id, name}` with no `claim`.
+`credential_digest` and `claim_ttl_ms` together are `bad_request`.
+
 `credentials.revoke` keeps its body and reply, and also voids the open
 claim.
 
@@ -318,8 +363,16 @@ claim.
 the header has exactly that form and a claim row with that digest exists
 and is not `void`. This lookup only filters; the command below decides. The
 upgrade takes a control-class parser permit (`root.acquire`, as at
-`server.gleam:520`), its inbound frame limit is 1 KiB, and the daemon
-closes it if no command arrives within 5 seconds.
+`server.gleam:520`) and its inbound frame limit is 1 KiB.
+
+A spent claim is public from then on: it sits in a chat log, and its row
+still exists, so it passes the filter above. Two bounds keep such a token
+from holding control permits open. The daemon admits at most one
+in-flight `/v2/claim` upgrade per claim digest, the way `root` lets one
+process own only one reservation (`root.gleam:410`); a second upgrade for
+the same digest is refused with `409` while the first is open. And the
+daemon closes the socket if no command arrives within 2 seconds of the
+upgrade.
 
 ```
 s→c: {v:2, event:"hello", body:{protocol:2}}
@@ -341,19 +394,24 @@ socket. One connection carries one command.
   returns the full set (`manager.gleam:1392-1396`).
 - Refusals: `not_found` (no such claim, a void one, or a claimed one whose
   credential is no longer active), `expired`, `conflict` (bound to another
-  digest, or the digest is already a credential), `bad_request`,
-  `unavailable`. `expired` is a new error code.
+  digest, the digest is already a credential, or the digest is the
+  claim's own), `bad_request`, `unavailable`. `expired` is a new error
+  code.
 
 ### `loom claim`
 
 ```
-loom claim [TOKEN] --addr wss://<host>[:port]/v2/control
-           [--label NAME] [--state-dir PATH]
+loom claim --addr wss://<host>[:port]/v2/control
+           [--label NAME] [--state-dir PATH] [TOKEN]
 ```
 
-1. The token comes from the argument, or from standard input when the
-   argument is omitted. Anything but `loomclaim_` and 64 hexadecimal
-   characters is refused before any connection.
+1. The token comes from standard input by default: without a `TOKEN`
+   argument, `loom claim` prompts for it on a terminal or reads one line
+   from a pipe. The argument form is accepted but is not
+   what the owner's `claim_command` prints, so the token stays out of the
+   invitee's shell history and argument vector by default. Anything but
+   `loomclaim_` and 64 hexadecimal characters is refused before any
+   connection.
 2. `--addr` passes `tui/daemon.valid_address` (`tui/daemon.gleam:421-449`):
    `wss` for any host, `ws` only for a literal loopback address. The claim
    URL is the address with `/v2/control` replaced by `/v2/claim`.
@@ -363,29 +421,51 @@ loom claim [TOKEN] --addr wss://<host>[:port]/v2/control
    user's directory and forces mode `0700` (`host/bootstrap.gleam:217-254`).
    `<state-dir>` defaults to `$HOME/.loom`.
 4. If the directory already holds `remote.json`, the claim is refused: a
-   finished claim lives there. If it holds only `credential`, that
-   credential is reused, which is how a rerun completes an unknown outcome.
-   Otherwise `loom` draws 32 bytes, hex-encodes them, and writes
-   `credential` with `bootstrap.atomic_write_private` (mode `0600`,
-   `host_bootstrap_ffi.erl:169-189`) **before** it connects.
+   finished claim lives there. If it holds `credential` and a `claim` file
+   naming the SHA-256 digest of this same claim token, that credential is
+   reused, which is how a rerun completes an unknown outcome. In every
+   other case (no `credential`, or one left by a different claim) `loom`
+   draws 32 fresh bytes, hex-encodes them, and writes `credential`, then
+   `claim` holding this claim's digest, each with
+   `bootstrap.atomic_write_private` (mode `0600`,
+   `host_bootstrap_ffi.erl:169-189`), **before** it connects. Tying the
+   file to its claim keeps a credential drawn for an earlier, refused or
+   rotated claim from being bound to a new one.
 5. It connects, sends the digest of the credential, and reads the reply.
    - On success it writes `remote.json` (mode `0600`) holding `addr`,
      `principal_id`, `name` and `fingerprint`, and prints.
-   - On `not_found`, `expired` or `conflict` it deletes `credential`, which
-     authenticates nothing, prints the code, and exits 1. For `conflict` it
+   - On `not_found`, `expired` or `conflict` it deletes `credential` and
+     `claim`, which authenticate nothing, prints the code, and exits 1. For `conflict` it
      says the claim is bound to another credential and that the owner can
      compare fingerprints and rotate.
    - On an unknown outcome it keeps `credential`, says that rerunning the
      same command completes or refuses the claim, and exits 1.
 
-`loom claim` never prints the bearer. Once the claim is redeemed, the copy
-of the token in the shell's history, or in the argument vector while the
-command ran, is spent.
+`loom claim` never prints the bearer. When the argument form was used
+anyway, the copy of the token in the shell's history is spent once the
+claim is redeemed.
 
 `loom --addr ... --token-file PATH` reads its file through
 `read_private_bounded`, as the page launch already does, so a token file
 that other users can read is refused. It refuses a file whose content
-starts with `loomclaim_`.
+starts with `loomclaim_`, and `--token VALUE` refuses a value that starts
+with `loomclaim_` in the same way.
+
+### `loom enroll`
+
+```
+loom enroll --addr wss://<host>[:port]/v2/control [--label NAME] [--state-dir PATH]
+```
+
+`loom enroll` is the invitee's half of enrollment by digest. It checks the
+address and prepares `<state-dir>/remotes/<label>/` exactly as `loom claim`
+does, draws a credential, writes `credential` (mode `0600`) and a
+`remote.json` holding `addr`, and prints `{"credential_digest",
+"fingerprint", "credential_file"}`. It opens no connection. The invitee
+sends the digest to the owner; it is not secret, but the owner confirms
+its fingerprint with the invitee over a second channel before inviting
+with `--credential-digest`, because a substituted digest would enroll
+whoever substituted it.
 
 ### What the two sides print
 
@@ -400,13 +480,16 @@ Standard error: `principal recovery ID: alice`, as today (`admin.gleam:55`).
 Standard output, one line:
 
 ```json
-{"principal_id":"alice","name":"Alice","claim":"loomclaim_4be1...","expires_in_ms":86400000,"claim_command":"loom claim loomclaim_4be1... --addr wss://loom.example.com/v2/control"}
+{"principal_id":"alice","name":"Alice","claim":"loomclaim_4be1...","expires_in_ms":86400000,"claim_command":"loom claim --addr wss://loom.example.com/v2/control"}
 ```
 
-The owner sends `claim_command` to Alice. Alice runs it:
+`claim_command` does not contain the token. The owner sends Alice both,
+over a channel outside Loom, never through a Loom session. Alice runs the
+command and pastes the token at its prompt:
 
 ```
-$ loom claim loomclaim_4be1... --addr wss://loom.example.com/v2/control
+$ loom claim --addr wss://loom.example.com/v2/control
+claim token: 
 ```
 
 Standard error: `claimed alice at loom.example.com; credential fingerprint
@@ -457,14 +540,13 @@ and the owner token file is read through `read_private_bounded`.
 |---|---|---|---|
 | `list [--after PRINCIPAL]` | `principals.list` | one JSON line per principal, then `{"next":...}` when there are more | no |
 | `show PRINCIPAL [--after SESSION]` | `principals.memberships` | one JSON line per membership | no |
-| `invite SESSION PRINCIPAL ROLE NAME [--ttl D] [--claim-addr URL]` | `sessions.invite` | `{principal_id, name, claim, expires_in_ms, claim_command}` | **yes** |
+| `invite SESSION PRINCIPAL ROLE NAME [--ttl D] [--claim-addr URL \| --credential-digest HEX]` | `sessions.invite` | `{principal_id, name, claim, expires_in_ms, claim_command}`, or `{principal_id, name}` with `--credential-digest` | **yes**, unless `--credential-digest` |
 | `set-role SESSION PRINCIPAL ROLE` | `sessions.set_role` | `{principal_id, name}` | no |
 | `revoke SESSION PRINCIPAL` | `sessions.revoke` | `{principal_id, name}` | no |
-| `rotate PRINCIPAL [--ttl D] [--claim-addr URL]` | `credentials.rotate` | as `invite` | **yes** |
+| `rotate PRINCIPAL [--ttl D] [--claim-addr URL \| --credential-digest HEX]` | `credentials.rotate` | as `invite` | as `invite` |
 | `revoke-credentials PRINCIPAL` | `credentials.revoke` | `{principal_id, name}` | no |
 | `isolate SESSION --share-existing-transcript` | `sessions.isolate` | `{session_id, domain_scope}` | no |
 | `page [--open]` (phase 4) | `ui.admin_link` | the admin page's link | **yes**, a 60-second ticket |
-| `confirm CODE [--yes]` (phase 5) | `access.proposal`, then `access.confirm` | as the confirmed command | **yes** when it confirms `invite` or `rotate` |
 
 - `set-role` is also how an existing member is added to another session:
   it upserts the membership (`storage/access.gleam:385-420`).
@@ -473,8 +555,9 @@ and the owner token file is read through `read_private_bounded`.
   pass `valid_address`. It defaults to `--addr` in remote mode. In local
   mode it defaults to the discovered loopback address, and standard error
   notes that such a command works only on the daemon's host.
-- A secret appears only in `claim` and `claim_command` (or in the `page`
-  link), only on standard output, and only on success. Refusals use the
+- A secret appears only in `claim` (or in the `page` link), only on
+  standard output, and only on success. `claim_command` carries the
+  address and not the token. Refusals use the
   fixed codes the daemon already returns and never echo the request
   (`server.gleam:1228-1229`, `admin.gleam:475-487`).
 
@@ -487,8 +570,10 @@ to 60,000 bytes per page as `sessions.list` is (`server.gleam:1083-1091`).
 c→s: {v:2, id, cmd:"principals.list", body:{after?:<principal_id>}}
 s→c: {v:2, reply_to, event:"principals.list",
       body:{principals:[{principal_id, name, kind:"owner"|"member",
-                         credential:{state:"active", fingerprint}
+                         credential:{state:"active", fingerprint,
+                                     claimed_at_ms?}
                                   | {state:"claim_open", expires_in_ms}
+                                  | {state:"claim_expired"}
                                   | {state:"none"}}],
             next?:<principal_id>}}
 
@@ -499,8 +584,12 @@ s→c: {v:2, reply_to, event:"principals.memberships",
             next?:<session_id>}}
 ```
 
-Rule 3 above is what lets `credential` be one value per principal. Neither
-reply carries a claim or a bearer. The owner has no memberships
+Rule 3 above is what lets `credential` be one value per principal.
+`claimed_at_ms` is present when the active credential was bound by a
+claim, and is the wall-clock instant of that claim, so the owner can see
+when an invitation was redeemed. `claim_expired` is a member whose only
+claim expired unredeemed and who has no active credential; `rotate` issues
+a new claim. Neither reply carries a claim or a bearer. The owner has no memberships
 (`storage/access.gleam:376-377`), so the owner's list is empty.
 
 ### The terminal overlay (phase 3)
@@ -520,7 +609,7 @@ paste and every session-socket message to a file verbatim
 (`tui/recording.gleam:91-121`), and a claim shown in or typed into the
 terminal would need a redaction rule to stay out of that file.
 
-### The admin page (phases 4 and 5)
+### The admin page (phase 4)
 
 **Gating.** `loomd --ui --ui-admin`. Without `--ui-admin`, every
 `/ui/admin` path is `404` and `ui.admin_link` is `unavailable`. `--ui-admin`
@@ -541,8 +630,10 @@ admin exchange and an admin ticket never redeems at a session's.
 
 **Loopback only.** `/ui/admin` is served only when the request's `Host`
 resolves to a loopback name (`ui_http.loopback_host`,
-`ui_http.gleam:115-130`). Under 052's `Remote(origin)` every `/ui/admin`
-path is `404`. An owner away from the host reaches the page only through
+`ui_http.gleam:115-130`). Any other `Host` is refused with `403`, the same
+answer every `/ui` path gives a non-loopback host today
+(`server.gleam:164-165`). When 052 lands, its `Remote(origin)` resolution
+keeps that `403` for every `/ui/admin` path. An owner away from the host reaches the page only through
 `ssh -L`, which needs a shell account on the host.
 
 | Method and path | Purpose |
@@ -564,7 +655,7 @@ every administration dispatch runs (`manager.gleam:1594-1611`).
 of it is drawn as text nodes; no attribute or handler value comes from
 data. The page draws no transcript and no session content.
 
-**What the page does (phase 4).** The component's message type has exactly
+**What the page does.** The component's message type has exactly
 two commands: `RevokeMembership(principal, session)` and
 `RevokeCredentials(principal)`. They map to the manager's
 `RevokeMembership` and `RevokeMember` administration constructors
@@ -575,29 +666,16 @@ because both commands only reduce authority. The type has no constructor
 for invite, set-role or rotate, since those grant authority or produce a
 secret.
 
-**Grants from the page (phase 5).** The page can propose an invitation, a
-role change or a rotation. A proposal records the command and its
-arguments in the admin actor for 5 minutes and shows an 8-character code.
-The owner runs `loom access confirm CODE`:
-
-```
-c→s: {v:2, id, cmd:"access.proposal", body:{code}}
-s→c: {v:2, reply_to, event:"access.proposal",
-      body:{code, cmd:"sessions.invite"|"sessions.set_role"|"credentials.rotate",
-            args:{...the command's body without epoch...}, expires_in_ms}}
-
-c→s: {v:2, id, cmd:"access.confirm", body:{code, epoch}}
-s→c: {v:2, reply_to, event:"access.confirm",
-      body:{cmd, result:{...the confirmed command's own reply body...}}}
-```
-
-The CLI prints the proposal on standard error and asks `[y/N]` on a
-terminal; without a terminal it refuses unless `--yes` is given. A
-proposal confirms once and then is gone. The claim, when there is one,
-reaches only the CLI's standard output. The page shows that the proposal
-was confirmed and never shows the claim. The code is not a secret:
-confirming needs the owner token, and the code only names which proposal
-to confirm.
+**Grants from the page.** The page has no path to a grant. For an
+invitation, a role change or a rotation it renders, as text, the `loom
+access` line that performs it, built from the form the owner filled in,
+with every argument single-quoted for the shell. The owner copies the line
+into a terminal, reads it, and runs it; the claim, when there is one,
+reaches only that terminal's standard output. The terminal overlay does
+the same (phase 3). A line rendered by a page the agent had taken is text
+the agent chose, like any text 051's addendum assumes the agent can put in
+front of the person, and the owner is running a command that names what
+it grants.
 
 ### The admin page's threat model
 
@@ -619,7 +697,8 @@ The admin page goes further than 051 in eight ways:
 4. Its UI session lasts 15 minutes.
 5. Its component can only reduce authority, and the reduction is fixed by
    the message type.
-6. Every grant needs the owner's terminal and a y/N answer there.
+6. It has no path to a grant. It renders the `loom access` line, and the
+   owner runs it in a terminal.
 7. It draws no session content, so no text the agent wrote reaches it.
 8. Its ticket table, grant type, cookie name and cookie path are its own.
 
@@ -635,11 +714,13 @@ of service, which is why the page does not also require `--network off`;
 A claim is created in the daemon's control handler and carried in one reply
 frame to the `access` CLI, over loopback or TLS. The CLI writes it to
 standard output. From there it is wherever the owner sends it, then in the
-invitee's argument vector or standard input, then in one `Authorization`
-header over TLS, where the daemon hashes it.
+invitee's standard input (or argument vector, if the invitee chose that
+form), then in one `Authorization`
+header over TLS, where the daemon hashes it. It never passes through a Loom
+session or page (see "Claim tokens").
 
 It is never in the catalogue (only its digest), a daemon log line, a URL, a
-page, the terminal, or a recording. One exposure is shared with today's
+page, Loom's terminal UI, or a recording. One exposure is shared with today's
 bearer: if the handler process crashed while holding the reply, an OTP crash
 report could write it to `daemon.log`. A claim found there afterwards is
 spent or expires within its lifetime; a bearer found there works until
@@ -657,10 +738,10 @@ a Part 1 interface: Part 1.2 describes conversation storage
 | 1 | `sessions.invite`: optional `claim_ttl_ms`; reply drops `bearer`, adds `claim` and `expires_in_ms`. |
 | 1 | `credentials.rotate`: as `sessions.invite`. |
 | 1 | `credentials.revoke`: also voids an open claim; wire shape unchanged. |
+| 1 | `sessions.invite` and `credentials.rotate`: optional `credential_digest` for enrollment by digest; with it the reply carries no `claim`. |
 | 1 | New error code `expired`. |
 | 2 | New owner-only `principals.list` and `principals.memberships`. |
 | 4 | New routes `/ui/admin`, `/ui/admin/p/<key>`, `/ui/admin/p/<key>/ws`; new owner-only `ui.admin_link`. |
-| 5 | New owner-only `access.proposal` and `access.confirm`. |
 
 This supersedes one sentence of 015's addendum: "Only a successful
 invitation or rotation reply contains the fresh bearer"
@@ -677,8 +758,8 @@ Each phase ships on its own and leaves the tree consistent.
 1. **Claims.** The `access_claims` table and the version 4 migration; the
    new `sessions.invite`, `credentials.rotate` and `credentials.revoke`;
    `/v2/claim` and `credentials.claim`; `loomd access` printing claims and
-   `claim_command`; `loom claim`; the `--token-file` read through
-   `read_private_bounded`. Useful alone: from this phase on, no invitation
+   `claim_command`; `loom claim` and `loom enroll`; enrollment by digest;
+   the `--token-file` read through `read_private_bounded`. Useful alone: from this phase on, no invitation
    or rotation hands a live credential to a chat channel. Phase 1 is the
    first step.
 2. **`loom access` and listing.** The shared grammar module in `host`;
@@ -688,16 +769,23 @@ Each phase ships on its own and leaves the tree consistent.
 3. **The terminal overlay.** `/access`, owner-only: list, set-role, revoke,
    revoke credentials. Useful alone for an owner who works in the terminal.
 4. **The admin page.** `--ui-admin`, `ui.admin_link`, the `/ui/admin`
-   routes, and the read-and-revoke component. Build it only if phase 3
-   leaves a need for the browser view.
-5. **Grants from the page.** `access.proposal`, `access.confirm` and
-   `loom access confirm`. Build it only after phase 4 is in use.
+   routes, and the read-and-revoke component, which renders grants as
+   `loom access` lines. Build it only if phase 3 leaves a need for the
+   browser view.
 
 ## Verification required
 
 Phase 1:
 
-- A claim binds once. A second presentation with another digest is
+- A claim binds once. A `credential_digest` equal to the claim's own
+  digest is refused with `conflict`.
+- A second concurrent `/v2/claim` upgrade for the same claim digest is
+  refused while the first is open, and an upgrade with no command is
+  closed after 2 seconds.
+- `principals.list` reports `claimed_at_ms` after a claim and
+  `claim_expired` for an unredeemed expired claim.
+- An invitation with `credential_digest` creates the credential and no
+  claim, and its reply carries no `claim`. A second presentation with another digest is
   `conflict`; with the same digest, while the credential is active, it
   returns the same body; after that credential is revoked it is
   `not_found`.
@@ -713,14 +801,20 @@ Phase 1:
 - An open claim still redeems after a daemon restart.
 - A version 3 catalogue migrates to version 4 with its principals intact.
 - `loom claim` writes `credential` at mode `0600`, in a `0700` directory,
-  before it connects. With the reply dropped, a rerun completes. A refusal
-  deletes the file. It refuses `ws://` to a non-loopback host, and it
-  refuses a bearer-shaped token.
-- `loom --addr ... --token-file` refuses a group-readable file.
+  before it connects, with `claim` naming this claim's digest. With the
+  reply dropped, a rerun completes. A `credential` left by a different
+  claim is replaced, not reused. A refusal deletes both files. It refuses
+  `ws://` to a non-loopback host, and it refuses a bearer-shaped token.
+  Without a `TOKEN` argument it reads the token from standard input, and
+  the owner's `claim_command` contains no token.
+- `loom --addr ... --token-file` refuses a group-readable file, and both
+  `--token-file` and `--token` refuse a claim-shaped value.
 - Mutations, each applied alone and reverted, each fail a named test:
   - the single-binding check is removed;
   - `authenticate` also consults `access_claims`;
   - the expiry check is removed;
+  - the self-digest refusal is removed;
+  - the one-upgrade-per-digest bound is removed;
   - `rotate` leaves the previous claim open;
   - `loom claim` writes `credential` after the exchange instead of before.
 - A drive through a real TLS proxy set up as 052 describes: invite, claim
@@ -737,22 +831,19 @@ Phase 2:
 
 Phase 4:
 
-- Every `/ui/admin` path is `404` without `--ui-admin`, and `404` under a
-  `Remote(origin)` `Host`.
+- Every `/ui/admin` path is `404` without `--ui-admin`. With it, a
+  request whose `Host` `ui_http.loopback_host` refuses is answered `403`;
+  the test drives `loopback_host` directly with a non-loopback name, since
+  052's `Remote(origin)` is not implemented yet.
 - A member's `ui.admin_link` is `forbidden`. A session ticket at the admin
   exchange and an admin ticket at a session exchange are refused.
 - The admin UI session ends at 15 minutes, and a second exchange ends the
   first.
-- Mutations, each failing a named test: `/ui/admin` served under a remote
-  origin; an `Invite` constructor added to the component's message type;
-  051's `loom_ui` cookie accepted at an admin route.
-
-Phase 5:
-
-- `access.confirm` without the owner token is `forbidden`. A code confirms
-  once and expires after 5 minutes.
-- `loom access confirm` refuses without a terminal unless `--yes`.
-- No frame on the admin page's socket contains `loomclaim_`.
+- No frame on the admin page's socket contains `loomclaim_`; a grant
+  appears only as a rendered `loom access` line.
+- Mutations, each failing a named test: `/ui/admin` served for a
+  non-loopback `Host`; an `Invite` constructor added to the component's
+  message type; 051's `loom_ui` cookie accepted at an admin route.
 
 ## Cost
 
@@ -772,8 +863,13 @@ Phase 5:
 - **Remote administration** with `loom access --addr` works only with the
   owner token on a second machine.
 - **The claim still crosses the owner's channel**, and sits in standard
-  output, the chat, and the invitee's shell history until it is redeemed.
+  output and the chat until it is redeemed, and in the invitee's shell
+  history if the invitee passes it as an argument.
   Its exposure is bounded by single use and its lifetime, not removed.
+- **Wrong-person redemption is caught only by checking.** The rightful
+  invitee's `conflict`, `claimed_at_ms` and the fingerprint comparison
+  reveal it, but only if someone looks; the owner confirms fingerprints
+  out of band, and uses enrollment by digest for operator roles.
 - **The admin page, if built**, adds a route family, a cookie, a ticket
   kind and a component to review, and one more flag an owner must
   understand.
@@ -785,24 +881,28 @@ in a day by default. The invitee's `loom claim` draws its own credential,
 stores it at mode `0600`, and binds it to the claim by digest over `wss` on
 a new `/v2/claim` route, so no bearer crosses a chat channel, a lost claim
 reply is recovered by rerunning the same command, and a claim redeemed by
-the wrong person is visible as the rightful invitee's `conflict`. No
+the wrong person can be detected from the rightful invitee's `conflict`,
+the listing's `claimed_at_ms`, and a fingerprint the owner confirms with
+the invitee out of band. For operator roles the owner can instead enroll
+the invitee by digest, so nothing secret crosses the channel. A claim never
+travels through a Loom session or page. No
 control reply carries a bearer after this change. `loomd access` and a new
 `loom access` share one implementation and add listing; the terminal gains
 an owner overlay that reads and reduces access. An admin web page, if it is
-built, is loopback-only, reduces authority only, and sends every grant
-through the owner's terminal for confirmation.
+built, is loopback-only, reduces authority only, and renders every grant
+as a `loom access` line for the owner to run in a terminal.
 
 A bearer in the invitation was rejected because its interception is
 silent. A daemon-minted credential in the claim reply was rejected because
-a lost reply loses the credential. Enrollment by digest was deferred
-because it needs two messages. A page with the CLI's full powers was
-rejected because a stolen one would give the session's agent a durable
-membership, not an 8-hour page.
+a lost reply loses the credential. Enrollment by digest is offered
+rather than required, because it needs two messages. A page with the
+CLI's full powers was rejected because a stolen one would give the
+session's agent a durable membership, not an 8-hour page. A page whose
+proposals the terminal confirms was rejected because an agent holding the
+page could lodge a proposal and then ask the owner to confirm it.
 
 ## Open
 
-- **Enrollment by digest** (option D) as an optional `credential_digest` on
-  `sessions.invite`, for invitees who can send the owner a digest first.
 - **Removing `loom --token BEARER`**, which puts a bearer in the argument
   vector.
 - **`principals.rename`.** `storage/access` already has `rename`
