@@ -192,6 +192,28 @@ pub fn set_cookie(value: String) -> String {
   cookie_name <> "=" <> value <> "; HttpOnly; SameSite=Strict; Path=/ui"
 }
 
+/// Adds the view's headers to a refusal made before the host was trusted.
+///
+/// The policy names no socket origin, since the request's `Host` is exactly
+/// what was refused, and allows nothing to load at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.refused(response)
+/// ```
+pub fn refused(response: Response(body)) -> Response(body) {
+  response
+  |> response.set_header(
+    "content-security-policy",
+    "default-src 'none'; base-uri 'none'; form-action 'none'; "
+      <> "frame-ancestors 'none'",
+  )
+  |> response.set_header("x-content-type-options", "nosniff")
+  |> response.set_header("referrer-policy", "no-referrer")
+  |> response.set_header("cache-control", "no-store")
+}
+
 /// Adds the headers every `/ui` response carries.
 ///
 /// ## Examples

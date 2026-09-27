@@ -158,7 +158,7 @@ pub fn handle(
 // the socket's upgrade, which carries mist's.
 fn web_view(config: Config(instance), ui: Ui(instance), request) {
   case ui_http.loopback_host(request) {
-    Error(Nil) -> plain(403, "forbidden host")
+    Error(Nil) -> ui_http.refused(plain(403, "forbidden host"))
     Ok(host) ->
       case ui_http.route(request) {
         ui_http.Socket(id) -> web_socket(config, ui, request, host, id)

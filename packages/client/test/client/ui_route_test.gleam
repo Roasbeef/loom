@@ -413,3 +413,15 @@ pub fn a_ticket_for_another_session_is_refused_and_signs_nothing_out_test() {
   })
 }
 
+pub fn a_refused_host_still_carries_the_policy_test() {
+  fixture(fn(_, port, _) {
+    let refused =
+      get(port, "/ui/assets/web_view.css", [#("host", "evil.example")])
+    assert refused.status == 403
+    let assert Ok(policy) =
+      list.key_find(refused.headers, "content-security-policy")
+      as "the refusal carries a policy"
+    assert string.contains(policy, "default-src 'none'")
+    assert !string.contains(policy, "evil.example")
+  })
+}
