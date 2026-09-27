@@ -5,8 +5,10 @@
 The web view's host and view for one session: two Lustre server components
 that drive `session_view`'s lane and draw the session's transcript lines as
 HTML, and the documents served around them (the page shell, the ticket
-exchange's hand-off page, the two scripts, the stylesheet and the content
-security policy). It is phase 4 of issue #530: the same engine the terminal
+exchange's hand-off page and the content security policy). The page's
+stylesheet and scripts are files: their sources are in `assets/` and what
+the daemon serves is in `priv/static/`, which a release carries like any
+application's `priv`. It is phase 4 of issue #530: the same engine the terminal
 runs, under a second host, with only the view differing
 ([ADR-014](../../docs/adr/014-second-runtime.md)).
 
@@ -36,9 +38,10 @@ page keys and nonces, and the relay into the session's gateway.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
   delivery)` and `Decided(id, seq, answer)`. `composition(fields)` is the
   total decoder of the composer form's fields.
-- `page`: the shell, the exchange page (`enter(next, nonce)`), the enter
-  and page scripts, the stylesheet, the keyed paths (`keyed_prefix`,
-  `session_path`) and `content_security_policy(host)`.
+- `page`: the shell, the exchange page (`enter(next, nonce)`), the asset
+  names and where each is on disk (`static_file`, `runtime_file`), the
+  keyed paths (`keyed_prefix`, `session_path`) and
+  `content_security_policy(host)`.
 
 ## Relationships
 

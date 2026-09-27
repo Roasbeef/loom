@@ -17,6 +17,7 @@ import broker/token
 import client/daemon/manager
 import client/daemon/protocol
 import client/daemon/root
+import client/daemon/ui_assets
 import client/daemon/ui_http
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
@@ -36,7 +37,6 @@ import gleam/string
 import host/bootstrap
 import host/build_identity
 import mist
-import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
@@ -67,6 +67,9 @@ pub type Ui(instance) {
   Ui(
     /// The ticket and UI-session tables.
     sessions: ui_sessions.Sessions,
+    /// The page's stylesheet and scripts and Lustre's client runtime, read
+    /// once when the daemon started.
+    assets: ui_assets.Assets,
     /// Upgrades a checked page request to the component's socket; like
     /// `session_upgrade`, it transfers the attachment's permit. The third
     /// argument says whether the page's UI session is still live, which the
@@ -242,7 +245,10 @@ fn web_document(
 ) {
   case route {
     ui_http.Unknown | ui_http.Socket(..) -> plain(404, "unknown endpoint")
-    ui_http.Asset(asset) -> web_asset(asset)
+    ui_http.Asset(asset) -> {
+      let #(content_type, body) = ui_assets.body(ui.assets, asset)
+      document(200, content_type, body)
+    }
 
     // A keyed page is reached only by a navigation from this origin or from
     // outside any page, so no other page can put it in front of the person.
@@ -280,27 +286,6 @@ fn web_document(
                 ui_http.set_cookie(redeemed.cookie, redeemed.key),
               )
           }
-      }
-  }
-}
-
-fn web_asset(asset: ui_http.Asset) {
-  case asset {
-    ui_http.Stylesheet ->
-      document(200, "text/css; charset=utf-8", page.stylesheet())
-    ui_http.EnterScript ->
-      document(200, "text/javascript; charset=utf-8", page.enter_script())
-    ui_http.PageScript ->
-      document(200, "text/javascript; charset=utf-8", page.page_script())
-    ui_http.Runtime ->
-      case
-        page.runtime_file()
-        |> result.try(fn(path) {
-          simplifile.read(path) |> result.replace_error(Nil)
-        })
-      {
-        Ok(source) -> document(200, "text/javascript; charset=utf-8", source)
-        Error(Nil) -> plain(500, "client runtime unavailable")
       }
   }
 }
