@@ -726,6 +726,66 @@ keep.
   `advanced`). Use the unconditional `event.prevent_default` wrapper, or
   `on_submit`, which applies it.
 
+### Hydration, and why the server component does not use it
+
+**What it is.** Hydration is how a client-side Lustre app takes over HTML
+the server already rendered ([server-side rendering guide][doc-ssr],
+"Hydration"). The server renders `view(model)` into the page with
+`element.to_document_string`, and embeds the same model as JSON in a
+`<script type="application/json" id="model">`. The browser's `main` reads
+that element, decodes it, and passes the result as the flags to
+`lustre.start(app, "#app", flags)`, so `init` rebuilds the model the
+server rendered. The client runtime then adopts the existing DOM rather
+than replacing it: the guide reports that "the existing HTML was not
+replaced and the app is fully interactive", and the runtime builds its
+first virtual tree by reading the DOM under the root
+([`runtime.ffi.mjs`][src-spa-runtime], the constructor's
+`virtualise(this.root)`) **(source)**. The guide's one condition: "Make
+sure the initial model on the client is the same as what the server used
+to render the page." It also suggests serialising less and deriving the
+rest of the model on the client.
+
+**It is a client-side-app technique.** It exists because a client-side app
+runs `view` in the browser and must start from the same model the server
+used. Loom's web view runs `view` only on the BEAM.
+
+**Why Loom's view does not need it.** The server component's first message
+on the socket is a `Mount` carrying the whole current tree, and the client
+renders from that. There is no model in the browser to reconstruct, and
+nothing in the page for the client to agree with.
+
+**Can a server component adopt server-rendered HTML in 5.7.1? No.** On
+`Mount`, the client runtime attaches (or reuses) the element's shadow root,
+removes every child already in it, and renders the `Mount` tree from
+scratch ([`server_component.ffi.mjs`][src-client-mount],
+`messageReceivedCallback`, the `mount_kind` arm) **(source)**. Anything
+server-rendered inside `<lustre-server-component>` is therefore shown only
+until the socket's first message, and is then discarded, not adopted. That
+is enough for a placeholder, and nothing more.
+
+**Where it could matter later.**
+
+- **First paint.** Today the page is empty until the socket's `Mount`
+  arrives, because the heading is part of the component. A static
+  placeholder inside the element (a "connecting" line) needs no hydration,
+  and the previous paragraph says what happens to it. Server-rendering the transcript itself would be drawn
+  twice, and would carry session content in the HTTP response, which the
+  second rule below governs.
+- **A future client-side piece.** If Loom ever ships a client-side Lustre
+  module (for example a composer editor that must not round-trip each
+  keystroke), that module's first render is where hydration would apply.
+  ADR-014 keeps session logic on the BEAM, so such a module would hold
+  view state only.
+
+**The security constraint.** An embedded model is page content: any script
+on the page, any extension with page access, and anything that can read
+the response can read it. So a model embedded for hydration may carry only
+what the viewer's role may already see on the page, and never approval
+records, credentials, the page key, the page nonce, tickets or cookie
+values. Escape it as JSON inside a `<script type="application/json">`
+element, which the policy allows because it is not executed; never inline
+it into executable script, which the policy refuses.
+
 ## 5. Components and custom elements
 
 Lustre's advice is to prefer view functions: a component is a "stateful
@@ -976,6 +1036,7 @@ Documentation pages (5.7.1):
 [doc-simulate]: https://lustre.hexdocs.pm/5.7.1/lustre/dev/simulate.html
 [doc-query]: https://lustre.hexdocs.pm/5.7.1/lustre/dev/query.html
 [doc-state]: https://lustre.hexdocs.pm/5.7.1/guide/02-state-management.html
+[doc-ssr]: https://lustre.hexdocs.pm/5.7.1/guide/05-server-side-rendering.html
 [hint-pure]: https://github.com/lustre-labs/lustre/blob/v5.7.1/pages/hints/pure-functions.md
 [hint-attrs]: https://github.com/lustre-labs/lustre/blob/v5.7.1/pages/hints/attributes-vs-properties.md
 [hint-lists]: https://github.com/lustre-labs/lustre/blob/v5.7.1/pages/hints/rendering-lists.md
@@ -995,7 +1056,7 @@ Documentation pages (5.7.1):
 - Guides: [quickstart](https://lustre.hexdocs.pm/5.7.1/guide/01-quickstart.html),
   [state management][doc-state],
   [side effects](https://lustre.hexdocs.pm/5.7.1/guide/03-side-effects.html),
-  [server-side rendering](https://lustre.hexdocs.pm/5.7.1/guide/05-server-side-rendering.html),
+  [server-side rendering][doc-ssr],
   [full-stack applications](https://lustre.hexdocs.pm/5.7.1/guide/06-full-stack-applications.html),
   and the two deployment guides, which do not discuss server components.
 - Hints: [pure functions][hint-pure], [attributes vs properties][hint-attrs],
@@ -1028,6 +1089,8 @@ Source at the `v5.7.1` tag:
 [src-vnode]: https://github.com/lustre-labs/lustre/blob/v5.7.1/src/lustre/vdom/vnode.gleam#L297-L380
 [src-simulate]: https://github.com/lustre-labs/lustre/blob/v5.7.1/src/lustre/dev/simulate.gleam#L184-L247
 [src-client]: https://github.com/lustre-labs/lustre/blob/v5.7.1/src/lustre/runtime/client/server_component.ffi.mjs#L85-L135
+[src-client-mount]: https://github.com/lustre-labs/lustre/blob/v5.7.1/src/lustre/runtime/client/server_component.ffi.mjs#L139-L175
+[src-spa-runtime]: https://github.com/lustre-labs/lustre/blob/v5.7.1/src/lustre/runtime/client/runtime.ffi.mjs#L90-L100
 [src-client-event]: https://github.com/lustre-labs/lustre/blob/v5.7.1/src/lustre/runtime/client/server_component.ffi.mjs#L427-L500
 [src-client-ws]: https://github.com/lustre-labs/lustre/blob/v5.7.1/src/lustre/runtime/client/server_component.ffi.mjs#L507-L618
 [src-reconciler]: https://github.com/lustre-labs/lustre/blob/v5.7.1/src/lustre/vdom/reconciler.ffi.mjs#L505-L700
