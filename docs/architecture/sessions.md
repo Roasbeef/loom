@@ -674,7 +674,11 @@ more than read authority.
 The capture has fixed bounds: one 8-second execution deadline shared by
 all calls, a 512 KiB total output budget, 24 files, and a 40 KiB encoded
 board. Anything cut is marked `Limited` and counted in `omitted`, never
-dropped silently. A failure is a typed `worktree_diff.Error` and is never
+dropped silently. That includes per-file patches the deadline does not
+reach: status and the metadata probes must finish, because they fix the
+census, but each patch is one more jailed spawn, and on a loaded host two
+dozen of them can spend the deadline by themselves. A failure is a typed
+`worktree_diff.Error` and is never
 presented as a clean tree. The observation is not atomic: status and file
 reads can interleave with concurrent edits, and only `HEAD` is pinned.
 

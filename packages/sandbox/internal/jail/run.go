@@ -748,6 +748,18 @@ const outputDrainGrace = 500 * time.Millisecond
 // the grace expires and turns an escaped writer into a broken pipe instead of
 // an unbounded helper hang.
 func (e *Exec) Wait() Result {
+	res, release := e.Settle()
+	release()
+	return res
+}
+
+// Settle is Wait with the per-exec cgroup's removal handed back as
+// release rather than performed. Removal waits for the jail's killed
+// namespace builder to leave the cgroup (see cgroup.Cleanup), about 50 ms
+// per execution on a Linux host, and a caller that reports the result
+// first keeps that teardown off the critical path of whoever is waiting
+// for the report. The caller must call release exactly once.
+func (e *Exec) Settle() (Result, func()) {
 	err := e.cmd.Wait()
 
 	observedDescendantKill := false
@@ -780,9 +792,11 @@ func (e *Exec) Wait() Result {
 	e.reportR.Close()
 
 	var pidsMax uint64
+	release := func() {}
 	if e.cgDir != "" {
 		pidsMax = cgroup.ReadPidsEventsMax(e.cgDir)
-		_ = cgroup.Cleanup(e.cgDir)
+		dir := e.cgDir
+		release = func() { _ = cgroup.Cleanup(dir) }
 	}
 	if e.scratchDir != "" {
 		_ = os.RemoveAll(e.scratchDir)
@@ -817,7 +831,7 @@ func (e *Exec) Wait() Result {
 		// Wait itself failed; report as a synthetic failure code.
 		res.Code = 127
 	}
-	return res
+	return res, release
 }
 
 func (e *Exec) waitForOutputPumps() {

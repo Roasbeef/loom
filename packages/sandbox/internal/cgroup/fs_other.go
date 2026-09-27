@@ -2,7 +2,10 @@
 
 package cgroup
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // notCgroup2 on a platform with no cgroups at all. There is nothing to
 // verify and nothing that could pass, so the answer is a reason rather
@@ -16,3 +19,7 @@ func notCgroup2(path string) string {
 // writableProcs cannot be answered off Linux, and is never reached:
 // notCgroup2 has already refused.
 func writableProcs(procs string) bool { return false }
+
+// awaitEmpty has no population to wait for off Linux: no cgroup was ever
+// created, so Cleanup only ever meets a plain directory, or none.
+func awaitEmpty(dir string, bound time.Duration) {}

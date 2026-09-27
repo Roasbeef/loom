@@ -116,3 +116,22 @@ identity without a second quoting grammar or a jailed orchestration script.
 The implementation adds no dependency, actor, durable storage format, automatic
 refresh loop, staging command, or write capability. Gateway lifecycle integration
 and the terminal navigator consume this bounded read surface.
+
+## Addendum: the deadline omits patches rather than failing (2026-09-27)
+
+The cost named above, one helper call per displayed file, was never
+reconciled with the 8-second deadline. On a 32-core Linux signoff host a
+jailed Git call took about 100 ms idle and 300 ms beside other jailed work,
+almost all of it sandbox setup. Four probes and 24 patch calls then spend
+the whole deadline, and the call it cut short failed the observation even
+though status had already fixed an exact census.
+
+We now treat a patch call as unreached when the capture's guard or the
+broker's budget refuses it after the deadline, or when it settles as an
+execution failure once the deadline has passed. The broker's budget cancels such a call, often before the jail has
+reported its enforcement, so it settles as a degraded execution. Its file
+and every later file are counted in `omitted`, and the board is `limited`,
+as for the byte ceiling. Status and the metadata probes still fail the
+observation when the deadline cuts them, because without them there is no
+census to omit from. Git errors and execution failures before the deadline
+remain distinct failures. The wire vocabulary and every bound are unchanged.
