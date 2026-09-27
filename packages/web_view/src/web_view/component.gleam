@@ -1346,7 +1346,7 @@ pub fn lane_view(pieces: List(turns.Piece)) -> Element(message) {
 
 fn piece_key(piece: turns.Piece) -> String {
   case piece {
-    turns.Plain(block:) -> block.key
+    turns.Plain(block:) | turns.Commentary(block:) -> block.key
     turns.Work(key:, ..)
     | turns.Spawned(key:, ..)
     | turns.Returned(key:, ..)
@@ -1436,6 +1436,15 @@ fn piece_element(piece: turns.Piece) -> Element(message) {
 
     turns.Missed(text:, ..) ->
       html.p([attribute.class("cache-miss")], [html.text(text)])
+
+    // The advisor's own commentary, captured on its strand and not sent to
+    // the primary: drawn as the transcript draws it, in the advisor's
+    // colour, so it cannot pass for the primary's words.
+    turns.Commentary(block:) ->
+      html.div(
+        [attribute.class("block"), attribute.class("commentary")],
+        list.map(block.rows, fn(row) { line_element(row.1) }),
+      )
   }
 }
 
