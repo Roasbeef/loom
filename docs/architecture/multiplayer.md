@@ -298,7 +298,7 @@ absent field as the mark of a push. A frame that does carry `reply_to` is
 still matched against the outstanding request, so a stale or forged
 correlation still fails closed. A push belongs to no request: it consumes
 no credit, allocates no identity, and cannot fail the lane
-(`apply_pushed`, `session_view/session_channel.gleam:679`).
+(`apply_pushed`, `session_view/session_channel.gleam:693`).
 
 ```mermaid
 stateDiagram-v2
@@ -326,14 +326,14 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`session_view/session_channel.gleam:1348`) starts the catch-up at the
+`send_queued` (`session_view/session_channel.gleam:1383`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in
-`tick` (`session_view/session_channel.gleam:1071`) would have started it. The mark is a
+`tick` (`session_view/session_channel.gleam:1106`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
 of them mean the same thing: capture when free.
 
 Two cases drop a notice
-(`capture_or_defer`, `session_view/session_channel.gleam:781`): a sequence below the current cut's
+(`capture_or_defer`, `session_view/session_channel.gleam:813`): a sequence below the current cut's
 `next_seq`, which the terminal already holds, and a notice that arrives
 before any cut exists, which the initial transfer will deliver anyway. A
 `Closed` lane drops everything.
