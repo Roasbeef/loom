@@ -171,6 +171,8 @@ pub fn a_revocation_between_admission_and_delivery_drops_the_reply_test() {
 
   assert gateway.connection_request(handle, subscribe(harness, 901))
     == Error("revoked")
+  assert consumed(script) == 4
+    as "the attach, the admission, the roster and the reply each asked once"
   let assert Ok(Nil) = process.receive(closed, 1000)
     as "the delivery check closes the attachment"
   assert process.receive(harness.inbox, 100) == Error(Nil)

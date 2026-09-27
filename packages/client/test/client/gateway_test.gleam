@@ -3777,8 +3777,8 @@ fn join_fixture_id(seed: Int) -> ids.SessionId {
 /// A join reaches the peers already attached as a pushed frame, not at
 /// their next refresh. With two network peers subscribed, a third
 /// subscribes, and all three are pushed one roster that names all three.
-/// An attachment that has not subscribed is told nothing, because it has
-/// not yet said it is here.
+/// An authenticated attachment that has not subscribed is told nothing,
+/// because it has not yet said it is here.
 pub fn a_join_is_pushed_to_every_subscribed_peer_test() {
   let harness = network_harness()
   let alice = process.new_subject()
@@ -3807,9 +3807,15 @@ pub fn a_join_is_pushed_to_every_subscribed_peer_test() {
     == ["connection-alice", "connection-bob"]
 
   let quiet = process.new_subject()
-  let assert Ok(_unsubscribed) =
-    gateway.attach(harness.hub, fn(frame) { process.send(quiet, frame) })
-    as "an attachment joins without subscribing"
+  let #(_, _, _) =
+    attach_socket(
+      harness.hub,
+      harness.runtime,
+      quiet,
+      operator("quinn", "Quinn"),
+      access.Participant(access.Operator),
+      process.self(),
+    )
 
   // Carol subscribes by hand rather than through `network_socket`, so that
   // her own copy of the roster is read here with the other two.
@@ -3840,6 +3846,44 @@ pub fn a_join_is_pushed_to_every_subscribed_peer_test() {
       as "one join is one roster per peer"
   })
   assert process.receive(quiet, within: 100) == Error(Nil)
+    as "an authenticated attachment that has not subscribed hears no join"
+}
+
+/// Only a join is announced. A second `subscribe` on a connection that is
+/// already subscribed changes nothing about who is here, so it pushes no
+/// roster; otherwise any attachment, an observer included, could make the
+/// hub push to every peer once per request.
+pub fn a_second_subscribe_announces_nothing_test() {
+  let harness = network_harness()
+  let alice = process.new_subject()
+  let #(_, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      alice,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let watcher = process.new_subject()
+  let #(watcher_handle, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      watcher,
+      operator("olive", "Olive"),
+      access.Participant(access.Observer),
+    )
+  let assert Ok(_) = roster_of(next_on(alice))
+    as "the observer's first subscribe is a join"
+
+  let _answer =
+    gateway.connection_request(
+      watcher_handle,
+      subscribe_frame(harness.runtime, 702),
+    )
+  assert process.receive(alice, within: 100) == Error(Nil)
+    as "a repeated subscribe is not a join"
+  assert process.receive(watcher, within: 100) == Error(Nil)
 }
 
 /// A hub serves one session, and a join on one session is never pushed to a
@@ -3872,6 +3916,32 @@ pub fn a_join_is_not_pushed_to_a_peer_of_another_session_test() {
     )
   assert process.receive(watcher, within: 200) == Error(Nil)
     as "a join on session B is not pushed to an observer of session A"
+
+  // What keeps the two apart is the attach check: a binding that names
+  // session B is refused by session A's hub, so a peer of B never becomes a
+  // connection A's roster could name or push to.
+  let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
+    as "the fixture digest is valid"
+  let mallory = operator("mallory", "Mallory")
+  let assert Error(_) =
+    gateway.attach_authenticated(
+      session_a.hub,
+      gateway.Binding(
+        ids.session_id_to_string(api.session_id(session_b.runtime)),
+        "epoch",
+        "incarnation",
+        "connection-mallory-a",
+        mallory,
+        access.Participant(access.Operator),
+        digest,
+      ),
+      fn() { Ok(#(mallory, access.Participant(access.Operator))) },
+      fn(frame) { process.send(watcher, frame) },
+      fn() { Nil },
+      fn() { Nil },
+      process.self(),
+    )
+    as "a binding for session B is refused by session A's hub"
 
   let neighbour = process.new_subject()
   let #(_, _, _) =

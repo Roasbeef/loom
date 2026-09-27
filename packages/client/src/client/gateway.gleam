@@ -1918,8 +1918,9 @@ fn network_command(
         // different paths out, so either may reach the socket first; a
         // pushed frame is order-free (`protocol-change/018`).
         True -> {
+          let before = subscription_of(state, connection)
           let state = mark_subscribed(state, connection)
-          publish_presence(state)
+          announce_join(state, before)
           begin_transfer(state, connection, id, transfer.Recent)
         }
         False -> {
@@ -4421,6 +4422,26 @@ fn subscribe(
       reply(state, connection, id, connection_snapshot(state, connection))
       state
     }
+  }
+}
+
+// A connection the hub no longer holds reads as subscribed, so that nothing
+// is announced for it.
+fn subscription_of(state: State, connection: Int) -> Subscription {
+  dict.get(state.connections, connection)
+  |> result.map(fn(link) { link.subscription })
+  |> result.unwrap(Subscribed)
+}
+
+// Only the move from unsubscribed to subscribed is a join. A second
+// `subscribe` on a subscribed network connection restarts its transfer and
+// changes nothing about who is here, so it pushes nothing; announcing it
+// would let any attachment, an observer included, make the hub push a roster
+// to every peer, and every peer's lane catch up, once per request.
+fn announce_join(state: State, before: Subscription) -> Nil {
+  case before {
+    Unsubscribed -> publish_presence(state)
+    Subscribed -> Nil
   }
 }
 
