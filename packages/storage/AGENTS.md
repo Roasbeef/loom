@@ -19,6 +19,12 @@ with these forks: they define the same modules.
 
 ## Key Types
 
+- The catalogue is at `user_version` 4. Each later version has its own embedded
+  migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
+  `catalogue_claims_schema`), and `initialize_schema` applies every schema an
+  older catalogue lacks, then moves the version, in one transaction; a fresh
+  catalogue runs the same list after `sql_schema`. A version it does not know
+  is refused, so a downgrade needs the pre-upgrade catalogue restored.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived
@@ -68,10 +74,22 @@ with these forks: they define the same modules.
   one owner or verifies its existing active credential; `owner` reads identity
   without changing credentials. `rotate_credential` changes credentials, not
   principal identity. This is an internal DAL, not invitation or gateway policy.
-  `invite_member` atomically creates a reserved principal ID, credential, and
-  first membership. `rotate_member` revokes all active member credentials and
-  inserts one replacement; `revoke_member` retains the identity and grants.
-  These member operations refuse the owner principal.
+  `invite_member` atomically creates a reserved principal ID, its `Enrollment`,
+  and first membership. `rotate_member` voids the open claim, revokes all
+  active member credentials and inserts one replacement enrollment;
+  `revoke_member` voids the open claim and revokes, retaining the identity and
+  grants. These member operations refuse the owner principal.
+- `storage/access.{ClaimDigest, Enrollment, Claimed, Membership, ClaimRefusal}`
+  hold the claim flow of [protocol 053](../../protocol-change/053-owner-admin-and-claims.md).
+  `ClaimDigest` is a separate opaque type from `Digest`, so a claim cannot be
+  passed to `authenticate`. `Enrollment` is `ClaimEnrollment(claim,
+  expires_at_ms)` (an open claim, no credential) or `DigestEnrollment(digest)`
+  (the invitee's own credential, no claim). `claim(store, claim, digest,
+  now_ms, equal)` binds a digest once in one transaction and answers
+  `Claimed(principal, memberships)` (at most 16, in session order) or
+  `UnknownClaim`, `ExpiredClaim`, `ConflictingClaim` or `ClaimStore(error)`.
+  `claim_known` is the `/v2/claim` upgrade's filter (exists and not void), and
+  `fingerprint` is a digest's first 16 hex characters.
 - `storage/catalogue.{Catalogue, Registration, State, Page}` holds daemon
   metadata in a separate SQLite file. `Reserved` and `Saved` describe file
   initialization, not runtime liveness. `reserve` is idempotent by creation
@@ -234,6 +252,20 @@ with these forks: they define the same modules.
   conflict, including after revocation. Explicit member rotation recovers a
   lost successful reply without reusing any tombstoned digest. Invitation and
   rotation roll back all preceding writes if a later insertion fails.
+- **A claim authenticates nothing and binds once.** Catalogue version 4 adds
+  `access_claims`: the SHA-256 of each claim token, its member, a wall-clock
+  expiry, and `open`, `claimed` or `void`. The digest never enters
+  `access_credentials`, and `authenticate` never reads `access_claims`. A
+  member has either one open claim and no active credential, or no open claim;
+  a partial unique index holds the first half, and rotation and revocation void
+  the open claim before touching credentials. `claim` makes every refusal
+  before any write: void or unknown, then a claimed row (the same success only
+  for the digest it bound, while that credential is active), then expiry, the
+  claim's own digest (which would make the chat-log string a bearer), a digest
+  already present in any state, and a member that already holds a credential.
+  Claim rows are never deleted, so a spent or voided claim cannot be re-bound.
+  Digest comparisons are injected (`equal`): the daemon passes a constant-time
+  one, and this package has no crypto dependency.
 - **There is one durable owner.** A partial unique index enforces the single
   owner row. Bootstrap retries require an active credential already belonging
   to that owner; a missing, malformed, revoked, or unrelated token cannot reset

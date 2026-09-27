@@ -18,16 +18,17 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/codec
 import machine/operation
+import session_view/agent_roster.{Changed, Unchanged}
+import session_view/agent_view
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
 import tui/agent_strip.{
-  Back, Browsing, Changed, Composing, Down, Halt, Left, Moved, Open, Other, Pass,
-  Select, Stop, Unchanged, Up,
+  Back, Browsing, Composing, Down, Halt, Left, Moved, Open, Other, Pass, Select,
+  Stop, Up,
 }
-import tui/agent_view
 import tui/agents
 import tui/connection
 import tui/frame
@@ -137,31 +138,31 @@ fn view(operations, cells) -> snapshot_view.View {
 // --- names and figures -----------------------------------------------------
 
 pub fn a_minted_child_name_shortens_to_its_slug_test() {
-  assert agent_strip.short_name("sub:main/audit-panics-1a2b3c")
+  assert agent_roster.short_name("sub:main/audit-panics-1a2b3c")
     == "audit-panics"
-  assert agent_strip.short_name("sub:sub:main/a-1b2c/deeper-work-00ff")
+  assert agent_roster.short_name("sub:sub:main/a-1b2c/deeper-work-00ff")
     == "deeper-work"
-  assert agent_strip.short_name("main") == "main"
-  assert agent_strip.short_name("advisor") == "advisor"
+  assert agent_roster.short_name("main") == "main"
+  assert agent_roster.short_name("advisor") == "advisor"
 
   // A last segment that is not a digest is part of the name.
-  assert agent_strip.short_name("sub:main/fix-login") == "fix-login"
+  assert agent_roster.short_name("sub:main/fix-login") == "fix-login"
 }
 
 pub fn durations_read_like_the_reference_strip_test() {
-  assert agent_strip.duration(0) == "0s"
-  assert agent_strip.duration(59) == "59s"
-  assert agent_strip.duration(60) == "1m 00s"
-  assert agent_strip.duration(475) == "7m 55s"
-  assert agent_strip.duration(3720) == "1h 02m"
+  assert agent_roster.duration(0) == "0s"
+  assert agent_roster.duration(59) == "59s"
+  assert agent_roster.duration(60) == "1m 00s"
+  assert agent_roster.duration(475) == "7m 55s"
+  assert agent_roster.duration(3720) == "1h 02m"
 }
 
 pub fn token_counts_keep_one_decimal_so_growth_is_visible_test() {
-  assert agent_strip.count_label(0) == "0"
-  assert agent_strip.count_label(999) == "999"
-  assert agent_strip.count_label(1000) == "1.0k"
-  assert agent_strip.count_label(136_540) == "136.5k"
-  assert agent_strip.count_label(2_345_678) == "2.3m"
+  assert agent_roster.count_label(0) == "0"
+  assert agent_roster.count_label(999) == "999"
+  assert agent_roster.count_label(1000) == "1.0k"
+  assert agent_roster.count_label(136_540) == "136.5k"
+  assert agent_roster.count_label(2_345_678) == "2.3m"
 }
 
 // --- which agents are listed -----------------------------------------------
@@ -305,15 +306,15 @@ pub fn an_undecodable_glance_is_skipped_not_fatal_test() {
       view([#("worker", current)], [broken]),
       0,
     )
-  assert dict.size(state.glances) == 0
+  assert dict.size(state.roster.glances) == 0
 }
 
 // --- clocks ----------------------------------------------------------------
 
 pub fn a_new_operation_starts_on_the_terminal_clock_test() {
-  let fresh = agent_strip.next_clock(None, "op", None, None, 500)
-  assert agent_strip.elapsed_ms(fresh, 2500) == 2000
-  assert agent_strip.elapsed_ms(fresh, 0) == 0
+  let fresh = agent_roster.next_clock(None, "op", None, None, 500)
+  assert agent_roster.elapsed_ms(fresh, 2500) == 2000
+  assert agent_roster.elapsed_ms(fresh, 0) == 0
 }
 
 // The daemon measured the run on its own clock; the terminal adds only the
@@ -332,10 +333,10 @@ pub fn a_glance_re_anchors_to_the_daemons_own_measurement_test() {
       ]),
       -5000,
     )
-  let assert Ok(clock) = dict.get(state.clocks, "worker")
+  let assert Ok(clock) = dict.get(state.roster.clocks, "worker")
     as "a current operation has a clock"
-  assert agent_strip.elapsed_ms(clock, -5000) == 90_000
-  assert agent_strip.elapsed_ms(clock, 5000) == 100_000
+  assert agent_roster.elapsed_ms(clock, -5000) == 90_000
+  assert agent_roster.elapsed_ms(clock, 5000) == 100_000
 
   // The same glance observed again does not reset the anchor.
   let again =
@@ -347,7 +348,7 @@ pub fn a_glance_re_anchors_to_the_daemons_own_measurement_test() {
       ]),
       7000,
     )
-  assert dict.get(again.clocks, "worker") == Ok(clock)
+  assert dict.get(again.roster.clocks, "worker") == Ok(clock)
 }
 
 pub fn a_successor_operation_starts_a_new_clock_test() {
@@ -359,16 +360,16 @@ pub fn a_successor_operation_starts_a_new_clock_test() {
     )
   let second =
     agent_strip.observe(first, view([#("worker", op_id(2))], []), 4000)
-  let assert Ok(clock) = dict.get(second.clocks, "worker")
+  let assert Ok(clock) = dict.get(second.roster.clocks, "worker")
     as "the successor has a clock"
   assert clock.operation == op_id(2)
-  assert agent_strip.elapsed_ms(clock, 4000) == 0
+  assert agent_roster.elapsed_ms(clock, 4000) == 0
 
   // A strand that settles drops its clock and its pushed usage.
   let pushed = agent_strip.observe_usage(second, "worker", Some(op_id(2)), 9)
   let settled = agent_strip.observe(pushed, view([], []), 5000)
-  assert dict.size(settled.clocks) == 0
-  assert dict.size(settled.pushed) == 0
+  assert dict.size(settled.roster.clocks) == 0
+  assert dict.size(settled.roster.pushed) == 0
 }
 
 pub fn a_live_push_wins_over_the_glance_for_the_same_operation_test() {
@@ -575,17 +576,17 @@ pub fn x_stops_the_selected_agent_without_retargeting_test() {
 // so the measurement trails the running figure; the drawn time must not
 // step backwards at that moment.
 pub fn a_re_anchor_never_steps_the_elapsed_time_backwards_test() {
-  let running = agent_strip.Clock("op", None, 0, 0)
+  let running = agent_roster.Clock("op", None, 0, 0)
   let seen = Glance("op", "t", "s", 1_099_700, 0)
   let anchored =
-    agent_strip.next_clock(
+    agent_roster.next_clock(
       Some(running),
       "op",
       Some(seen),
       Some(1_000_000),
       100_000,
     )
-  assert agent_strip.elapsed_ms(anchored, 100_000) == 100_000
+  assert agent_roster.elapsed_ms(anchored, 100_000) == 100_000
 }
 
 // An overlay the daemon opens on its own, such as an approval, takes the

@@ -80,11 +80,14 @@ pub type Command {
   IsolateSession(session_id: String, epoch: String)
 
   /// Creates a stable member identity with one initial session membership.
+  /// The member receives either a claim or the credential digest it sent
+  /// (protocol-change/053); no reply carries a bearer.
   Invite(
     session_id: String,
     principal_id: String,
     name: String,
     role: access.Role,
+    enrollment: Enrollment,
     epoch: String,
   )
 
@@ -99,10 +102,12 @@ pub type Command {
   /// Removes one membership without affecting other sessions.
   RevokeMembership(session_id: String, principal_id: String, epoch: String)
 
-  /// Replaces all credentials of a member identified by its recovery ID.
-  RotateCredential(principal_id: String, epoch: String)
+  /// Voids the open claim and revokes every credential of a member identified
+  /// by its recovery ID, then issues a new claim or binds the sent digest.
+  RotateCredential(principal_id: String, enrollment: Enrollment, epoch: String)
 
-  /// Revokes all credentials of a member without deleting its identity.
+  /// Revokes all credentials of a member and voids its open claim, without
+  /// deleting its identity.
   RevokeCredentials(principal_id: String, epoch: String)
 
   /// Reads daemon readiness and aggregate capacity counts.
@@ -170,6 +175,43 @@ pub type Command {
 
   /// Requests owner-authorized daemon drain.
   Shutdown(epoch: String)
+}
+
+/// What an invitation or rotation gives the member, as the request chose it.
+pub type Enrollment {
+  /// A single-use claim token living `ttl_ms` milliseconds, between
+  /// `min_claim_ttl_ms` and `max_claim_ttl_ms`. The default when the request
+  /// names neither field.
+  IssueClaim(ttl_ms: Int)
+
+  /// The digest of a credential the invitee drew itself (`credential_digest`);
+  /// no claim is created and the reply carries no secret.
+  EnrollDigest(credential: access.Digest)
+}
+
+/// A claim lives this long when the request does not set `claim_ttl_ms`.
+pub const default_claim_ttl_ms = 86_400_000
+
+/// The shortest `claim_ttl_ms` a request may set: five minutes.
+pub const min_claim_ttl_ms = 300_000
+
+/// The longest `claim_ttl_ms` a request may set: seven days.
+pub const max_claim_ttl_ms = 604_800_000
+
+/// The largest message the `/v2/claim` socket accepts. Its one command carries
+/// a 64-character digest, so this leaves room for the envelope and no more.
+pub const max_claim_bytes = 1024
+
+/// The one command `/v2/claim` accepts, decoded apart from the control
+/// commands so that `credentials.claim` never reaches `/v2/control` and no
+/// control command reaches `/v2/claim`.
+pub type ClaimRequest {
+  ClaimRequest(
+    /// The client's correlation for the one reply.
+    id: Int,
+    /// The digest of the credential the invitee drew and stored.
+    credential: access.Digest,
+  )
 }
 
 /// A positive request ID is local to one authenticated control connection.
@@ -327,8 +369,9 @@ fn decode_fields(
       use principal <- result.try(text_field(fields, "principal_id", 128))
       use name <- result.try(text_field(fields, "name", 256))
       use role <- result.try(member_role(fields))
+      use enrollment <- result.try(enrollment(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
-      Invite(session, principal, name, role, epoch)
+      Invite(session, principal, name, role, enrollment, epoch)
     }
     "sessions.set_role" -> {
       use session <- result.try(session_id(fields))
@@ -345,8 +388,9 @@ fn decode_fields(
     }
     "credentials.rotate" -> {
       use principal <- result.try(text_field(fields, "principal_id", 128))
+      use enrollment <- result.try(enrollment(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
-      RotateCredential(principal, epoch)
+      RotateCredential(principal, enrollment, epoch)
     }
     "credentials.revoke" -> {
       use principal <- result.try(text_field(fields, "principal_id", 128))
@@ -422,6 +466,105 @@ fn domain_scope(fields) {
       Ok(domain.WorkspacePrivate)
     Ok(json.String("session_only")) -> Ok(domain.SessionOnly)
     Ok(_) -> Error("expected workspace_private or session_only domain_scope")
+  }
+}
+
+// The two optional enrollment fields are exclusive. A digest enrolls the
+// invitee's own credential and creates no claim, so a lifetime for a claim
+// that will not exist names nothing and is refused rather than ignored.
+fn enrollment(
+  fields: List(#(String, JsonValue)),
+) -> Result(Enrollment, String) {
+  case
+    list.key_find(fields, "claim_ttl_ms"),
+    list.key_find(fields, "credential_digest")
+  {
+    Error(Nil), Error(Nil) -> Ok(IssueClaim(default_claim_ttl_ms))
+    Ok(json.Int(ttl)), Error(Nil)
+      if ttl >= min_claim_ttl_ms && ttl <= max_claim_ttl_ms
+    -> Ok(IssueClaim(ttl))
+    Ok(_), Error(Nil) ->
+      Error("claim_ttl_ms must be between 300000 and 604800000")
+    Error(Nil), Ok(_) ->
+      digest_field(fields, "credential_digest") |> result.map(EnrollDigest)
+    Ok(_), Ok(_) ->
+      Error("credential_digest and claim_ttl_ms are mutually exclusive")
+  }
+}
+
+fn digest_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(access.Digest, String) {
+  use text <- result.try(text_field(fields, key, 64))
+  access.credential_digest(text)
+  |> result.replace_error("expected a 64-character lowercase hex digest")
+}
+
+/// Decodes the one `/v2/claim` message without invoking any effect.
+///
+/// The byte bound precedes parsing, and only `credentials.claim` is
+/// accepted: a control command sent here is refused as `bad_request`, and
+/// `decode` refuses `credentials.claim` on the control socket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+/// let assert Ok(request) =
+///   protocol.decode_claim(
+///     "{\"v\":2,\"id\":1,\"cmd\":\"credentials.claim\",\"body\":{\"credential_digest\":\""
+///     <> digest
+///     <> "\"}}",
+///   )
+/// assert request.id == 1
+/// ```
+pub fn decode_claim(text: String) -> Result(ClaimRequest, Fault) {
+  use Nil <- result.try(
+    case bit_array.byte_size(bit_array.from_string(text)) <= max_claim_bytes {
+      True -> Ok(Nil)
+      False -> Error(Fault(None, "bad_request", "claim message exceeds 1 KiB"))
+    },
+  )
+
+  // Every shape fault is `bad_request`, the one refusal protocol-change/053
+  // gives this route for a message it cannot use.
+  use value <- result.try(
+    json.parse(text)
+    |> result.replace_error(Fault(
+      None,
+      "bad_request",
+      "expected a valid JSON claim envelope",
+    )),
+  )
+  use fields <- result.try(
+    object(value)
+    |> result.map_error(fn(reason) { Fault(None, "bad_request", reason) }),
+  )
+  use id <- result.try(
+    case list.key_find(fields, "v"), list.key_find(fields, "id") {
+      Ok(json.Int(2)), Ok(json.Int(id)) if id > 0 -> Ok(id)
+      _, _ ->
+        Error(Fault(
+          None,
+          "bad_request",
+          "expected protocol version 2 and a positive request id",
+        ))
+    },
+  )
+  let claim = {
+    use name <- result.try(text_field(fields, "cmd", 64))
+    use Nil <- result.try(case name {
+      "credentials.claim" -> Ok(Nil)
+      _other -> Error("the claim endpoint accepts only credentials.claim")
+    })
+    use body <- result.try(required(fields, "body"))
+    use body <- result.try(object(body))
+    digest_field(body, "credential_digest")
+  }
+  case claim {
+    Ok(credential) -> Ok(ClaimRequest(id, credential))
+    Error(reason) -> Error(Fault(Some(id), "bad_request", reason))
   }
 }
 

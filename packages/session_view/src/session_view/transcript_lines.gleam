@@ -547,13 +547,27 @@ pub fn live_reasoning_digest(text: String) -> String {
 /// ```
 @internal
 pub fn settled_reasoning_digest(text: String) -> String {
+  reasoning_opening(text) <> expand_hint
+}
+
+/// A settled reasoning block's opening line, cut to the digest's bound: the
+/// digest without the terminal's key hint, for a host whose reader opens
+/// the block some other way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.reasoning_opening("# Plan\nstep one")
+///   == "Plan"
+/// ```
+pub fn reasoning_opening(text: String) -> String {
   let opening =
     text
     |> string.split("\n")
     |> list.filter_map(digest_opening_line)
     |> list.first
     |> result.unwrap(text)
-  compact(opening, reasoning_digest_limit) <> expand_hint
+  compact(opening, reasoning_digest_limit)
 }
 
 // Whether one source line can open a digest, and what it reads as if it can.
@@ -690,7 +704,7 @@ pub fn record_lines(
     record_blocks(records, presentation, notices, advisor)
   #(
     blocks
-      |> list.map(fn(block) { block.1 })
+      |> list.map(fn(block) { block.1.1 })
       |> separated_tool_groups(BetweenEntries),
     calls,
     narratives,
@@ -725,29 +739,96 @@ pub fn keyed_record_lines(
   notices: List(CacheNotice),
   advisor: advisor_history.Board,
 ) -> List(#(String, Line)) {
+  keyed_record_blocks(records, presentation, notices, advisor)
+  |> list.flat_map(fn(block) { block.rows })
+}
+
+/// What drew one block of the transcript: the durable entry, the tool
+/// group, the local notice or the advisor board it came from, or the blank
+/// the fold placed between two groups.
+///
+/// A host that draws the transcript as rows needs none of this. A host that
+/// draws some blocks as something other than rows (a folded turn, a card
+/// for a message from another session) reads the source to decide, and the
+/// rows it keeps are still exactly the rows `record_lines` draws.
+pub type Source {
+  /// One narrative entry: a message, a compaction or a branch summary.
+  FromEntry(value: entry.Entry)
+
+  /// One compact group of tool calls and their joined results.
+  FromTools(calls: List(tool_activity.Call))
+
+  /// A transient notice this client spliced after an entry.
+  FromNotice
+
+  /// The advisor's commentary board, merged by sequence.
+  FromAdvisor
+
+  /// A blank the tool-group fold placed between two blocks.
+  FromSpacer
+}
+
+/// One block of the transcript, with the rows it draws and the key each row
+/// carries in `keyed_record_lines`.
+pub type Block {
+  Block(
+    /// The block's own key, `seq.occurrence`, or the key of the block
+    /// above it followed by `~` for a spacer. It holds digits, `.` and `~`
+    /// only.
+    key: String,
+    /// What drew the block.
+    source: Source,
+    /// The block's rows, each keyed `key:index`.
+    rows: List(#(String, Line)),
+  )
+}
+
+/// The same rows as `keyed_record_lines`, grouped by the block that drew
+/// them and tagged with its source.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.keyed_record_blocks(records, presentation, [], advisor)
+/// //   == [Block("7.0", FromEntry(..), [#("7.0:0", Line(User, "hello"))]), ..]
+/// ```
+pub fn keyed_record_blocks(
+  records: List(protocol.EntryRecord),
+  presentation: Presentation,
+  notices: List(CacheNotice),
+  advisor: advisor_history.Board,
+) -> List(Block) {
   let #(blocks, _, _) = record_blocks(records, presentation, notices, advisor)
-  let #(keyed, _) =
-    list.fold(blocks, #([], dict.new()), fn(acc, block) {
-      let #(keyed, seen) = acc
-      let #(seq, lines) = block
+
+  // Each block's key is its sequence and its occurrence at that sequence,
+  // and the source is looked up by that key after the spacer fold, which
+  // works on keyed row lists and knows nothing of sources.
+  let #(keyed, _, sources) =
+    list.fold(blocks, #([], dict.new(), dict.new()), fn(acc, block) {
+      let #(keyed, seen, sources) = acc
+      let #(seq, #(source, lines)) = block
       let occurrence = dict.get(seen, seq) |> result.unwrap(0)
       let key = int.to_string(seq) <> "." <> int.to_string(occurrence)
-      #([#(key, lines), ..keyed], dict.insert(seen, seq, occurrence + 1))
+      #(
+        [#(key, lines), ..keyed],
+        dict.insert(seen, seq, occurrence + 1),
+        dict.insert(sources, key, source),
+      )
     })
   keyed
   |> list.reverse
   |> separated_tool_blocks(BetweenEntries)
   |> list.fold(#([], ""), fn(acc, block) {
-    let #(rows, above) = acc
-    let key = case block.0 {
-      "" -> above <> "~"
-      key -> key
+    let #(placed, above) = acc
+    let #(key, source) = case block.0 {
+      "" -> #(above <> "~", FromSpacer)
+      key -> #(key, dict.get(sources, key) |> result.unwrap(FromSpacer))
     }
     let rows =
-      list.index_fold(block.1, rows, fn(rows, line, index) {
-        [#(key <> ":" <> int.to_string(index), line), ..rows]
+      list.index_map(block.1, fn(line, index) {
+        #(key <> ":" <> int.to_string(index), line)
       })
-    #(rows, key)
+    #([Block(key:, source:, rows:), ..placed], key)
   })
   |> fn(folded) { list.reverse(folded.0) }
 }
@@ -762,7 +843,7 @@ fn record_blocks(
   notices: List(CacheNotice),
   advisor: advisor_history.Board,
 ) -> #(
-  List(#(Int, List(Line))),
+  List(#(Int, #(Source, List(Line)))),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
 ) {
@@ -781,10 +862,13 @@ fn record_blocks(
         |> list.map(fn(item) {
           #(
             spliced_sequence(item, fn(value) { value.seq }),
-            expanded_lines(item, owner, presentation.summaries),
+            #(
+              expanded_source(item),
+              expanded_lines(item, owner, presentation.summaries),
+            ),
           )
         })
-        |> merge_sequence_blocks(advisor_history_blocks(advisor)),
+        |> merge_sequence_blocks(sourced_advisor_blocks(advisor)),
       dict.new(),
       dict.new(),
     )
@@ -801,7 +885,7 @@ fn record_blocks(
         |> list.fold(#([], dict.new(), dict.new()), fn(acc, spliced) {
           case spliced {
             Transient(text, seq) -> #(
-              [#(seq, [Line(System, text)]), ..acc.0],
+              [#(seq, #(FromNotice, [Line(System, text)])), ..acc.0],
               acc.1,
               acc.2,
             )
@@ -818,11 +902,26 @@ fn record_blocks(
       #(
         reversed
           |> list.reverse
-          |> merge_sequence_blocks(advisor_history_blocks(advisor)),
+          |> merge_sequence_blocks(sourced_advisor_blocks(advisor)),
         calls,
         narratives,
       )
     }
+  }
+}
+
+// The advisor's board, tagged as its own source.
+fn sourced_advisor_blocks(
+  advisor: advisor_history.Board,
+) -> List(#(Int, #(Source, List(Line)))) {
+  advisor_history_blocks(advisor)
+  |> list.map(fn(block) { #(block.0, #(FromAdvisor, block.1)) })
+}
+
+fn expanded_source(spliced: Spliced(entry.Entry)) -> Source {
+  case spliced {
+    Transient(..) -> FromNotice
+    Projected(value) -> FromEntry(value)
   }
 }
 
@@ -846,7 +945,7 @@ fn expanded_lines(
 // shape.
 fn compact_item_lines(
   acc: #(
-    List(#(Int, List(Line))),
+    List(#(Int, #(Source, List(Line)))),
     Dict(tool_activity.Call, List(Line)),
     Dict(
       #(entry.Entry, Option(message.Origin), List(#(Int, String))),
@@ -858,7 +957,7 @@ fn compact_item_lines(
   presentation: Presentation,
   owner: Option(message.Origin),
 ) -> #(
-  List(#(Int, List(Line))),
+  List(#(Int, #(Source, List(Line)))),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
 ) {
@@ -873,12 +972,20 @@ fn compact_item_lines(
         |> result.lazy_unwrap(fn() {
           entry_lines(value, False, owner, presentation.summaries)
         })
-      #([#(seq, lines), ..acc.0], acc.1, dict.insert(acc.2, key, lines))
+      #(
+        [#(seq, #(FromEntry(value), lines)), ..acc.0],
+        acc.1,
+        dict.insert(acc.2, key, lines),
+      )
     }
     tool_activity.Tools(calls) -> {
       let #(lines, cached) =
         cached_activity_lines(calls, presentation.compact_call_cache)
-      #([#(seq, lines), ..acc.0], dict.merge(acc.1, cached), acc.2)
+      #(
+        [#(seq, #(FromTools(calls), lines)), ..acc.0],
+        dict.merge(acc.1, cached),
+        acc.2,
+      )
     }
   }
 }
@@ -1087,11 +1194,7 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
   // Gleam renderer instead of displaying the transport JSON as a summary.
   let program =
     code_mode_program(call.invocation.name, call.invocation.arguments, False)
-  let summary = case program {
-    Some(_) -> "code_mode"
-    None ->
-      tool_call_summary(call.invocation.name, call.invocation.arguments, False)
-  }
+  let summary = program_summary(call, program)
   let rows = case call.outcome {
     None -> [Line(ToolCall, summary <> " · awaiting result")]
     Some(message.ToolResultMessage(is_error: True, content:, ..)) -> [
@@ -1172,6 +1275,66 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
       notes_view.Excerpt,
     ),
   )
+}
+
+/// The one-line summary of a tool call, as its compact row names it: the
+/// tool and its target (`Bash(ls)`, `fs_edit · src/a.gleam`), or
+/// `code_mode` for a program.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.call_summary(call) == "fs_edit · src/app.gleam"
+/// ```
+pub fn call_summary(call: tool_activity.Call) -> String {
+  program_summary(
+    call,
+    code_mode_program(call.invocation.name, call.invocation.arguments, False),
+  )
+}
+
+fn program_summary(
+  call: tool_activity.Call,
+  program: Option(String),
+) -> String {
+  case program {
+    Some(_) -> "code_mode"
+    None ->
+      tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+  }
+}
+
+/// The newest entry one strand holds among `records`, which are newest
+/// first: the entry a transient notice raised now is anchored after.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.newest_entry([], "main") == option.None
+/// ```
+pub fn newest_entry(
+  records: List(protocol.EntryRecord),
+  strand: String,
+) -> Option(ids.EntryId) {
+  records
+  |> list.find(fn(record) { record.strand == strand })
+  |> result.map(fn(record) { record.entry.id })
+  |> option.from_result
+}
+
+/// The text of a person's message, its blocks joined line by line, before
+/// the transcript's paste bound is applied.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.user_body([message.UserText("hi", option.None)])
+///   == "hi"
+/// ```
+pub fn user_body(content: List(message.UserBlock)) -> String {
+  content
+  |> list.map(user_block_text)
+  |> string.join("\n")
 }
 
 // Notes are useful output, even when ordinary tool details are collapsed.
@@ -1864,8 +2027,7 @@ fn message_lines(
         user_author_prefix(origin, local_owner)
           <> {
           content
-          |> list.map(user_block_text)
-          |> string.join("\n")
+          |> user_body
           |> composer.transcript_text(details_expanded)
         },
       ),

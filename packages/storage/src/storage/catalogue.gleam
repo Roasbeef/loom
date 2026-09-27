@@ -14,11 +14,13 @@
 import core/ids
 import gleam/dynamic/decode
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import parrot/dev
 import sqlight
 import storage/catalogue_archives_schema
+import storage/catalogue_claims_schema
 import storage/catalogue_names_schema
 import storage/sql
 import storage/sql_schema
@@ -138,27 +140,24 @@ fn initialize(connection: sqlight.Connection) -> Result(Nil, Error) {
 
 // Journal configuration follows schema validation, so an unrelated file is
 // refused before any persistent tuning can change its header.
+//
+// Each version after the first adds one migration schema, and an older
+// catalogue applies every schema it lacks in one transaction, so a crash
+// part-way through a migration leaves the previous version intact rather
+// than a catalogue that claims a version whose tables are missing.
 fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use found <- result.try(number(connection, "PRAGMA application_id"))
   use version <- result.try(number(connection, "PRAGMA user_version"))
   case found, version {
-    1_281_253_197, 3 -> {
+    1_281_253_197, 4 -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       Ok(Nil)
     }
-    1_281_253_197, 1 | 1_281_253_197, 2 -> {
+    1_281_253_197, 1 | 1_281_253_197, 2 | 1_281_253_197, 3 -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       transaction(connection, fn() {
-        use Nil <- result.try(case version {
-          1 -> execute(connection, catalogue_names_schema.schema)
-          2 -> Ok(Nil)
-          _ -> Error(Unsupported)
-        })
-        use Nil <- result.try(execute(
-          connection,
-          catalogue_archives_schema.schema,
-        ))
-        execute(connection, "PRAGMA user_version=3")
+        use Nil <- result.try(migrations_after(connection, version))
+        execute(connection, "PRAGMA user_version=4")
       })
     }
     0, 0 -> {
@@ -167,21 +166,14 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
         0 ->
           transaction(connection, fn() {
             use Nil <- result.try(execute(connection, sql_schema.schema))
-            use Nil <- result.try(execute(
-              connection,
-              catalogue_names_schema.schema,
-            ))
-            use Nil <- result.try(execute(
-              connection,
-              catalogue_archives_schema.schema,
-            ))
+            use Nil <- result.try(migrations_after(connection, 1))
             use Nil <- result.try(statement(
               Catalogue(connection),
               sql.initialize_catalogue_revision(),
             ))
             execute(
               connection,
-              "PRAGMA application_id=1281253197; PRAGMA user_version=3",
+              "PRAGMA application_id=1281253197; PRAGMA user_version=4",
             )
           })
         _ -> Error(Unsupported)
@@ -189,6 +181,22 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
     }
     _, _ -> Error(Unsupported)
   }
+}
+
+// The schemas a catalogue at `version` lacks, applied in version order. A
+// fresh catalogue is version one once `sql_schema` is in place, so creation
+// and migration run the same list and cannot drift apart.
+fn migrations_after(
+  connection: sqlight.Connection,
+  version: Int,
+) -> Result(Nil, Error) {
+  [
+    #(2, catalogue_names_schema.schema),
+    #(3, catalogue_archives_schema.schema),
+    #(4, catalogue_claims_schema.schema),
+  ]
+  |> list.filter(fn(migration) { migration.0 > version })
+  |> list.try_each(fn(migration) { execute(connection, migration.1) })
 }
 
 /// Reserves a creation exactly once without touching its conversation file.
@@ -808,20 +816,24 @@ pub fn statement(catalogue: Catalogue, generated: #(String, List(dev.Param))) {
   query(catalogue, #(text, params, decode.success(Nil))) |> result.replace(Nil)
 }
 
-// These queries use only non-null strings and integers. A future generator
-// change must add an explicit conversion instead of silently binding NULL.
+// These queries bind only non-null strings and integers. Parrot types a
+// parameter that assigns a nullable column as `ParamNullable`, as the claim
+// binding does; a present value binds as itself, and an absent one is refused
+// rather than silently binding NULL, because no catalogue write clears a
+// column. A future generator change must add an explicit conversion here.
 fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
   case param {
     dev.ParamInt(value) -> Ok(sqlight.int(value))
     dev.ParamString(value) -> Ok(sqlight.text(value))
-    dev.ParamFloat(_)
+    dev.ParamNullable(Some(value)) -> parameter(value)
+    dev.ParamNullable(None)
+    | dev.ParamFloat(_)
     | dev.ParamBool(_)
     | dev.ParamBitArray(_)
     | dev.ParamTimestamp(_)
     | dev.ParamDate(_)
     | dev.ParamList(_)
-    | dev.ParamDynamic(_)
-    | dev.ParamNullable(_) ->
+    | dev.ParamDynamic(_) ->
       Error(Invalid("unsupported generated catalogue parameter"))
   }
 }

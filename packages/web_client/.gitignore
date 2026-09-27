@@ -1,0 +1,4 @@
+# lustre_dev_tools caches its Bun and Tailwind binaries here.
+/.lustre
+/build
+/dist

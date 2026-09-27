@@ -20,6 +20,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import host/claim
 import runtime/api
 import runtime/escalation
 import runtime/writer
@@ -30,15 +31,25 @@ import support/tui_driver
 import tui/model as tui_model
 import weft
 
+// The member draws its own credential and the owner enrolls its digest
+// (protocol-change/053), so no control reply carries a secret.
 fn invited(address, owner, epoch, session, principal, role, name) {
+  let bearer = claim.random_credential()
   let assert Ok(request) =
-    admin.parse(["invite", session, principal, role, name])
+    admin.parse([
+      "invite",
+      session,
+      principal,
+      role,
+      name,
+      "--credential-digest",
+      claim.digest(bearer),
+    ])
     as "owner administration uses the shipped CLI parser"
   let assert Ok(json.Object(fields)) =
     admin.exchange(address, owner, epoch, request)
-    as "the real epoch-fenced control command issues one member credential"
-  let assert Ok(json.String(bearer)) = list.key_find(fields, "bearer")
-    as "the secret is returned once and never printed"
+    as "the real epoch-fenced control command enrolls one member credential"
+  assert list.key_find(fields, "claim") == Error(Nil)
   bearer
 }
 

@@ -66,11 +66,17 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   checks the deadline itself.
 - `daemon/ui_http`: pure checks. `route` (the exchange at
   `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
-  its socket at `.../ws` with the `csrf-token` query, and four assets),
+  its socket at `.../ws` with the `csrf-token` query, and five assets),
   `loopback_host`, `exchange_allowed` and `navigation_allowed`
   (`Sec-Fetch-Site` is `none` or `same-origin`), `origin_matches`, the
   `loom_ui` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/ui/p/<key>`) and
   `secured`, whose `Referrer-Policy: no-referrer` is load-bearing.
+- `daemon/ui_assets`: the page's stylesheet, bootstrap scripts and client
+  components' bundle (from `web_view`'s `priv/static`, `page.static_file`,
+  built from `web_client` by `make gen-client`) and Lustre's client runtime
+  (from `lustre`'s `priv`), read once by `main` when `--ui` is on and held
+  in `server.Ui`. A release that lost one refuses `--ui` at startup; a
+  request never touches the disk.
 - `daemon/server`: routes in 051's order of checks. The exchange answers
   200 with the keyed path and the nonce in the body, never a redirect.
   `page_grant` re-checks the cookie, its key, its session, and
@@ -168,8 +174,25 @@ catalogue without opening runtimes. Explicit admission invokes
   It reads existing private endpoint/owner-token records, verifies the hello
   epoch, and sends one control mutation through `host/websocket`. It never
   starts a daemon or opens a conversation. The caller's bounded principal ID
-  is printed before sending; only explicit successful invitation/rotation
-  output contains a bearer. A timeout does not trigger a retry.
+  is printed before sending. `invite` and `rotate` take `--ttl`,
+  `--claim-addr` (checked by `host/claim.remote_address`) or the exclusive
+  `--credential-digest`; their success prints the claim token only on
+  standard output, with a `claim_command` naming the address and never the
+  token (protocol-change/053). The reply is re-encoded from checked fields, so
+  no other field, and no bearer, can be printed. A timeout does not trigger a
+  retry.
+- `client/daemon/server` serves a third route, `/v2/claim` (protocol-change
+  053). `claim_route` hashes an exact `Bearer loomclaim_<64 hex>` header, asks
+  `manager.claim_known` (exists and not void, else 401), and takes
+  `root.acquire_claim` (409 while another upgrade for the same claim is open).
+  The socket accepts one message of `protocol.max_claim_bytes`, sends a
+  `hello` with only `protocol`, closes after `claim_idle_ms` (2 s) without a
+  command, and closes after answering its one `credentials.claim`
+  (`protocol.decode_claim`, which refuses every control command, as
+  `protocol.decode` refuses `credentials.claim`). Invitation and rotation mint
+  the claim with `host/claim.mint_token(token.production_entropy())`, store
+  its digest with a `bootstrap.system_time_ms` expiry, and reply `claim` and
+  `expires_in_ms`; no control reply carries a bearer.
 - `client/daemon/peer_cli.Command` provides `loomd peer inspect`, `link`,
   `unlink`, and `send` over that same private owner control transport. It
   requires explicit source and target coordinates, wake policy for links, and
@@ -179,10 +202,17 @@ catalogue without opening runtimes. Explicit admission invokes
   as not sent, and inspect follows bounded pages before returning one result.
   It never starts a daemon.
 - `client/daemon/manager.Administration` carries digest-only invitation,
-  membership, and principal-scoped credential changes. `administer` checks
+  membership, and principal-scoped credential changes. `Invite` and
+  `RotateMember` carry a `storage/access.Enrollment` (a claim digest with its
+  expiry, or the invitee's credential digest). `administer` checks
   phase, current owner credential, and epoch in the same serialized dispatch
   as the DAL mutation. Existing IDs conflict, revoked digests stay tombstoned,
   and owner credentials are excluded from member rotation/revocation.
+  `manager.claim` runs `access.claim` in its own serialized `Claim` message
+  with a constant-time digest comparison (`broker/internal/ffi_crypto`), and
+  answers `ClaimRefused(access.ClaimRefusal)` or `ClaimUnavailable`. Both
+  `Administer` and `Claim` drop the frame-authority memo before replying, so
+  the memo's single-writer argument covers the claim's credential insert.
   Invitation and membership-upserting role changes also require the persisted
   `storage/domain.SessionOnly` scope. `isolate` checks owner, epoch, and absence
   of every retained runtime slot before changing metadata; the wire requires
@@ -224,6 +254,13 @@ catalogue without opening runtimes. Explicit admission invokes
   `manager.DrainHeld` snapshots resident callbacks; the task invokes them outside
   the registry so authenticated delivery can call `frame_authority` there.
   `root.Returns` consumes the task's final report before session cancellation.
+  `ConnectionClass.Claim(claim_digest)` is the `/v2/claim` parser class
+  (1 KiB, no delivery allowance). Every reservation passes `admission`, which
+  refuses a second `Claim` allocation for the same digest while one exists;
+  the allocation already lives from the HTTP request to the socket process's
+  DOWN, so that check is the whole one-upgrade-per-claim bound.
+  `acquire_claim` reports it as `ClaimInFlight` (409) apart from `NotAdmitted`
+  (503). Claim sockets are cancelled with session sockets at drain.
   Task completion never replaces the original lifetime monitor's cleanup proof.
   Connection admission uses startup-owned `[daemon]` limits, defaulting to
   64 owners and 512MiB of accounted payload:

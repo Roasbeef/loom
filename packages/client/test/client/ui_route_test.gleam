@@ -18,6 +18,7 @@ import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
+import client/daemon/ui_assets
 import client/daemon/ui_sessions
 import client/daemon_server_test
 import core/clock
@@ -34,10 +35,12 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import mist
+import simplifile
 import storage/access
 import storage/catalogue
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
+import web_view/page
 import weft
 import weft/poll
 
@@ -67,6 +70,8 @@ fn fixture(run: fn(root.Ready(String), Int, String) -> Nil) -> Nil {
   let assert Ok(sessions) =
     ui_sessions.start(ui_sessions.production(bootstrap.monotonic_time_ms))
     as "the web view's tables start"
+  let assert Ok(assets) = ui_assets.load()
+    as "the web view's assets are in web_view's and lustre's priv"
   let config =
     server.Config(
       peer_endpoint: fn(_) { None },
@@ -75,15 +80,19 @@ fn fixture(run: fn(root.Ready(String), Int, String) -> Nil) -> Nil {
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(
-        server.Ui(sessions:, upgrade: fn(_, attachment, _open, _ceiling) {
-          // The router hands the page's upgrade the capped role. The stub
-          // reports what it was given.
-          case attachment.authority {
-            access.Participant(access.Observer) -> stub(299, "observer")
-            access.Participant(access.Operator) -> stub(298, "operator")
-            access.Owner -> stub(297, "not capped")
-          }
-        }),
+        server.Ui(
+          sessions:,
+          assets:,
+          upgrade: fn(_, attachment, _open, _ceiling) {
+            // The router hands the page's upgrade the capped role. The stub
+            // reports what it was given.
+            case attachment.authority {
+              access.Participant(access.Observer) -> stub(299, "observer")
+              access.Participant(access.Operator) -> stub(298, "operator")
+              access.Owner -> stub(297, "not capped")
+            }
+          },
+        ),
       ),
     )
   let ports = process.new_subject()
@@ -330,7 +339,7 @@ pub fn without_ui_the_routes_do_not_exist_test() {
   daemon_server_test.fixture(fn(_, _, port, credential) {
     let session = "0198c0de-0000-7000-8000-000000000001"
     assert get(port, "/ui/sessions/" <> session, [host(port)]).status == 404
-    assert get(port, "/ui/assets/web_view.css", [host(port)]).status == 404
+    assert get(port, "/ui/assets/web_client.css", [host(port)]).status == 404
 
     // The hello names no view, and a link is refused.
     let #(socket, _) =
@@ -565,6 +574,51 @@ pub fn an_operators_page_caps_the_membership_test() {
   })
 }
 
+// The policy protocol-change/051 specifies, spelled out rather than taken
+// from `page.content_security_policy`, so that a change to it fails here and
+// has to be argued in a 051 addendum. Moving the stylesheet and scripts into
+// files changed where they come from and nothing about what may run.
+fn policy(port: Int) -> String {
+  "default-src 'none'; script-src 'self'; style-src 'self'; "
+  <> "style-src-attr 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:"
+  <> int.to_string(port)
+  <> "; img-src 'self'; base-uri 'none'; form-action 'none'; "
+  <> "frame-ancestors 'none'"
+}
+
+// Every asset is served from the file its application ships, byte for byte,
+// under the unchanged policy; the scripts keep the nonce under the item name
+// the page module names.
+pub fn the_assets_are_the_priv_files_under_the_unchanged_policy_test() {
+  fixture(fn(_ready, port, _credential) {
+    let javascript = "text/javascript; charset=utf-8"
+    let assets = [
+      #(page.stylesheet_asset, "text/css; charset=utf-8", page.static_file),
+      #(page.enter_asset, javascript, page.static_file),
+      #(page.page_asset, javascript, page.static_file),
+      #(page.client_asset, javascript, page.static_file),
+      #(page.runtime_asset, javascript, fn(_) { page.runtime_file() }),
+    ]
+    list.each(assets, fn(asset) {
+      let #(name, content_type, file) = asset
+      let answer = get(port, page.asset_path(name), [host(port)])
+      assert answer.status == 200
+      assert list.key_find(answer.headers, "content-type") == Ok(content_type)
+      assert list.key_find(answer.headers, "content-security-policy")
+        == Ok(policy(port))
+      assert list.key_find(answer.headers, "x-content-type-options")
+        == Ok("nosniff")
+      let assert Ok(path) = file(name) as "the asset has a priv path"
+      let assert Ok(on_disk) = simplifile.read(path) as "the priv file reads"
+      assert answer.body == on_disk
+    })
+    list.each([page.enter_asset, page.page_asset], fn(name) {
+      let answer = get(port, page.asset_path(name), [host(port)])
+      assert string.contains(answer.body, "\"" <> page.nonce_item <> "\"")
+    })
+  })
+}
+
 // Referrer-Policy is load-bearing: the exchange's URL carries the ticket and
 // the page's carries its key, and neither may leave in a Referer.
 pub fn every_document_and_script_withholds_the_referrer_test() {
@@ -653,7 +707,7 @@ pub fn a_ticket_for_another_session_is_refused_and_signs_nothing_out_test() {
 pub fn a_refused_host_still_carries_the_policy_test() {
   fixture(fn(_, port, _) {
     let refused =
-      get(port, "/ui/assets/web_view.css", [#("host", "evil.example")])
+      get(port, "/ui/assets/web_client.css", [#("host", "evil.example")])
     assert refused.status == 403
     let assert Ok(policy) =
       list.key_find(refused.headers, "content-security-policy")

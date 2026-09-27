@@ -1,0 +1,192 @@
+//// `<loom-elapsed offset="4500">`: an operation that had run `offset`
+//// milliseconds when the attribute arrived, counted on from there in the
+//// browser once a second.
+////
+//// The server component draws each agent chip, and a chip's elapsed time is
+//// the one figure on it that changes with nothing but the clock. Counting
+//// it here means the server never renders the page again only to move a
+//// second, which an idle page would otherwise pay four times a second and
+//// an event-driven server would have no event for.
+////
+//// The attribute is a duration, not an instant. The server measured it on
+//// the daemon host's clock (`agent_roster.running_ms`), and the element
+//// anchors it to the browser's clock the moment it arrives, so the count is
+//// `offset + (now - anchor)` with each subtraction on one clock. A browser
+//// whose clock disagrees with the daemon's by a minute still counts right,
+//// which subtracting a daemon instant from `Date.now()` would not. Each
+//// rebuilt strip brings a fresh reading, and a changed attribute
+//// re-anchors.
+////
+//// The element renders only what its one attribute says: a number the
+//// daemon wrote, never session text. It draws a text node in its own shadow
+//// root, handles no key and takes no focus.
+
+import gleam/int
+import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
+import lustre
+import lustre/component
+import lustre/effect.{type Effect}
+import lustre/element.{type Element}
+import lustre/element/html
+import web_client/internal/ffi_clock
+
+/// The element's tag.
+pub const name = "loom-elapsed"
+
+/// What the element knows: the server's reading and the browser's clock
+/// when it arrived, the browser's clock at the last tick, and its timer
+/// while it is on the page.
+pub type Model {
+  Model(reading: Option(Reading), now: Int, timer: Option(ffi_clock.Timer))
+}
+
+/// One reading from the server, anchored to the browser's clock.
+pub type Reading {
+  Reading(
+    /// How long the operation had run, in milliseconds, by the server.
+    offset: Int,
+    /// The browser's clock when the reading arrived.
+    anchor: Int,
+  )
+}
+
+/// Everything the element can be told.
+pub type Msg {
+  /// The server set `offset` to this many milliseconds.
+  OffsetChanged(offset: Int)
+
+  /// The reading arrived, anchored to the browser's clock.
+  Anchored(reading: Reading)
+
+  /// The element was added to the page.
+  Connected
+
+  /// The element left the page.
+  Disconnected
+
+  /// The timer started.
+  Started(timer: ffi_clock.Timer)
+
+  /// A second passed, and this is the browser's clock.
+  Ticked(now: Int)
+}
+
+/// Registers the element with the browser.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = elapsed.register()
+/// ```
+pub fn register() -> Result(Nil, lustre.Error) {
+  lustre.component(init, update, view, [
+    component.on_attribute_change("offset", offset),
+    component.on_connect(Connected),
+    component.on_disconnect(Disconnected),
+  ])
+  |> lustre.register(name)
+}
+
+// An `offset` that is not a whole number is ignored, which leaves the
+// element showing what it showed; the server only ever writes digits.
+fn offset(value: String) -> Result(Msg, Nil) {
+  value
+  |> string.trim
+  |> int.parse
+  |> result.map(OffsetChanged)
+}
+
+fn init(_: Nil) -> #(Model, Effect(Msg)) {
+  #(Model(reading: None, now: 0, timer: None), effect.none())
+}
+
+/// Applies one message. The clock is read only inside effects, so `update`
+/// stays a function of its messages.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // elapsed.update(model, elapsed.OffsetChanged(4500))
+/// ```
+pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
+  case message {
+    // The reading is anchored inside an effect, where the clock is read,
+    // and the anchor doubles as the clock's latest reading.
+    OffsetChanged(offset:) -> #(model, anchor(offset))
+    Anchored(reading:) -> #(
+      Model(..model, reading: Some(reading), now: reading.anchor),
+      effect.none(),
+    )
+
+    // Connecting starts one timer; a timer left from an earlier connection
+    // is stopped first, so moving the element never runs two.
+    Connected -> #(model, effect.batch([stop(model.timer), start()]))
+    Started(timer:) -> #(Model(..model, timer: Some(timer)), read_clock())
+    Disconnected -> #(Model(..model, timer: None), stop(model.timer))
+    Ticked(now:) -> #(Model(..model, now:), effect.none())
+  }
+}
+
+fn anchor(offset: Int) -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(Anchored(Reading(offset:, anchor: ffi_clock.now())))
+}
+
+fn read_clock() -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(Ticked(ffi_clock.now()))
+}
+
+fn start() -> Effect(Msg) {
+  use dispatch <- effect.from
+  let timer = ffi_clock.every(1000, fn() { dispatch(Ticked(ffi_clock.now())) })
+  dispatch(Started(timer))
+}
+
+fn stop(timer: Option(ffi_clock.Timer)) -> Effect(Msg) {
+  case timer {
+    None -> effect.none()
+    Some(timer) -> {
+      use _ <- effect.from
+      ffi_clock.cancel(timer)
+    }
+  }
+}
+
+fn view(model: Model) -> Element(Msg) {
+  case model.reading {
+    Some(reading) ->
+      html.text(duration(
+        int.max(0, reading.offset + model.now - reading.anchor) / 1000,
+      ))
+    None -> element.none()
+  }
+}
+
+/// An elapsed duration the way the terminal's strip shows one
+/// (`session_view/agent_roster.duration`): seconds under a minute, minutes
+/// and padded seconds under an hour, then hours and padded minutes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert elapsed.duration(475) == "7m 55s"
+/// ```
+pub fn duration(seconds: Int) -> String {
+  case seconds >= 3600, seconds >= 60 {
+    True, _ ->
+      int.to_string(seconds / 3600)
+      <> "h "
+      <> pad2({ seconds % 3600 } / 60)
+      <> "m"
+    False, True ->
+      int.to_string(seconds / 60) <> "m " <> pad2(seconds % 60) <> "s"
+    False, False -> int.to_string(int.max(0, seconds)) <> "s"
+  }
+}
+
+fn pad2(value: Int) -> String {
+  string.pad_start(int.to_string(value), to: 2, with: "0")
+}

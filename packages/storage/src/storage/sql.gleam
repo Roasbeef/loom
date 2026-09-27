@@ -146,6 +146,109 @@ pub fn revoke_access_membership(
   #(sql, [dev.ParamString(principal_id), dev.ParamString(session_id)])
 }
 
+pub type AccessClaim {
+  AccessClaim(
+    digest: String,
+    principal_id: String,
+    expires_at_ms: Int,
+    state: String,
+    credential_digest: Option(String),
+    claimed_at_ms: Option(Int),
+  )
+}
+
+pub fn access_claim(digest digest: String) {
+  let sql =
+    "SELECT digest, principal_id, expires_at_ms, state, credential_digest, claimed_at_ms FROM access_claims WHERE digest = ?"
+  #(sql, [dev.ParamString(digest)], access_claim_decoder())
+}
+
+pub fn access_claim_decoder() -> decode.Decoder(AccessClaim) {
+  use digest <- decode.field(0, decode.string)
+  use principal_id <- decode.field(1, decode.string)
+  use expires_at_ms <- decode.field(2, decode.int)
+  use state <- decode.field(3, decode.string)
+  use credential_digest <- decode.field(4, decode.optional(decode.string))
+  use claimed_at_ms <- decode.field(5, decode.optional(decode.int))
+  decode.success(AccessClaim(
+    digest:,
+    principal_id:,
+    expires_at_ms:,
+    state:,
+    credential_digest:,
+    claimed_at_ms:,
+  ))
+}
+
+pub fn insert_access_claim(
+  digest digest: String,
+  principal_id principal_id: String,
+  expires_at_ms expires_at_ms: Int,
+) {
+  let sql =
+    "INSERT INTO access_claims(digest, principal_id, expires_at_ms, state) VALUES (?, ?, ?, 'open')"
+  #(sql, [
+    dev.ParamString(digest),
+    dev.ParamString(principal_id),
+    dev.ParamInt(expires_at_ms),
+  ])
+}
+
+pub fn bind_access_claim(
+  credential_digest credential_digest: Option(String),
+  claimed_at_ms claimed_at_ms: Option(Int),
+  digest digest: String,
+) {
+  let sql =
+    "UPDATE access_claims SET state = 'claimed', credential_digest = ?, claimed_at_ms = ? WHERE digest = ? AND state = 'open'"
+  #(sql, [
+    dev.ParamNullable(
+      option.map(credential_digest, fn(v) { dev.ParamString(v) }),
+    ),
+    dev.ParamNullable(option.map(claimed_at_ms, fn(v) { dev.ParamInt(v) })),
+    dev.ParamString(digest),
+  ])
+}
+
+pub fn void_member_claims(principal_id principal_id: String) {
+  let sql =
+    "UPDATE access_claims SET state = 'void' WHERE principal_id = ? AND state = 'open'"
+  #(sql, [dev.ParamString(principal_id)])
+}
+
+pub type ActiveMemberCredentials {
+  ActiveMemberCredentials(digest: String)
+}
+
+pub fn active_member_credentials(principal_id principal_id: String) {
+  let sql =
+    "SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' LIMIT 1"
+  #(sql, [dev.ParamString(principal_id)], active_member_credentials_decoder())
+}
+
+pub fn active_member_credentials_decoder() -> decode.Decoder(
+  ActiveMemberCredentials,
+) {
+  use digest <- decode.field(0, decode.string)
+  decode.success(ActiveMemberCredentials(digest:))
+}
+
+pub type ClaimMemberships {
+  ClaimMemberships(session_id: String, role: String)
+}
+
+pub fn claim_memberships(principal_id principal_id: String) {
+  let sql =
+    "SELECT session_id, role FROM access_memberships WHERE principal_id = ? ORDER BY session_id LIMIT 16"
+  #(sql, [dev.ParamString(principal_id)], claim_memberships_decoder())
+}
+
+pub fn claim_memberships_decoder() -> decode.Decoder(ClaimMemberships) {
+  use session_id <- decode.field(0, decode.string)
+  use role <- decode.field(1, decode.string)
+  decode.success(ClaimMemberships(session_id:, role:))
+}
+
 pub fn initialize_catalogue_revision() {
   let sql =
     "

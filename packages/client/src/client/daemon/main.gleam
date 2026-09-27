@@ -13,6 +13,7 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
+import client/daemon/ui_assets
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/host
@@ -708,7 +709,8 @@ fn run(
   }
 }
 
-// The web view's tables and socket, when the daemon was started with `--ui`.
+// The web view's assets, tables and socket, when the daemon was started with
+// `--ui`.
 // The tables' actor is linked to this process, which lives as long as the
 // daemon does.
 fn web_view(
@@ -718,20 +720,27 @@ fn web_view(
   case config.view {
     ViewOff -> Ok(None)
     ViewOn -> {
+      // The page's assets are read once, here, so a release that lost one
+      // refuses `--ui` at startup rather than serving a page without it.
+      use assets <- result.try(ui_assets.load())
       use sessions <- result.map(
         ui_sessions.start(ui_sessions.production(bootstrap.monotonic_time_ms)),
       )
       Some(
-        server.Ui(sessions:, upgrade: fn(request, attachment, open, ceiling) {
-          ui_socket.upgrade(
-            daemon,
-            request,
-            attachment,
-            attachment.instance.gateway,
-            open,
-            ceiling,
-          )
-        }),
+        server.Ui(
+          sessions:,
+          assets:,
+          upgrade: fn(request, attachment, open, ceiling) {
+            ui_socket.upgrade(
+              daemon,
+              request,
+              attachment,
+              attachment.instance.gateway,
+              open,
+              ceiling,
+            )
+          },
+        ),
       )
     }
   }

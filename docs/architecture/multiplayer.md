@@ -51,6 +51,43 @@ request or an outbound delivery. Revocation does not cancel a command that
 was already admitted, and it cannot undo a completed effect; protocol 015
 defines that boundary.
 
+## Invitations and claims
+
+The owner never holds a working credential that belongs to someone else
+([protocol 053](../../protocol-change/053-owner-admin-and-claims.md)).
+`loomd access invite SESSION PRINCIPAL ROLE NAME` creates the member and
+its membership, and prints a single-use claim token (`loomclaim_…`) with a
+`claim_command` line that names the daemon's address and not the token.
+The owner sends both to the invitee over a channel outside Loom, never
+through a Loom session: a claim pasted into a composer becomes part of the
+transcript and of the agent's context.
+
+The invitee runs `loom claim --addr ADDRESS` and supplies the token on
+standard input. Their client draws a fresh credential, stores it at mode
+`0600` under `~/.loom/remotes/<label>/`, and sends the daemon only its
+SHA-256 digest on `/v2/claim`. The daemon binds that digest to the claim
+once. Until then the member has no credential at all, and the claim
+itself authenticates nothing. A claim lives 24 hours by default
+(`--ttl`, five minutes to seven days).
+
+Three properties follow. A claim read by someone else before the invitee
+uses it is a race the loser sees: the rightful invitee's claim is refused
+with `conflict`, and `loom claim` says to contact the owner. A claim read
+after it is spent is worth nothing. And a lost reply is recovered by
+rerunning the same command, because the credential was stored before the
+digest was sent. `loom claim` prints the credential's fingerprint, the
+first 16 hex characters of its digest; the owner confirms it with the
+invitee out of band before relying on a new member, and recovers from a
+claim redeemed by the wrong person with `loomd access rotate PRINCIPAL`,
+which revokes that credential and issues a new claim.
+
+For an operator invitation the owner can skip the claim entirely: the
+invitee runs `loom enroll --addr ADDRESS`, sends the printed digest, the
+two confirm its fingerprint over a second channel, and the owner invites
+with `--credential-digest HEX`. Nothing secret crosses the channel.
+`credentials.revoke` voids an unredeemed claim as well as revoking every
+credential.
+
 Membership does not isolate the filesystem. An invitation exposes the
 existing transcript and whatever the session's tools and memory can bring
 into it, so overlapping workspace grants and deliberately shared memory
@@ -512,12 +549,16 @@ and session switching, but not distinct-principal authority.
 | Two operators prompt inside one catch-up window | One prompt opens the run; the other is answered `queued` and commits with its own submitter's origin when the run settles. | `tui_shipped_live_delivery_test` |
 | A peer's answer is delivered | Every terminal shows the answer's text before any entry for it exists in that terminal's cut, and its notice count rises by the records the turns commit. | `tui_shipped_live_delivery_test` |
 | A member is revoked mid-answer | The socket closes at the per-frame authority check while pushed frames are in flight, and no further frame reaches it. | `tui_shipped_live_delivery_test` |
+| An invitee redeems a claim | The stored credential attaches with the granted role; a replay with any other digest is `conflict`; the claim string is refused as a bearer; revocation closes the attachment; no file the daemon wrote holds the claim or the credential. | `daemon_shipped_claim_test`, `daemon_claim_test` |
+| A claim is attacked | Its own digest, an expired claim, a voided claim, a second in-flight upgrade and an idle socket are each refused; of four concurrent claims one binds. | `daemon_claim_test` (host level) |
 
 ### The shipped multiplayer fixture
 
 `tui_shipped_multiplayer_test` drives the built `bin/loomd` through its
 real bootstrap and administration APIs. The owner creates a session,
-isolates it, invites two operators and an observer, and reopens it. Three
+isolates it, invites two operators and an observer by credential digest
+(each driver draws its own credential, as `loom enroll` does), and
+reopens it. Three
 terminal drivers verify their principal and role, converge on Alice's
 configuration change and its server-assigned origin, and then run a
 scripted provider turn each for Alice and Bob, with Bob leaving and

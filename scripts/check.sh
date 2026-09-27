@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(host core storage session machine prompt session_view web_view telemetry runtime provider broker mcp tools cap ext codemode events client tui conformance lint sandbox)
+packages=(host core storage session machine prompt session_view web_view web_client telemetry runtime provider broker mcp tools cap ext codemode events client tui conformance lint sandbox)
 targets=("${@:-${packages[@]}}")
 
 if [ $# -eq 0 ]; then
@@ -32,6 +32,21 @@ for pkg in "${targets[@]}"; do
   fi
 done
 
+# What the page loads besides Lustre's own runtime (the client components'
+# bundle, the Tailwind stylesheet and the two bootstrap scripts) is built
+# from packages/web_client into web_view's priv/static by `make gen-client`,
+# which needs the network. A stale build compiles and passes every test
+# while the page runs old code or misses a style, so drift is gated here,
+# with the package that serves it, by digests alone. See
+# scripts/web_assets.sh.
+for pkg in "${targets[@]}"; do
+  if [ "$pkg" = "web_view" ]; then
+    echo "==> web view assets"
+    scripts/web_assets.sh --check
+    scripts/web_assets.sh --self-test
+  fi
+done
+
 for pkg in "${targets[@]}"; do
   if [ "$pkg" = "sandbox" ]; then
     echo "==> $pkg (Go)"
@@ -48,6 +63,15 @@ for pkg in "${targets[@]}"; do
     )
     (cd "packages/$pkg" && go vet ./... && go build ./... && \
       python3 ../../scripts/with_timeout.py 1200 -- go test -timeout 10m ./...)
+    continue
+  fi
+  # The browser package targets JavaScript. The gate compiles it, warning
+  # free, and runs nothing: executing JavaScript would need a runtime the
+  # gate does not otherwise require. What its elements render is checked by
+  # web_view's rendered-output tests, and its bundle by the asset gate.
+  if [ "$pkg" = "web_client" ]; then
+    echo "==> $pkg (JavaScript, compiled only)"
+    (cd "packages/$pkg" && gleam format --check src && gleam build --warnings-as-errors)
     continue
   fi
   echo "==> $pkg"

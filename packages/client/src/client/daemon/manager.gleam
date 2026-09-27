@@ -29,6 +29,7 @@
 //// startup, then the registry confirms successful initialization in the catalogue.
 
 import broker/internal/call
+import broker/internal/ffi_crypto
 import client/daemon/domain as domain_service
 import client/distill
 import client/distillpass
@@ -390,6 +391,18 @@ type Message(instance) {
     Administration,
     Subject(Result(access.Principal, AdminError)),
   )
+
+  /// Binds a credential digest to a claim at a wall-clock instant; the only
+  /// writer of the credential table besides `Administer`.
+  Claim(
+    access.ClaimDigest,
+    access.Digest,
+    Int,
+    Subject(Result(access.Claimed, ClaimError)),
+  )
+
+  /// The `/v2/claim` upgrade's filter: the claim exists and is not void.
+  ClaimKnown(access.ClaimDigest, Subject(Result(Nil, Error)))
   Census(Subject(Summary))
 
   /// Answers the subject a session's domain currently settles on. Fixtures
@@ -484,14 +497,16 @@ pub type FrameRefusal {
   RegistryUnavailable
 }
 
-/// One owner-only mutation; bearer values never enter the registry.
+/// One owner-only mutation; bearer and claim values never enter the
+/// registry, only their digests.
 @internal
 pub type Administration {
-  /// Creates a permanently reserved member ID and its first session grant.
+  /// Creates a permanently reserved member ID, its enrollment (an open claim
+  /// or the invitee's own credential digest), and its first session grant.
   Invite(
     id: String,
     name: String,
-    digest: access.Digest,
+    enrollment: access.Enrollment,
     session_id: String,
     role: access.Role,
   )
@@ -502,11 +517,26 @@ pub type Administration {
   /// Removes one session grant without revoking unrelated memberships.
   RevokeMembership(id: String, session_id: String)
 
-  /// Revokes every active member credential and inserts one replacement.
-  RotateMember(id: String, digest: access.Digest)
+  /// Voids the open claim, revokes every active member credential, and
+  /// inserts one replacement enrollment.
+  RotateMember(id: String, enrollment: access.Enrollment)
 
-  /// Revokes all member credentials while retaining the recovery identity.
+  /// Revokes all member credentials and voids the open claim while retaining
+  /// the recovery identity.
   RevokeMember(id: String)
+}
+
+/// Why a claim bound nothing. Neither variant carries a digest.
+@internal
+pub type ClaimError {
+  /// The catalogue refused the claim, with the reason the claim socket
+  /// reports.
+  ClaimRefused(refusal: access.ClaimRefusal)
+
+  /// The registry is draining, died, or did not answer in time. The claim may
+  /// or may not have bound; presenting the same claim and digest again
+  /// answers which.
+  ClaimUnavailable
 }
 
 /// An administration refusal contains no credential material.
@@ -563,6 +593,52 @@ pub fn administer(
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Redeems a claim for the presented credential digest in one serialized
+/// dispatch, like every administration mutation.
+///
+/// `now_ms` is the wall-clock instant the expiry is judged against and the
+/// one recorded as the claim instant. A timeout is an unknown outcome; the
+/// claim socket reports it as `unavailable`, and a rerun with the same claim
+/// and digest either completes or refuses.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.claim(registry, claim, credential, now_ms: bootstrap.system_time_ms())
+/// ```
+@internal
+pub fn claim(
+  manager: Manager(instance),
+  claim: access.ClaimDigest,
+  credential: access.Digest,
+  now_ms now_ms: Int,
+) -> Result(access.Claimed, ClaimError) {
+  call.try_call(manager.commands, waiting: 5000, sending: Claim(
+    claim,
+    credential,
+    now_ms,
+    _,
+  ))
+  |> result.unwrap(Error(ClaimUnavailable))
+}
+
+/// Answers whether a claim exists and is not void, for the `/v2/claim`
+/// upgrade. The command, not this check, decides expiry and binding.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.claim_known(registry, claim)
+/// ```
+@internal
+pub fn claim_known(
+  manager: Manager(instance),
+  claim: access.ClaimDigest,
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: ClaimKnown(claim, _))
+  |> result.unwrap(Error(Unavailable))
 }
 
 /// Renames metadata after reauthenticating owner and epoch in one dispatch.
@@ -1369,6 +1445,29 @@ fn handle(
       process.send(reply, outcome)
       sm.keep(book)
     }
+
+    // A claim only inserts a credential nobody has presented yet, which no
+    // remembered answer can depend on. The memo is dropped anyway, so the
+    // rule stays "every writer of the access tables drops it" rather than an
+    // argument about which writes are harmless.
+    Claim(claim, credential, now_ms, reply) -> {
+      let outcome = case phase {
+        Ready ->
+          access.claim(book.catalogue, claim, credential, now_ms, same_digest)
+          |> result.map_error(ClaimRefused)
+        ShuttingDown -> Error(ClaimUnavailable)
+      }
+      let book = Book(..book, authority: dict.new())
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    ClaimKnown(claim, reply) -> {
+      process.send(
+        reply,
+        access.claim_known(book.catalogue, claim) |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
     Census(reply) -> {
       process.send(reply, census(phase, book))
       sm.keep(book)
@@ -1612,13 +1711,14 @@ fn authorize_admin(phase, book: Book(instance), digest, epoch) {
 
 fn administer_member(store, action) {
   case action {
-    Invite(id, name, digest, session_id, role) -> {
+    Invite(id, name, enrollment, session_id, role) -> {
       use Nil <- result.try(require_shared(store, session_id))
-      access.invite_member(store, id, name, digest, session_id, role)
+      access.invite_member(store, id, name, enrollment, session_id, role)
       |> result.map_error(AdminMetadata)
     }
-    RotateMember(id, digest) ->
-      access.rotate_member(store, id, digest) |> result.map_error(AdminMetadata)
+    RotateMember(id, enrollment) ->
+      access.rotate_member(store, id, enrollment)
+      |> result.map_error(AdminMetadata)
     RevokeMember(id) ->
       access.revoke_member(store, id) |> result.map_error(AdminMetadata)
     SetRole(id, session_id, role) -> {
@@ -1643,6 +1743,16 @@ fn administer_member(store, action) {
       Ok(member)
     }
   }
+}
+
+// Two digests are 64-character base16 SHA-256 values, the same length
+// whatever they digest, so a constant-time comparison of their bytes reveals
+// nothing about either through the time a refusal takes.
+fn same_digest(stored: String, presented: String) -> Bool {
+  ffi_crypto.constant_time_equal(
+    bit_array.from_string(stored),
+    bit_array.from_string(presented),
+  )
 }
 
 fn require_shared(store, session_id) {
@@ -2604,9 +2714,12 @@ fn frame_authorized(
 // This is memoisation rather than a cache, and two fences hold it to that. The
 // first is the single writer: the tables it reads — `access_credential`,
 // `access_principal`, `access_membership`, and the session registration row —
-// are written in exactly one place, `administer_member`, reached only by the
-// `Administer` message this same actor serialises, and that arm drops the whole
-// memo before it replies. Startup's `access.bootstrap_owner` runs in the root
+// are written in exactly two places, `administer_member` and `access.claim`,
+// reached only by the `Administer` and `Claim` messages this same actor
+// serialises, and both arms drop the whole memo before they reply. A claim
+// only inserts a credential that has never authenticated, so it could not
+// change a remembered answer anyway; it drops the memo so the fence stays one
+// rule rather than two. Startup's `access.bootstrap_owner` runs in the root
 // before the registry exists. The second is the slot lifetime: `frame_authority`
 // resolves nothing without a `Running` slot for the session, and `forget_authority`
 // drops an entry when that slot goes, so no remembered answer outlives the

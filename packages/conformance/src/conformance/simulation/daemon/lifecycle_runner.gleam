@@ -674,7 +674,13 @@ fn invite(
   id: String,
 ) -> Result(Nil, Failure) {
   let action =
-    manager.Invite(member_id, "Operator", member, id, access.Operator)
+    manager.Invite(
+      member_id,
+      "Operator",
+      access.DigestEnrollment(member),
+      id,
+      access.Operator,
+    )
   case
     manager.administer(
       harness.registry(daemon),

@@ -33,3 +33,21 @@ ON CONFLICT(principal_id, session_id) DO UPDATE SET role = excluded.role;
 
 -- name: RevokeAccessMembership :exec
 DELETE FROM access_memberships WHERE principal_id = ? AND session_id = ?;
+
+-- name: AccessClaim :many
+SELECT digest, principal_id, expires_at_ms, state, credential_digest, claimed_at_ms FROM access_claims WHERE digest = ?;
+
+-- name: InsertAccessClaim :exec
+INSERT INTO access_claims(digest, principal_id, expires_at_ms, state) VALUES (?, ?, ?, 'open');
+
+-- name: BindAccessClaim :exec
+UPDATE access_claims SET state = 'claimed', credential_digest = ?, claimed_at_ms = ? WHERE digest = ? AND state = 'open';
+
+-- name: VoidMemberClaims :exec
+UPDATE access_claims SET state = 'void' WHERE principal_id = ? AND state = 'open';
+
+-- name: ActiveMemberCredentials :many
+SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active' LIMIT 1;
+
+-- name: ClaimMemberships :many
+SELECT session_id, role FROM access_memberships WHERE principal_id = ? ORDER BY session_id LIMIT 16;

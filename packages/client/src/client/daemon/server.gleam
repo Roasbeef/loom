@@ -17,6 +17,7 @@ import broker/token
 import client/daemon/manager
 import client/daemon/protocol
 import client/daemon/root
+import client/daemon/ui_assets
 import client/daemon/ui_http
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
@@ -35,8 +36,8 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import host/build_identity
+import host/claim
 import mist
-import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
@@ -67,6 +68,9 @@ pub type Ui(instance) {
   Ui(
     /// The ticket and UI-session tables.
     sessions: ui_sessions.Sessions,
+    /// The page's stylesheet and scripts and Lustre's client runtime, read
+    /// once when the daemon started.
+    assets: ui_assets.Assets,
     /// Upgrades a checked page request to the component's socket; like
     /// `session_upgrade`, it transfers the attachment's permit. The third
     /// argument says whether the page's UI session is still live, which the
@@ -147,6 +151,7 @@ pub fn handle(
   case request.path_segments(request) {
     ["v2", "control"] -> authenticated(config, request, None)
     ["v2", "sessions", id, "ws"] -> authenticated(config, request, Some(id))
+    ["v2", "claim"] -> claim_route(config, request)
     ["ui", ..] ->
       case config.ui {
         Some(ui) -> web_view(config, ui, request)
@@ -242,7 +247,10 @@ fn web_document(
 ) {
   case route {
     ui_http.Unknown | ui_http.Socket(..) -> plain(404, "unknown endpoint")
-    ui_http.Asset(asset) -> web_asset(asset)
+    ui_http.Asset(asset) -> {
+      let #(content_type, body) = ui_assets.body(ui.assets, asset)
+      document(200, content_type, body)
+    }
 
     // A keyed page is reached only by a navigation from this origin or from
     // outside any page, so no other page can put it in front of the person.
@@ -280,27 +288,6 @@ fn web_document(
                 ui_http.set_cookie(redeemed.cookie, redeemed.key),
               )
           }
-      }
-  }
-}
-
-fn web_asset(asset: ui_http.Asset) {
-  case asset {
-    ui_http.Stylesheet ->
-      document(200, "text/css; charset=utf-8", page.stylesheet())
-    ui_http.EnterScript ->
-      document(200, "text/javascript; charset=utf-8", page.enter_script())
-    ui_http.PageScript ->
-      document(200, "text/javascript; charset=utf-8", page.page_script())
-    ui_http.Runtime ->
-      case
-        page.runtime_file()
-        |> result.try(fn(path) {
-          simplifile.read(path) |> result.replace_error(Nil)
-        })
-      {
-        Ok(source) -> document(200, "text/javascript; charset=utf-8", source)
-        Error(Nil) -> plain(500, "client runtime unavailable")
       }
   }
 }
@@ -646,15 +633,222 @@ fn hello_view(config: Config(instance)) -> List(#(String, JsonValue)) {
   }
 }
 
-// Takes the reserved permit in the control socket's first handler turn and
-// then writes whatever the caller had waiting. `process.self()` is still the
-// websocket process here, so the permit's new owner and the PID the root
-// monitors are the ones the initializer would have named.
+/// How long a `/v2/claim` socket may stay open without its one command.
+const claim_idle_ms = 2000
+
+type ClaimSignal {
+  // The permit transfer, queued by the initializer ahead of any frame, as
+  // `Admit` is for the control socket.
+  AdmitClaim
+
+  // The idle bound. It is armed at the upgrade and never cancelled: the
+  // socket stops after answering its one command, so a fire that arrives
+  // finds either a socket still waiting for that command or no socket.
+  ClaimIdle
+}
+
+// `/v2/claim` (protocol-change/053). The route redeems a claim token for the
+// credential digest the invitee's client drew, and nothing else: it carries
+// one command, `credentials.claim`, over one short-lived socket.
+//
+// The upgrade's checks run in this order. The header must be exactly
+// `Bearer loomclaim_<64 hex>`; a bearer, or anything else, is 401 before the
+// daemon is asked anything. The claim row must exist and not be void, also
+// 401 otherwise. That lookup only filters: the command decides expiry and
+// binding. Then the root admits at most one reservation per claim digest, so
+// a second upgrade for the same claim is 409 while the first is open. A
+// spent claim is public from then on, sitting in a chat log, and passes the
+// filter; the per-digest bound and the idle close are what keep such a token
+// from holding control permits open.
+fn claim_route(config: Config(instance), request) {
+  let admitted = {
+    use presented <- result.try(claim_header(request))
+    use state <- result.try(
+      root.ready(config.daemon, within: 1000)
+      |> result.replace_error(plain(503, "daemon unavailable")),
+    )
+    use Nil <- result.try(case manager.claim_known(state.registry, presented) {
+      Ok(Nil) -> Ok(Nil)
+      Error(manager.Catalogue(catalogue.Missing)) ->
+        Error(plain(401, "unauthorized"))
+      Error(_) -> Error(plain(503, "daemon unavailable"))
+    })
+    Ok(#(state, presented))
+  }
+  case admitted {
+    Error(response) -> response
+    Ok(#(state, presented)) ->
+      case root.acquire_claim(config.daemon, presented, within: 1000) {
+        Error(root.ClaimInFlight) -> plain(409, "claim already in use")
+        Error(root.NotAdmitted(reason)) -> plain(503, reason)
+        Ok(permit) -> claim_socket(config, request, state, presented, permit)
+      }
+  }
+}
+
+// The token is hashed here and never kept: from this line on the daemon holds
+// only the claim's digest, as it does for bearers.
+fn claim_header(
+  request,
+) -> Result(access.ClaimDigest, Response(mist.ResponseData)) {
+  let unauthorized = plain(401, "unauthorized")
+  use header <- result.try(
+    request.get_header(request, "authorization")
+    |> result.replace_error(unauthorized),
+  )
+  use token <- result.try(case string.split_once(header, "Bearer ") {
+    Ok(#("", token)) -> Ok(token)
+    Ok(_) | Error(Nil) -> Error(unauthorized)
+  })
+  use Nil <- result.try(
+    claim.validate_token(token) |> result.replace_error(unauthorized),
+  )
+  access.claim_digest(claim.digest(token))
+  |> result.replace_error(unauthorized)
+}
+
+fn claim_socket(
+  config: Config(instance),
+  request,
+  state: root.Ready(instance),
+  presented: access.ClaimDigest,
+  permit: root.Permit,
+) {
+  // The same custody barrier as the control socket's; see `control_upgrade`.
+  let settled = process.new_subject()
+  let response =
+    mist.websocket_with_options(
+      request:,
+      options: mist.WebsocketOptions(
+        protocol.max_claim_bytes,
+        protocol.max_claim_bytes,
+        mist.CompressionDisabled,
+      ),
+      on_init: fn(_) {
+        let signals = process.new_subject()
+        process.send(signals, AdmitClaim)
+        let _idle = process.send_after(signals, claim_idle_ms, ClaimIdle)
+        #(Nil, Some(process.new_selector() |> process.select(signals)))
+      },
+      handler: fn(_, message, socket) {
+        case message {
+          mist.Custom(AdmitClaim) ->
+            admit(config.daemon, permit, settled, fn() {
+              send(
+                socket,
+                protocol.event(
+                  None,
+                  "hello",
+                  json.Object([#("protocol", json.Int(2))]),
+                ),
+              )
+            })
+
+          // One connection carries one command. The socket closes after the
+          // reply is written, whatever the reply said.
+          mist.Text(frame) -> {
+            let _written = send(socket, claim_reply(state, presented, frame))
+            mist.stop()
+          }
+          mist.Custom(ClaimIdle)
+          | mist.Binary(_)
+          | mist.Closed
+          | mist.Shutdown -> mist.stop()
+        }
+      },
+      on_close: fn(_) { Nil },
+    )
+  case response.body {
+    mist.Websocket -> {
+      let _ = process.receive(settled, within: 5000)
+      Nil
+    }
+    mist.Bytes(_) | mist.Chunked | mist.File(..) | mist.ServerSentEvents -> Nil
+  }
+  root.release(config.daemon, permit)
+  response
+}
+
+// Decodes the one command, redeems the claim in one serialized registry
+// dispatch, and encodes the answer. Refusals carry a fixed code and message
+// and never the digest the client sent.
+fn claim_reply(
+  state: root.Ready(instance),
+  presented: access.ClaimDigest,
+  frame: String,
+) {
+  case protocol.decode_claim(frame) {
+    Error(fault) -> refusal(fault)
+    Ok(protocol.ClaimRequest(id:, credential:)) ->
+      case
+        manager.claim(
+          state.registry,
+          presented,
+          credential,
+          now_ms: bootstrap.system_time_ms(),
+        )
+      {
+        Ok(claimed) ->
+          protocol.event(
+            Some(id),
+            "credentials.claim",
+            claimed_json(claimed, access.fingerprint(credential)),
+          )
+        Error(error) ->
+          refusal(protocol.Fault(
+            Some(id),
+            claim_error_code(error),
+            "claim refused",
+          ))
+      }
+  }
+}
+
+fn claimed_json(claimed: access.Claimed, fingerprint: String) -> JsonValue {
+  json.Object([
+    #("principal_id", json.String(claimed.principal.id)),
+    #("name", json.String(claimed.principal.display_name)),
+    #("fingerprint", json.String(fingerprint)),
+    #(
+      "sessions",
+      json.Array(
+        list.map(claimed.memberships, fn(membership) {
+          json.Object([
+            #("session_id", json.String(membership.session_id)),
+            #("role", json.String(role_text(membership.role))),
+          ])
+        }),
+      ),
+    ),
+  ])
+}
+
+fn role_text(role: access.Role) -> String {
+  case role {
+    access.Operator -> "operator"
+    access.Observer -> "observer"
+  }
+}
+
+fn claim_error_code(error: manager.ClaimError) -> String {
+  case error {
+    manager.ClaimRefused(access.UnknownClaim) -> "not_found"
+    manager.ClaimRefused(access.ExpiredClaim) -> "expired"
+    manager.ClaimRefused(access.ConflictingClaim) -> "conflict"
+    manager.ClaimRefused(access.ClaimStore(_)) | manager.ClaimUnavailable ->
+      "unavailable"
+  }
+}
+
+// Takes the reserved permit in a socket's first handler turn and then writes
+// whatever the caller had waiting. `process.self()` is still the websocket
+// process here, so the permit's new owner and the PID the root monitors are
+// the ones the initializer would have named.
 fn admit(
   daemon,
   permit,
   settled: process.Subject(Nil),
-  then: fn() -> mist.Next(Nil, Signal),
+  then: fn() -> mist.Next(Nil, signal),
 ) {
   let transferred = root.transfer(daemon, permit, within: 1000)
 
@@ -962,42 +1156,28 @@ fn dispatch(
         ]),
       ))
     }
-    protocol.Invite(session_id, id, name, role, supplied) -> {
+    protocol.Invite(session_id, id, name, role, requested, supplied) -> {
       use Nil <- result.try(owner(principal))
-      let bearer =
-        token.production_entropy()(32)
-        |> bit_array.base16_encode
-        |> string.lowercase
-      use credential <- result.try(
-        bearer_digest(bearer)
-        |> result.replace_error("unavailable"),
-      )
+      use #(enrollment, issued) <- result.try(enrollment(requested))
       admin_result(
         state,
         digest,
         supplied,
-        manager.Invite(id, name, credential, session_id, role),
+        manager.Invite(id, name, enrollment, session_id, role),
         "sessions.invite",
-        Some(bearer),
+        issued,
       )
     }
-    protocol.RotateCredential(id, supplied) -> {
+    protocol.RotateCredential(id, requested, supplied) -> {
       use Nil <- result.try(owner(principal))
-      let bearer =
-        token.production_entropy()(32)
-        |> bit_array.base16_encode
-        |> string.lowercase
-      use credential <- result.try(
-        bearer_digest(bearer)
-        |> result.replace_error("unavailable"),
-      )
+      use #(enrollment, issued) <- result.try(enrollment(requested))
       admin_result(
         state,
         digest,
         supplied,
-        manager.RotateMember(id, credential),
+        manager.RotateMember(id, enrollment),
         "credentials.rotate",
-        Some(bearer),
+        issued,
       )
     }
     protocol.SetRole(session_id, id, role, supplied) ->
@@ -1216,24 +1396,48 @@ fn operator(authority) {
   }
 }
 
-fn bearer_digest(bearer) {
-  bearer
-  |> bit_array.from_string
-  |> bootstrap.sha256
-  |> bit_array.base16_encode
-  |> string.lowercase
-  |> access.credential_digest
+// A claim minted for one invitation or rotation, kept only long enough to
+// write it into the success reply.
+type Issued {
+  Issued(token: String, ttl_ms: Int)
 }
 
-// Only an explicitly successful secret-producing mutation returns a bearer.
-// Refusals use fixed codes and never stringify a request or durable error.
+// Turns the requested enrollment into what the catalogue stores. A claim is
+// drawn here, from the same entropy source as every other daemon secret, and
+// only its digest leaves this function for the registry; its expiry is a
+// wall-clock instant so that it means the same thing after a restart.
+fn enrollment(
+  requested: protocol.Enrollment,
+) -> Result(#(access.Enrollment, Option(Issued)), String) {
+  case requested {
+    protocol.EnrollDigest(credential:) ->
+      Ok(#(access.DigestEnrollment(credential), None))
+    protocol.IssueClaim(ttl_ms:) -> {
+      let issued = claim.mint_token(token.production_entropy())
+      use digest <- result.try(
+        access.claim_digest(claim.digest(issued))
+        |> result.replace_error("unavailable"),
+      )
+      let expires_at_ms = bootstrap.system_time_ms() + ttl_ms
+      Ok(#(
+        access.ClaimEnrollment(digest, expires_at_ms),
+        Some(Issued(issued, ttl_ms)),
+      ))
+    }
+  }
+}
+
+// Only an explicitly successful invitation or rotation returns a claim, and
+// no reply returns a bearer (protocol-change/053 rule 5). Refusals use fixed
+// codes and never stringify a request or durable error, so a claim minted for
+// a refused mutation is dropped here and exists nowhere else.
 fn admin_result(
   state: root.Ready(instance),
   digest,
   epoch,
   action,
   event,
-  bearer,
+  issued: Option(Issued),
 ) {
   use principal <- result.try(
     manager.administer(state.registry, digest, epoch, action)
@@ -1243,9 +1447,13 @@ fn admin_result(
     #("principal_id", json.String(principal.id)),
     #("name", json.String(principal.display_name)),
   ]
-  let fields = case bearer {
+  let fields = case issued {
     None -> fields
-    Some(value) -> [#("bearer", json.String(value)), ..fields]
+    Some(Issued(token:, ttl_ms:)) ->
+      list.append(fields, [
+        #("claim", json.String(token)),
+        #("expires_in_ms", json.Int(ttl_ms)),
+      ])
   }
   Ok(#(event, json.Object(fields)))
 }

@@ -5,6 +5,9 @@
 
 PACKAGES := host core storage session machine prompt session_view web_view telemetry runtime provider \
 	broker mcp tools cap ext codemode events client conformance tui lint
+# Packages that target JavaScript. They are formatted, built and documented
+# with the rest but have no test run (scripts/check.sh says why).
+JS_PACKAGES := web_client
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
 PREFIX   ?= $(HOME)/.local
@@ -41,7 +44,7 @@ test-%: ## Run tests for one package, e.g. make test-core
 
 .PHONY: build
 build: ## Warning-free build of every Gleam package
-	@set -e; for p in $(PACKAGES); do \
+	@set -e; for p in $(PACKAGES) $(JS_PACKAGES); do \
 		echo "==> $$p"; (cd packages/$$p && gleam build --warnings-as-errors); \
 	done
 
@@ -54,9 +57,10 @@ LOOSE_GLEAM := $(wildcard docs/examples/*.gleam)
 
 .PHONY: fmt
 fmt: ## Format all Gleam and Go sources in place
-	@set -e; for p in $(PACKAGES); do \
+	@set -e; for p in $(PACKAGES) $(JS_PACKAGES); do \
 		(cd packages/$$p && \
-			paths="src test"; [ ! -d dev ] || paths="$$paths dev"; \
+			paths="src"; [ ! -d test ] || paths="$$paths test"; \
+			[ ! -d dev ] || paths="$$paths dev"; \
 			gleam format $$paths); \
 	done
 	@test -z "$(LOOSE_GLEAM)" || gleam format $(LOOSE_GLEAM)
@@ -65,9 +69,10 @@ fmt: ## Format all Gleam and Go sources in place
 
 .PHONY: fmt-check
 fmt-check: ## Verify formatting without writing (what CI enforces)
-	@set -e; for p in $(PACKAGES); do \
+	@set -e; for p in $(PACKAGES) $(JS_PACKAGES); do \
 		(cd packages/$$p && \
-			paths="src test"; [ ! -d dev ] || paths="$$paths dev"; \
+			paths="src"; [ ! -d test ] || paths="$$paths test"; \
+			[ ! -d dev ] || paths="$$paths dev"; \
 			gleam format --check $$paths); \
 	done
 	@test -z "$(LOOSE_GLEAM)" || gleam format --check $(LOOSE_GLEAM)
@@ -450,7 +455,7 @@ soak-daemon-sim: ## Wall-clock-budgeted daemon simulation (SOAK_DAEMON_BUDGET_SE
 
 .PHONY: deps
 deps: ## Download dependencies for every package
-	@set -e; for p in $(PACKAGES); do \
+	@set -e; for p in $(PACKAGES) $(JS_PACKAGES); do \
 		echo "==> $$p"; (cd packages/$$p && gleam deps download); \
 	done
 	@cd $(GO_PKG) && go mod download
@@ -467,6 +472,21 @@ gen-prelude: ## Regenerate tools/prelude from packages/cap (needs gleam, python3
 prelude-check: ## Check tools/prelude against packages/cap (no toolchain needed)
 	@scripts/gen-prelude.sh --check
 	@scripts/gen-prelude.sh --self-test
+
+.PHONY: gen-client
+gen-client: ## Build web_client's bundle and the page's stylesheet into web_view's priv (needs the network once)
+	@scripts/web_assets.sh
+
+.PHONY: gen-css
+gen-css: gen-client ## The page's stylesheet is built with the bundle: see gen-client
+
+.PHONY: client-check
+client-check: ## Check web_view's built assets against their sources (no toolchain, no network)
+	@scripts/web_assets.sh --check
+	@scripts/web_assets.sh --self-test
+
+.PHONY: css-check
+css-check: client-check ## The stylesheet is gated with the bundle: see client-check
 
 .PHONY: docs
 docs: ## Build HexDocs-style API documentation for every Gleam package

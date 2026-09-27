@@ -394,7 +394,13 @@ pub fn private_domain_requires_explicit_stopped_isolation_test() {
     as "owner exists"
   let registry = start(store, 1, fn(record, _) { Ok(record.id) })
   let invite =
-    manager.Invite("member", "Member", member, record.id, access.Observer)
+    manager.Invite(
+      "member",
+      "Member",
+      access.DigestEnrollment(member),
+      record.id,
+      access.Observer,
+    )
   assert manager.administer(registry, owner, "daemon-test", invite)
     == Error(manager.IsolationRequired)
   let assert Ok(known) = access.credential_digest(string.repeat("c", 64))
@@ -479,7 +485,7 @@ pub fn owner_admin_rechecks_epoch_and_authority_before_mutation_test() {
     manager.Invite(
       "member",
       "Member",
-      member_digest,
+      access.DigestEnrollment(member_digest),
       session.id,
       access.Observer,
     )
@@ -494,14 +500,14 @@ pub fn owner_admin_rechecks_epoch_and_authority_before_mutation_test() {
       registry,
       member_digest,
       "daemon-test",
-      manager.RotateMember(member.id, replacement),
+      manager.RotateMember(member.id, access.DigestEnrollment(replacement)),
     )
     == Error(manager.AdminForbidden)
   assert manager.administer(
       registry,
       owner_digest,
       "daemon-test",
-      manager.RotateMember("owner", replacement),
+      manager.RotateMember("owner", access.DigestEnrollment(replacement)),
     )
     == Error(manager.AdminMetadata(catalogue.Conflict))
   assert manager.administer(

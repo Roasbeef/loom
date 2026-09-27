@@ -214,10 +214,15 @@ behaviour").
 
 ## Admitting a connection
 
-Every client reaches the daemon through the one listener, which serves two
+Every client reaches the daemon through the one listener, which serves three
 routes and answers 404 to anything else. `/v2/control` carries catalogue
 and lifecycle commands. `/v2/sessions/<id>/ws` carries one session's
-conversation. [Client](client.md) ("The authenticated v2 boundary")
+conversation. `/v2/claim` redeems one invitation's claim token for a
+credential digest the invitee drew
+([protocol 053](../../protocol-change/053-owner-admin-and-claims.md)); it
+is authenticated by the claim, admits one upgrade per claim at a time
+through the root's allocation map, takes one 1 KiB command, and closes
+after two idle seconds. [Client](client.md) ("The authenticated v2 boundary")
 describes the wire contract, and
 [protocol 015](../../protocol-change/015-daemon-control-and-session-attachments.md)
 defines it. A daemon started with `--ui` also routes `/ui/...`, where a
@@ -402,7 +407,10 @@ to the owner-only membership commands and `IsolateSession`. It reads the
 `Ready` endpoint record, checks that the recorded VM is still present,
 reads `owner.token`, verifies the `hello` epoch, and sends exactly one
 command. It never starts a daemon or opens a session. A lost reply is
-reported as an unknown outcome and is not retried.
+reported as an unknown outcome and is not retried. `invite` and `rotate`
+print a single-use claim token and a `claim_command` naming the address
+but not the token, or, with `--credential-digest`, nothing secret; no
+reply carries a bearer.
 
 ## Resource limits
 

@@ -19,8 +19,10 @@
 #   packages/storage — separate sql/schema.sql and sql/session.sql schemas,
 #                     and src/storage/sql/*.sql named queries
 #                     -> src/storage/sql.gleam, sql_schema.gleam and
-#                        session_schema.gleam and catalogue_names_schema.gleam.
-#                        Catalogue v2 names have a separate migration schema;
+#                        session_schema.gleam, catalogue_names_schema.gleam,
+#                        catalogue_archives_schema.gleam and
+#                        catalogue_claims_schema.gleam. Each catalogue version
+#                        after the first has its own migration schema;
 #                        runtime catalogue creation never embeds session tables.
 #
 # Known parrot 2.3.0 constraints (discovered by the WP-K pilot; keep in
@@ -49,6 +51,7 @@ gen_package() {
   if [[ "$pkg" == storage ]]; then
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_names.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_archives.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_claims.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
   fi
   (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
@@ -68,4 +71,7 @@ gleam format packages/storage/src/storage/catalogue_names_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_archives.sql \
   packages/storage/src/storage/catalogue_archives_schema.gleam
 gleam format packages/storage/src/storage/catalogue_archives_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_claims.sql \
+  packages/storage/src/storage/catalogue_claims_schema.gleam
+gleam format packages/storage/src/storage/catalogue_claims_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"

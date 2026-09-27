@@ -264,9 +264,11 @@ model's request.
 
 ### The authenticated v2 boundary
 
-The loopback listener serves two routes: `/v2/control` handles catalogue and
-lifecycle requests, and `/v2/sessions/<session-id>/ws` carries conversation
-commands and credited transfers. Both use text WebSocket frames carrying `v: 2`
+The loopback listener serves three routes: `/v2/control` handles catalogue and
+lifecycle requests, `/v2/sessions/<session-id>/ws` carries conversation
+commands and credited transfers, and `/v2/claim` redeems an invitation's
+claim token once for the invitee's own credential digest
+([protocol 053](../../protocol-change/053-owner-admin-and-claims.md)). Both use text WebSocket frames carrying `v: 2`
 JSON envelopes. A daemon started with `--ui` also serves the web view's
 `/ui/...` routes, which authenticate a browser with a ticket and a cookie
 rather than a bearer ([the web view](web-view.md),
@@ -1533,7 +1535,7 @@ or `/healthz`.
 | `packages/tui/src/tui/render.gleam`, `layout.gleam`, `projection.gleam`, `live_tail.gleam` | Frame painting, screen geometry, the cached transcript projection, and the live answer's incremental rows. |
 | `packages/tui/src/tui/inbound.gleam`, `outbound.gleam`, `surfaces.gleam`, `session_control.gleam` | Channel traffic in and out, side-surface reads, and daemon control requests. |
 | `packages/tui/src/tui/interaction.gleam`, `submit.gleam`, `tick.gleam` | Key, paste and mouse handling, composer submission, and the periodic drain. |
-| `packages/tui/src/tui/agent_view.gleam`, `agents.gleam` | Captured task/status projection and identity-based agent inspection. |
+| `packages/session_view/src/session_view/agent_view.gleam`, `packages/tui/src/tui/agents.gleam` | Captured task/status projection and identity-based agent inspection. |
 | `packages/tui/src/tui/agent_message_panel.gleam`, `focused_goal_panel.gleam` | Selectable observed-send presentation and the server-owned goal inspector. |
 | `packages/tui/src/tui/note_panel.gleam` | Shared standalone and agent-inspector note selection, detail modes, and body paging. |
 | `packages/tui/src/tui/queue_panel.gleam`, `diff_panel.gleam` | Captured queue-excerpt inspection and shared worktree navigation geometry. |

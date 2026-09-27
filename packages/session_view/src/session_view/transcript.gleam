@@ -13,9 +13,10 @@
 //// history and empty caches, so its lines are what a terminal that had just
 //// attached would draw for the same records.
 
+import core/ids
 import gleam/dict
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import session_view/advisor_history
 import session_view/block_summary
 import session_view/history_view
@@ -23,7 +24,7 @@ import session_view/notes_view
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
-import session_view/transcript_line.{type Line}
+import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/worktree_view
 
@@ -85,6 +86,49 @@ pub fn project_rows(
   let #(records, presentation, advisor) = projected(cut, view, strand)
   transcript_lines.keyed_record_lines(records, presentation, [], advisor)
   |> list.map(fn(row) { Row(key: row.0, line: row.1) })
+}
+
+/// The same rows as `project_rows`, grouped by the block that drew them and
+/// tagged with what drew it (`transcript_lines.keyed_record_blocks`), with
+/// `notices` spliced after the entries they were anchored to, as the
+/// terminal splices its own.
+///
+/// A host that draws some blocks as something other than rows (a folded
+/// turn, a card for another session's message) reads these; `turns` is
+/// the rule for which.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript.blocks(cut, view, "main", [])
+/// ```
+pub fn blocks(
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+  strand: String,
+  notices: List(CacheNotice),
+) -> List(transcript_lines.Block) {
+  let #(records, presentation, advisor) = projected(cut, view, strand)
+  let notices = list.filter(notices, fn(notice) { notice.strand == strand })
+  transcript_lines.keyed_record_blocks(records, presentation, notices, advisor)
+}
+
+/// The newest entry `strand` holds on its own ancestry in a capture: where a
+/// transient notice raised for it now is anchored, as the terminal anchors
+/// one (`transcript_lines.newest_entry`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript.newest_entry(cut, view, "main")
+/// ```
+pub fn newest_entry(
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+  strand: String,
+) -> Option(ids.EntryId) {
+  let #(records, _, _) = projected(cut, view, strand)
+  transcript_lines.newest_entry(records, strand)
 }
 
 // What both projections read of one capture: the strand's records, the
