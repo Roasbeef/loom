@@ -1,186 +1,192 @@
 # Current handoff
 
-The collaboration stack landed on `main` in [#510](https://github.com/Roasbeef/loom/pull/510)
-at `645b8faf`. PR #484 had already merged async execution, resident peer
-messaging, and the named workflow core. The four review layers below add
-model-visible virtual reads, owner controls, a terminal link manager, and
-executable collaboration examples. GitHub marked #494 merged and the other
-three layers were closed as landed through #510; their diffs remain available
-for review.
+Issue #530 is done through phase 4 on `main` at `b4eeb50c`. The client is
+now a pure engine and two hosts. The engine is `packages/session_view`: the
+session lane, the protocol decoders, snapshot adoption, the history window,
+the transcript projection and the operator's command arms, held by lint R6
+to depend on nothing BEAM-only. The terminal (`packages/tui`) wraps it in a
+step that reads no clock, file, mailbox, process or environment variable
+and returns its effects as values. The web view (`packages/web_view`) wraps
+it in a Lustre server component that `loomd --ui` serves to a browser, and
+an operator's page can prompt, steer and answer approvals.
 
 | PR | Result |
 |---|---|
-| [#494](https://github.com/Roasbeef/loom/pull/494) | `fs_read` discovers full capability declarations at `cap://` and polls caller-owned jobs at `job://`. Prompt pack v9 describes both program modes. |
-| [#499](https://github.com/Roasbeef/loom/pull/499) | The owner CLI inspects, links, unlinks, and sends across exact session and strand pairs. |
-| [#502](https://github.com/Roasbeef/loom/pull/502) | `/sessions` links the attached strand to a selected resident target; `/peers` inspects and revokes directional grants, and `/agents` can choose another source strand. |
-| [#503](https://github.com/Roasbeef/loom/pull/503) | A coordinator and two specialists exercise durable child steps and granted peer exchange in jailed code mode. |
+| [#549](https://github.com/Roasbeef/loom/pull/549) | Phase 2 (#544 to #548): mailbox reads, recording, jobs, the attachment attempt and file reads leave the step. |
+| [#550](https://github.com/Roasbeef/loom/pull/550) | Phase 3: the client's own `msg.Msg` in front of the step, and admission that files arrivals without reducing them. |
+| [#551](https://github.com/Roasbeef/loom/pull/551) | One mailbox scan for the jobs and the replay inbox per event. |
+| [#552](https://github.com/Roasbeef/loom/pull/552) | Phase 4: `session_view` extracted, and a read-only web view behind `loomd --ui`, linked by `loom --ui`. |
+| [#553](https://github.com/Roasbeef/loom/pull/553) | `docs/lustre.md`, the guide to Lustre 5.7.1 server components for this code. |
+| [#554](https://github.com/Roasbeef/loom/pull/554) | Milestone 1: the operator's page (composer, allow once and deny), page keys, nonces and role ceilings. |
+| [#555](https://github.com/Roasbeef/loom/pull/555) | `loom --ui --open`, and protocol-change/052 proposed (design only). |
+| [#556](https://github.com/Roasbeef/loom/pull/556) | The streaming live tail: the terminal redraws a growing answer from what changed. |
+| [#557](https://github.com/Roasbeef/loom/pull/557) | The hand-run queue that landed #553 to #556 together. |
+| [#559](https://github.com/Roasbeef/loom/pull/559) | Architecture docs for the web view and the engine layering, the web UI design note, and package READMEs. Pending. |
 
-The [code-mode architecture](architecture/code-mode.md) explains virtual-read
-routing. The [async architecture](architecture/async-collaboration.md) and
-[messaging architecture](architecture/messaging.md) explain execution custody
-and peer delivery. The [API guide](async-collaboration.md) and
-[collaboration example](examples/collaboration.md) show the calls. Protocol 048
-owns the async and peer wire; protocol 049 adds owner inspection.
+[ADR-013](adr/013-tui-effects-as-values.md) records each terminal phase in
+an addendum. [ADR-014](adr/014-second-runtime.md) and
+[protocol-change/051](../protocol-change/051-web-view-route.md) with its
+addenda record the web view. [The web view](architecture/web-view.md) is
+the map of the request path, the processes and the security layers, and
+[the client engine and its hosts](architecture/client.md#the-client-engine-and-its-hosts)
+draws the layering.
 
-In the TUI, `/sessions` is the normal target-discovery path. Selecting a
-resident row and pressing `l` starts a link from the currently attached
-session and strand. Enter still opens a session. The form asks for the exact
-receiving strand and shows both endpoints and wake permission before sending
-the grant. Escape returns to the same session selection. `/agents` plus `p`
-selects another source strand, and `/peers` opens inspection and revocation
-directly. A saved session must be opened explicitly before it can receive a
-link. The daemon does not enumerate target strands or activate saved sessions
-as a side effect of discovery.
+## Where the tree is
 
-Main's #495 TUI split moved this flow into `tui/interaction`,
-`tui/session_control`, `tui/model`, and `tui/render`. The native screenshots
-were recaptured from the post-split client.
+**The terminal.** `tui.update` is
+`runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`.
+`runtime.message` stamps the clocks and reads a pasted file into the input;
+`runtime.receive` reads job replies and each inbox's mailbox up to its room
+and has `tui/admission` file them; the step reduces an input at a tick or a
+key, in `tick.update_tick`'s fixed drain order; and `runtime.settle`
+performs the effects and stores the job table. Jobs are keyed data
+(`tui/job`, `tui/job_runner`), and replies are admitted only by the key
+their slot holds. The live answer is drawn by `tui/live_tail`, whose cache
+lives in the terminal's view state (`View.live_tail`), so a frame costs what
+the new text changes rather than the length of the answer.
 
-The stack's images in `docs/images/peer-links-*.png` come from the native
-116-by-38 terminal with two resident sample sessions. The target name and
-source name are fixture metadata, and no model request was sent. The current
-design leaves cross-machine routing, saved-session outboxes, deadline renewal,
-and actor-heap recovery for separate work.
+**The web view.** `loom --ui --session <id> [--operate] [--open]` asks the
+daemon for a single-use ticket with `ui.link` and prints the link. The
+browser exchanges the ticket for an `HttpOnly`, `SameSite=Strict` cookie
+scoped to a page key, keeps a per-tab nonce in `sessionStorage`, and opens
+the page's socket with it. `ui_socket` starts `web_view/component` for an
+observer or `web_view/operator_page` for an operator, chosen by the smallest
+of the membership role, the link's ceiling and Operator, and `ui_relay`
+attaches it to the session's gateway. The component files arrivals and
+reduces on a 250 ms tick, except that a reply the lane is waiting for is
+reduced on arrival, which took a first capture from 2.77 s to about 4 ms.
+The page shows `main` only, and only durable records: no streams, tool
+tails or live tail yet.
 
-PR #484 merged at `77269e50`. The native Collaboration tab projects
-captured execution, workflow and peer-message facts without starting work.
-Protocol 048 owns the backend contracts. The sections below record
-earlier validation and follow-ups as a historical handoff.
+## In flight
 
-## Terminal client: issue #530 through phase 3
+- **Web UI phase A**, on `web_view/agents-and-cache`: the agent strip,
+  cache rings and cache-miss rows, folded work, sub-agent spawn and result
+  rows, advisor nudges, and peer message cards, all drawn from the cut and
+  the pushes without the extracted step. The direction is
+  [the web UI design note](design-notes/web-ui.md), sections 3.8 and 3.9
+  and screen (d).
+- **protocol-change/053**, claim tokens and owner admin
+  ([#558](https://github.com/Roasbeef/loom/pull/558)), accepted by the owner
+  on 2026-09-27. Step 1, the claim flow (`loom claim` and the `/v2/claim`
+  route, so no invitation carries a bearer), is being built.
+- **The package README audit**, [#560](https://github.com/Roasbeef/loom/pull/560).
 
-The terminal's step (`tui.step`) is a function from the client's own
-message and the model to the next model and a list of effects, and it
-reads no clock, file, mailbox, process or environment variable.
-[ADR-013](adr/013-tui-effects-as-values.md) records each phase in an
-addendum. Phase 1 made fire-and-forget effects values. Phase 2 (S1 to S6)
-moved clock reads, mailbox reads, recording, job starts and file reads out
-of the step. Phase 3, on `tui/domain-msg` stacked on phase 2's
-`tui/file-reads-as-effects`, replaced etui's input event with `msg.Msg`:
-`Input(at, event)`, which the step reduces, and `Arrived(arrivals)`, which
-it only files (`tui/admission`). It also moved the adopted socket's
-liveness read into the host and read the client build identity once at
-model creation, and deleted the unreachable arms that wrote to a peer's
-socket with no lane.
+## What to work on next: event-driven delivery
 
-Phase 4 is in progress on `tui/core-extraction`, stacked on
-`tui/domain-msg`. Its first part (P4a) is done: `packages/session_view`
-now holds the session lane (generic over its socket and recorder), the
-protocol decoders, snapshot adoption, the history window and the
-transcript's line builders, with `transcript.project` for a host that
-keeps no presentation state. It imports only `core`, `machine` and the
-standard library, and R6 holds it there. The terminal drives the same
-modules through `tui/terminal_lane` and `tui_model.presentation`; the
-goldens are unchanged. The step itself (`msg`, `admission`, the reducers,
-`tui/model`) stays in `tui` until the build-out phase, for the reasons
-[ADR-014](adr/014-second-runtime.md) gives.
+Both hosts still poll. The component reduces on a 250 ms tick, and the
+lane's idle refresh issues a `catch_up` every 250 ms whether or not the
+daemon has anything new. The decided next step replaces both:
 
-Next in phase 4: [protocol-change/051](../protocol-change/051-web-view-route.md)
-and ADR-014 are under review (P4b). After them, P4c builds the skeleton:
-`packages/web_view` with a Lustre server component that shows one
-session's transcript lines read-only, served by `loomd --ui` and linked by
-`loom --ui`, with a parity test against the terminal's projection; P4d is
-the docs. Exit criteria: `make check-tui` and `make check-client` pass
-unchanged, the replay goldens are byte-identical, and the skeleton renders
-an attached session read-only.
+- **Reduce on arrival, coalesced.** An arrival schedules one reduction
+  rather than waiting for the tick, and every arrival that lands before
+  that reduction runs is taken in the same batch. Batches stay intact:
+  reduction still drains what is held in arrival order, never one message
+  per reduce.
+- **A deadline timer instead of the refresh poll.** A new
+  `session_channel.next_due` answers when the lane next needs to act (a
+  request deadline, a due catch-up), and the host arms one timer for that
+  instant instead of ticking.
+- **Refresh backs off while the daemon pushes.** While pushes arrive, the
+  idle refresh drops to a slower recovery rate, since the pushes already
+  carry the news; a gap in the pushed notice sequence triggers a
+  `catch_up` at once.
 
-Rulings to preserve:
+This revises ADR-013's option C, which says arrivals are filed and reduced
+only at fixed points, so it lands with an ADR-013 addendum that says what
+replaces the rule and why ADR-010's ordering (Escape acts before traffic is
+reduced) still holds. A new `docs/architecture/delivery.md` follows it.
 
-- Arrivals are filed, never reduced. Any host that wakes on arrival
-  delivers `Arrived` and then a `Ticked` input, so Escape still acts
-  before traffic is reduced (ADR-010) and the drain order holds.
-- The buffer bound is the host's. Admission never drops a frame for
-  capacity; a host reads no more from a mailbox than a buffer has room
-  for.
-- Admission files a frame only into the inbox whose subject it names, so
-  no message from a replaced inbox reaches the reducer after an adoption.
-- Where a host dispatches `Input` events is host code, not a mode enum in
-  the core.
-
-Open, deliberately:
-
-- Waking the loop on arrival instead of at the poll timeout is deferred
-  until idle push latency is measured; today it is up to 250 ms. It needs
-  etui's loop to select on caller subjects, a change to the
-  `Roasbeef/etui` fork.
-- `msg.Event` still carries etui's `keys.Key` and `backend.MouseButton`.
-- The test fixture `pushed.attached()` is a replaying peer with a lane, a
-  state the shipped client never reaches; two `Replaying` arms and the
-  composer's pending-marker guard stay because of it.
-
-## Shell approval recovery on main
-
-A running shell can hit a kernel permission error after earlier effects. It
-still settles in band: stderr cannot supply a trusted canonical grant, and
-replaying a `Never` command could repeat those effects. A failed `bash` call
-now tells the agent to make a fresh invocation with `permissions` declaring
-the needed roots. For a quoted Git lock path, it names the reported `.git`
-directory as a possible writable root. The declared request goes through
-canonicalization, protected-path checks, and the operator dialog before the
-new command starts.
-
-The real-jail Git worktree regression exercises the denied write and approved
-retry. The client regression checks the durable question, displayed command,
-and exact grants through production wiring. A trusted helper-side denial
-report would be needed before an automatic prompt could safely identify a
-resource from an already-running command; stderr remains diagnostic only.
+Exit criteria: no performance regression, measured with
+`scripts/tui_perf.sh` against the backlog cases in ADR-013's mailbox-scan
+addendum and with the web view's first-capture timing; batches still
+intact, pinned by a test that sends a burst and sees it reduced together;
+the replay goldens byte-identical; and `make check` green by its own exit
+code.
 
 ## Rulings to preserve
 
-**Authority and communication are separate.** A link grants neither child
-custody nor filesystem access. The source index permits discovery; the
-recipient grant authorizes admission. A peer receipt proves durable message
-admission, not model consumption or review completion. `busy_only` never wakes
-an idle target; `may_wake` is a separate owner choice.
+**Session logic has one home.** What a frame means, when to catch up,
+which lines a capture becomes and what an operator's input becomes on the
+wire are `session_view`'s. A host owns its runtime and its view and
+nothing else; session logic found in `web_view`, or duplicated in `tui`, is
+a review finding.
 
-**A virtual read is a capability call.** `cap://` serves generated declarations
-for modules the selected code-mode seam admits. `job://` exposes only the
-calling strand's jobs. Neither is an operating-system mount. Ordinary file
-reads and image support retain their path. Prompt guidance must match the
-installed router and generated prelude in both workspace and orchestration.
+**Effects are values and name their handles.** A step or a lane returns
+what it decided; the host performs it, in decision order, against the
+handle each effect names, never a handle looked up at perform time. The
+web host performs the lane's outputs inside one `effect.from`, because
+Lustre's `effect.batch` does not order them.
 
-**Recovery retains identity, not execution state.** Typed input is admitted
-before callback completion. Progress is an intermediate observation. A named
-workflow step reconciles its original child operation and result after a lost
-satellite. It cannot replay arbitrary effects or restore an actor heap.
+**The buffer bound is the host's.** Admission never drops a frame for
+capacity, a host reads no more from a mailbox than a buffer has room for,
+and admission files a frame only into the inbox whose subject it names, so
+nothing from a replaced inbox reaches a reducer after an adoption.
+Event-driven delivery changes when a host reduces, not these.
 
-**Operator surfaces do not open saved sessions.** CLI and TUI use the
-owner/epoch-checked control protocol. Inspection is bounded into pages. A
-large catalogue or grant set is not permission to activate a saved target.
-The CLI reports partial unlink when source authority was removed but
-recipient revocation could not finish.
+**A page is never more than an operator.** The role is the smallest of the
+membership, the ceiling the link was minted with, and Operator. A page
+never offers allow for the session, its approval cards sit below the
+composer and are drawn from the record alone, nothing from the session
+becomes markup, and the page nonce is never rendered into a document.
 
-## Remaining work
+**Authority and communication are separate.** A peer link grants neither
+child custody nor filesystem access. A peer receipt proves durable
+admission, not that a model read the message. `busy_only` never wakes an
+idle target; `may_wake` is a separate owner choice.
 
-1. Measure how virtual-read discovery affects prompt size and cached-prefix
-   reuse in real sessions. The prompt-size repository budget is a test
-   threshold, not a provider token limit.
-2. Add an example in which a coordinator does independent work after launching
-   children, then sends follow-up tasks to those same children.
-3. Design saved-session outboxes, cross-machine transport, and durable actor
-   recovery separately from the resident-session link path.
+**A virtual read is a capability call.** `cap://` and `job://` are served
+through the capability router, not mounted, and prompt guidance must match
+the installed router and generated prelude.
 
-The current examples demonstrate fan-out, a bounded join, named steps, progress,
-and recovery. They do not yet show one coordinator doing independent work after
-launching children and then sending follow-up tasks to the same children.
+**Operator surfaces do not open saved sessions.** The CLI and the terminal
+use the membership- and epoch-checked control protocol, and a
+listing is never permission to activate a saved target.
 
-Saved-session outboxes, cross-machine peer transport, actor-heap persistence,
-automatic deadline renewal, general effect replay, and an automatic workflow
-retry language remain separate designs. At the outgoing-link limit, creation
-can still write a recipient grant before the source refuses its 65th distinct
-link. This pre-existing sequence cannot send without the source index, but it
-can leave a stale incoming grant. A future atomic or reserved link-admission
-protocol should address it; a compensating revoke can race a successful link
-to the same pair.
+## Open, deliberately
+
+- **Remote access to the page**, protocol-change/052: a TLS proxy at a
+  listed origin with a `__Host-` cookie. Proposed, design only; today a
+  remote person uses `ssh -L`.
+- **The 053 admin page.** A later phase of 053, if built at all: loopback
+  only, revoke-only, rendering each grant as a `loom access` line.
+- **Web UI phase B**, interactivity beyond the composer and approvals:
+  strand focus, history paging, fork, abort, image prompts and the
+  auxiliary reads. It needs strand focus, and with it the extracted step:
+  of ADR-014's four blockers the inbox split is done, and engine-owned key
+  and pointer types, the split of the model into engine and view state,
+  and host handles as type parameters remain.
+- **`conformance` declares `prompt` as a dependency and imports nothing
+  from it.** Remove it, with the manifest updates that follow.
+- `msg.Event` still carries etui's `keys.Key` and `backend.MouseButton`,
+  and the test fixture `pushed.attached()` is a replaying peer with a lane,
+  a state the shipped client never reaches.
+
+## Earlier on main
+
+The collaboration stack landed in
+[#510](https://github.com/Roasbeef/loom/pull/510) at `645b8faf`: async
+execution, resident peer messaging, the named workflow core, virtual reads
+at `cap://` and `job://`, owner inspection and linking from the CLI, the
+terminal's link manager (`/sessions` then `l`, `/peers`, `/agents` then
+`p`), and executable collaboration examples. Protocols 048 and 049 own the
+wire; [async collaboration](architecture/async-collaboration.md) and
+[messaging](architecture/messaging.md) explain it. Still open from it:
+measuring how virtual-read discovery affects prompt size and cached-prefix
+reuse; an example of a coordinator sending follow-up tasks to children it
+already launched; saved-session outboxes, cross-machine transport and
+durable actor recovery; and the link-admission race at the outgoing-link
+limit, which can leave a stale incoming grant.
+
+A running shell that hits a kernel permission error settles in band, and
+a failed `bash` call tells the agent to retry with `permissions` naming the
+needed roots, which then go through canonicalization, protected-path
+checks and the operator dialog.
 
 ## Validation boundary
 
-The exact combined tip `f63deb04` passed fresh-container obelisk
-`signoff/linux`: client, mid, conformance, fast, static, enforcement, release
-update, and a clean skip census. Its hosted Linux client and jail jobs also
-passed. The first signoff exposed a fixture collision: two deterministic
-specialist sessions could select the same code-mode build root and remove one
-another's files or cap socket. Each session now uses its own workspace; the
-real-satellite collaboration test passed on the corrected obelisk run. The
-merged `main` commit is `645b8faf`; the signoff belongs to its PR head, not
-to that new merge-commit SHA. Issues #485, #488, and #489 closed with #510.
+This handoff was written against `main` at `b4eeb50c`, the merge of the
+#557 queue. It re-states what the merged PRs and their ADR addenda record
+and does not re-run their signoffs; check the queue's signoff and the
+hosted checks before relying on a claim here. #559 is documentation only
+and changes no Gleam source; `make doc-check` exits 0 on it.
