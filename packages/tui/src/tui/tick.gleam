@@ -163,9 +163,10 @@ fn settle_tick(model: Model, drained: Model) -> Model {
 }
 
 // One recorded attempt event per tick, taken from what the runtime received
-// before the step. An event that arrives outside replay is taken and
-// dropped, as it always was, so it cannot wait in the inbox for a later
-// replay to apply.
+// before the step. The runtime reads the replay inbox only while the peer
+// is `Replaying`, but a host that delivers `msg.Arrived` itself can still
+// admit an event outside replay, and that event is taken and dropped, as it
+// always was, so it cannot wait in the inbox for a later replay to apply.
 fn drain_replay(model: Model) -> Model {
   let #(replay_inbox, next) = buffered.take(model.replay_inbox)
   let model = Model(..model, replay_inbox:)

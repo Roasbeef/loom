@@ -1574,8 +1574,9 @@ untouched.
   `Prepared` admitted in that receive has its first frames read with it,
   then reads each inbox's mailbox up to the room its buffer has left
   (`arrivals`): `Model.inbox` to `connection_batch` (64),
-  `Model.replay_inbox` to one event, and the candidate's frames to forty
-  until capture (`attachment.frame_room`). `tui/admission` files what it
+  `Model.replay_inbox` to one event, and only while the peer is
+  `Replaying`, and the candidate's frames to forty until capture
+  (`attachment.frame_room`). `tui/admission` files what it
   read, the same function the step runs for `msg.Arrived`, and reduces
   nothing. `inbound.drain_connection`, `tick.drain_replay` and the
   attachment's `prepare`, `drain` and `settle` take from those buffers and
@@ -1614,7 +1615,9 @@ untouched.
   which no reducer reads, and `runtime.settle` stores the table back, so
   `tui.update` is `settle(step(message(event, model), receive(model)))`.
   `runtime.receive` reads every running job's messages, at most two per
-  one-task relay and a `Prepared` besides, and `runtime.hold` has
+  one-task relay and a `Prepared` besides, in one pass over the mailbox
+  through the merged `job_runner.selector` (none when no job runs), and
+  `runtime.hold` has
   admission file each into the slot of its kind only when the slot holds
   the same key; any other message is dropped there. An attachment job's
   end is handed over as `job.Finished` with the host's read of whether the

@@ -383,7 +383,7 @@ The survey of mailbox reads, at the commit this slice started from:
   Each answers a job the step started, and they move when job starts
   become keyed effects.
 - **Outside the step, and staying there.** The worker's acknowledgement wait,
-  now in the runner (`tui/job_runner.gleam:402` (`acknowledged`)), runs in
+  now in the runner (`tui/job_runner.gleam:427` (`acknowledged`)), runs in
   the worker, and `attachment.cancel` runs as an effect; since S5 it reads
   no mailbox, and the attachment job's cancel drains the job's messages
   instead (`tui/job_runner.gleam:254` (`drain`)). `sessions.discard`, now `buffered.discard`, is the
@@ -668,7 +668,7 @@ that waits for a real reply selects on `job_runner.selector`.
 and pulls the switch's run, which S5 moves. Adoption calls
 `connection.adopt` (in the local switch's adoption, which S5 deleted, and
 in the attachment's; phase 3 moved the call to
-`tui/runtime.gleam:258` (`connection.adopt`)), which creates nothing but
+`tui/runtime.gleam:270` (`connection.adopt`)), which creates nothing but
 reads whether the replacement socket's actor is alive. That read
 stays in the step until phase 3, which replaces etui's events with a
 domain message type; the runtime can then read the liveness when it
@@ -815,7 +815,7 @@ attempt and a quit both cancel the job before the cleanup.
 
 **What the step still does itself.** It reads files, which a later slice
 moves, and adoption still calls `connection.adopt` (phase 3 moved the
-call to `tui/runtime.gleam:258` (`connection.adopt`)), which creates
+call to `tui/runtime.gleam:270` (`connection.adopt`)), which creates
 nothing but reads whether the socket's actor is alive. That read stays until phase 3,
 when the runtime can read the liveness as it delivers the message that
 carries the socket and hand the answer to the reducer.
@@ -905,7 +905,7 @@ around it, at the commit this slice started from:
 
 | Read | Site | Where it ran | After S6 |
 |---|---|---|---|
-| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:137` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:187` |
+| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:137` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:199` |
 | a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:451` | in the step | a job, `Configure` at `tui/job_runner.gleam:152` |
 | the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:515` | the attachment worker, since S5 | unchanged |
 | the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
@@ -1068,7 +1068,7 @@ jobs. Each has moved:
 
 Two reads remain in the step, and neither touches the file system. Adoption
 asks whether the replacement socket's actor is alive (phase 3 moved the
-read to `tui/runtime.gleam:258` (`connection.adopt`)). And the
+read to `tui/runtime.gleam:270` (`connection.adopt`)). And the
 build-mismatch notice reads this client's build identity from two environment variables on
 every coherent cut (`tui/inbound.gleam:103` (`build_identity`)). Phase 3
 takes both: once etui's events are replaced by a domain message type, the
@@ -1258,3 +1258,28 @@ host the bound is a buffer bound the host keeps itself, since a selector
 consumes what it matches. `keys.Key` and `backend.MouseButton` are etui
 types that remain in `msg.Event`; both are plain data, and a read-only
 view sends neither.
+
+## Addendum: one mailbox scan for the jobs (2026-09-26)
+
+Phase 2 moved the job and replay reads to every event, and each is a
+selective receive that scans the whole mailbox when nothing in it
+matches, so under a socket backlog a keypress paid one scan for the replay
+inbox and one per running job, where before phase 1 it paid none.
+Measured with `scripts/tui_perf.sh` against a 10,000-frame backlog on a
+live terminal with three jobs running, a keypress cost 219,325 reductions
+before phase 1, 260,405 at `42620f56`, and a tick 257,765 and 260,111.
+The runtime now reads the replay inbox only while the peer is `Replaying`,
+since only a replay's virtual backend sends to it and no transition
+enters or leaves that peer (`runtime.arrivals`), and reads every job in
+one pass through the merged `job_runner.selector`, reading nothing when no
+job runs (`job_runner.receive`). Merging changes the order of arrivals
+only across jobs, and each is admitted by its own key into its own slot,
+which the tick drains in its fixed order; the comment at the site gives
+the argument. With both, the keypress costs 230,493 reductions and the
+tick 228,640, below its pre-phase-1 cost; the one scan left on a keypress
+is the jobs' read, which phase 2 moved there on purpose. The per-event
+bounds are unchanged. `jobs_test` pins the routing: a runtime that tags
+every arrival with one job's key, or reads only one job's selector, fails
+`a_keypress_admits_every_jobs_reply_into_its_own_slot_test`, and one that
+reads the replay inbox outside a replay fails
+`only_a_replay_reads_its_replay_inbox_test`.
