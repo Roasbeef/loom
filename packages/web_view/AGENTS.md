@@ -84,10 +84,11 @@ page keys and nonces, and the relay into the session's gateway.
   attachment as a third layer.
 - **No handler or attribute from session text.** Button messages carry the
   daemon's escalation identity and sequence; cards are keyed by sequence
-  and index, rows by the engine's `transcript.Row` key. Text is only ever
+  (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever
   `html.text`; nothing uses `unsafe_raw_html`.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
-  in its own region outside the transcript. Deny comes first; each button
+  in its own region outside the transcript and after the composer, so a
+  card appearing never moves the composer. Deny comes first; each button
   names the tool; nothing has `autofocus`; the composer's submit never
   decides an approval; a decision is sent only for the record still pending
   at the drawn sequence (`operator.drawn`).

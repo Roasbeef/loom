@@ -659,8 +659,11 @@ these rules:
 
 - It draws `approval.presentation` (question, action, authority) from the
   escalation record only, never from transcript text.
-- It sits in its own region above the composer, which transcript content
-  cannot occupy, and it is styled unlike the transcript.
+- It sits in its own region below the composer, which transcript content
+  cannot occupy, and it is styled unlike the transcript. Below, not above:
+  the agent chooses when a card appears and how tall it is, and a card
+  drawn above the composer would move the composer's controls under a
+  click already on its way to them.
 - Each button names the tool: "Allow bash once", "Deny bash".
 - A newly drawn card never takes focus, and nothing on the page has
   `autofocus`. Enter never approves: the composer attaches no keyboard

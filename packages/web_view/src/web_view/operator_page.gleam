@@ -97,8 +97,14 @@ pub fn update(
   #(model, effect.map(effects, Observed))
 }
 
-/// The operator's page: the heading, the transcript, the approvals waiting
-/// for a decision in a region of their own, and the composer.
+/// The operator's page: the heading, the transcript, the composer, and
+/// below it the approvals waiting for a decision, in a region of their own.
+///
+/// The approvals come after the composer so that a card appearing never
+/// moves the composer. The agent decides when an escalation lands and how
+/// tall its card is (an action preview can run to 16 KiB); drawn above the
+/// composer, a card could slide Deny or Allow under a click already on its
+/// way to the editor or to Send.
 ///
 /// ## Examples
 ///
@@ -109,16 +115,18 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
     component.transcript_view(component.rows(model)),
-    approvals(component.pending(model)),
     composer(model),
+    approvals(component.pending(model)),
   ])
 }
 
 // The approvals region sits outside the transcript, so nothing the session
 // writes can appear inside it, and it is styled unlike any transcript line.
-// A card is keyed by the sequence its record was drawn at and its place,
-// both the daemon's, never by text the session wrote. A card never takes
-// focus and nothing here has `autofocus`.
+// A card is keyed by the sequence its record was drawn at, which is the
+// daemon's and never text the session wrote. Every storage write takes its
+// own sequence, so no two pending records share one, and a card keeps its
+// key when a sibling leaves. A card never takes focus and nothing here has
+// `autofocus`.
 fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
   case pending {
     [] -> element.none()
@@ -131,11 +139,8 @@ fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
         [
           keyed.div(
             [attribute.class("approval-list")],
-            list.index_map(pending, fn(record, index) {
-              #(
-                int.to_string(record.seq) <> ":" <> int.to_string(index),
-                card(record),
-              )
+            list.map(pending, fn(record) {
+              #(int.to_string(record.seq), card(record))
             }),
           ),
         ],

@@ -199,6 +199,20 @@ pub fn the_composer_refuses_any_field_it_does_not_offer_test() {
   )
 }
 
+// A card appearing must never move the composer: the agent chooses when a
+// card lands and how tall it is, so drawn above the composer it could slide
+// Deny or Allow under a click on its way to the editor or to Send. The
+// approvals therefore come after the composer.
+pub fn the_composer_comes_before_the_approvals_test() {
+  let #(model, _) = page("operator", pending())
+  let html = element.to_string(operator_page.view(model))
+  let assert Ok(#(before_composer, _)) =
+    string.split_once(html, "class=\"composer\"")
+    as "the page draws a composer"
+  assert !string.contains(before_composer, "class=\"approvals\"")
+  assert string.contains(html, "class=\"approvals\"")
+}
+
 // The card is drawn from the record alone, outside the transcript: Deny is
 // its first control, every button names the tool, nothing takes focus, and
 // the session's text is escaped.
