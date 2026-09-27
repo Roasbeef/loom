@@ -1677,21 +1677,6 @@ pub fn a_recording_line_round_trips_test() {
   })
 }
 
-pub fn only_events_that_move_the_model_are_recorded_test() {
-  assert recording.of_input(backend.Tick) == None
-  assert recording.of_input(backend.MouseMove(1, 2)) == None
-  assert recording.of_input(backend.MousePress(1, 2, backend.MouseLeft))
-    == Some(recording.Pressed(x: 1, y: 2, button: backend.MouseLeft))
-  assert recording.of_input(backend.MouseDrag(3, 2, backend.MouseRight))
-    == Some(recording.Dragged(x: 3, y: 2, button: backend.MouseRight))
-  assert recording.of_input(backend.MouseRelease(3, 2, backend.MouseMiddle))
-    == Some(recording.Released(x: 3, y: 2, button: backend.MouseMiddle))
-  assert recording.of_input(backend.KeyPress("q"))
-    == Some(recording.Key(text: "q"))
-  assert recording.of_input(backend.MouseScroll(3, 4, True))
-    == Some(recording.Scrolled(x: 3, y: 4, direction: recording.ScrollUp))
-}
-
 pub fn a_malformed_recording_line_is_a_worded_error_test() {
   assert recording.decode_line("not json")
     |> result.is_error

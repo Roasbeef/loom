@@ -27,6 +27,7 @@ import tui/session_control
 import tui/snapshot
 import tui/workspace
 import tui_test/pushed
+import tui_test/stepping
 import weft
 
 // Opening a session queues exactly one attachment job under the key the
@@ -62,7 +63,7 @@ pub fn the_frames_inbox_comes_only_from_the_prepared_test() {
   list.each(pushed.transfer(1, "1:1", "recent", 10), process.send(frames, _))
 
   let #(waiting, effects) =
-    tui.step(backend.Tick, runtime.receive(runtime.stamp(model)))
+    stepping.step(backend.Tick, runtime.receive(runtime.stamp(model)))
   assert attachment.busy(waiting.candidate)
   assert list.filter(effects, is_attachment) == []
     as "no tick reduced the frames before the Prepared named them"
@@ -173,7 +174,7 @@ pub fn a_second_prepared_for_the_same_attempt_is_closed_test() {
 pub fn an_arrival_for_a_cancelled_attach_key_is_never_delivered_test() {
   let #(model, key) = tui_model.allocate_job(blank())
   let model = tui_model.Model(..model, candidate: attachment.opening(key, None))
-  let #(quit, effects) = tui.step(backend.KeyPress("ctrl+c"), model)
+  let #(quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), model)
   assert list.contains(effects, effect.CancelJob(key))
   assert !attachment.busy(quit.candidate)
 
@@ -210,7 +211,7 @@ pub fn a_failed_attempt_cancels_its_job_ahead_of_its_cleanup_test() {
       key,
       job.Settled(weft.PulledOutcome(weft.Failed(0, "refused"))),
     ))
-  let #(failed, effects) = tui.step(backend.Tick, model)
+  let #(failed, effects) = stepping.step(backend.Tick, model)
   assert !attachment.busy(failed.candidate)
   let lifecycle =
     list.filter_map(effects, fn(decided) {

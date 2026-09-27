@@ -8,7 +8,7 @@
 //// what it decided. `take` empties the outbox at the end of a step;
 //// `perform` then carries the effects out. `tui.step` returns what `take`
 //// collected, and `tui.update`, which etui and the virtual backend call, is
-//// `step` followed by `perform`.
+//// `message`, then `step`, then `perform`.
 ////
 //// The effects come out in the order the step decided them. For the
 //// sockets that is the order that matters: frames on one socket leave in
@@ -17,11 +17,6 @@
 //// its own close. For the recording it is the order ADR-009 requires: the
 //// input's line is queued before the reducer runs, and every note after it
 //// is queued where its cause was decided.
-////
-//// It also reads the clocks the step is applied at. `stamp` runs before
-//// the step and writes one `Stamp` onto the model, so the reducers read the
-//// time from the model instead of calling a clock, and every reducer in a
-//// step sees the same instant.
 ////
 //// It also receives the step's traffic. `receive` runs before the step and
 //// tops up every inbox the model holds from its mailbox, each to the most
@@ -35,9 +30,10 @@
 //// reads every running job's replies and `hold` admits each into the slot
 //// that names its key, or drops it when no slot does.
 ////
-//// And it reads the file a pasted path names. `read_paste` runs before
-//// the step and writes what the read found onto the model, so the
-//// composer attaches a dropped image without the step opening a file.
+//// And it builds the message each step is given. `message` translates
+//// etui's input event (`tui/keymap`), reads the clocks into it once, and
+//// reads the file a pasted path names into it, so the step reads neither a
+//// clock nor a file, and every reducer in a step sees the same instant.
 ////
 //// This module and `tui/job_runner`, which it calls, are the impure half
 //// of the step. Nothing in the reducer imports either.
@@ -60,19 +56,20 @@ import tui/herdr
 import tui/image_drop
 import tui/job
 import tui/job_runner
+import tui/keymap
 import tui/model.{
-  type Model, type Stamp, ActivityAsking, ActivityDue, ActivityResting,
-  ControlRequest, Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  Stamp,
+  type Model, ActivityAsking, ActivityDue, ActivityResting, ControlRequest,
+  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
 } as tui_model
+import tui/msg.{type Msg, type Stamp, Msg, Stamp}
 import tui/recording
 import tui/session_channel
 
-/// Reads the clocks for one event and writes them onto the model.
+/// Reads the clocks and writes them onto the model, for a caller that
+/// drives a reducer outside `tui.step`.
 ///
-/// `tui.update` calls this once per event, before the step. A caller that
-/// drives a reducer outside `update`, such as a test driver handing a
-/// selected socket message to `inbound.accept_connection_message`, stamps
+/// The step takes its time from its message instead. A test driver handing
+/// a selected socket message to `inbound.accept_connection_message` stamps
 /// first, or the reducer runs at the time of the previous event.
 ///
 /// ## Examples
@@ -105,13 +102,13 @@ pub fn stamp(model: Model) -> Model {
 /// `Prepared`, which names the frames inbox, is admitted before the
 /// candidate's frames are topped up, and the first frames arrive with it.
 ///
-/// `tui.update` calls this once per event, after `stamp`. A caller that
+/// `tui.update` calls this once per event, before the step. A caller that
 /// runs `tui.step` itself and expects it to see traffic calls it first.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let model = runtime.receive(runtime.stamp(model))
+/// let model = runtime.receive(model)
 /// ```
 pub fn receive(model: Model) -> Model {
   let model = list.fold(job_runner.receive(model.running), model, hold)
@@ -123,43 +120,49 @@ pub fn receive(model: Model) -> Model {
   )
 }
 
-/// Reads the file a paste event names, before the step, and writes what the
-/// read found onto the model as `Model.dropped`.
+/// Builds the message the step is given for one etui input event.
 ///
-/// A terminal delivers a dragged file as a paste of its path. The read is
-/// done here rather than as a job because a job's answer arrives a step
-/// later: a key typed between the paste and that answer would be applied
-/// first, so an Enter could submit the prompt without the image, and pasted
-/// text that names no image would be inserted after the keys that followed
-/// it. Read here, the paste is still handled in one step.
+/// This is where the host does the reading the event needs, so the step
+/// does none: it reads the presentation, transport and wall clocks once
+/// each into the message's `Stamp`, and, for a paste that names one path,
+/// reads that file (`image_drop.load_paste`) into the message's `Pasted`.
+/// A read belongs to the paste it was taken for because it travels inside
+/// that paste's message, and it is gone with the message once the step
+/// has handled it.
 ///
-/// Every event overwrites the field, so a read never outlives the event it
-/// was taken for, and an image the read held is not kept on the model after
-/// the composer has taken it. Nothing is read for a paste that does not
-/// name exactly one path. The read happens whatever the step then does with
+/// A paste's file is read here rather than by a job because a job's answer
+/// arrives a step later: a key typed between the paste and that answer
+/// would be applied first, so an Enter could submit the prompt without the
+/// image, and pasted text that names no image would be inserted after the
+/// keys that followed it. The read happens whatever the step then does with
 /// the paste, so a path pasted into an overlay that ignores pastes is read
-/// and then dropped; the bounds on the read (`image_drop.max_image_bytes`)
-/// apply either way.
+/// and dropped; the bounds on the read (`image_drop.max_image_bytes`) apply
+/// either way.
 ///
-/// `tui.update` calls this once per event, after `receive`. A caller that
-/// runs `tui.step` itself with a paste naming an image calls it first.
+/// `tui.update` calls this once per event. The model is read only for its
+/// two clock functions.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let model = runtime.read_paste(backend.Paste("/tmp/shot.png"), model)
+/// let message = runtime.message(backend.Paste("/tmp/shot.png"), model)
 /// ```
-pub fn read_paste(event: backend.InputEvent, model: Model) -> Model {
-  case event, model.dropped {
-    backend.Paste(text), _ ->
-      Model(..model, dropped: image_drop.read_dropped(text))
-
-    // Most events are not pastes and find nothing to clear, so the model is
-    // returned as it was rather than rebuilt.
-    _, image_drop.NothingDropped -> model
-    _, image_drop.Dropped(..) ->
-      Model(..model, dropped: image_drop.NothingDropped)
+pub fn message(event: backend.InputEvent, model: Model) -> Msg {
+  let pasted = case event {
+    backend.Paste(text) -> image_drop.load_paste(text)
+    backend.KeyPress(_)
+    | backend.Resize(..)
+    | backend.Tick
+    | backend.MousePress(..)
+    | backend.MouseRelease(..)
+    | backend.MouseScroll(..)
+    | backend.MouseDrag(..)
+    | backend.MouseMove(..) -> Ok(None)
   }
+  Msg(
+    at: read_stamp(model.monotonic_time_ms, model.transport_time_ms),
+    event: keymap.translate(event, pasted),
+  )
 }
 
 /// Admits one job reply into the slot that waits for it, and forgets the
@@ -336,9 +339,9 @@ pub fn perform(
 
 /// Performs what a step returned and stores the job table on its model.
 ///
-/// `tui.update` is `settle(step(event, receive(stamp(model))))`. The step
-/// never touches `Model.running`, so the table `perform` starts from is the
-/// one the previous event left.
+/// `tui.update` is `settle(step(message(event, model), receive(model)))`.
+/// The step never touches `Model.running`, so the table `perform` starts
+/// from is the one the previous event left.
 ///
 /// ## Examples
 ///

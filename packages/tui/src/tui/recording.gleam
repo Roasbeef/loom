@@ -64,7 +64,7 @@ import etui/backend
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
@@ -225,32 +225,6 @@ pub fn append(recorder: Recorder, event: Recorded) -> Nil {
   case recorder {
     Recorder(path:, started_ms:) -> write(path, started_ms, event)
     Observed(sink:) -> process.send(sink, event)
-  }
-}
-
-/// The recordable part of an input event, if any.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert recording.of_input(backend.Tick) == option.None
-/// ```
-pub fn of_input(event: backend.InputEvent) -> Option(Recorded) {
-  case event {
-    backend.KeyPress(key) -> Some(Key(text: key))
-    backend.Paste(text) -> Some(Pasted(text:))
-    backend.Resize(width, height) -> Some(Resized(width:, height:))
-    backend.MouseScroll(x, y, True) ->
-      Some(Scrolled(x:, y:, direction: ScrollUp))
-    backend.MouseScroll(x, y, False) ->
-      Some(Scrolled(x:, y:, direction: ScrollDown))
-    backend.MousePress(x, y, button) -> Some(Pressed(x:, y:, button:))
-    backend.MouseDrag(x, y, button) -> Some(Dragged(x:, y:, button:))
-    backend.MouseRelease(x, y, button) -> Some(Released(x:, y:, button:))
-
-    // A tick carries nothing, and a move with no button held leaves the
-    // model exactly as it found it.
-    backend.Tick | backend.MouseMove(..) -> None
   }
 }
 

@@ -72,8 +72,14 @@ import tui/worktree_view
 
 /// The rename overlay owns pasted text just as it owns character keys. It
 /// must never leave a pasted title in the hidden conversation composer.
+/// `image` is what the host found when it read the path the paste names,
+/// before the step; the composer attaches it rather than reading the file.
 @internal
-pub fn handle_paste(model: Model, text: String) -> Model {
+pub fn handle_paste(
+  model: Model,
+  text: String,
+  image: Result(Option(image_drop.Image), String),
+) -> Model {
   case model.overlay {
     DaemonSelector(
       session_selector.State(prompt: session_selector.Renaming(..), ..) as selector,
@@ -81,10 +87,10 @@ pub fn handle_paste(model: Model, text: String) -> Model {
     NoOverlay ->
       case layout.diff_shown(model), model.worktree.focus {
         True, worktree_view.Navigator -> model
-        _, _ -> handle_underlay_paste(model, text)
+        _, _ -> handle_underlay_paste(model, text, image)
       }
     AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
-      handle_underlay_paste(model, text)
+      handle_underlay_paste(model, text, image)
     PeerLinkManager(
       peer_links.State(prompt: peer_links.EditingTargetStrand, ..) as state,
     ) -> session_control.update_peer_link_manager(keys.Char(text), model, state)
@@ -97,7 +103,11 @@ pub fn handle_paste(model: Model, text: String) -> Model {
   }
 }
 
-fn handle_underlay_paste(model: Model, text: String) -> Model {
+fn handle_underlay_paste(
+  model: Model,
+  text: String,
+  image: Result(Option(image_drop.Image), String),
+) -> Model {
   use <- bool.guard(model.context.surface != context_view.Hidden, model)
   case model.queue_editor.surface {
     queue_editor.Editor ->
@@ -105,23 +115,31 @@ fn handle_underlay_paste(model: Model, text: String) -> Model {
     queue_editor.Inspector -> model
     queue_editor.Closed ->
       case model.summary_surface {
-        queue_editor.Closed -> handle_composer_paste(model, text)
+        queue_editor.Closed -> handle_composer_paste(model, text, image)
         queue_editor.Editor | queue_editor.Inspector -> model
       }
   }
 }
 
-fn handle_composer_paste(model: Model, text: String) -> Model {
+fn handle_composer_paste(
+  model: Model,
+  text: String,
+  image: Result(Option(image_drop.Image), String),
+) -> Model {
   case model.pending_submission {
     Some(_) -> outbound.waiting_notice(model)
-    None -> paste_unlocked(model, text)
+    None -> paste_unlocked(model, text, image)
   }
 }
 
-// The runtime read the file this paste names before the step
-// (`runtime.read_paste`); the step only asks what that read found.
-fn paste_unlocked(model: Model, text: String) -> Model {
-  case image_drop.dropped_image(model.dropped, text) {
+// The host read the file this paste names before the step
+// (`runtime.message`), and the message carried what it found here.
+fn paste_unlocked(
+  model: Model,
+  text: String,
+  image: Result(Option(image_drop.Image), String),
+) -> Model {
+  case image {
     Error(reason) -> tui_model.append_error(model, reason)
     Ok(Some(image)) -> add_attachment(model, composer.ImageAttachment(image))
     Ok(None) ->

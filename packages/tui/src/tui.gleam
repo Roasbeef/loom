@@ -33,7 +33,6 @@ import etui/backend
 import etui/backend/default
 import etui/buffer
 import etui/geometry
-import etui/keys
 import etui/widgets/textarea as text_area
 import gleam/bit_array
 import gleam/dict
@@ -68,7 +67,6 @@ import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/frame
 import tui/history_view
-import tui/image_drop
 import tui/inbound
 import tui/interaction
 import tui/internal/ffi_terminal
@@ -80,6 +78,7 @@ import tui/model.{
   Model, Newer, NoClipboard, NoOverlay, Older, Preview, PromptNext, Reasoning,
   ReconnectIdle, Replaying, System, TerminalClipboard, ToolResult,
 } as tui_model
+import tui/msg
 import tui/note_panel
 import tui/pacing
 import tui/projection
@@ -595,7 +594,6 @@ pub fn new_model_with_clock(
     stamp:,
     terminal: runtime.terminal_identity(),
     client_build: build_identity.current(),
-    dropped: image_drop.NothingDropped,
     last_frame_ms: stamp.now_ms,
     activity_revision: 0,
     quiet_for_ms: pacing.quiet_after_ms,
@@ -1382,13 +1380,13 @@ fn attach_daemon(
 
 /// Applies one terminal event and performs the effects it decided on.
 ///
-/// This is the function etui and the virtual backend call: `runtime.stamp`,
-/// which reads the clocks once for this event, `runtime.receive`, which
-/// moves the waiting traffic and job replies into the model,
-/// `runtime.read_paste`, which reads the file a pasted path names, then
-/// `step`, then `runtime.settle`, which performs what the step returned and
-/// stores the job table it leaves. Everything that inspects a transition
-/// without acting on it calls `step` instead.
+/// This is the function etui and the virtual backend call:
+/// `runtime.message`, which translates the event into the client's own
+/// message and reads the clocks and any pasted file into it,
+/// `runtime.receive`, which moves the waiting traffic and job replies into
+/// the model, then `step`, then `runtime.settle`, which performs what the
+/// step returned and stores the job table it leaves. Everything that
+/// inspects a transition without acting on it calls `step` instead.
 ///
 /// ## Examples
 ///
@@ -1397,14 +1395,11 @@ fn attach_daemon(
 /// ```
 @internal
 pub fn update(event: backend.InputEvent, model: Model) -> Model {
-  runtime.settle(step(
-    event,
-    runtime.read_paste(event, runtime.receive(runtime.stamp(model))),
-  ))
+  runtime.settle(step(runtime.message(event, model), runtime.receive(model)))
 }
 
-/// Applies one terminal event and returns the effects it decided on,
-/// without performing them.
+/// Applies one message and returns the effects it decided on, without
+/// performing them.
 ///
 /// The reducer queues its I/O as `effect.Effect` values rather than doing
 /// it, and this collects them, together with whatever was still queued
@@ -1415,38 +1410,34 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 /// attachment and configuration jobs are started and cancelled by
 /// `StartJob` and `CancelJob` effects.
 ///
-/// The step reads no file. A pasted image is read by `runtime.read_paste`
-/// before the step, and the step attaches what that read found, so a test
-/// that calls `step` directly with a paste naming an image calls
-/// `runtime.read_paste` first, or the paste is inserted as text.
+/// The step reads no file. A pasted image is read by `runtime.message`
+/// when it builds the message, and the step attaches what that read found,
+/// so a test that builds a `msg.Pasted` itself chooses what the read found.
 ///
 /// The step reads the connection, replay and attachment inboxes, and every
 /// job's messages, only through what `runtime.receive` put in the model, so
 /// a test that calls `step` directly and wants it to see queued traffic
 /// receives first, or hands it a job message with `runtime.hold`.
 ///
-/// The step reads no clock. It applies the event at `model.stamp`, which
-/// `update` writes before calling it; a test calling `step` directly gets
-/// whatever stamp the model already carries, the creation-time reading
-/// for a fresh model, and sets the field to choose another time.
+/// The step reads no clock. It applies the message's event at the
+/// message's stamp, which it stores as `Model.stamp` before any reducer
+/// runs; a test that builds a message chooses the time with it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let #(next, effects) = tui.step(backend.KeyPress(enter), model)
+/// let #(next, effects) =
+///   tui.step(msg.Msg(model.stamp, msg.KeyPressed("enter", keys.Enter)), model)
 /// ```
 @internal
-pub fn step(
-  event: backend.InputEvent,
-  model: Model,
-) -> #(Model, List(effect.Effect)) {
-  // Queued before the event is interpreted, so a recording holds what the
+pub fn step(message: msg.Msg, model: Model) -> #(Model, List(effect.Effect)) {
+  // Recorded before the event is interpreted, so a recording holds what the
   // client was given rather than what it made of it, and the input's line
   // is ahead of every line the reducer queues for it.
-  let model = tui_model.record_input(model, event)
+  let model = tui_model.start_step(model, message)
 
-  let updated = apply_input(event, model)
-  runtime.take(settle_update(event, model, updated))
+  let updated = apply_input(message.event, model)
+  runtime.take(settle_update(message.event, model, updated))
 }
 
 // The dispatch on the event and the settling of its result are two functions
@@ -1468,12 +1459,12 @@ pub fn step(
 // sibling modules, which the inliner never attempts. The boundary stays
 // because `snap_viewport_for` is still a local step, and any local step
 // added to `update` would reintroduce the cost.
-fn apply_input(event: backend.InputEvent, model: Model) -> Model {
+fn apply_input(event: msg.Event, model: Model) -> Model {
   case event {
     // A selection is screen cells over a layout the resize just replaced,
     // so it goes with the old layout rather than surviving as a highlight
     // over whatever now occupies those cells.
-    backend.Resize(width, height) ->
+    msg.Resized(width:, height:) ->
       Model(
         ..model,
         width:,
@@ -1484,17 +1475,17 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
       )
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
-    backend.Tick -> tick.update_tick(model)
+    msg.Ticked -> tick.update_tick(model)
 
     // A keyboard burst can arrive before an idle tick even when the final
     // server reply is already queued. Apply bounded ready progress before
     // interpreting the action, without starting another periodic capture.
-    backend.KeyPress(key) ->
-      interaction.update_ready_key(keys.match(key), model)
+    msg.KeyPressed(key:, ..) ->
+      interaction.update_ready_key(key, model)
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
-    backend.Paste(text) ->
-      interaction.handle_paste(interaction.clear_selection(model), text)
+    msg.Pasted(text:, image:) ->
+      interaction.handle_paste(interaction.clear_selection(model), text, image)
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
 
@@ -1502,19 +1493,19 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
     // tick arrives until the hand pauses. Draining here, as a key does,
     // keeps the history page this gesture asked for from waiting on that
     // pause and then landing with every capture queued behind it.
-    backend.MouseScroll(x, y, up) ->
+    msg.Scrolled(x:, y:, direction:) ->
       inbound.drain_connection(model, tui_model.connection_batch)
       |> interaction.clear_selection
-      |> interaction.scroll_at(geometry.Position(x, y), case up {
-        True -> Older
-        False -> Newer
+      |> interaction.scroll_at(geometry.Position(x, y), case direction {
+        recording.ScrollUp -> Older
+        recording.ScrollDown -> Newer
       })
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
 
     // The left button is the selection button, as in every terminal. The
     // other two are listed so a new etui button is a compile error here.
-    backend.MousePress(x, y, backend.MouseLeft) ->
+    msg.Pressed(x:, y:, button: backend.MouseLeft) ->
       interaction.begin_selection(model, geometry.Position(x, y))
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
@@ -1522,22 +1513,22 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
     // A held drag is the other gesture that outruns the poll timeout, for as
     // long as the button is down. The selection reads the frame it began
     // on, so the traffic applied here cannot move the cells under it.
-    backend.MouseDrag(x, y, backend.MouseLeft) ->
+    msg.Dragged(x:, y:, button: backend.MouseLeft) ->
       inbound.drain_connection(model, tui_model.connection_batch)
       |> interaction.extend_selection(geometry.Position(x, y))
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
-    backend.MouseRelease(x, y, backend.MouseLeft) ->
+    msg.Released(x:, y:, button: backend.MouseLeft) ->
       interaction.finish_selection(model, geometry.Position(x, y))
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
-    backend.MousePress(_, _, backend.MouseMiddle)
-    | backend.MousePress(_, _, backend.MouseRight)
-    | backend.MouseDrag(_, _, backend.MouseMiddle)
-    | backend.MouseDrag(_, _, backend.MouseRight)
-    | backend.MouseRelease(_, _, backend.MouseMiddle)
-    | backend.MouseRelease(_, _, backend.MouseRight)
-    | backend.MouseMove(..) -> model
+    msg.Pressed(button: backend.MouseMiddle, ..)
+    | msg.Pressed(button: backend.MouseRight, ..)
+    | msg.Dragged(button: backend.MouseMiddle, ..)
+    | msg.Dragged(button: backend.MouseRight, ..)
+    | msg.Released(button: backend.MouseMiddle, ..)
+    | msg.Released(button: backend.MouseRight, ..)
+    | msg.Moved(..) -> model
   }
 }
 
@@ -1545,11 +1536,7 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
 // newly shown diff needs, the context sync, the Herdr report, the transcript
 // projection, the viewport snap and the frame decision. `model` is the
 // state before the event and `updated` the state its handler produced.
-fn settle_update(
-  event: backend.InputEvent,
-  model: Model,
-  updated: Model,
-) -> Model {
+fn settle_update(event: msg.Event, model: Model, updated: Model) -> Model {
   let updated = case !layout.diff_shown(model) && layout.diff_shown(updated) {
     True -> inbound.request_visible_worktree(updated)
     False -> updated
@@ -1582,7 +1569,7 @@ fn settle_update(
 // exists to smooth output the reader did not ask for, and making a scroll,
 // a page key or a resize wait on it would put the walk in front of the
 // hand.
-fn snap_viewport_for(model: Model, event: backend.InputEvent) -> Model {
+fn snap_viewport_for(model: Model, event: msg.Event) -> Model {
   case pacing.viewport_address(event) {
     pacing.AddressesElsewhere -> model
     pacing.AddressesTranscript ->

@@ -1,12 +1,15 @@
 //// The step reads no file (ADR-013, phase 2 S6).
 ////
-//// A pasted image path is read by `runtime.read_paste` before the step, and
-//// the step attaches what that read found. These tests pin both halves: the
-//// step alone leaves a pasted path as text even when the path names an
-//// image on disk, and a read taken before the step attaches its image even
-//// after the file is gone. The behaviour through `tui.update` is unchanged:
-//// the image attaches in the step that handled the paste, and a refused
-//// image reports the same error it did when the step read the file itself.
+//// A pasted image path is read by `runtime.message` when it builds the
+//// step's message, and the step attaches what that read found. These tests
+//// pin both halves: a message whose read found nothing leaves a pasted path
+//// as text even when the path names an image on disk, and a message built
+//// before the file is deleted still attaches its image. The behaviour
+//// through `tui.update` is unchanged: the image attaches in the step that
+//// handled the paste, and a refused image reports the same error it did
+//// when the step read the file itself. Since phase 3 the read travels
+//// inside the paste's own message, so it cannot be attached to another
+//// paste or outlive its event, and nothing needs a test to say so.
 ////
 //// A new session's configuration is resolved by a keyed job
 //// (`job.Configure`). The step that asks for a session queues the job and
@@ -39,6 +42,7 @@ import tui/runtime
 import tui/session_selector
 import tui/submit
 import tui/workspace
+import tui_test/stepping
 import weft
 
 // The smallest byte string `image_drop.media_type` recognises as a PNG.
@@ -76,38 +80,26 @@ pub fn a_pasted_image_attaches_in_the_step_that_handled_the_paste_test() {
 pub fn the_step_alone_leaves_a_pasted_image_path_as_text_test() {
   let path = "build/s6-unread.png"
   write(path, png)
-  let #(stepped, _effects) = tui.step(backend.Paste(path), model())
+  let #(stepped, _effects) = stepping.step(backend.Paste(path), model())
   let _ = simplifile.delete(path)
 
   assert image_names(stepped) == []
   assert textarea.value(stepped.input) == path
 }
 
-// The read before the step is the only read: the file is deleted between
-// `read_paste` and the step, and the image still attaches from what the
-// read found. A step that read the file itself would find nothing there.
+// The read that builds the message is the only read: the file is deleted
+// between `runtime.message` and the step, and the image still attaches from
+// what the read found. A step that read the file itself would find nothing
+// there.
 pub fn the_step_attaches_what_the_read_before_it_found_test() {
   let path = "build/s6-read-first.png"
   write(path, png)
-  let read = runtime.read_paste(backend.Paste(path), model())
+  let message = runtime.message(backend.Paste(path), model())
   let assert Ok(Nil) = simplifile.delete(path)
-  let #(stepped, _effects) = tui.step(backend.Paste(path), read)
+  let #(stepped, _effects) = tui.step(message, model())
 
   assert image_names(stepped) == ["s6-read-first.png"]
   assert textarea.value(stepped.input) == ""
-}
-
-// A read belongs to the paste text it was taken for. A step for another
-// paste treats it as no read at all.
-pub fn a_read_for_another_paste_is_not_attached_test() {
-  let path = "build/s6-other.png"
-  write(path, png)
-  let read = runtime.read_paste(backend.Paste(path), model())
-  let _ = simplifile.delete(path)
-  let #(stepped, _effects) = tui.step(backend.Paste("later words"), read)
-
-  assert image_names(stepped) == []
-  assert textarea.value(stepped.input) == "later words"
 }
 
 pub fn an_oversized_image_reports_the_error_the_step_reported_before_test() {
@@ -126,20 +118,6 @@ pub fn an_oversized_image_reports_the_error_the_step_reported_before_test() {
   assert reason == "dropped image exceeds the 20 MiB limit"
   assert image_names(pasted) == []
   assert textarea.value(pasted.input) == ""
-}
-
-// The read holds the image's bytes, so it must not stay on the model after
-// the event it was taken for.
-pub fn the_next_event_clears_the_read_test() {
-  let path = "build/s6-cleared.png"
-  write(path, png)
-  let pasted = tui.update(backend.Paste(path), model())
-  let _ = simplifile.delete(path)
-  let assert image_drop.Dropped(read: Ok(Some(_)), ..) = pasted.dropped
-    as "the paste's read is on the model the paste returned"
-  let ticked = tui.update(backend.Tick, pasted)
-
-  assert ticked.dropped == image_drop.NothingDropped
 }
 
 // Launch options whose `--config` names a file that does not exist, so
@@ -184,7 +162,7 @@ fn failures(model: tui_model.Model) -> List(String) {
 // noticed, no creation key is retained and no attachment starts.
 pub fn asking_for_a_session_queues_the_configuration_job_test() {
   let options = absent_config()
-  let #(asked, effects) = tui.step(backend.KeyPress("n"), picker(options))
+  let #(asked, effects) = stepping.step(backend.KeyPress("n"), picker(options))
   let assert Some(slot) = asked.configuring
     as "the creation waits for its configuration job"
 
@@ -218,7 +196,7 @@ pub fn a_configuration_failure_reports_the_same_error_test() {
 // already cleared and reports nothing.
 pub fn a_resolved_configuration_continues_the_creation_test() {
   let options = absent_config()
-  let #(asked, _effects) = tui.step(backend.KeyPress("n"), picker(options))
+  let #(asked, _effects) = stepping.step(backend.KeyPress("n"), picker(options))
   let assert Some(slot) = asked.configuring
     as "the creation waits for its configuration job"
   let resolved =
@@ -229,7 +207,7 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
         weft.PulledOutcome(weft.Completed(0, "/cfg/loom.toml")),
       ),
     )
-  let #(created, effects) = tui.step(backend.Tick, resolved)
+  let #(created, effects) = stepping.step(backend.Tick, resolved)
   let assert Some(creation_key) = created.creation_key
     as "the creation retained its key once the configuration arrived"
   let assert Some(host) = created.daemon_host as "the stand-in host remains"
@@ -252,7 +230,7 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
       created,
       job.ConfigurationArrived(job.key(slot), weft.AllDelivered),
     )
-  let #(after, _effects) = tui.step(backend.Tick, finished)
+  let #(after, _effects) = stepping.step(backend.Tick, finished)
   assert failures(after) == []
 }
 
@@ -260,7 +238,7 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
 // for, so it is not admitted and the creation does not continue.
 pub fn a_configuration_reply_for_another_key_is_not_admitted_test() {
   let #(asked, _effects) =
-    tui.step(backend.KeyPress("n"), picker(absent_config()))
+    stepping.step(backend.KeyPress("n"), picker(absent_config()))
   let #(asked, other) = tui_model.allocate_job(asked)
   let held =
     runtime.hold(
@@ -270,7 +248,7 @@ pub fn a_configuration_reply_for_another_key_is_not_admitted_test() {
         weft.PulledOutcome(weft.Completed(0, "/cfg/loom.toml")),
       ),
     )
-  let #(after, _effects) = tui.step(backend.Tick, held)
+  let #(after, _effects) = stepping.step(backend.Tick, held)
 
   assert after.configuring == asked.configuring
   assert after.creation_key == None
@@ -281,7 +259,7 @@ pub fn a_configuration_reply_for_another_key_is_not_admitted_test() {
 // so a reply the job sends afterwards reaches no creation.
 pub fn quit_cancels_the_configuration_job_test() {
   let #(asked, _effects) =
-    tui.step(backend.KeyPress("n"), picker(absent_config()))
+    stepping.step(backend.KeyPress("n"), picker(absent_config()))
   let assert Some(slot) = asked.configuring
     as "the creation waits for its configuration job"
   let #(quitting, effects) = runtime.take(submit.quit(asked))

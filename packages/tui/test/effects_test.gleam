@@ -30,6 +30,7 @@ import tui/session_channel
 import tui/snapshot
 import tui/workspace
 import tui_test/pushed
+import tui_test/stepping
 
 // A copy asks the runtime for exactly one clipboard write, and only when the
 // terminal has a clipboard to write to. The notice is set either way, which
@@ -89,7 +90,7 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
       activity_poll: tui_model.ActivityAsking(job.awaiting(poll), ["A"]),
     )
 
-  let #(quit, effects) = tui.step(backend.KeyPress("ctrl+c"), model)
+  let #(quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), model)
   assert quit.quit
   assert quit.outbox == []
   assert effects
@@ -127,7 +128,7 @@ pub fn a_replayed_prompt_queues_no_write_test() {
       input: text_area.state_from_string("hello"),
     )
 
-  let #(submitted, effects) = tui.step(backend.KeyPress("enter"), model)
+  let #(submitted, effects) = stepping.step(backend.KeyPress("enter"), model)
   assert string.contains(submitted.notice, "prompt sent")
     as "premise: the submission took the live path's local half"
 
@@ -150,10 +151,12 @@ fn drag_and_release(
 
   // The transcript's text starts at row 2, column 1 on a 60x12 screen: one
   // header row, then the panel border.
-  let #(model, _) = tui.step(backend.Resize(60, 12), model)
-  let #(model, _) = tui.step(backend.MousePress(3, 2, backend.MouseLeft), model)
-  let #(model, _) = tui.step(backend.MouseDrag(5, 3, backend.MouseLeft), model)
-  tui.step(backend.MouseRelease(5, 3, backend.MouseLeft), model)
+  let #(model, _) = stepping.step(backend.Resize(60, 12), model)
+  let #(model, _) =
+    stepping.step(backend.MousePress(3, 2, backend.MouseLeft), model)
+  let #(model, _) =
+    stepping.step(backend.MouseDrag(5, 3, backend.MouseLeft), model)
+  stepping.step(backend.MouseRelease(5, 3, backend.MouseLeft), model)
 }
 
 fn quiet_model() -> tui_model.Model {
