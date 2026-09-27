@@ -28,6 +28,7 @@ import tui/model.{
   ReportGoal,
 } as tui_model
 import tui/queue_editor
+import tui/terminal_lane
 
 /// Sets the notice shown while a submission waits for the channel.
 @internal
@@ -143,10 +144,33 @@ pub fn discard_own_turn(model: Model) -> Model {
 /// reaches the wire until the runtime performs the step's effects.
 @internal
 pub fn send_frame(model: Model, frame: String) -> Model {
+  send_via(model, fn(lane, now) { session_channel.submit(lane, frame, now:) })
+}
+
+/// Submits through the adopted lane with `arm`, one of the engine's command
+/// arms (`session_view/operator`) or a plain `session_channel.submit`, and
+/// folds the lane's disposition back into the model as `send_frame` does.
+///
+/// The arm is given the lane and the step's transport time and returns the
+/// transitioned lane, which is stored through `hold_channel` so its queued
+/// write joins the step's effects. Without a lane nothing is written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// outbound.send_via(model, fn(lane, now) {
+///   operator.submit(lane, model.next_id, "main", text, operator.Prompt, now)
+/// })
+/// ```
+@internal
+pub fn send_via(
+  model: Model,
+  arm: fn(terminal_lane.Lane, Int) ->
+    #(terminal_lane.Lane, session_channel.Disposition),
+) -> Model {
   case model.channel {
     Some(channel) -> {
-      let #(channel, disposition) =
-        session_channel.submit(channel, frame, now: model.stamp.transport_ms)
+      let #(channel, disposition) = arm(channel, model.stamp.transport_ms)
       apply_submission(tui_model.hold_channel(model, channel), disposition)
     }
 

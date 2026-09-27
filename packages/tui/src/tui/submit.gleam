@@ -15,10 +15,10 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import session_view/approval
 import session_view/command
 import session_view/composer
 import session_view/context_view
+import session_view/operator
 import session_view/pasted_image
 import session_view/protocol
 import session_view/session_channel
@@ -232,8 +232,8 @@ fn submit_text(model: Model) -> Model {
         cleared,
         protocol.add_directory(cleared.next_id, path, access),
       )
-    command.Approve(id) -> inbound.decide(cleared, id, approval.approve)
-    command.Deny(id) -> inbound.decide(cleared, id, approval.deny)
+    command.Approve(id) -> inbound.decide(cleared, id, operator.AllowOnce)
+    command.Deny(id) -> inbound.decide(cleared, id, operator.Deny)
     command.Notes ->
       surfaces.refresh_notes(
         Model(
@@ -670,12 +670,21 @@ fn send_prompt(model: Model, text: String) -> Model {
 // operator watches their own line disappear, which is the symptom the echo
 // exists to prevent.
 fn send_steer(model: Model, text: String) -> Model {
-  outbound.send_frame(
+  outbound.send_via(
     Model(
       ..inbound.expect_own_turn(model, steering_submission(model, text)),
       notice: "steered " <> model.active_strand,
     ),
-    protocol.steer(model.next_id, model.active_strand, text),
+    fn(lane, now) {
+      operator.submit(
+        lane,
+        model.next_id,
+        model.active_strand,
+        text,
+        operator.Steer,
+        now,
+      )
+    },
   )
 }
 
