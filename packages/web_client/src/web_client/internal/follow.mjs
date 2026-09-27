@@ -1,0 +1,45 @@
+// The page's scroll position and the lane's size, behind
+// `web_client/internal/ffi_follow`. See that module for why these are
+// JavaScript: no Gleam library observes an element's size or reads and
+// moves the page's scroll position on this target.
+
+// The page scrolls as a whole: the lane is in the document's flow, not in a
+// scrolling box of its own.
+function page() {
+  return document.scrollingElement || document.documentElement;
+}
+
+// How far the bottom of the viewport is from the bottom of the page, in
+// whole pixels.
+function gap() {
+  const scroller = page();
+  const left = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  return Math.max(0, Math.round(left));
+}
+
+// Starts watching: every scroll of the page reports the gap, and every change
+// in the size of the element whose shadow root is `root` reports growth. The
+// element is the `<loom-follow>` around the lane, so its size changes when a
+// row lands, and not when the dock's editor grows.
+export function watch(root, scrolled, resized) {
+  const host = root.host || root;
+  const onScroll = () => scrolled(gap());
+  window.addEventListener("scroll", onScroll, { passive: true });
+  const observer = new ResizeObserver(() => resized());
+  observer.observe(host);
+  return { onScroll, observer };
+}
+
+// Stops what `watch` started.
+export function unwatch(watching) {
+  window.removeEventListener("scroll", watching.onScroll);
+  watching.observer.disconnect();
+}
+
+// Scrolls the page to its bottom at once. It is never animated: a smooth
+// scroll reports its intermediate positions, and each would read as the
+// reader leaving the tail.
+export function to_bottom() {
+  const scroller = page();
+  scroller.scrollTop = scroller.scrollHeight;
+}

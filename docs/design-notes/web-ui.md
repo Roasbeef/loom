@@ -210,11 +210,17 @@ Expanded, the card has three tabs:
 **Approvals** are never a modal. Protocol-change/051's operator addendum
 fixes where a card with buttons may sit, and this spec follows it. The
 card is drawn from the escalation record alone, in a region of its own
-below the composer, which transcript content cannot occupy, and in a style
-no transcript line uses. It sits below the composer because the agent
-chooses when a card appears and how tall it is, and a card drawn above the
-composer, or inline in the transcript, could move a button under a click already
-on its way to Send. In the transcript column, the row of the call that holds
+directly above the composer, which transcript content cannot occupy, and
+in a style no transcript line uses. The composer and the region share the
+dock, a footer pinned to the bottom of the viewport, so a pending card is
+on screen wherever the operator has scrolled. The dock is pinned by its
+bottom edge, so a card appearing grows it upward and never moves the
+composer's controls. The card's buttons refuse clicks for 600 ms after it
+appears, as a browser's permission prompt does, so a click aimed at the
+bottom of the transcript cannot land on Allow. A card drawn inline in the
+transcript could still
+move a button under a click already on its way somewhere else, which is
+why it is not drawn there (051, the addendum on the pinned composer). In the transcript column, the row of the call that holds
 the claim (a `bash` call, a native file tool, or a program launch) shows
 the waiting state glyph and a one-line `waits for approval` marker with no
 buttons. A capability refused inside a running program is drawn as a
@@ -629,7 +635,7 @@ The viewport is 1440 by 900 px, in the dark theme.
 - **Composer**: `Alice · Owner · → main · glm-5.2 · effort 400 ·
   workspace-write`, and the action row **Queue**, **Steer** and **Stop**,
   because `main` is busy.
-- **Approvals region**, below the composer: the card
+- **Approvals region**, in the dock directly above the composer: the card
   `waits for approval · asked 1 of 3 · bash · main`, the wanted grant
   `+ writable root packages/lint/build`, the action preview
   `["/bin/sh","tools/sweep","deprecated_decode","packages/lint"]`, the
