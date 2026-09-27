@@ -26,8 +26,7 @@
 //// because until a frame has been pushed to it the refresh is the only way
 //// it learns that the session moved. The first pushed frame moves it to
 //// `Pushing` for the rest of its life, and from then on an idle cut is
-//// refreshed every `pushing_refresh_ms` (1 s for now; the constant's doc
-//// says why it is not yet 5 s). The hello is not used for
+//// refreshed every `pushing_refresh_ms` (5 s). The hello is not used for
 //// this: it carries no push capability, and a lane that reconnects may be
 //// talking to an older daemon than the one that pushed before.
 ////
@@ -236,14 +235,14 @@ pub const polling_refresh_ms = 250
 /// refresh repairs a lost final notice and catches what the daemon does not
 /// announce.
 ///
-/// One second is an interim value. A peer joining the session is not
-/// announced: protocol-change/018 has the hub push `presence` on a
-/// departure and not on a join, so a lane learns of a newcomer only at its
-/// next capture, and this refresh is what bounds that wait. The intended
-/// value is five seconds, which an idle client can afford once the join is
-/// pushed; `protocol-change/054-roster-push-on-subscribe.md` proposes that
-/// push, and this constant returns to 5000 when it lands.
-pub const pushing_refresh_ms = 1000
+/// Five seconds is affordable because the refresh no longer carries any
+/// change a peer's screen depends on. The hub pushes `presence` when a
+/// peer subscribes as well as when one departs
+/// (`protocol-change/054-roster-push-on-subscribe.md`), so a newcomer
+/// reaches the peers already attached as a pushed frame and not at their
+/// next refresh. Before 054 a join produced no frame, and this constant
+/// was 1000 so that a join reached the other peers within a second.
+pub const pushing_refresh_ms = 5000
 
 /// Whether this lane has evidence that its daemon pushes.
 ///
