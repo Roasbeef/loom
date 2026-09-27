@@ -37,7 +37,7 @@ terminal state exists. Only three variants start the interactive loop:
 - `Remote` attaches to an explicit address with an explicit token.
 
 The rest never enter the alternate screen. `Version` prints the client's own
-build identity. `View` is `loom --ui --session <id>`: it resolves the daemon
+build identity. `View` is `loom ui --session <id>`: it resolves the daemon
 (starting one with `--ui` if none runs), asks it for a single-use link to
 the session's web page with `ui.link`, prints the link, and with `--open`
 also hands it to the platform's opener; [the web view](web-view.md) follows
@@ -91,7 +91,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:1639`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:1699`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid
@@ -942,10 +942,10 @@ Paths are relative to the package's source root: `tui/...` is under
 
 | Module | What it owns |
 |---|---|
-| `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, `loom --ui` (`run_view`), and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
+| `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, `loom ui` (`run_view`), and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
 | `tui/effect` | The closed vocabulary of effects a step decides on. |
 | `tui/terminal_lane` | The session lane with the terminal's socket and recorder filled in, and `perform`, the one place a lane's outputs touch the websocket or the recording. |
-| `tui/view_link` | Printing the `loom --ui` link and handing it to the platform's opener. |
+| `tui/view_link` | Printing the `loom ui` link and handing it to the platform's opener. |
 | `tui/model` | `Model`, the frame cache, the `Reconnect` state, the effect outbox (`emit`, `record`, `hold_channel`) and the other types every reducer shares. |
 | `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
 | `tui/msg` | What the step is given: `Input(at, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`. |

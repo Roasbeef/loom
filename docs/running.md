@@ -261,14 +261,20 @@ member of. Ask your own `loom` for a link:
 
 ```sh
 # Print a single-use link to an observer's page for one session.
-loom --ui --session SESSION_ID
+loom ui --session SESSION_ID
 
 # Ask for an operator's page, and open the link in the default browser.
-loom --ui --session SESSION_ID --operate --open
+loom ui --session SESSION_ID --operate --open
+
+# Name the daemon's state directory and config, in any order.
+loom ui --state-dir ~/.loom --config ~/.loom/loom.toml --session SESSION_ID
 ```
 
-If no daemon is running, `loom --ui` starts one with `--ui`. If the
-running daemon was started without it, `loom --ui` says so and exits with
+`loom --ui ...` is an older spelling of the same command and still works,
+with the options before or after `--ui`.
+
+If no daemon is running, `loom ui` starts one with `--ui`. If the
+running daemon was started without it, `loom ui` says so and exits with
 status 1; it never restarts a daemon other people may be using. The link
 works once, within 60 seconds, and only in the browser tab that opens it;
 a new tab or a daemon restart needs a new link. A page is an observer's

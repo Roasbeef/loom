@@ -49,7 +49,7 @@ socket wakes etui's loop after each frame it files, paced to one wake per
 `session_channel.next_due` when nothing else is owed
 ([delivery.md](architecture/delivery.md)).
 
-**The web view.** `loom --ui --session <id> [--operate] [--open]` asks the
+**The web view.** `loom ui --session <id> [--operate] [--open]` asks the
 daemon for a single-use ticket with `ui.link` and prints the link. The
 browser exchanges the ticket for an `HttpOnly`, `SameSite=Strict` cookie
 scoped to a page key, keeps a per-tab nonce in `sessionStorage`, and opens
