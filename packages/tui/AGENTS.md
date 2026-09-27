@@ -252,7 +252,18 @@ arguments only when it starts one. A running daemon whose `hello` has
 `view: NoWebView` is refused by `view_served` with status 1 and never
 stopped or relaunched. Otherwise the session is opened through
 `daemon_selection.open` and the path `UiLink` returns is printed joined to
-the listener's http origin. `daemon/protocol.Hello.view` is `NoWebView`
+the listener's http origin. `tui.view_request` parses the words after
+`--ui` into a `ViewRequest` whose `delivery` is `view_link.PrintLink` or,
+with `--open`, `view_link.OpenInBrowser`. `view_link.deliver` always emits
+the link first, then runs the opener when asked; a failed opener is a
+`Note` on stderr and the command still exits 0. `view_link.opener_for`
+maps `LOOM_BUILD_PLATFORM` (`macos-*` to `open`, `linux-*` to `xdg-open`,
+anything else or absent to a note), `platform_opener` builds the opener
+from injected find and launch functions, and `launch_within` runs it
+through `ffi_terminal.run_forwarding` inside a five-second weft deadline;
+an opener still running then counts as a started browser. A note is built
+only from the opener's name and status, so it never carries the ticket
+(051 addendum "opening the browser"). `daemon/protocol.Hello.view` is `NoWebView`
 or `WebViewAt(path)` from the optional `ui` field
 (`protocol-change/051`). `projection.record_projection` names the call the
 record cache makes for durable lines, so the web view's parity test can

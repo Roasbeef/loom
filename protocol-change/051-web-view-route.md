@@ -420,3 +420,58 @@ and short-lived.
   decided.
 - **A default session.** `loom --ui` takes `--session`. Choosing the
   session a terminal would attach to when it is omitted is left for later.
+
+## Addendum: opening the browser (2026-09-26)
+
+The Open item "Opening the browser" is settled. `loom --ui --session <id>
+--open` prints the link exactly as before and then hands it to the
+platform's opener: `open` on macOS, `xdg-open` on Linux. Nothing on the
+wire changes. The daemon never learns whether a link was opened, and
+`ui.link`, the ticket and the exchange are untouched.
+
+**The link is always printed, and printed first.** A headless machine or
+an SSH session has no browser to open, and there the printed line is the
+only way in. Printing it before the opener runs also means an opener that
+hangs or fails leaves the person holding a working link.
+
+**A failed opener is a note, not a failure.** A missing opener, one that
+cannot be started, and one that exits non-zero each print one line on
+standard error, and `loom` still exits 0, because the link it printed
+works. The note is built only from the opener's name, its exit status or
+the platform name. Text the opener or the operating system produced is
+dropped, since an opener may echo its argument and the note must never
+carry the ticket. The link is the first line of standard output; with
+`--open` the opener's own output is forwarded after it, so a script takes
+the first line.
+
+**The platform comes from the launcher.** Every launcher Loom builds
+(`bin/loom`, the shipment and the release) exports `LOOM_BUILD_PLATFORM`
+as `macos-<arch>` or `linux-<arch>`, and `loom version` and `loom update`
+already trust it. A `loom` run without a launcher has no such variable, so
+`--open` prints a note rather than guessing. Probing `PATH` for whichever
+opener exists was rejected: some Linux distributions ship `/bin/open` as
+`openvt`.
+
+**No new FFI.** The opener runs through `ffi_terminal.run_forwarding`, the
+same `open_port` passthrough `loom ext` and `loom update` use, with the
+link as its single argument and no shell between. A one-task weft run
+bounds the wait at five seconds. `xdg-open` outside a known desktop runs
+the browser in the foreground and exits only when the browser does, so an
+opener still running at the deadline counts as a browser that started;
+the port closes, and the opener keeps running.
+
+**Where the ticket goes.** Standard output, as before, and the opener's
+argument vector. It is written to no log and no file. The argument vector
+is readable by other local users through `ps` for as long as the opener
+runs, and for as long as the browser runs when `xdg-open` starts the
+browser itself. A local user who races the browser to the exchange gains
+what a stolen cookie gains, observer access to one session, and the
+person's own browser then lands on a `401` because the ticket is spent.
+A same-user process could already read the owner credential, so the
+exposure is to other accounts on a shared machine. Printing without
+`--open` avoids it entirely.
+
+The seam is `tui/view_link`: `opener_for` chooses the command,
+`platform_opener` builds the opener from injected find and launch
+functions, and `deliver` takes the opener and the printer, so the tests
+drive every failure without a browser.

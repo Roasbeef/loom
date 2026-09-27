@@ -102,6 +102,7 @@ import tui/tick
 import tui/update
 import tui/update/download
 import tui/update/options as update_options
+import tui/view_link
 import tui/virtual_backend
 import tui/workspace
 
@@ -113,8 +114,9 @@ type Launch {
   Local(bootstrap.Options, selected: String)
 
   // `loom --ui --session <id>` prints a link that opens the session's web
-  // view (protocol-change/051). It installs no terminal state.
-  View(options: bootstrap.Options, session: String)
+  // view (protocol-change/051), and with `--open` also opens it. It installs
+  // no terminal state.
+  View(request: ViewRequest)
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
@@ -242,7 +244,7 @@ pub fn main() {
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
         Sessions(options:, command:) -> run_sessions(options, command)
-        View(options:, session:) -> run_view(options, session)
+        View(request:) -> run_view(request)
         Invalid(reason) -> rejected_launch(reason)
         Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
       }
@@ -792,7 +794,11 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
-    ["--ui", ..rest] -> parse_view(rest)
+    ["--ui", ..rest] ->
+      case view_request(rest) {
+        Ok(request) -> View(request:)
+        Error(reason) -> Invalid(reason)
+      }
     ["sessions", ..rest] -> parse_sessions(rest)
     _ ->
       case
@@ -862,23 +868,46 @@ fn sessions_usage() -> String {
   <> "  session the daemon still holds open; stop it first"
 }
 
-// One catalogue action over a control connection this process owns for the
-// length of the command. Nothing is retained: the connection closes before
-// the exit status is chosen, so a refusal and a success leave the daemon in
-// the same state as far as this launcher is concerned.
-// `--ui` is followed by `--session <id>` and the shared local options.
-fn parse_view(arguments: List(String)) -> Launch {
-  case session_control.flag_value(arguments, "--session") {
-    Error(_) -> Invalid("loom --ui needs --session <id>\n" <> launch_usage())
+/// What `loom --ui` was asked for: the daemon options, the session to link,
+/// and whether to open the link as well as print it.
+@internal
+pub type ViewRequest {
+  ViewRequest(
+    options: bootstrap.Options,
+    session: String,
+    delivery: view_link.Delivery,
+  )
+}
+
+/// Parses the words after `loom --ui`: `--session <id>`, an optional
+/// `--open`, and the shared local options.
+///
+/// `--open` is taken out first because it has no value, and the local
+/// option parser reads its arguments in flag-and-value pairs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(request) = tui.view_request(["--session", "s", "--open"])
+/// assert request.delivery == view_link.OpenInBrowser
+/// ```
+@internal
+pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
+  let #(delivery, rest) = case take_switch(arguments, "--open") {
+    #(True, remaining) -> #(view_link.OpenInBrowser, remaining)
+    #(False, remaining) -> #(view_link.PrintLink, remaining)
+  }
+  case session_control.flag_value(rest, "--session") {
+    Error(_) -> Error("loom --ui needs --session <id>\n" <> launch_usage())
     Ok(session) ->
       case
         parse_local_options(
-          without_flag(arguments, "--session"),
+          without_flag(rest, "--session"),
           default_bootstrap_options(),
         )
       {
-        Ok(options) -> View(options:, session:)
-        Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
+        Ok(options) -> Ok(ViewRequest(options:, session:, delivery:))
+        Error(reason) -> Error(reason <> "\n" <> launch_usage())
       }
   }
 }
@@ -895,7 +924,12 @@ fn without_flag(arguments: List(String), flag: String) -> List(String) {
 // running daemon that does not serve the view, opens the session if it is
 // not resident, and prints the link its `ui.link` returns. It never stops
 // or relaunches a running daemon: other people's terminals may be on it.
-fn run_view(options: bootstrap.Options, session: String) -> Nil {
+//
+// Once the link is minted the command succeeds whatever the opener does.
+// The link is printed before any opener runs, and the ticket in it is
+// written nowhere but standard output and the opener's argument vector.
+fn run_view(request: ViewRequest) -> Nil {
+  let ViewRequest(options:, session:, delivery:) = request
   let outcome = {
     use connected <- result.try(bootstrap.resolve_viewing_daemon(
       options,
@@ -925,12 +959,29 @@ fn run_view(options: bootstrap.Options, session: String) -> Nil {
     linked
   }
   case outcome {
-    Ok(link) -> io.println(link)
+    Ok(link) ->
+      view_link.deliver(
+        link,
+        delivery,
+        view_link.system_opener(),
+        print_view_output,
+      )
     Error(reason) -> {
       io.println_error("loom --ui: " <> reason)
       ffi_terminal.halt(1)
       Nil
     }
+  }
+}
+
+// The link is the command's output, so it is the first line of standard
+// output, where a script can take it; a note about the opener is a
+// diagnostic. With `--open` the opener's own output is forwarded to
+// standard output after the link, so a script wants the first line only.
+fn print_view_output(output: view_link.Output) -> Nil {
+  case output {
+    view_link.Link(link) -> io.println(link)
+    view_link.Note(note) -> io.println_error("loom --ui: " <> note)
   }
 }
 
@@ -976,6 +1027,10 @@ fn view_host(record: endpoint.Endpoint, token_file: String, control) {
   daemon_selection.host(control, address, string.trim(token))
 }
 
+// One catalogue action over a control connection this process owns for the
+// length of the command. Nothing is retained: the connection closes before
+// the exit status is chosen, so a refusal and a success leave the daemon in
+// the same state as far as this launcher is concerned.
 fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
   case sessions_host(options) {
     Error(reason) -> sessions_failed(reason)
@@ -1148,7 +1203,9 @@ fn launch_usage() -> String {
   <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"
-  <> "  --ui --session <id> Print a link to the session's read-only web view.\n"
+  <> "  --ui --session <id> [--open]\n"
+  <> "                      Print a link to the session's read-only web view;\n"
+  <> "                      --open also opens it in the default browser.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
