@@ -16,7 +16,6 @@
 //// same events.
 
 import core/entry
-import core/ids
 import core/json
 import core/message
 import core/origin
@@ -2113,45 +2112,22 @@ fn note_cache_miss(
   // retained nothing, or a strand whose history this connection never
   // fetched. A notice anchored to no entry would never be drawn, so it is
   // not raised at all.
-  case newest_record(model, strand) {
+  case transcript_lines.newest_entry(model.records, strand) {
     None -> model
     Some(after_entry) ->
       Model(
         ..model,
         cache_notices: list.append(model.cache_notices, [
-          CacheNotice(strand:, after_entry:, text: cache_miss_row(miss)),
+          CacheNotice(
+            strand:,
+            after_entry:,
+            text: cache_watch.notice_text(miss),
+          ),
         ]),
         record_cache_valid: False,
       )
       |> tui_model.invalidate_transcript
       |> tui_model.invalidate_frame
-  }
-}
-
-// The newest retained entry of one strand. Records are held newest first,
-// so the head of the filtered list is the turn a row raised now follows.
-fn newest_record(model: Model, strand: String) -> Option(ids.EntryId) {
-  model.records
-  |> list.find(fn(record) { record.strand == strand })
-  |> result.map(fn(record) { record.entry.id })
-  |> option.from_result
-}
-
-// The notice as the operator reads it.
-//
-// Token counts use the status line's own abbreviation so the two figures
-// can be compared without unit arithmetic, and the money is omitted rather
-// than shown as zero when the model is unpriced: a confident "$0.00" would
-// claim the pause was free.
-fn cache_miss_row(miss: cache_miss.CacheMiss) -> String {
-  "Cache miss after "
-  <> cache_miss.idle_label(miss.idle_ms)
-  <> " idle: "
-  <> transcript_lines.tokens(miss.tokens)
-  <> " tokens re-billed"
-  <> case miss.estimate {
-    None -> ""
-    Some(amount) -> " (~$" <> transcript_lines.money(amount) <> ")"
   }
 }
 

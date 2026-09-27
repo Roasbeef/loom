@@ -29,6 +29,7 @@ import gleam/result
 import machine/strand as machine_strand
 import session_view/cache_miss
 import session_view/snapshot_view
+import session_view/transcript_lines
 
 /// One pushed usage row waiting for a capture that covers its sequence.
 ///
@@ -373,4 +374,30 @@ fn configured_model(
   |> dict.get(strand)
   |> option.from_result
   |> option.map(fn(config) { config.configuration.model })
+}
+
+/// A miss as a person reads it, the line a host files after the turn that
+/// paid for it.
+///
+/// Token counts use the status line's own abbreviation so the two figures
+/// can be compared without unit arithmetic, and the money is omitted rather
+/// than shown as zero when the model is unpriced: a confident "$0.00" would
+/// claim the pause was free.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // cache_watch.notice_text(miss)
+/// //   == "Cache miss after 12m idle: 38.0k tokens re-billed (~$0.41)"
+/// ```
+pub fn notice_text(miss: cache_miss.CacheMiss) -> String {
+  "Cache miss after "
+  <> cache_miss.idle_label(miss.idle_ms)
+  <> " idle: "
+  <> transcript_lines.tokens(miss.tokens)
+  <> " tokens re-billed"
+  <> case miss.estimate {
+    None -> ""
+    Some(amount) -> " (~$" <> transcript_lines.money(amount) <> ")"
+  }
 }
