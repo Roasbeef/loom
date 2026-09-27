@@ -1,6 +1,6 @@
 # ADR-014: one client engine, two views
 
-**Status**: proposed · **Date**: 2026-09-26 · **Supersedes**: nothing ·
+**Status**: accepted, implemented in #552 (2026-09-27) · **Date**: 2026-09-26 · **Supersedes**: nothing ·
 **Relates to**: [issue #530](https://github.com/Roasbeef/loom/issues/530),
 [ADR-013](013-tui-effects-as-values.md),
 [protocol-change/051](../../protocol-change/051-web-view-route.md)

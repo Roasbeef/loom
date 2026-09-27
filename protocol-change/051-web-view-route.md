@@ -1,6 +1,6 @@
 # protocol-change/051: an opt-in web view on the daemon's listener
 
-**Status**: PROPOSED 2026-09-26 · **Affects**: Part 1.6 client protocol
+**Status**: ACCEPTED, IMPLEMENTED in #552 (2026-09-27) · **Affects**: Part 1.6 client protocol
 (the listener's route table, the control `hello`, one control command) ·
 **Raised by**: issue #530, phase 4 · **Decision record**:
 [ADR-014](../docs/adr/014-second-runtime.md)
@@ -423,7 +423,7 @@ and short-lived.
 
 ## Addendum: operators act from the page (2026-09-26)
 
-**Status**: PROPOSED · **Raised by**: issue #530, the web view's first
+**Status**: ACCEPTED, IMPLEMENTED in #554 (2026-09-27) · **Raised by**: issue #530, the web view's first
 interactive milestone ([ADR-014](../docs/adr/014-second-runtime.md),
 "Direction")
 
