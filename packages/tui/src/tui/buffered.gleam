@@ -71,20 +71,6 @@ pub fn sender(inbox: Inbox(a)) -> Subject(a) {
   inbox.subject
 }
 
-/// Reports whether a subject is the one this inbox receives from.
-///
-/// A selected event carries the subject it came from, and this is how an
-/// event from an inbox the model no longer holds is recognised as stale.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert buffered.is_sender(inbox, buffered.sender(inbox))
-/// ```
-pub fn is_sender(inbox: Inbox(a), subject: Subject(a)) -> Bool {
-  inbox.subject == subject
-}
-
 /// How many received messages the inbox holds.
 ///
 /// ## Examples

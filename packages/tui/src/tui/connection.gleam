@@ -156,8 +156,8 @@ pub fn owner(connection: Connection) -> Result(process.Pid, Nil) {
 ///
 /// The terminal's step never calls this: it reads `Model.inbox` through
 /// `tui/buffered`, whose held messages are older than anything this would
-/// return. It is for a subject nothing has buffered, such as a session
-/// switch's frames before adoption.
+/// return. It is for a subject nothing has buffered, such as a test's
+/// frames subject before a `Prepared` names it.
 ///
 /// ## Examples
 ///
