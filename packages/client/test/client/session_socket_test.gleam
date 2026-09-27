@@ -135,6 +135,7 @@ fn fixture_with(
           attachment.instance.hub,
         )
       },
+      None,
     )
   let ports = process.new_subject()
   let assert Ok(listener) =

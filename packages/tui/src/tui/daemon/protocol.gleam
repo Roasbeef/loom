@@ -49,7 +49,18 @@ pub type Hello {
     control_bytes: Int,
     /// The daemon's build, when it named one.
     build: Option(Build),
+    /// Whether the daemon serves the web view (protocol-change/051).
+    view: WebView,
   )
+}
+
+/// Whether a daemon serves the web view, as its `hello` says.
+pub type WebView {
+  /// The `hello` names no view: the daemon was started without `--ui`.
+  NoWebView
+
+  /// The daemon serves the view under this route prefix.
+  WebViewAt(path: String)
 }
 
 /// Idle delivery policy attached to a directional peer grant.
@@ -104,6 +115,13 @@ pub type Command {
 
   /// Reads one saved registration.
   GetSession(
+    /// Canonical authorized session identity.
+    session_id: String,
+  )
+
+  /// Asks for a single-use link that opens one session's web view in this
+  /// principal's browser (protocol-change/051).
+  UiLink(
     /// Canonical authorized session identity.
     session_id: String,
   )
@@ -376,6 +394,15 @@ pub type Summary {
 
 /// Successful replies remain distinct from refusal and transport failure.
 pub type Reply {
+  /// A web view link: a path on the daemon's listener carrying a
+  /// single-use ticket, and how long the ticket lasts.
+  UiLinkReply(
+    /// The path, which the caller joins to the address it connected to.
+    path: String,
+    /// The ticket's remaining lifetime in milliseconds, a duration.
+    expires_in_ms: Int,
+  )
+
   /// A current daemon status.
   StatusReply(
     /// Capacity and epoch observed by the server.
@@ -474,6 +501,7 @@ pub fn name(command: Command) -> String {
     ArchiveSession(..) -> "sessions.archive"
     RestoreSession(..) -> "sessions.restore"
     GetSession(..) -> "sessions.get"
+    UiLink(..) -> "ui.link"
     WorkspaceDefault(..) -> "sessions.default"
     SetDefault(..) -> "sessions.set_default"
     CreateSession(..) -> "sessions.create"
@@ -502,6 +530,7 @@ pub fn mutates(command: Command) -> Bool {
     | ListSessions(..)
     | ListArchivedSessions(..)
     | GetSession(..)
+    | UiLink(..)
     | WorkspaceDefault(..)
     | GetOperation(..)
     | InspectPeers(..)
@@ -568,7 +597,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       })
       Ok([#("after", json.String(after)), ..extra])
     }
-    GetSession(id) -> identity_fields(id)
+    GetSession(id) | UiLink(id) -> identity_fields(id)
     WorkspaceDefault(workspace) ->
       text_fields([#("workspace", workspace, 4096)])
     RenameSession(id, name) -> {
@@ -785,7 +814,8 @@ pub fn decode(text: String) -> Result(Event, String) {
         False -> Error("unsupported control limit")
       })
       use build <- result.try(build_at(body))
-      Ok(Greeting(Hello(Epoch(epoch), principal, limit, build)))
+      use view <- result.try(view_at(body))
+      Ok(Greeting(Hello(Epoch(epoch), principal, limit, build, view)))
     }
     "error" -> {
       use id <- result.try(optional_id(value))
@@ -804,6 +834,11 @@ pub fn decode(text: String) -> Result(Event, String) {
 fn decode_reply(event: String, body: json.JsonValue) {
   case event {
     "status" -> result.map(summary(body), StatusReply)
+    "ui.link" -> {
+      use path <- result.try(text_at(body, "path", 1024))
+      use expires_in_ms <- result.map(number_at(body, "expires_in_ms"))
+      UiLinkReply(path, expires_in_ms)
+    }
     "sessions.list" | "sessions.archived" ->
       result.map(page(body), SessionsReply)
     "sessions.get"
@@ -1002,6 +1037,16 @@ fn field(value: json.JsonValue, key: String) {
 // half identity is no more an identity than an absent one, and reading
 // it as `Some(Build("0.1.0", ""))` would put a blank commit in a
 // diagnostic the operator is meant to compare.
+// The web view's route prefix, when the daemon serves the view. An absent
+// field is a daemon started without `--ui`; a present one must be well
+// formed, because a client acts on it.
+fn view_at(body: json.JsonValue) {
+  case field(body, "ui") {
+    Error(_) -> Ok(NoWebView)
+    Ok(view) -> result.map(text_at(view, "path", 256), WebViewAt)
+  }
+}
+
 fn build_at(body: json.JsonValue) {
   case text_at(body, "build_version", 128), text_at(body, "build_commit", 128) {
     Ok(version), Ok(commit) -> Ok(Some(Build(version, commit)))

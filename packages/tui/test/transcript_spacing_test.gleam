@@ -27,6 +27,8 @@ import gleam/list
 import gleam/option.{None}
 import gleam/result
 import gleam/string
+import session_view/connection_event
+import session_view/transcript_line
 import tui
 import tui/agents
 import tui/buffered
@@ -407,7 +409,7 @@ fn expanded_calls() -> Pane {
 fn said(text: String) -> Pane {
   let model =
     tui_model.Model(..quiet_model(connection.new_inbox(), Compact), transcript: [
-      tui_model.Line(tui_model.Assistant, text),
+      transcript_line.Line(transcript_line.Assistant, text),
     ])
   run(model, [])
 }
@@ -522,13 +524,13 @@ fn counting_down(start: Int, offset: Int, collected: List(Int)) -> List(Int) {
 }
 
 fn deliver(payload: String) -> virtual_backend.Step {
-  virtual_backend.Deliver(message: connection.Incoming(payload))
+  virtual_backend.Deliver(message: connection_event.Incoming(payload))
 }
 
 // The demo scaffolding removed, so every row in the pane was put there by
 // this module.
 fn quiet_model(
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
   view: TranscriptView,
 ) -> tui_model.Model {
   tui_model.Model(

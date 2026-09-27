@@ -21,27 +21,28 @@ import gleam/option.{None, Some}
 import machine/codec
 import machine/operation
 import machine/strand
+import session_view/advisor_pending
+import session_view/context_view
+import session_view/goal_view
+import session_view/live_jobs
+import session_view/notes_view
+import session_view/protocol
+import session_view/queued_input
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/worktree_view
 import tui
-import tui/advisor_pending
 import tui/agents
 import tui/appearance
 import tui/connection
-import tui/context_view
-import tui/goal_view
 import tui/inbound
 import tui/internal/ffi_terminal
-import tui/live_jobs
 import tui/model as tui_model
-import tui/notes_view
-import tui/protocol
 import tui/queue_editor
 import tui/render
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/tick
 import tui/workspace
-import tui/worktree_view
 
 type Work {
   Active(tool: String)
@@ -349,11 +350,11 @@ fn fixture_pending(
 
 fn fixture_queue_editor() -> queue_editor.State {
   let document =
-    queue_editor.Document(
+    queued_input.Document(
       "fixture-queued",
       "main",
       12,
-      queue_editor.Queue,
+      queued_input.Queue,
       "Prepare the native layout report with the wide and compact evidence attached.\n\nKeep this authoritative original separate from the local unsaved line.",
       1,
     )

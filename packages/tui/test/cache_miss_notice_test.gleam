@@ -18,6 +18,11 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import machine/strand
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
 import tui
 import tui/attachment
 import tui/buffered
@@ -27,11 +32,7 @@ import tui/frame
 import tui/inbound
 import tui/interaction
 import tui/model as tui_model
-import tui/protocol
 import tui/render
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/workspace
 import tui_test/gateway
 import tui_test/pushed
@@ -100,7 +101,7 @@ fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
 }
 
 fn deliver(model: tui_model.Model, wire: String) -> tui_model.Model {
-  process.send(buffered.sender(model.inbox), connection.Incoming(wire))
+  process.send(buffered.sender(model.inbox), connection_event.Incoming(wire))
   tui.update(backend.Tick, model)
 }
 
@@ -448,7 +449,7 @@ fn begin_for(
   id: Int,
   transfer_id: String,
   next_seq: Int,
-) -> connection.Message {
+) -> connection_event.Message {
   pushed.reply(
     id,
     "snapshot_begin",
@@ -476,7 +477,11 @@ fn begin_for(
   )
 }
 
-fn piece_for(id: Int, transfer_id: String, data: String) -> connection.Message {
+fn piece_for(
+  id: Int,
+  transfer_id: String,
+  data: String,
+) -> connection_event.Message {
   pushed.reply(
     id,
     "snapshot_chunk",
@@ -500,7 +505,7 @@ fn finish_for(
   id: Int,
   transfer_id: String,
   next_seq: Int,
-) -> connection.Message {
+) -> connection_event.Message {
   pushed.reply(
     id,
     "snapshot_end",
@@ -520,7 +525,7 @@ fn transfer_for(
   first: Int,
   transfer_id: String,
   next_seq: Int,
-) -> List(connection.Message) {
+) -> List(connection_event.Message) {
   [
     begin_for(session, first, transfer_id, next_seq),
     piece_for(first + 1, transfer_id, pushed.metadata()),

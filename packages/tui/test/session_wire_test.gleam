@@ -3,8 +3,8 @@
 import core/json
 import gleam/list
 import gleam/string
-import tui/protocol
-import tui/session_wire
+import session_view/protocol
+import session_view/session_wire
 
 fn reply(version, id, event, body) {
   json.to_string(

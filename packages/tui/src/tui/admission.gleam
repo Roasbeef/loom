@@ -38,9 +38,9 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import session_view/connection_event
 import tui/attachment
 import tui/buffered
-import tui/connection
 import tui/job
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, ControlRequest,
@@ -75,8 +75,8 @@ fn admit_one(model: Model, arrival: Arrival) -> Model {
 // arrives after the capture. Anything else came from a replaced socket.
 fn admit_frame(
   model: Model,
-  source: Subject(connection.Message),
-  message: connection.Message,
+  source: Subject(connection_event.Message),
+  message: connection_event.Message,
 ) -> Model {
   case source == buffered.sender(model.inbox) {
     True -> Model(..model, inbox: buffered.push(model.inbox, message))

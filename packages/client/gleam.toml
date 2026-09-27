@@ -20,6 +20,9 @@ tools = { path = "../tools" }
 codemode = { path = "../codemode" }
 mcp = { path = "../mcp" }
 telemetry = { path = "../telemetry" }
+session_view = { path = "../session_view" }
+web_view = { path = "../web_view" }
+lustre = "== 5.7.1"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 weft = "== 0.4.5"

@@ -12,8 +12,8 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/codec
 import machine/operation
+import session_view/snapshot_view
 import tui/completion_summary as summary
-import tui/snapshot_view
 
 fn entry_id(n) {
   ids.mint_entry(ids.generator(clock.fixed(n), seed: n)).0

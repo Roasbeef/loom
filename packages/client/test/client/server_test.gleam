@@ -11,6 +11,7 @@ import gleam/httpc
 import gleam/int
 import gleam/result
 import gleam/string
+import session_view/connection_event
 import simplifile
 import support/addresses
 import support/internal/ffi_ws
@@ -176,7 +177,7 @@ pub fn an_idle_socket_closes_when_its_gateway_is_unavailable_test() {
   // Send no protocol frame. The server's post-transfer refusal message must
   // close an idle peer too. Closure may race the client's Connected notice.
   let closed = case process.receive(inbox, within: 1000) {
-    Ok(connection.Connected) -> process.receive(inbox, within: 1000)
+    Ok(connection_event.Connected) -> process.receive(inbox, within: 1000)
     other -> other
   }
   case attached {
@@ -184,7 +185,7 @@ pub fn an_idle_socket_closes_when_its_gateway_is_unavailable_test() {
     Error(_already_closed) -> Nil
   }
   server.stop(served)
-  let assert Ok(connection.Closed(_)) = closed
+  let assert Ok(connection_event.Closed(_)) = closed
     as "an authenticated idle socket must observe closure, not a timeout"
   Nil
 }

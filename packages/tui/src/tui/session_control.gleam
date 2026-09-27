@@ -21,9 +21,9 @@ import core/json
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/attempt
 import tui/agents
 import tui/attachment
-import tui/attempt
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/inbound

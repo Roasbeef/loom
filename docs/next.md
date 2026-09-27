@@ -63,16 +63,26 @@ liveness read into the host and read the client build identity once at
 model creation, and deleted the unreachable arms that wrote to a peer's
 socket with no lane.
 
-Next is phase 4: extract the platform-free core behind `msg.Msg` and
-`effect.Effect` (the step, `tui/admission`, the reducers and projection)
-from the terminal's host (`tui/runtime`, `tui/job_runner`, `tui/keymap`
-and etui), and spike a read-only Lustre server component in the daemon
-that renders from it. Its host dispatches `Arrived` from a selector that
-tags each frame with its subject and each job message with its key,
-dispatches `Input(stamp, Ticked)` from a timer, and interprets the
-effects. Exit criteria: the terminal still passes `make check-tui` and
-`make check-client` unchanged, the replay goldens are byte-identical, and
-the spike renders an attached session read-only.
+Phase 4 is in progress on `tui/core-extraction`, stacked on
+`tui/domain-msg`. Its first part (P4a) is done: `packages/session_view`
+now holds the session lane (generic over its socket and recorder), the
+protocol decoders, snapshot adoption, the history window and the
+transcript's line builders, with `transcript.project` for a host that
+keeps no presentation state. It imports only `core`, `machine` and the
+standard library, and R6 holds it there. The terminal drives the same
+modules through `tui/terminal_lane` and `tui_model.presentation`; the
+goldens are unchanged. The step itself (`msg`, `admission`, the reducers,
+`tui/model`) stays in `tui` until the build-out phase, for the reasons
+[ADR-014](adr/014-second-runtime.md) gives.
+
+Next in phase 4: [protocol-change/051](../protocol-change/051-web-view-route.md)
+and ADR-014 are under review (P4b). After them, P4c builds the skeleton:
+`packages/web_view` with a Lustre server component that shows one
+session's transcript lines read-only, served by `loomd --ui` and linked by
+`loom --ui`, with a parity test against the terminal's projection; P4d is
+the docs. Exit criteria: `make check-tui` and `make check-client` pass
+unchanged, the replay goldens are byte-identical, and the skeleton renders
+an attached session read-only.
 
 Rulings to preserve:
 

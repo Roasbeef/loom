@@ -18,6 +18,8 @@ import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap as native
 import host/endpoint
+import session_view/session_channel
+import session_view/snapshot
 import simplifile
 import support/provider_held_http as held
 import support/provider_http as provider
@@ -26,8 +28,6 @@ import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
 import tui/daemon/selection
-import tui/session_channel
-import tui/snapshot
 import tui/workspace
 import weft
 import weft/actor

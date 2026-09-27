@@ -43,11 +43,12 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import session_view/connection_event
+import session_view/transcript_line
+import session_view/transcript_lines
 import tui
-import tui/connection
 import tui/inbound
 import tui/model as tui_model
-import tui/transcript_lines
 import tui_test/pushed
 import weft/actor
 
@@ -100,7 +101,7 @@ const retained_ceiling = 131_072
 /// One command to the process holding the model.
 type Command {
   /// A frame off the wire, applied through the shipped reducer.
-  Frame(message: connection.Message)
+  Frame(message: connection_event.Message)
 
   /// A barrier: the reply lands after every frame sent before it.
   Drained(reply: Subject(Nil))
@@ -226,7 +227,7 @@ fn feed(
 
 // Exercise the production response identity while measuring retention and
 // projection throughput, not only the legacy stream shape without an ID.
-fn named_delta(text: String) -> connection.Message {
+fn named_delta(text: String) -> connection_event.Message {
   pushed.push([
     #("event", json.String("stream_delta")),
     #(
@@ -339,7 +340,7 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
       pushed.attached(),
       inbound.accept_connection_message,
     )
-  let assert [tui_model.Stream(bytes:, fragments:, ..)] = model.streams
+  let assert [transcript_line.Stream(bytes:, fragments:, ..)] = model.streams
     as "the live answer is on screen as one stream"
 
   // The exact invariant, on the model rather than on the process: the region
@@ -362,7 +363,7 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
       pushed.delta("main", "op-2", "New"),
     )
   assert next.streams
-    == [tui_model.Stream("main", "op-2", "", "text", ["New"], 3)]
+    == [transcript_line.Stream("main", "op-2", "", "text", ["New"], 3)]
     as "the previous operation's fragments are dropped, not carried forward"
   let assert Some(_) = next.channel as "the lane survives the whole answer"
   assert next.notices == 0 as "no notice was pushed in this fixture"

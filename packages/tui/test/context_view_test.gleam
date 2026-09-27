@@ -16,21 +16,21 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/codec as machine_codec
 import machine/strand
+import session_view/command
+import session_view/context_view as context
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/worktree_view
 import tui
-import tui/command
 import tui/connection
-import tui/context_view as context
 import tui/frame
 import tui/inbound
 import tui/model as tui_model
-import tui/protocol
 import tui/render
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/surfaces
 import tui/workspace
-import tui/worktree_view
 import tui_test/pushed
 
 fn board(id, strand) {

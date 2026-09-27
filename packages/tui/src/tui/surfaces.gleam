@@ -23,15 +23,19 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
-import tui/advisor_pending
+import session_view/advisor_pending
+import session_view/block_summary
+import session_view/command
+import session_view/context_view
+import session_view/goal_view
+import session_view/live_jobs
+import session_view/protocol
+import session_view/session_channel
+import session_view/transcript_lines
+import session_view/worktree_view
 import tui/agents
-import tui/block_summary
-import tui/command
-import tui/context_view
 import tui/focused_goal_panel
-import tui/goal_view
 import tui/layout
-import tui/live_jobs
 import tui/model.{
   type Model, AgentInspector, ApprovalInspector, Attached, ConfirmGoal,
   DaemonSelector, Disconnected, GoalInspector, HoldGoalReport, Model,
@@ -39,13 +43,9 @@ import tui/model.{
   Replaying, ReportGoal,
 } as tui_model
 import tui/outbound
-import tui/protocol
 import tui/queue_editor
 import tui/render
-import tui/session_channel
 import tui/summary_panel
-import tui/transcript_lines
-import tui/worktree_view
 
 /// Inspection has its own target. Reading a worker's notes never changes the
 /// active strand, its parked draft, or the next submitted message.

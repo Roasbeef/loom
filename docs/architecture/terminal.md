@@ -145,10 +145,10 @@ modules divide the work:
 - `tui/effect` is the vocabulary: a closed data type, not closures, so a test
   can assert on the effects a step produced and a second runtime can interpret
   the same values against its own transport.
-- `tui/session_channel` is a pure transition system. Its `emit`, `close`
+- `session_view/session_channel` is a pure transition system. Its `emit`, `close`
   and receive queue `Transmit`, `Shut` and `Note` outputs on the channel
   itself, a `Note` being one attempt event for the recording, and
-  `session_channel.perform` is the only place the channel touches its socket
+  `terminal_lane.perform` is the only place the channel touches its socket
   or its recorder. Every reducer that transitions the adopted lane stores it
   through `tui_model.hold_channel`, which moves those outputs into the model
   outbox at that point. `tui/attachment` returns its candidate channel's
@@ -317,8 +317,8 @@ below the durable rows and never enter the record cache. A stream fragment
 therefore cannot force the settled transcript to be re-parsed, and a settled
 entry cannot be drawn twice. Each stream is owned by one provider request
 generation; the durable entry that answers it, a newer generation, or the
-operation's terminal result retires it (`tui/stream_identity`). A live stream
-is also bounded: past twice `tui/transcript_lines.live_stream_limit` (24 KiB) its fragments
+operation's terminal result retires it (`session_view/stream_identity`). A live stream
+is also bounded: past twice `session_view/transcript_lines.live_stream_limit` (24 KiB) its fragments
 collapse to the newest 24 KiB. [Multiplayer](multiplayer.md#what-the-terminal-does-with-a-pushed-frame)
 explains the memory failure behind that bound.
 
@@ -334,7 +334,7 @@ are painted over the frame after the transcript.
 
 Scrolling above the live tail freezes a copy of the transient rows in
 `Model.reading_lines`, so a stream that keeps arriving does not move the text
-being read. Older history is fetched in bounded pages by `tui/history_view`,
+being read. Older history is fetched in bounded pages by `session_view/history_view`,
 which keeps its own window separate from the live cut. The reading position is
 held by `transcript_anchor.Row` values (an entry identity plus an offset within
 its rows) rather than by row counts, so it survives new output, older pages,
@@ -399,14 +399,14 @@ socket's work:
   transport. It maps transport events onto the terminal's `Message` type
   (`Connected`, `Incoming`, `Closed`, `NetworkFault`) and translates an HTTP
   503 at startup into advice about the daemon's connection limits.
-- `tui/session_wire` encodes commands and decodes one frame. A frame carrying
+- `session_view/session_wire` encodes commands and decodes one frame. A frame carrying
   `reply_to` must answer the one outstanding request exactly; a frame without
   it is a push from the daemon and is decoded as an event.
-- `tui/session_channel` is the credited request lane. It is terminal-owned
+- `session_view/session_channel` is the credited request lane. It is terminal-owned
   state, not a process, and it performs no I/O during a transition: its
   writes and its close are queued outputs that the runtime performs after the
   step.
-- `tui/snapshot` and `tui/snapshot_view` assemble a transfer into a validated
+- `session_view/snapshot` and `session_view/snapshot_view` assemble a transfer into a validated
   cut and project it into strands, operations, configuration and presence.
 
 `session_channel.Channel` moves between five phases: `AwaitingBegin`,
@@ -442,7 +442,7 @@ decision.
 
 The command-name lists are string literals in three places
 (`session_channel`'s `outbound` and `matching_presentation`, and
-`tui/attempt`'s `decode_selection`), and the compiler checks none of them. A
+`session_view/attempt`'s `decode_selection`), and the compiler checks none of them. A
 new read command must be added to all three. In `outbound`, an unlisted read
 defaults to the mutation lane, and the channel fails closed when its reply
 does not match a mutation or when the request deadline passes. In `decode_selection`, an unlisted
@@ -532,7 +532,7 @@ restored to the composer; image bytes must be reattached.
 
 ## The composer, commands and the queue editor
 
-The composer is an etui text area plus `tui/composer` attachments. A paste
+The composer is an etui text area plus `session_view/composer` attachments. A paste
 estimated at 400 tokens or more, or of eight lines or more, becomes a compact
 attachment chip; its bytes are expanded into the prompt only when it is sent.
 A pasted path to a PNG, JPEG, GIF or WebP file of at most 20 MiB becomes an
@@ -547,7 +547,7 @@ the command variants, and a name from the daemon's skill catalogue becomes a
 prompt the daemon expands. `submit` first checks `mutation_refusal` (is a
 conversation attached, is the recipient strand known, is the mutation slot
 free) and keeps the draft with a reason if the answer is no. Otherwise the
-command is encoded by a `tui/protocol` constructor and handed to `send_frame`,
+command is encoded by a `session_view/protocol` constructor and handed to `send_frame`,
 which calls `session_channel.submit`. Every send site switches on
 `tui.Peer`: `Attached`, which always has its lane, queues a write through
 the lane that the runtime performs at the end of the step, `Preview` echoes
@@ -632,7 +632,7 @@ refreshes behind the dialog cannot change the question.
 ## Rendering
 
 Every string from the daemon or the model is untrusted terminal input.
-`tui/text_hygiene` replaces C0 and C1 controls, bidirectional marks,
+`session_view/text_hygiene` replaces C0 and C1 controls, bidirectional marks,
 zero-width and tag codepoints before text reaches an etui span, and complete
 ANSI CSI and OSC sequences are stripped before Markdown parsing. Model text
 therefore never becomes terminal control traffic.
@@ -648,7 +648,7 @@ Fenced Gleam, including code-mode programs, gets token styling without being
 reformatted. `markdown.diff` renders patches with addition and removal colours.
 
 `render_line` gives each `Speaker` its mark and style. In compact mode,
-`tui/tool_activity` groups consecutive tool calls and joins results by call
+`session_view/tool_activity` groups consecutive tool calls and joins results by call
 ID, a reasoning block is one `ReasoningDigest` row, and a successful settle
 keeps the same row count as the live region it replaces, so the transcript
 does not jump when a call completes. `Ctrl+G` expands all of it.
@@ -658,7 +658,7 @@ does not jump when a call completes. `Ctrl+G` expands all of it.
 The daemon's summarizer writes a one- or two-sentence summary of each
 reasoning block and each delivered advice or nudges message of at least
 512 bytes ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
-`tui/block_summary` holds them per attachment: stored summaries keyed by
+`session_view/block_summary` holds them per attachment: stored summaries keyed by
 entry id and block index, and live summaries keyed by the `generation` of
 the stream they describe.
 
@@ -750,7 +750,7 @@ the order the step decided them, and reads each offset as it appends. A
 failed append is silent, since etui owns the screen.
 
 The current format (local format 2) tags each request credit, raw frame and
-adoption with a terminal-local attempt identity (`tui/attempt`), so a replay
+adoption with a terminal-local attempt identity (`session_view/attempt`), so a replay
 can tell a provisional attachment that failed from the one that was adopted.
 [ADR-009](../adr/009-record-terminal-attempt-custody.md) records that design.
 
@@ -859,7 +859,7 @@ Paths are relative to `packages/tui/src`.
 | `tui/job` | Jobs as data: `Key`, the slot type `Awaiting`, `Spec`, and the keyed `Arrival`. |
 | `tui/job_runner` | The runtime's table of running jobs: starts a spec as a weft run, cancels by key, receives every job's replies. |
 | `tui/buffered` | `Inbox`: a terminal-owned subject with the messages already received from it, `waiting` and `push` before the step, `take` in it, `receive` outside it. |
-| `tui/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
+| `session_view/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
 | `tui/outbound`, `tui/inbound` | Sending frames, and applying channel traffic, captured cuts (`render_cut`) and events. |
@@ -869,13 +869,13 @@ Paths are relative to `packages/tui/src`.
 | `tui/submit`, `tui/interaction` | Composer submission and keyboard and mouse handling. |
 | `tui/tick` | `update_tick`/`settle_tick`: the drain chain and the read services. |
 | `tui/todo_panel` | The pinned todo panel and the one-line transcript summary of a `todo` call. |
-| `tui/advisor_history`, `tui/collaboration_view` | Advisor-only commentary in the main transcript, and the inspector's Collaboration tab. |
+| `session_view/advisor_history`, `tui/collaboration_view` | Advisor-only commentary in the main transcript, and the inspector's Collaboration tab. |
 | `tui/pacing` | Frame and viewport pacing and the poll cadence, as pure arithmetic. |
 | `tui/connection` | The terminal's event names over the shared `host/websocket` transport. |
-| `tui/session_wire` | v2 command encoding and single-frame decoding: correlated replies versus pushes. |
-| `tui/session_channel` | The credited conversation lane: phases, one outstanding request, one unsent mutation, 250 ms catch-up, pushed frames. |
-| `tui/snapshot`, `tui/snapshot_view` | Assembling a credited transfer into a validated cut, and projecting it into strands, operations, configuration and presence. |
-| `tui/protocol` | The client's view of the ClientGateway event union and its command constructors. |
+| `session_view/session_wire` | v2 command encoding and single-frame decoding: correlated replies versus pushes. |
+| `session_view/session_channel` | The credited conversation lane: phases, one outstanding request, one unsent mutation, 250 ms catch-up, pushed frames. |
+| `session_view/snapshot`, `session_view/snapshot_view` | Assembling a credited transfer into a validated cut, and projecting it into strands, operations, configuration and presence. |
+| `session_view/protocol` | The client's view of the ClientGateway event union and its command constructors. |
 | `tui/attachment` | One provisional session replacement, the reducer's view of its `job.Attach` job, and its adoption. |
 | `tui/daemon` | The `/v2/control` connection: weft state machine, one outstanding request. |
 | `tui/daemon/protocol` | The independent, total control codec. |
@@ -883,28 +883,28 @@ Paths are relative to `packages/tui/src`.
 | `tui/daemon/selection` | Open, create, rename, archive, delete and list over control; control-owner replacement; relaunch. |
 | `tui/bootstrap` | Launch options, state-root and executable discovery, and the entry points `resolve_daemon` and `reconnect_daemon`. |
 | `tui/session_selector` | The catalogue picker page and its confirm, rename and delete prompts. |
-| `tui/history_view`, `tui/transcript_anchor` | Bounded scrollback paging and identity-based reading position. |
-| `tui/stream_identity` | Handoff of a streamed answer to its reserved durable entry. |
-| `tui/tool_activity`, `tui/file_read_view` | Compact tool groups, and the readable projection of file reads and edits. |
-| `tui/markdown`, `tui/text_hygiene` | CommonMark to etui spans, table layout, wrapping, patch rendering; terminal-safe text. |
+| `session_view/history_view`, `tui/transcript_anchor` | Bounded scrollback paging and identity-based reading position. |
+| `session_view/stream_identity` | Handoff of a streamed answer to its reserved durable entry. |
+| `session_view/tool_activity`, `session_view/file_read_view` | Compact tool groups, and the readable projection of file reads and edits. |
+| `tui/markdown`, `session_view/text_hygiene` | CommonMark to etui spans, table layout, wrapping, patch rendering; terminal-safe text. |
 | `tui/theme`, `tui/appearance` | Semantic colours and the launch-time palette. |
-| `tui/command`, `tui/skills` | Slash-command grammar, palette suggestions, and daemon skill names. |
-| `tui/composer`, `tui/image_drop` | Paste attachments, token estimate, and image admission. |
+| `session_view/command`, `session_view/skills` | Slash-command grammar, palette suggestions, and daemon skill names. |
+| `session_view/composer`, `tui/image_drop` | Paste attachments, token estimate, and image admission. |
 | `tui/queue_panel`, `tui/queue_editor` | Held-input inspector and the revision-fenced queue editor. |
-| `tui/approval`, `tui/approval_panel` | Exact approval capture and the approval dialog. |
-| `tui/worktree_view`, `tui/diff_panel` | Git worktree observation and the changes navigator. |
+| `session_view/approval`, `tui/approval_panel` | Exact approval capture and the approval dialog. |
+| `session_view/worktree_view`, `tui/diff_panel` | Git worktree observation and the changes navigator. |
 | `tui/agents`, `tui/agent_view`, `tui/agent_activity`, `tui/agent_messages`, `tui/agent_message_panel`, `tui/reviewer_status` | The agent rail and inspector projections. |
-| `tui/notes_view`, `tui/note_panel` | The notes observation and browser. |
-| `tui/completion_summary`, `tui/summary_panel`, `tui/live_jobs` | Completion evidence, the summary panel, and the jobs roster. |
-| `tui/context_view`, `tui/context_panel` | The context observation and inspector. |
-| `tui/advisor_pending` | The pending-nudge observation. |
-| `tui/block_summary` | Summarizer labels for long blocks, stored and live, and the exact-key reads still owed. |
-| `tui/goal_view`, `tui/focused_goal_panel` | The goal board, composer row and inspector. |
+| `session_view/notes_view`, `tui/note_panel` | The notes observation and browser. |
+| `tui/completion_summary`, `tui/summary_panel`, `session_view/live_jobs` | Completion evidence, the summary panel, and the jobs roster. |
+| `session_view/context_view`, `tui/context_panel` | The context observation and inspector. |
+| `session_view/advisor_pending` | The pending-nudge observation. |
+| `session_view/block_summary` | Summarizer labels for long blocks, stored and live, and the exact-key reads still owed. |
+| `session_view/goal_view`, `tui/focused_goal_panel` | The goal board, composer row and inspector. |
 | `tui/model_selector` | The `/model` overlay. |
 | `tui/cache_miss` | Prompt-cache miss detection and TTL outlook from usage rows. |
 | `tui/selection`, `tui/frame` | Mouse selection and OSC 52 copy; a `Buffer` as plain text. |
 | `tui/workspace`, `tui/internal/workspace_file` | Repository root and branch discovery. |
 | `tui/herdr`, `tui/internal/ffi_herdr` | Herdr pane-state reporting and its one socket exchange. |
-| `tui/recording`, `tui/attempt`, `tui/attempt_replay`, `tui/virtual_backend` | The `--record` format, attempt custody, replay reduction, and the scripted etui backend. |
+| `tui/recording`, `session_view/attempt`, `tui/attempt_replay`, `tui/virtual_backend` | The `--record` format, attempt custody, replay reduction, and the scripted etui backend. |
 | `tui/update`, `tui/update/*` | The `loom update` release installer and daemon restart. |
 | `tui/internal/ffi_terminal`, `tui/internal/ffi_file`, `tui/internal/ffi_download` | The package's Erlang FFI: terminal-owned actions, bounded image reads, and Gun HTTPS streams. |

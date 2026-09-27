@@ -237,9 +237,9 @@ fn is_harness(package: Option(String)) -> Bool {
 /// `eager_combinators` is: adding or removing a package is a one-line
 /// change, and the tests can enumerate what the rule claims to cover rather
 /// than trusting that it covers anything. `lint/portable` argues what the
-/// membership protects.
+/// membership protects, and why `session_view` is on the list.
 pub fn portable_packages() -> List(String) {
-  ["core", "machine", "prompt"]
+  ["core", "machine", "prompt", "session_view"]
 }
 
 /// A dependency that exists only on the BEAM, named from both sides.

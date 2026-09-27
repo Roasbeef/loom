@@ -6,9 +6,9 @@ import etui/text
 import gleam/list
 import gleam/string
 import gleeunit/should
+import session_view/text_hygiene
 import snapshot_test
 import tui/markdown
-import tui/text_hygiene
 import tui/theme
 
 pub fn headings_lists_and_code_keep_semantic_text_test() {

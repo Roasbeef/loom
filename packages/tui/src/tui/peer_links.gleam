@@ -18,12 +18,12 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/text_hygiene
 import tui/agents
 import tui/daemon/protocol.{
   type PeerWake, type Session, BusyOnly, MayWake, Resident,
 }
 import tui/session_selector
-import tui/text_hygiene
 import tui/theme
 
 /// One peer grant and its exact direction.

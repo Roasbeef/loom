@@ -15,19 +15,20 @@ import etui/backend
 import etui/geometry
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/advisor_pending
+import session_view/connection_event
+import session_view/protocol.{type Strand, Strand}
+import session_view/session_channel
+import session_view/transcript_lines
+import session_view/worktree_view
 import tui
-import tui/advisor_pending
 import tui/connection
 import tui/frame
 import tui/inbound
 import tui/model as tui_model
-import tui/protocol.{type Strand, Strand}
 import tui/render
-import tui/session_channel
 import tui/surfaces
-import tui/transcript_lines
 import tui/workspace
-import tui/worktree_view
 import tui_test/gateway
 import tui_test/pushed
 
@@ -358,7 +359,10 @@ pub fn a_pushed_delivery_retires_the_board_test() {
       9,
     )
   let delivered =
-    inbound.accept_connection_message(observed, connection.Incoming(frame))
+    inbound.accept_connection_message(
+      observed,
+      connection_event.Incoming(frame),
+    )
   assert delivered.nudges == None
   assert delivered.nudges_refresh == worktree_view.Requested
 }

@@ -31,12 +31,13 @@ import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option}
+import session_view/connection_event
+import session_view/snapshot
 import tui/bootstrap
 import tui/connection
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/session_selector
-import tui/snapshot
 import tui/workspace
 import weft
 
@@ -314,7 +315,7 @@ pub type Prepared {
     /// The subject the worker waits on for the terminal's acknowledgement.
     acknowledgement: Subject(Nil),
     /// The terminal-owned subject the socket delivers frames to.
-    frames: Subject(connection.Message),
+    frames: Subject(connection_event.Message),
   )
 }
 

@@ -13,7 +13,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui/text_hygiene
+import session_view/text_hygiene
 import tui/theme
 
 /// Notes switch only their selected body's representation.

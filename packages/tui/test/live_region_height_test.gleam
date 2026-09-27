@@ -29,11 +29,13 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/connection_event
+import session_view/transcript_line
+import session_view/transcript_lines
 import tui
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
-import tui/transcript_lines
 import tui/workspace
 import tui_test/gateway
 
@@ -53,7 +55,7 @@ fn model() -> tui_model.Model {
 }
 
 fn received(model: tui_model.Model, wire: String) -> tui_model.Model {
-  inbound.accept_connection_message(model, connection.Incoming(wire))
+  inbound.accept_connection_message(model, connection_event.Incoming(wire))
 }
 
 // Laying the rows out is what fills `rendered_rows`; a model that has only
@@ -122,11 +124,11 @@ fn settled(model: tui_model.Model) -> tui_model.Model {
 
 pub fn a_running_tools_output_costs_no_rows_until_details_open_test() {
   let live = running()
-  assert transcript_lines.tool_tail_lines(live) == []
+  assert transcript_lines.tool_tail_lines(tui_model.presentation(live)) == []
     as "a collapsed transcript draws none of the running command's window"
 
-  let assert [tui_model.Line(tui_model.ToolResult, window)] =
-    transcript_lines.tool_tail_lines(expanded(live))
+  let assert [transcript_line.Line(transcript_line.ToolResult, window)] =
+    transcript_lines.tool_tail_lines(tui_model.presentation(expanded(live)))
     as "an expanded transcript still draws the window it collected"
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(window, "\n")

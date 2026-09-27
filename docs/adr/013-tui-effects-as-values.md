@@ -388,7 +388,7 @@ The survey of mailbox reads, at the commit this slice started from:
   no mailbox, and the attachment job's cancel drains the job's messages
   instead (`tui/job_runner.gleam:254` (`drain`)). `sessions.discard`, now `buffered.discard`, is the
   `Discard` effect. The bootstrap snapshot wait
-  (`tui/bootstrap.gleam:1199` (`await_snapshot`)) runs before the loop, the
+  (`tui/bootstrap.gleam:1205` (`await_snapshot`)) runs before the loop, the
   daemon control handshake in `tui/daemon.gleam` runs in its own process, and
   the virtual backend's frame collection (`tui/virtual_backend.gleam:315`
   (`drain`)) is test infrastructure outside the model.
@@ -909,7 +909,7 @@ around it, at the commit this slice started from:
 | a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:451` | in the step | a job, `Configure` at `tui/job_runner.gleam:152` |
 | the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:515` | the attachment worker, since S5 | unchanged |
 | the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
-| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:616`, `discover_from` at `tui.gleam:638`, `read` at `tui.gleam:1006`, `read_private_bounded` at `tui.gleam:1350`, `start` at `tui.gleam:736`, `decode_file` at `tui.gleam:1167`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
+| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:626`, `discover_from` at `tui.gleam:653`, `read` at `tui.gleam:1006`, `read_private_bounded` at `tui.gleam:1477`, `start` at `tui.gleam:751`, `decode_file` at `tui.gleam:1294`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
 | the record-based session discovery that fed the local switch | `tui/sessions` and `tui/bootstrap` | deleted in S5 | gone; no definition or caller remains |
 
 Recording appends are writes, and have been effects since S3. Two reads in
@@ -1283,3 +1283,38 @@ every arrival with one job's key, or reads only one job's selector, fails
 `a_keypress_admits_every_jobs_reply_into_its_own_slot_test`, and one that
 reads the replay inbox outside a replay fails
 `only_a_replay_reads_its_replay_inbox_test`.
+
+## Addendum: phase 4, P4a, the lane leaves the terminal (2026-09-26)
+
+The first part of phase 4 moved the part of the client that no host
+owns into `packages/session_view`, a package that imports only `core`,
+`machine` and the standard library and that lint R6 holds there. It is
+the session lane, the protocol and wire decoders, snapshot adoption
+(`snapshot`, `snapshot_view`), the history window, the attempt
+vocabulary with the connection events, the approval decisions, and the
+transcript's line builders with everything they import. The terminal
+drives the same modules it drove before, the moves were renames that
+changed only import lines, and the replay goldens did not change.
+
+Three changes to names this ADR uses above:
+
+- **`session_channel.perform` is now `tui/terminal_lane.perform`.** The
+  channel is generic over its socket and recorder
+  (`Channel(socket, recorder)`, `Out(socket, recorder)`), and performing
+  an output needs the concrete handles, so the perform half moved to the
+  host. The paragraphs above that name `session_channel.perform` (phase 1's
+  decision, S3's recording paragraph and S3's table) describe it as it
+  was at each phase; the function is the same, under the new name.
+  `tui/terminal_lane` also names the terminal's choice once: `Lane` and
+  `Output` are the channel and its output with the terminal's connection
+  and recorder.
+- **`connection.Message` is now `connection_event.Message`**, data in the
+  engine; `tui/connection` keeps the transport.
+- **`recording.Trace` is an alias of `attempt.Trace(Recorder)`**, so a
+  lane can carry its trace without importing the recording.
+
+The phase 3 addendum's "What phase 4 extracts" names the step, admission
+and the reducers. Phase 4 extracts less: a read-only view needs the lane
+and the projection, and the step waits for the phase that builds the web
+view out. [ADR-014](014-second-runtime.md) records that decision, the
+four things that tie the step to the terminal today, and a path for each.

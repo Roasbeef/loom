@@ -5,10 +5,10 @@ import etui/backend
 import etui/widgets/textarea
 import gleam/option.{None}
 import gleam/string
+import session_view/composer
+import session_view/pasted_image
 import tui
-import tui/composer
 import tui/connection
-import tui/image_drop
 import tui/model as tui_model
 import tui/workspace
 
@@ -23,7 +23,7 @@ fn model(draft: String) -> tui_model.Model {
 }
 
 fn image() -> composer.Attachment {
-  composer.ImageAttachment(image_drop.Image(
+  composer.ImageAttachment(pasted_image.Image(
     local_path: "/tmp/preview.png",
     filename: "preview.png",
     mime_type: "image/png",

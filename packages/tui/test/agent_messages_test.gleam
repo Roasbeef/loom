@@ -17,10 +17,10 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/codec
 import machine/operation
+import session_view/protocol
+import session_view/snapshot
+import session_view/snapshot_view
 import tui/agent_messages
-import tui/protocol
-import tui/snapshot
-import tui/snapshot_view
 
 fn eid(n) {
   ids.mint_entry(ids.generator(clock.fixed(n), n)).0

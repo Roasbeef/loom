@@ -33,15 +33,16 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/advisor_history
+import session_view/notes_view
+import session_view/protocol
+import session_view/transcript_line
+import session_view/transcript_lines
 import tui
-import tui/advisor_history
 import tui/connection
 import tui/frame
 import tui/model as tui_model
-import tui/notes_view
-import tui/protocol
 import tui/render
-import tui/transcript_lines
 import tui/workspace
 import tui_test/gateway
 
@@ -63,9 +64,9 @@ pub fn a_compact_advice_row_keeps_the_full_delivered_block_test() {
 
   assert lines
     == [
-      tui_model.Line(tui_model.System, "Advisor · block delivered"),
-      tui_model.Line(
-        tui_model.ToolDetail,
+      transcript_line.Line(transcript_line.System, "Advisor · block delivered"),
+      transcript_line.Line(
+        transcript_line.ToolDetail,
         "the new test asserts nothing\nrerun it against the old code",
       ),
     ]
@@ -81,8 +82,8 @@ pub fn an_expanded_advice_row_shows_the_whole_body_test() {
 
   assert lines
     == [
-      tui_model.Line(tui_model.System, "Advisor · block delivered"),
-      tui_model.Line(tui_model.ToolDetail, body),
+      transcript_line.Line(transcript_line.System, "Advisor · block delivered"),
+      transcript_line.Line(transcript_line.ToolDetail, body),
     ]
 }
 
@@ -179,7 +180,7 @@ pub fn long_advisor_history_does_not_hide_the_live_primary_tail_test() {
       records: [],
       advisor_history: advisor_history.Board(items, None),
       streams: [
-        tui_model.Stream(
+        transcript_line.Stream(
           "main",
           "op",
           "generation",
@@ -279,7 +280,7 @@ pub fn stream_deltas_reuse_the_wrapped_advisor_history_test() {
       tui_model.Model(
         ..model,
         streams: [
-          tui_model.Stream(
+          transcript_line.Stream(
             "main",
             "op",
             "generation",
@@ -327,16 +328,22 @@ pub fn a_compact_nudges_frame_keeps_every_bullet_test() {
       notes_view.Excerpt,
     )
     == [
-      tui_model.Line(tui_model.System, "Advisor · nudges delivered (2)"),
-      tui_model.Line(tui_model.ToolDetail, body),
+      transcript_line.Line(
+        transcript_line.System,
+        "Advisor · nudges delivered (2)",
+      ),
+      transcript_line.Line(transcript_line.ToolDetail, body),
     ]
   assert transcript_lines.advisor_lines(
       transcript_lines.Nudges(body),
       notes_view.Complete,
     )
     == [
-      tui_model.Line(tui_model.System, "Advisor · nudges delivered (2)"),
-      tui_model.Line(tui_model.ToolDetail, body),
+      transcript_line.Line(
+        transcript_line.System,
+        "Advisor · nudges delivered (2)",
+      ),
+      transcript_line.Line(transcript_line.ToolDetail, body),
     ]
 }
 
@@ -353,8 +360,11 @@ pub fn a_multi_line_nudge_counts_once_test() {
       notes_view.Excerpt,
     )
     == [
-      tui_model.Line(tui_model.System, "Advisor · nudges delivered (2)"),
-      tui_model.Line(tui_model.ToolDetail, body),
+      transcript_line.Line(
+        transcript_line.System,
+        "Advisor · nudges delivered (2)",
+      ),
+      transcript_line.Line(transcript_line.ToolDetail, body),
     ]
 }
 
@@ -374,8 +384,8 @@ pub fn a_feed_frame_is_recognized_on_the_advisors_branch_test() {
       notes_view.Excerpt,
     )
     == [
-      tui_model.Line(
-        tui_model.System,
+      transcript_line.Line(
+        transcript_line.System,
         "advisor feed: user:  [Ctrl+G to expand]",
       ),
     ]
@@ -384,8 +394,8 @@ pub fn a_feed_frame_is_recognized_on_the_advisors_branch_test() {
       notes_view.Complete,
     )
     == [
-      tui_model.Line(tui_model.System, "advisor feed"),
-      tui_model.Line(tui_model.ToolDetail, body),
+      transcript_line.Line(transcript_line.System, "advisor feed"),
+      transcript_line.Line(transcript_line.ToolDetail, body),
     ]
 }
 
@@ -512,7 +522,7 @@ pub fn commentary_between_calls_splits_the_group_and_keeps_a_gap_test() {
   let #(lines, _, _) =
     transcript_lines.record_lines(
       records,
-      model,
+      tui_model.presentation(model),
       [],
       advisor_history.Board([commentary], None),
     )
@@ -536,7 +546,7 @@ pub fn commentary_between_calls_splits_the_group_and_keeps_a_gap_test() {
   // The heading is not welded to the call row above it.
   let assert Ok(above) = list.drop(lines, heading - 1) |> list.first
     as "a row precedes the heading"
-  assert above.speaker == tui_model.Spacer
+  assert above.speaker == transcript_line.Spacer
 }
 
 // The anchor projection is read as a list parallel to the rendered record

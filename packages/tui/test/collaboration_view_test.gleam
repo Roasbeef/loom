@@ -11,12 +11,12 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/protocol
+import session_view/snapshot
+import session_view/snapshot_view
 import tui
 import tui/collaboration_view
 import tui/connection
-import tui/protocol
-import tui/snapshot
-import tui/snapshot_view
 import tui/workspace
 
 fn empty_view() {

@@ -19,23 +19,24 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import tui/advisor_history
-import tui/composer
-import tui/layout
-import tui/markdown
-import tui/model.{
-  type Line, type Model, Assistant, Failure, Line, Model, Reasoning,
-  ReasoningDigest, Spacer, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
-} as tui_model
-import tui/notes_view
-import tui/render
-import tui/surfaces
-import tui/tool_activity
-import tui/transcript_anchor
-import tui/transcript_lines.{
+import session_view/advisor_history
+import session_view/composer
+import session_view/notes_view
+import session_view/tool_activity
+import session_view/transcript_line.{
+  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, User,
+}
+import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
 }
+import tui/layout
+import tui/markdown
+import tui/model.{type Model, Model} as tui_model
+import tui/render
+import tui/surfaces
+import tui/transcript_anchor
 
 /// Terminal polling still produces idle ticks so the websocket inbox can be
 /// drained, but those ticks must not compare or wrap the durable transcript.
@@ -214,7 +215,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
         True -> after
         False -> {
           let #(rows, line_cache, _) =
-            transcript_lines.diff_content(after)
+            transcript_lines.diff_content(tui_model.presentation(after))
             |> cached_record_lines(
               layout.diff_width(after),
               previous_diff_layout(before, after),
@@ -312,12 +313,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         False -> dict.new()
       }
       let #(lines, compact_call_cache, compact_entry_cache) =
-        transcript_lines.record_lines(
-          model.records,
-          model,
-          transcript_lines.active_notices(model),
-          visible_advisor_history(model),
-        )
+        record_projection(model)
       let #(record_rows, record_line_cache, record_gutters) =
         model.transcript
         |> list.append(lines)
@@ -341,7 +337,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(lines, calls, narratives) =
         transcript_lines.record_lines(
           pending,
-          model,
+          tui_model.presentation(model),
           [],
           advisor_history.Board([], None),
         )
@@ -431,7 +427,7 @@ fn record_anchors_for(
   let entries =
     transcript_lines.strand_entries(model.records, model.active_strand)
   let sequences = transcript_lines.entry_sequences(entries)
-  let notices = transcript_lines.active_notices(model)
+  let notices = transcript_lines.active_notices(tui_model.presentation(model))
   let blocks = case model.details_expanded {
     True -> {
       // The compact projection owns call/result association, including reused
@@ -695,15 +691,16 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
 // The live tail is a bounded, disposable observation. Scrollback retains one
 // immutable projection so later fragments cannot reflow text under the reader.
 fn transient_lines(model: Model) -> List(Line) {
+  let presentation = tui_model.presentation(model)
   transcript_lines.stream_lines(
-    transcript_lines.display_streams(model),
+    transcript_lines.display_streams(presentation),
     model.active_strand,
     transcript_lines.details_extent(model.details_expanded),
     model.summaries,
     model.generation_elapsed_s,
   )
-  |> list.append(transcript_lines.tool_tail_lines(model))
-  |> list.append(transcript_lines.pending_input_lines(model))
+  |> list.append(transcript_lines.tool_tail_lines(presentation))
+  |> list.append(transcript_lines.pending_input_lines(presentation))
   |> list.append(pending_nudge_lines(model))
   |> separated_from_screen(model)
 }
@@ -794,13 +791,37 @@ pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
   }
 }
 
+/// The durable records' transcript lines, before styling, with the row
+/// caches the next rebuild reuses. This is the terminal's side of the parity
+/// the web view is held to: the same records give the same lines through
+/// `session_view`'s `transcript.project`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(lines, _calls, _narratives) = projection.record_projection(model)
+/// ```
+@internal
+pub fn record_projection(
+  model: Model,
+) -> #(
+  List(Line),
+  Dict(tool_activity.Call, List(Line)),
+  Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
+) {
+  let presentation = tui_model.presentation(model)
+  transcript_lines.record_lines(
+    model.records,
+    presentation,
+    transcript_lines.active_notices(presentation),
+    visible_advisor_history(model),
+  )
+}
+
 // Advisor-only commentary is visible beside the primary's captured entries.
-// The advisor's own branch retains its ordinary transcript instead.
+// Which strands show it is session_view's rule, shared with every host.
 fn visible_advisor_history(model: Model) -> advisor_history.Board {
-  case model.active_strand {
-    "main" -> model.advisor_history
-    _ -> advisor_history.Board([], None)
-  }
+  advisor_history.visible(model.advisor_history, model.active_strand)
 }
 
 // The row and anchor projections merge the same captured blocks. The stable

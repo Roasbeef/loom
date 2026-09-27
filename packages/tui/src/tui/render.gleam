@@ -7,7 +7,7 @@
 //// model: nothing here sends a frame or changes state, which is what lets
 //// the tick cache a frame and repaint it only when a revision moved.
 ////
-//// Transcript rows arrive as `Line`s from `tui/transcript_lines`, already
+//// Transcript rows arrive as `Line`s from `session_view/transcript_lines`, already
 //// ordered; this module styles them, applies Markdown, wraps them to the
 //// pane width, and adds the speaker gutter.
 
@@ -31,7 +31,23 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui/advisor_pending
+import session_view/advisor_pending
+import session_view/command
+import session_view/composer
+import session_view/context_view
+import session_view/live_jobs
+import session_view/notes_view
+import session_view/protocol
+import session_view/queued_input
+import session_view/snapshot_view
+import session_view/text_hygiene
+import session_view/transcript_line.{
+  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, User,
+}
+import session_view/transcript_lines
+import session_view/worktree_view
 import tui/agent_message_panel
 import tui/agent_messages
 import tui/agent_strip
@@ -39,41 +55,28 @@ import tui/agents
 import tui/appearance
 import tui/approval_panel
 import tui/collaboration_view
-import tui/command
 import tui/completion_summary
-import tui/composer
 import tui/context_panel
-import tui/context_view
 import tui/diff_panel
 import tui/focused_goal_panel
 import tui/layout
-import tui/live_jobs
 import tui/markdown
 import tui/model.{
-  type Line, type Model, AgentInspector, ApprovalInspector, Assistant,
-  DaemonSelector, Disconnected, Failure, FrameCache, GoalInspector, Line, Model,
-  ModelSelector, NoOverlay, PeerLinkManager, PromptNext, Reasoning,
-  ReasoningDigest, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Spacer,
-  SteerNow, SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolPatch, ToolResult, User,
+  type Model, AgentInspector, ApprovalInspector, DaemonSelector, Disconnected,
+  FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
+  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
-import tui/notes_view
 import tui/peer_links
-import tui/protocol
 import tui/queue_editor
 import tui/queue_panel
 import tui/selection
 import tui/session_selector
-import tui/snapshot_view
 import tui/summary_panel
-import tui/text_hygiene
 import tui/theme
 import tui/todo_panel
-import tui/transcript_lines
 import tui/workspace
-import tui/worktree_view
 
 // The frame on screen is whatever `refresh_frame_cache` last decided to
 // render, including a frame it deliberately left stale to pace a burst. The
@@ -1973,8 +1976,8 @@ fn render_queue_draft(
       let inner = layout.panel_inner(area)
       let editor_area = layout.queue_draft_area(area)
       let priority = case draft.document.kind {
-        queue_editor.Queue -> "queue"
-        queue_editor.Steer -> "steer"
+        queued_input.Queue -> "queue"
+        queued_input.Steer -> "steer"
       }
       let delivery = case draft.delivery {
         queue_editor.Editable -> "editable revision"

@@ -17,7 +17,7 @@ import etui/backend
 import etui/keys
 import gleam/list
 import gleam/option.{None, Some}
-import tui/image_drop
+import session_view/pasted_image
 import tui/keymap
 import tui/msg
 import tui/recording
@@ -26,7 +26,7 @@ import tui/virtual_backend
 // Every etui event, and the client event it translates to. A paste carries
 // the read it was given, and every other event ignores it.
 pub fn every_etui_event_translates_to_its_client_event_test() {
-  let image = image_drop.Image("/tmp/a.png", "a.png", "image/png", 3, "YQ==")
+  let image = pasted_image.Image("/tmp/a.png", "a.png", "image/png", 3, "YQ==")
   let read = Ok(Some(image))
 
   assert keymap.translate(backend.KeyPress("esc"), read)

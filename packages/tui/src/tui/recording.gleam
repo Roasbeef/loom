@@ -68,9 +68,9 @@ import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
+import session_view/attempt
+import session_view/connection_event
 import simplifile
-import tui/attempt
-import tui/connection
 import tui/virtual_backend
 
 /// Which way a wheel event moved, so no reader has to carry the polarity
@@ -117,7 +117,7 @@ pub type Recorded {
   Released(x: Int, y: Int, button: backend.MouseButton)
 
   /// One message from the websocket actor's inbox.
-  Arrived(message: connection.Message)
+  Arrived(message: connection_event.Message)
 }
 
 /// One recorded event and when it happened.
@@ -148,20 +148,11 @@ pub opaque type Recorder {
   Observed(sink: Subject(Recorded))
 }
 
-/// The recorder and attempt identity an attachment's lane records under.
-///
-/// This is data rather than a callback. A lane holding a trace queues each
-/// attempt event as an output naming this recorder, in the order it decided
-/// the events, and the runtime writes them after the step with everything
-/// else the step decided.
-pub type Trace {
-  Trace(
-    /// Where the lane's attempt events are written.
-    recorder: Recorder,
-    /// Terminal-local attempt identity, never a credential or socket address.
-    id: attempt.Id,
-  )
-}
+/// The recorder and attempt identity an attachment's lane records under,
+/// with this module's recorder as the recorder. The type and its constructor
+/// live in `session_view/attempt`, beside the lane that carries them.
+pub type Trace =
+  attempt.Trace(Recorder)
 
 /// Opens a recording, truncating anything already at the path.
 ///
@@ -204,7 +195,7 @@ pub fn observed(sink: Subject(Recorded)) -> Recorder {
 /// let trace = recording.trace(recorder, attempt.Id(1))
 /// ```
 pub fn trace(recorder: Option(Recorder), id: attempt.Id) -> Option(Trace) {
-  option.map(recorder, Trace(_, id))
+  option.map(recorder, attempt.Trace(_, id))
 }
 
 /// Appends one event to the recording, with its offset read now.
@@ -439,19 +430,19 @@ fn button_name(button: backend.MouseButton) -> String {
 // first. The three lifecycle messages are not wire frames at all, so each
 // is given a tag of its own rather than being flattened into a fake one.
 fn encode_message(
-  message: connection.Message,
+  message: connection_event.Message,
 ) -> List(#(String, json.JsonValue)) {
   case message {
-    connection.Connected -> [#("t", json.String("connected"))]
-    connection.Incoming(text:) -> [
+    connection_event.Connected -> [#("t", json.String("connected"))]
+    connection_event.Incoming(text:) -> [
       #("t", json.String("incoming")),
       #("text", json.String(text)),
     ]
-    connection.Closed(reason:) -> [
+    connection_event.Closed(reason:) -> [
       #("t", json.String("closed")),
       #("reason", json.String(reason)),
     ]
-    connection.NetworkFault(reason:) -> [
+    connection_event.NetworkFault(reason:) -> [
       #("t", json.String("fault")),
       #("reason", json.String(reason)),
     ]
@@ -485,18 +476,18 @@ fn decode_event(
     "press" -> decode_button(fields, Pressed)
     "drag" -> decode_button(fields, Dragged)
     "release" -> decode_button(fields, Released)
-    "connected" -> Ok(Arrived(message: connection.Connected))
+    "connected" -> Ok(Arrived(message: connection_event.Connected))
     "incoming" ->
       result.map(required_string(fields, "text"), fn(text) {
-        Arrived(message: connection.Incoming(text:))
+        Arrived(message: connection_event.Incoming(text:))
       })
     "closed" ->
       result.map(required_string(fields, "reason"), fn(reason) {
-        Arrived(message: connection.Closed(reason:))
+        Arrived(message: connection_event.Closed(reason:))
       })
     "fault" ->
       result.map(required_string(fields, "reason"), fn(reason) {
-        Arrived(message: connection.NetworkFault(reason:))
+        Arrived(message: connection_event.NetworkFault(reason:))
       })
     other -> Error("unknown recording event \"" <> other <> "\"")
   }

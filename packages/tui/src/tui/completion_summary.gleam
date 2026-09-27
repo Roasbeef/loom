@@ -21,8 +21,8 @@ import gleam/result
 import gleam/string
 import machine/codec
 import machine/operation
-import tui/snapshot_view
-import tui/tool_activity
+import session_view/snapshot_view
+import session_view/tool_activity
 
 /// How much of the operation's ancestry was available in this attachment.
 pub type Coverage {

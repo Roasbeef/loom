@@ -1,6 +1,6 @@
 // The session channel as pure functions over a value.
 //
-// Stands for packages/tui/src/tui/session_channel.gleam. Like the Gleam
+// Stands for packages/session_view/src/session_view/session_channel.gleam. Like the Gleam
 // module, every function here is a transition over its argument: writes and
 // closes are queued on `out` (session_channel.Out) and updates on `ups`
 // (session_channel.Update) for the caller to take. Snapshot chunks, payload

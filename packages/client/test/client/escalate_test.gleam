@@ -53,13 +53,13 @@ import runtime/api
 import runtime/effects
 import runtime/escalation
 import session/session
+import session_view/approval
+import session_view/snapshot_view
 import simplifile
 import support/addresses
 import support/provider as provider_test
 import support/tool_registry
 import tools/codemode as codemode_tool
-import tui/approval
-import tui/snapshot_view
 import weft/actor
 
 // --- the harness -----------------------------------------------------------

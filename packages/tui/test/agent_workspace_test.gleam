@@ -18,25 +18,25 @@ import gleam/string
 import machine/codec
 import machine/operation
 import machine/strand
+import session_view/advisor_pending
+import session_view/composer
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/worktree_view
 import tui
-import tui/advisor_pending
 import tui/agent_message_panel
 import tui/agent_messages
 import tui/agent_view
 import tui/agents
-import tui/composer
 import tui/connection
 import tui/frame
 import tui/inbound
 import tui/model as tui_model
-import tui/protocol
 import tui/render
 import tui/reviewer_status
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/workspace
-import tui/worktree_view
 
 fn model() {
   tui.new_model_with_clock(

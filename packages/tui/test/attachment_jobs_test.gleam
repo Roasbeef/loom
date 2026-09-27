@@ -14,6 +14,8 @@ import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import session_view/connection_event
+import session_view/snapshot
 import tui
 import tui/attachment
 import tui/connection
@@ -24,7 +26,6 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
-import tui/snapshot
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -98,7 +99,7 @@ pub fn a_stale_prepared_has_its_socket_closed_test() {
 
   let owner: Subject(Dynamic) = process.new_subject()
   let frames = connection.new_inbox()
-  process.send(frames, connection.Connected)
+  process.send(frames, connection_event.Connected)
   let held =
     runtime.hold(
       waiting,
@@ -248,7 +249,7 @@ fn is_job(requested: effect.Effect) -> Bool {
 // whose close arrives at `owner`.
 fn prepared_on(
   owner: Subject(Dynamic),
-  frames: Subject(connection.Message),
+  frames: Subject(connection_event.Message),
   acknowledgement: Subject(Nil),
 ) -> job.Prepared {
   job.Prepared(

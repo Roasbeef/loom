@@ -33,6 +33,8 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import session_view/connection_event
+import session_view/session_channel
 import tui
 import tui/attachment
 import tui/buffered
@@ -44,7 +46,7 @@ import tui/job
 import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
-import tui/session_channel
+import tui/terminal_lane
 import tui/virtual_backend
 import tui/workspace
 import weft/actor
@@ -52,8 +54,8 @@ import weft/actor
 /// Commands belong to one driver process, never to its socket's inbox.
 pub opaque type Message {
   Play(events: List(backend.InputEvent), reply: Subject(Sample))
-  Inbound(message: connection.Message)
-  Candidate(message: connection.Message)
+  Inbound(message: connection_event.Message)
+  Candidate(message: connection_event.Message)
   Job(arrival: job.Arrival)
   Stop
 }
@@ -255,7 +257,7 @@ fn disconnect(model: tui_model.Model) -> Nil {
     Some(channel) -> {
       let #(_, outputs) =
         session_channel.take_outputs(session_channel.close(channel))
-      list.each(outputs, session_channel.perform)
+      list.each(outputs, terminal_lane.perform)
     }
 
     // With no channel there is no socket: an attached peer always has its

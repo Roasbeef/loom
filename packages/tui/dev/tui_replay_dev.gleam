@@ -10,6 +10,7 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None}
+import session_view/transcript_line
 import tui
 import tui/agents
 import tui/buffered
@@ -72,7 +73,7 @@ pub fn run(path: String, expected_records: Int) -> Nil {
   assert list.length(final.records) == expected_records
     as "the reducer must retain the expected durable history"
   assert !list.any(final.transcript, fn(line) {
-    line.speaker == tui_model.Failure
+    line.speaker == transcript_line.Failure
   })
     as "the replay must not render protocol failures"
   io.println(

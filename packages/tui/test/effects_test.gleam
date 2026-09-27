@@ -16,6 +16,9 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/session_channel
+import session_view/snapshot
+import session_view/transcript_line
 import tui
 import tui/agents
 import tui/attachment
@@ -26,8 +29,7 @@ import tui/job
 import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
-import tui/session_channel
-import tui/snapshot
+import tui/terminal_lane
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -145,8 +147,8 @@ fn drag_and_release(
 ) -> #(tui_model.Model, List(Effect)) {
   let model =
     tui_model.Model(..quiet_model(), clipboard:, transcript: [
-      tui_model.Line(tui_model.System, "alpha beta"),
-      tui_model.Line(tui_model.System, "gamma delta"),
+      transcript_line.Line(transcript_line.System, "alpha beta"),
+      transcript_line.Line(transcript_line.System, "gamma delta"),
     ])
 
   // The transcript's text starts at row 2, column 1 on a 60x12 screen: one
@@ -190,7 +192,7 @@ pub fn a_closed_lane_queues_nothing_after_its_close_test() {
   assert updates == [] as "retiring a closed lane reports nothing"
 }
 
-fn output_kind(output: session_channel.Out) -> String {
+fn output_kind(output: terminal_lane.Output) -> String {
   case output {
     session_channel.Transmit(..) -> "transmit"
     session_channel.Shut(..) -> "shut"

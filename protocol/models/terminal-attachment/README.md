@@ -75,8 +75,8 @@ modelled (see below).
 
 | Event | Code |
 |---|---|
-| `eWrite`, `eShut` | `session_channel.Transmit` / `Shut` performed by `session_channel.perform`; also the close inside `attachment.cancel` |
-| `eFrame` | a `connection.Message` delivered to a frames inbox, later read by the host and filed into its `buffered.Inbox` by admission (`runtime.receive`, `tui/admission`) |
+| `eWrite`, `eShut` | `session_channel.Transmit` / `Shut` performed by `terminal_lane.perform`; also the close inside `attachment.cancel` |
+| `eFrame` | a `connection_event.Message` delivered to a frames inbox, later read by the host and filed into its `buffered.Inbox` by admission (`runtime.receive`, `tui/admission`) |
 | `ePrepared`, `eOutcome`, `eAck`, `eCancel` | `job.AttachArrived` with `job.Published(prepared)` and with `job.Settled` (the weft relay's `AllDelivered` or a failure), both tagged with the job's key; `attachment.Acknowledge`; `weft.cancel`, which `job_runner.cancel` sends when the runtime performs `effect.CancelJob` |
 | `eWorkerClose`, `eGuardianKill` | the worker's own `connection.close` when its acknowledgement wait times out; the guardian killing a socket after its startup worker exits abnormally |
 | `eOpOpen`, `eOpSubmit`, `eOpEscape`, `eOpQuit` | `session_control.begin_open`, Enter through `outbound.send_frame`, Escape through `inbound.cancel_pending`, Ctrl-C through `submit.quit` |

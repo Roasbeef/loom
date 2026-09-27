@@ -18,16 +18,16 @@ import etui/widgets/textarea as text_area
 import gleam/bool
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import tui/command
-import tui/context_view
+import session_view/command
+import session_view/context_view
+import session_view/session_channel
+import session_view/worktree_view
 import tui/model.{
   type Model, Attached, ComposerSubmission, ConfirmGoal, Disconnected,
   HoldGoalReport, Model, OverlaySubmission, Preview, PromptNext, Replaying,
   ReportGoal,
 } as tui_model
 import tui/queue_editor
-import tui/session_channel
-import tui/worktree_view
 
 /// Sets the notice shown while a submission waits for the channel.
 @internal

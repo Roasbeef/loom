@@ -12,9 +12,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import machine/operation
+import session_view/live_jobs
+import session_view/text_hygiene
 import tui/completion_summary
-import tui/live_jobs
-import tui/text_hygiene
 import tui/theme
 
 /// The independently scrollable summary section.

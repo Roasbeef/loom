@@ -10,7 +10,7 @@ and this note should say so at the top.
 The pieces this note leans on: etui's `Backend(state)` is a record of
 five functions, so a scripted backend replaces the terminal without the
 TUI knowing; `tui.update` and `tui.render_frame` are pure; server traffic
-enters the model through one `Subject(connection.Message)` inbox that
+enters the model through one `Subject(connection_event.Message)` inbox that
 `update_tick` drains; and the conformance simulator
 (`packages/conformance/src/conformance/simulation/`) already turns one
 integer into a script plus a fault schedule, runs the real supervision
@@ -156,7 +156,7 @@ catches a regression without the soak.
 
 ## What Part A cannot see
 
-Part A feeds the model `connection.Message`s it minted itself, so it
+Part A feeds the model `connection_event.Message`s it minted itself, so it
 proves the TUI is consistent with *what it was told*, never that the
 server tells it the right things, that the wire decoders agree with the
 wire encoders, or that a command the TUI sends actually does what the

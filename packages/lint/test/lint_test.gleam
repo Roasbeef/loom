@@ -1972,8 +1972,10 @@ fn wide(a, b, c, d, e, f, g, h) { #(a, b, c, d, e, f, g, h) }",
 
 /// The table is what the rule claims to cover; a test that did not enumerate
 /// it would pass just as well against an empty one.
-pub fn the_portable_table_names_the_three_test() {
-  should.equal(policy.portable_packages(), ["core", "machine", "prompt"])
+pub fn the_portable_table_names_the_four_test() {
+  should.equal(policy.portable_packages(), [
+    "core", "machine", "prompt", "session_view",
+  ])
 }
 
 pub fn the_beam_only_table_names_both_test() {

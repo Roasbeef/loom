@@ -9,18 +9,19 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel
+import session_view/worktree_view
 import tui
 import tui/connection
 import tui/frame
 import tui/inbound
 import tui/layout
 import tui/model as tui_model
-import tui/protocol
 import tui/render
-import tui/session_channel
 import tui/submit
 import tui/workspace
-import tui/worktree_view
 import tui_test/pushed
 
 fn file(path, patch) {
@@ -542,7 +543,7 @@ pub fn live_jobs_is_a_read_and_its_correlated_roster_keeps_channel_ready_test() 
 
 fn apply_incoming(
   model: tui_model.Model,
-  message: connection.Message,
+  message: connection_event.Message,
 ) -> tui_model.Model {
   let assert Some(channel) = model.channel as "fixture has a channel"
   let #(channel, updates) = session_channel.receive(channel, message, now: 0)

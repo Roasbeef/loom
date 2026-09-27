@@ -18,10 +18,10 @@ import machine/strand
 import runtime/effects
 import runtime/hooks
 import session/session
+import session_view/context_view as terminal
 import storage/storage
 import support/tool_registry
 import tools/tool
-import tui/context_view as terminal
 
 fn user(text) {
   message.UserMessage([message.UserText(text, None)], 0, None)

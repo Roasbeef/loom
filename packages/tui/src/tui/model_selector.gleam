@@ -14,8 +14,8 @@ import etui/widgets/paragraph
 import gleam/int
 import gleam/list
 import gleam/string
-import tui/protocol.{type ModelInfo, ModelInfo}
-import tui/text_hygiene
+import session_view/protocol.{type ModelInfo, ModelInfo}
+import session_view/text_hygiene
 import tui/theme
 
 /// The selector's local interaction state.

@@ -24,15 +24,17 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui/attempt
+import session_view/attempt
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel as channel
+import session_view/snapshot
+import session_view/snapshot_view
 import tui/buffered.{type Inbox}
 import tui/connection
 import tui/job
-import tui/protocol
 import tui/recording
-import tui/session_channel as channel
-import tui/snapshot
-import tui/snapshot_view
+import tui/terminal_lane
 import tui/workspace
 import weft
 
@@ -57,7 +59,7 @@ const frame_batch = 40
 
 type Candidate {
   Candidate(
-    channel: channel.Channel,
+    channel: terminal_lane.Lane,
     acknowledgement: Subject(Nil),
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
     workspace: workspace.Context,
@@ -76,10 +78,10 @@ type Stage {
   Resolving
 
   // A `Prepared` is admitted; the next poll starts the lane on its socket.
-  Published(prepared: job.Prepared, frames: Inbox(connection.Message))
+  Published(prepared: job.Prepared, frames: Inbox(connection_event.Message))
 
   // The candidate lane exists and captures its initial cut.
-  Connecting(candidate: Candidate, frames: Inbox(connection.Message))
+  Connecting(candidate: Candidate, frames: Inbox(connection_event.Message))
 }
 
 /// One provisional lifetime, named by its job key.
@@ -96,12 +98,12 @@ pub opaque type Status {
 pub type Outcome {
   /// Initial capture and original worker completion have both been observed.
   Adopted(
-    channel: channel.Channel,
+    channel: terminal_lane.Lane,
     cut: snapshot.Captured,
     view: snapshot_view.View,
     /// The frames inbox together with the frames already received from it
     /// and not reduced, which are older than anything still in its mailbox.
-    inbox: Inbox(connection.Message),
+    inbox: Inbox(connection_event.Message),
     workspace: workspace.Context,
     /// Display name from the authorized catalogue, adopted with this identity.
     session_name: String,
@@ -319,7 +321,7 @@ pub fn poll(
 @internal
 pub fn frame_room(
   status: Status,
-) -> Result(#(Subject(connection.Message), Int), Nil) {
+) -> Result(#(Subject(connection_event.Message), Int), Nil) {
   case status {
     Opening(_, Published(_, frames))
     | Opening(_, Connecting(Candidate(captured: None, ..), frames)) ->
@@ -346,8 +348,8 @@ pub fn frame_room(
 @internal
 pub fn push_frame(
   status: Status,
-  source: Subject(connection.Message),
-  message: connection.Message,
+  source: Subject(connection_event.Message),
+  message: connection_event.Message,
 ) -> Result(Status, Nil) {
   case status {
     Opening(run, Published(prepared, frames)) ->
@@ -386,7 +388,7 @@ pub fn push_frame(
 pub fn select(
   status: Status,
   selector: Selector(a),
-  tag: fn(connection.Message) -> a,
+  tag: fn(connection_event.Message) -> a,
 ) -> Selector(a) {
   case status {
     Idle | Opening(_, Resolving) -> selector
@@ -414,7 +416,7 @@ pub fn select(
 /// ```
 pub fn accept(
   status: Status,
-  message: connection.Message,
+  message: connection_event.Message,
   now now: Int,
 ) -> #(Status, Option(Outcome), List(Out)) {
   case status {
@@ -536,10 +538,10 @@ fn progress(stage: Stage, now: Int) -> Result(Stage, Broken) {
 // which the adoption hands over whole.
 fn drain(
   candidate: Candidate,
-  frames: Inbox(connection.Message),
+  frames: Inbox(connection_event.Message),
   remaining: Int,
   now: Int,
-) -> Result(#(Candidate, Inbox(connection.Message)), Broken) {
+) -> Result(#(Candidate, Inbox(connection_event.Message)), Broken) {
   case remaining <= 0, candidate.captured {
     True, _ | _, Some(_) -> Ok(#(candidate, frames))
     False, None ->
@@ -555,7 +557,7 @@ fn drain(
 
 fn receive_frame(
   candidate: Candidate,
-  message: connection.Message,
+  message: connection_event.Message,
   now: Int,
 ) -> Result(Candidate, Broken) {
   let #(next, updates) = channel.receive(candidate.channel, message, now:)
@@ -688,7 +690,7 @@ fn adopt(
 // runtime performs it, after the job itself is cancelled by its key.
 fn failed(status, reason) -> #(Status, Option(Outcome), List(Out)) {
   let noted = case status {
-    Opening(Run(trace: Some(recording.Trace(recorder:, id:)), ..), _) -> [
+    Opening(Run(trace: Some(attempt.Trace(recorder:, id:)), ..), _) -> [
       FromChannel(channel.Note(recorder, attempt.Failed(id, reason))),
     ]
     Idle | Opening(Run(trace: None, ..), _) -> []
@@ -759,7 +761,7 @@ fn preceded_by(
 pub type Out {
   /// An output of the candidate's channel, or the attempt's failure note,
   /// which is recorded as one of that lane's notes.
-  FromChannel(channel.Out)
+  FromChannel(terminal_lane.Output)
 
   /// Releases the worker waiting on its acknowledgement subject.
   Acknowledge(to: Subject(Nil))
@@ -782,7 +784,7 @@ pub type Out {
 /// ```
 pub fn perform(output: Out) -> Nil {
   case output {
-    FromChannel(output) -> channel.perform(output)
+    FromChannel(output) -> terminal_lane.perform(output)
     Acknowledge(to) -> process.send(to, Nil)
     Abandon(status) -> cancel(status)
   }
@@ -813,7 +815,7 @@ pub fn cancel(status: Status) -> Nil {
     Opening(_, Connecting(candidate, frames)) -> {
       channel.close(candidate.channel)
       |> channel.take_outputs
-      |> fn(closed) { list.each(closed.1, channel.perform) }
+      |> fn(closed) { list.each(closed.1, terminal_lane.perform) }
       buffered.discard(buffered.sender(frames))
     }
   }

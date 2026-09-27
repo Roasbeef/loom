@@ -51,6 +51,7 @@ import provider/secret
 import runtime/api
 import runtime/effects
 import session/session
+import session_view/connection_event
 import simplifile
 import storage/sqlite
 import support/addresses
@@ -469,7 +470,7 @@ pub fn a_socket_crash_does_not_kill_its_terminal_test() {
   let assert Ok(owner) = connection.owner(socket)
     as "the connected socket must have an owner"
   process.kill(owner)
-  let assert Ok(connection.Closed(_)) = process.receive(inbox, 1000)
+  let assert Ok(connection_event.Closed(_)) = process.receive(inbox, 1000)
     as "a socket crash must become a close notice in the surviving terminal"
   assert connection.adopt(socket) != Ok(Nil)
 }
@@ -555,12 +556,12 @@ fn socket_address(served: server.Server) -> String {
 
 fn open_test_socket(
   served: server.Server,
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
 ) -> connection.Connection {
   let assert Ok(socket) =
     connection.connect(socket_address(served), served.token, inbox)
     as "the fixture socket must authenticate"
-  let assert Ok(connection.Connected) = process.receive(inbox, 1000)
+  let assert Ok(connection_event.Connected) = process.receive(inbox, 1000)
     as "the fixture socket must complete its handshake"
   socket
 }

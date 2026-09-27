@@ -14,7 +14,7 @@
 //// each event does lives in the modules under `tui/`, which form a strict
 //// import order because Gleam forbids cycles and none of them may import
 //// this one: `tui/model` holds the `Model` record and its types;
-//// `tui/transcript_lines` builds transcript lines; `tui/layout` computes
+//// `session_view/transcript_lines` builds transcript lines; `tui/layout` computes
 //// screen geometry and `tui/render` paints it; `tui/outbound` sends command
 //// frames; `tui/surfaces` services the side-surface reads; `tui/inbound`
 //// applies channel traffic; `tui/session_control` runs daemon control
@@ -47,27 +47,34 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/endpoint
+import session_view/advisor_history
+import session_view/attempt
+import session_view/block_summary
+import session_view/connection_event
+import session_view/context_view
+import session_view/history_view
+import session_view/session_channel
+import session_view/text_hygiene
+import session_view/transcript_line.{
+  Assistant, Line, Reasoning, System, ToolResult,
+}
+import session_view/worktree_view
 import simplifile
 import tui/admission
-import tui/advisor_history
 import tui/agent_strip
 import tui/agents
 import tui/appearance
 import tui/attachment
-import tui/attempt
 import tui/attempt_replay
-import tui/block_summary
 import tui/bootstrap
 import tui/buffered
 import tui/completion_summary
 import tui/connection
-import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/frame
-import tui/history_view
 import tui/inbound
 import tui/interaction
 import tui/internal/ffi_terminal
@@ -75,9 +82,9 @@ import tui/job
 import tui/job_runner
 import tui/layout
 import tui/model.{
-  type Model, Assistant, DiffAutomatic, Disconnected, HoldGoalReport, Line,
-  Model, Newer, NoClipboard, NoOverlay, Older, Preview, PromptNext, Reasoning,
-  ReconnectIdle, Replaying, System, TerminalClipboard, ToolResult,
+  type Model, DiffAutomatic, Disconnected, HoldGoalReport, Model, Newer,
+  NoClipboard, NoOverlay, Older, Preview, PromptNext, ReconnectIdle, Replaying,
+  TerminalClipboard,
 } as tui_model
 import tui/msg
 import tui/note_panel
@@ -87,19 +94,16 @@ import tui/queue_editor
 import tui/recording
 import tui/render
 import tui/runtime
-import tui/session_channel
 import tui/session_control
 import tui/session_table
 import tui/summary_panel
 import tui/surfaces
-import tui/text_hygiene
 import tui/tick
 import tui/update
 import tui/update/download
 import tui/update/options as update_options
 import tui/virtual_backend
 import tui/workspace
-import tui/worktree_view
 
 type Launch {
   // Build reporting reads launcher metadata without opening a terminal or daemon.
@@ -107,6 +111,10 @@ type Launch {
 
   Demo
   Local(bootstrap.Options, selected: String)
+
+  // `loom --ui --session <id>` prints a link that opens the session's web
+  // view (protocol-change/051). It installs no terminal state.
+  View(options: bootstrap.Options, session: String)
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
@@ -218,6 +226,7 @@ pub fn main() {
         ["ext", ..]
         | ["replay", ..]
         | ["sessions", ..]
+        | ["--ui", ..]
         | ["update", ..]
         | ["version", ..]
         | ["--version", ..] -> #("", raw)
@@ -233,6 +242,7 @@ pub fn main() {
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
         Sessions(options:, command:) -> run_sessions(options, command)
+        View(options:, session:) -> run_view(options, session)
         Invalid(reason) -> rejected_launch(reason)
         Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
       }
@@ -406,7 +416,7 @@ fn flag_or_empty(arguments: List(String), flag: String) -> String {
 /// ```
 @internal
 pub fn new_model(
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
   project: workspace.Context,
 ) -> Model {
   new_model_with_clock(inbox, project, host_bootstrap.monotonic_time_ms)
@@ -430,7 +440,7 @@ pub fn new_model(
 /// ```
 @internal
 pub fn new_model_with_clock(
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
   project: workspace.Context,
   monotonic_time_ms: fn() -> Int,
 ) -> Model {
@@ -623,8 +633,13 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // recorded.
   let launched = case launch {
     // Unreachable: `main` answers these before it builds a model.
-    Version | Forward(..) | Update(..) | Replay(..) | Sessions(..) | Demo ->
-      base
+    Version
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | Sessions(..)
+    | View(..)
+    | Demo -> base
     Local(options, selected) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a
@@ -777,6 +792,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
+    ["--ui", ..rest] -> parse_view(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
     _ ->
       case
@@ -850,6 +866,116 @@ fn sessions_usage() -> String {
 // length of the command. Nothing is retained: the connection closes before
 // the exit status is chosen, so a refusal and a success leave the daemon in
 // the same state as far as this launcher is concerned.
+// `--ui` is followed by `--session <id>` and the shared local options.
+fn parse_view(arguments: List(String)) -> Launch {
+  case session_control.flag_value(arguments, "--session") {
+    Error(_) -> Invalid("loom --ui needs --session <id>\n" <> launch_usage())
+    Ok(session) ->
+      case
+        parse_local_options(
+          without_flag(arguments, "--session"),
+          default_bootstrap_options(),
+        )
+      {
+        Ok(options) -> View(options:, session:)
+        Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
+      }
+  }
+}
+
+fn without_flag(arguments: List(String), flag: String) -> List(String) {
+  case arguments {
+    [] -> []
+    [name, _value, ..rest] if name == flag -> without_flag(rest, flag)
+    [name, ..rest] -> [name, ..without_flag(rest, flag)]
+  }
+}
+
+// Resolves the daemon (starting it with `--ui` when none runs), refuses a
+// running daemon that does not serve the view, opens the session if it is
+// not resident, and prints the link its `ui.link` returns. It never stops
+// or relaunches a running daemon: other people's terminals may be on it.
+fn run_view(options: bootstrap.Options, session: String) -> Nil {
+  let outcome = {
+    use connected <- result.try(bootstrap.resolve_viewing_daemon(
+      options,
+      process.self(),
+      90_000,
+    ))
+    let control = connected.control
+    let linked = {
+      use Nil <- result.try(view_served(daemon.hello(control).view))
+      use origin <- result.try(web_origin(connected.record))
+      use host <- result.try(view_host(
+        connected.record,
+        connected.paths.token,
+        control,
+      ))
+      use _target <- result.try(daemon_selection.open(host, session))
+      use reply <- result.try(
+        daemon.request(control, control_protocol.UiLink(session), 5000)
+        |> result.map_error(daemon_selection.failure),
+      )
+      case reply {
+        control_protocol.UiLinkReply(path:, ..) -> Ok(origin <> path)
+        _other -> Error("ui.link returned an unexpected control reply")
+      }
+    }
+    daemon.close(control)
+    linked
+  }
+  case outcome {
+    Ok(link) -> io.println(link)
+    Error(reason) -> {
+      io.println_error("loom --ui: " <> reason)
+      ffi_terminal.halt(1)
+      Nil
+    }
+  }
+}
+
+/// Whether a running daemon serves the web view, and what to tell the
+/// operator when it does not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert view_served(control_protocol.WebViewAt("/ui")) == Ok(Nil)
+/// ```
+@internal
+pub fn view_served(view: control_protocol.WebView) -> Result(Nil, String) {
+  case view {
+    control_protocol.WebViewAt(_) -> Ok(Nil)
+    control_protocol.NoWebView ->
+      Error(
+        "the running daemon was started without --ui. Stop it and run "
+        <> "loom --ui again to start one that serves the web view. It was "
+        <> "left running because other terminals may be attached to it.",
+      )
+  }
+}
+
+// The page's origin: the listener's loopback address over http.
+fn web_origin(record: endpoint.Endpoint) -> Result(String, String) {
+  case record {
+    endpoint.Ready(host: "::1", port:, ..) ->
+      Ok("http://[::1]:" <> int.to_string(port))
+    endpoint.Ready(host:, port:, ..) ->
+      Ok("http://" <> host <> ":" <> int.to_string(port))
+    endpoint.Starting(..) -> Error("the daemon has not published its address")
+  }
+}
+
+fn view_host(record: endpoint.Endpoint, token_file: String, control) {
+  use address <- result.try(endpoint.address(record))
+  use bytes <- result.try(host_bootstrap.read_private_bounded(token_file, 65))
+  use token <- result.try(
+    bit_array.to_string(bytes)
+    |> result.replace_error("invalid owner credential encoding"),
+  )
+  daemon_selection.host(control, address, string.trim(token))
+}
+
 fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
   case sessions_host(options) {
     Error(reason) -> sessions_failed(reason)
@@ -1022,6 +1148,7 @@ fn launch_usage() -> String {
   <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"
+  <> "  --ui --session <id> Print a link to the session's read-only web view.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
@@ -1287,7 +1414,7 @@ fn frame_separator(index: Int) -> String {
 @internal
 pub fn connect_remote(
   base: Model,
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
   address: String,
   session: String,
   token: String,

@@ -8,7 +8,7 @@
 //// problem — it asks a human to authorize a command, so a payload that can
 //// repaint the compact panel can forge the thing being consented to.
 ////
-//// `tui/text_hygiene` and the escaped literal in `tui/approval` exist to
+//// `session_view/text_hygiene` and the escaped literal in `session_view/approval` exist to
 //// prevent that, and this module is the adversary that holds them to it.
 //// Every check drives the shipped loop under the virtual backend and reads
 //// the finished buffer back as characters, because an intermediate string
@@ -36,9 +36,10 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/approval
+import session_view/connection_event
 import tui
 import tui/agents
-import tui/approval
 import tui/approval_panel
 import tui/buffered
 import tui/connection
@@ -302,7 +303,7 @@ fn is_control(code: Int) -> Bool {
 }
 
 fn deliver(payload: String) -> virtual_backend.Step {
-  virtual_backend.Deliver(message: connection.Incoming(payload))
+  virtual_backend.Deliver(message: connection_event.Incoming(payload))
 }
 
 // One scripted run at a fixed screen, read back as the rows of the last
@@ -330,7 +331,7 @@ fn last_rows(
 
 // The demo scaffolding removed, so a frame shows only what this module put
 // there and a stray control character can only have come from the payload.
-fn quiet_model(inbox: Subject(connection.Message)) -> tui_model.Model {
+fn quiet_model(inbox: Subject(connection_event.Message)) -> tui_model.Model {
   tui_model.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],

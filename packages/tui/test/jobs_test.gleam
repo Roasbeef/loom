@@ -15,9 +15,12 @@ import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/attempt
+import session_view/session_channel
+import session_view/snapshot
+import session_view/transcript_line
 import tui
 import tui/attachment
-import tui/attempt
 import tui/buffered
 import tui/connection
 import tui/daemon/protocol as control_protocol
@@ -28,10 +31,8 @@ import tui/job
 import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
-import tui/session_channel
 import tui/session_control
 import tui/session_selector
-import tui/snapshot
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -275,7 +276,8 @@ pub fn a_tick_drains_the_jobs_in_their_fixed_order_test() {
   let failures =
     list.filter_map(ticked.transcript, fn(line) {
       case line {
-        tui_model.Line(speaker: tui_model.Failure, text:) -> Ok(text)
+        transcript_line.Line(speaker: transcript_line.Failure, text:) ->
+          Ok(text)
         _ -> Error(Nil)
       }
     })

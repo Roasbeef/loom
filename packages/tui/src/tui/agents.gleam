@@ -17,9 +17,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/protocol.{type Strand}
+import session_view/text_hygiene
 import tui/agent_view.{type Row}
-import tui/protocol.{type Strand}
-import tui/text_hygiene
 import tui/theme
 
 /// Inspection never owns the composer's recipient or draft.

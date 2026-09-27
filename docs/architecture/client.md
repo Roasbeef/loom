@@ -1375,7 +1375,7 @@ or `/healthz`.
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
 | `packages/tui/src/tui.gleam` | Entry points, launch parsing, and the event dispatch (`update`, `apply_input`, `settle_update`). |
 | `packages/tui/src/tui/model.gleam` | The `Model` record, the types it names, and the helpers every reducer shares. |
-| `packages/tui/src/tui/transcript_lines.gleam`, `render.gleam`, `layout.gleam`, `projection.gleam` | Transcript line construction, frame painting, screen geometry, and the cached transcript projection. |
+| `packages/session_view/src/session_view/transcript_lines.gleam`, `render.gleam`, `layout.gleam`, `projection.gleam` | Transcript line construction, frame painting, screen geometry, and the cached transcript projection. |
 | `packages/tui/src/tui/inbound.gleam`, `outbound.gleam`, `surfaces.gleam`, `session_control.gleam` | Channel traffic in and out, side-surface reads, and daemon control requests. |
 | `packages/tui/src/tui/interaction.gleam`, `submit.gleam`, `tick.gleam` | Key, paste and mouse handling, composer submission, and the periodic drain. |
 | `packages/tui/src/tui/agent_view.gleam`, `agents.gleam` | Captured task/status projection and identity-based agent inspection. |
@@ -1391,9 +1391,9 @@ or `/healthz`.
 | `packages/tui/src/tui/bootstrap.gleam` | The default bootstrap forwarding seam. |
 | `packages/tui/src/tui_ffi.erl` | Terminal-specific OS integration; shared bootstrap primitives live in the host package. |
 | `packages/tui/src/tui/queue_editor.gleam` | Complete queued drafts, revisions, namespace identity, and uncertain-save state. |
-| `packages/tui/src/tui/worktree_view.gleam` | Validated worktree boards, request correlation, file selection, and refresh state. |
+| `packages/session_view/src/session_view/worktree_view.gleam` | Validated worktree boards, request correlation, file selection, and refresh state. |
 | `packages/tui/src/tui/completion_summary.gleam`, `live_jobs.gleam` | Captured operation evidence and separately timestamped current job rosters. |
-| `packages/tui/src/tui/protocol.gleam` | Total event decoding and outbound command encoding. |
+| `packages/session_view/src/session_view/protocol.gleam` | Total event decoding and outbound command encoding. |
 
 Each unqualified Gleam path is relative to its package's source root;
 `client/gateway.gleam` is `packages/client/src/client/gateway.gleam`.

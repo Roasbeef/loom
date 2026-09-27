@@ -13,6 +13,8 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
+import client/daemon/ui_sessions
+import client/daemon/ui_socket
 import client/host
 import client/internal/ffi_os
 import client/peer_mail
@@ -54,7 +56,18 @@ pub type Config {
     owner_display_name: String,
     /// Helper/configuration/enforcement flags understood by serve's resolver.
     session_defaults: List(String),
+    /// Whether the listener serves the web view (`--ui`).
+    view: WebView,
   )
+}
+
+/// Whether the daemon serves the web view under `/ui` (protocol-change/051).
+pub type WebView {
+  /// No `/ui` route, no `hello` field and no `ui.link`: the default.
+  ViewOff
+
+  /// `loomd --ui`: the listener serves the view.
+  ViewOn
 }
 
 /// A ready root and its original public listener, with no per-session token.
@@ -202,7 +215,7 @@ fn acquire_launch_lock(paths: endpoint.Paths) {
 /// ```
 @internal
 pub fn parse(arguments: List(String)) -> Result(Config, String) {
-  let initial = Config("", "127.0.0.1", 0, 8, "Owner", [])
+  let initial = Config("", "127.0.0.1", 0, 8, "Owner", [], ViewOff)
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
     "" ->
@@ -223,6 +236,7 @@ fn parse_loop(
     [] -> Ok(config)
     ["--state-dir", value, ..rest] ->
       parse_loop(rest, Config(..config, state_root: value))
+    ["--ui", ..rest] -> parse_loop(rest, Config(..config, view: ViewOn))
     ["--owner-name", value, ..rest] if value != "" ->
       parse_loop(rest, Config(..config, owner_display_name: value))
     ["--capacity", value, ..rest] -> {
@@ -555,6 +569,25 @@ pub fn listen_with_peers(
     Response(mist.ResponseData),
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
 ) -> Result(Serving(instance), String) {
+  listen_serving(config, daemon, upgrade, peer_endpoint, None)
+}
+
+/// Starts the daemon listener, serving the web view when `ui` is present.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.listen_serving(config, daemon, upgrade, peers, Some(ui))
+/// ```
+@internal
+pub fn listen_serving(
+  config: Config,
+  daemon: root.Root(instance),
+  upgrade: fn(Request(mist.Connection), server.Attachment(instance)) ->
+    Response(mist.ResponseData),
+  peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+  ui: Option(server.Ui(instance)),
+) -> Result(Serving(instance), String) {
   use ready <- result.try(root.ready(daemon, within: 20_000))
   use domain_configuration <- result.try(captured_domain_configuration(
     config.session_defaults,
@@ -572,6 +605,7 @@ pub fn listen_with_peers(
         )
       },
       session_upgrade: upgrade,
+      ui:,
     )
   let builder =
     mist.new(fn(request) { server.handle(routing, request) })
@@ -617,19 +651,23 @@ fn run(
   let signals = process.new_subject()
   host.relay_sigterm(signals, ffi_os.wait_for_sigterm)
   case
-    listen_with_peers(
-      config,
-      daemon,
-      fn(request, attachment) {
-        session_socket.upgrade(
-          daemon,
-          request,
-          attachment,
-          attachment.instance.gateway,
-        )
-      },
-      fn(resident: serve.Resident) { Some(resident.peer) },
-    )
+    web_view(config, daemon)
+    |> result.try(fn(ui) {
+      listen_serving(
+        config,
+        daemon,
+        fn(request, attachment) {
+          session_socket.upgrade(
+            daemon,
+            request,
+            attachment,
+            attachment.instance.gateway,
+          )
+        },
+        fn(resident: serve.Resident) { Some(resident.peer) },
+        ui,
+      )
+    })
     |> result.try(fn(serving) {
       publish_endpoint(config, serving, paths, fence)
       |> result.replace(serving)
@@ -655,10 +693,45 @@ fn run(
         <> serving.ready.state_root
         <> "/owner.token)",
       )
+      case config.view {
+        ViewOn ->
+          io.println(
+            "loomd: web view on; run `loom --ui --session <id>` for a link",
+          )
+        ViewOff -> Nil
+      }
       log.info(logger, "daemon.listening", [
         field.count("port", serving.listener.port),
       ])
       wait(daemon, watch, signals, logger)
+    }
+  }
+}
+
+// The web view's tables and socket, when the daemon was started with `--ui`.
+// The tables' actor is linked to this process, which lives as long as the
+// daemon does.
+fn web_view(
+  config: Config,
+  daemon: root.Root(serve.Resident),
+) -> Result(Option(server.Ui(serve.Resident)), String) {
+  case config.view {
+    ViewOff -> Ok(None)
+    ViewOn -> {
+      use sessions <- result.map(
+        ui_sessions.start(ui_sessions.production(bootstrap.monotonic_time_ms)),
+      )
+      Some(
+        server.Ui(sessions:, upgrade: fn(request, attachment, open) {
+          ui_socket.upgrade(
+            daemon,
+            request,
+            attachment,
+            attachment.instance.gateway,
+            open,
+          )
+        }),
+      )
     }
   }
 }

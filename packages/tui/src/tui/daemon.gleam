@@ -17,6 +17,7 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import host/bootstrap
+import session_view/connection_event
 import tui/connection
 import tui/daemon/protocol
 import weft/state_machine as sm
@@ -94,7 +95,7 @@ type Data {
 }
 
 type Message {
-  Wire(connection.Message)
+  Wire(connection_event.Message)
   Request(
     protocol.Command,
     deadline: Int,
@@ -245,10 +246,10 @@ fn handle(
 ) -> sm.Next(Phase, Data, Message) {
   case message {
     OwnerGone | Close -> finish(phase, data, Disconnected)
-    Wire(connection.Closed(_)) | Wire(connection.NetworkFault(_)) ->
+    Wire(connection_event.Closed(_)) | Wire(connection_event.NetworkFault(_)) ->
       finish(phase, data, Disconnected)
-    Wire(connection.Connected) -> sm.keep(data)
-    Wire(connection.Incoming(text)) -> receive(phase, data, text)
+    Wire(connection_event.Connected) -> sm.keep(data)
+    Wire(connection_event.Incoming(text)) -> receive(phase, data, text)
     Deadline ->
       case phase {
         AwaitHello -> finish(phase, data, HandshakeFailed)
@@ -380,6 +381,7 @@ fn same_epoch(data: Data, reply: protocol.Reply) {
     | protocol.PeersInspectionReply(_), _
     | protocol.PeersMutationReply(_), _
     | protocol.ActivityReply(_), _
+    | protocol.UiLinkReply(..), _
     | protocol.ShutdownReply, _
     -> True
   }

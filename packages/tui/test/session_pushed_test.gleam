@@ -1,6 +1,6 @@
 //// A pushed frame is accepted in every open phase and never owns the wire.
 ////
-//// These fixtures drive `tui/session_channel` through real v2 bodies and the
+//// These fixtures drive `session_view/session_channel` through real v2 bodies and the
 //// credited transfer decoder, so what they prove about a notice — that it
 //// moves a catch-up earlier and changes nothing else — is proved against the
 //// same code path a live socket takes. The trace queues the notes a
@@ -12,26 +12,27 @@ import core/json
 import core/message
 import etui/backend
 import etui/widgets/textarea
+import gleam/bit_array
 import gleam/dict
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import machine/strand
+import session_view/attempt
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/transcript_line
 import tui
-import tui/attempt
 import tui/cache_miss
 import tui/connection
-import tui/protocol
-import tui/recording
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
-import tui/workspace
-
-import gleam/bit_array
 import tui/inbound
 import tui/model as tui_model
+import tui/recording
+import tui/workspace
 
 fn metadata() {
   json.to_string(
@@ -65,7 +66,7 @@ fn metadata() {
 }
 
 fn reply(id, event, body) {
-  connection.Incoming(
+  connection_event.Incoming(
     json.to_string(
       json.Object([
         #("v", json.Int(2)),
@@ -78,7 +79,7 @@ fn reply(id, event, body) {
 }
 
 fn push(fields) {
-  connection.Incoming(
+  connection_event.Incoming(
     json.to_string(json.Object([#("v", json.Int(2)), ..fields])),
   )
 }
@@ -198,7 +199,7 @@ fn feed(channel, messages) {
 // holding the notes of every request that capture issued.
 fn synchronized() {
   let trace =
-    recording.Trace(recording.observed(process.new_subject()), attempt.Id(1))
+    attempt.Trace(recording.observed(process.new_subject()), attempt.Id(1))
   let channel =
     session_channel.replay_traced(
       snapshot.Expected("A", "epoch", "incarnation"),
@@ -523,7 +524,7 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
       inbound.accept_connection_message,
     )
   assert model.streams
-    == [tui_model.Stream("main", "op-1", "", "text", ["lo", "Hel"], 5)]
+    == [transcript_line.Stream("main", "op-1", "", "text", ["lo", "Hel"], 5)]
     as "fragments of one operation accumulate rather than replacing each other"
 
   // The next operation is a different answer, so it starts the region over
@@ -531,7 +532,7 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
   let next =
     inbound.accept_connection_message(model, delta("main", "op-2", "New"))
   assert next.streams
-    == [tui_model.Stream("main", "op-2", "", "text", ["New"], 3)]
+    == [transcript_line.Stream("main", "op-2", "", "text", ["New"], 3)]
 }
 
 pub fn a_notice_the_lane_drops_still_counts_at_the_terminal_test() {

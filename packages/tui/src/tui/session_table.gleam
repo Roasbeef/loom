@@ -18,8 +18,8 @@ import etui/style
 import etui/text
 import gleam/int
 import gleam/list
+import session_view/text_hygiene
 import tui/daemon/protocol as control_protocol
-import tui/text_hygiene
 import tui/theme
 
 // The gap between columns, in cells.

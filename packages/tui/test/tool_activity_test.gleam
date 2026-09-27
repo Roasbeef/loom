@@ -18,16 +18,17 @@ import gleam/string
 import machine/codec as machine_codec
 import machine/operation
 import machine/strand
+import session_view/connection_event
+import session_view/protocol
+import session_view/snapshot_view
+import session_view/tool_activity
 import tui
 import tui/connection
 import tui/frame
 import tui/inbound
 import tui/layout
 import tui/model as tui_model
-import tui/protocol
 import tui/render
-import tui/snapshot_view
-import tui/tool_activity
 import tui/workspace
 import tui_test/gateway
 
@@ -180,7 +181,7 @@ pub fn current_action_comes_from_the_captured_batch_not_an_old_unmatched_call_te
 fn received(model, value) {
   inbound.accept_connection_message(
     model,
-    connection.Incoming(
+    connection_event.Incoming(
       json.to_string(
         json.Object([
           #("v", json.Int(1)),
@@ -259,7 +260,11 @@ fn changes_model(diff) {
     ])
   model()
   |> inbound.accept_connection_message(
-    connection.Incoming(gateway.user_entry("main", "CONVERSATION_MARKER", 1)),
+    connection_event.Incoming(gateway.user_entry(
+      "main",
+      "CONVERSATION_MARKER",
+      1,
+    )),
   )
   |> received(call(2, "edit", "fs_edit", args()))
   |> received(outcome(3, "edit", False, Some(details)))
@@ -330,7 +335,7 @@ pub fn diff_and_conversation_scroll_independently_test() {
     int.range(4, 64, changes_model(long_diff), fn(current, seq) {
       inbound.accept_connection_message(
         current,
-        connection.Incoming(gateway.user_entry(
+        connection_event.Incoming(gateway.user_entry(
           "main",
           "older conversation",
           seq,
@@ -369,7 +374,7 @@ pub fn replacement_history_releases_the_open_diffs_old_layout_test() {
   let #(replaced, drawn) =
     opened
     |> inbound.accept_connection_message(
-      connection.Incoming(gateway.full_snapshot("new")),
+      connection_event.Incoming(gateway.full_snapshot("new")),
     )
     |> painted_buffer(160)
   assert !string.contains(frame.buffer_to_text(drawn), "DISCARDED_DIFF_MARKER")
@@ -501,7 +506,7 @@ pub fn replacement_history_releases_compact_presentation_caches_test() {
   let #(replaced, _) =
     loaded
     |> inbound.accept_connection_message(
-      connection.Incoming(gateway.full_snapshot("replacement")),
+      connection_event.Incoming(gateway.full_snapshot("replacement")),
     )
     |> painted
   assert dict.is_empty(replaced.compact_call_cache)
@@ -561,7 +566,7 @@ pub fn pasted_user_code_preserves_tabs_and_blank_lines_test() {
   let original =
     model()
     |> inbound.accept_connection_message(
-      connection.Incoming(gateway.user_entry("main", source, 1)),
+      connection_event.Incoming(gateway.user_entry("main", source, 1)),
     )
   let #(_, visible) = painted(original)
   assert string.contains(visible, "       if peer == nil {")

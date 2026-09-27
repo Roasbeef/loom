@@ -11,6 +11,11 @@ import etui/widgets/textarea as text_area
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
+import session_view/transcript_line
 import tui
 import tui/bootstrap
 import tui/connection
@@ -18,11 +23,8 @@ import tui/effect
 import tui/inbound
 import tui/job
 import tui/model as tui_model
-import tui/protocol
 import tui/runtime
-import tui/session_channel
 import tui/session_control
-import tui/snapshot
 import tui/workspace
 import weft
 
@@ -118,7 +120,7 @@ pub fn a_failed_reconnect_is_reported_once_and_stays_disconnected_test() {
   assert failed.peer == tui_model.Disconnected
   assert list.any(failed.transcript, fn(line) {
     case line {
-      tui_model.Line(speaker: tui_model.Failure, text:) ->
+      transcript_line.Line(speaker: transcript_line.Failure, text:) ->
         string.contains(text, "reconnect failed")
       _other -> False
     }
@@ -184,7 +186,7 @@ pub fn a_resumed_lane_requires_a_cursor_it_asked_for_test() {
   let expected = snapshot.Expected("s", "epoch", "incarnation")
   let lane = session_channel.replay(expected)
   let marker =
-    connection.Incoming(
+    connection_event.Incoming(
       "{\"v\":2,\"reply_to\":1,\"event\":\"snapshot\",\"body\":{\"mode\":\"resume\",\"next_seq\":40}}",
     )
   let #(closed, updates) = session_channel.receive(lane, marker, now: 0)

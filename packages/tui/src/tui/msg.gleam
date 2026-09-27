@@ -37,9 +37,9 @@ import etui/backend
 import etui/keys
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
-import tui/attempt
-import tui/connection
-import tui/image_drop
+import session_view/attempt
+import session_view/connection_event
+import session_view/pasted_image
 import tui/job
 import tui/recording
 
@@ -71,7 +71,10 @@ pub type Arrival {
   /// adopted inbox's nor the waiting attempt's belongs to a socket the model
   /// no longer reads, and admission drops it rather than let it reach the
   /// adopted lane.
-  Frame(source: Subject(connection.Message), message: connection.Message)
+  Frame(
+    source: Subject(connection_event.Message),
+    message: connection_event.Message,
+  )
 
   /// One recorded attempt event, during a replay.
   Replayed(event: attempt.Event)
@@ -112,7 +115,7 @@ pub type Event {
   /// One bracketed paste, delivered whole, with what reading the path it
   /// names found. The host reads the file before the step; `Ok(None)` is
   /// the answer for text that names no image, which is inserted as text.
-  Pasted(text: String, image: Result(Option(image_drop.Image), String))
+  Pasted(text: String, image: Result(Option(pasted_image.Image), String))
 
   /// The terminal's new size.
   Resized(width: Int, height: Int)

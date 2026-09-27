@@ -87,6 +87,7 @@ fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
           mist.Bytes(bytes_tree.from_string("v2 conversation adapter absent")),
         )
       },
+      ui: None,
     )
   let ports = process.new_subject()
   let assert Ok(listener) =

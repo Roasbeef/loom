@@ -26,11 +26,13 @@ import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import session_view/composer
+import session_view/pasted_image
+import session_view/transcript_line
 import simplifile
 import tui
 import tui/attachment
 import tui/bootstrap
-import tui/composer
 import tui/connection
 import tui/daemon/protocol
 import tui/daemon/selection as daemon_selection
@@ -61,7 +63,8 @@ fn write(path: String, bytes: BitArray) -> Nil {
 fn image_names(model: tui_model.Model) -> List(String) {
   list.filter_map(model.attachments, fn(attachment) {
     case attachment {
-      composer.ImageAttachment(image_drop.Image(filename:, ..)) -> Ok(filename)
+      composer.ImageAttachment(pasted_image.Image(filename:, ..)) ->
+        Ok(filename)
       composer.Attachment(..) -> Error(Nil)
     }
   })
@@ -104,7 +107,7 @@ pub fn the_step_attaches_what_the_read_before_it_found_test() {
 
 pub fn an_oversized_image_reports_the_error_the_step_reported_before_test() {
   let path = "build/s6-oversized.png"
-  let padding = image_drop.max_image_bytes + 1 - bit_array.byte_size(png)
+  let padding = pasted_image.max_image_bytes + 1 - bit_array.byte_size(png)
   write(path, <<png:bits, 0:size(padding * 8)>>)
   let expected = image_drop.load_paste(path)
   let pasted = tui.update(backend.Paste(path), model())
@@ -112,7 +115,7 @@ pub fn an_oversized_image_reports_the_error_the_step_reported_before_test() {
 
   assert expected == Error("dropped image exceeds the 20 MiB limit")
   assert pasted.notice == "dropped image exceeds the 20 MiB limit"
-  let assert Ok(tui_model.Line(tui_model.Failure, reason)) =
+  let assert Ok(transcript_line.Line(transcript_line.Failure, reason)) =
     list.last(pasted.transcript)
     as "the refusal is the transcript's newest line"
   assert reason == "dropped image exceeds the 20 MiB limit"
@@ -151,8 +154,8 @@ fn is_job(requested: effect.Effect) -> Bool {
 fn failures(model: tui_model.Model) -> List(String) {
   list.filter_map(model.transcript, fn(line) {
     case line {
-      tui_model.Line(tui_model.Failure, text) -> Ok(text)
-      tui_model.Line(..) -> Error(Nil)
+      transcript_line.Line(transcript_line.Failure, text) -> Ok(text)
+      transcript_line.Line(..) -> Error(Nil)
     }
   })
 }

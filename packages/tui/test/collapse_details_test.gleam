@@ -27,6 +27,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/connection_event
 import tui
 import tui/agents
 import tui/connection
@@ -202,12 +203,12 @@ fn key(name: String) -> virtual_backend.Step {
 }
 
 fn deliver(payload: String) -> virtual_backend.Step {
-  virtual_backend.Deliver(message: connection.Incoming(payload))
+  virtual_backend.Deliver(message: connection_event.Incoming(payload))
 }
 
 // The demo scaffolding removed, so the pane holds only what this module
 // delivered and a leftover row can only have come from the expanded view.
-fn quiet_model(inbox: Subject(connection.Message)) -> tui_model.Model {
+fn quiet_model(inbox: Subject(connection_event.Message)) -> tui_model.Model {
   tui_model.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],

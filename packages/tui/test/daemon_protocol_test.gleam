@@ -4,7 +4,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import tui/command
+import session_view/command
+import tui
 import tui/daemon/protocol
 
 const hello = "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"epoch-one\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536}}}"
@@ -30,6 +31,7 @@ pub fn every_truncated_hello_is_rejected_test() {
         "owner",
         65_536,
         None,
+        protocol.NoWebView,
       )),
     )
   list.each(
@@ -54,6 +56,7 @@ pub fn a_hello_carries_the_daemons_build_when_it_names_one_test() {
         "owner",
         65_536,
         Some(protocol.Build("0.1.0", "4c266dde")),
+        protocol.NoWebView,
       )),
     )
 
@@ -68,6 +71,7 @@ pub fn a_hello_carries_the_daemons_build_when_it_names_one_test() {
         "owner",
         65_536,
         None,
+        protocol.NoWebView,
       )),
     )
 }
@@ -343,4 +347,32 @@ fn pad(index: Int) -> String {
     True -> "0" <> int.to_string(index)
     False -> int.to_string(index)
   }
+}
+
+// protocol-change/051. A daemon started with `--ui` names the view's route
+// prefix in its hello; one started without it names nothing, and
+// `loom --ui` refuses it with the reason rather than relaunching it.
+pub fn a_hello_names_the_web_view_only_when_it_is_served_test() {
+  assert protocol.decode(
+      "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"e\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536},\"ui\":{\"path\":\"/ui\"}}}",
+    )
+    == Ok(
+      protocol.Greeting(protocol.Hello(
+        protocol.Epoch("e"),
+        "owner",
+        65_536,
+        None,
+        protocol.WebViewAt("/ui"),
+      )),
+    )
+  let assert Error(_) =
+    protocol.decode(
+      "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"e\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536},\"ui\":{}}}",
+    )
+    as "a malformed view field is refused, not ignored"
+
+  assert tui.view_served(protocol.WebViewAt("/ui")) == Ok(Nil)
+  let assert Error(reason) = tui.view_served(protocol.NoWebView)
+    as "a daemon without the view is refused"
+  assert string.contains(reason, "started without --ui")
 }

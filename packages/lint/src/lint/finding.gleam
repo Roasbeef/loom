@@ -51,7 +51,7 @@ pub type Rule {
   BoundedLength
 
   /// R6. `@external`, a BEAM-only import, or a BEAM-only dependency in one
-  /// of the three packages held to the portable subset. What that subset is
+  /// of the packages held to the portable subset. What that subset is
   /// and what rests on it is argued in `lint/portable`.
   PortablePurity
 

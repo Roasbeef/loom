@@ -19,20 +19,20 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import host/bootstrap as host_bootstrap
+import session_view/history_view
+import session_view/session_channel
 import tui/attachment
 import tui/attempt_replay
 import tui/buffered
 import tui/cache_miss
 import tui/effect
 import tui/herdr
-import tui/history_view
 import tui/inbound
 import tui/interaction
 import tui/layout
 import tui/model.{type Model, FrameCache, Model, Replaying} as tui_model
 import tui/pacing
 import tui/render
-import tui/session_channel
 import tui/session_control
 import tui/surfaces
 

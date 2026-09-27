@@ -12,14 +12,16 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
+import session_view/tool_activity
+import session_view/transcript_line
 import tui
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
-import tui/protocol
-import tui/session_channel
-import tui/snapshot
-import tui/tool_activity
 import tui/workspace
 import tui_test/ffi_term
 import tui_test/gateway
@@ -32,7 +34,7 @@ fn model() {
 }
 
 fn received(model, wire) {
-  inbound.accept_connection_message(model, connection.Incoming(wire))
+  inbound.accept_connection_message(model, connection_event.Incoming(wire))
 }
 
 fn checked_layout(model, width) {
@@ -76,7 +78,7 @@ pub fn cached_history_matches_fresh_rows_after_each_event_test() {
   assert list.length(populated.records) == 8
     as "the fixture must admit every durable event before comparing layout"
   assert !list.any(populated.transcript, fn(line) {
-    line.speaker == tui_model.Failure
+    line.speaker == transcript_line.Failure
   })
     as "protocol errors are not a history-rendering workload"
   let narrow = checked_layout(populated, 32)

@@ -19,24 +19,26 @@ import gleam/result
 import gleam/string
 import machine/codec as machine_codec
 import machine/strand
+import session_view/advisor_pending
+import session_view/attempt
+import session_view/composer
+import session_view/connection_event
+import session_view/goal_view
+import session_view/history_view
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
+import session_view/transcript_line
 import tui
-import tui/advisor_pending
 import tui/attachment
-import tui/attempt
 import tui/attempt_replay
 import tui/buffered
-import tui/composer
 import tui/connection
 import tui/frame
-import tui/goal_view
-import tui/history_view
 import tui/inbound
 import tui/interaction
 import tui/model as tui_model
-import tui/protocol
 import tui/recording
-import tui/session_channel
-import tui/snapshot
 import tui/surfaces
 import tui/virtual_backend
 import tui/workspace
@@ -77,7 +79,7 @@ fn metadata_with_peers(peers) {
 }
 
 fn frame(id, event, body) {
-  connection.Incoming(
+  connection_event.Incoming(
     json.to_string(
       json.Object([
         #("v", json.Int(2)),
@@ -307,7 +309,7 @@ pub fn attempt_recording_round_trips_bounded_selectors_and_refuses_mixed_formats
       <> "\n"
       <> recording.encode_line(recording.Moment(
         20,
-        recording.Arrived(connection.Connected),
+        recording.Arrived(connection_event.Connected),
       )),
     )
     as "untagged legacy traffic cannot enter a format-two replay"
@@ -350,7 +352,7 @@ pub fn attempt_replay_failed_selection_and_closed_live_lane_release_buffers_test
   let assert Ok(#(same, [])) =
     attempt_replay.apply(
       closed,
-      attempt.Received(attempt.Id(3), connection.Closed("late close")),
+      attempt.Received(attempt.Id(3), connection_event.Closed("late close")),
     )
     as "late closed-owner mail cannot restore a retired lane"
   assert same == closed
@@ -372,7 +374,7 @@ pub fn attempt_replay_last_unconfirmed_submission_survives_adopting_another_sess
           attempt.Id(1),
           attempt.Request(4, "prompt", attempt.NoSelection),
         ),
-        attempt.Received(attempt.Id(1), connection.Closed("reply lost")),
+        attempt.Received(attempt.Id(1), connection_event.Closed("reply lost")),
         attempt.Closed(attempt.Id(1)),
       ],
       events(2, "B"),
@@ -901,14 +903,18 @@ pub fn unsent_command_waits_for_valid_end_and_never_retries_sent_mutation_test()
     as "no mutation queues behind a sent mutation"
   assert same == sent
   let #(closed, updates) =
-    session_channel.receive(sent, connection.Closed("lost reply"), now: 0)
+    session_channel.receive(sent, connection_event.Closed("lost reply"), now: 0)
   assert updates
     == [
       session_channel.UnknownOutcome("prompt", 8),
       session_channel.Failed("lost reply"),
     ]
   let #(_, repeated) =
-    session_channel.receive(closed, connection.Closed("already closed"), now: 0)
+    session_channel.receive(
+      closed,
+      connection_event.Closed("already closed"),
+      now: 0,
+    )
   assert !list.any(repeated, fn(update) {
     case update {
       session_channel.UnknownOutcome(..) -> True
@@ -937,7 +943,10 @@ pub fn unsent_command_failure_timeout_and_initial_capture_never_claim_unknown_te
       now: 0,
     )
   list.each(
-    [connection.NetworkFault("revoked"), connection.Incoming("invalid capture")],
+    [
+      connection_event.NetworkFault("revoked"),
+      connection_event.Incoming("invalid capture"),
+    ],
     fn(failure) {
       let #(closed, updates) = session_channel.receive(waiting, failure, now: 0)
       let assert [
@@ -1043,7 +1052,10 @@ pub fn unsent_composer_clears_only_on_send_and_overlay_preserves_unrelated_text_
   assert sent.pending_submission == None
   let #(model, _) = waiting_model(tui_model.ComposerSubmission)
   let failed =
-    inbound.accept_connection_message(model, connection.NetworkFault("revoked"))
+    inbound.accept_connection_message(
+      model,
+      connection_event.NetworkFault("revoked"),
+    )
   assert failed.pending_submission == None
   assert textarea.value(failed.input) == "visible draft"
   assert failed.attachments == model.attachments
@@ -1127,7 +1139,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   let notices =
     list.filter(adopted.transcript, fn(line) {
       string.contains(line.text, "target change")
-      && line.speaker == tui_model.System
+      && line.speaker == transcript_line.System
     })
   let assert [notice] = notices as "the unsent draft is reported once"
   assert notice.text == "Not sent: target changed from A; draft retained"
@@ -1250,7 +1262,7 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
   let assert Ok(#(state, first)) =
     attempt_replay.apply(
       state,
-      attempt.Received(attempt.Id(1), connection.Closed("network loss")),
+      attempt.Received(attempt.Id(1), connection_event.Closed("network loss")),
     )
     as "network loss publishes one unknown outcome"
   assert list.any(first, fn(change) {
@@ -1385,7 +1397,7 @@ fn older_page_events(row: entry.Entry, before: Int) {
           id,
           attempt.Request(4, "history", attempt.HistoryRange(0, before)),
         )
-      attempt.Received(id, connection.Incoming(raw)) -> {
+      attempt.Received(id, connection_event.Incoming(raw)) -> {
         let assert Ok(json.Object(fields)) = json.parse(raw)
           as "the fixture contains a protocol envelope"
         let assert Ok(json.Object(body)) = list.key_find(fields, "body")
@@ -1404,7 +1416,7 @@ fn older_page_events(row: entry.Entry, before: Int) {
         }
         attempt.Received(
           id,
-          connection.Incoming(
+          connection_event.Incoming(
             json.to_string(
               json.Object(list.key_set(fields, "body", json.Object(body))),
             ),
@@ -1579,7 +1591,7 @@ pub fn valid_large_history_page_retains_suffix_without_closing_channel_test() {
         let adjusted =
           list.map(chunks, fn(event) {
             case event {
-              attempt.Received(id, connection.Incoming(raw)) -> {
+              attempt.Received(id, connection_event.Incoming(raw)) -> {
                 let assert Ok(json.Object(fields)) = json.parse(raw)
                   as "fixture envelope is valid"
                 let assert Ok(json.Object(body)) = list.key_find(fields, "body")
@@ -1593,7 +1605,7 @@ pub fn valid_large_history_page_retains_suffix_without_closing_channel_test() {
                   |> list.key_set("offset", json.Int(part.2))
                 attempt.Received(
                   id,
-                  connection.Incoming(
+                  connection_event.Incoming(
                     json.to_string(
                       json.Object(list.key_set(
                         fields,

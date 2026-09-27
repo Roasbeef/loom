@@ -33,56 +33,58 @@ import gleam/set
 import gleam/string
 import host/build_identity
 import machine/strand as machine_strand
-import tui/advisor_history
+import session_view/advisor_history
+import session_view/approval
+import session_view/block_summary
+import session_view/command
+import session_view/composer
+import session_view/connection_event
+import session_view/context_view
+import session_view/history_view
+import session_view/protocol.{Strand}
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/stream_identity
+import session_view/todo_board
+import session_view/transcript_line.{
+  type Line, type Stream, type Submission, type ToolTail, Assistant, CacheNotice,
+  HeldPrompt, Interjection, Line, Stream, System, ToolTail, User,
+}
+import session_view/transcript_lines
+import session_view/worktree_view
 import tui/agent_message_panel
 import tui/agent_messages
 import tui/agent_strip
 import tui/agent_view
 import tui/agents
-import tui/approval
 import tui/approval_panel
-import tui/block_summary
 import tui/bootstrap
 import tui/buffered
 import tui/cache_miss
-import tui/command
 import tui/completion_summary
-import tui/composer
-import tui/connection
-import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
-import tui/history_view
 import tui/job
 import tui/layout
 import tui/model.{
-  type Interrupt, type Line, type Model, type Peer, type Reconnect,
-  type StrandWorkspace, type Stream, type Submission, type ToolTail,
-  type UnconfirmedSubmission, AgentInspector, ApprovalInspector, Assistant,
-  Attached, CacheNotice, CacheObservation, DaemonSelector, Disconnected,
-  GoalInspector, HeldPrompt, HoldGoalReport, Interjection, Interrupt, Line,
-  Model, ModelSelector, NoOverlay, PeerLinkManager, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, StrandWorkspace,
-  Stream, System, ToolTail, UnconfirmedSubmission, User,
+  type Interrupt, type Model, type Peer, type Reconnect, type StrandWorkspace,
+  type UnconfirmedSubmission, AgentInspector, ApprovalInspector, Attached,
+  CacheObservation, DaemonSelector, Disconnected, GoalInspector, HoldGoalReport,
+  Interrupt, Model, ModelSelector, NoOverlay, PeerLinkManager, Preview,
+  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying,
+  StrandWorkspace, UnconfirmedSubmission,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
-import tui/protocol.{Strand}
 import tui/queue_editor
 import tui/queue_panel
 import tui/recording
 import tui/render
 import tui/reviewer_status
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
-import tui/stream_identity
 import tui/surfaces
-import tui/todo_panel
-import tui/transcript_lines
-import tui/worktree_view
 
 /// The authenticated build belongs to the retained control host. Projecting
 /// its mismatch on every coherent cut keeps attachment and later captures from
@@ -688,9 +690,9 @@ fn render_cut(
   // A strand whose capture reaches no `todo` call may still have a board
   // in its notes, the usual case after reattaching to a long session, so
   // its first capture asks for one notes read to seed the panel.
-  let boards = todo_panel.remember(model.todo_boards, branch.records)
+  let boards = todo_board.remember(model.todo_boards, branch.records)
   let #(todo_seed, todo_asked) = case
-    todo_panel.needs_seed(boards, model.todo_asked, active)
+    todo_board.needs_seed(boards, model.todo_asked, active)
   {
     True -> #(Some(active), set.insert(model.todo_asked, active))
     False -> #(model.todo_seed, model.todo_asked)
@@ -995,14 +997,14 @@ pub fn drain_connection(model: Model, remaining: Int) -> Model {
 @internal
 pub fn accept_connection_message(
   model: Model,
-  incoming: connection.Message,
+  incoming: connection_event.Message,
 ) -> Model {
   handle_connection_message(model, incoming)
 }
 
 fn handle_connection_message(
   model: Model,
-  incoming: connection.Message,
+  incoming: connection_event.Message,
 ) -> Model {
   case model.channel {
     Some(channel) -> {
@@ -1029,14 +1031,14 @@ fn handle_connection_message(
 
 fn handle_presentation_message(
   model: Model,
-  incoming: connection.Message,
+  incoming: connection_event.Message,
 ) -> Model {
   case incoming {
-    connection.Connected ->
+    connection_event.Connected ->
       Model(..model, notice: "connected")
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
-    connection.Closed(reason) ->
+    connection_event.Closed(reason) ->
       tui_model.append_error(
         Model(
           ..model,
@@ -1048,10 +1050,10 @@ fn handle_presentation_message(
       )
       |> begin_reconnect
       |> tui_model.mark_activity
-    connection.NetworkFault(reason) ->
+    connection_event.NetworkFault(reason) ->
       tui_model.append_error(model, "network: " <> reason)
       |> tui_model.mark_activity
-    connection.Incoming(text) ->
+    connection_event.Incoming(text) ->
       case protocol.decode_event(text) {
         Ok(event) -> apply_event(model, event)
         Error(reason) ->
@@ -1221,7 +1223,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       // asked for it, so the panel is seeded before the notes view decides
       // whether this read is its own.
       let model =
-        Model(..model, todo_boards: todo_panel.seed(model.todo_boards, board))
+        Model(..model, todo_boards: todo_board.seed(model.todo_boards, board))
       case board.strand == surfaces.notes_target(model) {
         True -> {
           let previous = case model.note_board {
@@ -1269,7 +1271,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         Model(
           ..model,
           records: [record, ..model.records],
-          todo_boards: todo_panel.remember(model.todo_boards, [record]),
+          todo_boards: todo_board.remember(model.todo_boards, [record]),
           streams: transcript_lines.clear_streams(model.streams, strand),
           tool_tails: retire_recorded_tail(model.tool_tails, record),
           pending_records: case strand == model.active_strand {
@@ -1418,7 +1420,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       )
 
     // A commit notice and a metadata change say only that the next capture
-    // will differ. `tui/session_channel` acts on them by capturing; there is
+    // will differ. `session_view/session_channel` acts on them by capturing; there is
     // nothing for a renderer to draw from the frame itself.
     protocol.Committed(..) | protocol.MetadataChanged -> model
 

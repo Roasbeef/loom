@@ -40,3 +40,5 @@ number. Neither is renumbered, for the same reason.
   inference separate from Codex authentication.
 - [013](013-tui-effects-as-values.md): the terminal's step returns its effects
   as values, and a runtime performs them (issue #530, phase 1).
+- [014](014-second-runtime.md): one client engine drives two views, the
+  terminal and a web view served by the daemon (issue #530, phase 4).

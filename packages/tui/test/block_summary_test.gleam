@@ -15,17 +15,18 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/block_summary.{Key}
+import session_view/notes_view
+import session_view/protocol
+import session_view/session_channel
+import session_view/transcript_line
+import session_view/transcript_lines
 import tui
-import tui/block_summary.{Key}
 import tui/connection
 import tui/frame
 import tui/inbound
 import tui/model as tui_model
-import tui/notes_view
-import tui/protocol
 import tui/render
-import tui/session_channel
-import tui/transcript_lines
 import tui/workspace
 import tui_test/gateway
 import tui_test/pushed
@@ -49,7 +50,10 @@ pub fn a_short_block_keeps_its_first_line_digest_test() {
   assert transcript_lines.summarizable_blocks(record.entry) == []
   assert transcript_lines.entry_lines(record.entry, False, None, labels)
     == [
-      tui_model.Line(tui_model.ReasoningDigest, "First.  [Ctrl+G to expand]"),
+      transcript_line.Line(
+        transcript_line.ReasoningDigest,
+        "First.  [Ctrl+G to expand]",
+      ),
     ]
 }
 
@@ -70,8 +74,8 @@ pub fn a_long_block_shows_its_label_in_compact_mode_only_test() {
 
   assert transcript_lines.entry_lines(record.entry, False, None, labels)
     == [
-      tui_model.Line(
-        tui_model.SummarizedReasoning,
+      transcript_line.Line(
+        transcript_line.SummarizedReasoning,
         "  [Ctrl+G to expand]\n" <> label,
       ),
     ]
@@ -82,13 +86,13 @@ pub fn a_long_block_shows_its_label_in_compact_mode_only_test() {
       block_summary.new(),
     )
     == [
-      tui_model.Line(
-        tui_model.ReasoningDigest,
+      transcript_line.Line(
+        transcript_line.ReasoningDigest,
         transcript_lines.settled_reasoning_digest(text),
       ),
     ]
   assert transcript_lines.entry_lines(record.entry, True, None, labels)
-    == [tui_model.Line(tui_model.Reasoning, text)]
+    == [transcript_line.Line(transcript_line.Reasoning, text)]
 }
 
 // Unsummarized, the live row is the count and the clock on one row, and
@@ -171,7 +175,7 @@ pub fn an_unsummarized_reasoning_row_is_one_row_test() {
   ]
   list.each([24, 40, 80, 200], fn(width) {
     list.each(rows, fn(text) {
-      let line = tui_model.Line(tui_model.ReasoningDigest, text)
+      let line = transcript_line.Line(transcript_line.ReasoningDigest, text)
       assert list.length(render.render_line(line, width)) == 1
     })
   })
@@ -228,7 +232,14 @@ pub fn the_tick_times_the_live_row_test() {
       summaries: labels,
       generation_started_ms: Some(base.monotonic_time_ms() - 64_000),
       streams: [
-        tui_model.Stream("main", "op-1", "g-1", "thinking", ["a\nb\nc"], 5),
+        transcript_line.Stream(
+          "main",
+          "op-1",
+          "g-1",
+          "thinking",
+          ["a\nb\nc"],
+          5,
+        ),
       ],
     )
     |> tui.update(backend.Tick, _)
@@ -236,7 +247,7 @@ pub fn the_tick_times_the_live_row_test() {
   // The clock is the real one, so the reading is 64 seconds plus however
   // long the test took to reach its tick.
   assert ticked.generation_elapsed_s >= 64
-  let assert [tui_model.Line(tui_model.SummarizedReasoning, block)] =
+  let assert [transcript_line.Line(transcript_line.SummarizedReasoning, block)] =
     transcript_lines.stream_lines(
       ticked.streams,
       "main",
@@ -312,8 +323,8 @@ pub fn long_advice_collapses_to_its_heading_and_label_test() {
       Some("Asks for a rerun."),
     )
     == [
-      tui_model.Line(
-        tui_model.SummarizedAdvice,
+      transcript_line.Line(
+        transcript_line.SummarizedAdvice,
         "Advisor · block delivered (summarized)  [Ctrl+G to expand]\nAsks for a rerun.",
       ),
     ]
@@ -323,8 +334,8 @@ pub fn long_advice_collapses_to_its_heading_and_label_test() {
       None,
     )
     == [
-      tui_model.Line(
-        tui_model.SummarizedAdvice,
+      transcript_line.Line(
+        transcript_line.SummarizedAdvice,
         "Advisor · block delivered  [Ctrl+G to expand]\nRerun the verifier first.",
       ),
     ]
@@ -334,8 +345,8 @@ pub fn long_advice_collapses_to_its_heading_and_label_test() {
       Some("Asks for a rerun."),
     )
     == [
-      tui_model.Line(tui_model.System, "Advisor · block delivered"),
-      tui_model.Line(tui_model.ToolDetail, body),
+      transcript_line.Line(transcript_line.System, "Advisor · block delivered"),
+      transcript_line.Line(transcript_line.ToolDetail, body),
     ]
 
   let short = transcript_lines.Advice("Looks fine.")
@@ -345,14 +356,14 @@ pub fn long_advice_collapses_to_its_heading_and_label_test() {
       Some("unused"),
     )
     == [
-      tui_model.Line(tui_model.System, "Advisor · block delivered"),
-      tui_model.Line(tui_model.ToolDetail, "Looks fine."),
+      transcript_line.Line(transcript_line.System, "Advisor · block delivered"),
+      transcript_line.Line(transcript_line.ToolDetail, "Looks fine."),
     ]
 
   let rows =
     render.render_line(
-      tui_model.Line(
-        tui_model.SummarizedAdvice,
+      transcript_line.Line(
+        transcript_line.SummarizedAdvice,
         "Advisor · block delivered (summarized)  [Ctrl+G to expand]\n"
           <> string.repeat("Asks for a rerun. ", 30),
       ),
@@ -382,8 +393,8 @@ pub fn long_nudges_collapse_with_their_count_test() {
       Some("Asks for three checks."),
     )
     == [
-      tui_model.Line(
-        tui_model.SummarizedAdvice,
+      transcript_line.Line(
+        transcript_line.SummarizedAdvice,
         "Advisor · nudges delivered (10) (summarized)  [Ctrl+G to expand]\nAsks for three checks.",
       ),
     ]

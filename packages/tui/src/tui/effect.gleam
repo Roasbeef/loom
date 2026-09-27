@@ -37,18 +37,19 @@
 //// issue #530.
 
 import gleam/erlang/process.{type Subject}
+import session_view/connection_event
 import tui/attachment
 import tui/connection
 import tui/daemon
 import tui/herdr
 import tui/job
 import tui/recording
-import tui/session_channel
+import tui/terminal_lane
 
 /// One side effect a reducer step decided on.
 pub type Effect {
   /// An output of the adopted session channel: a frame write or a close.
-  Channel(session_channel.Out)
+  Channel(terminal_lane.Output)
 
   /// An output of a provisional attachment attempt.
   Attachment(attachment.Out)
@@ -71,7 +72,7 @@ pub type Effect {
 
   /// Empties an inbox the model has stopped reading, so its queued frames
   /// do not sit in the terminal's mailbox forever.
-  Discard(inbox: Subject(connection.Message))
+  Discard(inbox: Subject(connection_event.Message))
 
   /// Appends one line to a recording: an input the terminal was given, or
   /// a message that arrived with no channel to note it.

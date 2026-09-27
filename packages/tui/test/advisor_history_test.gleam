@@ -8,9 +8,9 @@ import core/message
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
-import tui/advisor_history
-import tui/snapshot
-import tui/snapshot_view
+import session_view/advisor_history
+import session_view/snapshot
+import session_view/snapshot_view
 
 fn id(number: Int) -> ids.EntryId {
   ids.mint_entry(ids.generator(clock.fixed(number), number)).0

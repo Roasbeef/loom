@@ -14,8 +14,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import runtime/escalation
-import tui/approval
-import tui/snapshot_view
+import session_view/approval
+import session_view/snapshot_view
 
 pub fn tui_approval_translates_every_current_grant_without_widening_test() {
   let limits = [

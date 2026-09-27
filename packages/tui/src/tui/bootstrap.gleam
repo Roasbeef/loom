@@ -17,9 +17,10 @@ import gleam/result
 import gleam/string
 import host/bootstrap as host
 import host/endpoint as daemon_endpoint
+import session_view/connection_event
+import session_view/protocol
 import tui/connection
 import tui/daemon/bootstrap as daemon_bootstrap
-import tui/protocol
 import weft/poll
 
 const endpoint_version = 2
@@ -40,7 +41,27 @@ pub fn resolve_daemon(
   owner: process.Pid,
   within_ms: Int,
 ) -> Result(daemon_bootstrap.Connected, String) {
-  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.resolve)
+  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.resolve, [])
+}
+
+/// Resolves the daemon as `resolve_daemon` does, starting it with `--ui`
+/// when none is running, so a daemon this launch starts serves the web view
+/// (protocol-change/051). A daemon that is already running is reused as it
+/// is; whether it serves the view is its `hello`'s to say.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.resolve_viewing_daemon(options, terminal_pid, 30_000)
+/// ```
+pub fn resolve_viewing_daemon(
+  options: Options,
+  owner: process.Pid,
+  within_ms: Int,
+) -> Result(daemon_bootstrap.Connected, String) {
+  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.resolve, [
+    "--ui",
+  ])
 }
 
 /// Reuses an accepting daemon or waits for native retirement before relaunch.
@@ -59,10 +80,16 @@ pub fn reconnect_daemon(
   owner: process.Pid,
   within_ms: Int,
 ) -> Result(daemon_bootstrap.Connected, String) {
-  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.reconnect)
+  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.reconnect, [])
 }
 
-fn resolve_daemon_with(options: Options, owner, within_ms, resolve) {
+fn resolve_daemon_with(
+  options: Options,
+  owner,
+  within_ms,
+  resolve,
+  extra: List(String),
+) {
   use state <- result.try(state_directory(options.state_directory))
   use paths <- result.try(daemon_endpoint.paths(state))
   resolve(
@@ -74,7 +101,8 @@ fn resolve_daemon_with(options: Options, owner, within_ms, resolve) {
       Ok(daemon_bootstrap.Launch(
         server,
         daemon_launch_arguments(paths.root, server, config)
-          |> daemon_profile_arguments,
+          |> daemon_profile_arguments
+          |> list.append(extra),
       ))
     },
     within_ms,
@@ -1187,7 +1215,7 @@ fn probe(endpoint: Endpoint) -> Result(Target, String) {
 }
 
 fn await_snapshot(
-  inbox: process.Subject(connection.Message),
+  inbox: process.Subject(connection_event.Message),
   expected_session: String,
   deadline: Int,
 ) -> Result(Nil, String) {
@@ -1198,11 +1226,12 @@ fn await_snapshot(
   let remaining = int.max(0, deadline - host.monotonic_time_ms())
   case process.receive(inbox, remaining) {
     Error(Nil) -> Error("gateway snapshot timed out")
-    Ok(connection.Connected) ->
+    Ok(connection_event.Connected) ->
       await_snapshot(inbox, expected_session, deadline)
-    Ok(connection.Closed(reason)) -> Error("gateway closed: " <> reason)
-    Ok(connection.NetworkFault(reason)) -> Error("gateway fault: " <> reason)
-    Ok(connection.Incoming(text)) ->
+    Ok(connection_event.Closed(reason)) -> Error("gateway closed: " <> reason)
+    Ok(connection_event.NetworkFault(reason)) ->
+      Error("gateway fault: " <> reason)
+    Ok(connection_event.Incoming(text)) ->
       case protocol.decode_event(text) {
         Ok(protocol.FullSnapshot(session:, ..)) ->
           case session == expected_session {

@@ -16,7 +16,6 @@
 //// sibling first defined them.
 
 import core/entry
-import core/ids
 import core/json
 import core/message
 import core/todo_list
@@ -31,106 +30,63 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import host/build_identity
-import tui/advisor_history
-import tui/advisor_pending
+import session_view/advisor_history
+import session_view/advisor_pending
+import session_view/approval
+import session_view/attempt
+import session_view/block_summary
+import session_view/command
+import session_view/composer
+import session_view/connection_event
+import session_view/context_view
+import session_view/goal_view
+import session_view/history_view
+import session_view/live_jobs
+import session_view/notes_view
+import session_view/protocol.{Strand}
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/tool_activity
+import session_view/transcript_line.{
+  type CacheNotice, type Line, type Stream, type Submission, type ToolTail,
+  Failure, Line, System,
+}
+import session_view/transcript_lines
+import session_view/worktree_view
 import tui/agent_messages
 import tui/agent_strip
 import tui/agent_view
 import tui/agents
 import tui/appearance
-import tui/approval
 import tui/approval_panel
 import tui/attachment
-import tui/attempt
 import tui/attempt_replay
-import tui/block_summary
 import tui/bootstrap
 import tui/buffered
 import tui/cache_miss
-import tui/command
 import tui/completion_summary
-import tui/composer
-import tui/connection
-import tui/context_view
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/focused_goal_panel
-import tui/goal_view
 import tui/herdr
-import tui/history_view
 import tui/job
 import tui/job_runner
-import tui/live_jobs
 import tui/model_selector
 import tui/msg
 import tui/note_panel
-import tui/notes_view
 import tui/pacing
 import tui/peer_links
-import tui/protocol.{Strand}
 import tui/queue_editor
 import tui/recording
 import tui/reviewer_status
 import tui/selection
-import tui/session_channel
 import tui/session_selector
-import tui/snapshot
-import tui/snapshot_view
 import tui/summary_panel
-import tui/tool_activity
+import tui/terminal_lane
 import tui/transcript_anchor
 import tui/workspace
-import tui/worktree_view
 import weft
-
-/// Who a transcript line belongs to, which is the whole of its styling.
-@internal
-pub type Speaker {
-  System
-  User
-  Assistant
-  Reasoning
-
-  /// One reasoning block stood in for by a single literal row.
-  ///
-  /// The digest bypasses the Markdown renderer, so a fence or a list
-  /// marker inside the model's own prose cannot turn the indicator into
-  /// several rows. That is what lets a reasoning block hold one height
-  /// from its first live fragment through to its settle.
-  ReasoningDigest
-
-  /// A collapsed reasoning block that has a summarizer label (protocol
-  /// 050). The text is a header, a newline, and the label: the header row
-  /// names the block as summarized, and the label is drawn beneath it as
-  /// dim secondary text of at most three rows, so the summary is readable
-  /// rather than clipped to what is left of one row.
-  SummarizedReasoning
-
-  /// A collapsed long advice or nudges message: the heading row, a
-  /// newline, then the summarizer's label or the body's opening line, drawn
-  /// the way `SummarizedReasoning` draws its label.
-  SummarizedAdvice
-
-  ToolCall
-  ToolResult
-  ToolDetail
-
-  /// Literal patch content, rendered without interpreting Markdown fences.
-  ToolPatch
-
-  ToolFailure
-  Failure
-
-  /// One blank row, placed by the projection that knows it is needed.
-  ///
-  /// Every other block closes itself with a blank, but the tool family is
-  /// excluded from that so a call's summary can never be split from the
-  /// patch, result or note rows beneath it. The gap between one call and the
-  /// next is therefore nobody's trailing blank, and only a fold that can see
-  /// where one group ends and another begins is in a position to emit it.
-  /// This is the row it emits.
-  Spacer
-}
 
 /// Whether the transcript area is showing captured edits.
 @internal
@@ -151,62 +107,6 @@ pub type DiffVisibility {
 pub type ScrollDirection {
   Older
   Newer
-}
-
-/// One rendered transcript line before markdown and wrapping.
-@internal
-pub type Line {
-  Line(speaker: Speaker, text: String)
-}
-
-/// The undurable fragments of one strand-and-kind generation.
-///
-/// A request owns its text, thinking and tool-call fragments. Operation IDs
-/// alone cannot separate requests around tool batches or retries. An `end`
-/// observation keeps an identity marker so an older captured preview cannot
-/// resurrect a completed answer. When the request names its reserved response
-/// entry, its bounded fragments remain visible until that entry arrives.
-///
-/// `bytes` is what the fragments weigh, carried rather than recomputed: the
-/// budget is checked once per delta and a delta arrives per provider token,
-/// so counting the list each time would make a bounded question cost the
-/// length of the answer.
-@internal
-pub type Stream {
-  Stream(
-    strand: String,
-    operation: String,
-    generation: String,
-    kind: String,
-    fragments: List(String),
-    bytes: Int,
-  )
-}
-
-/// The rolling tail of one output stream of a tool call that is still
-/// running, as the daemon last pushed it (`protocol-change/031`).
-///
-/// It is kept apart from `Stream` because the two grow differently: a
-/// stream is appended to fragment by fragment, while a tail is *replaced*
-/// whole on every frame, keyed by `{strand, operation, step, source_index,
-/// call_id, stream}`. The daemon bounds `text` at a few kilobytes and this terminal keeps one
-/// tail per key, so however long a command runs the region stays the size
-/// of the last frame. It is cleared with the strand's streams — on an
-/// entry landing and on the operation reaching `done` — and a capture
-/// drops it once that call's durable result is visible. A fixed global cap
-/// also bounds tails whose matching capture was missed or evicted.
-@internal
-pub type ToolTail {
-  ToolTail(
-    strand: String,
-    operation: String,
-    step: String,
-    source_index: Int,
-    call_id: String,
-    stream: String,
-    text: String,
-    total_bytes: Int,
-  )
 }
 
 /// The modal surface that owns focus, if any.
@@ -259,30 +159,6 @@ pub type SubmissionMode {
 
   /// Send `steer`, folding the draft into the run that is already going.
   SteerNow
-}
-
-/// One submission this terminal made that the daemon answers with a user
-/// entry of its own.
-///
-/// The list of these is what tells a drained prompt's entry apart from the
-/// entry a steer commits. Both arrive as an ordinary `UserMessage` on the
-/// active strand and neither reply carries an entry id — the gateway rewrites
-/// a steer's entry reply to a bare `mutation_outcome` before it reaches the
-/// wire — so the only discriminator left is the order this terminal issued
-/// them in, which is the order the daemon commits them in: a steer joins the
-/// run that is already open, and a held prompt is drained only once that run
-/// has settled.
-@internal
-pub type Submission {
-  /// A prompt aimed at a busy strand. The daemon holds it and runs it on
-  /// that strand's next turn, so it is drawn under the live tail until the
-  /// entry it stands for commits.
-  HeldPrompt(text: String)
-
-  /// A steer or a follow-up. It is folded into the answer already on screen
-  /// and so draws nothing of its own, but its entry still commits, and that
-  /// entry is not the one a held prompt is waiting for.
-  Interjection
 }
 
 // Interrupt state belongs to the client because the server's abort contract
@@ -405,26 +281,6 @@ pub type FrameCache {
     rendered: #(buffer.Buffer, Result(geometry.Position, Nil)),
     /// Viewport copy metadata for these exact rendered cells.
     selection_gutters: List(#(Int, Int)),
-  )
-}
-
-/// A prompt-cache miss already rendered as its transcript row.
-///
-/// The row belongs inside the transcript rather than at the end of it, so
-/// the notice names the entry it follows. A usage event arrives after the
-/// entry whose request it bills, which is what puts the row under the turn
-/// that missed; naming the entry rather than a position is what survives the
-/// compact projection, which joins a call to a result several entries later
-/// and must not be cut between them.
-@internal
-pub type CacheNotice {
-  CacheNotice(
-    /// The strand whose transcript shows the row.
-    strand: String,
-    /// The last entry that strand held when the row was raised.
-    after_entry: ids.EntryId,
-    /// The operator-facing line, already formatted.
-    text: String,
   )
 }
 
@@ -679,12 +535,12 @@ pub type Model {
     /// The adopted connection's socket traffic, with what the runtime already
     /// received from it for the next step. An adoption replaces the whole
     /// value, so the old socket's held messages leave the model with it.
-    inbox: buffered.Inbox(connection.Message),
+    inbox: buffered.Inbox(connection_event.Message),
     peer: Peer,
     /// One provisional replacement, whose original deadline includes capture.
     candidate: attachment.Status,
     /// Serial credited state for the adopted socket only.
-    channel: Option(session_channel.Channel),
+    channel: Option(terminal_lane.Lane),
     /// Last complete raw cut and its coherent metadata projection.
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
     /// What made the lane ask for the last cut that changed something
@@ -942,7 +798,7 @@ pub fn mark_activity(model: Model) -> Model {
 /// tui_model.hold_channel(model, channel)
 /// ```
 @internal
-pub fn hold_channel(model: Model, channel: session_channel.Channel) -> Model {
+pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
   let #(channel, outputs) = session_channel.take_outputs(channel)
   let outbox =
     list.fold(outputs, model.outbox, fn(outbox, output) {
@@ -1045,7 +901,7 @@ pub fn emit_attachment(model: Model, output: attachment.Out) -> Model {
 /// ## Examples
 ///
 /// ```gleam
-/// tui_model.record(model, recording.Arrived(connection.Connected))
+/// tui_model.record(model, recording.Arrived(connection_event.Connected))
 /// ```
 @internal
 pub fn record(model: Model, event: recording.Recorded) -> Model {
@@ -1304,4 +1160,33 @@ pub fn queue_namespace(model: Model) -> String {
       )
     None -> ""
   }
+}
+
+/// What the transcript's line builders read of this model.
+///
+/// The builders take this record rather than the model, so that they need
+/// nothing of the terminal; this is the one place that knows which model
+/// fields they read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.display_streams(tui_model.presentation(model))
+/// ```
+pub fn presentation(model: Model) -> transcript_lines.Presentation {
+  transcript_lines.Presentation(
+    active_strand: model.active_strand,
+    extent: transcript_lines.details_extent(model.details_expanded),
+    captured: model.captured,
+    records: model.records,
+    streams: model.streams,
+    tool_tails: model.tool_tails,
+    queued: model.queued,
+    awaiting_outcome: model.awaiting_outcome,
+    cache_notices: model.cache_notices,
+    summaries: model.summaries,
+    compact_entry_cache: model.compact_entry_cache,
+    compact_call_cache: model.compact_call_cache,
+    worktree: model.worktree,
+  )
 }

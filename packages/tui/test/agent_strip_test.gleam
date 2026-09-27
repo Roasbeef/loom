@@ -18,6 +18,10 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/codec
 import machine/operation
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
 import tui
 import tui/agent_strip.{
   Back, Browsing, Changed, Composing, Down, Halt, Left, Moved, Open, Other, Pass,
@@ -29,11 +33,7 @@ import tui/connection
 import tui/frame
 import tui/inbound
 import tui/model as tui_model
-import tui/protocol
 import tui/render
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/workspace
 
 // --- fixtures --------------------------------------------------------------

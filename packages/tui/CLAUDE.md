@@ -158,8 +158,8 @@ progress it left, which keeps the compact height rule.
 
 The notes browser (`/notes` and the inspector's Notes tab) draws the same
 cell. `notes_view.todo_board` is the one reading of a note as a board: the
-key is `notes_view.todo_key` (which `todo_panel.note_key` names), the extent
-is complete, and the value passes `todo_list.decode`; `todo_panel.seed` uses
+key is `notes_view.todo_key` (which `todo_board.note_key` names), the extent
+is complete, and the value passes `todo_list.decode`; `todo_board.seed` uses
 it too. A note that passes renders in readable mode through
 `notes_view.readable_note` as a Markdown checklist, one `### Phase · n/m`
 heading per phase and the panel's glyphs per task, with task text escaped so
@@ -244,6 +244,20 @@ one normal resolver launch. Polling and startup share the deadline, and session
 open remains outside that polling loop. Held prompt returns restore text in the
 composer; image bytes must be reattached by the operator.
 
+## Web view link (`loom --ui`)
+
+`loom --ui --session <id>` (`tui.run_view`) resolves the daemon through
+`bootstrap.resolve_viewing_daemon`, which adds `--ui` to the launch
+arguments only when it starts one. A running daemon whose `hello` has
+`view: NoWebView` is refused by `view_served` with status 1 and never
+stopped or relaunched. Otherwise the session is opened through
+`daemon_selection.open` and the path `UiLink` returns is printed joined to
+the listener's http origin. `daemon/protocol.Hello.view` is `NoWebView`
+or `WebViewAt(path)` from the optional `ui` field
+(`protocol-change/051`). `projection.record_projection` names the call the
+record cache makes for durable lines, so the web view's parity test can
+compare against it.
+
 ## Purpose
 
 The shipped native terminal client. It authenticates one daemon control
@@ -264,15 +278,30 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 `new_model`, `loop`, `run_script`, `replay_steps`, `connect_remote`) and the
 event dispatch (`update`, `step`, `apply_input`, `settle_update`). Everything else
 that used to share its 15,500 lines (issue #374) lives in modules under
-`tui/`, listed here in import order. Gleam forbids import cycles and none of
-them may import `tui`, so a module may import only those above it in the
-list:
+`tui/`, listed here in import order, or in `packages/session_view`.
 
+`session_view` holds the part of the client that no host owns (ADR-013,
+phase 4): the session lane (`session_view/session_channel`, generic over
+its socket and recorder), the protocol and wire decoders, the snapshot
+types and `snapshot_view`, the history window, the attempt vocabulary and
+`connection_event`, the approval decisions, the board decoders the
+protocol names, and the transcript's line builders (`transcript_lines`,
+which read a `transcript_lines.Presentation` rather than the model), their
+line types (`transcript_line`), and `transcript.project`. It imports only
+`core`, `machine` and the standard library, R6 holds it there, and nothing
+in it imports `tui`. Its `CLAUDE.md` describes each module.
+
+Gleam forbids import cycles and none of the `tui/` modules may import
+`tui`, so a module may import only those above it in the list:
+
+- `tui/terminal_lane`: `Lane` and `Output`, the session lane with the
+  terminal's connection and recorder as its handle types, and `perform`,
+  the only place a lane's outputs touch the websocket or the recording.
 - `tui/effect`: `Effect`, the closed vocabulary of fire-and-forget effects a
   step decides on, recording appends among them (`Record`). It imports the
   modules whose handles its variants carry (`attachment`, `connection`,
-  `daemon`, `herdr`, `recording`, `session_channel`, `sessions`) and nothing
-  that imports the model.
+  `daemon`, `herdr`, `job`, `recording`, `terminal_lane`) and nothing that
+  imports the model.
 - `tui/model`: the `Model` record, the types it names, and the helpers every
   reducer shares (`append_system`, `append_error`, `invalidate_frame`,
   `invalidate_transcript`, `mark_activity`, `queue_owner`,
@@ -286,6 +315,9 @@ list:
   queued into the outbox. `start_job` allocates a job key from
   `Model.next_job` and queues its `StartJob`; `allocate_job` only
   allocates, for a test that stands a slot in for a running job.
+  `presentation` builds the `transcript_lines.Presentation` the line
+  builders read, so this is the one place that knows which model fields
+  they depend on.
 - `tui/runtime`: `take`, `perform`, `settle` and `flush`, which empty a
   step's outbox and perform what it held, in the order it was decided,
   threading the job table through and storing it back on the model;
@@ -350,11 +382,6 @@ list:
   behind the held ones and `take` is pure; `top_up` is `waiting` then
   `push`; `receive` is the held-first read for code outside the step; and
   `sender` is the send side, whose direct reads bypass the buffer.
-- `tui/transcript_lines`: `Line`s from durable entries, streams and tool
-  calls. A new kind of transcript row starts in `entry_lines`,
-  `message_lines`, `assistant_block_lines`, `record_lines`,
-  `activity_call_lines`, `tool_call_summary`, `tool_result_lines` or
-  `stream_lines`.
 - `tui/layout`: screen rectangles for painting and hit-testing, and the
   transcript width and height.
 - `tui/render`: `view`, `cached_frame` and `render_frame`; a pure function of
@@ -428,10 +455,10 @@ boundaries and the split's measurements under Invariants.
   Raw inspection pretty-prints complete JSON; excerpts remain literal.
   `session_selector.prioritize` sorts exact workspace matches first, related
   directories next, and preserves order within each group and selection by ID.
-- `tui/transcript_lines.AdvisorMessage` names the advisor frames the transcript
+- `session_view/transcript_lines.AdvisorMessage` names the advisor frames the transcript
   recognizes — `Advice`, `Nudges`, `Feed`, `GoalFeed`, and `Continuation` — each carrying the body left
-  after its frame lines are stripped. `tui/transcript_lines.advisor_payload` extracts one from
-  a durable message and `tui/transcript_lines.advisor_lines` renders delivered advice and nudges
+  after its frame lines are stripped. `session_view/transcript_lines.advisor_payload` extracts one from
+  a durable message and `session_view/transcript_lines.advisor_lines` renders delivered advice and nudges
   in full in both modes; feeds and continuations use `notes_view.Extent`.
   `composer.expand_hint` is the suffix every collapsed row ends with, shared with the `[loom] ` injection collapse so
   the two spellings cannot drift.
@@ -451,7 +478,7 @@ boundaries and the split's measurements under Invariants.
   its existing frozen ancestry and row anchors. The composer border provides
   a clickable jump action that preserves an unsent draft; End also returns to
   the tail when the composer is empty.
-- `tui/file_read_view` removes recognized edit digests and hashline anchors
+- `session_view/file_read_view` removes recognized edit digests and hashline anchors
   only from successful file-read presentation. Line numbers and source text
   remain; stored results and model-facing edit prerequisites are unchanged.
   `without_fresh_anchors` applies the same rule to a successful `fs_edit` or
@@ -478,7 +505,7 @@ boundaries and the split's measurements under Invariants.
   One prompt may wait behind an authenticated read; a sent mutation still blocks
   another mutation until its reply. Neither path resends an uncertain command.
 
-- `tui/history_view.State` owns bounded presentation history separately from
+- `session_view/history_view.State` owns bounded presentation history separately from
   the latest authoritative cut. Live captures retain at most 600 descriptors
   and 16 MiB. Scrolling freezes the selected ancestry endpoint; `history` reads
   exclusive intervals of at most 100 sequence positions on the existing channel.
@@ -538,7 +565,7 @@ boundaries and the split's measurements under Invariants.
   deadlines use the server's shared clock domain; refresh age uses only the
   terminal's local receipt clock.
 
-- `tui/skills.Page` decodes the attached daemon's paged skill commands.
+- `session_view/skills.Page` decodes the attached daemon's paged skill commands.
   `Model.skills` is presentation metadata, cleared with attachment replacement.
   `command.suggestions_with_skills` keeps built-ins authoritative and completes
   loaded names; `parse_with_skills` classifies them as prompts before mutation
@@ -692,7 +719,7 @@ boundaries and the split's measurements under Invariants.
   write reaches a terminal:
   only the interactive launch sets `TerminalClipboard`; a replay or a
   scripted test keeps `NoClipboard`, because their stdout is not one.
-- `tui/protocol.Event` is the client-owned view of the frozen
+- `session_view/protocol.Event` is the client-owned view of the frozen
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
   `ToolOutput(strand, operation, step, source_index, call_id, stream, text,
@@ -701,7 +728,7 @@ boundaries and the split's measurements under Invariants.
   `session_channel.ToolStreamed` carries it through the adopted lane and
   `tui/model.ToolTail` is what the model keeps — one per `{strand, operation,
   step, source_index, call_id, stream}`, replaced whole on every frame, drawn by
-  `tui/transcript_lines.tool_tail_lines` as one `ToolResult` line under the live region:
+  `session_view/transcript_lines.tool_tail_lines` as one `ToolResult` line under the live region:
   the stream's name and byte count so far, then the last
   `tail_lines_shown` lines of the window. That drawing happens only with
   details expanded; a compact transcript draws no window, because the row
@@ -828,7 +855,7 @@ boundaries and the split's measurements under Invariants.
   `accept` takes a frame an actor-hosted driver selected through `select`.
   The terminal validates the initial cut, acknowledges it, observes task
   completion and checks adoption before replacing the old socket.
-- `tui/session_channel.Channel` is terminal-owned state, not another actor.
+- `session_view/session_channel.Channel` is terminal-owned state, not another actor.
   It admits one request at a time, grants one snapshot fragment per reply, and
   reconciles at 250ms while idle. It holds no clock: `tick`, `receive`,
   `submit`, `lookup`, `history`, `replay_issued` and the `start`
@@ -866,11 +893,11 @@ boundaries and the split's measurements under Invariants.
   (and the transport case a second `Failed`); both now leave a `Closed`
   lane untouched, and the property holds every event on a closed lane to
   inertness.
-- `tui/snapshot` validates attachment identity, exact credits, fragment
-  offsets, immutable entry identity and payload limits. `tui/snapshot_view`
+- `session_view/snapshot` validates attachment identity, exact credits, fragment
+  offsets, immutable entry identity and payload limits. `session_view/snapshot_view`
   projects captured leaf ancestry with pure `core` and `machine` codecs.
   Missing parents remain unloaded rather than being assigned to main.
-- `tui/approval.Review` binds the displayed action, requested grants and
+- `session_view/approval.Review` binds the displayed action, requested grants and
   register seq. Exact resolution lookups have their own channel lane; sparse
   lookup metadata cannot replace conversation history or configuration.
   `tui/approval_panel` presents a typed question, action preview and exact grant
@@ -921,7 +948,7 @@ boundaries and the split's measurements under Invariants.
   pinned per-agent strip under the footer (see "Agent strip"). `State` holds
   keyboard focus, decoded glances, per-operation clocks and pushed context
   sizes; `Model.strip` owns it and session replacement resets it.
-- `tui/composer` separates editable prompt text from large pasted-text
+- `session_view/composer` separates editable prompt text from large pasted-text
   and validated image attachments. It owns the approximate token indicator,
   expands exact pasted text only at the gateway boundary, and keeps local
   image paths out of typed prompt blocks.
@@ -934,7 +961,7 @@ boundaries and the split's measurements under Invariants.
   expansion or shell evaluation. The host reads, the step does not:
   `runtime.message` calls `load_paste` for a paste and carries what it
   found in `msg.Pasted`, and the composer's paste handler attaches that.
-- `tui/block_summary.{Key, Subject, Reads, Labels, floor_bytes, max_blocks,
+- `session_view/block_summary.{Key, Subject, Reads, Labels, floor_bytes, max_blocks,
   new, stored, live, carried, receive, receive_board, want,
   next_read, refused, retain_live, decode_board}` — summarizer labels for
   long blocks (protocol 050), held per attachment in `Model.summaries`:
@@ -956,9 +983,9 @@ boundaries and the split's measurements under Invariants.
   nudges message collapses in compact mode to a `SummarizedAdvice` line:
   its heading and, beneath it, the label or its first line while none
   exists; a short one keeps its full body in
-  both modes, and advisor commentary rows (`tui/advisor_history`) are
+  both modes, and advisor commentary rows (`session_view/advisor_history`) are
   never summarized.
-- `tui/advisor_pending.{Board, decode, lines, primary_strand,
+- `session_view/advisor_pending.{Board, decode, lines, primary_strand,
   advisor_strand}` validates an observation of undelivered advice. The composer
   uses the count/recipient heading from `lines`; `pending_nudge_lines` exposes
   every received body in the scrollable transient tail, with a pending and
@@ -967,7 +994,7 @@ boundaries and the split's measurements under Invariants.
   records. The primary/advisor constants remain copied from the server and
   pinned by gateway tests, because the terminal links no server package.
 
-- `tui/goal_view.{Board, Status, PauseCause, LimitCause, CheckRun,
+- `session_view/goal_view.{Board, Status, PauseCause, LimitCause, CheckRun,
   check_output_limit, decode, lines, row, refusal}` is the session goal's
   surface (protocol 044). `Board` has
   two variants rather than one record of options, because "no goal is
@@ -1110,7 +1137,7 @@ untouched.
   from each cut instead of guessing which user entry consumed an echo. The
   interrupt marker carries the stopped operation and clears when a cut shows
   idle or a successor. Older recordings retain their local echo semantics.
-- **Compact tools and changes**: `tui/tool_activity` groups consecutive tool
+- **Compact tools and changes**: `session_view/tool_activity` groups consecutive tool
   calls, joining results by call ID and ending a group when a later response
   reuses an ID. Compact history retains every call and the group's failure
   count; Ctrl+g recovers the original entries. Code-mode source previews belong
@@ -1128,7 +1155,7 @@ untouched.
   rows reuse unchanged line layouts at the same width and discard old keys
   when the captured projection changes. Closing the pane releases its cache
   and restores the conversation's scroll position.
-- **Worktree navigation**: `tui/worktree_view` validates a bounded Git board
+- **Worktree navigation**: `session_view/worktree_view` validates a bounded Git board
   from the attached session. `/diff` requests an observation; Up/Down selects
   all changes or a raw file identity, Enter returns to the composer, Ctrl+d
   changes focus, and `r` refreshes while the navigator has focus. Mouse file
@@ -1176,7 +1203,7 @@ untouched.
   same cut. It attributes captured edits and paired tool outcomes only within
   that ancestry interval. Missing ancestry is partial; a missed start is
   unavailable. The latest card and `/summary` show actual command exit codes,
-  queued work, and a separately timestamped `tui/live_jobs` roster. Completion,
+  queued work, and a separately timestamped `session_view/live_jobs` roster. Completion,
   opening the summary, or explicit `r` requests the roster once when the lane
   is free. Ordinary transcript refreshes do not query job history or run Git.
   `session_channel.RequestRefused` carries the command and actual request ID,
@@ -1192,7 +1219,7 @@ untouched.
   from one server observation; rendering does not read a clock. Section paging
   does not alter the composer draft.
 - **Current context**: `/context` opens aggregate usage and `/context all`
-  (also `/contextall`) adds bounded item estimates. `tui/context_view.State`
+  (also `/contextall`) adds bounded item estimates. `session_view/context_view.State`
   retains one attachment and strand's request identity, board, and independent
   viewport. The automatic refresh fires on the first capture, a strand switch,
   a configuration change, and the settling of the active strand's operation,
@@ -1268,12 +1295,12 @@ untouched.
 - **A new observation command must be taught to every command-name table
   by hand — the compiler checks none of them.** `advisor_pending` needed
   three (and `block_summaries` needed the same three), and missing one is
-  not cosmetic: `tui/session_channel`'s
+  not cosmetic: `session_view/session_channel`'s
   `matching_presentation` and `outbound` both switch on the literal
   command string, and an unlisted name in `outbound` defaults to the
   `Mutation` lane — which held the composer lane forever and hung every
   attachment, since an observation's own reply never arrives to release
-  it — while `tui/attempt`'s `decode_selection` rejects an unlisted kind
+  it — while `session_view/attempt`'s `decode_selection` rejects an unlisted kind
   outright, which fails the recording replayer on any log carrying that
   command. Both have regression tests now
   (`the_observation_takes_the_read_lane_and_its_reply_settles_it_test`,
@@ -1281,7 +1308,7 @@ untouched.
   but the tables themselves stay three separate lists a new read command
   must be added to, not one the type system enforces.
 - **Current notes**: `/notes` requests a separate bounded `notes` observation.
-  `tui/notes_view` validates values, last-write revisions, capture revision,
+  `session_view/notes_view` validates values, last-write revisions, capture revision,
   excerpt markers and omitted counts. `r` refreshes the panel without a new
   model turn. Historical run-start digests remain explicitly historical.
 - **Paste**: small pastes retain the ordinary editor path. A paste estimated
@@ -1348,7 +1375,7 @@ untouched.
   their own rows. What the rule removes is growth that carried no
   information.
 - **A harness-authored user turn is drawn in the system voice, and only on
-  both of its tokens.** `tui/transcript_lines.advisor_payload` recognizes advice, nudges, the
+  both of its tokens.** `session_view/transcript_lines.advisor_payload` recognizes advice, nudges, the
   feed, the goal feed (`goal_feed_header`/`goal_feed_footer`) and the goal
   continuation (`continuation_header`/`continuation_footer`) — copies of
   `client/advisorslice`'s literals, pinned against them by
@@ -1535,7 +1562,7 @@ untouched.
   `tui/model`, which recompiles every module and test that imports it, in
   2.7–3.6 s. `erlc +time` wall time per module is 0.54 s for `tui`, 2.49 s
   for `tui/inbound`, 0.87 s for `tui/render`, 0.44 s for
-  `tui/transcript_lines` and 2.39 s for `tui/interaction`. These are
+  `session_view/transcript_lines` and 2.39 s for `tui/interaction`. These are
   measurements, not budgets.
 - **Presentation uses one caller-owned clock, read once per event.**
   `new_model` supplies the host's monotonic clock; `new_model_with_clock`
@@ -1748,9 +1775,9 @@ untouched.
   historical fallback of `/notes`. Do not broaden this into heuristic filtering.
 - **Advisor traffic is not operator speech either.** Advice, queued nudges and
   the feed a review is made from are all stored as user messages.
-  `tui/transcript_lines.advisor_payload` recognizes each by its whole frame — a header line
+  `session_view/transcript_lines.advisor_payload` recognizes each by its whole frame — a header line
   with its footer, or the header with the `advisor-nudges` fence — and
-  `tui/transcript_lines.advisor_lines` draws the row as `System` under the advisor's name:
+  `session_view/transcript_lines.advisor_lines` draws the row as `System` under the advisor's name:
   delivered advice and nudges retain their full body in both modes, with
   explicit delivery labels. Feeds and continuations collapse until expanded.
   Expanded bodies drop their frame lines,
@@ -1959,7 +1986,7 @@ untouched.
   `call_id` has a durable tool result in its strand. A global 128-tail cap
   bounds missed or evicted captures. Another strand's tail is kept but not drawn.
 - **A live stream is bounded, and its text is owned.** `Stream` carries the
-  bytes its fragments weigh, and past twice `tui/transcript_lines.live_stream_limit` — 24 KiB,
+  bytes its fragments weigh, and past twice `session_view/transcript_lines.live_stream_limit` — 24 KiB,
   the same clip the snapshot preview takes — the fragments collapse into one
   holding the newest limit's worth. The headroom is what makes the collapse
   amortised: coming back to exactly the limit would put the next token over it

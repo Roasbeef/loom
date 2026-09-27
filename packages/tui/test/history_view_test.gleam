@@ -13,16 +13,17 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/history_view
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/transcript_line
 import tui
 import tui/connection
-import tui/history_view
 import tui/inbound
 import tui/layout
 import tui/model as tui_model
-import tui/protocol
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/transcript_anchor
 import tui/workspace
 import tui_test/ffi_term
@@ -883,7 +884,10 @@ pub fn switching_strands_and_back_preserves_loaded_history_test() {
   assert list.length(returned.records) == full
   assert history_view.branch(returned.scrollback, current).unloaded == None
   assert list.first(returned.transcript)
-    == Ok(tui_model.Line(tui_model.System, "Beginning of this conversation."))
+    == Ok(transcript_line.Line(
+      transcript_line.System,
+      "Beginning of this conversation.",
+    ))
   assert returned.scrollback.request == history_view.Quiet
 }
 

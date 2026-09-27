@@ -13,6 +13,8 @@ import gleam/erlang/atom.{type Atom}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
+import session_view/connection_event
+import session_view/transcript_line
 import tui
 import tui/agents
 import tui/connection
@@ -37,7 +39,7 @@ import tui/workspace
 /// ```gleam
 /// let #(inbox, model) = tui_perf_dev.bench_model()
 /// ```
-pub fn bench_model() -> #(Subject(connection.Message), tui_model.Model) {
+pub fn bench_model() -> #(Subject(connection_event.Message), tui_model.Model) {
   let inbox = connection.new_inbox()
   let model =
     tui.new_model_with_clock(inbox, workspace.Context("bench", None), fn() {
@@ -54,7 +56,7 @@ pub fn bench_model() -> #(Subject(connection.Message), tui_model.Model) {
 /// ```gleam
 /// let #(inbox, model) = tui_perf_dev.replay_model()
 /// ```
-pub fn replay_model() -> #(Subject(connection.Message), tui_model.Model) {
+pub fn replay_model() -> #(Subject(connection_event.Message), tui_model.Model) {
   let inbox = connection.new_inbox()
   #(
     inbox,
@@ -109,7 +111,9 @@ pub fn live(model: tui_model.Model) -> tui_model.Model {
 pub fn witness(model: tui_model.Model) -> #(Int, Int) {
   #(
     list.length(model.records),
-    list.count(model.transcript, fn(line) { line.speaker == tui_model.Failure }),
+    list.count(model.transcript, fn(line) {
+      line.speaker == transcript_line.Failure
+    }),
   )
 }
 

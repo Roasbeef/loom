@@ -13,22 +13,24 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/codec
 import machine/strand
+import session_view/attempt
+import session_view/command
+import session_view/composer
+import session_view/connection_event
+import session_view/protocol
+import session_view/queued_input
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
 import tui
-import tui/attempt
-import tui/command
-import tui/composer
 import tui/connection
 import tui/frame
 import tui/inbound
 import tui/model as tui_model
-import tui/protocol
 import tui/queue_editor
 import tui/recording
 import tui/render
 import tui/runtime
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/submit
 import tui/workspace
 import tui_test/pushed
@@ -94,7 +96,7 @@ fn metadata(rows) {
 
 fn receive(
   model: tui_model.Model,
-  incoming: connection.Message,
+  incoming: connection_event.Message,
 ) -> tui_model.Model {
   let assert Some(channel) = model.channel as "the fixture has an attached lane"
   let #(channel, updates) = session_channel.receive(channel, incoming, now: 0)
@@ -115,7 +117,7 @@ fn ready(rows) {
 
 fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
   let events = process.new_subject()
-  let trace = recording.Trace(recording.observed(events), attempt.Id(1))
+  let trace = attempt.Trace(recording.observed(events), attempt.Id(1))
   let channel = session_channel.replay_traced(expected, trace)
   let initial =
     tui_model.Model(
@@ -144,7 +146,7 @@ fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
 // Replay the authenticated attachment change through the capture decoder,
 // so the new model and its usable channel agree on the selected namespace.
 fn retarget_begin(incoming, expected: snapshot.Expected, connection_id) {
-  let assert connection.Incoming(text) = incoming
+  let assert connection_event.Incoming(text) = incoming
     as "the capture begin arrives as a wire frame"
   let assert Ok(json.Object(envelope)) = json.parse(text)
     as "the capture begin has a valid envelope"
@@ -162,7 +164,7 @@ fn retarget_begin(incoming, expected: snapshot.Expected, connection_id) {
       replacements,
       list.filter(body, fn(pair) { !list.contains(keys, pair.0) }),
     ))
-  connection.Incoming(
+  connection_event.Incoming(
     json.to_string(
       json.Object([
         #("body", body),
@@ -609,7 +611,7 @@ pub fn uncertain_save_locks_text_and_cannot_reissue_until_reconciled_test() {
   let value = textarea.value(draft(edited).input)
   let saving = key(edited, "ctrl+s")
   let request = issued(events, "edit_queued_input")
-  let uncertain = receive(saving, connection.NetworkFault("reply lost"))
+  let uncertain = receive(saving, connection_event.NetworkFault("reply lost"))
   assert draft(uncertain).delivery == queue_editor.Unknown
   let assert Some(unconfirmed) = uncertain.unconfirmed
     as "the lost mutation reply keeps its exact request identity"
@@ -669,7 +671,7 @@ pub fn selecting_another_item_does_not_discard_an_uncertain_draft_test() {
   let edited = model |> key("end") |> key("!")
   let saving = key(edited, "ctrl+s")
   let _ = issued(events, "edit_queued_input")
-  let uncertain = receive(saving, connection.NetworkFault("reply lost"))
+  let uncertain = receive(saving, connection_event.NetworkFault("reply lost"))
   let #(reconnected, reads) = ready([pending("A"), pending("B")])
   let switched =
     tui_model.Model(
@@ -710,17 +712,17 @@ pub fn explicit_refresh_after_stale_refusal_keeps_same_item_draft_test() {
 
 pub fn full_document_decoder_bounds_encoded_bytes_and_image_counts_test() {
   let assert Ok(document) =
-    queue_editor.decode(board("A", 3, string.repeat("x", 600), 2))
+    queued_input.decode(board("A", 3, string.repeat("x", 600), 2))
     as "a complete value beyond the queue excerpt remains editable"
   assert document.attachment_count == 2
   assert string.length(document.text) == 600
   let escaped = string.repeat("\u{0000}", 9000)
   assert string.byte_size(escaped) < 48_000
-  let assert Error(_) = queue_editor.decode(board("A", 3, escaped, 2))
+  let assert Error(_) = queued_input.decode(board("A", 3, escaped, 2))
     as "JSON escaping counts toward the encoded document bound"
-  let assert Error(_) = queue_editor.decode(board("A", 3, "text", -1))
+  let assert Error(_) = queued_input.decode(board("A", 3, "text", -1))
     as "image counts cannot be negative"
-  let assert Error(_) = queue_editor.decode(board("A", -1, "text", 0))
+  let assert Error(_) = queued_input.decode(board("A", -1, "text", 0))
     as "queue revisions cannot be negative"
 }
 

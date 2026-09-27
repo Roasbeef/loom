@@ -19,6 +19,10 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/connection_event
+import session_view/session_channel
+import session_view/snapshot
+import session_view/transcript_line
 import tui
 import tui/attachment
 import tui/buffered
@@ -30,8 +34,6 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/msg
 import tui/runtime
-import tui/session_channel
-import tui/snapshot
 import tui/workspace
 import tui_test/pushed
 import weft
@@ -66,18 +68,24 @@ pub fn a_top_up_holds_at_most_its_bound_in_arrival_order_test() {
 // message before the newer one still in the mailbox.
 pub fn a_reader_outside_the_step_gets_held_traffic_first_test() {
   let model = waiting(fresh())
-  process.send(buffered.sender(model.inbox), connection.NetworkFault("older"))
+  process.send(
+    buffered.sender(model.inbox),
+    connection_event.NetworkFault("older"),
+  )
   let escaped = tui.update(backend.KeyPress("esc"), model)
   assert escaped.pending_submission == None
   assert faults(escaped) == []
     as "Escape cancels before it reduces any queued traffic"
 
-  process.send(buffered.sender(escaped.inbox), connection.NetworkFault("newer"))
+  process.send(
+    buffered.sender(escaped.inbox),
+    connection_event.NetworkFault("newer"),
+  )
   let #(inbox, first) = buffered.receive(escaped.inbox, 0)
-  assert first == Ok(connection.NetworkFault("older"))
+  assert first == Ok(connection_event.NetworkFault("older"))
     as "the held message is older than anything in the mailbox"
   let #(_, second) = buffered.receive(inbox, 0)
-  assert second == Ok(connection.NetworkFault("newer"))
+  assert second == Ok(connection_event.NetworkFault("newer"))
 }
 
 // A hundred queued messages meet a key that does not drain and then two
@@ -88,7 +96,7 @@ pub fn escape_holds_one_batch_and_ticks_drain_it_in_order_test() {
   int.range(from: 0, to: 100, with: Nil, run: fn(_, n) {
     process.send(
       buffered.sender(model.inbox),
-      connection.NetworkFault(int.to_string(n)),
+      connection_event.NetworkFault(int.to_string(n)),
     )
   })
 
@@ -247,7 +255,7 @@ fn tick_until_settled(
 ) -> tui_model.Model {
   process.send(
     buffered.sender(model.inbox),
-    connection.NetworkFault(int.to_string(tick)),
+    connection_event.NetworkFault(int.to_string(tick)),
   )
   let model = tui.update(backend.Tick, model)
   case attachment.busy(model.candidate), budget {
@@ -276,8 +284,8 @@ fn waiting(model: tui_model.Model) -> tui_model.Model {
 fn failures(model: tui_model.Model) -> List(String) {
   list.filter_map(model.transcript, fn(line) {
     case line {
-      tui_model.Line(tui_model.Failure, text) -> Ok(text)
-      tui_model.Line(..) -> Error(Nil)
+      transcript_line.Line(transcript_line.Failure, text) -> Ok(text)
+      transcript_line.Line(..) -> Error(Nil)
     }
   })
 }
@@ -336,7 +344,7 @@ fn captured_replacement() {
 
 // The `Prepared` an attachment worker publishes, for a stand-in socket.
 fn prepared(
-  frames: Subject(connection.Message),
+  frames: Subject(connection_event.Message),
   acknowledgement: Subject(Nil),
 ) -> job.Prepared {
   job.Prepared(

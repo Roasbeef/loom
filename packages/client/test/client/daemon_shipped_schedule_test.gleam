@@ -28,6 +28,7 @@ import gleam/string
 import gleam/uri
 import host/bootstrap as native
 import host/endpoint
+import session_view/session_channel
 import simplifile
 import sqlight
 import storage/internal/snapshot_sqlite
@@ -38,7 +39,6 @@ import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
 import tui/daemon/selection
-import tui/session_channel
 import tui/workspace
 import weft
 import weft/actor

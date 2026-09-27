@@ -5,11 +5,11 @@ import etui/backend
 import etui/widgets/textarea
 import gleam/list
 import gleam/option.{None}
+import session_view/command
+import session_view/skills
 import tui
-import tui/command
 import tui/connection
 import tui/model as tui_model
-import tui/skills
 import tui/workspace
 
 pub fn skill_completion_preserves_builtin_precedence_and_arguments_test() {

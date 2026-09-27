@@ -13,11 +13,11 @@ import gleam/io
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/protocol
 import simplifile
 import tui
 import tui/connection
 import tui/model as tui_model
-import tui/protocol
 import tui/workspace
 
 type ClockUnit {

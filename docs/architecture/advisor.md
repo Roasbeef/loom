@@ -732,8 +732,8 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui/transcript_lines.gleam:1243`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1600`) renders
+`advisor_payload` (`session_view/transcript_lines.gleam:1284`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`session_view/transcript_lines.gleam:1641`) renders
 them. Delivered advice and nudges shorter than 512 bytes show their
 complete bodies even in compact mode, with a delivery label. A longer one
 collapses in compact mode to its heading and, beneath it as dim text of
@@ -955,7 +955,7 @@ each with what it is waiting on.
   live state.
 - **The pending panel has no way to expand past three nudges.** It shows
   at most `visible_nudges` (3) and a remainder count
-  (`packages/tui/src/tui/advisor_pending.gleam`); an operator who wants
+  (`packages/session_view/src/session_view/advisor_pending.gleam`); an operator who wants
   the fourth nudge and beyond has no command to see it. The open question
   from the implementation is whether that deserves a keybinding, a wider
   panel on demand, or the same three-row allowance the reviewer roster

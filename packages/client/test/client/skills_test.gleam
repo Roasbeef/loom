@@ -11,8 +11,8 @@ import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
 import host/skill
+import session_view/skills as terminal_skills
 import simplifile
-import tui/skills as terminal_skills
 
 fn root() -> String {
   let assert Ok(root) =

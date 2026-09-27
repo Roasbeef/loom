@@ -9,6 +9,7 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/endpoint
+import session_view/session_channel
 import simplifile
 import tui
 import tui/attachment
@@ -24,9 +25,9 @@ import tui/job
 import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
-import tui/session_channel
 import tui/session_control
 import tui/session_selector
+import tui/terminal_lane
 import tui/workspace
 import weft
 import weft/poll
@@ -590,10 +591,10 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   Nil
 }
 
-fn close_channel(channel: session_channel.Channel) -> Nil {
+fn close_channel(channel: terminal_lane.Lane) -> Nil {
   let #(_, outputs) =
     session_channel.take_outputs(session_channel.close(channel))
-  list.each(outputs, session_channel.perform)
+  list.each(outputs, terminal_lane.perform)
 }
 
 // Drives a model's attachment attempt outside the terminal loop until it
