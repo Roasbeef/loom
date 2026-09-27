@@ -14,10 +14,11 @@ import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import session_view/connection_event
+import session_view/snapshot
 import tui
 import tui/attachment
 import tui/connection
-import tui/connection_event
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/job
@@ -25,7 +26,6 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
-import tui/snapshot
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping

@@ -33,13 +33,13 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/notes_view
+import session_view/protocol
 import tui
 import tui/advisor_history
 import tui/connection
 import tui/frame
 import tui/model as tui_model
-import tui/notes_view
-import tui/protocol
 import tui/render
 import tui/transcript_lines
 import tui/workspace

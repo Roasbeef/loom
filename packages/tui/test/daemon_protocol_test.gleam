@@ -4,7 +4,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import tui/command
+import session_view/command
 import tui/daemon/protocol
 
 const hello = "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"epoch-one\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536}}}"

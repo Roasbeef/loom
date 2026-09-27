@@ -8,7 +8,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import tui/text_hygiene
+import session_view/text_hygiene
 
 /// One bounded currently nonterminal job.
 pub type Job {

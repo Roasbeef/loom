@@ -9,12 +9,12 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import tui/attempt
-import tui/connection_event
-import tui/session_channel
-import tui/session_wire
-import tui/snapshot
-import tui/snapshot_view
+import session_view/attempt
+import session_view/connection_event
+import session_view/session_channel
+import session_view/session_wire
+import session_view/snapshot
+import session_view/snapshot_view
 import tui/terminal_lane
 
 // A replay lane's time. A recording carries no clock the lane could honour:

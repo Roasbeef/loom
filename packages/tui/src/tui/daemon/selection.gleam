@@ -12,10 +12,10 @@ import gleam/string
 import gleam/uri
 import host/bootstrap as host_bootstrap
 import host/endpoint as daemon_endpoint
+import session_view/snapshot
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
-import tui/snapshot
 import tui/workspace
 import weft/poll
 

@@ -15,12 +15,16 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/approval
+import session_view/command
+import session_view/context_view
+import session_view/protocol
+import session_view/session_channel
+import session_view/text_hygiene
+import session_view/worktree_view
 import tui/agents
-import tui/approval
 import tui/attachment
-import tui/command
 import tui/composer
-import tui/context_view
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/image_drop
@@ -37,13 +41,9 @@ import tui/model.{
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
-import tui/protocol
 import tui/queue_editor
-import tui/session_channel
 import tui/session_control
 import tui/surfaces
-import tui/text_hygiene
-import tui/worktree_view
 
 /// Opens the agent workspace on the active strand.
 @internal

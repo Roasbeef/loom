@@ -12,8 +12,8 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import tui/snapshot_view
-import tui/text_hygiene
+import session_view/snapshot_view
+import session_view/text_hygiene
 import tui/theme
 
 type RowFocus {

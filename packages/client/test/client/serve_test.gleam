@@ -51,6 +51,7 @@ import provider/secret
 import runtime/api
 import runtime/effects
 import session/session
+import session_view/connection_event
 import simplifile
 import storage/sqlite
 import support/addresses
@@ -58,7 +59,6 @@ import support/internal/ffi_ws
 import support/provider as provider_test
 import telemetry/log
 import tui/connection
-import tui/connection_event
 import weft
 import weft/poll
 import weft/registry as address

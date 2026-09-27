@@ -18,16 +18,16 @@ import gleam/string
 import machine/codec as machine_codec
 import machine/operation
 import machine/strand
+import session_view/connection_event
+import session_view/protocol
+import session_view/snapshot_view
 import tui
 import tui/connection
-import tui/connection_event
 import tui/frame
 import tui/inbound
 import tui/layout
 import tui/model as tui_model
-import tui/protocol
 import tui/render
-import tui/snapshot_view
 import tui/tool_activity
 import tui/workspace
 import tui_test/gateway

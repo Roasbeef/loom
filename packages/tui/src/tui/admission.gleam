@@ -38,9 +38,9 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import session_view/connection_event
 import tui/attachment
 import tui/buffered
-import tui/connection_event
 import tui/job
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, ControlRequest,

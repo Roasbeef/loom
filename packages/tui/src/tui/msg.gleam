@@ -37,8 +37,8 @@ import etui/backend
 import etui/keys
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
-import tui/attempt
-import tui/connection_event
+import session_view/attempt
+import session_view/connection_event
 import tui/image_drop
 import tui/job
 import tui/recording

@@ -13,13 +13,13 @@ import gleam/list
 import gleam/option.{None, Some}
 import machine/codec as machine_codec
 import machine/strand
-import tui/approval
+import session_view/approval
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
 import tui/approval_panel
 import tui/inbound
 import tui/model as tui_model
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui_test/pushed
 
 fn author(name) {

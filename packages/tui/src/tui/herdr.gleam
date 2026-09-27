@@ -31,9 +31,9 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import host/bootstrap
-import tui/approval
+import session_view/approval
+import session_view/protocol.{type Strand}
 import tui/internal/ffi_herdr
-import tui/protocol.{type Strand}
 import weft/actor
 
 /// The wire tag Herdr's resume planner matches this integration on.

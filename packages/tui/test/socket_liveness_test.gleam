@@ -17,13 +17,13 @@ import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/snapshot
 import tui
 import tui/attachment
 import tui/connection
 import tui/job
 import tui/model as tui_model
 import tui/runtime
-import tui/snapshot
 import tui/workspace
 import tui_test/pushed
 import weft

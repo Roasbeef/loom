@@ -81,12 +81,12 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel
+import session_view/session_wire
+import session_view/snapshot
 import tui/connection
-import tui/connection_event
-import tui/protocol
-import tui/session_channel
-import tui/session_wire
-import tui/snapshot
 import tui/terminal_lane.{type Lane as TerminalLane}
 import tui_test/pushed
 

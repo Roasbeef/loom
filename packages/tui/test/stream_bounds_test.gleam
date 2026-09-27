@@ -43,8 +43,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import session_view/connection_event
 import tui
-import tui/connection_event
 import tui/inbound
 import tui/model as tui_model
 import tui/transcript_lines

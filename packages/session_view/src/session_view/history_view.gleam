@@ -12,8 +12,8 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import tui/snapshot
-import tui/snapshot_view
+import session_view/snapshot
+import session_view/snapshot_view
 
 /// Whether transcript updates follow the captured leaf or a reading endpoint.
 pub type Mode {

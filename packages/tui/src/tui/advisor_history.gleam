@@ -13,8 +13,8 @@ import core/json
 import core/message
 import gleam/list
 import gleam/option.{type Option}
-import tui/snapshot
-import tui/snapshot_view
+import session_view/snapshot
+import session_view/snapshot_view
 
 /// One verdict requested by the advisor in the same settled response.
 ///

@@ -85,6 +85,7 @@ import provider/http
 import provider/model
 import provider/secret
 import runtime/api
+import session_view/session_channel
 import simplifile
 import support/enforcement
 import support/internal/ffi_proc
@@ -96,7 +97,6 @@ import telemetry/log
 import tools/hashline
 import tui/completion_summary
 import tui/queue_editor
-import tui/session_channel
 import weft/actor
 import weft/poll
 

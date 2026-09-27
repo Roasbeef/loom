@@ -27,10 +27,10 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/connection_event
 import tui
 import tui/agents
 import tui/connection
-import tui/connection_event
 import tui/frame
 import tui/layout
 import tui/model as tui_model

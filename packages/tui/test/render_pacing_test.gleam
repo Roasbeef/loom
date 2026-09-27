@@ -20,14 +20,14 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/connection_event
+import session_view/protocol
 import tui
 import tui/connection
-import tui/connection_event
 import tui/frame
 import tui/keymap
 import tui/model as tui_model
 import tui/pacing
-import tui/protocol
 import tui/render
 import tui/tick
 import tui/virtual_backend

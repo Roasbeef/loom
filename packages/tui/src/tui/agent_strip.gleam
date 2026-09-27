@@ -49,10 +49,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import machine/codec
+import session_view/snapshot_view
+import session_view/text_hygiene
 import tui/agent_view
 import tui/agents
-import tui/snapshot_view
-import tui/text_hygiene
 import tui/theme
 
 /// The most agent rows the strip draws before it folds the rest into a count.

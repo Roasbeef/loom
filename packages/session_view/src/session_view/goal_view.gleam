@@ -26,8 +26,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui/live_jobs
-import tui/text_hygiene
+import session_view/live_jobs
+import session_view/text_hygiene
 
 /// How many bytes of board this terminal will accept.
 ///

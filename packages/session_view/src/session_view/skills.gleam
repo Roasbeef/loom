@@ -8,8 +8,8 @@ import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import tui/command
-import tui/text_hygiene
+import session_view/command
+import session_view/text_hygiene
 
 /// A contiguous page with an optional next cursor.
 pub type Page {

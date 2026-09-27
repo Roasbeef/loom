@@ -23,11 +23,11 @@ import gleam/string
 import runtime/api
 import runtime/escalation
 import runtime/writer
+import session_view/approval
+import session_view/session_channel
+import session_view/snapshot
 import support/tui_driver
-import tui/approval
 import tui/model as tui_model
-import tui/session_channel
-import tui/snapshot
 import weft
 
 fn invited(address, owner, epoch, session, principal, role, name) {

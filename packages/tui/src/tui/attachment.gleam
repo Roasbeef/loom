@@ -24,16 +24,16 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui/attempt
+import session_view/attempt
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel as channel
+import session_view/snapshot
+import session_view/snapshot_view
 import tui/buffered.{type Inbox}
 import tui/connection
-import tui/connection_event
 import tui/job
-import tui/protocol
 import tui/recording
-import tui/session_channel as channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/terminal_lane
 import tui/workspace
 import weft

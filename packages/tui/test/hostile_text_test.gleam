@@ -36,13 +36,13 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/approval
+import session_view/connection_event
 import tui
 import tui/agents
-import tui/approval
 import tui/approval_panel
 import tui/buffered
 import tui/connection
-import tui/connection_event
 import tui/frame
 import tui/model as tui_model
 import tui/virtual_backend

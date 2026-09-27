@@ -16,8 +16,8 @@ import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
-import tui/session_wire
-import tui/snapshot_view
+import session_view/session_wire
+import session_view/snapshot_view
 
 /// Durable decision state, independent of a temporary absence from pending rows.
 pub type Status {

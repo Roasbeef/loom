@@ -29,9 +29,9 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/connection_event
 import tui
 import tui/connection
-import tui/connection_event
 import tui/inbound
 import tui/model as tui_model
 import tui/transcript_lines

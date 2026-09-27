@@ -22,7 +22,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import tui/text_hygiene
+import session_view/text_hygiene
 
 /// Presents complete structured notes as Markdown while retaining plain prose.
 ///

@@ -48,8 +48,8 @@ import etui/geometry.{type Position, type Rect}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import tui/attempt
-import tui/connection_event
+import session_view/attempt
+import session_view/connection_event
 
 /// One scripted moment in a run.
 pub type Step {

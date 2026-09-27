@@ -33,8 +33,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/text_hygiene
 import tui/daemon/protocol
-import tui/text_hygiene
 import tui/theme
 
 /// The selected metadata collection, independent of runtime status.

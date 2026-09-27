@@ -10,9 +10,9 @@
 //// only place a lane's decisions touch the websocket or the recording file,
 //// and it runs after the step, as the runtime performs everything else.
 
+import session_view/session_channel
 import tui/connection
 import tui/recording
-import tui/session_channel
 
 /// A session lane whose socket is a terminal connection and whose recorder
 /// is the terminal's recording.

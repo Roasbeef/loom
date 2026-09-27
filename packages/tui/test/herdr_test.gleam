@@ -8,9 +8,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
-import tui/approval
+import session_view/approval
+import session_view/protocol.{type Strand, Strand}
 import tui/herdr
-import tui/protocol.{type Strand, Strand}
 
 fn config() -> herdr.Config {
   herdr.Config(

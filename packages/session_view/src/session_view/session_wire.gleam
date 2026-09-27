@@ -16,7 +16,7 @@ import gleam/bool
 import gleam/list
 import gleam/result
 import gleam/string
-import tui/protocol
+import session_view/protocol
 
 /// One credited transfer response, bounded auxiliary command result, or
 /// uncorrelated frame the daemon pushed on its own initiative.

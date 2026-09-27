@@ -47,6 +47,14 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/endpoint
+import session_view/attempt
+import session_view/block_summary
+import session_view/connection_event
+import session_view/context_view
+import session_view/history_view
+import session_view/session_channel
+import session_view/text_hygiene
+import session_view/worktree_view
 import simplifile
 import tui/admission
 import tui/advisor_history
@@ -54,21 +62,16 @@ import tui/agent_strip
 import tui/agents
 import tui/appearance
 import tui/attachment
-import tui/attempt
 import tui/attempt_replay
-import tui/block_summary
 import tui/bootstrap
 import tui/buffered
 import tui/completion_summary
 import tui/connection
-import tui/connection_event
-import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/frame
-import tui/history_view
 import tui/inbound
 import tui/interaction
 import tui/internal/ffi_terminal
@@ -88,19 +91,16 @@ import tui/queue_editor
 import tui/recording
 import tui/render
 import tui/runtime
-import tui/session_channel
 import tui/session_control
 import tui/session_table
 import tui/summary_panel
 import tui/surfaces
-import tui/text_hygiene
 import tui/tick
 import tui/update
 import tui/update/download
 import tui/update/options as update_options
 import tui/virtual_backend
 import tui/workspace
-import tui/worktree_view
 
 type Launch {
   // Build reporting reads launcher metadata without opening a terminal or daemon.

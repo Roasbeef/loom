@@ -80,6 +80,7 @@ import gleam/result
 import gleam/string
 import host/bootstrap as native
 import host/endpoint
+import session_view/session_channel
 import simplifile
 import support/enforcement
 import support/internal/ffi_proc
@@ -89,7 +90,6 @@ import tui/bootstrap
 import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/selection
-import tui/session_channel
 import tui/workspace
 import weft
 import weft/actor

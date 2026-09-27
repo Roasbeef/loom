@@ -11,12 +11,12 @@ import etui/geometry
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/connection_event
+import session_view/protocol
 import tui
 import tui/connection
-import tui/connection_event
 import tui/frame
 import tui/inbound
-import tui/protocol
 import tui/render
 import tui/workspace
 import tui_test/gateway

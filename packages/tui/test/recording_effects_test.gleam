@@ -20,13 +20,15 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import machine/codec
 import machine/strand
+import session_view/attempt
+import session_view/connection_event
+import session_view/session_channel
+import session_view/snapshot
 import simplifile
 import tui
 import tui/attachment
-import tui/attempt
 import tui/buffered
 import tui/connection
-import tui/connection_event
 import tui/effect
 import tui/inbound
 import tui/job
@@ -34,8 +36,6 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/recording
 import tui/runtime
-import tui/session_channel
-import tui/snapshot
 import tui/terminal_lane
 import tui/virtual_backend
 import tui/workspace

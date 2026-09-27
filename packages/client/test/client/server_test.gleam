@@ -11,11 +11,11 @@ import gleam/httpc
 import gleam/int
 import gleam/result
 import gleam/string
+import session_view/connection_event
 import simplifile
 import support/addresses
 import support/internal/ffi_ws
 import tui/connection
-import tui/connection_event
 
 fn entropy() -> fn() -> Int {
   // Deterministic but distinct per call: tests never need real entropy.

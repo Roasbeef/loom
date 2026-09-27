@@ -12,15 +12,15 @@ import core/message.{type Usage, type UserBlock}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import tui/advisor_pending
-import tui/block_summary
-import tui/context_view
-import tui/goal_view
-import tui/live_jobs
-import tui/notes_view
-import tui/queued_input
-import tui/skills
-import tui/worktree_view
+import session_view/advisor_pending
+import session_view/block_summary
+import session_view/context_view
+import session_view/goal_view
+import session_view/live_jobs
+import session_view/notes_view
+import session_view/queued_input
+import session_view/skills
+import session_view/worktree_view
 
 /// One strand from a snapshot.
 pub type Strand {

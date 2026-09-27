@@ -37,9 +37,9 @@
 //// issue #530.
 
 import gleam/erlang/process.{type Subject}
+import session_view/connection_event
 import tui/attachment
 import tui/connection
-import tui/connection_event
 import tui/daemon
 import tui/herdr
 import tui/job

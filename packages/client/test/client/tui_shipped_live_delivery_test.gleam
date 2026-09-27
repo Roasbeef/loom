@@ -80,6 +80,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import host/bootstrap as native
 import host/endpoint
+import session_view/protocol as conversation
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
 import simplifile
 import support/internal/ffi_ws.{type Socket}
 import support/provider_http
@@ -90,10 +94,6 @@ import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol
 import tui/daemon/selection
 import tui/model as tui_model
-import tui/protocol as conversation
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/workspace
 import weft
 import weft/actor

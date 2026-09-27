@@ -1,6 +1,6 @@
 import gleam/string
-import tui/command
-import tui/protocol
+import session_view/command
+import session_view/protocol
 
 pub fn add_directory_defaults_to_read_and_keeps_spaces_test() {
   assert command.parse("/add-dir /work/shared files")

@@ -15,11 +15,11 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import host/build_identity
+import session_view/session_channel
+import session_view/snapshot
 import tui/daemon/selection as daemon_selection
 import tui/inbound
 import tui/model as tui_model
-import tui/session_channel
-import tui/snapshot
 import tui_test/pushed
 
 // A daemon whose build differs from the one the model was created with is

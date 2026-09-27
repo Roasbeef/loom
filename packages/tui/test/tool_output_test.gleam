@@ -18,7 +18,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import tui/connection_event
+import session_view/connection_event
 import tui/inbound
 import tui/model as tui_model
 import tui/transcript_lines

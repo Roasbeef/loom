@@ -68,9 +68,9 @@ import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
+import session_view/attempt
+import session_view/connection_event
 import simplifile
-import tui/attempt
-import tui/connection_event
 import tui/virtual_backend
 
 /// Which way a wheel event moved, so no reader has to carry the polarity

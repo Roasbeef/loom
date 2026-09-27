@@ -17,8 +17,8 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import host/bootstrap
+import session_view/connection_event
 import tui/connection
-import tui/connection_event
 import tui/daemon/protocol
 import weft/state_machine as sm
 

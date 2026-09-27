@@ -31,8 +31,15 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/block_summary
+import session_view/notes_view
+import session_view/protocol
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/stream_identity
+import session_view/text_hygiene
+import session_view/worktree_view
 import tui/advisor_history
-import tui/block_summary
 import tui/composer
 import tui/file_read_view
 import tui/model.{
@@ -41,15 +48,8 @@ import tui/model.{
   ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
   ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 }
-import tui/notes_view
-import tui/protocol
-import tui/snapshot
-import tui/snapshot_view
-import tui/stream_identity
-import tui/text_hygiene
 import tui/todo_panel
 import tui/tool_activity
-import tui/worktree_view
 
 // A stream stays separate from durable entries because the server may replay
 // the settled entry after its fragments. Keeping both in one list would render

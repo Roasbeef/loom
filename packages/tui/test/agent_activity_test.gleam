@@ -10,12 +10,12 @@ import gleam/dict
 import gleam/option.{None, Some}
 import machine/codec
 import machine/operation
+import session_view/protocol
+import session_view/snapshot
+import session_view/snapshot_view
 import tui
 import tui/agent_activity
 import tui/connection
-import tui/protocol
-import tui/snapshot
-import tui/snapshot_view
 import tui/workspace
 
 fn eid(n) {

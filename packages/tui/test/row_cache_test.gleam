@@ -12,14 +12,14 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
 import tui
 import tui/connection
-import tui/connection_event
 import tui/inbound
 import tui/model as tui_model
-import tui/protocol
-import tui/session_channel
-import tui/snapshot
 import tui/tool_activity
 import tui/workspace
 import tui_test/ffi_term

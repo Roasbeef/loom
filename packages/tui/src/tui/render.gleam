@@ -31,7 +31,16 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui/advisor_pending
+import session_view/advisor_pending
+import session_view/command
+import session_view/context_view
+import session_view/live_jobs
+import session_view/notes_view
+import session_view/protocol
+import session_view/queued_input
+import session_view/snapshot_view
+import session_view/text_hygiene
+import session_view/worktree_view
 import tui/agent_message_panel
 import tui/agent_messages
 import tui/agent_strip
@@ -39,15 +48,12 @@ import tui/agents
 import tui/appearance
 import tui/approval_panel
 import tui/collaboration_view
-import tui/command
 import tui/completion_summary
 import tui/composer
 import tui/context_panel
-import tui/context_view
 import tui/diff_panel
 import tui/focused_goal_panel
 import tui/layout
-import tui/live_jobs
 import tui/markdown
 import tui/model.{
   type Line, type Model, AgentInspector, ApprovalInspector, Assistant,
@@ -59,22 +65,16 @@ import tui/model.{
 } as tui_model
 import tui/model_selector
 import tui/note_panel
-import tui/notes_view
 import tui/peer_links
-import tui/protocol
 import tui/queue_editor
 import tui/queue_panel
-import tui/queued_input
 import tui/selection
 import tui/session_selector
-import tui/snapshot_view
 import tui/summary_panel
-import tui/text_hygiene
 import tui/theme
 import tui/todo_panel
 import tui/transcript_lines
 import tui/workspace
-import tui/worktree_view
 
 // The frame on screen is whatever `refresh_frame_cache` last decided to
 // render, including a frame it deliberately left stale to pace a burst. The

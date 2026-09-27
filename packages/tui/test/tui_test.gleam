@@ -16,16 +16,19 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit
+import session_view/command
+import session_view/connection_event
+import session_view/protocol.{ModelInfo, Strand}
+import session_view/session_channel
+import session_view/text_hygiene
 import simplifile
 import snapshot_test
 import tui
 import tui/agent_view
 import tui/agents
 import tui/buffered
-import tui/command
 import tui/composer
 import tui/connection
-import tui/connection_event
 import tui/frame
 import tui/image_drop
 import tui/inbound
@@ -38,13 +41,10 @@ import tui/model as tui_model
 import tui/model_selector
 import tui/pacing
 import tui/projection
-import tui/protocol.{ModelInfo, Strand}
 import tui/recording
 import tui/render
 import tui/selection
-import tui/session_channel
 import tui/submit
-import tui/text_hygiene
 import tui/theme
 import tui/transcript_lines
 import tui/virtual_backend

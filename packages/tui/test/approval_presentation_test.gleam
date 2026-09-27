@@ -14,8 +14,8 @@ import gleam/list
 import gleam/option.{None}
 import gleam/result
 import gleam/string
+import session_view/approval
 import tui/appearance
-import tui/approval
 import tui/approval_panel
 import tui/frame
 

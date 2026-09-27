@@ -16,15 +16,15 @@ import gleam/result
 import gleam/string
 import machine/codec
 import machine/operation
+import session_view/protocol
+import session_view/snapshot
+import session_view/snapshot_view
 import tui
 import tui/connection
 import tui/frame
 import tui/model as tui_model
-import tui/protocol
 import tui/render
 import tui/reviewer_status
-import tui/snapshot
-import tui/snapshot_view
 import tui/workspace
 
 fn model() {

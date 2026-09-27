@@ -19,10 +19,10 @@ import gleam/result
 import gleam/string
 import machine/codec
 import machine/operation
-import tui/protocol
-import tui/snapshot
-import tui/snapshot_view
-import tui/text_hygiene
+import session_view/protocol
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/text_hygiene
 
 /// The delivery state visible for one captured send.
 pub type State {

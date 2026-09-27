@@ -43,6 +43,10 @@ import gleam/string
 import host/bootstrap as native
 import host/endpoint
 import machine/strand
+import session_view/protocol as conversation
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
 import simplifile
 import support/enforcement
 import support/internal/ffi_daemon_socket
@@ -57,10 +61,6 @@ import tui/daemon/protocol
 import tui/daemon/selection
 import tui/model as tui_model
 import tui/peer_links
-import tui/protocol as conversation
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
 import tui/workspace
 import weft
 import weft/actor

@@ -11,19 +11,19 @@ import etui/widgets/textarea as text_area
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
 import tui
 import tui/bootstrap
 import tui/connection
-import tui/connection_event
 import tui/effect
 import tui/inbound
 import tui/job
 import tui/model as tui_model
-import tui/protocol
 import tui/runtime
-import tui/session_channel
 import tui/session_control
-import tui/snapshot
 import tui/workspace
 import weft
 

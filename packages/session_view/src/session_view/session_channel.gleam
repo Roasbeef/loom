@@ -36,13 +36,13 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui/approval
-import tui/attempt
-import tui/connection_event
-import tui/protocol
-import tui/session_wire
-import tui/snapshot
-import tui/snapshot_view
+import session_view/approval
+import session_view/attempt
+import session_view/connection_event
+import session_view/protocol
+import session_view/session_wire
+import session_view/snapshot
+import session_view/snapshot_view
 
 /// A completed cut or bounded command result for atomic model application.
 pub type Update {

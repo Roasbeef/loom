@@ -25,7 +25,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import tui/text_hygiene
+import session_view/text_hygiene
 
 /// The strand the advisor advises, and whose next prompt drains the
 /// queue this panel shows.

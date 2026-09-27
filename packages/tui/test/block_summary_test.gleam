@@ -15,16 +15,16 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/block_summary.{Key}
+import session_view/notes_view
+import session_view/protocol
+import session_view/session_channel
 import tui
-import tui/block_summary.{Key}
 import tui/connection
 import tui/frame
 import tui/inbound
 import tui/model as tui_model
-import tui/notes_view
-import tui/protocol
 import tui/render
-import tui/session_channel
 import tui/transcript_lines
 import tui/workspace
 import tui_test/gateway

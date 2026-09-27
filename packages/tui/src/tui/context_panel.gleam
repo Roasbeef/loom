@@ -8,8 +8,8 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import tui/context_view
-import tui/text_hygiene
+import session_view/context_view
+import session_view/text_hygiene
 import tui/theme
 
 /// Produces semantic context rows for the current detail mode.

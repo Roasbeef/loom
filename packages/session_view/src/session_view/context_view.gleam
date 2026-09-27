@@ -10,7 +10,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui/text_hygiene
+import session_view/text_hygiene
 
 /// Inspector visibility and detail are one choice.
 pub type Surface {

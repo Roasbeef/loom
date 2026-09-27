@@ -16,7 +16,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import machine/codec
 import machine/operation
-import tui/snapshot_view
+import session_view/snapshot_view
 
 /// One boundary in the compact transcript.
 pub type Item {

@@ -19,25 +19,25 @@ import gleam/result
 import gleam/string
 import machine/codec as machine_codec
 import machine/strand
+import session_view/advisor_pending
+import session_view/attempt
+import session_view/connection_event
+import session_view/goal_view
+import session_view/history_view
+import session_view/protocol
+import session_view/session_channel
+import session_view/snapshot
 import tui
-import tui/advisor_pending
 import tui/attachment
-import tui/attempt
 import tui/attempt_replay
 import tui/buffered
 import tui/composer
 import tui/connection
-import tui/connection_event
 import tui/frame
-import tui/goal_view
-import tui/history_view
 import tui/inbound
 import tui/interaction
 import tui/model as tui_model
-import tui/protocol
 import tui/recording
-import tui/session_channel
-import tui/snapshot
 import tui/surfaces
 import tui/virtual_backend
 import tui/workspace

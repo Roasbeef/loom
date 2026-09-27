@@ -5,7 +5,7 @@
 
 import etui/widgets/textarea
 import gleam/option.{type Option, None, Some}
-import tui/queued_input.{type Document}
+import session_view/queued_input.{type Document}
 
 /// Whether the queue inspector or a retained draft is visible.
 pub type Surface {

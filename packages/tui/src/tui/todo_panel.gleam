@@ -35,9 +35,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/set.{type Set}
 import gleam/string
-import tui/notes_view
-import tui/protocol
-import tui/text_hygiene
+import session_view/notes_view
+import session_view/protocol
+import session_view/text_hygiene
 import tui/theme
 
 /// The tool name whose results carry a board.

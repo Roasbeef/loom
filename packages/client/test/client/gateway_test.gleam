@@ -46,6 +46,9 @@ import runtime/effects
 import runtime/escalation as durable
 import runtime/writer
 import session/session
+import session_view/advisor_pending as terminal_nudges
+import session_view/block_summary as terminal_summaries
+import session_view/notes_view as terminal_notes
 import simplifile
 import storage/access
 import storage/storage
@@ -54,9 +57,6 @@ import support/internal/ffi_memory
 import support/tool_registry
 import tools/directory_access
 import tools/tool
-import tui/advisor_pending as terminal_nudges
-import tui/block_summary as terminal_summaries
-import tui/notes_view as terminal_notes
 import weft
 import weft/actor
 import weft/poll

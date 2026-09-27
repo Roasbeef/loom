@@ -30,7 +30,7 @@ import mork/document.{
   RefLink, Relative, Right, SoftBreak, Strikethrough, Strong, THead, Table, Text,
   ThematicBreak, lookup_link,
 }
-import tui/text_hygiene
+import session_view/text_hygiene
 import tui/theme
 
 type InlinePart {

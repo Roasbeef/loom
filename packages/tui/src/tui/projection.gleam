@@ -19,6 +19,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import session_view/notes_view
 import tui/advisor_history
 import tui/composer
 import tui/layout
@@ -28,7 +29,6 @@ import tui/model.{
   ReasoningDigest, Spacer, SummarizedAdvice, SummarizedReasoning, System,
   ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 } as tui_model
-import tui/notes_view
 import tui/render
 import tui/surfaces
 import tui/tool_activity

@@ -17,8 +17,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/set
 import gleam/string
-import tui/notes_view
-import tui/protocol
+import session_view/notes_view
+import session_view/protocol
 import tui/todo_panel
 
 fn board() -> Board {

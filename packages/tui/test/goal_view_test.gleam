@@ -25,22 +25,22 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/advisor_pending
+import session_view/command
+import session_view/connection_event
+import session_view/goal_view
+import session_view/notes_view
+import session_view/protocol.{type Strand, Strand}
+import session_view/session_channel
 import tui
-import tui/advisor_pending
 import tui/buffered
-import tui/command
 import tui/connection
-import tui/connection_event
 import tui/focused_goal_panel
 import tui/frame
-import tui/goal_view
 import tui/inbound
 import tui/model as tui_model
-import tui/notes_view
-import tui/protocol.{type Strand, Strand}
 import tui/render
 import tui/reviewer_status
-import tui/session_channel
 import tui/surfaces
 import tui/transcript_lines
 import tui/workspace

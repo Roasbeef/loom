@@ -21,8 +21,8 @@ import gleam/string
 import machine/codec as machine_codec
 import machine/operation
 import machine/strand
-import tui/protocol
-import tui/snapshot
+import session_view/protocol
+import session_view/snapshot
 
 /// One authenticated presence row, not a source of local mutation authority.
 pub type Peer {

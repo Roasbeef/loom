@@ -10,8 +10,8 @@ import gleam/bool
 import gleam/list
 import gleam/result
 import gleam/string
-import tui/connection_event
-import tui/snapshot
+import session_view/connection_event
+import session_view/snapshot
 
 /// An increasing terminal-local identity, never a server-issued identifier.
 pub type Id {

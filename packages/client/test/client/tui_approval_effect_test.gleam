@@ -39,6 +39,7 @@ import provider/http
 import provider/secret
 import runtime/api
 import runtime/escalation
+import session_view/approval
 import simplifile
 import storage/domain
 import storage/storage
@@ -46,7 +47,6 @@ import support/internal/ffi_ws
 import support/provider as provider_test
 import support/tui_driver
 import telemetry/log
-import tui/approval
 import tui/model as tui_model
 import weft
 import weft/poll

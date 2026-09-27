@@ -17,10 +17,10 @@ import gleam/result
 import gleam/string
 import host/bootstrap as host
 import host/endpoint as daemon_endpoint
+import session_view/connection_event
+import session_view/protocol
 import tui/connection
-import tui/connection_event
 import tui/daemon/bootstrap as daemon_bootstrap
-import tui/protocol
 import weft/poll
 
 const endpoint_version = 2

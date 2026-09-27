@@ -10,7 +10,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui/text_hygiene
+import session_view/text_hygiene
 
 /// One bounded file observation; path remains an opaque unsanitized identity.
 pub type File {

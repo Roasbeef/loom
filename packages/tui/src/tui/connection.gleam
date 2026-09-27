@@ -8,7 +8,7 @@
 import gleam/erlang/process.{type Subject}
 import gleam/result
 import host/websocket
-import tui/connection_event.{
+import session_view/connection_event.{
   type Message, Closed, Connected, Incoming, NetworkFault,
 }
 

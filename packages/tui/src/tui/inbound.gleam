@@ -33,27 +33,33 @@ import gleam/set
 import gleam/string
 import host/build_identity
 import machine/strand as machine_strand
+import session_view/approval
+import session_view/block_summary
+import session_view/command
+import session_view/connection_event
+import session_view/context_view
+import session_view/history_view
+import session_view/protocol.{Strand}
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/stream_identity
+import session_view/worktree_view
 import tui/advisor_history
 import tui/agent_message_panel
 import tui/agent_messages
 import tui/agent_strip
 import tui/agent_view
 import tui/agents
-import tui/approval
 import tui/approval_panel
-import tui/block_summary
 import tui/bootstrap
 import tui/buffered
 import tui/cache_miss
-import tui/command
 import tui/completion_summary
 import tui/composer
-import tui/connection_event
-import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
-import tui/history_view
 import tui/job
 import tui/layout
 import tui/model.{
@@ -69,20 +75,14 @@ import tui/model.{
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
-import tui/protocol.{Strand}
 import tui/queue_editor
 import tui/queue_panel
 import tui/recording
 import tui/render
 import tui/reviewer_status
-import tui/session_channel
-import tui/snapshot
-import tui/snapshot_view
-import tui/stream_identity
 import tui/surfaces
 import tui/todo_panel
 import tui/transcript_lines
-import tui/worktree_view
 
 /// The authenticated build belongs to the retained control host. Projecting
 /// its mismatch on every coherent cut keeps attachment and later captures from

@@ -13,7 +13,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import tui/snapshot
+import session_view/snapshot
 
 fn expected() {
   snapshot.Expected("session", "epoch", "incarnation")

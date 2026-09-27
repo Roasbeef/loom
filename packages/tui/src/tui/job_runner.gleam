@@ -48,10 +48,10 @@ import gleam/erlang/process.{type Selector, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import session_view/connection_event
 import tui/bootstrap
 import tui/buffered
 import tui/connection
-import tui/connection_event
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection

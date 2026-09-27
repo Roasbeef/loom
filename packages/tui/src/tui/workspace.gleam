@@ -8,9 +8,9 @@ import gleam/bit_array
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/text_hygiene
 import simplifile
 import tui/internal/workspace_file
-import tui/text_hygiene
 
 /// The repository root and branch visible to the terminal process.
 pub type Context {

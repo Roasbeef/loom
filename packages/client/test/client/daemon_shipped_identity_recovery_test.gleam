@@ -23,6 +23,7 @@ import gleam/result
 import gleam/string
 import host/bootstrap as native
 import host/endpoint
+import session_view/session_channel
 import simplifile
 import sqlight
 import storage/catalogue
@@ -36,7 +37,6 @@ import tui/bootstrap as terminal_bootstrap
 import tui/daemon
 import tui/daemon/bootstrap
 import tui/daemon/protocol
-import tui/session_channel
 import weft
 import weft/actor
 import weft/poll

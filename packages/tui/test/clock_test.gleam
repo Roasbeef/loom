@@ -15,17 +15,17 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import session_view/connection_event
+import session_view/session_channel
+import session_view/snapshot
 import tui
 import tui/buffered
 import tui/connection
-import tui/connection_event
 import tui/frame
 import tui/model as tui_model
 import tui/msg
 import tui/pacing
 import tui/runtime
-import tui/session_channel
-import tui/snapshot
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway

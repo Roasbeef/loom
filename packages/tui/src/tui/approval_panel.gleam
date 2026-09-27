@@ -15,8 +15,8 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import tui/approval
-import tui/text_hygiene
+import session_view/approval
+import session_view/text_hygiene
 import tui/theme
 
 /// Explicit decisions offered beside the exact requested authority.

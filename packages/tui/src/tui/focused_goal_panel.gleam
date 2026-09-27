@@ -19,8 +19,8 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import tui/goal_view
-import tui/text_hygiene
+import session_view/goal_view
+import session_view/text_hygiene
 import tui/theme
 
 /// Whether the command lane already owns a goal request.

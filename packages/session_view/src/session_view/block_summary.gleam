@@ -32,7 +32,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set.{type Set}
-import tui/stream_identity
+import session_view/stream_identity
 
 /// The least source text, in bytes, a block needs before the daemon labels
 /// it: eight times the 64-cell digest. A copy of the server's
