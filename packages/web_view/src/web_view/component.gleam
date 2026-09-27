@@ -543,6 +543,20 @@ pub fn apply(
             "The daemon's reply to your last command was lost. It was not resent.",
           ),
         )
+
+      // The daemon's answer to the page's own command replaces whatever
+      // the page said before, as the terminal's footer does, so the notice
+      // always states the outcome of the latest command rather than an
+      // earlier refusal or a "sent" the daemon has since answered. The
+      // page's lane sends no read that expects a reply, so every
+      // acknowledgement and every refusal it sees answers a command this
+      // page issued. A refusal names its code, which the daemon chooses,
+      // and not its message.
+      session_channel.Acknowledged(command:, status:) ->
+        Model(..model, notice: Said(command <> " " <> status))
+      session_channel.RequestRefused(command:, code:, ..) ->
+        Model(..model, notice: Warned(command <> " refused: " <> code))
+
       session_channel.Auxiliary(protocol.UsageChanged(
         strand:,
         seq:,
@@ -552,11 +566,9 @@ pub fn apply(
       session_channel.HistoryPage(..)
       | session_channel.LookedUp(..)
       | session_channel.Auxiliary(..)
-      | session_channel.RequestRefused(..)
       | session_channel.Streamed(..)
       | session_channel.ToolStreamed(..)
-      | session_channel.Noticed(..)
-      | session_channel.Acknowledged(..) -> model
+      | session_channel.Noticed(..) -> model
     }
   })
 }

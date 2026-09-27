@@ -176,6 +176,65 @@ pub fn an_empty_or_oversized_draft_is_refused_before_the_lane_test() {
   assert page_fixture.commands(page_fixture.sent(wire)) == []
 }
 
+// The notice states the outcome of the latest command. A refusal the page
+// made itself is replaced by the next command that is sent, and that
+// "sent" by the daemon's acknowledgement of it.
+pub fn a_later_outcome_replaces_the_notice_test() {
+  let #(model, wire) = page("operator", [])
+  let model = send(model, [operator_page.Submitted("   ", operator.Prompt)])
+  assert component.notice(model) == component.Warned("Nothing to send.")
+
+  let model = send(model, [operator_page.Submitted("hi", operator.Prompt)])
+  assert component.notice(model) == component.Said("prompt sent")
+
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one prompt is one command"
+  let model =
+    send(model, [
+      reply(frame, "\"mutation_outcome\",\"body\":{\"status\":\"admitted\"}"),
+    ])
+  assert component.notice(model) == component.Said("prompt admitted")
+}
+
+// A command the daemon refuses replaces the "sent" notice with the
+// command's name and the refusal's code, never the daemon's message.
+pub fn a_refusal_replaces_the_sent_notice_test() {
+  let #(model, wire) = page("operator", [])
+  let model = send(model, [operator_page.Submitted("go left", operator.Steer)])
+  assert component.notice(model) == component.Said("steer sent")
+
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one steer is one command"
+  let model =
+    send(model, [
+      reply(
+        frame,
+        "\"error\",\"body\":{\"code\":\"conflict\",\"message\":\"<b>busy</b>\"}",
+      ),
+    ])
+  assert component.notice(model) == component.Warned("steer refused: conflict")
+}
+
+// The daemon's correlated reply to `frame`, a command the page sent: the
+// event and the body after `"event":`.
+fn reply(
+  frame: String,
+  event: String,
+) -> operator_page.Msg(process.Subject(String)) {
+  let assert Ok(#(_, after)) = string.split_once(frame, "\"id\":")
+    as "a command carries its request identity"
+  let assert Ok(#(id, _)) = string.split_once(after, ",")
+    as "the identity is followed by the command"
+  operator_page.Observed(component.Arrived(
+    [
+      connection_event.Incoming(
+        "{\"v\":2,\"reply_to\":" <> id <> ",\"event\":" <> event <> "}",
+      ),
+    ],
+    0,
+  ))
+}
+
 pub fn the_composer_refuses_any_field_it_does_not_offer_test() {
   assert operator_page.composition([#("draft", "hi")])
     == Ok(operator_page.Submitted("hi", operator.Prompt))

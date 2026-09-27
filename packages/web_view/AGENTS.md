@@ -72,8 +72,10 @@ page keys and nonces, and the relay into the session's gateway.
   `session_channel.next_due` (mapped to `Ticked`). Each source is one
   `server_component.select` from `init`, so its subjects belong to the
   component's process. Of the lane's updates,
-  `Captured` projects the page and `Auxiliary(UsageChanged)` feeds the cache
-  ledger and the roster.
+  `Captured` projects the page, `Auxiliary(UsageChanged)` feeds the cache
+  ledger and the roster, and `Submission`, `Acknowledged`,
+  `RequestRefused` and `UnknownOutcome` replace the operator's notice, so
+  it always states the outcome of the latest command.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in each chip, `<loom-fold>` around a settled
   turn's work, and `<loom-follow>` around the lane, which keeps the newest
