@@ -368,11 +368,11 @@ The survey of mailbox reads, at the commit this slice started from:
   which read through `connection.receive`, and the four places that call it:
   the wheel and drag arms of `apply_input`
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
-  key drain (`tui/interaction.gleam:1213` (`drain_connection`)) and the tick
+  key drain (`tui/interaction.gleam:1228` (`drain_connection`)) and the tick
   (`tui/tick.gleam:131` (`drain_connection`)). The attachment's reads:
-  `tui/attachment.gleam:408` (`prepare`),
-  `tui/attachment.gleam:455` (`drain`) and
-  `tui/attachment.gleam:513` (`settle`). The replay drain:
+  `tui/attachment.gleam:480` (`prepare`),
+  `tui/attachment.gleam:525` (`drain`) and
+  `tui/attachment.gleam:585` (`settle`). The replay drain:
   `tui/tick.gleam:172` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:129` (`drain_reconnect`)), the control reply
@@ -667,8 +667,9 @@ that waits for a real reply selects on `job_runner.selector`.
 (`sessions.start`) and the attachment attempt (`attachment.start_recorded`)
 and pulls the switch's run, which S5 moves. Adoption calls
 `connection.adopt` (in the local switch's adoption, which S5 deleted, and
-at `tui/attachment.gleam:563` (`connection.adopt`)), which creates nothing
-but reads whether the replacement socket's actor is alive. That read
+in the attachment's; phase 3 moved the call to
+`tui/runtime.gleam:258` (`connection.adopt`)), which creates nothing but
+reads whether the replacement socket's actor is alive. That read
 stays in the step until phase 3, which replaces etui's events with a
 domain message type; the runtime can then read the liveness when it
 delivers the message that carries the socket, and hand the answer to the
@@ -813,9 +814,9 @@ attempt and a quit both cancel the job before the cleanup.
   start inside `update`, in the process that created the model.
 
 **What the step still does itself.** It reads files, which a later slice
-moves, and adoption still calls `connection.adopt`
-(`tui/attachment.gleam:563` (`connection.adopt`)), which creates nothing but
-reads whether the socket's actor is alive. That read stays until phase 3,
+moves, and adoption still calls `connection.adopt` (phase 3 moved the
+call to `tui/runtime.gleam:258` (`connection.adopt`)), which creates
+nothing but reads whether the socket's actor is alive. That read stays until phase 3,
 when the runtime can read the liveness as it delivers the message that
 carries the socket and hand the answer to the reducer.
 
@@ -904,7 +905,7 @@ around it, at the commit this slice started from:
 
 | Read | Site | Where it ran | After S6 |
 |---|---|---|---|
-| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:124` | in the step | before the step, in `read_paste` at `tui/runtime.gleam:152` |
+| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:137` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:187` |
 | a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:451` | in the step | a job, `Configure` at `tui/job_runner.gleam:152` |
 | the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:515` | the attachment worker, since S5 | unchanged |
 | the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
@@ -1066,9 +1067,9 @@ jobs. Each has moved:
 | S6 | the pasted image read; the configuration resolution | `runtime.read_paste`; a keyed `Configure` job |
 
 Two reads remain in the step, and neither touches the file system. Adoption
-asks whether the replacement socket's actor is alive
-(`tui/attachment.gleam:563` (`connection.adopt`)). And the build-mismatch
-notice reads this client's build identity from two environment variables on
+asks whether the replacement socket's actor is alive (phase 3 moved the
+read to `tui/runtime.gleam:258` (`connection.adopt`)). And the
+build-mismatch notice reads this client's build identity from two environment variables on
 every coherent cut (`tui/inbound.gleam:103` (`build_identity`)). Phase 3
 takes both: once etui's events are replaced by a domain message type, the
 runtime can read the liveness when it delivers the message that carries the
@@ -1078,3 +1079,182 @@ Phase 3 also deletes the `Peer` branches that suppress effects during
 replay; they perform no I/O now, but they remain as control flow. Every
 other effect the step decides is a value in its returned list, and every
 other input it reads was put on the model by the runtime before the step.
+
+## Addendum: phase 3, the client's own message (2026-09-26)
+
+Phase 3 replaces etui's input event with a message type of the client's
+own, takes the last two host reads out of the step, and separates
+received traffic from reduction. Nothing above is changed by it, except
+the claim about `Peer` branches, which the survey below corrects.
+
+**The message.** `tui.step(msg.Msg, Model)` takes one of two things.
+`msg.Input(at, event)` is one event and the clock readings it is applied
+at, and the step reduces it. `msg.Arrived(arrivals)` is traffic the host
+received, and the step only files it (`tui/admission`): each message goes
+into the buffer or slot that waits for it, nothing is reduced, and no
+effect is returned. The event is in the client's terms: a key with the
+text it came from and the key it parses as, a paste with what reading its
+path found, a resize, the pointer, or a tick. `tui/keymap.translate`
+builds one from etui's event and only parses. What Escape means depends
+on whether a submission is waiting and which overlay is open, so that
+decision stays in the reducer, which has the model. `tui.update` keeps
+its signature and is `runtime.message`, then `runtime.receive`, then
+`step`, then `runtime.settle`.
+
+Phase 2 wrote the clocks and the pasted file's read onto the model before
+the step (`runtime.stamp`, `runtime.read_paste`). A Lustre runtime calls
+`update(model, msg)` and has no hook before it, so both now travel inside
+the input: `runtime.message` reads the clocks once and the pasted file,
+and `tui_model.start_step` stores the stamp before any reducer runs.
+`Model.dropped` and `image_drop.Dropped` are gone, because a read carried
+by its own paste's message cannot be attached to another paste or outlive
+its event. `Stamp` moved from `tui/model` to `tui/msg`. A recording is
+written from the event (`msg.recorded`), which writes the line
+`recording.of_input` wrote, so the format and its bytes are unchanged, and
+a replay still drives `tui.update` with etui's events decoded from the
+file.
+
+**Why admit-only arrivals.** Three designs were weighed. (A) Keep etui's
+tick and key as the only messages. That leaves the writes to the model
+before the step in place, and a Lustre host cannot make them. (B) One
+message per arrival, each reduced. That runs `settle_update` per message,
+needs a timer for the 250 ms reconcile the tick carries, and lets a reply
+received before an Escape be reduced ahead of it (ADR-010). (C), chosen,
+separates the two: arrivals are messages but only filed, and reduction
+stays at a tick or a key, in the fixed drain order. Every ordering phase
+2 kept is kept by construction, because the reducers take from the same
+buffers at the same points. A fourth design, waking the loop when traffic
+arrives instead of at the poll timeout, changes when a host delivers, not
+what the step does, and is deferred until idle latency is measured. Any
+such host delivers `Arrived` and then an input with `Ticked`; it never
+expects an arrival alone to be reduced, which would be design B.
+
+**Admission and the bound.** A frame is tagged with the inbox subject it
+was read from, and the subject is its source key. Admission files it into
+the adopted inbox or into the waiting attempt whose subject it names; a
+frame from any other subject came from a socket the model no longer reads
+and is not filed, which is the protocol model's S2 rule. Admission never
+drops a frame for capacity, since a dropped frame is a gap in the lane's
+sequence; past the bound it appends. The bound is the host's to keep:
+`runtime.arrivals` reads each mailbox up to the room its buffer has left
+(`buffered.waiting`, `attachment.frame_room`), which is phase 2's top-up
+moved, and what it does not read waits in the mailbox. It reads each
+subject from the model it is given, so after an adoption it reads the
+adopted inbox's subject and never the replaced one's. The terminal's host
+calls `admission.admit` directly, in the step's process, immediately
+before the step; a host that can only call `update` delivers the same
+traffic as `Arrived`. Job replies are admitted by key as `runtime.hold`
+admitted them. A reply dropped at admission that holds a socket or a
+control connection queues its release on the outbox, and the next input's
+step returns it, as in phase 2.
+
+**The two host reads.** The client's build identity, which the
+build-mismatch notice compares with the daemon's on every coherent cut, is
+read once when the model is created, into `Model.client_build`. Whether
+the socket an attempt would adopt is still alive is read by the host when
+it hands the attachment job's end over: `runtime.hold` turns the relay's
+`AllDelivered` for the waiting attempt into
+`job.Finished(SocketAlive | SocketGone(reason))`, reading the socket the
+attempt's lane holds (`attachment.adoptable_socket`), and the attempt
+adopts or fails on the answer, with the reasons it gave before. The read
+now happens when the end is received rather than when the tick settles
+it, at most one poll interval earlier; a socket can die after either
+read, and the adopted lane's transport-loss handling covers both. An
+unchecked end that reaches an attempt from a caller that bypassed the
+host is refused rather than adopted. After phase 3 the step reads no
+clock, file, mailbox, process or environment variable.
+
+**The `Peer` survey.** The phase 1 text above says about twenty `Peer`
+branches each decide whether they may write, and that phase 3 deletes
+them once the replay runtime drops effects. The survey found that wrong.
+During `loom replay`, `Model.channel` is `None`, so a replay's writes are
+already stopped by the absence of a lane, and its recorder and Herdr
+reporter are `None`. Of the sites that read the peer, three were
+unreachable in the shipped client, because the only constructor of
+`Attached` sets the channel in the same update and nothing clears it: the
+socket close in `retire_previous` and in `submit.quit`, and the direct
+write that was the only producer of `effect.Send`. They are deleted, with
+`effect.Send`, and `Attached` no longer carries a second copy of the
+socket. The rest change state or rendering (refusal and notice lines, the
+output rate, idle time, submission bookkeeping, the disconnected footer)
+and stay; deleting them changes replay frames. Two candidates were tried
+and kept. The `Replaying -> sent` arms in `inbound.send_prompt_to` and
+`submit.send_prompt_content` match the attached arm only while there is
+no lane, and the test fixture `pushed.attached()` is a replaying peer
+with a lane. The attached guard on the composer's pending marker in
+`submit.submit` is not redundant for the same fixtures: removing it
+failed four tests, one of them a live recording's replay. The clipboard
+flag, the one check that only gates an effect, stays as the host's choice
+at launch, because removing it would need a host mode in the core, which
+was declined. There is no separate replay runtime.
+
+**Orderings kept.** Escape before the drain: admission reduces nothing,
+so a key step still cancels before it drains. The tick drain order is
+unchanged in `tick.update_tick`. The swap: admission files only frames
+whose subject is the adopted inbox's or the attempt's, and the host reads
+the post-adoption subject. `models(1)` after `apply_cut`, quit's cancel
+order and the 250 ms reconcile live inside reducers this phase does not
+touch. The recording order: an input's line is still its step's first
+effect, and admission records nothing.
+
+**Tests and mutations.** `build_notice_test`, `keymap_test`,
+`socket_liveness_test` and `admission_test` are new, and the S2 swap
+regression in `runtime_receive_test` now also checks which subject the
+host reads after an adoption. `admission_test` includes twenty generated
+runs of frames, keys, submissions, Escapes and ticks that reduce exactly
+as they did with phase 2's receive. Tests that stepped with etui's event
+go through `tui_test/stepping`. Four tests were removed with the state
+they pinned: two for a socket with no lane, and two for a paste read held
+on the model. Each mutation below was applied alone and reverted.
+
+| Mutation | Tests that failed |
+|---|---|
+| a cut reads the build identity from the environment again | `build_notice_test` |
+| `translate` swaps the wheel direction | both `keymap_test` translation tests, and 17 scroll and history tests |
+| `start_step` does not store the input's stamp | 13 clock and cache-notice tests |
+| `start_step` records no input line | 2 in `recording_effects_test`, including `a_scripted_session_records_the_golden_bytes_test` |
+| the paste handler ignores the input's read | 3 `file_reads_test` paste tests |
+| `runtime.message` reads no pasted file | the same 3 |
+| `hold` passes the relay's end through unchecked | 4 adoption tests |
+| adoption ignores a gone socket | `a_socket_dead_before_the_end_arrives_fails_the_attempt_test` |
+| the step reads the socket's process again | `a_socket_that_dies_after_the_end_arrives_is_still_adopted_test` |
+| `Arrived` runs a tick after filing | 3 `admission_test` tests |
+| admission files a frame from any subject | 8 tests, including the S2 swap regression |
+| a frame is filed ahead of the held ones | 9 tests, including the golden recording |
+| the host reads a full batch whatever the buffer holds | the room test and `escape_holds_one_batch_and_ticks_drain_it_in_order_test` |
+| admission drops frames past the bound | `admission_never_drops_a_frame_for_capacity_test` |
+| the host files frames before job messages | none |
+
+The last is S5's uncaught mutation again and breaks no rule: an attempt's
+first frames are read one tick later.
+
+**Compile time.** The step's dispatch is a two-arm case: an input goes to
+`reduce`, which is the phase 2 step body with its `settle_update`
+boundary unchanged, and an arrival goes to `admission.admit`, a
+cross-module call. `update` is cross-module calls on its parameters
+(`docs/execution.md` §8). Measured with `erlc +time` on the generated
+modules, median of three, with the commit phase 2 ended at and phase 3's
+last code commit timed one after the other, wall time and
+`core_inline_module` before and after: `tui` 0.54 s and 0.024 s, 0.53 s
+and 0.024 s; `tui@tick` 0.53 s and 0.021 s, 0.55 s and 0.022 s;
+`tui@interaction` 2.58 s and 0.170 s, 2.60 s and 0.169 s; `tui@inbound`
+2.52 s and 0.127 s, 2.53 s and 0.126 s; `tui@submit` 1.16 s and 0.050 s,
+1.15 s and 0.050 s; `tui@model` 0.39 s and 0.015 s, 0.41 s and 0.017 s;
+`tui@attachment` 0.25 s and 0.008 s, 0.26 s and 0.008 s; `tui@pacing`
+0.21 s and 0.005 s, 0.21 s and 0.004 s. `tui@runtime` fell from 0.45 s
+and 0.017 s to 0.32 s and 0.009 s, as the slot logic left it for
+`tui@admission` (0.36 s and 0.013 s). `tui@msg` and `tui@keymap` compile
+in 0.21 s each.
+
+**What phase 4 extracts.** The core is the step behind `msg.Msg` and
+`effect.Effect`, `tui/admission`, and the reducers and projection they
+call. The host is `tui/runtime`, which reads clocks, files, mailboxes and
+process liveness and performs effects, `tui/job_runner`, and `tui/keymap`
+with etui. A Lustre server component supplies its own host: a selector
+that tags each socket frame with its subject and each job message with
+its key and dispatches `Arrived`, a timer that dispatches
+`Input(stamp, Ticked)`, and an interpreter for the effects. Under that
+host the bound is a buffer bound the host keeps itself, since a selector
+consumes what it matches. `keys.Key` and `backend.MouseButton` are etui
+types that remain in `msg.Event`; both are plain data, and a read-only
+view sends neither.
