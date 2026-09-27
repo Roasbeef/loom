@@ -19,8 +19,11 @@
 //// exactly as one the runtime received would, and the settling ticks of the
 //// next run take it from its slot. The candidate's frames inbox is known
 //// only once its `Prepared` has been admitted, so a frame that reaches the
-//// actor before that is discarded; before the lane subscribes the socket
-//// sends only `Connected`, which the lane ignores.
+//// actor before that is discarded. Usually that is `Connected`, which the
+//// lane ignores. A gateway that refuses after the upgrade can send
+//// `Closed` or `NetworkFault` first, and then the driver's lane fails at
+//// its deadline instead of at once; the shipped loop, which selects
+//// nothing, would still see the close.
 ////
 //// A sample is not a server barrier: the test must wait for the condition
 //// it needs, under a real deadline, before asserting convergence.

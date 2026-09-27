@@ -291,11 +291,13 @@ pub fn top_up(status: Status) -> Status {
 /// selector.
 ///
 /// A test driver hosted in an actor selects it between scripts, because an
-/// actor discards a message its selector does not match. The attempt's
-/// `Prepared` and outcomes are job messages, which the driver selects
-/// through `job_runner.selector`. The selector reads the mailbox, so it
-/// cannot return what the runtime already received; `accept` puts a
-/// selected frame behind the held ones.
+/// actor discards a message its selector does not match, and that includes
+/// frames that arrive after the capture, which the shipped loop leaves in
+/// the mailbox for the adopted lane. The attempt's `Prepared` and outcomes
+/// are job messages, which the driver selects through
+/// `job_runner.selector`. The selector reads the mailbox, so it cannot
+/// return what the runtime already received; `accept` puts a selected
+/// frame behind the held ones.
 ///
 /// ## Examples
 ///
@@ -317,10 +319,12 @@ pub fn select(
 /// Applies an already selected frame before draining any later mailbox
 /// message.
 ///
-/// The selected frame joins the held ones and the same drain the poll runs
-/// takes them in order, stopping at the capture. A frame after the
-/// capture, held or selected, stays in the inbox for the adopted lane,
-/// exactly as in the interactive loop. Like `poll`, it returns what it
+/// The selected frame joins the held ones. While the lane captures, the
+/// same drain the poll runs takes them in order, stopping at the capture.
+/// Before the lane exists, and after the capture, the frame is only held:
+/// the next poll drains it, or the adoption hands the inbox with it to the
+/// adopted lane, which is where the interactive loop's top-up would have
+/// put it. Like `poll`, it returns what it
 /// decided rather than performing it, and it measures the candidate
 /// channel's deadlines against `now`.
 ///
@@ -349,19 +353,26 @@ pub fn accept(
       }
     }
 
-    // A frame selected before the lane exists, or once the candidate has
-    // already captured its cut, is dropped rather than held: nothing would
-    // bound what a driver held while the attempt waits for its worker, and
-    // the adopted channel's 250 ms credited `catch_up` is what makes the
-    // drop lossless.
-    Idle
-    | Opening(_, Resolving)
-    | Opening(_, Published(..))
-    | Opening(_, Connecting(Candidate(captured: Some(_), ..), _)) -> #(
-      status,
+    // Held without a drain. What the driver holds here is what the
+    // interactive loop would leave in the mailbox for the same wait, and
+    // the attempt's deadline bounds that wait.
+    Opening(run, Published(prepared, frames)) -> #(
+      Opening(run, Published(prepared, buffered.push(frames, message))),
       None,
       [],
     )
+    Opening(
+      run,
+      Connecting(Candidate(captured: Some(_), ..) as candidate, frames),
+    ) -> #(
+      Opening(run, Connecting(candidate, buffered.push(frames, message))),
+      None,
+      [],
+    )
+
+    // `select` offers no frames inbox for these, so nothing selected can
+    // name one.
+    Idle | Opening(_, Resolving) -> #(status, None, [])
   }
 }
 
