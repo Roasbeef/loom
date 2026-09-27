@@ -32,9 +32,11 @@ type Server struct {
 	// "is the helper free to start another execution".
 	execFreed chan struct{}
 
-	// waitDone is closed after that exec_exit frame has been written.
-	// It answers "has the terminal frame reached the channel", which is
-	// the weaker moment reapRunning must not exit before.
+	// waitDone is closed after that exec_exit frame has been written and
+	// the execution's cgroup removed, and not before the previous
+	// execution's waitDone. It answers "has the terminal frame reached the
+	// channel", which is the weaker moment reapRunning must not exit
+	// before.
 	waitDone chan struct{}
 }
 
@@ -201,19 +203,27 @@ func (s *Server) handleExecStart(f framing.Frame) {
 	// only after the write leaves a window in which the helper is idle
 	// and still calls itself busy.
 	//
-	// Nothing is lost by freeing early. Wait joins the output pumps, so
+	// Nothing is lost by freeing early. Settle joins the output pumps, so
 	// no further exec_out can be emitted for this id, and the one frame
 	// still owed carries this execution's id, which is not the next
 	// one's. Conn.Write is mutex-serialized and emits a frame in a
 	// single Write, so that frame cannot interleave with the next
 	// execution's bytes even if a broker dispatched without waiting for
 	// it.
+	//
+	// The cgroup's removal follows the frame, because it waits out the
+	// jail's namespace teardown and a broker reading exec_exit has no use
+	// for that wait. It still precedes done, and
+	// each execution's done also waits for the previous one's, so the
+	// join in reapRunning covers every removal still in flight, not only
+	// the current execution's.
 	freed := make(chan struct{})
 	done := make(chan struct{})
+	previous := s.waitDone
 	s.execFreed = freed
 	s.waitDone = done
 	go func() {
-		res := ex.Wait()
+		res, release := ex.Settle()
 		close(freed)
 		_ = s.conn.Write(f.ID, framing.KindExecExit, framing.ExecExit{
 			Code:            res.Code,
@@ -228,6 +238,10 @@ func (s *Server) handleExecStart(f framing.Frame) {
 			TimedOut:        res.TimedOut,
 			Cancelled:       res.Cancelled,
 		})
+		release()
+		if previous != nil {
+			<-previous
+		}
 		close(done)
 	}()
 }
