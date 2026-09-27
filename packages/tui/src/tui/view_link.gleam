@@ -1,4 +1,4 @@
-//// How `loom --ui` hands the web view's link to the person
+//// How `loom ui` hands the web view's link to the person
 //// (protocol-change/051, addendum "Opening the browser").
 ////
 //// The link carries a single-use ticket, so where the link goes is the whole
@@ -34,7 +34,7 @@ import host/bootstrap as host
 import tui/internal/ffi_terminal
 import weft
 
-/// What `loom --ui` does with a minted link.
+/// What `loom ui` does with a minted link.
 pub type Delivery {
   /// Print the link and nothing else. The default.
   PrintLink
@@ -66,7 +66,7 @@ pub type Launched {
   StillRunning
 }
 
-/// How long `loom --ui --open` waits for the opener before it exits and
+/// How long `loom ui --open` waits for the opener before it exits and
 /// leaves the opener running.
 pub const opener_wait_ms = 5000
 
@@ -166,7 +166,7 @@ pub fn platform_opener(
   }
 }
 
-/// The opener `loom --ui --open` uses: the platform its launcher exported,
+/// The opener `loom ui --open` uses: the platform its launcher exported,
 /// found on `PATH`, and waited on for at most `opener_wait_ms`.
 ///
 /// ## Examples

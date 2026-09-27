@@ -74,7 +74,7 @@ pub type PeerWake {
 
 /// Requests are explicit; metadata reads never imply an open.
 /// What a web page may do: the ceiling `ui.link` asks for. An operator's
-/// page is asked for only with `loom --ui --operate`.
+/// page is asked for only with `loom ui --operate`.
 pub type WebPage {
   /// A page that follows the session and sends nothing.
   ObserverPage

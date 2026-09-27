@@ -351,7 +351,7 @@ fn pad(index: Int) -> String {
 
 // protocol-change/051. A daemon started with `--ui` names the view's route
 // prefix in its hello; one started without it names nothing, and
-// `loom --ui` refuses it with the reason rather than relaunching it.
+// `loom ui` refuses it with the reason rather than relaunching it.
 pub fn a_hello_names_the_web_view_only_when_it_is_served_test() {
   assert protocol.decode(
       "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"e\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536},\"ui\":{\"path\":\"/ui\"}}}",

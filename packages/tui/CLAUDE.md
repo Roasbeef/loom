@@ -248,9 +248,9 @@ one normal resolver launch. Polling and startup share the deadline, and session
 open remains outside that polling loop. Held prompt returns restore text in the
 composer; image bytes must be reattached by the operator.
 
-## Web view link (`loom --ui`)
+## Web view link (`loom ui`)
 
-`loom --ui --session <id> [--operate]` (`tui.run_view`) resolves the daemon through
+`loom ui --session <id> [--operate]` (`tui.run_view`) resolves the daemon through
 `bootstrap.resolve_viewing_daemon`, which adds `--ui` to the launch
 arguments only when it starts one. A running daemon whose `hello` has
 `view: NoWebView` is refused by `view_served` with status 1 and never
@@ -261,7 +261,10 @@ the listener's http origin. `UiLink(session_id, page)` carries a
 wire, and `OperatorPage` with `--operate`, which sends `page:"operator"`.
 The page is a ceiling the daemon caps the principal's membership with; it
 never grants a role (protocol-change/051, the operator addendum).
-`tui.view_request` parses the words after `--ui` into a `ViewRequest`
+`parse_launch` routes `ui` in first position, or `--ui` anywhere in argv
+(the older spelling, taken out with `take_switch`), to the one parser
+`tui.view_request`; `tui.launch_view` is the test seam over that routing.
+`tui.view_request` parses the remaining words into a `ViewRequest`
 carrying that `page` and a `delivery`, which is `view_link.PrintLink` or,
 with `--open`, `view_link.OpenInBrowser`. `view_link.deliver` always emits
 the link first, then runs the opener when asked; a failed opener is a
