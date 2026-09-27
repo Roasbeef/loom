@@ -254,6 +254,63 @@ pub fn a_notice_in_ready_issues_its_catch_up_before_the_idle_refresh_test() {
     as "the capture that paints the answer is the notice's, not a refresh's"
 }
 
+fn feed_at(channel, messages, now) {
+  list.fold(messages, #(channel, []), fn(acc, message) {
+    let #(channel, updates) = session_channel.receive(acc.0, message, now:)
+    #(channel, list.append(acc.1, updates))
+  })
+}
+
+// A lane that has seen no push cannot tell a quiet session from a daemon
+// that never pushes, so it keeps the 250 ms refresh. The first pushed frame
+// is the evidence that commits will be announced, and from the next capture
+// on the refresh only repairs a lost final notice, every five seconds.
+pub fn the_idle_refresh_lengthens_once_the_daemon_has_pushed_test() {
+  let fresh =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  let #(ready, _) = feed_at(fresh, transfer(1, "1:1", "recent", 10), 100)
+  assert session_channel.next_due(ready)
+    == Some(100 + session_channel.polling_refresh_ms)
+    as "a lane that has heard no push refreshes at the polling interval"
+
+  // The refresh runs, and its capture completes with nothing pushed yet.
+  let #(refreshing, _) = session_channel.tick(ready, now: 350)
+  assert session_channel.next_due(refreshing) == Some(350 + 30_000)
+    as "a capture in flight is due at its deadline"
+  let #(polled, _) =
+    feed_at(refreshing, transfer(4, "1:2", "catch_up", 10), 360)
+  assert session_channel.next_due(polled) == Some(360 + 250)
+
+  // A delta is a push like any other. It moves no instant already set.
+  let #(pushed, _) =
+    session_channel.receive(polled, delta("main", "o", "x"), now: 400)
+  assert session_channel.next_due(pushed) == Some(610)
+    as "the first push does not move the refresh already scheduled"
+
+  let #(refreshing, _) = session_channel.tick(pushed, now: 610)
+  let #(settled, _) =
+    feed_at(refreshing, transfer(7, "1:3", "catch_up", 10), 620)
+  assert session_channel.next_due(settled)
+    == Some(620 + session_channel.pushing_refresh_ms)
+    as "the capture after a push schedules the pushing interval"
+  let #(early, updates) = session_channel.tick(settled, now: 5619)
+  assert updates == [] && !session_channel.in_flight(early)
+    as "nothing happens before the refresh instant"
+  let #(due, _) = session_channel.tick(settled, now: 5620)
+  assert session_channel.in_flight(due) as "the refresh runs at its instant"
+}
+
+// A closed lane and a lane waiting on its first cut have nothing a tick can
+// do, so a host arms no wake-up for either.
+pub fn a_lane_with_nothing_a_tick_can_do_names_no_due_reading_test() {
+  let fresh =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  assert session_channel.next_due(fresh) == Some(30_000)
+    as "the initial subscribe is in flight from the start"
+  let closed = session_channel.close(fresh)
+  assert session_channel.next_due(closed) == None
+}
+
 pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {
   let ready = quiet(synchronized())
 

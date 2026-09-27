@@ -14,11 +14,35 @@
 //// a frame that does not decode closes the socket as any bad frame does.
 //// What a commit
 //// notice does is move a catch-up earlier: the lane issues it now, or at the
-//// moment the outstanding request finishes, rather than at the 250 ms idle
+//// moment the outstanding request finishes, rather than at the idle
 //// refresh. That makes a notice idempotent and order-free — a sequence
 //// already held says nothing new, a lost notice is repaired by the refresh,
 //// and a daemon that pushes nothing leaves the refresh as the only path,
 //// which is the terminal's behaviour before live delivery existed.
+////
+//// The refresh has two intervals, and the lane picks between them by what
+//// it has seen rather than by what the daemon claims. A lane starts
+//// `Polling`, refreshing an idle cut every `polling_refresh_ms` (250 ms),
+//// because until a frame has been pushed to it the refresh is the only way
+//// it learns that the session moved. The first pushed frame moves it to
+//// `Pushing` for the rest of its life, and from then on an idle cut is
+//// refreshed every `pushing_refresh_ms` (5 s). The hello is not used for
+//// this: it carries no push capability, and a lane that reconnects may be
+//// talking to an older daemon than the one that pushed before.
+////
+//// No gap detection is needed for the longer interval. A notice carries
+//// only a sequence, and a notice at or above the cut's `next_seq` catches
+//// up from `cut.next_seq`, so a lost notice followed by any later one loses
+//// nothing: the later catch-up fetches both commits. What the 5 s refresh
+//// covers is a lost *final* notice, the last commit before the session goes
+//// quiet, which no later notice will repair. That case, and a daemon that
+//// stops pushing after it started, cost at most one refresh interval of
+//// staleness.
+////
+//// A host drives the refresh and the deadlines by calling `tick`, and asks
+//// `next_due` when it next has to. Neither host polls on a fixed cadence:
+//// each arms one wake-up for `next_due` and reduces arriving traffic as it
+//// arrives.
 ////
 //// Because a notice may legitimately do nothing, the lane reports every one
 //// it receives as `Noticed` before deciding what to do with it. That is the
@@ -151,8 +175,8 @@ pub type Capture {
   /// A pushed frame — a commit notice, presence or attachment — asked for it.
   Notified
 
-  /// The 250 ms idle refresh, which is the recovery path and the only path
-  /// on a daemon that pushes nothing.
+  /// The idle refresh, which is the recovery path and the only path on a
+  /// daemon that pushes nothing.
   Refreshed
 
   /// The lane's own subscribe or a recorded command produced it.
@@ -192,8 +216,43 @@ type Refresh {
   /// A notice arrived mid-request; capture at the next ready transition.
   Due
 
-  /// Nothing is owed; the 250 ms idle refresh is the only capture cadence.
+  /// Nothing is owed; the idle refresh is the only capture cadence.
   Idle
+}
+
+/// How long a `Polling` lane waits with an idle cut before it captures
+/// again, in milliseconds.
+///
+/// A lane that has seen no pushed frame cannot tell a quiet session from a
+/// daemon that never pushes, so it refreshes at the cadence the terminal
+/// used before live delivery existed.
+pub const polling_refresh_ms = 250
+
+/// How long a `Pushing` lane waits with an idle cut before it captures
+/// again, in milliseconds.
+///
+/// Once the daemon has pushed, every commit it makes is announced, so the
+/// refresh only repairs a lost final notice. Five seconds bounds that
+/// staleness while an idle client asks for one capture where it used to
+/// ask for twenty.
+pub const pushing_refresh_ms = 5000
+
+/// Whether this lane has evidence that its daemon pushes.
+///
+/// The evidence is a pushed frame the lane itself received, and nothing
+/// else: the hello names no capability, and a lane replacing another may
+/// face an older daemon. The value only ever moves from `Polling` to
+/// `Pushing`, since a daemon that stops pushing is still covered by the
+/// longer refresh.
+type Delivery {
+  /// No pushed frame has arrived; the idle refresh is the lane's only way
+  /// to learn that the session moved, so it runs every
+  /// `polling_refresh_ms`.
+  Polling
+
+  /// A pushed frame has arrived; the idle refresh runs every
+  /// `pushing_refresh_ms` and only repairs a lost final notice.
+  Pushing
 }
 
 type Projection {
@@ -266,6 +325,9 @@ pub opaque type Channel(socket, recorder) {
     refresh_at: Int,
     refresh: Refresh,
     trigger: Capture,
+    /// Whether a pushed frame has reached this lane, which picks the idle
+    /// refresh interval.
+    delivery: Delivery,
   )
 }
 
@@ -345,6 +407,7 @@ pub fn start_resumed(
     refresh_at: now,
     refresh: Idle,
     trigger: Requested,
+    delivery: Polling,
   )
   |> note(attempt.Started(_, expected))
   |> emit(protocol.subscribe_from(1, expected.session, retained.next_seq))
@@ -400,6 +463,7 @@ fn initial(socket, expected, trace, now: Int) {
     refresh_at: now,
     refresh: Idle,
     trigger: Requested,
+    delivery: Polling,
   )
 }
 
@@ -485,6 +549,7 @@ pub fn state(channel: Channel(socket, recorder)) -> Channel(Nil, Nil) {
     refresh_at: channel.refresh_at,
     refresh: channel.refresh,
     trigger: channel.trigger,
+    delivery: channel.delivery,
   )
 }
 
@@ -712,11 +777,17 @@ pub fn receive(
   }
 }
 
+// Every pushed frame, of whatever kind, is the evidence `Delivery` waits
+// for, so the switch to `Pushing` happens before the frame is dispatched,
+// including for a kind this client drops. The switch moves no deadline and
+// no refresh instant already set: the next capture is the first to be
+// followed by the longer refresh.
 fn apply_pushed(
   channel: Channel(socket, recorder),
   event: protocol.Event,
   now: Int,
 ) {
+  let channel = Channel(..channel, delivery: Pushing)
   case event {
     protocol.Committed(strand: _, seq:) -> notified(channel, seq, now)
 
@@ -996,7 +1067,7 @@ fn apply_reply(
               phase: Ready,
               cut: Some(cut),
               attachment: Some(cut.attachment),
-              refresh_at: now + 250,
+              refresh_at: now + refresh_interval(channel.delivery),
             )
           send_queued(channel, [Captured(cut, view, channel.trigger)], now)
         }
@@ -1095,10 +1166,17 @@ fn credit(
   emit(next, session_wire.next(channel.next_id, id, index))
 }
 
-/// Drives idle catch-up at 250ms and fails an expired in-flight request closed.
+/// Drives the idle catch-up and fails an expired in-flight request closed.
 ///
-/// Capture credit does not reset the original thirty-second transfer deadline.
-/// The enclosing Weft switch task separately bounds initial candidate lifetime.
+/// An idle lane with a cut captures again once its refresh instant has
+/// passed, which is `polling_refresh_ms` or `pushing_refresh_ms` after its
+/// last capture completed, by the lane's `Delivery`. An in-flight request
+/// fails the lane at its deadline. Capture credit does not reset the
+/// original thirty-second transfer deadline. The enclosing Weft switch task
+/// separately bounds initial candidate lifetime.
+///
+/// A tick at any other time does nothing, so a host may tick as often as it
+/// likes; `next_due` says when a tick is next able to act.
 ///
 /// ## Examples
 ///
@@ -1124,6 +1202,46 @@ pub fn tick(
         }
         Some(_) | None -> #(channel, [])
       }
+  }
+}
+
+/// The earliest reading at which `tick` would act on this lane, or `None`
+/// when no tick can act until something else happens to it.
+///
+/// While a request is in flight this is its deadline, at which `tick` fails
+/// the lane. While the lane is ready with a cut it is the refresh instant,
+/// at which `tick` issues the catch-up. A lane with no cut, or a closed one,
+/// has nothing a tick could do: the first waits for its initial reply,
+/// which arrives as a frame, and the second is finished.
+///
+/// A host arms one wake-up for this reading instead of ticking on a fixed
+/// cadence. The contract is exact in both directions: `tick` at any reading
+/// before the one returned changes nothing, and `tick` at the reading
+/// returned acts. A host that wakes late acts late, and never misses the
+/// deadline or the refresh, because `tick` compares with `>=`. The answer
+/// changes with every transition, so a host asks again after each one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lane = session_channel.start(socket, expected, now: 1000)
+/// assert session_channel.next_due(lane) == Some(31_000)
+/// ```
+pub fn next_due(channel: Channel(socket, recorder)) -> Option(Int) {
+  case channel.phase, channel.cut {
+    AwaitingBegin, _ | Receiving(..), _ | AwaitingReply(..), _ ->
+      Some(channel.deadline)
+    Ready, Some(_) -> Some(channel.refresh_at)
+    Ready, None | Closed, _ -> None
+  }
+}
+
+// The idle refresh interval a lane uses after a capture, by what it has
+// seen of its daemon.
+fn refresh_interval(delivery: Delivery) -> Int {
+  case delivery {
+    Polling -> polling_refresh_ms
+    Pushing -> pushing_refresh_ms
   }
 }
 
