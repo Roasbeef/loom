@@ -604,7 +604,7 @@ fn used(
               ),
             )
           case covered {
-            Some(next_seq) -> settle_cache(model, next_seq) |> relaned
+            Some(next_seq) -> settle_pushed(model, next_seq)
             None -> restripped(model)
           }
         }
@@ -633,6 +633,18 @@ fn settle_cache(model: Model(socket), next_seq: Int) -> Model(socket) {
   let #(cache, missed) =
     cache_watch.settle(model.cache, next_seq, cache_watch.Live)
   list.fold(missed, Model(..model, cache:), noted)
+}
+
+// A pushed row the last capture already covers is settled at once. A push
+// usually runs ahead of the captures, so settling finds nothing and files
+// no notice; the lane is projected again only when a miss was found, and
+// otherwise only the strip, whose context size or outlook may have moved.
+fn settle_pushed(model: Model(socket), next_seq: Int) -> Model(socket) {
+  let settled = settle_cache(model, next_seq)
+  case settled.notices == model.notices {
+    True -> restripped(settled)
+    False -> relaned(settled)
+  }
 }
 
 // Files one miss as a notice after the newest entry its strand holds, as
