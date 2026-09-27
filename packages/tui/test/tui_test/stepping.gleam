@@ -40,5 +40,5 @@ pub fn step(
 /// let message = stepping.message(backend.Tick, model)
 /// ```
 pub fn message(event: backend.InputEvent, model: tui_model.Model) -> msg.Msg {
-  msg.Msg(model.stamp, keymap.translate(event, Ok(None)))
+  msg.Input(model.stamp, keymap.translate(event, Ok(None)))
 }

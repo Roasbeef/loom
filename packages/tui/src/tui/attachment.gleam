@@ -289,36 +289,73 @@ pub fn poll(
   }
 }
 
-/// Receives the attempt's frames, up to what the next step can consume,
-/// without blocking.
+/// The frames subject the host should read for this attempt, and how many
+/// messages the next step has room for, when the attempt still reads
+/// frames.
 ///
-/// `runtime.receive` calls it before every step, after it has admitted the
-/// job's own messages, so a `Prepared` admitted in the same receive has its
-/// first frames topped up with it. Frames are received until the initial
-/// cut is captured, forty at most; frames that arrive after the capture
-/// stay in the mailbox for the adopted lane, as they always have. The
-/// `Prepared` and the worker's outcomes are job messages, which the runtime
-/// admits through `admit`.
+/// The host reads at most that many before every step and delivers them
+/// as `msg.Frame` arrivals, after it has delivered the job's own messages,
+/// so a `Prepared` admitted in the same receive has its first frames read
+/// with it. Frames are read until the initial cut is captured, forty held
+/// at most; frames that arrive after the capture stay in the mailbox for
+/// the adopted lane, as they always have. The `Prepared` and the worker's
+/// outcomes are job messages, which admission files through `admit`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let pending = attachment.top_up(pending)
+/// case attachment.frame_room(pending) {
+///   Ok(#(subject, room)) -> buffered.waiting(subject, room)
+///   Error(Nil) -> []
+/// }
 /// ```
-pub fn top_up(status: Status) -> Status {
+@internal
+pub fn frame_room(
+  status: Status,
+) -> Result(#(Subject(connection.Message), Int), Nil) {
   case status {
-    Idle | Opening(_, Resolving) -> status
+    Opening(_, Published(_, frames))
+    | Opening(_, Connecting(Candidate(captured: None, ..), frames)) ->
+      Ok(#(buffered.sender(frames), frame_batch - buffered.held(frames)))
+    Idle
+    | Opening(_, Resolving)
+    | Opening(_, Connecting(Candidate(captured: Some(_), ..), _)) -> Error(Nil)
+  }
+}
+
+/// Files one frame the host received from `source` into this attempt's
+/// frames inbox, behind the frames it already holds.
+///
+/// The error means the frame is not this attempt's: the attempt has no
+/// frames inbox yet, or the inbox is another subject. A frame is filed
+/// whatever the attempt's stage, so one that arrives after the capture is
+/// kept for the adopted lane, which the adoption hands the inbox to.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(pending) = attachment.push_frame(pending, source, message)
+/// ```
+@internal
+pub fn push_frame(
+  status: Status,
+  source: Subject(connection.Message),
+  message: connection.Message,
+) -> Result(Status, Nil) {
+  case status {
     Opening(run, Published(prepared, frames)) ->
-      Opening(
-        run,
-        Published(prepared, buffered.top_up(frames, up_to: frame_batch)),
-      )
-    Opening(run, Connecting(Candidate(captured: None, ..) as candidate, frames)) ->
-      Opening(
-        run,
-        Connecting(candidate, buffered.top_up(frames, up_to: frame_batch)),
-      )
-    Opening(_, Connecting(Candidate(captured: Some(_), ..), _)) -> status
+      case buffered.sender(frames) == source {
+        True ->
+          Ok(Opening(run, Published(prepared, buffered.push(frames, message))))
+        False -> Error(Nil)
+      }
+    Opening(run, Connecting(candidate, frames)) ->
+      case buffered.sender(frames) == source {
+        True ->
+          Ok(Opening(run, Connecting(candidate, buffered.push(frames, message))))
+        False -> Error(Nil)
+      }
+    Idle | Opening(_, Resolving) -> Error(Nil)
   }
 }
 
@@ -358,7 +395,7 @@ pub fn select(
 /// same drain the poll runs takes them in order, stopping at the capture.
 /// Before the lane exists, and after the capture, the frame is only held:
 /// the next poll drains it, or the adoption hands the inbox with it to the
-/// adopted lane, which is where the interactive loop's top-up would have
+/// adopted lane, which is where the interactive loop's receive would have
 /// put it. Like `poll`, it returns what it
 /// decided rather than performing it, and it measures the candidate
 /// channel's deadlines against `now`.

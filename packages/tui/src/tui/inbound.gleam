@@ -960,7 +960,7 @@ pub fn decide(
 /// the connection inbox before this step.
 ///
 /// It reads no mailbox. A message that arrived during the step waits for
-/// the next one, whose top-up receives it behind anything still held.
+/// the next one, whose receive files it behind anything still held.
 /// Each message is taken from whatever inbox the model holds at that
 /// moment, so a drain that follows an adoption in the same step reads the
 /// adopted inbox and never the one it replaced.

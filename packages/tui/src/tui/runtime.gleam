@@ -18,11 +18,12 @@
 //// input's line is queued before the reducer runs, and every note after it
 //// is queued where its cause was decided.
 ////
-//// It also receives the step's traffic. `receive` runs before the step and
-//// tops up every inbox the model holds from its mailbox, each to the most
-//// the step can consume from it, and the reducers take from those buffers
-//// instead of reading a mailbox. What arrives during the step waits for
-//// the next one.
+//// It also receives the step's traffic. `receive` runs before the step,
+//// reads every inbox the model holds from its mailbox, each up to the room
+//// its buffer has left (`arrivals`), and has the step's admission file what
+//// it read (`tui/admission`); the reducers take from those buffers instead
+//// of reading a mailbox. What arrives during the step waits for the next
+//// one.
 ////
 //// And it runs the background jobs the reducers ask for. `perform` starts
 //// and cancels them in `Model.running`, a table no reducer reads, and
@@ -47,6 +48,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
+import tui/admission
 import tui/attachment
 import tui/buffered
 import tui/connection
@@ -57,11 +59,8 @@ import tui/image_drop
 import tui/job
 import tui/job_runner
 import tui/keymap
-import tui/model.{
-  type Model, ActivityAsking, ActivityDue, ActivityResting, ControlRequest,
-  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-} as tui_model
-import tui/msg.{type Msg, type Stamp, Msg, Stamp}
+import tui/model.{type Model, Model} as tui_model
+import tui/msg.{type Msg, type Stamp, Stamp}
 import tui/recording
 import tui/session_channel
 import weft
@@ -85,23 +84,27 @@ pub fn stamp(model: Model) -> Model {
   )
 }
 
-/// Receives the traffic for one event, before the step, into the inboxes
-/// the model holds.
+/// Receives the traffic for one event, before the step, and has the step's
+/// admission file it into the inboxes and slots the model holds.
 ///
-/// Each inbox is topped up to what the step can take from it: the
-/// connection inbox to `connection_batch`, the drain a tick or a key runs;
-/// the replay inbox to one event, which is all a tick applies; and the
-/// provisional attachment's inboxes through `attachment.top_up`. An inbox
-/// the step did not drain keeps what it holds and receives nothing more, so
-/// no buffer grows past its bound.
+/// Every running job's messages are received in full and handed over first
+/// (`hold`). A job sends at most three messages, an attachment's `Prepared`
+/// and its relay's two, so that is bounded, and reading a job's messages
+/// even after its slot was cleared is what keeps them from staying in the
+/// mailbox. The jobs go first so that an attachment's `Prepared`, which
+/// names the frames inbox, is admitted before the attempt's frames are
+/// read, and the first frames arrive with it.
 ///
-/// Every running job's replies are received in full and passed to `hold`
-/// first. A job sends at most three messages, an attachment's `Prepared`
-/// and its relay's two, so that is bounded too, and reading a job's
-/// messages even after its slot was cleared is what keeps them from
-/// staying in the mailbox. The jobs go first so that an attachment's
-/// `Prepared`, which names the frames inbox, is admitted before the
-/// candidate's frames are topped up, and the first frames arrive with it.
+/// Then each inbox's mailbox is read up to the room its buffer has
+/// (`arrivals`) and the messages are admitted behind what the buffer holds.
+/// The bound is kept here, by reading no more than there is room for, and
+/// not by admission, which never drops a frame for capacity: what is not
+/// read waits in the mailbox for the next event.
+///
+/// Admission is `tui/admission`, the same function the step runs for
+/// `msg.Arrived`. This host calls it directly because it runs in the step's
+/// own process, immediately before the step; a host that can only call the
+/// step delivers the same arrivals as `msg.Arrived`.
 ///
 /// `tui.update` calls this once per event, before the step. A caller that
 /// runs `tui.step` itself and expects it to see traffic calls it first.
@@ -113,12 +116,45 @@ pub fn stamp(model: Model) -> Model {
 /// ```
 pub fn receive(model: Model) -> Model {
   let model = list.fold(job_runner.receive(model.running), model, hold)
-  Model(
-    ..model,
-    inbox: buffered.top_up(model.inbox, up_to: tui_model.connection_batch),
-    replay_inbox: buffered.top_up(model.replay_inbox, up_to: 1),
-    candidate: attachment.top_up(model.candidate),
-  )
+  admission.admit(model, arrivals(model))
+}
+
+/// The traffic waiting for the model's inboxes, read from each mailbox up
+/// to the room its buffer has left: the connection inbox to
+/// `connection_batch`, the drain a tick or a key runs; the replay inbox to
+/// one event, which is all a tick applies; and the waiting attempt's frames
+/// to its batch, until its initial cut is captured
+/// (`attachment.frame_room`).
+///
+/// Each subject is read from the model it is given, so after an adoption
+/// the adopted inbox's subject is read and the replaced one never again. An
+/// inbox the step did not drain has no room and reads nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = admission.admit(model, runtime.arrivals(model))
+/// ```
+pub fn arrivals(model: Model) -> List(msg.Arrival) {
+  let connection = buffered.sender(model.inbox)
+  let from_connection =
+    buffered.waiting(
+      connection,
+      tui_model.connection_batch - buffered.held(model.inbox),
+    )
+    |> list.map(msg.Frame(connection, _))
+  let replayed =
+    buffered.waiting(
+      buffered.sender(model.replay_inbox),
+      1 - buffered.held(model.replay_inbox),
+    )
+    |> list.map(msg.Replayed)
+  let from_attempt = case attachment.frame_room(model.candidate) {
+    Error(Nil) -> []
+    Ok(#(frames, room)) ->
+      buffered.waiting(frames, room) |> list.map(msg.Frame(frames, _))
+  }
+  list.flatten([from_connection, replayed, from_attempt])
 }
 
 /// Builds the message the step is given for one etui input event.
@@ -160,30 +196,24 @@ pub fn message(event: backend.InputEvent, model: Model) -> Msg {
     | backend.MouseDrag(..)
     | backend.MouseMove(..) -> Ok(None)
   }
-  Msg(
+  msg.Input(
     at: read_stamp(model.monotonic_time_ms, model.transport_time_ms),
     event: keymap.translate(event, pasted),
   )
 }
 
-/// Admits one job reply into the slot that waits for it, and forgets the
-/// job once the reply is the last its relay sends.
+/// Hands one job message to the step's admission, after the host's own
+/// bookkeeping for it.
 ///
-/// A reply goes to the slot of its kind only when that slot names the
-/// reply's key. Otherwise it belongs to a job no reducer waits for any
-/// more, one that was cancelled or whose slot moved on, and it is dropped
-/// here; that comparison of keys is the only fence a job reply passes.
-/// Most replies are data and are simply forgotten. Two carry a resource
-/// nobody else will release: an attachment's `Prepared` holds an open
-/// socket and names its frames subject, and a relaunch's `Completed` holds
-/// a control connection. Dropping either queues the effects that release
-/// it, `CloseSocket` then `Discard`, or `CloseControl`, which the runtime
-/// performs after the next step like any other (`tui_model.release`, which
-/// a reducer clearing a slot also uses). `hold` itself performs
-/// nothing, so `receive` only reads mailboxes. `receive` calls this for
-/// everything it read; a test calls it to hand a step a reply without
-/// running a job, and a test driver calls it with a reply its actor
-/// selected.
+/// The host forgets the job once the message is the last its relay sends
+/// (`job_runner.observed`), and turns an attachment job's end into
+/// `job.Finished` with whether the socket the attempt would adopt is still
+/// alive, which is a process read the step does not do (`checked`). Then
+/// admission files the message into the slot that names its key, or drops
+/// it and queues the release of what it holds (`tui/admission`). `hold`
+/// performs nothing. `receive` calls this for every job message it read; a
+/// test calls it to hand a step a reply without running a job, and a test
+/// driver calls it with a reply its actor selected.
 ///
 /// ## Examples
 ///
@@ -194,20 +224,7 @@ pub fn hold(model: Model, arrival: job.Arrival) -> Model {
   let arrival = checked(model, arrival)
   let model =
     Model(..model, running: job_runner.observed(model.running, arrival))
-  let admitted = case arrival {
-    job.ControlArrived(key:, reply:) -> hold_control(model, key, reply)
-    job.ReconnectArrived(key:, reply:) -> hold_reconnect(model, key, reply)
-    job.ActivityArrived(key:, reply:) -> hold_activity(model, key, reply)
-    job.ConfigurationArrived(key:, reply:) ->
-      hold_configuration(model, key, reply)
-    job.AttachArrived(key:, reply:) ->
-      attachment.admit(model.candidate, key, reply)
-      |> result.map(fn(candidate) { Model(..model, candidate:) })
-  }
-  case admitted {
-    Ok(model) -> model
-    Error(Nil) -> tui_model.release(model, arrival)
-  }
+  admission.admit(model, [msg.JobReplied(arrival)])
 }
 
 // An attachment job's end permits adoption only on a socket that is still
@@ -241,67 +258,6 @@ fn liveness(candidate: attachment.Status) -> job.SocketLiveness {
   case result.try(attachment.adoptable_socket(candidate), connection.adopt) {
     Ok(Nil) -> job.SocketAlive
     Error(reason) -> job.SocketGone(reason:)
-  }
-}
-
-fn hold_control(
-  model: Model,
-  key: job.Key,
-  reply: job.ControlReply,
-) -> Result(Model, Nil) {
-  case model.control_request {
-    None -> Error(Nil)
-    Some(run) ->
-      job.admit(run.job, key, reply)
-      |> result.map(fn(awaiting) {
-        Model(
-          ..model,
-          control_request: Some(ControlRequest(..run, job: awaiting)),
-        )
-      })
-  }
-}
-
-fn hold_reconnect(
-  model: Model,
-  key: job.Key,
-  reply: job.ReconnectReply,
-) -> Result(Model, Nil) {
-  case model.reconnect {
-    ReconnectIdle | ReconnectSpent -> Error(Nil)
-    ReconnectAttempting(job: awaiting) ->
-      job.admit(awaiting, key, reply)
-      |> result.map(fn(awaiting) {
-        Model(..model, reconnect: ReconnectAttempting(awaiting))
-      })
-  }
-}
-
-fn hold_activity(
-  model: Model,
-  key: job.Key,
-  reply: job.ActivityReply,
-) -> Result(Model, Nil) {
-  case model.activity_poll {
-    ActivityDue | ActivityResting(..) -> Error(Nil)
-    ActivityAsking(job: awaiting, asked:) ->
-      job.admit(awaiting, key, reply)
-      |> result.map(fn(awaiting) {
-        Model(..model, activity_poll: ActivityAsking(awaiting, asked))
-      })
-  }
-}
-
-fn hold_configuration(
-  model: Model,
-  key: job.Key,
-  reply: job.ConfigurationReply,
-) -> Result(Model, Nil) {
-  case model.configuring {
-    None -> Error(Nil)
-    Some(awaiting) ->
-      job.admit(awaiting, key, reply)
-      |> result.map(fn(awaiting) { Model(..model, configuring: Some(awaiting)) })
   }
 }
 

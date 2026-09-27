@@ -7,7 +7,16 @@
 //// hook that runs before it, so anything the step needs from the host has
 //// to arrive inside the message. This module is that message.
 ////
-//// A `Msg` is one event and the instant it is applied at. The event names
+//// A `Msg` is one of two things. `Input` is one event and the instant it is
+//// applied at, and the step reduces it. `Arrived` is traffic the host
+//// received, which the step only admits: it files each message into the
+//// buffer or slot that waits for it and reduces nothing, so the drains keep
+//// running where they always ran, at a tick or a key, in their fixed
+//// order. A host that wakes when traffic arrives therefore delivers
+//// `Arrived` and then an `Input` with `Ticked`, and never expects an arrival
+//// alone to be reduced.
+////
+//// An input's event names
 //// what happened in the client's own terms: the key etui parsed and the
 //// text it came from, a paste together with what reading its path found,
 //// a resize, the pointer, or a tick. `tui/keymap` builds one from etui's
@@ -26,20 +35,49 @@
 
 import etui/backend
 import etui/keys
+import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
+import tui/attempt
+import tui/connection
 import tui/image_drop
+import tui/job
 import tui/recording
 
-/// One event and the instant it is applied at.
+/// What the step is given.
 @internal
 pub type Msg {
-  Msg(
+  /// One event and the instant it is applied at, which the step reduces.
+  Input(
     /// The clock readings the step is applied at. The step stores them as
     /// `Model.stamp`, and every reducer reads the time there.
     at: Stamp,
     /// What happened.
     event: Event,
   )
+
+  /// Traffic the host received, oldest first, which the step admits and
+  /// does not reduce (`tui/admission`). It reads no clock, so it carries no
+  /// stamp, and it returns no effects.
+  Arrived(arrivals: List(Arrival))
+}
+
+/// One message the host received for the model, before any reducer takes
+/// it.
+@internal
+pub type Arrival {
+  /// A message from a conversation socket, tagged with the inbox subject it
+  /// was received from. The subject is the source key: an inbox is replaced
+  /// whole at an adoption, so a message whose subject is neither the
+  /// adopted inbox's nor the waiting attempt's belongs to a socket the model
+  /// no longer reads, and admission drops it rather than let it reach the
+  /// adopted lane.
+  Frame(source: Subject(connection.Message), message: connection.Message)
+
+  /// One recorded attempt event, during a replay.
+  Replayed(event: attempt.Event)
+
+  /// One message from a background job, tagged with the job's key.
+  JobReplied(arrival: job.Arrival)
 }
 
 /// The clock readings one event is applied at.

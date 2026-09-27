@@ -1055,23 +1055,23 @@ pub fn record(model: Model, event: recording.Recorded) -> Model {
   }
 }
 
-/// Opens a step for one message: stores the instant it is applied at and
+/// Opens a step for one input: stores the instant it is applied at and
 /// queues its recording line, if it is one that replays and the terminal
 /// is recording.
 ///
 /// `tui.step` calls this before the reducer runs, so every reducer reads
-/// the message's time from `Model.stamp`, and the input's line is the first
+/// the input's time from `Model.stamp`, and the input's line is the first
 /// effect of its step and precedes every line the input causes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let model = tui_model.start_step(model, msg.Msg(model.stamp, msg.Ticked))
+/// let model = tui_model.start_step(model, model.stamp, msg.Ticked)
 /// ```
 @internal
-pub fn start_step(model: Model, message: msg.Msg) -> Model {
-  let model = Model(..model, stamp: message.at)
-  case msg.recorded(message.event) {
+pub fn start_step(model: Model, at: msg.Stamp, event: msg.Event) -> Model {
+  let model = Model(..model, stamp: at)
+  case msg.recorded(event) {
     Some(recorded) -> record(model, recorded)
     None -> model
   }

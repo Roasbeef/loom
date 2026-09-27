@@ -1,12 +1,13 @@
 //// A terminal-owned inbox together with the messages already taken out of
 //// its mailbox.
 ////
-//// The terminal's step reads no mailbox. Before each step the runtime tops
-//// up every inbox the model holds, moving a bounded number of waiting
-//// messages out of the BEAM mailbox and into the `Inbox` value, and the
-//// reducers then take from that value where they used to call
-//// `process.receive(subject, 0)`. `top_up` is the only function here that
-//// reads a mailbox for the step, and `take` is pure.
+//// The terminal's step reads no mailbox. Before each step the host reads a
+//// bounded number of waiting messages for every inbox the model holds
+//// (`waiting`), and the step files them into the `Inbox` value
+//// (`push`, from `tui/admission`); the reducers then take from that value
+//// where they used to call `process.receive(subject, 0)`. `waiting` is the
+//// only function here that reads a mailbox for the step, and `push` and
+//// `take` are pure.
 ////
 //// The received messages live inside the inbox value rather than in a table
 //// beside the model, and that is what makes an adoption safe by
@@ -24,8 +25,10 @@
 //// directly, through `sender`, would let a newer message overtake the held
 //// ones.
 ////
-//// Every top-up names its bound, and the bound is the most the next step can
-//// consume from that inbox, so nothing buffers without limit.
+//// Every read names its room, and the room is the most the next step can
+//// consume from that inbox less what it holds, so nothing buffers without
+//// limit. Filing never drops a message; the bound is kept by reading no
+//// more than there is room for.
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -38,7 +41,7 @@ pub opaque type Inbox(a) {
     /// created it, can receive from it.
     subject: Subject(a),
     /// Messages moved out of the mailbox and not yet taken, oldest first.
-    /// Every top-up is bounded, so the list is short.
+    /// Every read is bounded, so the list is short.
     held: List(a),
   )
 }
@@ -85,8 +88,8 @@ pub fn held(inbox: Inbox(a)) -> Int {
 /// Moves waiting messages out of the mailbox until the inbox holds
 /// `up_to`, without blocking.
 ///
-/// The runtime calls this before a step, with the most that step can take
-/// from the inbox. An inbox that already holds `up_to` or more reads
+/// This is `waiting` followed by `push` for each message, for a caller that
+/// files an inbox itself. An inbox that already holds `up_to` or more reads
 /// nothing, so an inbox the step did not drain does not grow.
 ///
 /// ## Examples
@@ -95,8 +98,25 @@ pub fn held(inbox: Inbox(a)) -> Int {
 /// let inbox = buffered.top_up(inbox, up_to: 64)
 /// ```
 pub fn top_up(inbox: Inbox(a), up_to limit: Int) -> Inbox(a) {
-  let fresh = receive_waiting(inbox.subject, limit - held(inbox), [])
-  Inbox(..inbox, held: list.append(inbox.held, list.reverse(fresh)))
+  list.fold(waiting(inbox.subject, limit - held(inbox)), inbox, push)
+}
+
+/// Reads up to `room` messages waiting in a subject's mailbox, oldest
+/// first, without blocking.
+///
+/// The host calls this before a step with the room an inbox has left, the
+/// most the step can take from it less what the inbox already holds, and
+/// hands the messages to the step to file. What it does not read stays in
+/// the mailbox, behind everything it did, so no buffer grows past its bound
+/// and nothing is dropped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let fresh = buffered.waiting(buffered.sender(inbox), 64 - buffered.held(inbox))
+/// ```
+pub fn waiting(subject: Subject(a), room: Int) -> List(a) {
+  receive_waiting(subject, room, []) |> list.reverse
 }
 
 // The budget is checked before each receive, because a message received

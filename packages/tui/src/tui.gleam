@@ -48,6 +48,7 @@ import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/endpoint
 import simplifile
+import tui/admission
 import tui/advisor_history
 import tui/agent_strip
 import tui/agents
@@ -1419,25 +1420,43 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 /// a test that calls `step` directly and wants it to see queued traffic
 /// receives first, or hands it a job message with `runtime.hold`.
 ///
-/// The step reads no clock. It applies the message's event at the
-/// message's stamp, which it stores as `Model.stamp` before any reducer
-/// runs; a test that builds a message chooses the time with it.
+/// The step reads no clock. It applies an input's event at the input's
+/// stamp, which it stores as `Model.stamp` before any reducer runs; a test
+/// that builds a message chooses the time with it.
+///
+/// Traffic the host received arrives as `msg.Arrived`, which the step only
+/// admits (`admission.admit`): each message goes into the buffer or slot
+/// that waits for it, nothing is reduced, and no effect is returned. The
+/// drains still run at a tick or a key, in their fixed order, so Escape
+/// still acts before any traffic is reduced. A reply dropped at admission
+/// that holds a socket or a control connection queues its release, which
+/// the next input's step returns, as `runtime.hold` did in phase 2.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let #(next, effects) =
-///   tui.step(msg.Msg(model.stamp, msg.KeyPressed("enter", keys.Enter)), model)
+///   tui.step(msg.Input(model.stamp, msg.KeyPressed("enter", keys.Enter)), model)
 /// ```
 @internal
 pub fn step(message: msg.Msg, model: Model) -> #(Model, List(effect.Effect)) {
-  // Recorded before the event is interpreted, so a recording holds what the
-  // client was given rather than what it made of it, and the input's line
-  // is ahead of every line the reducer queues for it.
-  let model = tui_model.start_step(model, message)
+  case message {
+    msg.Input(at:, event:) -> reduce(at, event, model)
+    msg.Arrived(arrivals:) -> #(admission.admit(model, arrivals), [])
+  }
+}
 
-  let updated = apply_input(message.event, model)
-  runtime.take(settle_update(message.event, model, updated))
+// One input's step. Recorded before the event is interpreted, so a
+// recording holds what the client was given rather than what it made of it,
+// and the input's line is ahead of every line the reducer queues for it.
+fn reduce(
+  at: msg.Stamp,
+  event: msg.Event,
+  model: Model,
+) -> #(Model, List(effect.Effect)) {
+  let model = tui_model.start_step(model, at, event)
+  let updated = apply_input(event, model)
+  runtime.take(settle_update(event, model, updated))
 }
 
 // The dispatch on the event and the settling of its result are two functions
