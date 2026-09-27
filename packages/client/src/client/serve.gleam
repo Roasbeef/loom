@@ -1752,7 +1752,10 @@ pub fn boot_with(
 /// that is safe here only because of order. Nothing the caller's close
 /// stops before the runtime is a fatal child, so the caller captures the
 /// drain witness before any death can start the host, and the caller is
-/// the one that releases the lease before it returns. `boot` has a
+/// the one that releases the lease before it returns. Two facts carry
+/// that: `hub.drain_held` stops no process, and
+/// `runtime/supervisor.shutdown` monitors the drain ledger before it
+/// terminates the root, whose death is the first the host can see. `boot` has a
 /// listener to stop first and so cannot rely on that; it goes through
 /// `host.retire` instead.
 ///
