@@ -67,9 +67,14 @@ pub type Ui(instance) {
     /// The ticket and UI-session tables.
     sessions: ui_sessions.Sessions,
     /// Upgrades a checked page request to the component's socket; like
-    /// `session_upgrade`, it transfers the attachment's permit.
-    upgrade: fn(Request(mist.Connection), Attachment(instance)) ->
-      Response(mist.ResponseData),
+    /// `session_upgrade`, it transfers the attachment's permit. The last
+    /// argument says whether the page's UI session is still live; the
+    /// socket checks it with every authorization.
+    upgrade: fn(
+      Request(mist.Connection),
+      Attachment(instance),
+      fn() -> Result(Nil, Nil),
+    ) -> Response(mist.ResponseData),
   )
 }
 
@@ -180,7 +185,8 @@ fn web_socket(
   }
   case checked {
     Error(response) -> ui_http.secured(response, host)
-    Ok(#(state, grant)) ->
+    Ok(#(state, grant, cookie)) -> {
+      let open = ui_sessions.still_open(ui.sessions, cookie, grant)
       resident_upgrade(
         config,
         request,
@@ -188,8 +194,9 @@ fn web_socket(
         grant.credential,
         id,
         ObserverRole,
-        ui.upgrade,
+        fn(request, attachment) { ui.upgrade(request, attachment, open) },
       )
+    }
   }
 }
 
@@ -258,7 +265,8 @@ fn web_asset(asset: ui_http.Asset) {
 
 // The cookie's UI session, re-authorized from scratch: it must be live, name
 // this session, and its minting credential must still authenticate and still
-// be a member. The answer carries the readiness the socket's upgrade reuses.
+// be a member. The answer carries the readiness the socket's upgrade reuses,
+// and the cookie, which the socket keeps checking.
 fn page_grant(config: Config(instance), ui: Ui(instance), request, id: String) {
   use cookie <- result.try(
     ui_http.session_cookie(request)
@@ -285,7 +293,7 @@ fn page_grant(config: Config(instance), ui: Ui(instance), request, id: String) {
     manager.session_authority(state.registry, grant.credential, id)
     |> result.map_error(fn(_) { plain(403, "not a member of this session") }),
   )
-  Ok(#(state, grant))
+  Ok(#(state, grant, cookie))
 }
 
 fn document(status: Int, content_type: String, body: String) {

@@ -66,6 +66,7 @@ pub fn upgrade(
   request: Request(mist.Connection),
   attachment: server.Attachment(instance),
   hub: gateway.Gateway,
+  open: fn() -> Result(Nil, Nil),
 ) -> Response(mist.ResponseData) {
   let limit = root.message_limit(root.Observer)
   let attach =
@@ -80,7 +81,7 @@ pub fn upgrade(
         authority: attachment.authority,
         digest: attachment.digest,
       ),
-      check: fn() { authorize(attachment) },
+      check: ui_relay.while_open(fn() { authorize(attachment) }, open),
       failed_reader: fn() {
         let _ =
           manager.stop_if_incarnation(

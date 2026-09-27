@@ -73,7 +73,7 @@ fn fixture(run: fn(root.Ready(String), Int, String) -> Nil) -> Nil {
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(
-        server.Ui(sessions:, upgrade: fn(_, attachment) {
+        server.Ui(sessions:, upgrade: fn(_, attachment, _open) {
           // The router hands the page's upgrade an observer, whatever the
           // principal's membership. The stub reports what it was given.
           case attachment.authority {

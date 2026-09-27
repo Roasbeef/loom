@@ -722,12 +722,13 @@ fn web_view(
         ui_sessions.start(ui_sessions.production(bootstrap.monotonic_time_ms)),
       )
       Some(
-        server.Ui(sessions:, upgrade: fn(request, attachment) {
+        server.Ui(sessions:, upgrade: fn(request, attachment, open) {
           ui_socket.upgrade(
             daemon,
             request,
             attachment,
             attachment.instance.gateway,
+            open,
           )
         }),
       )

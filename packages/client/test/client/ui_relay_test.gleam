@@ -1,20 +1,23 @@
 //// The web view's relay against a real session gateway: it is read-only by
 //// role whatever the membership says, and every one of its four exits
 //// leaves no process and no presence behind (protocol-change/051, "The
-//// relay").
+//// relay"). A page's check also ends it when its UI session expires or is
+//// replaced.
 ////
 //// Presence is read as `gateway.attached`, which counts every attachment the
 //// hub holds. The harness attaches one test client of its own, so each test
 //// compares against the count before the relay attached.
 
+import broker/token
 import client/daemon/ui_relay
+import client/daemon/ui_sessions
 import client/gateway
 import client/gateway_test
 import client/protocol
 import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -251,4 +254,102 @@ pub fn a_gateway_that_goes_away_ends_its_relay_test() {
   assert gone(pid)
   assert process.receive(inbox, 1000)
     == Ok(connection_event.Closed("the session ended"))
+}
+
+fn digest() -> access.Digest {
+  let assert Ok(digest) = access.credential_digest(string.repeat("c", 64))
+    as "the fixture digest is valid"
+  digest
+}
+
+type Clock {
+  Read(reply: Subject(Int))
+  Advance(by: Int)
+}
+
+fn clock() -> Subject(Clock) {
+  let assert Ok(started) =
+    actor.new(0)
+    |> actor.on_message(fn(now, message) {
+      case message {
+        Read(reply) -> {
+          process.send(reply, now)
+          actor.continue(now)
+        }
+        Advance(by) -> actor.continue(now + by)
+      }
+    })
+    |> actor.start
+    as "the test clock starts"
+  started.data
+}
+
+// A page's relay whose check runs the UI session's liveness, as the daemon's
+// page socket builds it, over a table on the test's clock.
+fn page(
+  harness: gateway_test.Harness,
+  session: String,
+) -> #(
+  ui_relay.Relay,
+  Subject(String),
+  Subject(Clock),
+  ui_sessions.Sessions,
+  String,
+) {
+  let time = clock()
+  let assert Ok(tables) =
+    ui_sessions.start(ui_sessions.Settings(
+      now: fn() { process.call(time, 1000, Read) },
+      entropy: token.production_entropy(),
+      ticket_ms: 60_000,
+      session_ms: 28_800_000,
+    ))
+    as "the table starts"
+  let grant = ui_sessions.Grant(session, digest())
+  let assert Ok(issued) = ui_sessions.mint(tables, grant) as "a ticket"
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(tables, issued.ticket, session, None)
+    as "the ticket is redeemed"
+  let ended = process.new_subject()
+  let open = ui_sessions.still_open(tables, redeemed.cookie, grant)
+  let assert Ok(relay) =
+    ui_relay.start(
+      attach(harness, ui_relay.while_open(operator, open)),
+      process.new_subject(),
+      fn(reason) { process.send(ended, reason) },
+    )
+    as "the relay attaches"
+  #(relay, ended, time, tables, redeemed.cookie)
+}
+
+pub fn an_expired_ui_session_ends_an_open_page_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5106))
+  let session = ids.session_id_to_string(api.session_id(harness.runtime))
+  let #(relay, ended, time, _, _) = page(harness, session)
+  let pid = relay_pid(relay)
+
+  process.send(time, Advance(28_800_000))
+  ui_relay.transmit(relay, subscribe(harness, 1))
+  let assert Ok(_reason) = process.receive(ended, 5000)
+    as "the expired page ends"
+  assert gone(pid)
+}
+
+pub fn a_replaced_ui_session_ends_an_open_page_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5107))
+  let session = ids.session_id_to_string(api.session_id(harness.runtime))
+  let #(relay, ended, _, tables, cookie) = page(harness, session)
+  let pid = relay_pid(relay)
+
+  // A newer ticket redeemed with the page's cookie replaces its UI session.
+  let assert Ok(issued) =
+    ui_sessions.mint(tables, ui_sessions.Grant(session, digest()))
+    as "a second ticket"
+  let assert Ok(_) =
+    ui_sessions.redeem(tables, issued.ticket, session, Some(cookie))
+    as "the second ticket replaces the first UI session"
+  ui_relay.transmit(relay, subscribe(harness, 1))
+  let assert Ok(_reason) = process.receive(ended, 5000)
+    as "the replaced page ends"
+  assert gone(pid)
 }

@@ -68,6 +68,31 @@ pub type Attach {
   )
 }
 
+/// A page's authorization: `check`, refused once `open` says the page's UI
+/// session has ended.
+///
+/// The gateway calls the result at every request and every push, so a UI
+/// session that expires or is replaced while the page is open ends the
+/// attachment at the next frame, through the same `close` a revocation
+/// takes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_relay.while_open(authorize, ui_sessions.still_open(tables, cookie, grant))
+/// ```
+pub fn while_open(
+  check: fn() -> Result(answer, String),
+  open: fn() -> Result(Nil, Nil),
+) -> fn() -> Result(answer, String) {
+  fn() {
+    case open() {
+      Ok(Nil) -> check()
+      Error(Nil) -> Error("the page session ended")
+    }
+  }
+}
+
 /// A running relay.
 pub opaque type Relay {
   Relay(subject: Subject(Message))

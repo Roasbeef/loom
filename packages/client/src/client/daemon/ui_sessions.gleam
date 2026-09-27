@@ -206,6 +206,33 @@ pub fn lookup(sessions: Sessions, cookie: String) -> Result(Grant, Nil) {
   |> result.unwrap(Error(Nil))
 }
 
+/// A check that the UI session behind `cookie` still grants `grant`.
+///
+/// The page's socket runs it with every authorization the gateway asks for,
+/// so a UI session that expires, or is replaced by a newer ticket, ends an
+/// open page the way a revoked credential does. A lookup that answers with
+/// a different grant counts as ended too.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let open = ui_sessions.still_open(sessions, cookie, grant)
+/// // open() == Ok(Nil)
+/// ```
+pub fn still_open(
+  sessions: Sessions,
+  cookie: String,
+  grant: Grant,
+) -> fn() -> Result(Nil, Nil) {
+  fn() {
+    use current <- result.try(lookup(sessions, cookie))
+    case current == grant {
+      True -> Ok(Nil)
+      False -> Error(Nil)
+    }
+  }
+}
+
 /// How many tickets and UI sessions the tables hold, expired or not, for a
 /// test that checks the sweep.
 ///
