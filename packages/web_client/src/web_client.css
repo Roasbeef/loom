@@ -105,7 +105,8 @@
   li.chip.settled{width:auto;align-content:center;padding:8px 12px;border-style:dashed;}
   li.chip.settled .chip-name{color:var(--color-fg-quiet);font-weight:400;}
   .elapsed{font-variant-numeric:tabular-nums;}
-  .ring{display:inline-block;width:12px;height:12px;border-radius:50%;flex:0 0 auto;margin-left:auto; border:2px solid var(--color-divider);}
+  .cache{display:inline-flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;}
+  .ring{display:inline-block;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
   .ring.ring-head{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 25%,transparent);}
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
   .ring.ring-idle{border-color:var(--color-fg-quiet);}

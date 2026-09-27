@@ -1274,22 +1274,27 @@ fn elapsed(chip: Chip) -> Element(message) {
 }
 
 // The cache ring: its shape from the outlook, its words from
-// `cache_miss.outlook_label`, which is all the outlook may claim. The label
-// is the ring's accessible name and tooltip, and is never session text.
+// `cache_miss.outlook_label`, which is all the outlook may claim and is
+// never session text. The words are drawn beside the ring rather than kept
+// in a tooltip. A strand whose outlook is shown is resting, so its chip has
+// no elapsed time and usually no context size, and a ring on its own read
+// as a stray glyph; with its words it reads as the cache's state. The ring
+// is then decoration, hidden from a screen reader, which reads the words.
 fn ring(cache: Option(#(cache_miss.Outlook, String))) -> Element(message) {
   case cache {
     None -> element.none()
     Some(#(held, label)) ->
-      html.span(
-        [
-          attribute.class("ring"),
-          ring_class(held),
-          attribute.role("img"),
-          attribute.aria_label(label),
-          attribute.title(label),
-        ],
-        [],
-      )
+      html.span([attribute.class("cache")], [
+        html.span(
+          [
+            attribute.class("ring"),
+            ring_class(held),
+            attribute.aria_hidden(True),
+          ],
+          [],
+        ),
+        html.text(label),
+      ])
   }
 }
 

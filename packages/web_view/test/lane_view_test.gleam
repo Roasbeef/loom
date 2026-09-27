@@ -137,9 +137,12 @@ pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
     |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 1)])
     |> at(60_000)
   let drawn = html(warm)
+
+  // The ring carries its words beside it on the figures row, so an idle
+  // chip with no elapsed time or context size does not show a bare glyph.
   assert string.contains(
     drawn,
-    "<span aria-label=\"cache tail ≤4m\" class=\"ring ring-tail\" role=\"img\" title=\"cache tail ≤4m\">",
+    "<span class=\"cache\"><span aria-hidden=\"true\" class=\"ring ring-tail\"></span>cache tail ≤4m</span>",
   )
 
   // The operator's composer names the same outlook for the strand it
