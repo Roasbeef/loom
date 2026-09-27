@@ -348,18 +348,16 @@ fn on_terminal(model: tui_model.Model, step: Step) -> tui_model.Model {
   }
 }
 
-// The page takes a frame at arrival and reduces it at the next tick, so a
-// frame step is filed and then ticked, which is the terminal's
-// receive-then-apply in the page's two messages.
+// The page reduces a frame as it arrives, in a batch of one, which is the
+// terminal's receive-then-apply in one message. The page's reduction also
+// runs the lane's tick at the batch's reading; at the script's reading of
+// zero nothing is due, as nothing is for the terminal's step.
 fn on_page(
   page: component.Model(process.Subject(String)),
   step: Step,
 ) -> component.Model(process.Subject(String)) {
   let messages = case step {
-    Frame(message) -> [
-      operator_page.Observed(component.Arrived(message, 0)),
-      operator_page.Observed(component.Ticked(0)),
-    ]
+    Frame(message) -> [operator_page.Observed(component.Arrived([message], 0))]
     Tick -> [operator_page.Observed(component.Ticked(0))]
     Prompt(text) -> [operator_page.Submitted(text, operator.Prompt)]
     Deny(id) ->
