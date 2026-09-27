@@ -199,6 +199,20 @@ pub fn the_composer_refuses_any_field_it_does_not_offer_test() {
   )
 }
 
+// The composer is drawn inside the dock, the footer the stylesheet pins to
+// the viewport's bottom edge, so rows landing above it never move Send or
+// Steer out from under a click.
+pub fn the_composer_is_drawn_in_the_dock_test() {
+  let #(model, _) = page("operator", [])
+  let html = element.to_string(operator_page.view(model))
+  let assert Ok(#(_, from_dock)) =
+    string.split_once(html, "<footer class=\"dock\">")
+    as "the page draws a dock"
+  let assert Ok(#(dock, _)) = string.split_once(from_dock, "</footer>")
+    as "the dock is closed"
+  assert string.contains(dock, "class=\"composer\"")
+}
+
 // A card appearing must never move the composer: the agent chooses when a
 // card lands and how tall it is, so drawn above the composer it could slide
 // Deny or Allow under a click on its way to the editor or to Send. The

@@ -101,6 +101,12 @@ pub fn update(
 /// composer, and below it the approvals waiting for a decision, in a region
 /// of their own.
 ///
+/// The composer sits in the dock, a footer the stylesheet pins to the
+/// bottom edge of the viewport. In the document's flow the composer moved
+/// down every time a row landed or its editor grew, so a click aimed at
+/// Send or Steer could land on whatever had slid under the pointer. Pinned,
+/// it stays where the operator last saw it however the transcript moves.
+///
 /// The approvals come after the composer so that a card appearing never
 /// moves the composer. The agent decides when an escalation lands and how
 /// tall its card is (an action preview can run to 16 KiB); drawn above the
@@ -117,7 +123,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
     component.heading(model),
     component.strip_view(component.strip(model)),
     component.lane_view(component.pieces(model)),
-    composer(model),
+    html.footer([attribute.class("dock")], [composer(model)]),
     approvals(component.pending(model)),
   ])
 }

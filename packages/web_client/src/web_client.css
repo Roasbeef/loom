@@ -74,7 +74,11 @@
 
 /* The page's parts. Each class here is one the view spells literally. */
 @layer components {
-  main.loom-session{max-width:1100px;margin:0 auto;padding:16px;min-width:0;}
+  /* The page is at least one viewport tall and the lane takes the height
+     that is left, so the dock rests on the viewport's bottom edge even when
+     the transcript is short. The page has no bottom padding: the dock
+     carries its own, so it sits flush with the edge it is pinned to. */
+  main.loom-session{max-width:1100px;margin:0 auto;padding:16px 16px 0;min-width:0;min-height:100dvh;box-sizing:border-box; display:flex;flex-direction:column;}
   .session-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;margin-bottom:12px; padding-bottom:8px;border-bottom:1px solid var(--color-divider);}
   .session-head h1{font:600 14px/1.4 var(--font-mono);margin:0;min-width:0;overflow-wrap:anywhere;}
   .session-head .status{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
@@ -111,7 +115,7 @@
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
   .ring.ring-idle{border-color:var(--color-fg-quiet);}
   .ring.ring-elapsed{border:2px dashed var(--color-fg-quiet);}
-  .transcript.lane{display:flex;flex-direction:column;gap:10px;min-width:0;}
+  .transcript.lane{display:flex;flex-direction:column;gap:10px;min-width:0;flex:1 0 auto;}
   .block{min-width:0;}
   pre.line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
   pre.line.user,pre.line.assistant{font:14px/1.5 var(--font-sans);}
@@ -164,7 +168,13 @@
   pre.approval-action{margin:0 0 8px 0;padding:8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
   ul.approval-authority{margin:0 0 12px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
   .approval-actions{display:flex;flex-wrap:wrap;gap:8px;}
-  form.composer{margin-top:16px;background:var(--color-bg-raised);border:1px solid var(--color-divider); border-radius:8px;padding:12px;}
+  /* The dock: the operator's composer, pinned to the bottom of the viewport.
+     It is sticky rather than fixed, so it keeps its own place in the flow:
+     at the end of the page it sits below the last row, never over it, and no
+     padding has to guess its height. Its background is opaque, so rows that
+     scroll behind it do not show through. */
+  footer.dock{position:sticky;bottom:0;z-index:1;margin-top:16px;padding:8px 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
+  form.composer{margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider); border-radius:8px;padding:12px;}
   .identity{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;font-size:12px;margin-bottom:8px;}
   .identity-name{color:var(--color-fg);}
   .role-badge{border:1px solid var(--color-signal);color:var(--color-signal);border-radius:999px;padding:0 8px;}
@@ -176,7 +186,7 @@
   .outlook.ring-tail::before{border-color:var(--color-divider);border-top-color:var(--color-signal);}
   .outlook.ring-idle::before{border-color:var(--color-fg-quiet);}
   .outlook.ring-elapsed::before{border-style:dashed;border-color:var(--color-fg-quiet);}
-  .editor textarea{field-sizing:content;min-height:4.5em;max-height:50vh;width:100%;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider); border-radius:4px;padding:8px;font:14px/1.5 var(--font-sans);resize:vertical;}
+  .editor textarea{field-sizing:content;min-height:4.5em;max-height:30vh;width:100%;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider); border-radius:4px;padding:8px;font:14px/1.5 var(--font-sans);resize:vertical;}
   .composer-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;}
   .notice{margin:0 auto 0 0;color:var(--color-fg-quiet);font-size:13px;min-width:0;}
   .notice.warned{color:var(--color-danger);}
@@ -186,6 +196,6 @@
   button.approval-deny{border-color:var(--color-danger);color:var(--color-danger);}
   button.approval-allow{border-color:var(--color-added);color:var(--color-added);}
   button:focus-visible,textarea:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
-  @media (max-width:640px){main.loom-session{padding:12px 16px;}li.chip{width:200px;} pre.line.user{padding:6px 10px;}}
+  @media (max-width:640px){main.loom-session{padding:12px 16px 0;}li.chip{width:200px;} pre.line.user{padding:6px 10px;}}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;}}
 }
