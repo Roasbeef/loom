@@ -220,10 +220,11 @@ type Phase {
 ///
 /// The channel decides what to write, when to close and what to record; it
 /// never writes, closes or records itself. A transition appends its outputs
-/// to the channel's outbox, the reducer that called it moves them into the
-/// model's outbox before it stores the channel, and the terminal's runtime
-/// performs them after the step, so every function below is a pure
-/// transition over its arguments. Each output names what it acts on: an
+/// to the channel's outbox, the host's reducer that called it moves them
+/// out before it stores the channel, and the host performs them after its
+/// step, so every function below is a pure transition over its arguments.
+/// In the terminal the move is `tui_model.hold_channel` and the perform is
+/// `tui/terminal_lane.perform`. Each output names what it acts on: an
 /// attachment replaced later in the same step must not redirect a write
 /// that was meant for the connection it replaced, and a note decided under
 /// one recorder goes to that recorder.
@@ -433,11 +434,11 @@ fn note(
 
 /// Hands over the outputs queued since the last call, oldest first.
 ///
-/// A reducer calls this, through `tui_model.hold_channel`, after every
-/// transition of the adopted lane, and the attachment calls it for its
-/// candidate's lane, so the outputs join the step's one queue in the order
-/// they were decided. A caller that drives a channel outside the terminal
-/// loop, such as a test holding a live socket, takes the outputs itself and
+/// A host's reducer calls this after every transition of the lane it holds,
+/// so the outputs join the host's queue in the order they were decided. In
+/// the terminal that reducer is `tui_model.hold_channel` for the adopted
+/// lane, and the attachment calls it for its candidate's lane. A caller
+/// that drives a channel outside a host's loop, such as a test holding a live socket, takes the outputs itself and
 /// performs each as its host does; the terminal's is
 /// `tui/terminal_lane.perform`.
 ///
