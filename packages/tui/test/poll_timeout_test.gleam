@@ -178,3 +178,21 @@ fn drain(model: tui_model.Model) -> tui_model.Model {
     )
   inbound.drain_connection(topped, tui_model.connection_batch)
 }
+
+// An adoption swaps in the candidate's inbox, whose mailbox may still hold
+// frames the candidate stopped reading at its capture; their wakes went to
+// ticks that could not read them, so the adopting tick owes one more batch.
+pub fn an_adopting_tick_owes_one_more_batch_test() {
+  let before = attached(lane([]), 0)
+  assert tick.adopted_backlog(before, before) == tui_model.MailboxDrained
+  let adopted =
+    tui_model.Model(..before, inbox: buffered.new(connection.new_inbox()))
+  assert tick.adopted_backlog(before, adopted) == tui_model.MailboxMayHoldMore
+  assert tick.terminal_poll_timeout(
+      tui_model.Model(
+        ..adopted,
+        connection_backlog: tick.adopted_backlog(before, adopted),
+      ),
+    )
+    == 0
+}

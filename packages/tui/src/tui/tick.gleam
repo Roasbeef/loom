@@ -160,7 +160,36 @@ fn settle_tick(model: Model, drained: Model) -> Model {
       terminal_poll_timeout(model),
       drained.activity_revision != model.activity_revision,
     )
-  Model(..drained, quiet_for_ms:)
+  Model(
+    ..drained,
+    quiet_for_ms:,
+    connection_backlog: adopted_backlog(model, drained),
+  )
+}
+
+/// What a tick leaves `Model.connection_backlog` as, given the model before
+/// and after it.
+///
+/// An adoption in the tick installed the candidate's inbox. A candidate
+/// stops reading its frames at its capture, so frames its socket filed
+/// after that are still in the mailbox, and their wakes were spent on ticks
+/// that could not read them; one more batch is owed at once. Without an
+/// adoption the drain's own answer stands.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tick.adopted_backlog(model, model) == model.connection_backlog
+/// ```
+@internal
+pub fn adopted_backlog(
+  before: Model,
+  after: Model,
+) -> tui_model.ConnectionBacklog {
+  case buffered.sender(after.inbox) == buffered.sender(before.inbox) {
+    True -> after.connection_backlog
+    False -> tui_model.MailboxMayHoldMore
+  }
 }
 
 // One recorded attempt event per tick, taken from what the runtime received

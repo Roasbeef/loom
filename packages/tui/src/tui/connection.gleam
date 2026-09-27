@@ -81,8 +81,11 @@ fn admission_notice(reason: String) -> String {
 /// `inbox`, as the module header describes.
 ///
 /// Only a socket whose inbox the etui loop reads should wake: the wake is a
-/// message for etui's input wait, and any other owner would never read it.
-/// The daemon's control connection and the bootstrap probe use `connect`.
+/// message for etui's input wait, and any other owner would never read it,
+/// so the wakes would collect in its mailbox, at most one per interval for
+/// the socket's life. The daemon's control connection and the bootstrap
+/// probe use `connect`; a test that drives the attach worker from its own
+/// process collects those wakes and ignores them.
 ///
 /// ## Examples
 ///
