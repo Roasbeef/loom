@@ -108,6 +108,10 @@ literate register", gives the complete conventions and examples.
   never the harness in a browser: `gleam_otp` has no JavaScript target, Rule
   Zero is kernel-enforced, and the two-channel doctrine needs processes on
   both sides. `docs/gleam-style.md` Part IV §5 has the whole argument.
+  `session_view` is held to the same rule for a different reason: it is
+  the client's session lane and transcript projection, which the terminal
+  and the daemon's web view both drive, and R6 is what keeps either host
+  out of it (`lint/portable`).
 - **No naked `Bool`** in a function parameter or a record field. `Bool`
   carries no domain meaning, so `render(document, True)` names nothing at
   the call site and a field typed `Bool` makes every reader carry the
