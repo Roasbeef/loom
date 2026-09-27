@@ -89,7 +89,9 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
 - `daemon/ui_socket`: the page's mist socket. It transfers the permit in
   its first handler turn and starts `web_view/component` for an observer's
   attachment or `web_view/operator_page` for an operator's, with a
-  transport over `ui_relay` whose `connect` returns at once. An observer's
+  transport over `ui_relay` whose `connect` returns at once, and with the
+  session's catalogue name and workspace (`manager.get`, which does not
+  wake a saved runtime) for the page's heading. An observer's
   socket drops every browser message; an operator's forwards only the
   click and submit events its page attaches (`operator_accepts`) and takes
   frames up to `operator_frame_limit` (1 MiB). It closes on the relay's

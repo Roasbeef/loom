@@ -23,8 +23,12 @@ page keys and nonces, and the relay into the session's gateway.
 ## Key Types
 
 - `component.Start(socket)`: what the daemon supplies when it starts a
-  component: the session ID, the `snapshot.Expected` attachment every cut
-  must match, and a `Transport(socket)`.
+  component: the session ID, the catalogue's `Label(name, workspace)` for
+  the heading (or `None`), the `snapshot.Expected` attachment every cut
+  must match, and a `Transport(socket)`. The heading shows the name (or
+  `Session` and the ID's first eight characters) with the whole ID in a
+  `title`, and the workspace's last segment with the whole path in a
+  `title`.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
   and `now()`. All run in the component's process.

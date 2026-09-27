@@ -38,7 +38,7 @@ import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/json
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import host/bootstrap
 import lustre
@@ -310,7 +310,13 @@ fn admit(
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
     )
-  let start = component.Start(attachment.session_id, expected, transport)
+  let start =
+    component.Start(
+      session_id: attachment.session_id,
+      label: label(attachment),
+      expected:,
+      transport:,
+    )
   let started = case transferred {
     Error(_) -> Error(Nil)
     Ok(Nil) -> start_page(attachment.authority, start)
@@ -324,6 +330,22 @@ fn admit(
         |> process.select(signals)
         |> process.merge_selector(process.map_selector(frames, Client)),
       )
+  }
+}
+
+// The session's name and workspace from the daemon's catalogue, for the
+// page's heading. The lookup reads the registration without waking a saved
+// runtime. A page whose lookup fails still opens, with a heading that names
+// the session by its identity, because the heading is the only thing the
+// label is for.
+fn label(attachment: server.Attachment(instance)) -> Option(component.Label) {
+  case manager.get(attachment.registry, attachment.session_id) {
+    Ok(view) ->
+      Some(component.Label(
+        name: view.registration.name,
+        workspace: view.registration.workspace,
+      ))
+    Error(_) -> None
   }
 }
 
