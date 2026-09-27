@@ -17,14 +17,17 @@ does that, and the layer below has never heard of any of them.
 
 ## One session, one backend, erased
 
-A `Session` is three fields:
+A `Session` is five fields:
 
 ```gleam
 pub type Session {
   Session(
     store: Storage(Nil),
+    snapshot_reader: snapshot.Reader,
     renew_lease: fn() -> Result(Nil, StorageError),
     lease_interval_ms: Option(Int),
+    record_identity: fn(SessionId, Option(SessionId)) ->
+      Result(Nil, StorageError),
   )
 }
 ```
@@ -47,7 +50,14 @@ has a place to be answered. A file from a *newer* build is refused
 outright (`SqliteOpenFailed(sqlite.UnsupportedVersion(..))`) rather than
 misread.
 
-The other two fields are the lease.
+`snapshot_reader` is a `storage/snapshot.Reader` borrowed from the same
+backend actor. The client gateway uses it for bounded snapshot reads: a
+cut of register metadata, then pages of immutable entries below that
+cut's high-water mark. It holds no transaction or process between calls,
+and it does not widen the frozen `Storage` record. `record_identity`
+writes the session's canonical id, and its parent's, into the SQLite
+catalog row; for a memory session it does nothing, since there is no
+catalog. `renew_lease` and `lease_interval_ms` are the lease.
 
 ## The writer lease, and the writer that lost it
 
@@ -124,11 +134,22 @@ strand seeded concurrently by someone else loses the CAS, and
 `StaleExpectation` is mapped to `Ok(Nil)` rather than an error — the
 strand exists, which is what the caller asked for.
 
-It is also the one commit in the system that does not go through
-`runtime/writer`, because it runs before the supervision tree that
-contains the writer has started. Every post-boot commit goes through the
-writer, which is what makes "exactly one process commits to a session" a
-structural claim.
+It also does not go through `runtime/writer`, because it runs before
+the supervision tree that contains the writer has started. The same is
+true of `ensure_id` below, and of the admin operations in `session/repo`,
+which run where no tree owns the store. Every post-boot commit goes
+through the writer, which is what makes "exactly one process commits to
+a session" a structural claim.
+
+`ensure_id` is the same kind of boot bookkeeping for the session's own
+name. It mints a canonical `core/ids.SessionId` only if the reserved
+`fact.custom` cell `session/id` is empty, under the same absence CAS, so
+every later open of the store reads back the same id. A losing
+concurrent minter adopts the winner's id. `id` and `parent_id` read the
+cell and its fork counterpart `session/parent`
+(`protocol-change/008-canonical-session-id.md`). The daemon's catalogue
+path uses `ensure_reserved_id` instead: it writes an id reserved in
+advance, and it refuses a store that already holds a different one.
 
 ## Every typed read carries the seq it was read at
 
@@ -253,7 +274,7 @@ flowchart LR
     end
     subgraph dst["fresh destination session"]
         D1["e1 → e2 → e3<br/>same EntryIds, new seq and ts"]
-        DR["strand.config/main (copied)<br/>strand.leaf/main → e3<br/>fresh StrandState<br/>fact.name, fact.label for copied ids"]
+        DR["strand.config/main (copied)<br/>strand.leaf/main → e3<br/>fresh StrandState<br/>fact.name, fact.label for copied ids<br/>a new session/id, session/parent → source id"]
     end
     S1 -->|"ForkBranch(strand: main, at: e3)<br/>scan_branch oldest-first, one InsertEntry each"| D1
     SR -->|"SetRegister, payloads verbatim"| DR
@@ -269,7 +290,10 @@ does not interpret them. **The destination starts idle**: a fresh
 ledger at zero. And **the destination must be empty** — forking into a
 session that already holds entries is refused with
 `ForkDestinationNotEmpty`, because a fork must never splice two
-histories together.
+histories together. **The destination is born identified**: the copy
+transaction mints its own `session/id` and records the source's id as
+`session/parent`. A source that has no id forks to a destination with no
+parent recorded, because minting one into the source would mutate it.
 
 `ForkTree` copies everything instead: every entry, every strand's
 configuration and leaf, every label. `ForkBranch` copies the ancestor
@@ -328,29 +352,68 @@ erasure is allowed to change what a row says, never where it sits.
 
 | Module | What it holds |
 |---|---|
-| `session/session` | `Session` and the two constructors, the migration chain, handle erasure, `ensure_strand`, the typed `Cell` accessors, and the whole projection pipeline. |
+| `session/session` | `Session` and the two constructors, the migration chain, handle erasure, `ensure_strand` and `ensure_id`, the typed `Cell` accessors, and the whole projection pipeline. |
 | `session/repo` | `fork` and its scopes, the `EntryRewrite`/`ValueRewrite` contracts, `erase_text`/`erase_value`, and the two rewrite drivers. |
 
-Paths are relative to `packages/session/src/` — `session/repo` is
+Paths are relative to `packages/session/src/`, so `session/repo` is
 `packages/session/src/session/repo.gleam`.
+
+The package sits between the store and the harness. It imports `core`,
+`storage` and `machine`, plus `gleam_erlang` for the connection PID that
+`open_sqlite_custody` returns. It has no FFI and no actor of its own:
+every call passes through to the backend actor behind the `Storage`
+record.
+
+```mermaid
+flowchart LR
+    runtime --> session
+    client --> session
+    conformance --> session
+    session --> storage
+    session --> machine
+    session --> core
+    storage --> core
+    machine --> core
+```
+
+## How it is tested
+
+`test/session_test.gleam` covers the projection rules one at a time,
+boot seeding, and the typed register reads. The files under
+`test/session/` each take one area: `projection_test` (custom
+projectors, the transform hook, orphan healing, and a seeded property
+that each projection is a prefix of the next except across a
+compaction), `fork_test` (both scopes, the refusals, and a property that
+a branch fork projects the same context as the source at the fork
+point), `rewrite_test` (both drivers, and a check that an erased string
+appears nowhere in the rewritten file's raw bytes), `identity_test`, and
+`migrate_test` (the version refusal and a synthetic migration step).
+`test/support/` holds a history builder and a seeded generator, so a
+failing property reproduces from its seed.
+
+Run the package gate, which is format check, warning-free build, and
+tests, with `make check-session`.
 
 ## Reading further
 
-- [`CLAUDE.md`](CLAUDE.md) — the reference doc for changing this code:
+- [`CLAUDE.md`](CLAUDE.md): the reference doc for changing this code, with
   key types, real dependency edges, commit and register traffic, and the
   invariants that break things when violated. Read it before editing.
-- [`packages/storage/README.md`](../storage/README.md) — the store this
+- [`packages/storage/README.md`](../storage/README.md): the store this
   package is one handle over: the three stores, the branch walk, the
   fenced lease, and the rewrite's file-level mechanics.
-- [`docs/architecture/durability.md`](../../docs/architecture/durability.md)
-  — the tree, branches, and strands the projection walks.
-- [`docs/architecture/orchestration.md`](../../docs/architecture/orchestration.md)
-  — where the projection sits in the drive loop.
-- [`docs/architecture/compaction.md`](../../docs/architecture/compaction.md)
-  — why a context scan stops at the first compaction, and what a
+- [`docs/architecture/durability.md`](../../docs/architecture/durability.md):
+  the tree, branches, and strands the projection walks.
+- [`docs/architecture/orchestration.md`](../../docs/architecture/orchestration.md):
+  where the projection sits in the drive loop.
+- [`docs/architecture/compaction.md`](../../docs/architecture/compaction.md):
+  why a context scan stops at the first compaction, and what a
   compaction entry carries.
-- [`protocol-change/005-lease-lost-commit-error.md`](../../protocol-change/005-lease-lost-commit-error.md)
-  — why a stolen lease is a typed refusal.
-- [`docs/spec-gaps.md`](../../docs/spec-gaps.md) — the recorded
+- [`protocol-change/005-lease-lost-commit-error.md`](../../protocol-change/005-lease-lost-commit-error.md):
+  why a stolen lease is a typed refusal.
+- [`protocol-change/008-canonical-session-id.md`](../../protocol-change/008-canonical-session-id.md):
+  the canonical session id that `ensure_id` mints and a fork records as
+  its parent.
+- [`docs/spec-gaps.md`](../../docs/spec-gaps.md): the recorded
   interpretations behind boot seeding, fork placement, healing, and what
   erasure leaves alone.
