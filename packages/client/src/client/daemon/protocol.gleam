@@ -108,6 +108,11 @@ pub type Command {
   /// Reads daemon readiness and aggregate capacity counts.
   Status
 
+  /// Mints a single-use ticket that lets this principal's browser open the
+  /// web view of one session (protocol-change/051). Served only when the
+  /// daemon was started with `--ui`.
+  UiLink(session_id: String)
+
   /// Lists authorized metadata after one canonical identity.
   ListSessions(after: String, revision: Option(Int))
 
@@ -346,6 +351,7 @@ fn decode_fields(
       RevokeCredentials(principal, epoch)
     }
     "status" -> Ok(Status)
+    "ui.link" -> result.map(session_id(fields), UiLink)
     "sessions.list" -> {
       use after <- result.try(cursor(fields))
       use revision <- result.try(optional_revision(fields))

@@ -6,11 +6,19 @@
 //// The supplied conversation adapter must speak v2 and must not return before
 //// its websocket process has attempted the parser reservation's transfer, or
 //// the release here would race it; the legacy gateway is not an adapter.
+////
+//// With `loomd --ui` the router also serves the web view under `/ui`
+//// (protocol-change/051): a page per session, the ticket exchange, the
+//// page's socket and a fixed list of assets. Without it every `/ui` path is
+//// a 404 and the control `hello` does not name the view, so the two v2
+//// endpoints are the whole surface, as spec Part 1.6 says.
 
 import broker/token
 import client/daemon/manager
 import client/daemon/protocol
 import client/daemon/root
+import client/daemon/ui_http
+import client/daemon/ui_sessions
 import client/peer_mail
 import client/peers
 import core/ids
@@ -27,9 +35,11 @@ import gleam/string
 import host/bootstrap
 import host/build_identity
 import mist
+import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
+import web_view/page
 import weft
 
 /// Capabilities owned by the daemon, not supplied over the wire.
@@ -46,7 +56,30 @@ pub type Config(instance) {
     /// A v2-only conversation adapter, responsible for transferring its permit.
     session_upgrade: fn(Request(mist.Connection), Attachment(instance)) ->
       Response(mist.ResponseData),
+    /// The web view, present only when the daemon was started with `--ui`.
+    ui: Option(Ui(instance)),
   )
+}
+
+/// The web view's half of the router's configuration (protocol-change/051).
+pub type Ui(instance) {
+  Ui(
+    /// The ticket and UI-session tables.
+    sessions: ui_sessions.Sessions,
+    /// Upgrades a checked page request to the component's socket; like
+    /// `session_upgrade`, it transfers the attachment's permit.
+    upgrade: fn(Request(mist.Connection), Attachment(instance)) ->
+      Response(mist.ResponseData),
+  )
+}
+
+/// Whose role an attachment carries.
+type Role {
+  /// The principal's membership role, as a terminal socket carries it.
+  MembershipRole
+
+  /// Observer whatever the membership says: the web view's cap.
+  ObserverRole
 }
 
 /// One authorized resident target; it cannot be retargeted by a later command.
@@ -105,8 +138,159 @@ pub fn handle(
   case request.path_segments(request) {
     ["v2", "control"] -> authenticated(config, request, None)
     ["v2", "sessions", id, "ws"] -> authenticated(config, request, Some(id))
+    ["ui", ..] ->
+      case config.ui {
+        Some(ui) -> web_view(config, ui, request)
+        None -> plain(404, "unknown endpoint")
+      }
     _ -> plain(404, "unknown endpoint")
   }
+}
+
+// The web view's routes, in the order protocol-change/051 checks them: the
+// host first, then the check that belongs to the route, then the cookie and
+// the credential behind it. Every response carries the view's headers except
+// the socket's upgrade, which carries mist's.
+fn web_view(config: Config(instance), ui: Ui(instance), request) {
+  case ui_http.loopback_host(request) {
+    Error(Nil) -> plain(403, "forbidden host")
+    Ok(host) ->
+      case ui_http.route(request) {
+        ui_http.Socket(id) -> web_socket(config, ui, request, host, id)
+        route -> ui_http.secured(web_document(config, ui, request, route), host)
+      }
+  }
+}
+
+// The page's socket: this origin, then the page's grant, then the same
+// resident-session resolution a terminal's socket uses, capped to observer.
+fn web_socket(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  host: String,
+  id: String,
+) {
+  let checked = {
+    use Nil <- result.try(case ui_http.origin_matches(request, host) {
+      True -> Ok(Nil)
+      False -> Error(plain(403, "forbidden origin"))
+    })
+    page_grant(config, ui, request, id)
+  }
+  case checked {
+    Error(response) -> ui_http.secured(response, host)
+    Ok(#(state, grant)) ->
+      resident_upgrade(
+        config,
+        request,
+        state,
+        grant.credential,
+        id,
+        ObserverRole,
+        ui.upgrade,
+      )
+  }
+}
+
+fn web_document(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  route: ui_http.Route,
+) {
+  case route {
+    ui_http.Unknown | ui_http.Socket(_) -> plain(404, "unknown endpoint")
+    ui_http.Asset(asset) -> web_asset(asset)
+    ui_http.Page(id) ->
+      case page_grant(config, ui, request, id) {
+        Error(response) -> response
+        Ok(_) -> document(200, "text/html; charset=utf-8", page.shell(id))
+      }
+
+    // The exchange redeems the ticket before it looks at the path's session,
+    // so a ticket presented against the wrong session is spent rather than
+    // left for another try.
+    ui_http.Exchange(id, ticket) ->
+      case ui_http.exchange_allowed(request) {
+        False -> plain(403, "forbidden exchange")
+        True ->
+          case
+            ui_sessions.redeem(
+              ui.sessions,
+              ticket,
+              ui_http.session_cookie(request),
+            )
+          {
+            Error(Nil) -> plain(401, "unknown or expired ticket")
+            Ok(redeemed) if redeemed.grant.session_id != id ->
+              plain(403, "ticket names another session")
+            Ok(redeemed) ->
+              document(200, "text/html; charset=utf-8", page.enter())
+              |> response.set_header(
+                "set-cookie",
+                ui_http.set_cookie(redeemed.cookie),
+              )
+          }
+      }
+  }
+}
+
+fn web_asset(asset: ui_http.Asset) {
+  case asset {
+    ui_http.Stylesheet ->
+      document(200, "text/css; charset=utf-8", page.stylesheet())
+    ui_http.EnterScript ->
+      document(200, "text/javascript; charset=utf-8", page.enter_script())
+    ui_http.Runtime ->
+      case
+        page.runtime_file()
+        |> result.try(fn(path) {
+          simplifile.read(path) |> result.replace_error(Nil)
+        })
+      {
+        Ok(source) -> document(200, "text/javascript; charset=utf-8", source)
+        Error(Nil) -> plain(500, "client runtime unavailable")
+      }
+  }
+}
+
+// The cookie's UI session, re-authorized from scratch: it must be live, name
+// this session, and its minting credential must still authenticate and still
+// be a member. The answer carries the readiness the socket's upgrade reuses.
+fn page_grant(config: Config(instance), ui: Ui(instance), request, id: String) {
+  use cookie <- result.try(
+    ui_http.session_cookie(request)
+    |> option.to_result(Nil)
+    |> result.map_error(fn(_) { plain(401, "no page session") }),
+  )
+  use grant <- result.try(
+    ui_sessions.lookup(ui.sessions, cookie)
+    |> result.map_error(fn(_) { plain(401, "unknown or expired page session") }),
+  )
+  use Nil <- result.try(case grant.session_id == id {
+    True -> Ok(Nil)
+    False -> Error(plain(403, "page session names another session"))
+  })
+  use state <- result.try(
+    root.ready(config.daemon, within: 1000)
+    |> result.map_error(fn(_) { plain(503, "daemon unavailable") }),
+  )
+  use _principal <- result.try(
+    manager.authenticate(state.registry, grant.credential)
+    |> result.map_error(fn(_) { plain(401, "credential revoked") }),
+  )
+  use _authority <- result.try(
+    manager.session_authority(state.registry, grant.credential, id)
+    |> result.map_error(fn(_) { plain(403, "not a member of this session") }),
+  )
+  Ok(#(state, grant))
+}
+
+fn document(status: Int, content_type: String, body: String) {
+  response.new(status)
+  |> response.set_header("content-type", content_type)
+  |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
 }
 
 fn authenticated(config: Config(instance), request, target) {
@@ -127,7 +311,16 @@ fn authenticated(config: Config(instance), request, target) {
     Ok(#(state, digest, principal)) ->
       case target {
         None -> control_upgrade(config, request, state, digest, principal)
-        Some(id) -> session_upgrade(config, request, state, digest, id)
+        Some(id) ->
+          resident_upgrade(
+            config,
+            request,
+            state,
+            digest,
+            id,
+            MembershipRole,
+            config.session_upgrade,
+          )
       }
   }
 }
@@ -160,12 +353,19 @@ fn nonempty(value) {
   }
 }
 
-fn session_upgrade(
+// Resolves one resident session for an authenticated upgrade and hands the
+// attachment to `upgrade`. A terminal socket carries the principal's
+// membership role; the web view's socket carries observer whatever the
+// membership says, and so is admitted with an observer's parser permit.
+fn resident_upgrade(
   config: Config(instance),
   request,
   state: root.Ready(instance),
   digest,
   id,
+  role: Role,
+  upgrade: fn(Request(mist.Connection), Attachment(instance)) ->
+    Response(mist.ResponseData),
 ) {
   // Resolve metadata first, then compare the observed incarnation in one actor
   // turn. A stop/reopen between those calls must refuse this upgrade.
@@ -189,7 +389,11 @@ fn session_upgrade(
   }
   case target {
     Error(_) -> plain(409, "session unavailable")
-    Ok(#(principal, authority, incarnation, instance)) -> {
+    Ok(#(principal, membership, incarnation, instance)) -> {
+      let authority = case role {
+        MembershipRole -> membership
+        ObserverRole -> access.Participant(access.Observer)
+      }
       let class = case authority {
         access.Participant(access.Observer) -> root.Observer
         access.Owner | access.Participant(access.Operator) -> root.Operator
@@ -199,7 +403,7 @@ fn session_upgrade(
         Ok(permit) -> {
           let #(connection_id, _) = ids.mint_op(config.generator())
           let response =
-            config.session_upgrade(
+            upgrade(
               request,
               Attachment(
                 instance:,
@@ -318,6 +522,7 @@ fn control_upgrade(
                             ),
                           ]),
                         ),
+                        ..hello_view(config)
                       ]),
                     ),
                   )
@@ -361,6 +566,15 @@ fn control_upgrade(
       root.release(config.daemon, permit)
       response
     }
+  }
+}
+
+// The `hello` names the web view only when the daemon serves it, so a
+// client can tell a daemon started with `--ui` from one that was not.
+fn hello_view(config: Config(instance)) -> List(#(String, JsonValue)) {
+  case config.ui {
+    Some(_) -> [#("ui", json.Object([#("path", json.String(page.prefix))]))]
+    None -> []
   }
 }
 
@@ -438,6 +652,7 @@ fn control(
             | protocol.UnlinkPeers(..)
             | protocol.SendPeer(..)
             | protocol.Status
+            | protocol.UiLink(..)
             | protocol.ListSessions(..)
             | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
@@ -475,6 +690,7 @@ fn control(
 fn control_use(command: protocol.Command) {
   case command {
     protocol.Status
+    | protocol.UiLink(..)
     | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
     | protocol.SessionActivity(..)
@@ -761,6 +977,33 @@ fn dispatch(
           #("domain_capacity", json.Int(summary.domain_capacity)),
           #("domain_occupied", json.Int(summary.domain_occupied)),
           #("domain_blocked", json.Int(summary.domain_blocked)),
+        ]),
+      ))
+    }
+
+    // A ticket for this principal's browser to open one session's page. It
+    // is minted only for a member of that session, and records the digest of
+    // the credential asking, so every later check of the page re-checks it.
+    protocol.UiLink(id) -> {
+      use ui <- result.try(option.to_result(config.ui, "unavailable"))
+      use _ <- result.try(authorized(state, digest, id))
+      use issued <- result.try(
+        ui_sessions.mint(
+          ui.sessions,
+          ui_sessions.Grant(principal.id, id, digest),
+        )
+        |> result.replace_error("unavailable"),
+      )
+      Ok(#(
+        "ui.link",
+        json.Object([
+          #(
+            "path",
+            json.String(
+              page.prefix <> "/sessions/" <> id <> "?ticket=" <> issued.ticket,
+            ),
+          ),
+          #("expires_in_ms", json.Int(issued.expires_in_ms)),
         ]),
       ))
     }
