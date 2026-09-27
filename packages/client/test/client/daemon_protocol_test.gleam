@@ -106,7 +106,14 @@ pub fn every_control_command_has_one_typed_decode_test() {
         #("name", json.String("Member")),
         #("role", json.String("observer")),
       ],
-      protocol.Invite(id, "member", "Member", access.Observer, "epoch"),
+      protocol.Invite(
+        id,
+        "member",
+        "Member",
+        access.Observer,
+        protocol.IssueClaim(protocol.default_claim_ttl_ms),
+        "epoch",
+      ),
     ),
     #(
       "sessions.set_role",
@@ -126,7 +133,11 @@ pub fn every_control_command_has_one_typed_decode_test() {
     #(
       "credentials.rotate",
       [epoch, #("principal_id", json.String("member"))],
-      protocol.RotateCredential("member", "epoch"),
+      protocol.RotateCredential(
+        "member",
+        protocol.IssueClaim(protocol.default_claim_ttl_ms),
+        "epoch",
+      ),
     ),
     #(
       "credentials.revoke",

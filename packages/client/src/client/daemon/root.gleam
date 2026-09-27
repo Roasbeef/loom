@@ -31,6 +31,7 @@ import client/daemon/lifetime
 import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
+import client/daemon/protocol
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -80,6 +81,24 @@ pub type ConnectionClass {
 
   /// A session operator may submit the larger supported input messages.
   Operator
+
+  /// A `/v2/claim` socket for one claim digest (protocol-change/053). It
+  /// accepts one message of at most `protocol.max_claim_bytes`, and the root
+  /// admits at most one reservation per digest at a time, so a spent claim
+  /// that is public in a chat log can hold at most one parser permit.
+  Claim(claim: access.ClaimDigest)
+}
+
+/// Why an upgrade received no reservation. `acquire_claim` reports the two
+/// apart, because the claim route answers them with different statuses;
+/// `acquire` flattens both to text.
+pub type AdmissionRefusal {
+  /// Another upgrade for the same claim digest holds a reservation, from its
+  /// HTTP request until its socket's process exits.
+  ClaimInFlight
+
+  /// The daemon is not admitting connections, or a ceiling is full.
+  NotAdmitted(reason: String)
 }
 
 /// Whether an existing control request may inspect a draining registry.
@@ -208,6 +227,12 @@ type Message(instance) {
     Reference,
     ConnectionClass,
     Subject(Result(Permit, String)),
+  )
+  AcquireClaim(
+    process.Pid,
+    Reference,
+    access.ClaimDigest,
+    Subject(Result(Permit, AdmissionRefusal)),
   )
   Transfer(Permit, process.Pid, Subject(Result(Nil, String)))
   Release(Permit)
@@ -391,6 +416,7 @@ pub fn message_limit(class: ConnectionClass) -> Int {
   case class {
     Control | Observer -> 65_536
     Operator -> 33_554_432
+    Claim(_) -> protocol.max_claim_bytes
   }
 }
 
@@ -400,7 +426,7 @@ pub fn message_limit(class: ConnectionClass) -> Int {
 // retained payload upward; it does not claim to measure JSON-term heap size.
 fn connection_charge(class: ConnectionClass) -> Int {
   let delivery = case class {
-    Control -> 0
+    Control | Claim(_) -> 0
     Observer | Operator -> 8_388_608
   }
   message_limit(class) + delivery
@@ -432,6 +458,48 @@ pub fn acquire(
     Error(reason) -> {
       release(root, Permit(http_owner, identity))
       Error(reason)
+    }
+  }
+}
+
+/// Reserves a `/v2/claim` socket for one claim digest in the calling HTTP
+/// handler, before the upgrade is sent.
+///
+/// It is `acquire` with the `Claim` class and one more refusal: while any
+/// reservation for the same digest exists, from another HTTP request through
+/// the death of the socket it was transferred to, this answers
+/// `ClaimInFlight`. The permit transfers and releases exactly as `acquire`'s
+/// does. A timeout cancels its exact request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // root.acquire_claim(daemon, claim, within: 1000)
+/// ```
+@internal
+pub fn acquire_claim(
+  root: Root(instance),
+  claim: access.ClaimDigest,
+  within within: Int,
+) -> Result(Permit, AdmissionRefusal) {
+  let http_owner = process.self()
+  let identity = reference.new()
+  let answer = case
+    call.try_call(
+      root.commands,
+      waiting: int.max(within, 0),
+      sending: fn(reply) { AcquireClaim(http_owner, identity, claim, reply) },
+    )
+  {
+    Ok(answer) -> answer
+    Error(call.NoReply) -> Error(NotAdmitted("daemon root request timed out"))
+    Error(call.CalleeGone) -> Error(NotAdmitted("daemon root is unavailable"))
+  }
+  case answer {
+    Ok(permit) -> Ok(permit)
+    Error(refusal) -> {
+      release(root, Permit(http_owner, identity))
+      Error(refusal)
     }
   }
 }
@@ -572,6 +640,8 @@ fn handle(
     WitnessGone(reason) -> witness_gone(phase, book, reason)
     Acquire(owner, identity, class, reply) ->
       acquire_slot(phase, book, owner, identity, class, reply)
+    AcquireClaim(owner, identity, claim, reply) ->
+      acquire_claim_slot(phase, book, owner, identity, claim, reply)
     Transfer(permit, websocket, reply) ->
       transfer_slot(phase, book, permit, websocket, reply)
     Release(permit) -> release_reserved(phase, book, permit)
@@ -882,20 +952,43 @@ fn acquire_slot(
   class: ConnectionClass,
   reply: Subject(Result(Permit, String)),
 ) {
-  // Refusal happens before parser activation. Custody and phase checks do
-  // not spend capacity, and the two configured ceilings remain independent.
-  let admission = case phase {
-    Serving ->
-      case dict.has_key(book.allocations, owner) {
-        True -> Error("connection PID already owns a reservation")
-        False -> available_connection(book, class)
+  let answer =
+    admission(phase, book, owner, class)
+    |> result.map_error(fn(refusal) {
+      case refusal {
+        ClaimInFlight -> "claim upgrade already in flight"
+        NotAdmitted(reason) -> reason
       }
-    Dormant | Starting | Stopping | Refused(_) | RecoveryBlocked(_) | Closed ->
-      Error("daemon is not admitting connections")
-  }
-  case admission {
-    Error(reason) -> {
-      process.send(reply, Error(reason))
+    })
+  reserve(book, owner, identity, class, answer, reply)
+}
+
+// The typed twin of `acquire_slot`, for the one caller that must tell a claim
+// already in flight (409) from a daemon that is not admitting (503).
+fn acquire_claim_slot(
+  phase: Phase,
+  book: Book(instance),
+  owner: process.Pid,
+  identity: Reference,
+  claim: access.ClaimDigest,
+  reply: Subject(Result(Permit, AdmissionRefusal)),
+) {
+  let class = Claim(claim)
+  let answer = admission(phase, book, owner, class)
+  reserve(book, owner, identity, class, answer, reply)
+}
+
+fn reserve(
+  book: Book(instance),
+  owner: process.Pid,
+  identity: Reference,
+  class: ConnectionClass,
+  answer: Result(Nil, refusal),
+  reply: Subject(Result(Permit, refusal)),
+) {
+  case answer {
+    Error(refusal) -> {
+      process.send(reply, Error(refusal))
       sm.keep(book)
     }
     Ok(Nil) -> {
@@ -903,6 +996,45 @@ fn acquire_slot(
       process.send(reply, Ok(Permit(owner, identity)))
       sm.keep(book) |> sm.with_selector(book.selector)
     }
+  }
+}
+
+// Refusal happens before parser activation. Custody and phase checks do
+// not spend capacity, and the two configured ceilings remain independent.
+//
+// A claim's reservation is also keyed by its digest. The allocation already
+// lives from the HTTP request until the socket process's DOWN, so finding an
+// allocation of the same class is the whole of "one upgrade in flight per
+// claim": no second table and no second monitor. The check sits here, where
+// every reservation passes, so no entry point can admit a second one.
+fn admission(
+  phase: Phase,
+  book: Book(instance),
+  owner: process.Pid,
+  class: ConnectionClass,
+) -> Result(Nil, AdmissionRefusal) {
+  case phase {
+    Serving ->
+      case dict.has_key(book.allocations, owner), claim_in_flight(book, class) {
+        True, _ ->
+          Error(NotAdmitted("connection PID already owns a reservation"))
+        False, True -> Error(ClaimInFlight)
+        False, False ->
+          available_connection(book, class) |> result.map_error(NotAdmitted)
+      }
+    Dormant | Starting | Stopping | Refused(_) | RecoveryBlocked(_) | Closed ->
+      Error(NotAdmitted("daemon is not admitting connections"))
+  }
+}
+
+// The allocation map is bounded by the configured connection ceiling, so this
+// walk is bounded too.
+fn claim_in_flight(book: Book(instance), class: ConnectionClass) -> Bool {
+  case class {
+    Claim(_) ->
+      dict.values(book.allocations)
+      |> list.any(fn(allocation) { allocation.class == class })
+    Control | Observer | Operator -> False
   }
 }
 
@@ -1110,7 +1242,7 @@ fn cancel_session_connections(book: Book(instance)) {
   dict.each(book.allocations, fn(owner, allocation) {
     case allocation.class {
       Control -> Nil
-      Observer | Operator -> process.kill(owner)
+      Observer | Operator | Claim(_) -> process.kill(owner)
     }
   })
 }

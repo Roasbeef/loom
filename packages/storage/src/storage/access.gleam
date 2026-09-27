@@ -179,6 +179,20 @@ pub fn credential_digest(value: String) -> Result(Digest, Error) {
   }
 }
 
+/// The first 16 hexadecimal characters of a credential digest, which the owner
+/// and the invitee compare out of band to confirm who bound a claim. It is not
+/// secret: it is part of a digest of the credential, not the credential.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.fingerprint(digest) -> "9c1e0f2ab3d4e5f6"
+/// ```
+@internal
+pub fn fingerprint(digest: Digest) -> String {
+  string.slice(digest.value, 0, 16)
+}
+
 /// Validates a claim-token digest. Like `credential_digest`, this checks the
 /// representation only; the caller hashes the whole `loomclaim_` string.
 ///
