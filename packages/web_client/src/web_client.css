@@ -162,8 +162,12 @@
   p.cache-miss{margin:0;padding:6px 10px;border:1px dashed var(--color-signal);border-radius:6px; color:var(--color-signal);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .observer-bar{margin:16px 0 0 0;padding:12px 16px;border-top:1px solid var(--color-divider); color:var(--color-fg-quiet);font-size:13px;}
   .page-note{margin:16px;color:var(--color-fg-quiet);}
-  section.approvals{margin:16px 0;}
-  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-signal); border-left:4px solid var(--color-signal);border-radius:8px;padding:12px 16px;margin:8px 0;}
+  /* The approvals sit in the dock above the composer. Their height is
+     capped and they scroll on their own, so a long action preview or
+     several pending cards cannot push the composer off the screen. */
+  section.approvals{margin:0 0 8px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
+  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-signal); border-left:4px solid var(--color-signal);border-radius:8px;padding:12px 16px;margin:0 0 8px 0;}
+  article.approval-card:last-child{margin-bottom:0;}
   .approval-head{margin:0 0 4px 0;color:var(--color-signal);font:12px/1.4 var(--font-mono);text-transform:lowercase;}
   .approval-question{margin:0 0 8px 0;font-weight:600;}
   pre.approval-action{margin:0 0 8px 0;padding:8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}

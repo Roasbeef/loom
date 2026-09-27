@@ -288,8 +288,9 @@ not a decision, and the record stays reachable through `/approvals`.
 An operator's web page ([the web view](web-view.md)) decodes the same
 cells with the same `session_view/approval` code and draws each pending
 record as a card, under stricter rules, because the page shows content the
-session's agent wrote. The card sits in its own region below the composer,
-drawn from the record alone. It offers *deny* first and *allow once*
+session's agent wrote. The card sits in its own region directly above the
+composer, in the dock pinned to the bottom of the viewport, drawn from the
+record alone. It offers *deny* first and *allow once*
 second, each naming the tool, and never *allow for session*, because a
 remembered grant would outlive the page that gave it. Nothing on the page
 takes focus when a card appears, and Enter in the composer never decides.

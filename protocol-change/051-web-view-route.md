@@ -807,3 +807,59 @@ at a host name listed with `loomd --ui-origin`, with a `__Host-` `Secure`
 cookie, an exact `https` `Origin` rule and a `wss:` socket policy. A
 teammate mints their own ticket with `loom --ui --addr wss://…` and their
 member credential.
+
+## Addendum: the pinned composer and the approval card (2026-09-27)
+
+The operator addendum placed the approval card in its own region below the
+composer. The first live drive of an operator's page (issue #569) found
+two problems with that layout. The composer sat in the document's flow
+under the transcript, so it moved down each time a row landed and each
+time its editor grew, and a click aimed at Send or Steer landed on
+whatever had moved under the pointer. And the card, below the composer at
+the very end of the page, was off screen whenever the operator had
+scrolled up to read.
+
+**The composer is pinned.** The composer is drawn in a dock, a footer
+the stylesheet pins to the bottom edge of the viewport with `position:
+sticky`. It no longer moves when the transcript does.
+
+**The card sits directly above the composer, inside the dock.** A
+pending card is therefore on screen wherever the operator has scrolled.
+The reason this addendum's original rule gave for "below, not above" was
+that a card drawn above the composer would move the composer's controls
+under a click already on its way to them. That held for a composer in the
+flow, which a card above it pushed down. It does not hold for a composer
+pinned by its bottom edge: a card appearing grows the dock upward, and
+the composer's controls stay where they were. The region's height is
+capped at 35% of the viewport and scrolls on its own, so a long action
+preview cannot push the composer off the screen.
+
+Every other rule for the card is unchanged: it is drawn from the
+escalation record alone, in a region transcript content cannot occupy and
+in a style no transcript line uses; Deny comes first and each button
+names the tool; nothing takes focus; the card's buttons are
+`type="button"` outside the composer's form; and a decision names the
+drawn identity and sequence. The client component that follows the tail
+(`<loom-follow>`) wraps only the lane, so it neither reads nor scrolls
+anything in the dock.
+
+**What was considered.**
+
+- **Keep the card below a pinned composer, inside the dock.** The card
+  would still be on screen, and a card appearing below the composer would
+  push the composer up, which is the movement the original rule refused.
+  Not taken.
+- **Draw the card beside the call that holds the claim, in the
+  transcript.** The direction in `docs/design-notes/web-ui.md` already
+  places a buttonless `waits for approval` marker there. A card with
+  buttons inline in the transcript would move every row after it when it
+  appears and leaves, and would sit in the region transcript content
+  occupies. Not taken.
+
+**Cost.** The dock now covers the bottom of the transcript by the height
+of any pending cards. A card that appears while the pointer is travelling
+toward a transcript row just above the dock can land under that click.
+The only controls in the transcript are the fold toggles, the card's
+buttons are at its bottom edge next to the composer rather than at its
+top, and Deny is the first of them. The page tests pin the placement
+(`operator_page_test`, the approvals above the composer in the dock).

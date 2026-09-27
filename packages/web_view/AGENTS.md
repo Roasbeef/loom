@@ -119,8 +119,12 @@ page keys and nonces, and the relay into the session's gateway.
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever
   `html.text`; nothing uses `unsafe_raw_html`.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
-  in its own region outside the transcript and after the composer, so a
-  card appearing never moves the composer. Deny comes first; each button
+  in its own region outside the transcript, directly above the composer in
+  the dock, the footer pinned to the viewport's bottom edge. A card
+  appearing grows the dock upward and never moves the composer, and the
+  region's height is capped so it scrolls on its own. With nothing pending
+  the region is `element.none()`, so the composer's path does not change
+  when a card appears. Deny comes first; each button
   names the tool; nothing has `autofocus`; the composer's submit never
   decides an approval; a decision is sent only for the record still pending
   at the drawn sequence (`operator.drawn`).

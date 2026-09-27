@@ -390,10 +390,13 @@ would try to trick the person into approving:
 
 - It is drawn from the escalation record alone
   (`approval.presentation`), never from transcript text, in a region
-  below the composer that transcript content cannot occupy, and in a style
-  no transcript line uses. Below, not above: the agent chooses when a card
-  appears and how tall it is, and a card drawn above the composer could
-  move a button under a click already on its way to Send.
+  that transcript content cannot occupy, and in a style no transcript
+  line uses. The region sits directly above the composer in the dock, the
+  footer pinned to the bottom of the viewport, so a pending card is on
+  screen wherever the operator has scrolled. The dock is pinned by its
+  bottom edge, so a card appearing grows it upward and leaves the
+  composer's controls where they were (051, the addendum on the pinned
+  composer).
 - Deny comes first, each button names the tool ("Deny bash", "Allow bash
   once"), nothing has `autofocus`, and a new card never takes focus.
 - Enter in the composer is a newline. A draft is sent only by the form's

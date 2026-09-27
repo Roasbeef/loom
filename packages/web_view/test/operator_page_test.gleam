@@ -213,18 +213,24 @@ pub fn the_composer_is_drawn_in_the_dock_test() {
   assert string.contains(dock, "class=\"composer\"")
 }
 
-// A card appearing must never move the composer: the agent chooses when a
-// card lands and how tall it is, so drawn above the composer it could slide
-// Deny or Allow under a click on its way to the editor or to Send. The
-// approvals therefore come after the composer.
-pub fn the_composer_comes_before_the_approvals_test() {
+// A pending card is drawn in the dock, directly above the composer, so it
+// is on screen wherever the operator has scrolled. The dock is pinned by
+// its bottom edge, so a card appearing grows it upward and never moves the
+// composer's controls. Nothing from the transcript is inside the dock.
+pub fn the_approvals_sit_above_the_composer_in_the_dock_test() {
   let #(model, _) = page("operator", pending())
   let html = element.to_string(operator_page.view(model))
-  let assert Ok(#(before_composer, _)) =
-    string.split_once(html, "class=\"composer\"")
-    as "the page draws a composer"
-  assert !string.contains(before_composer, "class=\"approvals\"")
-  assert string.contains(html, "class=\"approvals\"")
+  let assert Ok(#(before_dock, from_dock)) =
+    string.split_once(html, "<footer class=\"dock\">")
+    as "the page draws a dock"
+  let assert Ok(#(dock, _)) = string.split_once(from_dock, "</footer>")
+    as "the dock is closed"
+  assert !string.contains(before_dock, "class=\"approvals\"")
+  let assert Ok(#(above_composer, _)) =
+    string.split_once(dock, "class=\"composer\"")
+    as "the dock holds the composer"
+  assert string.contains(above_composer, "class=\"approvals\"")
+  assert !string.contains(dock, "class=\"transcript lane\"")
 }
 
 // The card is drawn from the record alone, outside the transcript: Deny is
