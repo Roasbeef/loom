@@ -14,17 +14,17 @@
 
 import etui/geometry
 import gleam/bool
-import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import host/bootstrap as host_bootstrap
+import session_view/cache_miss
+import session_view/cache_watch
 import session_view/history_view
 import session_view/session_channel
 import tui/attachment
 import tui/attempt_replay
 import tui/buffered
-import tui/cache_miss
 import tui/effect
 import tui/herdr
 import tui/inbound
@@ -322,22 +322,22 @@ fn advance_generation_clock(model: Model) -> Model {
 // function of the model, and the label repaints only when the reading
 // actually moved.
 //
-// The reading is suppressed while the active strand is running. A request
-// in flight re-writes the prefix whatever the label says, so a countdown
-// shown mid-generation would name an expiry the request in progress is
-// about to reset — and the miss row, not the label, is the thing that
-// reports what the pause before the request cost.
+// The reading is suppressed while the active strand is running
+// (`cache_watch.shown` says why), which the web view's rings follow too.
 fn advance_cache_outlook(model: Model) -> Model {
-  let label = case tui_model.active_strand_live(model) {
-    False ->
-      model.cache_watch
-      |> dict.get(model.active_strand)
-      |> option.from_result
-      |> cache_miss.outlook(model.stamp.now_ms)
-      |> option.map(cache_miss.outlook_label)
-      |> option.unwrap("")
-    True -> ""
+  let activity = case tui_model.active_strand_live(model) {
+    True -> cache_watch.Running
+    False -> cache_watch.Resting
   }
+  let label =
+    cache_watch.shown(
+      model.cache,
+      model.active_strand,
+      activity,
+      model.stamp.now_ms,
+    )
+    |> option.map(cache_miss.outlook_label)
+    |> option.unwrap("")
   case label == model.cache_outlook {
     True -> model
     False -> tui_model.invalidate_frame(Model(..model, cache_outlook: label))

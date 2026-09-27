@@ -59,6 +59,9 @@ pub type Asset {
 
   /// The session page's script.
   PageScript
+
+  /// The client components' bundle.
+  Client
 }
 
 /// Routes a `/ui` request; every route is a `GET`. The session ID is returned as the path gave it;
@@ -87,6 +90,7 @@ pub fn route(request: Request(body)) -> Route {
         _ if name == page.stylesheet_asset -> Asset(Stylesheet)
         _ if name == page.enter_asset -> Asset(EnterScript)
         _ if name == page.page_asset -> Asset(PageScript)
+        _ if name == page.client_asset -> Asset(Client)
         _ -> Unknown
       }
     _, _ -> Unknown

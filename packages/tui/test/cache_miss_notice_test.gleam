@@ -18,6 +18,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import machine/strand
+import session_view/cache_miss
+import session_view/cache_watch
 import session_view/connection_event
 import session_view/protocol
 import session_view/session_channel
@@ -26,7 +28,6 @@ import session_view/snapshot_view
 import tui
 import tui/attachment
 import tui/buffered
-import tui/cache_miss
 import tui/connection
 import tui/frame
 import tui/inbound
@@ -225,9 +226,10 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
     |> fn(base) {
       tui_model.Model(
         ..base,
-        cache_watch: dict.from_list([
-          #("main", watch_with(cache_miss.Split)),
-        ]),
+        cache: cache_watch.Ledger(
+          ..base.cache,
+          watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+        ),
       )
     }
     |> at(180_000)
@@ -242,7 +244,10 @@ pub fn changing_the_model_discards_the_old_watch_before_the_next_row_test() {
   let watched =
     tui_model.Model(
       ..base,
-      cache_watch: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+      cache: cache_watch.Ledger(
+        ..base.cache,
+        watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+      ),
     )
   let shown = tui.update(backend.Tick, at(watched, 180_000))
   assert shown.cache_outlook == "cache tail ≤2m"
@@ -253,7 +258,7 @@ pub fn changing_the_model_discards_the_old_watch_before_the_next_row_test() {
       input: textarea.state_from_string("/model another-provider"),
     )
   let switched = tui.update(backend.KeyPress("enter"), requested)
-  assert dict.get(switched.cache_watch, "main") == Error(Nil)
+  assert dict.get(switched.cache.watches, "main") == Error(Nil)
     as "a new provider has no prior cache baseline or proven horizon"
   assert switched.cache_outlook == ""
     as "the old provider's countdown disappears with the switch"
@@ -303,7 +308,10 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
   let initial =
     tui_model.Model(
       ..base,
-      cache_watch: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+      cache: cache_watch.Ledger(
+        ..base.cache,
+        watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+      ),
     )
   let cut =
     snapshot.Captured(
@@ -339,7 +347,7 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
         session_channel.Notified,
       ),
     )
-  assert dict.get(same_provider.cache_watch, "main") != Error(Nil)
+  assert dict.get(same_provider.cache.watches, "main") != Error(Nil)
     as "changing reasoning effort does not erase the provider's watch"
 
   let switched =
@@ -354,7 +362,7 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
         session_channel.Notified,
       ),
     )
-  assert dict.get(switched.cache_watch, "main") == Error(Nil)
+  assert dict.get(switched.cache.watches, "main") == Error(Nil)
     as "same model ID under another provider is a different cache"
   assert switched.cache_outlook == ""
 }
@@ -571,7 +579,7 @@ pub fn a_session_switch_resets_the_watch_and_its_notices_test() {
   // Seed a watch and a drawn notice on session A's "main" strand.
   let seeded = after_the_second_turn(after_the_first_turn())
   assert string.contains(text(seeded), expected_row)
-  assert seeded.cache_watch != dict.new()
+  assert seeded.cache.watches != dict.new()
   assert seeded.cache_notices != []
 
   // Adopt session B through the real `candidate_outcome` path the terminal
@@ -584,7 +592,7 @@ pub fn a_session_switch_resets_the_watch_and_its_notices_test() {
   // can check directly is the state the switch itself must clear.
   let switched = adopt_session(seeded, "B")
 
-  assert switched.cache_watch == dict.new()
+  assert switched.cache.watches == dict.new()
     as "a session switch must drop the previous session's cache watch"
   assert switched.cache_notices == []
     as "a session switch must drop the previous session's cache notices"

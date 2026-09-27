@@ -66,11 +66,17 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   checks the deadline itself.
 - `daemon/ui_http`: pure checks. `route` (the exchange at
   `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
-  its socket at `.../ws` with the `csrf-token` query, and four assets),
+  its socket at `.../ws` with the `csrf-token` query, and five assets),
   `loopback_host`, `exchange_allowed` and `navigation_allowed`
   (`Sec-Fetch-Site` is `none` or `same-origin`), `origin_matches`, the
   `loom_ui` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/ui/p/<key>`) and
   `secured`, whose `Referrer-Policy: no-referrer` is load-bearing.
+- `daemon/ui_assets`: the page's stylesheet, bootstrap scripts and client
+  components' bundle (from `web_view`'s `priv/static`, `page.static_file`,
+  built from `web_client` by `make gen-client`) and Lustre's client runtime
+  (from `lustre`'s `priv`), read once by `main` when `--ui` is on and held
+  in `server.Ui`. A release that lost one refuses `--ui` at startup; a
+  request never touches the disk.
 - `daemon/server`: routes in 051's order of checks. The exchange answers
   200 with the keyed path and the nonce in the body, never a redirect.
   `page_grant` re-checks the cookie, its key, its session, and

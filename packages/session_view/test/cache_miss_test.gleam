@@ -1,6 +1,6 @@
 //// The prompt-cache miss detector, over generated pairs of usage rows.
 ////
-//// Every test here drives `tui/cache_miss` alone: the detector is pure
+//// Every test here drives `session_view/cache_miss` alone: the detector is pure
 //// arithmetic over two rows and two instants, so its thresholds can be
 //// swept rather than sampled. The sweeps stand in for a property-based
 //// framework, which this package does not depend on.
@@ -10,7 +10,7 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import tui/cache_miss
+import session_view/cache_miss
 
 // Anthropic's published per-token rates for a mid-sized model, which is the
 // shape the detector was written against: a cached read costs a tenth of

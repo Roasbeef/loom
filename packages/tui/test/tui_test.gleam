@@ -16,6 +16,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit
+import session_view/agent_view
 import session_view/command
 import session_view/composer
 import session_view/connection_event
@@ -28,7 +29,6 @@ import session_view/transcript_lines
 import simplifile
 import snapshot_test
 import tui
-import tui/agent_view
 import tui/agents
 import tui/buffered
 import tui/connection

@@ -29,7 +29,7 @@ import core/origin
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
@@ -97,8 +97,9 @@ pub fn update(
   #(model, effect.map(effects, Observed))
 }
 
-/// The operator's page: the heading, the transcript, the composer, and
-/// below it the approvals waiting for a decision, in a region of their own.
+/// The operator's page: the heading, the agent strip, the lane, the
+/// composer, and below it the approvals waiting for a decision, in a region
+/// of their own.
 ///
 /// The approvals come after the composer so that a card appearing never
 /// moves the composer. The agent decides when an escalation lands and how
@@ -114,7 +115,8 @@ pub fn update(
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
-    component.transcript_view(component.rows(model)),
+    component.strip_view(component.strip(model)),
+    component.lane_view(component.pieces(model)),
     composer(model),
     approvals(component.pending(model)),
   ])
@@ -253,7 +255,8 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
 }
 
 // Who the page acts as, from the attachment the last capture was taken
-// for, and the strand the composer addresses.
+// for, the strand the composer addresses, and what may be said about that
+// strand's prompt cache, where the operator decides to send now or later.
 fn identity(model: component.Model(socket)) -> Element(Msg(socket)) {
   let who = case component.attachment(model) {
     None -> [html.span([attribute.class("identity-name")], [html.text("…")])]
@@ -272,8 +275,27 @@ fn identity(model: component.Model(socket)) -> Element(Msg(socket)) {
       html.span([attribute.class("addressed")], [
         html.text("→ " <> component.strand),
       ]),
+      outlook(component.addressed(model)),
     ]),
   )
+}
+
+// The addressed strand's cache outlook, drawn as the chip's ring is and
+// worded by `cache_miss.outlook_label`. A tail about to lapse is the one
+// reading worth the signal colour; nothing else here nags.
+fn outlook(chip: Option(component.Chip)) -> Element(Msg(socket)) {
+  case chip {
+    Some(component.Chip(cache: Some(#(held, label)), ..)) ->
+      html.span(
+        [
+          attribute.class("outlook"),
+          component.ring_class(held),
+          attribute.role("status"),
+        ],
+        [html.text(label)],
+      )
+    Some(component.Chip(cache: None, ..)) | None -> element.none()
+  }
 }
 
 fn role_text(role: snapshot.Role) -> String {

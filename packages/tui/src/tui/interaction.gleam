@@ -16,13 +16,13 @@ import etui/geometry.{type Rect}
 import etui/keys
 import etui/widgets/textarea as text_area
 import gleam/bool
-import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/approval
+import session_view/cache_watch
 import session_view/command
 import session_view/composer
 import session_view/connection_event
@@ -352,10 +352,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           // against the wrong baseline: the new session's first usage row
           // would be compared to the old session's last one and drawn as a
           // miss that never happened.
-          cache_watch: dict.new(),
-          cache_seen_seq: dict.new(),
-          cache_pending: dict.new(),
-          cache_fence: dict.new(),
+          cache: cache_watch.new(),
           cache_notices: [],
           cache_outlook: "",
           scroll_offset: case model.scrollback.mode {

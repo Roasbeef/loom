@@ -43,10 +43,12 @@
 //// reaches the lane through `submit` and `decide` here, which call the
 //// engine's command arms.
 
+import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre
 import lustre/attribute
@@ -55,15 +57,23 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
 import lustre/server_component
+import session_view/agent_roster
+import session_view/agent_view
 import session_view/approval
+import session_view/cache_miss
+import session_view/cache_watch
 import session_view/connection_event
 import session_view/inbox.{type Inbox}
 import session_view/operator
+import session_view/protocol
+import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript
-import session_view/transcript_line.{type Line}
+import session_view/transcript_line.{type CacheNotice, type Line}
+import session_view/transcript_lines
+import session_view/turns
 
 /// How often the component reduces what arrived, in milliseconds.
 ///
@@ -165,6 +175,37 @@ pub type Answer {
   Deny
 }
 
+/// One agent chip: the roster's line for a strand, the hue its position
+/// gives it, and what may be said about its prompt cache.
+pub type Chip {
+  Chip(
+    /// The roster's line: name, status, activity, elapsed time, context.
+    line: agent_roster.Line,
+    /// The strand's hue, from its position among the captured strands.
+    hue: turns.Hue,
+    /// The cache outlook `cache_watch.shown` allows for the strand, with
+    /// its label, or `None` when nothing honest can be said.
+    cache: Option(#(cache_miss.Outlook, String)),
+    /// How long the strand's current operation had run when the strip was
+    /// built, in milliseconds (`agent_roster.running_ms`), or `None` when
+    /// it has no operation.
+    running_ms: Option(Int),
+  )
+}
+
+/// The agent strip: the listed agents in the terminal's order, the advisor
+/// in its own place, and how many strands settled out of it.
+pub type Strip {
+  Strip(
+    /// `main`, then every other strand whose state needs watching.
+    chips: List(Chip),
+    /// The advisor, when the capture holds its strand.
+    advisor: Option(Chip),
+    /// How many strands settled and left the strip.
+    settled: Int,
+  )
+}
+
 /// The component's state: the lane, the frames filed since the last tick,
 /// the last completed capture and what was derived from it.
 pub opaque type Model(socket) {
@@ -179,9 +220,27 @@ pub opaque type Model(socket) {
     filed: Inbox(Nil, connection_event.Message),
     /// The last `Captured` update.
     shown: Option(#(snapshot.Captured, snapshot_view.View)),
-    /// The transcript rows of `shown`, projected once when it arrived so
-    /// that a message which changed nothing costs the view no projection.
-    rows: List(transcript.Row),
+    /// The page strand's transcript blocks, projected once when a capture
+    /// or a cache notice arrived, so a message which changed neither costs
+    /// the view no projection.
+    blocks: List(transcript_lines.Block),
+    /// The same blocks laid out as turns (`session_view/turns`), derived
+    /// with them.
+    pieces: List(turns.Piece),
+    /// Every strand's agent row from the last capture (`agent_view`), and
+    /// the reviewer rows it is observed with.
+    agents: List(agent_view.Row),
+    reviewers: List(reviewer_status.Row),
+    /// The roster's memory of glances, clocks and pushed context sizes.
+    roster: agent_roster.Roster,
+    /// The prompt-cache ledger the usage pushes are folded into.
+    cache: cache_watch.Ledger,
+    /// Cache-miss notices raised on this page for its strand, oldest first.
+    /// Like the terminal's, they are transient and are not stored.
+    notices: List(CacheNotice),
+    /// The agent strip, derived when a capture, a usage push or a tick
+    /// changed something it draws.
+    strip: Strip,
     /// The escalations of `shown`, and the settled ones kept beside them.
     approvals: List(approval.Review),
     status: Status,
@@ -247,7 +306,14 @@ pub fn new(start: Start(socket)) -> Model(socket) {
     lane: None,
     filed: inbox.new(Nil),
     shown: None,
-    rows: [],
+    blocks: [],
+    pieces: [],
+    agents: [],
+    reviewers: [],
+    roster: agent_roster.new(),
+    cache: cache_watch.new(),
+    notices: [],
+    strip: Strip(chips: [], advisor: None, settled: 0),
     approvals: [],
     status: Connecting,
     clock: 0,
@@ -342,7 +408,7 @@ pub fn update(
     // does not, so the timer keeps exactly one pending fire.
     Ticked(at:) -> {
       let #(model, effects) = reduce(Model(..model, clock: at), at)
-      #(model, effect.batch([effects, rearm(model.timer)]))
+      #(ticked(model, at), effect.batch([effects, rearm(model.timer)]))
     }
   }
 }
@@ -401,8 +467,10 @@ fn received(
 }
 
 /// Folds the lane's updates into the component: a capture is projected
-/// once, here, into the rows the view draws and the escalations it offers;
-/// a submission's outcome becomes the notice; a failure ends the page.
+/// once, here, into the blocks and pieces the view draws, the agent rows
+/// and strip, and the escalations it offers; a usage push is folded into
+/// the cache ledger and the roster; a submission's outcome becomes the
+/// notice; a failure ends the page.
 ///
 /// ## Examples
 ///
@@ -416,17 +484,7 @@ pub fn apply(
 ) -> Model(socket) {
   list.fold(updates, model, fn(model, update) {
     case update {
-      session_channel.Captured(cut:, view:, ..) ->
-        Model(
-          ..model,
-          shown: Some(#(cut, view)),
-          rows: transcript.project_rows(cut, view, strand),
-          approvals: case approval.records(view.cells) {
-            Ok(current) -> approval.project(model.approvals, current)
-            Error(_) -> []
-          },
-          status: Following,
-        )
+      session_channel.Captured(cut:, view:, ..) -> captured(model, cut, view)
       session_channel.Failed(reason:) -> Model(..model, status: Ended(reason))
       session_channel.Submission(disposition:) -> settled(model, disposition)
       session_channel.UnknownOutcome(..) ->
@@ -436,6 +494,12 @@ pub fn apply(
             "The daemon's reply to your last command was lost. It was not resent.",
           ),
         )
+      session_channel.Auxiliary(protocol.UsageChanged(
+        strand:,
+        seq:,
+        operation:,
+        usage:,
+      )) -> used(model, strand, seq, operation, usage)
       session_channel.HistoryPage(..)
       | session_channel.LookedUp(..)
       | session_channel.Auxiliary(..)
@@ -446,6 +510,270 @@ pub fn apply(
       | session_channel.Acknowledged(..) -> model
     }
   })
+}
+
+// One capture, in the order the terminal takes it: the cache ledger is
+// carried across the new configuration before anything is compared, the
+// agent rows and the roster are observed, and only then are the pushed
+// usage rows the capture covers settled, so a miss they reveal is anchored
+// to the records this capture holds.
+fn captured(
+  model: Model(socket),
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+) -> Model(socket) {
+  case model.shown == Some(#(cut, view)) {
+    True -> recaptured(model, cut.next_seq)
+    False -> fresh(model, cut, view)
+  }
+}
+
+// The lane refreshes an idle page every 250 ms, and a refresh of a session
+// where nothing moved brings back the capture already drawn. Comparing it
+// with the one shown costs a walk of the two terms; projecting it again
+// would cost the agent rows, the lane and the strip for nothing. Only the
+// cache ledger can still move, since a held usage row may be covered now.
+fn recaptured(model: Model(socket), next_seq: Int) -> Model(socket) {
+  let settled = settle_cache(model, next_seq)
+  case settled.notices == model.notices, settled.cache == model.cache {
+    True, True -> settled
+    True, False -> restripped(settled)
+    False, _ -> relaned(settled)
+  }
+}
+
+fn fresh(
+  model: Model(socket),
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+) -> Model(socket) {
+  let previous = option.map(model.shown, fn(shown) { shown.1 })
+  let reviewers = reviewer_status.observe(model.reviewers, cut.window, view)
+  Model(
+    ..model,
+    shown: Some(#(cut, view)),
+    cache: cache_watch.capture(model.cache, previous, view),
+    reviewers:,
+    agents: agent_view.observe(model.agents, cut.window, view, reviewers),
+    roster: agent_roster.observe(model.roster, view, model.clock),
+    approvals: case approval.records(view.cells) {
+      Ok(current) -> approval.project(model.approvals, current)
+      Error(_) -> []
+    },
+    status: Following,
+  )
+  |> settle_cache(cut.next_seq)
+  |> relaned
+}
+
+// A usage row the daemon pushed. One with a durable sequence is admitted
+// once, becomes the strand's context size, and waits for a capture that
+// covers it; one without is compared at once. Either way the strip is
+// redrawn, since a context size or an outlook may have moved.
+fn used(
+  model: Model(socket),
+  strand: String,
+  seq: Option(Int),
+  operation: Option(String),
+  usage: message.Usage,
+) -> Model(socket) {
+  case seq {
+    Some(seq) -> {
+      let covered = option.map(model.shown, fn(shown) { { shown.0 }.next_seq })
+      case
+        cache_watch.admit(
+          model.cache,
+          strand,
+          seq,
+          operation,
+          usage,
+          model.clock,
+          covered,
+        )
+      {
+        Error(Nil) -> model
+        Ok(cache) -> {
+          let model =
+            Model(
+              ..model,
+              cache:,
+              roster: agent_roster.observe_usage(
+                model.roster,
+                strand,
+                operation,
+                agent_roster.context(usage),
+              ),
+            )
+          case covered {
+            Some(next_seq) -> settle_pushed(model, next_seq)
+            None -> restripped(model)
+          }
+        }
+      }
+    }
+    None -> {
+      let #(cache, missed) =
+        cache_watch.observe(
+          model.cache,
+          strand,
+          usage,
+          model.clock,
+          cache_watch.Live,
+        )
+      case missed {
+        None -> restripped(Model(..model, cache:))
+        Some(found) -> noted(Model(..model, cache:), found) |> relaned
+      }
+    }
+  }
+}
+
+// Settles the held usage rows a capture covers and files each miss they
+// reveal.
+fn settle_cache(model: Model(socket), next_seq: Int) -> Model(socket) {
+  let #(cache, missed) =
+    cache_watch.settle(model.cache, next_seq, cache_watch.Live)
+  list.fold(missed, Model(..model, cache:), noted)
+}
+
+// A pushed row the last capture already covers is settled at once. A push
+// usually runs ahead of the captures, so settling finds nothing and files
+// no notice; the lane is projected again only when a miss was found, and
+// otherwise only the strip, whose context size or outlook may have moved.
+fn settle_pushed(model: Model(socket), next_seq: Int) -> Model(socket) {
+  let settled = settle_cache(model, next_seq)
+  case settled.notices == model.notices {
+    True -> restripped(settled)
+    False -> relaned(settled)
+  }
+}
+
+// Files one miss as a notice after the newest entry its strand holds, as
+// the terminal files one. The page draws one strand, so a miss on another
+// strand has no row here; that strand's chip still shows its outlook.
+fn noted(model: Model(socket), found: cache_watch.Missed) -> Model(socket) {
+  case model.shown, found.strand == strand {
+    Some(#(cut, view)), True ->
+      case transcript.newest_entry(cut, view, strand) {
+        None -> model
+        Some(after_entry) ->
+          Model(
+            ..model,
+            notices: list.append(model.notices, [
+              transcript_line.CacheNotice(
+                strand:,
+                after_entry:,
+                text: cache_watch.notice_text(found.miss),
+              ),
+            ]),
+          )
+      }
+    _, _ -> model
+  }
+}
+
+// Projects the page strand's blocks and pieces from the shown capture and
+// the notices, then the strip. This is the one place a projection runs.
+fn relaned(model: Model(socket)) -> Model(socket) {
+  case model.shown {
+    None -> restripped(model)
+    Some(#(cut, view)) -> {
+      let blocks = transcript.blocks(cut, view, strand, model.notices)
+      let latest = turns.latest(view, model.agents, strand)
+      Model(
+        ..model,
+        blocks:,
+        pieces: turns.pieces(blocks, view.strands, latest),
+      )
+      |> restripped
+    }
+  }
+}
+
+// The agent strip from the roster, the agent rows and the cache ledger, as
+// of the page's clock. Which strands are listed and what each line says is
+// `agent_roster.chips`; which outlook may be shown is `cache_watch.shown`.
+fn restripped(model: Model(socket)) -> Model(socket) {
+  Model(..model, strip: strip_of(model))
+}
+
+fn strip_of(model: Model(socket)) -> Strip {
+  let strands = strands(model)
+  let chips = agent_roster.chips(model.roster, model.agents, strand)
+  let chip = fn(line: agent_roster.Line) {
+    Chip(
+      line:,
+      hue: turns.hue(strands, line.id),
+      cache: outlook(model, strands, line.id),
+      running_ms: running_ms(model, line.id),
+    )
+  }
+  Strip(
+    chips: list.map(chips.listed, chip),
+    advisor: option.map(chips.advisor, chip),
+    settled: chips.settled,
+  )
+}
+
+// How long a strand's current operation has run, on the roster's clock.
+fn running_ms(model: Model(socket), id: String) -> Option(Int) {
+  model.agents
+  |> list.find(fn(row) { row.id == id })
+  |> option.from_result
+  |> option.then(agent_roster.running_ms(model.roster, _))
+}
+
+fn strands(model: Model(socket)) -> List(protocol.Strand) {
+  case model.shown {
+    Some(#(_, view)) -> view.strands
+    None -> []
+  }
+}
+
+// A strand the capture lists with a live phase is running, which is the
+// terminal's test too, and `cache_watch.shown` says nothing for it.
+fn outlook(
+  model: Model(socket),
+  strands: List(protocol.Strand),
+  id: String,
+) -> Option(#(cache_miss.Outlook, String)) {
+  let activity = case list.find(strands, fn(listed) { listed.id == id }) {
+    Ok(protocol.Strand(live_phase: Some(_), ..)) -> cache_watch.Running
+    Ok(protocol.Strand(live_phase: None, ..)) | Error(Nil) ->
+      cache_watch.Resting
+  }
+  cache_watch.shown(model.cache, id, activity, model.clock)
+  |> option.map(fn(held) { #(held, cache_miss.outlook_label(held)) })
+}
+
+// The tick's part in the strip. The browser counts each chip's elapsed
+// time, so a second passing redraws nothing; the strip is rebuilt only when
+// a drawn cache label changed, which is once a minute at most until a
+// countdown's last minute. An idle page's tick therefore leaves the strip
+// as the same value and its memoized subtree is not diffed. The labels are
+// compared chip by chip rather than by rebuilding the strip, which would
+// redo every line's text on every tick.
+fn ticked(model: Model(socket), at: Int) -> Model(socket) {
+  let #(roster, _) = agent_roster.tick(model.roster, at)
+  let model = Model(..model, roster:)
+  let strands = strands(model)
+  let moved =
+    list.any(chips(model.strip), fn(chip) {
+      option.map(chip.cache, fn(held) { held.1 })
+      != option.map(outlook(model, strands, chip.line.id), fn(held) { held.1 })
+    })
+  case moved {
+    False -> model
+    True -> restripped(model)
+  }
+}
+
+// Every chip of a strip, the advisor's included.
+fn chips(strip: Strip) -> List(Chip) {
+  case strip.advisor {
+    Some(advisor) -> list.append(strip.chips, [advisor])
+    None -> strip.chips
+  }
 }
 
 // What the lane's answer to a submission means for the page. A sent draft
@@ -626,7 +954,9 @@ fn rearm(timer: Option(Subject(Nil))) -> Effect(Msg(socket)) {
   }
 }
 
-/// The transcript lines the page draws, oldest first.
+/// The transcript lines of the page strand's blocks, oldest first: the
+/// lines the terminal draws for the same capture, which the lane lays out
+/// as turns.
 ///
 /// ## Examples
 ///
@@ -634,7 +964,44 @@ fn rearm(timer: Option(Subject(Nil))) -> Effect(Msg(socket)) {
 /// // component.lines(model)
 /// ```
 pub fn lines(model: Model(socket)) -> List(Line) {
-  list.map(model.rows, fn(row) { row.line })
+  list.flat_map(model.blocks, fn(block) {
+    list.map(block.rows, fn(row) { row.1 })
+  })
+}
+
+/// The lane's pieces, in order (`session_view/turns`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.lane_view(component.pieces(model))
+/// ```
+pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
+  model.pieces
+}
+
+/// The agent strip as the page draws it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.strip_view(component.strip(model))
+/// ```
+pub fn strip(model: Model(socket)) -> Strip {
+  model.strip
+}
+
+/// The chip of the strand the page addresses, whose cache outlook the
+/// operator's composer shows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.addressed(model)
+/// ```
+pub fn addressed(model: Model(socket)) -> Option(Chip) {
+  list.find(model.strip.chips, fn(chip) { chip.line.id == strand })
+  |> option.from_result
 }
 
 /// The connection's status.
@@ -721,10 +1088,12 @@ pub fn activity(model: Model(socket)) -> Activity {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.transcript_view(component.rows(model))
+/// // component.rows(model)
 /// ```
 pub fn rows(model: Model(socket)) -> List(transcript.Row) {
-  model.rows
+  list.flat_map(model.blocks, fn(block) {
+    list.map(block.rows, fn(row) { transcript.Row(key: row.0, line: row.1) })
+  })
 }
 
 /// The page's lane, for the parity test that compares it with the
@@ -753,8 +1122,8 @@ pub fn session_id(model: Model(socket)) -> String {
   model.session_id
 }
 
-/// The observer's page: the heading, the transcript, and a fixed line
-/// saying the page is read-only. It attaches no event handler.
+/// The observer's page: the heading, the agent strip, the lane, and a fixed
+/// line saying the page is read-only. It attaches no event handler.
 ///
 /// ## Examples
 ///
@@ -764,7 +1133,8 @@ pub fn session_id(model: Model(socket)) -> String {
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session")], [
     heading(model),
-    transcript_view(model.rows),
+    strip_view(model.strip),
+    lane_view(model.pieces),
     html.p([attribute.class("observer-bar")], [
       html.text(
         "Observer · read-only · you can follow this session; ask the owner for operator access",
@@ -781,7 +1151,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 /// // component.heading(model)
 /// ```
 pub fn heading(model: Model(socket)) -> Element(message) {
-  html.header([], [
+  html.header([attribute.class("session-head")], [
     html.h1([], [html.text("Session " <> model.session_id)]),
     html.p([attribute.class("status"), attribute.role("status")], [
       html.text(status_text(model.status)),
@@ -789,21 +1159,381 @@ pub fn heading(model: Model(socket)) -> Element(message) {
   ])
 }
 
-/// The transcript, keyed by the engine's row identity and memoized on the
-/// rows, so a message that did not bring a capture costs no diff here and a
-/// window that drops its oldest rows removes them rather than rewriting
-/// every row after them.
+/// The agent strip: one chip per listed strand, the advisor's chip last,
+/// and one chip counting the strands that settled.
+///
+/// The chips are drawn and not operated: switching the strand the lane
+/// follows needs the extracted step, so no chip is a control, none takes
+/// focus, and none carries a handler. The list is memoized on the strip,
+/// which the component rebuilds only when something it draws changed.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.transcript_view(rows)
+/// // component.strip_view(component.strip(model))
 /// ```
-pub fn transcript_view(rows: List(transcript.Row)) -> Element(message) {
-  use <- element.memo([element.ref(rows)])
+pub fn strip_view(strip: Strip) -> Element(message) {
+  use <- element.memo([element.ref(strip)])
+  case strip.chips, strip.advisor {
+    [], None -> element.none()
+    _, _ -> {
+      let settled = case strip.settled {
+        0 -> []
+        count -> [
+          html.li([attribute.class("chip settled")], [
+            html.span([attribute.class("chip-name")], [
+              html.text("+" <> int.to_string(count) <> " settled"),
+            ]),
+          ]),
+        ]
+      }
+      let advisor = case strip.advisor {
+        Some(chip) -> [chip_element(chip)]
+        None -> []
+      }
+
+      // Chips are listed by position, never keyed by strand name: a child's
+      // name carries words its parent chose.
+      html.nav(
+        [attribute.class("agent-strip"), attribute.aria_label("Agents")],
+        [
+          html.ul(
+            [attribute.class("chips")],
+            list.flatten([list.map(strip.chips, chip_element), settled, advisor]),
+          ),
+        ],
+      )
+    }
+  }
+}
+
+fn chip_element(chip: Chip) -> Element(message) {
+  let line = chip.line
+  let figures =
+    option.map(line.tokens, fn(count) {
+      agent_roster.count_label(count) <> " ctx"
+    })
+    |> option.to_result(Nil)
+    |> result.map(list.wrap)
+    |> result.unwrap([])
+  html.li(chip_attributes(chip), [
+    html.span([attribute.class("swatch"), attribute.aria_hidden(True)], []),
+    html.span([attribute.class("chip-head")], [
+      html.span([attribute.class("chip-name")], [html.text(line.name)]),
+      html.span([attribute.class("state"), status_class(line.status)], [
+        html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
+          html.text(status_glyph(line.status)),
+        ]),
+        html.text(agent_view.label(line.status)),
+      ]),
+    ]),
+    html.span([attribute.class("chip-activity")], [html.text(line.text)]),
+    html.span([attribute.class("chip-figures")], [
+      elapsed(chip),
+      html.text(string.join(figures, " · ")),
+      ring(chip.cache),
+    ]),
+  ])
+}
+
+// The chip of the strand the lane follows is marked as the current one, for
+// a screen reader in words as well as by its ring.
+fn chip_attributes(chip: Chip) -> List(attribute.Attribute(message)) {
+  case chip.line.id == strand {
+    True -> [
+      attribute.class("chip"),
+      attribute.class("following"),
+      attribute.attribute("aria-current", "true"),
+      hue_class(chip.hue),
+    ]
+    False -> [attribute.class("chip"), hue_class(chip.hue)]
+  }
+}
+
+// How long the strand's operation has run. The browser counts it
+// (`<loom-elapsed>`, from `packages/web_client`), so the server never
+// renders again only to move a clock. The attribute is a duration the
+// roster measured on the daemon host's clock, and the element anchors it to
+// the browser's clock when it arrives: an instant from one clock is never
+// subtracted from the other, so a browser whose clock is off by a minute
+// still counts right. A rebuilt strip carries a fresh reading, which
+// re-anchors the count.
+fn elapsed(chip: Chip) -> Element(message) {
+  case chip.running_ms {
+    Some(running) ->
+      element.element(
+        "loom-elapsed",
+        [
+          attribute.class("elapsed"),
+          attribute.attribute("offset", int.to_string(running)),
+        ],
+        [],
+      )
+    None -> element.none()
+  }
+}
+
+// The cache ring: its shape from the outlook, its words from
+// `cache_miss.outlook_label`, which is all the outlook may claim and is
+// never session text. The words are drawn beside the ring rather than kept
+// in a tooltip. A strand whose outlook is shown is resting, so its chip has
+// no elapsed time and usually no context size, and a ring on its own read
+// as a stray glyph; with its words it reads as the cache's state. The ring
+// is then decoration, hidden from a screen reader, which reads the words.
+fn ring(cache: Option(#(cache_miss.Outlook, String))) -> Element(message) {
+  case cache {
+    None -> element.none()
+    Some(#(held, label)) ->
+      html.span([attribute.class("cache")], [
+        html.span(
+          [
+            attribute.class("ring"),
+            ring_class(held),
+            attribute.aria_hidden(True),
+          ],
+          [],
+        ),
+        html.text(label),
+      ])
+  }
+}
+
+/// The class naming how an outlook is drawn: a held head, a held tail, an
+/// idle age, or a boundary that has passed. Each is a whole literal, which
+/// is what lets Tailwind see it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.ring_class(cache_miss.Expired) == attribute.class("ring-elapsed")
+/// ```
+pub fn ring_class(outlook: cache_miss.Outlook) -> attribute.Attribute(message) {
+  case outlook {
+    cache_miss.Head(..) -> attribute.class("ring-head")
+    cache_miss.Held(..) -> attribute.class("ring-tail")
+    cache_miss.Idle(..) -> attribute.class("ring-idle")
+    cache_miss.Expired -> attribute.class("ring-elapsed")
+    cache_miss.Unheld -> attribute.class("ring-none")
+  }
+}
+
+/// The class for a strand's hue, from its position: never from its name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.hue_class(turns.Sub(0)) == attribute.class("hue-2")
+/// ```
+pub fn hue_class(hue: turns.Hue) -> attribute.Attribute(message) {
+  case hue {
+    turns.Primary -> attribute.class("hue-main")
+    turns.Advisor -> attribute.class("hue-advisor")
+    turns.Sub(index: 0) -> attribute.class("hue-2")
+    turns.Sub(index: 1) -> attribute.class("hue-3")
+    turns.Sub(index: 2) -> attribute.class("hue-4")
+    turns.Sub(index: 3) -> attribute.class("hue-5")
+    turns.Sub(..) -> attribute.class("hue-6")
+    turns.Unplaced -> attribute.class("hue-none")
+  }
+}
+
+fn status_class(status: agent_view.Status) -> attribute.Attribute(message) {
+  case status {
+    agent_view.Working -> attribute.class("running")
+    agent_view.Waiting -> attribute.class("waiting")
+    agent_view.NeedsInput -> attribute.class("needs-input")
+    agent_view.Finished -> attribute.class("done")
+    agent_view.Failed -> attribute.class("failed")
+    agent_view.Halted -> attribute.class("halted")
+    agent_view.Idle | agent_view.Unavailable -> attribute.class("idle")
+  }
+}
+
+// The glyph beside every state label; colour never carries state alone.
+fn status_glyph(status: agent_view.Status) -> String {
+  case status {
+    agent_view.Working -> "●"
+    agent_view.Waiting -> "◌"
+    agent_view.NeedsInput -> "◇"
+    agent_view.Finished -> "✓"
+    agent_view.Failed -> "✕"
+    agent_view.Halted -> "⊘"
+    agent_view.Idle | agent_view.Unavailable -> "○"
+  }
+}
+
+/// The lane: the page strand's turns, keyed by the engine's identity for
+/// each piece and memoized on the pieces, so a message that brought no
+/// capture costs no diff here and a window that drops its oldest rows
+/// removes them rather than rewriting every piece after them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.lane_view(component.pieces(model))
+/// ```
+pub fn lane_view(pieces: List(turns.Piece)) -> Element(message) {
+  use <- element.memo([element.ref(pieces)])
   keyed.div(
-    [attribute.class("transcript"), attribute.role("log")],
-    list.map(rows, fn(row) { #(row.key, line_element(row.line)) }),
+    [attribute.class("transcript lane"), attribute.role("log")],
+    list.map(pieces, fn(piece) { #(piece_key(piece), piece_element(piece)) }),
+  )
+}
+
+fn piece_key(piece: turns.Piece) -> String {
+  case piece {
+    turns.Plain(block:) | turns.Commentary(block:) -> block.key
+    turns.Work(key:, ..)
+    | turns.Spawned(key:, ..)
+    | turns.Returned(key:, ..)
+    | turns.Nudged(key:, ..)
+    | turns.Peer(key:, ..)
+    | turns.Missed(key:, ..) -> key
+  }
+}
+
+fn piece_element(piece: turns.Piece) -> Element(message) {
+  case piece {
+    turns.Plain(block:) -> block_element(block)
+
+    // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
+    // collapsed until the reader opens it. The fold opens and closes in the
+    // browser, so it needs no handler here and works on an observer's page,
+    // and the server never renders its state, so a later patch leaves the
+    // reader's choice alone. Every word in it is a child the server renders
+    // and escapes: the divider in the `summary` slot, the work in the
+    // default one.
+    turns.Work(worked:, items:, folding: turns.Folded, ..) ->
+      element.element("loom-fold", [attribute.class("work")], [
+        html.span(
+          [
+            attribute.attribute("slot", "summary"),
+            attribute.class("work-divider"),
+          ],
+          [html.text(turns.divider(worked))],
+        ),
+        html.div([attribute.class("work-items")], list.map(items, item_element)),
+      ])
+
+    // The turn still running is drawn open, with no divider to fold it.
+    turns.Work(items:, folding: turns.Open, ..) ->
+      html.div([attribute.class("work open")], list.map(items, item_element))
+
+    turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
+      html.div([attribute.class("spawn"), hue_class(hue)], [
+        html.span([attribute.class("spawn-head")], [
+          html.text(
+            "↳ agent_spawn · "
+            <> case child {
+              Some(child) -> "sub:" <> agent_roster.short_name(child)
+              None -> standing_text(standing)
+            },
+          ),
+        ]),
+        html.span([attribute.class("spawn-purpose")], [html.text(purpose)]),
+      ])
+
+    turns.Returned(child:, outcome:, report:, hue:, ..) ->
+      html.article([attribute.class("result-card"), hue_class(hue)], [
+        html.p([attribute.class("card-head")], [
+          html.text(
+            "from sub:"
+            <> agent_roster.short_name(child)
+            <> " · result · "
+            <> outcome,
+          ),
+        ]),
+        html.pre([attribute.class("card-body")], [html.text(report)]),
+      ])
+
+    turns.Nudged(frame:, body:, ..) ->
+      html.article([attribute.class("nudge")], [
+        html.p([attribute.class("card-head")], [
+          html.text(case frame {
+            turns.Nudges -> "advisor · nudge · delivered"
+            turns.Advice -> "advisor · advice · delivered"
+          }),
+        ]),
+        html.pre([attribute.class("card-body")], [html.text(body)]),
+      ])
+
+    // Another session's message. The daemon records that it was stored and
+    // nothing about whether anyone read it, so the receipt says `stored`.
+    turns.Peer(session:, strand:, text:, ..) ->
+      html.article([attribute.class("peer-card")], [
+        html.p([attribute.class("card-head")], [
+          html.span([attribute.class("peer-from")], [
+            html.text("peer · " <> session <> " · " <> strand),
+          ]),
+          html.span([attribute.class("receipt")], [html.text("stored")]),
+        ]),
+        html.pre([attribute.class("card-body")], [html.text(text)]),
+      ])
+
+    turns.Missed(text:, ..) ->
+      html.p([attribute.class("cache-miss")], [html.text(text)])
+
+    // The advisor's own commentary, captured on its strand and not sent to
+    // the primary: drawn as the transcript draws it, in the advisor's
+    // colour, so it cannot pass for the primary's words.
+    turns.Commentary(block:) ->
+      html.div(
+        [attribute.class("block"), attribute.class("commentary")],
+        list.map(block.rows, fn(row) { line_element(row.1) }),
+      )
+  }
+}
+
+fn item_element(item: turns.Item) -> Element(message) {
+  case item {
+    turns.Narrated(block:) -> block_element(block)
+    turns.Step(standing:, summary:, detail:, ..) ->
+      html.div([attribute.class("step"), standing_class(standing)], [
+        html.p([attribute.class("step-head")], [
+          html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
+            html.text(standing_glyph(standing)),
+          ]),
+          html.span([attribute.class("step-summary")], [html.text(summary)]),
+          html.span([attribute.class("step-state")], [
+            html.text(standing_text(standing)),
+          ]),
+        ]),
+        ..list.map(detail, line_element)
+      ])
+  }
+}
+
+fn standing_class(standing: turns.Standing) -> attribute.Attribute(message) {
+  case standing {
+    turns.Pending -> attribute.class("pending")
+    turns.Done -> attribute.class("done")
+    turns.Failed -> attribute.class("failed")
+  }
+}
+
+fn standing_glyph(standing: turns.Standing) -> String {
+  case standing {
+    turns.Pending -> "●"
+    turns.Done -> "✓"
+    turns.Failed -> "✕"
+  }
+}
+
+fn standing_text(standing: turns.Standing) -> String {
+  case standing {
+    turns.Pending -> "running"
+    turns.Done -> "done"
+    turns.Failed -> "failed"
+  }
+}
+
+// A block drawn as the transcript draws it, one line per row. The blank a
+// terminal places between tool groups is spacing here, so a spacer block
+// never reaches the lane.
+fn block_element(block: transcript_lines.Block) -> Element(message) {
+  html.div(
+    [attribute.class("block")],
+    list.map(block.rows, fn(row) { line_element(row.1) }),
   )
 }
 
@@ -816,28 +1546,31 @@ fn status_text(status: Status) -> String {
 }
 
 fn line_element(line: Line) -> Element(message) {
-  html.pre([attribute.class("line " <> speaker_class(line.speaker))], [
+  html.pre([attribute.class("line"), speaker_class(line.speaker)], [
     html.text(line.text),
   ])
 }
 
 // A class per speaker, which is the whole of a line's styling here as in the
 // terminal. The stylesheet decides what each looks like.
-fn speaker_class(speaker: transcript_line.Speaker) -> String {
+fn speaker_class(
+  speaker: transcript_line.Speaker,
+) -> attribute.Attribute(message) {
   case speaker {
-    transcript_line.System -> "system"
-    transcript_line.User -> "user"
-    transcript_line.Assistant -> "assistant"
-    transcript_line.Reasoning -> "reasoning"
-    transcript_line.ReasoningDigest -> "reasoning-digest"
-    transcript_line.SummarizedReasoning -> "summarized-reasoning"
-    transcript_line.SummarizedAdvice -> "summarized-advice"
-    transcript_line.ToolCall -> "tool-call"
-    transcript_line.ToolResult -> "tool-result"
-    transcript_line.ToolDetail -> "tool-detail"
-    transcript_line.ToolPatch -> "tool-patch"
-    transcript_line.ToolFailure -> "tool-failure"
-    transcript_line.Failure -> "failure"
-    transcript_line.Spacer -> "spacer"
+    transcript_line.System -> attribute.class("system")
+    transcript_line.User -> attribute.class("user")
+    transcript_line.Assistant -> attribute.class("assistant")
+    transcript_line.Reasoning -> attribute.class("reasoning")
+    transcript_line.ReasoningDigest -> attribute.class("reasoning-digest")
+    transcript_line.SummarizedReasoning ->
+      attribute.class("summarized-reasoning")
+    transcript_line.SummarizedAdvice -> attribute.class("summarized-advice")
+    transcript_line.ToolCall -> attribute.class("tool-call")
+    transcript_line.ToolResult -> attribute.class("tool-result")
+    transcript_line.ToolDetail -> attribute.class("tool-detail")
+    transcript_line.ToolPatch -> attribute.class("tool-patch")
+    transcript_line.ToolFailure -> attribute.class("tool-failure")
+    transcript_line.Failure -> attribute.class("failure")
+    transcript_line.Spacer -> attribute.class("spacer")
   }
 }

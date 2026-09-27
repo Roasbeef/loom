@@ -8,23 +8,10 @@
 //// eye. It grows by a row as each agent starts, and drops a row when an agent
 //// settles, so its height is itself a count of the work in flight.
 ////
-//// Each row joins two observations of the same capture. `agent_view.Row`
-//// supplies the status and a deterministic activity line from the captured
-//// operation and its running tools. The daemon's glance loop supplies a
-//// model-written title and one-line summary in `client/glance/{strand}`
-//// (`core/glance`). A glance is shown only while the operation it describes
-//// is still the strand's current one, so a successor never wears its
-//// predecessor's summary; until the first glance arrives, the row falls back
-//// to the deterministic line rather than showing nothing.
-////
-//// Time and tokens are the two figures that need care. The terminal never
-//// subtracts a server timestamp from its own clock, so elapsed time is
-//// anchored twice over: locally when the terminal first sees an operation,
-//// and re-anchored to the daemon's own `glance.at - started_at` whenever a
-//// new glance arrives, which keeps a reattached terminal from claiming a
-//// thirty-minute agent started five seconds ago. Tokens are the context size
-//// of the operation's newest generation, from a live usage push when this
-//// terminal has seen one and from the glance otherwise.
+//// Which strands are listed, in what order, and what words, elapsed time and
+//// context size each shows are `session_view/agent_roster`'s, which the web
+//// view's agent chips read too. This module keeps what is the terminal's
+//// own: the rows it paints and the keyboard focus that moves between them.
 ////
 //// Keyboard focus is a separate small state machine. Down from an idle
 //// composer moves a cursor into the strip; Up and Down move it; Enter opens
@@ -34,24 +21,20 @@
 //// the keyboard back. Moving the cursor never retargets the composer, so an
 //// unsent draft can never be redirected to an agent by browsing.
 
-import core/glance.{type Glance}
-import core/register
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/span
 import etui/style
 import etui/text
 import etui/widgets/paragraph
-import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
-import machine/codec
+import session_view/agent_roster
+import session_view/agent_view
 import session_view/snapshot_view
 import session_view/text_hygiene
-import tui/agent_view
 import tui/agents
 import tui/theme
 
@@ -76,64 +59,22 @@ pub type Focus {
   Browsing(cursor: String)
 }
 
-/// Anchors one operation's elapsed time without mixing clocks.
-///
-/// `offset_ms` is a duration the daemon measured on its own clock, and
-/// `anchor_ms` is the terminal's clock when that duration was observed, so
-/// the elapsed time is `offset_ms + (now - anchor_ms)`: each subtraction
-/// stays on one clock.
-@internal
-pub type Clock {
-  Clock(
-    /// The operation this clock times; a successor starts a new clock.
-    operation: String,
-    /// The glance write the offset came from, when there was one.
-    glance_at: Option(Int),
-    /// Daemon-measured time the operation had run when anchored.
-    offset_ms: Int,
-    /// Terminal-clock instant the offset was observed.
-    anchor_ms: Int,
-  )
-}
-
-/// Everything the strip remembers between captures.
+/// Everything the strip remembers between captures: who owns the keyboard,
+/// and the roster's own memory of glances, clocks and pushed usage.
 @internal
 pub type State {
   State(
     /// Keyboard ownership and the cursor.
     focus: Focus,
-    /// Decoded glances from the latest capture, keyed by strand.
-    glances: Dict(String, Glance),
-    /// Elapsed-time anchors for each strand's current operation.
-    clocks: Dict(String, Clock),
-    /// Context size from live usage pushes, keyed by strand and tagged with
-    /// the operation it belongs to.
-    pushed: Dict(String, #(String, Int)),
-    /// The terminal clock as of the last tick, so rendering reads no clock.
-    now_ms: Int,
+    /// What `agent_roster` remembers between captures.
+    roster: agent_roster.Roster,
   )
 }
 
-/// One drawn row: an agent's identity, state, words and figures.
+/// One drawn row: `agent_roster`'s line for one agent.
 @internal
-pub type Line {
-  Line(
-    /// Stable strand identity, used for the cursor and for opening.
-    id: String,
-    /// Short display name.
-    name: String,
-    /// Status justified by the capture.
-    status: agent_view.Status,
-    /// The glance summary when current, else the deterministic activity.
-    text: String,
-    /// The glance title when current, else the accepted task excerpt.
-    title: String,
-    /// Elapsed seconds of the current operation, when it has one.
-    elapsed_s: Option(Int),
-    /// Context size of the current operation, when known.
-    tokens: Option(Int),
-  )
-}
+pub type Line =
+  agent_roster.Line
 
 /// What a key pressed while the strip has focus asks for.
 @internal
@@ -163,21 +104,11 @@ pub type Outcome {
 /// ```
 @internal
 pub fn new() -> State {
-  State(
-    focus: Composing,
-    glances: dict.new(),
-    clocks: dict.new(),
-    pushed: dict.new(),
-    now_ms: 0,
-  )
+  State(focus: Composing, roster: agent_roster.new())
 }
 
-/// Folds one coherent capture into the strip's memory.
-///
-/// Glances are decoded once here rather than on every frame. A cell that does
-/// not decode is skipped, which leaves that row on its deterministic line:
-/// a daemon from another build must not blank the strip. Clocks and pushed
-/// usage survive only for operations that are still current.
+/// Folds one coherent capture into the strip's memory
+/// (`agent_roster.observe`).
 ///
 /// ## Examples
 ///
@@ -186,130 +117,11 @@ pub fn new() -> State {
 /// ```
 @internal
 pub fn observe(state: State, view: snapshot_view.View, now_ms: Int) -> State {
-  let glances =
-    view.cells
-    |> list.filter_map(fn(cell) {
-      use strand <- result.try(glance_strand(cell))
-      use decoded <- result.map(
-        glance.decode(cell.value) |> result.replace_error(Nil),
-      )
-      #(strand, decoded)
-    })
-    |> dict.from_list
-
-  // Each strand with a current operation gets a clock. The previous clock
-  // carries over only for the same operation, and a newer glance re-anchors
-  // it to the daemon's own measurement.
-  let clocks =
-    view.operations
-    |> dict.to_list
-    |> list.map(fn(pair) {
-      let #(strand, operation) = pair
-      let current = current_glance(glances, strand, operation)
-      let started = started_at(view.cells, operation)
-      let previous =
-        dict.get(state.clocks, strand)
-        |> option.from_result
-        |> keep_if(fn(clock) { clock.operation == operation })
-      #(strand, next_clock(previous, operation, current, started, now_ms))
-    })
-    |> dict.from_list
-  let pushed =
-    dict.filter(state.pushed, fn(strand, pair) {
-      dict.get(view.operations, strand) == Ok(pair.0)
-    })
-  State(..state, glances:, clocks:, pushed:, now_ms:)
+  State(..state, roster: agent_roster.observe(state.roster, view, now_ms))
 }
 
-fn glance_strand(cell: snapshot_view.Cell) -> Result(String, Nil) {
-  case cell.namespace == register.FactCustom {
-    True -> glance.strand_of(cell.key)
-    False -> Error(Nil)
-  }
-}
-
-fn current_glance(
-  glances: Dict(String, Glance),
-  strand: String,
-  operation: String,
-) -> Option(Glance) {
-  dict.get(glances, strand)
-  |> option.from_result
-  |> keep_if(fn(seen) { seen.operation == operation })
-}
-
-fn started_at(
-  cells: List(snapshot_view.Cell),
-  operation: String,
-) -> Option(Int) {
-  cells
-  |> list.find(fn(cell) {
-    cell.namespace == register.OpMeta && cell.key == operation
-  })
-  |> result.try(fn(cell) {
-    codec.decode_operation(cell.value) |> result.replace_error(Nil)
-  })
-  |> result.map(fn(meta) { meta.started_at })
-  |> option.from_result
-}
-
-/// Chooses the clock for a strand's current operation.
-///
-/// A glance the clock has not yet anchored to replaces the anchor with the
-/// daemon's measured run time, since that stays right across a reattach. An
-/// operation seen for the first time without one starts at zero on the
-/// terminal's clock.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let fresh = agent_strip.next_clock(None, "op", None, None, 500)
-/// assert agent_strip.elapsed_ms(fresh, 2500) == 2000
-/// ```
-@internal
-pub fn next_clock(
-  previous: Option(Clock),
-  operation: String,
-  current: Option(Glance),
-  started: Option(Int),
-  now_ms: Int,
-) -> Clock {
-  let kept = option.unwrap(previous, Clock(operation, None, 0, now_ms))
-  let anchored = option.map(current, fn(seen) { seen.at })
-
-  // The daemon measured `seen.at - started` when it wrote the glance, and
-  // the terminal sees it a capture later, so the measurement is always a
-  // little behind. Taking the larger of it and the running figure keeps the
-  // drawn time from stepping backwards at each re-anchor.
-  case current, started {
-    Some(seen), Some(started) if kept.glance_at != anchored ->
-      Clock(
-        operation,
-        anchored,
-        int.max(seen.at - started, elapsed_ms(kept, now_ms)),
-        now_ms,
-      )
-    _, _ -> kept
-  }
-}
-
-/// The elapsed time a clock reports at a terminal-clock instant.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert agent_strip.elapsed_ms(agent_strip.Clock("op", None, 1000, 0), 500)
-///   == 1500
-/// ```
-@internal
-pub fn elapsed_ms(clock: Clock, now_ms: Int) -> Int {
-  int.max(0, clock.offset_ms + now_ms - clock.anchor_ms)
-}
-
-/// Records a live usage push as the operation's current context size.
-///
-/// Pushes without an operation are dropped, since a figure the strip cannot
-/// tie to the current task would be attributed to whichever task is running.
+/// Records a live usage push as the operation's current context size
+/// (`agent_roster.observe_usage`).
 ///
 /// ## Examples
 ///
@@ -323,56 +135,29 @@ pub fn observe_usage(
   operation: Option(String),
   context: Int,
 ) -> State {
-  case operation {
-    None -> state
-    Some(operation) ->
-      State(
-        ..state,
-        pushed: dict.insert(state.pushed, strand, #(operation, context)),
-      )
-  }
+  State(
+    ..state,
+    roster: agent_roster.observe_usage(state.roster, strand, operation, context),
+  )
 }
 
-/// Advances the strip's clock on the tick. Reports whether a drawn second
-/// changed, so the tick repaints only when the figures the operator can see
-/// actually moved.
+/// Advances the strip's clock on the tick, reporting whether a drawn second
+/// changed (`agent_roster.tick`).
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let #(_, moved) = agent_strip.tick(agent_strip.new(), 0)
-/// assert moved == agent_strip.Unchanged
+/// assert moved == agent_roster.Unchanged
 /// ```
 @internal
-pub fn tick(state: State, now_ms: Int) -> #(State, Repaint) {
-  let clocks = dict.values(state.clocks)
-  let seconds = fn(at) {
-    list.map(clocks, fn(clock) { elapsed_ms(clock, at) / 1000 })
-  }
-  let advanced = State(..state, now_ms:)
-  case seconds(state.now_ms) == seconds(now_ms) {
-    True -> #(advanced, Unchanged)
-    False -> #(advanced, Changed)
-  }
+pub fn tick(state: State, now_ms: Int) -> #(State, agent_roster.Repaint) {
+  let #(roster, repaint) = agent_roster.tick(state.roster, now_ms)
+  #(State(..state, roster:), repaint)
 }
 
-/// Whether a tick moved anything the strip draws.
-@internal
-pub type Repaint {
-  /// A drawn figure changed; the frame must be rebuilt.
-  Changed
-
-  /// Nothing drawn changed; the cached frame stays valid.
-  Unchanged
-}
-
-/// Projects the rows the strip draws, in stable roster order.
-///
-/// `main` always leads, since it is the way back to the primary. After it
-/// come the active strand and every strand whose state needs watching:
-/// working, waiting, needing input or halted. Settled strands leave the
-/// strip; the workspace keeps their outcomes. The advisor has its own band
-/// and is listed only while it is the active strand.
+/// Projects the rows the strip draws, in stable roster order
+/// (`agent_roster.lines`).
 ///
 /// ## Examples
 ///
@@ -385,131 +170,7 @@ pub fn lines(
   rows: List(agent_view.Row),
   active: String,
 ) -> List(Line) {
-  let #(primary, others) = list.partition(rows, fn(row) { row.id == "main" })
-  list.append(primary, list.filter(others, listed(_, active)))
-  |> list.map(line(state, _))
-}
-
-fn listed(row: agent_view.Row, active: String) -> Bool {
-  case row.id == active, row.id, row.status {
-    True, _, _ -> True
-    False, "advisor", _ -> False
-    False, _, agent_view.Working
-    | False, _, agent_view.Waiting
-    | False, _, agent_view.NeedsInput
-    | False, _, agent_view.Halted
-    -> True
-    False, _, agent_view.Finished
-    | False, _, agent_view.Failed
-    | False, _, agent_view.Idle
-    | False, _, agent_view.Unavailable
-    -> False
-  }
-}
-
-fn line(state: State, row: agent_view.Row) -> Line {
-  let current = case row.operation {
-    Some(operation) -> current_glance(state.glances, row.id, operation)
-    None -> None
-  }
-
-  // A glance still waiting for its first summary has a title but no line,
-  // and an empty row reads as a stall; the deterministic activity stands in.
-  let text = case current {
-    Some(seen) if seen.summary != "" -> seen.summary
-    Some(_) | None -> shorten_names(row.activity)
-  }
-  let title = case current {
-    Some(seen) if seen.title != "" -> seen.title
-    Some(_) | None -> row.task
-  }
-  let clock =
-    row.operation
-    |> option.then(fn(operation) {
-      dict.get(state.clocks, row.id)
-      |> option.from_result
-      |> keep_if(fn(clock) { clock.operation == operation })
-    })
-  let pushed =
-    row.operation
-    |> option.then(fn(operation) {
-      dict.get(state.pushed, row.id)
-      |> option.from_result
-      |> keep_if(fn(pair) { pair.0 == operation })
-      |> option.map(fn(pair) { pair.1 })
-    })
-  let tokens =
-    option.lazy_or(pushed, fn() {
-      option.map(current, fn(seen) { seen.tokens })
-    })
-    |> keep_if(fn(count) { count > 0 })
-  Line(
-    id: row.id,
-    name: short_name(row.name),
-    status: row.status,
-    text: text_hygiene.single_line(text),
-    title: text_hygiene.single_line(title),
-    elapsed_s: option.map(clock, fn(clock) {
-      elapsed_ms(clock, state.now_ms) / 1000
-    }),
-    tokens:,
-  )
-}
-
-/// Shortens a minted child name to the words its parent chose.
-///
-/// A sub-agent is named `sub:{parent}/{slug}-{digest}`. The parent and the
-/// digest disambiguate for the machine; the slug is what a person reads.
-/// Anything not in that shape is returned whole.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert agent_strip.short_name("sub:main/audit-panics-1a2b3c") == "audit-panics"
-/// assert agent_strip.short_name("main") == "main"
-/// ```
-@internal
-pub fn short_name(name: String) -> String {
-  case string.starts_with(name, "sub:") {
-    False -> name
-    True -> {
-      let leaf =
-        string.split(name, "/")
-        |> list.last
-        |> result.unwrap(name)
-      case string.split(leaf, "-") |> list.reverse {
-        [digest, first, ..rest] ->
-          case is_digest(digest) {
-            True -> [first, ..rest] |> list.reverse |> string.join("-")
-            False -> leaf
-          }
-        [_] | [] -> leaf
-      }
-    }
-  }
-}
-
-// The deterministic activity names other strands by their minted IDs, as
-// in `Waiting for sub:main/audit-1a2b…, sub:main/review-3c4d…`. On a row
-// that is the operator's glance, each ID is cut to the slug the strip
-// already shows as that agent's name, so the waits read as names.
-fn shorten_names(text: String) -> String {
-  text
-  |> string.split(" ")
-  |> list.map(fn(word) {
-    case string.starts_with(word, "sub:"), string.ends_with(word, ",") {
-      False, _ -> word
-      True, True -> short_name(string.drop_end(word, 1)) <> ","
-      True, False -> short_name(word)
-    }
-  })
-  |> string.join(" ")
-}
-
-fn is_digest(value: String) -> Bool {
-  string.drop_start(value, 3) != ""
-  && string.to_graphemes(value)
-  |> list.all(fn(char) { string.contains("0123456789abcdef", char) })
+  agent_roster.lines(state.roster, rows, active)
 }
 
 /// Whether the strip is drawn: only when there is a second agent to watch.
@@ -521,10 +182,7 @@ fn is_digest(value: String) -> Bool {
 /// ```
 @internal
 pub fn visible(lines: List(Line)) -> Bool {
-  case lines {
-    [_, _, ..] -> True
-    [] | [_] -> False
-  }
+  agent_roster.visible(lines)
 }
 
 /// The rows the strip takes on a screen, including its overflow row.
@@ -663,9 +321,8 @@ fn step(ids: List(String), from: String, by: Int) -> String {
   |> result.unwrap(from)
 }
 
-/// The composer badge naming the viewed agent's task, when it has one.
-///
-/// The primary gets no badge: its task is the conversation on screen.
+/// The composer badge naming the viewed agent's task, when it has one
+/// (`agent_roster.badge`).
 ///
 /// ## Examples
 ///
@@ -674,15 +331,7 @@ fn step(ids: List(String), from: String, by: Int) -> String {
 /// ```
 @internal
 pub fn badge(lines: List(Line), active: String) -> Option(String) {
-  case active {
-    "main" -> None
-    _ ->
-      lines
-      |> list.find(fn(line) { line.id == active })
-      |> option.from_result
-      |> option.map(fn(line) { line.title })
-      |> keep_if(fn(title) { title != "" })
-  }
+  agent_roster.badge(lines, active)
 }
 
 /// Paints the strip into its area, bottom-aligned under the footer.
@@ -791,8 +440,11 @@ fn row(line: Line, focus: Focus, active: String, width: Int) -> span.Line {
 }
 
 fn meter(line: Line) -> String {
-  let time = option.map(line.elapsed_s, duration)
-  let size = option.map(line.tokens, fn(count) { count_label(count) <> " ctx" })
+  let time = option.map(line.elapsed_s, agent_roster.duration)
+  let size =
+    option.map(line.tokens, fn(count) {
+      agent_roster.count_label(count) <> " ctx"
+    })
   case time, size {
     Some(time), Some(size) -> time <> " · " <> size
     Some(one), None | None, Some(one) -> one
@@ -800,70 +452,6 @@ fn meter(line: Line) -> String {
   }
 }
 
-/// Formats an elapsed duration the way the strip shows it.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert agent_strip.duration(7) == "7s"
-/// assert agent_strip.duration(475) == "7m 55s"
-/// assert agent_strip.duration(3720) == "1h 02m"
-/// ```
-@internal
-pub fn duration(seconds: Int) -> String {
-  case seconds >= 3600, seconds >= 60 {
-    True, _ ->
-      int.to_string(seconds / 3600)
-      <> "h "
-      <> pad2({ seconds % 3600 } / 60)
-      <> "m"
-    False, True ->
-      int.to_string(seconds / 60) <> "m " <> pad2(seconds % 60) <> "s"
-    False, False -> int.to_string(int.max(0, seconds)) <> "s"
-  }
-}
-
-/// Abbreviates a token count with one decimal in the thousands, so a
-/// strip watched for a minute shows movement rather than a frozen `136k`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert agent_strip.count_label(950) == "950"
-/// assert agent_strip.count_label(136_540) == "136.5k"
-/// assert agent_strip.count_label(2_300_000) == "2.3m"
-/// ```
-@internal
-pub fn count_label(value: Int) -> String {
-  case value >= 1_000_000, value >= 1000 {
-    True, _ -> tenths(value, 1_000_000) <> "m"
-    False, True -> tenths(value, 1000) <> "k"
-    False, False -> int.to_string(int.max(0, value))
-  }
-}
-
-fn tenths(value: Int, unit: Int) -> String {
-  let scaled = value * 10 / unit
-  int.to_string(scaled / 10) <> "." <> int.to_string(scaled % 10)
-}
-
-fn pad2(value: Int) -> String {
-  string.pad_start(int.to_string(value), to: 2, with: "0")
-}
-
 fn fit(value: String, width: Int) -> String {
   text.truncate(text_hygiene.single_line(value), int.max(0, width), "…")
-}
-
-// Keeps an optional value only while it still satisfies the predicate, the
-// shape every "is this still about the current operation" check here takes.
-fn keep_if(value: Option(a), predicate: fn(a) -> Bool) -> Option(a) {
-  case value {
-    Some(inner) ->
-      case predicate(inner) {
-        True -> value
-        False -> None
-      }
-    None -> None
-  }
 }

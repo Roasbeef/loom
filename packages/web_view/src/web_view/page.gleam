@@ -1,6 +1,11 @@
 //// The documents the daemon serves around the component: the page shell,
-//// the ticket exchange's hand-off page, the stylesheet, the two scripts and
-//// the content security policy they are served under.
+//// the ticket exchange's hand-off page, the content security policy they
+//// are served under, and where the page's stylesheet and scripts are.
+////
+//// The stylesheet and scripts are files, not strings: their sources are in
+//// `packages/web_client`, and `make gen-client` builds them into this
+//// package's `priv/static` (`static_file`), which a release carries like
+//// any application's `priv`. The daemon reads them once when it starts.
 ////
 //// All of it is fixed text with no inline script and no inline style, which
 //// is what lets the policy say `script-src 'self'` and `style-src 'self'`.
@@ -33,8 +38,8 @@ pub const prefix = "/ui"
 /// server component.
 pub const runtime_asset = "lustre-server-component-5.7.1.mjs"
 
-/// The page's stylesheet.
-pub const stylesheet_asset = "web_view.css"
+/// The page's stylesheet, built from `packages/web_client`.
+pub const stylesheet_asset = "web_client.css"
 
 /// The script the exchange page runs to keep the nonce and move to the
 /// session page.
@@ -43,6 +48,11 @@ pub const enter_asset = "web_view_enter.js"
 /// The script the session page runs to connect its component with the
 /// nonce.
 pub const page_asset = "web_view_page.js"
+
+/// The client components (`packages/web_client`), bundled into one ES
+/// module, which the page loads so the server component can render their
+/// custom elements.
+pub const client_asset = "web_client.mjs"
 
 /// Where the keyed pages live: `/ui/p/<key>`, the path the page's cookie is
 /// scoped to.
@@ -91,6 +101,9 @@ pub fn shell(session_id: String) -> String {
   <> "<script type=\"module\" src=\""
   <> asset_path(runtime_asset)
   <> "\"></script>"
+  <> "<script type=\"module\" src=\""
+  <> asset_path(client_asset)
+  <> "\"></script>"
   <> "</head><body>"
   <> "<lustre-server-component></lustre-server-component>"
   <> "<script src=\""
@@ -125,120 +138,10 @@ pub fn enter(next: String, nonce: String) -> String {
   <> "</body></html>\n"
 }
 
-/// The exchange page's script: keep the nonce for this tab, then move to
-/// the keyed page. A `next` that is not a keyed page path is not followed.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // page.enter_script()
-/// ```
-pub fn enter_script() -> String {
-  "(function () {\n"
-  <> "  var body = document.body;\n"
-  <> "  var next = body.getAttribute(\"data-next\") || \"\";\n"
-  <> "  var nonce = body.getAttribute(\"data-nonce\") || \"\";\n"
-  <> "  if (next.indexOf(\""
-  <> prefix
-  <> "/p/\") !== 0 || nonce === \"\") { return; }\n"
-  <> "  try { sessionStorage.setItem(\""
-  <> nonce_item
-  <> "\", nonce); } catch (e) { return; }\n"
-  <> "  location.replace(next);\n"
-  <> "})();\n"
-}
-
-/// The `sessionStorage` item the nonce is kept under.
+/// The `sessionStorage` item the nonce is kept under. The two scripts in
+/// `assets/` spell the same name; the daemon's route tests check that the
+/// served scripts carry it.
 pub const nonce_item = "loom-page-nonce"
-
-/// The session page's script: hand the tab's nonce to the component as its
-/// `csrf-token`, then give it its route, so the client runtime opens the
-/// socket with the nonce in its query. A tab with no nonce opens nothing
-/// and says to run `loom --ui` again.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // page.page_script()
-/// ```
-pub fn page_script() -> String {
-  "(function () {\n"
-  <> "  var view = document.querySelector(\"lustre-server-component\");\n"
-  <> "  if (!view) { return; }\n"
-  <> "  var nonce = null;\n"
-  <> "  try { nonce = sessionStorage.getItem(\""
-  <> nonce_item
-  <> "\"); } catch (e) { nonce = null; }\n"
-  <> "  if (!nonce) {\n"
-  <> "    var note = document.createElement(\"p\");\n"
-  <> "    note.className = \"page-note\";\n"
-  <> "    note.textContent = \"This tab has no key for the page. Run loom --ui again and open the new link.\";\n"
-  <> "    document.body.appendChild(note);\n"
-  <> "    return;\n"
-  <> "  }\n"
-  <> "  view.setAttribute(\"csrf-token\", nonce);\n"
-  <> "  view.setAttribute(\"route\", location.pathname + \"/ws\");\n"
-  <> "})();\n"
-}
-
-/// The page's stylesheet: the web UI's dark tokens, legible transcript
-/// lines, the composer, and the approval card, which is drawn in a face no
-/// transcript line uses so that nothing the session writes can pass for it.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // page.stylesheet()
-/// ```
-pub fn stylesheet() -> String {
-  ":root{--bg:#181B1F;--bg-raised:#1F252B;--bg-user:#26221D;--bg-agent:#142023;\n"
-  <> "--fg:#E7EDF5;--fg-quiet:#A0ABB8;--divider:#3C4A5B;--signal:#FFBD69;\n"
-  <> "--current:#6EDBE8;--danger:#FF8E9B;--added:#8ED6A1;color-scheme:dark;}\n"
-  <> "body{margin:0;background:var(--bg);color:var(--fg);\n"
-  <> "font:14px/1.5 'IBM Plex Sans',Inter,system-ui,sans-serif;}\n"
-  <> "main.loom-session{max-width:100ch;margin:0 auto;padding:1rem;}\n"
-  <> "header h1{font-size:1rem;margin:0;font-family:'IBM Plex Mono','JetBrains Mono',ui-monospace,monospace;}\n"
-  <> "header .status{margin:0 0 1rem 0;color:var(--fg-quiet);font-size:13px;}\n"
-  <> "pre.line{margin:0;white-space:pre-wrap;word-break:break-word;\n"
-  <> "font:14px/1.4 'IBM Plex Mono','JetBrains Mono',ui-monospace,monospace;}\n"
-  <> "pre.line.user{background:var(--bg-user);font-weight:600;}\n"
-  <> "pre.line.assistant{background:var(--bg-agent);}\n"
-  <> "pre.line.system,pre.line.reasoning,pre.line.reasoning-digest{color:var(--fg-quiet);}\n"
-  <> "pre.line.failure,pre.line.tool-failure{color:var(--danger);}\n"
-  <> "pre.line.spacer{min-height:1em;}\n"
-  <> ".observer-bar{margin:1rem 0 0 0;padding:.75rem 1rem;border-top:1px solid var(--divider);\n"
-  <> "color:var(--fg-quiet);font-size:13px;}\n"
-  <> ".page-note{margin:1rem;color:var(--fg-quiet);}\n"
-  <> "section.approvals{margin:1rem 0;}\n"
-  <> "article.approval-card{background:var(--bg-raised);border:1px solid var(--signal);\n"
-  <> "border-left:4px solid var(--signal);border-radius:6px;padding:.75rem 1rem;margin:.5rem 0;}\n"
-  <> ".approval-head{margin:0 0 .25rem 0;color:var(--signal);font-size:12px;\n"
-  <> "font-family:'IBM Plex Mono',ui-monospace,monospace;text-transform:lowercase;}\n"
-  <> ".approval-question{margin:0 0 .5rem 0;font-weight:600;}\n"
-  <> "pre.approval-action{margin:0 0 .5rem 0;padding:.5rem;background:var(--bg);\n"
-  <> "white-space:pre-wrap;word-break:break-word;font:13px/1.4 'IBM Plex Mono',ui-monospace,monospace;}\n"
-  <> "ul.approval-authority{margin:0 0 .75rem 0;padding-left:1.25rem;color:var(--fg-quiet);\n"
-  <> "font:12px/1.4 'IBM Plex Mono',ui-monospace,monospace;}\n"
-  <> ".approval-actions{display:flex;gap:.5rem;}\n"
-  <> "form.composer{margin-top:1rem;background:var(--bg-raised);border:1px solid var(--divider);\n"
-  <> "border-radius:6px;padding:.75rem;}\n"
-  <> ".identity{display:flex;gap:.5rem;align-items:center;font-size:12px;margin-bottom:.5rem;}\n"
-  <> ".identity-name{color:var(--fg);}\n"
-  <> ".role-badge{border:1px solid var(--signal);color:var(--signal);border-radius:999px;padding:0 .5rem;}\n"
-  <> ".addressed{color:var(--current);font-family:'IBM Plex Mono',ui-monospace,monospace;}\n"
-  <> ".editor textarea{box-sizing:border-box;width:100%;background:var(--bg);color:var(--fg);\n"
-  <> "border:1px solid var(--divider);border-radius:4px;padding:.5rem;font:inherit;resize:vertical;}\n"
-  <> ".composer-actions{display:flex;gap:.5rem;align-items:center;justify-content:flex-end;margin-top:.5rem;}\n"
-  <> ".notice{margin:0 auto 0 0;color:var(--fg-quiet);font-size:13px;}\n"
-  <> ".notice.warned{color:var(--danger);}\n"
-  <> "button{font:inherit;font-size:13px;border-radius:4px;padding:.3rem .8rem;cursor:pointer;\n"
-  <> "border:1px solid var(--divider);background:var(--bg);color:var(--fg);}\n"
-  <> "button.send,button.queue{border-color:var(--current);color:var(--current);}\n"
-  <> "button.steer{border-color:var(--signal);color:var(--signal);}\n"
-  <> "button.approval-deny{border-color:var(--danger);color:var(--danger);}\n"
-  <> "button.approval-allow{border-color:var(--added);color:var(--added);}\n"
-  <> "button:focus-visible,textarea:focus-visible{outline:2px solid var(--current);outline-offset:1px;}\n"
-}
 
 /// The content security policy for every `/ui` response, for a request
 /// whose `Host` header is `host`.
@@ -270,6 +173,22 @@ pub fn content_security_policy(host: String) -> String {
 /// ```
 pub fn asset_path(name: String) -> String {
   prefix <> "/assets/" <> name
+}
+
+/// Where one of the page's own assets (`stylesheet_asset`, `enter_asset`,
+/// `page_asset`, `client_asset`) is on disk, inside this package's own
+/// `priv/static` directory. The sources are in `packages/web_client`, and
+/// `make gen-client` builds them here; `make client-check` fails when a
+/// committed output has drifted from its sources.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // page.static_file(page.stylesheet_asset)
+/// ```
+pub fn static_file(name: String) -> Result(String, Nil) {
+  application.priv_directory("web_view")
+  |> result.map(fn(directory) { directory <> "/static/" <> name })
 }
 
 /// Where Lustre's client runtime is on disk, inside the `lustre`
