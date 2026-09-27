@@ -408,7 +408,7 @@ func ReadPidsEventsMax(dir string) uint64 {
 }
 
 // emptyBound caps how long Cleanup waits for a killed jail to leave its
-// cgroup. It is two orders of magnitude above the measured teardown; a
+// cgroup. It is roughly thirty times the slowest measured teardown; a
 // process stuck past it is not one another wait would release, and the
 // rmdir that follows reports the cgroup as busy.
 const emptyBound = 2 * time.Second
