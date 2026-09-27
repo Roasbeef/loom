@@ -3,7 +3,7 @@
 //// are served under, and where the page's stylesheet and scripts are.
 ////
 //// The stylesheet and scripts are files, not strings: their sources are in
-//// `packages/web_view/assets` and what is served is built into this
+//// `packages/web_client`, and `make gen-client` builds them into this
 //// package's `priv/static` (`static_file`), which a release carries like
 //// any application's `priv`. The daemon reads them once when it starts.
 ////
@@ -38,8 +38,8 @@ pub const prefix = "/ui"
 /// server component.
 pub const runtime_asset = "lustre-server-component-5.7.1.mjs"
 
-/// The page's stylesheet.
-pub const stylesheet_asset = "web_view.css"
+/// The page's stylesheet, built from `packages/web_client`.
+pub const stylesheet_asset = "web_client.css"
 
 /// The script the exchange page runs to keep the nonce and move to the
 /// session page.
@@ -48,6 +48,11 @@ pub const enter_asset = "web_view_enter.js"
 /// The script the session page runs to connect its component with the
 /// nonce.
 pub const page_asset = "web_view_page.js"
+
+/// The client components (`packages/web_client`), bundled into one ES
+/// module, which the page loads so the server component can render their
+/// custom elements.
+pub const client_asset = "web_client.mjs"
 
 /// Where the keyed pages live: `/ui/p/<key>`, the path the page's cookie is
 /// scoped to.
@@ -95,6 +100,9 @@ pub fn shell(session_id: String) -> String {
   <> "\">"
   <> "<script type=\"module\" src=\""
   <> asset_path(runtime_asset)
+  <> "\"></script>"
+  <> "<script type=\"module\" src=\""
+  <> asset_path(client_asset)
   <> "\"></script>"
   <> "</head><body>"
   <> "<lustre-server-component></lustre-server-component>"
@@ -168,11 +176,10 @@ pub fn asset_path(name: String) -> String {
 }
 
 /// Where one of the page's own assets (`stylesheet_asset`, `enter_asset`,
-/// `page_asset`) is on disk, inside this package's own
-/// `priv/static` directory. The sources are in `packages/web_view/assets`,
-/// and `make gen-css` builds the stylesheet and copies the scripts here;
-/// `make css-check` fails when a committed output has drifted from its
-/// sources.
+/// `page_asset`, `client_asset`) is on disk, inside this package's own
+/// `priv/static` directory. The sources are in `packages/web_client`, and
+/// `make gen-client` builds them here; `make client-check` fails when a
+/// committed output has drifted from its sources.
 ///
 /// ## Examples
 ///

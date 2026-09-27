@@ -32,6 +32,21 @@ for pkg in "${targets[@]}"; do
   fi
 done
 
+# What the page loads besides Lustre's own runtime (the client components'
+# bundle, the Tailwind stylesheet and the two bootstrap scripts) is built
+# from packages/web_client into web_view's priv/static by `make gen-client`,
+# which needs the network. A stale build compiles and passes every test
+# while the page runs old code or misses a style, so drift is gated here,
+# with the package that serves it, by digests alone. See
+# scripts/web_assets.sh.
+for pkg in "${targets[@]}"; do
+  if [ "$pkg" = "web_view" ]; then
+    echo "==> web view assets"
+    scripts/web_assets.sh --check
+    scripts/web_assets.sh --self-test
+  fi
+done
+
 for pkg in "${targets[@]}"; do
   if [ "$pkg" = "sandbox" ]; then
     echo "==> $pkg (Go)"

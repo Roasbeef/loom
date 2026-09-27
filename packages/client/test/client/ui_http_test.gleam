@@ -106,8 +106,11 @@ pub fn routes_are_gets_under_ui_test() {
     == ui_http.Asset(ui_http.EnterScript)
   assert ui_http.route(get("/ui/assets/web_view_page.js", []))
     == ui_http.Asset(ui_http.PageScript)
-  assert ui_http.route(get("/ui/assets/web_view.css", []))
+  assert ui_http.route(get("/ui/assets/web_client.css", []))
     == ui_http.Asset(ui_http.Stylesheet)
+  assert ui_http.route(get("/ui/assets/web_client.mjs", []))
+    == ui_http.Asset(ui_http.Client)
+  assert ui_http.route(get("/ui/assets/web_view.css", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/assets/other.js", [])) == ui_http.Unknown
   assert ui_http.route(
       get("/ui/sessions/abc", []) |> request.set_method(http.Post),

@@ -339,7 +339,7 @@ pub fn without_ui_the_routes_do_not_exist_test() {
   daemon_server_test.fixture(fn(_, _, port, credential) {
     let session = "0198c0de-0000-7000-8000-000000000001"
     assert get(port, "/ui/sessions/" <> session, [host(port)]).status == 404
-    assert get(port, "/ui/assets/web_view.css", [host(port)]).status == 404
+    assert get(port, "/ui/assets/web_client.css", [host(port)]).status == 404
 
     // The hello names no view, and a link is refused.
     let #(socket, _) =
@@ -596,6 +596,7 @@ pub fn the_assets_are_the_priv_files_under_the_unchanged_policy_test() {
       #(page.stylesheet_asset, "text/css; charset=utf-8", page.static_file),
       #(page.enter_asset, javascript, page.static_file),
       #(page.page_asset, javascript, page.static_file),
+      #(page.client_asset, javascript, page.static_file),
       #(page.runtime_asset, javascript, fn(_) { page.runtime_file() }),
     ]
     list.each(assets, fn(asset) {
@@ -706,7 +707,7 @@ pub fn a_ticket_for_another_session_is_refused_and_signs_nothing_out_test() {
 pub fn a_refused_host_still_carries_the_policy_test() {
   fixture(fn(_, port, _) {
     let refused =
-      get(port, "/ui/assets/web_view.css", [#("host", "evil.example")])
+      get(port, "/ui/assets/web_client.css", [#("host", "evil.example")])
     assert refused.status == 403
     let assert Ok(policy) =
       list.key_find(refused.headers, "content-security-policy")

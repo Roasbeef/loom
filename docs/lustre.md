@@ -10,7 +10,7 @@ for code on this seam. Read [ADR-014](adr/014-second-runtime.md) and
 this guide assumes both.
 
 Lustre is pinned at `== 5.7.1` in `packages/web_view/gleam.toml`. Every
-claim below is about that version. When the pin moves, re-check section 7
+claim below is about that version. When the pin moves, re-check section 8
 before anything else.
 
 **How claims are cited.** A claim from the documentation links the page it
@@ -254,7 +254,7 @@ Messages are JSON text frames. Each has an integer `kind`
 | browser to server | 1 | `EventFired` | `path`, `name`, `event` |
 | browser to server | 2 | `PropertyChanged` | `name`, `value` |
 | browser to server | 3 | `Batch` | `messages` |
-| browser to server | 4 | `ContextProvided` | `key`, `value`, **not decoded in 5.7.1** (section 7) |
+| browser to server | 4 | `ContextProvided` | `key`, `value`, **not decoded in 5.7.1** (section 8) |
 
 The socket decodes a text frame with
 `server_component.runtime_message_decoder()` and hands the result to the
@@ -495,6 +495,30 @@ would refuse them anyway. If the view ever needs rendered markdown, the
 engine produces a tree of typed spans and the view maps each span to an
 element.
 
+### Client components inside the server component
+
+A client component is a second Lustre runtime, in the browser, inside the
+server component's tree. It runs code the daemon did not render, so it
+keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
+
+- **It renders only data from its own attributes, and those hold daemon
+  identities or numbers.** `<loom-elapsed since>` is the daemon's Unix
+  millisecond start instant. No attribute carries session text.
+- **Session text reaches it only as the server's children.** `<loom-fold>`
+  shows the divider and the work through a named and a default slot; the
+  words are light-DOM nodes the server rendered and escaped.
+- **No key handling and no focus near an approval card.** A client
+  component's button is a real button, which the browser activates; no
+  element listens for a key or calls `focus`.
+- **No raw HTML.** It renders through Lustre's virtual DOM, as the server
+  component does.
+- **Nothing the server needs.** A fold's open state and a clock reading live
+  only in the browser; the server never renders them, so its later patches
+  leave them alone, and it never reads them.
+
+Its styles are the page's: the client runtime adopts the document's
+stylesheets into the element's shadow root, as the server component's does.
+
 ### CSP compatibility
 
 The policy is `page.content_security_policy`, specified in 051 ("Response
@@ -516,6 +540,23 @@ headers"). What it means for view code:
   affected.
 - **The stylesheet reaches the shadow root by adoption**, which needs no
   policy change.
+- **Everything the page loads is a file.** The client components' bundle,
+  the stylesheet and the two bootstrap scripts come from
+  `packages/web_client` and are built into `packages/web_view/priv/static`
+  by `make gen-client`, which runs Lustre's own tool, `lustre_dev_tools`, a
+  dev dependency of `web_client` only: it bundles the components with Bun
+  and builds the stylesheet with Tailwind v4 from
+  `packages/web_client/src/web_client.css`. The daemon reads the outputs
+  once at startup and serves them from `/ui/assets`, a closed list of names
+  in `ui_http`. `make client-check`, part of `make check`, compares the
+  committed outputs with their inputs by digest and needs no network.
+- **Class names are complete literal strings.** Tailwind finds the classes
+  it builds by reading `packages/web_view/src` and `packages/web_client/src`
+  as text; it never runs the code. A class spelled `"hue-" <>
+  int.to_string(n)` is invisible to it and silently missing from the
+  stylesheet, so a class that varies is chosen with a `case` whose every arm
+  is a whole class string, and an element with several classes gets one
+  `attribute.class` per literal, which Lustre merges.
 - **`form-action 'none'`** refuses native form submission, which is fine:
   `event.on_submit` prevents the default and sends the form's data over the
   socket ([`lustre/event`][doc-event], `on_submit`).
@@ -798,9 +839,15 @@ In a server component the choice is narrower still:
 
 - **A Lustre client component** (`lustre.component` registered with
   `lustre.register`) is a browser custom element. `register` works only in
-  a browser ([`lustre`][doc-lustre]), so using one inside the web view would
-  mean shipping a client-side Gleam bundle as another asset, and running
-  view logic in the browser. Loom does not do this.
+  a browser ([`lustre`][doc-lustre]), so it lives in its own JavaScript
+  package, `packages/web_client`, bundled into one module the page loads.
+  Loom uses one only for behaviour that changes with nothing the server
+  knows, so the server would otherwise render and diff the whole page for
+  it: a clock that moves every second (`<loom-elapsed>`), a fold the reader
+  opens (`<loom-fold>`). The server component renders it by tag name like
+  any element. It holds no session state and sends no command; the rules
+  it keeps are in section 3, "Client components inside the server
+  component".
 - **A second server component** is a separate `<lustre-server-component>`
   with its own route, socket, runtime process and relay. It is the right
   unit for a view with its own lifetime and its own session traffic: another
@@ -842,7 +889,29 @@ A component reads the engine's state, draws it, and turns DOM events into
 engine messages. "A reviewer who finds session logic in `packages/web_view`
 has found a bug in the extraction" (ADR-014).
 
-## 6. Testing
+## 6. Loom and Lustre's full-stack layout
+
+Lustre's [full-stack guide][doc-fullstack] splits an application into three
+Gleam packages: shared code, a server, and a client. Loom maps onto them
+like this:
+
+| Guide | Loom |
+|---|---|
+| shared | `core` and `session_view`: the engine, pure, compiled for both targets |
+| server | `loomd` (`packages/client`) with `packages/web_view`, the server components and the documents around them |
+| client | `packages/web_client`: client components, bundled by `lustre_dev_tools` into `web_view`'s `priv/static` |
+
+The guide's client is a single-page app that talks to the server over
+HTTP. Loom's client is not an application: it is a few client components
+rendered inside the server component. Protocol-change/051 keeps the session
+on the BEAM: what a frame means, what a command is and whether an approval
+is still pending are the engine's, run by the server component, and the
+page's socket carries Lustre's patches and a closed set of events, never
+the session protocol. A single-page app would have to hold the session in
+the browser, which 051 and ADR-014 rule out. So the client package holds
+only what the browser can do without the session.
+
+## 7. Testing
 
 ### `lustre/dev/simulate`
 
@@ -947,7 +1016,7 @@ in `client/ui_route_test` and `client/ui_http_test`, and the relay's ends in
 the client tests. Those are where a change to `ui_socket` or `ui_relay` is
 tested; the component's tests do not reach the socket.
 
-## 7. Gotchas and anti-patterns
+## 8. Gotchas and anti-patterns
 
 All apply to 5.7.1. Re-check each when the pin moves.
 
@@ -979,7 +1048,7 @@ All apply to 5.7.1. Re-check each when the pin moves.
 | The `lustre` module page links guides `08-components` and `09-server-components`. | Both 404 for 5.7.1. | [`lustre`][doc-lustre] |
 | The "for LiveView developers" page shows `ServerComponent(init, update, view)` and `lustre.start_server_component(component, req, Nil)`. | Neither matches the 5.7.1 API; follow the module docs and examples. | [for LiveView devs][ref-liveview] |
 
-## 8. Checklist for a PR that touches `web_view`
+## 9. Checklist for a PR that touches `web_view`
 
 - [ ] No session logic in `web_view`: every decision about frames,
       captures, replies or approvals is in `session_view`, where the
@@ -1006,6 +1075,12 @@ All apply to 5.7.1. Re-check each when the pin moves.
       unexpected form fields as a refusal.
 - [ ] No new inline script or style; the CSP in `page` is unchanged or the
       change is argued in a 051 addendum. `runtime_asset` matches the pin.
+- [ ] Every class is a complete literal string, and `make gen-client` was
+      run after changing a class, `packages/web_client` or its stylesheet
+      input (`make client-check` passes).
+- [ ] A client component renders only its own numeric or identity
+      attributes and the server's slotted children, handles no key and
+      takes no focus.
 - [ ] Controls are real buttons with labels; the transcript is a `log` and
       the status a `status`; nothing uses `autofocus`; the approval card
       never takes focus and defaults to Deny.
@@ -1037,6 +1112,7 @@ Documentation pages (5.7.1):
 [doc-query]: https://lustre.hexdocs.pm/5.7.1/lustre/dev/query.html
 [doc-state]: https://lustre.hexdocs.pm/5.7.1/guide/02-state-management.html
 [doc-ssr]: https://lustre.hexdocs.pm/5.7.1/guide/05-server-side-rendering.html
+[doc-fullstack]: https://lustre.hexdocs.pm/guide/06-full-stack-applications.html
 [hint-pure]: https://github.com/lustre-labs/lustre/blob/v5.7.1/pages/hints/pure-functions.md
 [hint-attrs]: https://github.com/lustre-labs/lustre/blob/v5.7.1/pages/hints/attributes-vs-properties.md
 [hint-lists]: https://github.com/lustre-labs/lustre/blob/v5.7.1/pages/hints/rendering-lists.md

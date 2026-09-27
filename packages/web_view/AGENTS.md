@@ -5,10 +5,12 @@
 The web view's host and view for one session: two Lustre server components
 that drive `session_view`'s lane and draw the session's transcript lines as
 HTML, and the documents served around them (the page shell, the ticket
-exchange's hand-off page and the content security policy). The page's
-stylesheet and scripts are files: their sources are in `assets/` and what
-the daemon serves is in `priv/static/`, which a release carries like any
-application's `priv`. It is phase 4 of issue #530: the same engine the terminal
+exchange's hand-off page and the content security policy). What the page
+loads besides Lustre's server-component runtime is in `priv/static/`, which
+a release carries like any application's `priv`: the client components'
+bundle, the Tailwind stylesheet and the two bootstrap scripts, all built
+from `packages/web_client` by `make gen-client` and gated by `make
+client-check`. It is phase 4 of issue #530: the same engine the terminal
 runs, under a second host, with only the view differing
 ([ADR-014](../../docs/adr/014-second-runtime.md)).
 
@@ -39,8 +41,9 @@ page keys and nonces, and the relay into the session's gateway.
   delivery)` and `Decided(id, seq, answer)`. `composition(fields)` is the
   total decoder of the composer form's fields.
 - `page`: the shell, the exchange page (`enter(next, nonce)`), the asset
-  names and where each is on disk (`static_file`, `runtime_file`), the
-  keyed paths (`keyed_prefix`, `session_path`) and
+  names (`stylesheet_asset`, `enter_asset`, `page_asset`, `client_asset`,
+  `runtime_asset`) and where each is on disk (`static_file`,
+  `runtime_file`), the keyed paths (`keyed_prefix`, `session_path`) and
   `content_security_policy(host)`.
 
 ## Relationships
@@ -100,6 +103,11 @@ page keys and nonces, and the relay into the session's gateway.
   the event.
 - **No inline script or style** in any served document, so the policy can
   refuse both.
+- **Class names are complete literal strings.** Tailwind builds the
+  stylesheet from the classes this package's source spells, read as text
+  (`packages/web_client/src/web_client.css` names it with `@source`). A
+  class built by concatenation is missing from the output. `priv/static` is
+  generated: run `make gen-client` after changing a class.
 
 ## Deep Docs
 

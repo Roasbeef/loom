@@ -1,0 +1,173 @@
+/* The web view's stylesheet. `make gen-client` builds it with
+   lustre_dev_tools' Tailwind v4 into web_view's priv/static/web_client.css,
+   which the daemon serves and Lustre's client runtimes adopt into the
+   server component's shadow root and into each client component's.
+
+   Automatic source detection is off. Tailwind looks for classes in two
+   places only: the server component's views in packages/web_view/src and
+   the client components in this package. Every class must be a complete
+   literal string there, since Tailwind reads the source as text and never
+   runs it. */
+@import "tailwindcss" source(none);
+@source "../../web_view/src";
+@source "./web_client";
+
+/* The colour tokens of the web UI spec, dark by default. The default
+   palette is dropped so the output carries only these. */
+@theme {
+  --color-*: initial;
+  --color-bg: #181B1F;
+  --color-bg-raised: #1F252B;
+  --color-bg-user: #26221D;
+  --color-bg-agent: #142023;
+  --color-fg: #E7EDF5;
+  --color-fg-quiet: #A0ABB8;
+  --color-divider: #3C4A5B;
+  --color-signal: #FFBD69;
+  --color-current: #6EDBE8;
+  --color-advisor: #C0A6F5;
+  --color-danger: #FF8E9B;
+  --color-added: #8ED6A1;
+  --color-added-bg: #183423;
+  --color-removed-bg: #391B1F;
+  --color-strand-2: #5FB8A0;
+  --color-strand-3: #E39BC4;
+  --color-strand-4: #7FA7F0;
+  --color-strand-5: #D6C15A;
+  --color-strand-6: #F2A26B;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+/* The light tokens, a cool bone rather than warm paper. */
+@media (prefers-color-scheme: light) {
+  :root, :host {
+    --color-bg: #F4F5F7;
+    --color-bg-raised: #FFFFFF;
+    --color-bg-user: #F7F1E6;
+    --color-bg-agent: #E9F4F5;
+    --color-fg: #1C2225;
+    --color-fg-quiet: #5B6673;
+    --color-divider: #D5DBE3;
+    --color-signal: #9A5F0A;
+    --color-current: #0E7C8A;
+    --color-advisor: #6B4FBF;
+    --color-danger: #B3261E;
+    --color-added: #1E7A3C;
+    --color-added-bg: #E3F5E8;
+    --color-removed-bg: #FBE7E9;
+    --color-strand-2: #1F7F6C;
+    --color-strand-3: #B4497A;
+    --color-strand-4: #2E5FC4;
+    --color-strand-5: #8A7A0F;
+    --color-strand-6: #B8581E;
+  }
+}
+
+:root { color-scheme: dark; }
+@media (prefers-color-scheme: light) { :root { color-scheme: light; } }
+
+@layer base {
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font: 14px/1.5 var(--font-sans);
+  }
+  button, textarea { font: inherit; }
+}
+
+@layer components {
+  main.loom-session { max-width: 100ch; margin: 0 auto; padding: 1rem; }
+  header h1 { font: 600 1rem/1.4 var(--font-mono); margin: 0; }
+  header .status { margin: 0 0 1rem 0; color: var(--color-fg-quiet); font-size: 13px; }
+  pre.line {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: 14px/1.4 var(--font-mono);
+  }
+  pre.line.user { background: var(--color-bg-user); font-weight: 600; }
+  pre.line.assistant { background: var(--color-bg-agent); }
+  pre.line.system, pre.line.reasoning, pre.line.reasoning-digest { color: var(--color-fg-quiet); }
+  pre.line.failure, pre.line.tool-failure { color: var(--color-danger); }
+  pre.line.spacer { min-height: 1em; }
+  .observer-bar {
+    margin: 1rem 0 0 0;
+    padding: .75rem 1rem;
+    border-top: 1px solid var(--color-divider);
+    color: var(--color-fg-quiet);
+    font-size: 13px;
+  }
+  .page-note { margin: 1rem; color: var(--color-fg-quiet); }
+  section.approvals { margin: 1rem 0; }
+  article.approval-card {
+    background: var(--color-bg-raised);
+    border: 1px solid var(--color-signal);
+    border-left: 4px solid var(--color-signal);
+    border-radius: 6px;
+    padding: .75rem 1rem;
+    margin: .5rem 0;
+  }
+  .approval-head {
+    margin: 0 0 .25rem 0;
+    color: var(--color-signal);
+    font: 12px/1.4 var(--font-mono);
+    text-transform: lowercase;
+  }
+  .approval-question { margin: 0 0 .5rem 0; font-weight: 600; }
+  pre.approval-action {
+    margin: 0 0 .5rem 0;
+    padding: .5rem;
+    background: var(--color-bg);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: 13px/1.4 var(--font-mono);
+  }
+  ul.approval-authority {
+    margin: 0 0 .75rem 0;
+    padding-left: 1.25rem;
+    list-style: disc;
+    color: var(--color-fg-quiet);
+    font: 12px/1.4 var(--font-mono);
+  }
+  .approval-actions { display: flex; gap: .5rem; }
+  form.composer {
+    margin-top: 1rem;
+    background: var(--color-bg-raised);
+    border: 1px solid var(--color-divider);
+    border-radius: 6px;
+    padding: .75rem;
+  }
+  .identity { display: flex; gap: .5rem; align-items: center; font-size: 12px; margin-bottom: .5rem; }
+  .identity-name { color: var(--color-fg); }
+  .role-badge { border: 1px solid var(--color-signal); color: var(--color-signal); border-radius: 999px; padding: 0 .5rem; }
+  .addressed { color: var(--color-current); font-family: var(--font-mono); }
+  .editor textarea {
+    box-sizing: border-box;
+    width: 100%;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    border: 1px solid var(--color-divider);
+    border-radius: 4px;
+    padding: .5rem;
+    resize: vertical;
+  }
+  .composer-actions { display: flex; gap: .5rem; align-items: center; justify-content: flex-end; margin-top: .5rem; }
+  .notice { margin: 0 auto 0 0; color: var(--color-fg-quiet); font-size: 13px; }
+  .notice.warned { color: var(--color-danger); }
+  button {
+    font-size: 13px;
+    border-radius: 4px;
+    padding: .3rem .8rem;
+    cursor: pointer;
+    border: 1px solid var(--color-divider);
+    background: var(--color-bg);
+    color: var(--color-fg);
+  }
+  button.send, button.queue { border-color: var(--color-current); color: var(--color-current); }
+  button.steer { border-color: var(--color-signal); color: var(--color-signal); }
+  button.approval-deny { border-color: var(--color-danger); color: var(--color-danger); }
+  button.approval-allow { border-color: var(--color-added); color: var(--color-added); }
+  button:focus-visible, textarea:focus-visible { outline: 2px solid var(--color-current); outline-offset: 1px; }
+}

@@ -473,6 +473,21 @@ prelude-check: ## Check tools/prelude against packages/cap (no toolchain needed)
 	@scripts/gen-prelude.sh --check
 	@scripts/gen-prelude.sh --self-test
 
+.PHONY: gen-client
+gen-client: ## Build web_client's bundle and the page's stylesheet into web_view's priv (needs the network once)
+	@scripts/web_assets.sh
+
+.PHONY: gen-css
+gen-css: gen-client ## The page's stylesheet is built with the bundle: see gen-client
+
+.PHONY: client-check
+client-check: ## Check web_view's built assets against their sources (no toolchain, no network)
+	@scripts/web_assets.sh --check
+	@scripts/web_assets.sh --self-test
+
+.PHONY: css-check
+css-check: client-check ## The stylesheet is gated with the bundle: see client-check
+
 .PHONY: docs
 docs: ## Build HexDocs-style API documentation for every Gleam package
 	@set -e; for p in $(PACKAGES); do \

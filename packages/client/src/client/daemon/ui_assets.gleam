@@ -2,8 +2,9 @@
 //// `--ui` comes up, and served from memory for its life.
 ////
 //// Every asset is a file some application ships in its `priv` directory:
-//// Lustre's client runtime in `lustre`'s, and the page's stylesheet and
-//// scripts in `web_view`'s (`web_view/page.static_file`), which a release
+//// Lustre's client runtime in `lustre`'s, and the page's stylesheet,
+//// scripts and client components' bundle in `web_view`'s
+//// (`web_view/page.static_file`, built by `make gen-client`), which a release
 //// carries like any other application's `priv`. Reading them at startup
 //// rather than per request means a request never touches the disk, and a
 //// daemon whose release lost an asset says so when it starts instead of
@@ -23,6 +24,7 @@ pub opaque type Assets {
     stylesheet: String,
     enter_script: String,
     page_script: String,
+    client: String,
   )
 }
 
@@ -39,7 +41,8 @@ pub fn load() -> Result(Assets, String) {
   use stylesheet <- result.try(owned(page.stylesheet_asset))
   use enter_script <- result.try(owned(page.enter_asset))
   use page_script <- result.try(owned(page.page_asset))
-  Ok(Assets(runtime:, stylesheet:, enter_script:, page_script:))
+  use client <- result.try(owned(page.client_asset))
+  Ok(Assets(runtime:, stylesheet:, enter_script:, page_script:, client:))
 }
 
 // One of the assets `web_view` ships in its own `priv/static`.
@@ -73,5 +76,6 @@ pub fn body(assets: Assets, asset: ui_http.Asset) -> #(String, String) {
       "text/javascript; charset=utf-8",
       assets.page_script,
     )
+    ui_http.Client -> #("text/javascript; charset=utf-8", assets.client)
   }
 }
