@@ -56,9 +56,10 @@ process owns one immutable `Model`; each input event produces the next model,
 and `view` draws a frame from it.
 
 `update` runs four calls in order. `runtime.stamp` reads the clocks once for
-the event, `runtime.receive` moves waiting traffic into the model's inboxes,
-`tui.step` computes the next model and the effects it decided on, and
-`runtime.perform` carries those effects out. The step performs none of the
+the event, `runtime.receive` moves waiting traffic and job replies into the
+model, `tui.step` computes the next model and the effects it decided on, and
+`runtime.settle` carries those effects out and stores the table of running
+jobs they left on the model. The step performs none of the
 fire-and-forget effects itself; "Effects are values" below describes that
 split. `step` has three stages:
 
@@ -78,9 +79,9 @@ model.
 
 `Tick` is the event etui delivers when a poll times out with no input, so it
 is where socket traffic enters the model. `tui/tick.update_tick` drains, in
-order, the replay inbox, the session-switch and candidate attachment results,
-control replies, the reconnect outcome, and up to 64 messages from the
-conversation socket. `settle_tick` then services the auxiliary reads (queue,
+order, the replay inbox, the session-switch result, control replies, the
+candidate attachment's traffic, the reconnect outcome, the picker's activity
+answer, and up to 64 messages from the conversation socket. `settle_tick` then services the auxiliary reads (queue,
 worktree, notes, jobs, context, advisor nudges, goal), ticks the conversation
 channel, and updates the quiet timer. A key press,
 wheel notch or held drag also drains up to 64 socket messages before it is
@@ -97,8 +98,9 @@ exists, its frames to 40 until the initial cut is captured, and its worker
 outcome to one. The drains take from those buffers, and traffic that arrives
 during the step waits for the next one. An inbox the step did not drain keeps
 what it holds and receives nothing more, so every buffer stays within its
-bound. The session-switch, reconnect, control and activity replies are still
-read from their mailboxes during the step.
+bound. The control, reconnect and activity replies reach the step the same
+way ("Jobs are started by the runtime" below); only the session switch's
+result is still pulled from its run during the step.
 
 Because an inbox's buffer lives inside the inbox value, an adoption that
 replaces `Model.inbox` drops what the old socket's inbox had received along
@@ -143,7 +145,8 @@ modules divide the work:
   its cleanup.
 - `tui/runtime` owns collection and performance. `runtime.take` empties the
   model outbox, which is the step's one queue, and returns it oldest first.
-  `runtime.perform` carries the list out. Nothing in the reducer imports it.
+  `runtime.perform` carries the list out, starting and cancelling jobs
+  through `tui/job_runner`. Nothing in the reducer imports either.
 
 Every effect names the handle it acts on, and the runtime never looks a target
 up in the model. An adoption replaces the socket partway through a step, and a
@@ -165,12 +168,12 @@ A consequence is that a send decided mid-step leaves at the end of the step. A
 zero-timeout drain later in the same step cannot see its reply, which it never
 reliably could.
 
-Some I/O still happens inside the step in this phase. Job starts, file reads
-and the remaining mailbox reads (the session switch, reconnect, control and
-activity replies) produce values the step goes on to use, so they wait until
-the runtime can deliver results as messages; clock reads and the connection,
-replay and attachment drains have already moved before the step, as
-described above. Recording appends are effects: each line's offset is read
+Some I/O still happens inside the step in this phase. The session switch
+and attachment starts, the switch's pull, and file reads produce values the
+step goes on to use, so they wait for later slices; clock reads, the
+connection, replay and attachment drains, and the control, reconnect and
+activity jobs have already moved out of the step, as described above and
+below. Recording appends are effects: each line's offset is read
 when the runtime appends it, and the file's bytes are the ones the terminal
 wrote when the appends were synchronous
 ([ADR-009](../adr/009-record-terminal-attempt-custody.md) has the addendum).
@@ -187,6 +190,32 @@ missing flush delays an effect rather than losing it.
 [issue #530](https://github.com/Roasbeef/loom/issues/530) describes the later
 phases, which turn the remaining drains and job starts into messages and
 effects as well.
+
+### Jobs are started by the runtime
+
+The daemon control request, the relaunch after a daemon death and the
+picker's activity poll each block on a socket, so each runs as a one-task
+weft run. The step does not start them. A reducer describes the job as a
+`tui/job.Spec` (`Control(host, request)`, `Reconnect(options)` or
+`Activity(host, ids)`), allocates a key from `Model.next_job`, and queues
+`effect.StartJob(key, spec)`; the slot that waits for the job
+(`ControlRequest`, `ReconnectAttempting`, `ActivityAsking`) holds the key
+and the replies received for it. Keys are never reused.
+
+After the step, `tui/job_runner` starts the run in the terminal's process
+and records its cancel signal and reply subject under the key in
+`Model.running`, a table no reducer reads. `CancelJob(key)` cancels by the
+same key. Before the next step, `runtime.receive` reads every running job's
+messages, at most two per job, and `runtime.hold` admits each into the slot
+of its kind only when that slot holds the reply's key. A reply for any
+other key is dropped, and because the replies live inside the slot, a
+reducer that clears a slot drops what it held. The runner keeps a job until
+its relay's last message is read, whatever its slot holds, so no job leaves
+messages in the terminal's mailbox. The tick takes the replies at its fixed
+points through `session_control.drain_control`, `drain_reconnect` and
+`drain_activity`. Quit clears each slot and cancels each job by its key.
+The S4 addendum to [ADR-013](../adr/013-tui-effects-as-values.md) records
+the design and the alternatives it rejected.
 
 ### Frames are cached, then paced
 
@@ -767,14 +796,16 @@ Paths are relative to `packages/tui/src`.
 | `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
 | `tui/effect` | The closed vocabulary of effects a step decides on. |
 | `tui/model` | `Model`, the frame cache, the `Reconnect` state, the effect outbox (`emit`, `record`, `hold_channel`) and the other types every reducer shares. |
-| `tui/runtime` | `stamp` and `receive`, which read the clocks and top up the inboxes before a step; `take`, `perform` and `flush`, which collect a step's effects and perform them. |
+| `tui/runtime` | `stamp` and `receive`, which read the clocks and top up the inboxes and job slots before a step; `hold`, which admits one job reply by key; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
+| `tui/job` | Jobs as data: `Key`, the slot type `Awaiting`, `Spec`, and the keyed `Arrival`. |
+| `tui/job_runner` | The runtime's table of running jobs: starts a spec as a weft run, cancels by key, receives every job's replies. |
 | `tui/buffered` | `Inbox`: a terminal-owned subject with the messages already received from it, `top_up` before the step, `take` in it, `receive` outside it. |
 | `tui/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
 | `tui/outbound`, `tui/inbound` | Sending frames, and applying channel traffic, captured cuts (`render_cut`) and events. |
 | `tui/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed) and their edge detectors. |
-| `tui/session_control` | Daemon control requests and reconnection. |
+| `tui/session_control` | Daemon control requests and reconnection, as job specs, and the drains that take their replies. |
 | `tui/projection` | The record row cache and render cache. |
 | `tui/submit`, `tui/interaction` | Composer submission and keyboard and mouse handling. |
 | `tui/tick` | `update_tick`/`settle_tick`: the drain chain and the read services. |

@@ -282,12 +282,31 @@ list:
   step's one queue: `emit` queues an effect, `record` and `record_input`
   queue a recording line when the terminal is recording, and
   `hold_channel` stores a transitioned adopted lane and moves what it
-  queued into the outbox.
-- `tui/runtime`: `take`, `perform` and `flush`, which empty a step's outbox
-  and perform what it held, in the order it was decided; `stamp`,
-  which reads the clocks for one event before the step; and `receive`,
-  which tops up the model's inboxes before the step. `tui.gleam` and test
-  drivers import it; no reducer module does.
+  queued into the outbox. `start_job` allocates a job key from
+  `Model.next_job` and queues its `StartJob`; `allocate_job` only
+  allocates, for a test that stands a slot in for a running job.
+- `tui/runtime`: `take`, `perform`, `settle` and `flush`, which empty a
+  step's outbox and perform what it held, in the order it was decided,
+  threading the job table through and storing it back on the model;
+  `stamp`, which reads the clocks for one event before the step; `receive`,
+  which tops up the model's inboxes and reads every running job's replies
+  before the step; and `hold`, which admits one job reply into the slot
+  that holds its key or drops it. `tui.gleam` and test drivers import it;
+  no reducer module does.
+- `tui/job`: background jobs as data, and pure. `Key` is allocated from
+  `Model.next_job` and never reused; `Awaiting(reply)` is a slot's key and
+  the replies received for it, and `admit` accepts a reply only under that
+  key; `Spec` is `Control(host, ControlJob)`, `Reconnect(options)` or
+  `Activity(host, ids)`; `Arrival` is one relay message tagged with its
+  key. `ControlOutcome` and `Removal` live here.
+- `tui/job_runner`: the impure half of jobs, called only by the runtime.
+  `Running`, the opaque table on `Model.running`, maps each key to its
+  cancel signal and a selector over its reply subject. `start` turns a
+  spec into a one-task weft run (`start_task` takes the work as a
+  function, for tests), `cancel` cancels by key, `receive` reads every
+  running job's messages, `observed` drops a job after its last message,
+  and `selector` lets an actor-hosted test driver select every job's
+  replies. The control, relaunch and activity worker bodies live here.
 - `tui/buffered`: `Inbox(a)`, a terminal-owned subject with the messages
   already received from it, oldest first. `top_up` is the only read of the
   mailbox for a step, `take` is pure, `receive` is the held-first read for
@@ -310,7 +329,10 @@ list:
 - `tui/inbound`: `drain_connection`, `accept_connection_message`,
   `apply_channel_update`, `apply_event` and `render_cut`, with stream, tail,
   usage and cache accounting.
-- `tui/session_control`: daemon control requests and reconnection.
+- `tui/session_control`: daemon control requests and reconnection. It
+  describes each request as a `job.Spec`, and `drain_control`,
+  `drain_reconnect` and `drain_activity` take their replies from the slots
+  the runtime admitted them into.
 - `tui/projection`: `refresh_render_cache`, `refresh_diff_cache` and the
   record row cache.
 - `tui/submit`: composer submission, input history, interrupts and target
@@ -731,7 +753,9 @@ boundaries and the split's measurements under Invariants.
   so no single keystroke can destroy a conversation. The answer names the
   identity the question was asked about rather than whatever is highlighted
   when it arrives. `tui/model.ControlRequest` is the one job slot the picker's
-  paging, renames, and deletes share. `r` opens a bounded `Renaming` draft for
+  paging, renames, and deletes share: its `job` is the key and the replies
+  received for it, and its `result` holds the outcome until the relay's
+  `AllDelivered`. `r` opens a bounded `Renaming` draft for
   the selected identity; Enter saves, Escape cancels, and Ctrl+U clears it.
   Pasted text belongs to that editor and leaves the hidden composer unchanged.
   `session_selector.renamed` applies only the acknowledged row, while
@@ -743,11 +767,14 @@ boundaries and the split's measurements under Invariants.
 - `tui/effect.Effect` is what a step asks the runtime to do, as data:
   `Channel(session_channel.Out)` and `Attachment(attachment.Out)` wrap the
   two channels' queued outputs, and the rest name a socket write or close, a
-  control close, a weft, session-switch or attachment cancel, an inbox
-  discard, the OSC 52 clipboard write, or a Herdr announcement or report.
-  Every variant carries the handle it acts on, because an adoption can
-  replace the model's socket later in the same step and the effect must
-  still reach the handle it was decided for. `session_channel.Out` is
+  control close, a job start or cancel, a session-switch or attachment
+  cancel, an inbox discard, a recording line, the OSC 52 clipboard write,
+  or a Herdr announcement or report. Every variant carries the handle it
+  acts on, because an adoption can replace the model's socket later in the
+  same step and the effect must still reach the handle it was decided for.
+  `StartJob(key, spec)` and `CancelJob(key)` carry a job key, which is
+  never reused and is looked up in the runtime's own table, so it names
+  the same job at perform time that it named when the reducer decided. `session_channel.Out` is
   `Transmit(socket, frame)` or `Shut(socket)`; `attachment.Out` is a
   candidate channel output or `Acknowledge(to)`. `Model.outbox` holds
   pending effects newest first and is empty between steps. ADR-013 records
@@ -1442,9 +1469,10 @@ untouched.
   and `tui/tick`, which the inliner never attempts, but `snap_viewport_for`
   is still local and the boundary stays.
 - **Tick settling has the same parameter boundary.** `update_tick` drains
-  replay, control, reconnect and connection events before passing the result
-  to `settle_tick`. The replay, candidate and connection drains take from
-  the buffers `runtime.receive` filled, so none of them adds a mailbox read
+  the replay, the session switch, control, the candidate, reconnect, the
+  activity poll and the connection, in that order, before passing the result
+  to `settle_tick`. Every drain but the session switch's takes from what
+  `runtime.receive` put in the model, so none of them adds a mailbox read
   to the step. The helper applies the existing read-service chain to its
   `drained` parameter and retains the original model for quiet-time and activity
   comparisons. Adding the notes read to the former single body exposed another
@@ -1516,10 +1544,34 @@ untouched.
   and then advances as the poll does, and the client test driver reduces
   held connection messages before a selected one. A test that calls `step` directly and wants it to
   see queued traffic calls `runtime.receive` first, and a test injects
-  traffic through `buffered.sender`. The session switch, reconnect, control
-  and activity replies are still read inside the step, for later slices of
-  issue #530. `test/runtime_receive_test.gleam` pins the bound, the Escape
+  traffic through `buffered.sender`. The session switch is still pulled
+  inside the step, until phase 2's fifth slice. `test/runtime_receive_test.gleam` pins the bound, the Escape
   exception, the held-first read, the swap and the candidate-first tick.
+- **Jobs start after the step and answer by key.** A reducer allocates a
+  key and queues `StartJob(key, spec)` through `tui_model.start_job`; the
+  slot that waits for the job (`ControlRequest.job`,
+  `ReconnectAttempting`, `ActivityAsking`) holds the key and the replies
+  received for it. The step creates no subject, no cancel signal and no
+  process. `runtime.perform` starts and cancels jobs in `Model.running`,
+  which no reducer reads, and `runtime.settle` stores the table back, so
+  `tui.update` is `settle(step(event, receive(stamp(model))))`.
+  `runtime.receive` reads every running job's messages, at most two per
+  one-task relay, and `runtime.hold` admits each into the slot of its kind
+  only when the slot holds the same key; any other reply is dropped there.
+  Clearing a slot drops its held replies with it, so a reducer that stops
+  waiting for a job never sees its replies again. The runner keeps a job
+  until its relay's last message is read, whatever its slot holds, so no
+  job's messages stay in the mailbox. Quit clears each slot as it queues
+  `CancelJob` for the control job, the relaunch and the activity poll, in
+  that order, after the lane close and the attempt's `Abandon`. The launch
+  paths flush their first catalogue load so it starts before the loop.
+  A test allocates a key with `tui_model.allocate_job`, hands a slot a
+  reply with `runtime.hold`, and calls the drain or `step`; a test that
+  needs a real worker uses `job_runner.start_task`. The client test driver
+  selects `job_runner.selector(model.running)` and hands what it selects
+  to `runtime.hold`. `test/jobs_test.gleam` pins the start, the key fence,
+  distinct keys, the cancel, the read to a relay's last message and the
+  drain order (ADR-013, S4 addendum).
 - **Auxiliary panels draw borders, not interiors.** The ordinary conversation
   has no rectangle and the composer has horizontal rules. `render_panel_border` puts the same
   bytes on the wire as etui's `block.render` over a blank canvas, and the test
@@ -1696,11 +1748,12 @@ untouched.
   `take_outputs` then `perform`. The next `update` also performs anything
   left in the outbox. One consequence is that a send leaves at the end of
   its step, so a zero-timeout drain later in that step cannot see its
-  reply. Job starts, file reads and the switch, reconnect, control and
-  activity reply reads remain in the step until later slices of phase 2 of
-  issue #530. Clock reads left the step in phase 2's first slice, the
-  connection, replay and attachment drains in its second, and recording
-  writes in its third: see the clock and traffic invariants above and the
+  reply. The session switch and attachment starts, the switch's pull, and
+  file reads remain in the step until later slices of phase 2 of issue
+  #530. Clock reads left the step in phase 2's first slice, the
+  connection, replay and attachment drains in its second, recording
+  writes in its third, and the control, reconnect and activity jobs in its
+  fourth: see the clock, traffic and job invariants above and the
   recording invariant below.
 - **The recording is written in the order its causes were decided.**
   `tui.step` queues the input's own line first, before the reducer runs,
