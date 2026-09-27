@@ -34,6 +34,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/recording
 import tui/workspace
+import tui_test/pushed
 
 fn metadata() {
   json.to_string(
@@ -309,6 +310,31 @@ pub fn a_lane_with_nothing_a_tick_can_do_names_no_due_reading_test() {
     as "the initial subscribe is in flight from the start"
   let closed = session_channel.close(fresh)
   assert session_channel.next_due(closed) == None
+}
+
+// A peer's configuration change reaches every other subscriber as a pushed
+// configuration board, with no commit notice behind it. The board is not
+// what the lane draws from, but it says the cut's configuration moved, so a
+// ready lane catches up on it rather than waiting for its idle refresh.
+pub fn a_pushed_configuration_board_catches_up_test() {
+  let ready = quiet(synchronized())
+  let board =
+    pushed.push([
+      #("event", json.String("snapshot")),
+      #(
+        "body",
+        json.Object([
+          #("mode", json.String("config")),
+          #("config", json.Object([#("model_name", json.String("m"))])),
+        ]),
+      ),
+    ])
+  let #(caught, updates) = session_channel.receive(ready, board, now: 0)
+  assert updates == []
+  assert session_channel.in_flight(caught)
+    as "the configuration push starts the catch-up the refresh would"
+  assert requests(caught)
+    == [attempt.Request(4, "catch_up", attempt.Cursor(10))]
 }
 
 pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {

@@ -792,8 +792,14 @@ fn apply_pushed(
     protocol.Committed(strand: _, seq:) -> notified(channel, seq, now)
 
     // Presence and attachment carry nothing renderable; what they say is
-    // that the next capture differs, which is what a notice says too.
-    protocol.MetadataChanged -> capture_or_defer(channel, now)
+    // that the next capture differs, which is what a notice says too. A
+    // peer's configuration change arrives as the configuration board the
+    // daemon pushes to every other subscriber, and says the same thing:
+    // the cut's configuration moved. Before the refresh slowed to five
+    // seconds on a pushing lane, dropping it cost at most 250 ms; now it
+    // is the only prompt a peer's lane gets.
+    protocol.MetadataChanged | protocol.ConfigSnapshot(..) ->
+      capture_or_defer(channel, now)
     protocol.StreamDelta(strand:, operation:, generation:, kind:, text:) -> #(
       channel,
       [
@@ -861,7 +867,6 @@ fn apply_pushed(
     | protocol.BlockSummariesSnapshot(..)
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
-    | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.OperationChanged(..)
     | protocol.EscalationPending(..)
