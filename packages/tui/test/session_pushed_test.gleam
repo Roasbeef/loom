@@ -21,6 +21,7 @@ import gleam/string
 import machine/strand
 import session_view/attempt
 import session_view/cache_miss
+import session_view/cache_watch
 import session_view/connection_event
 import session_view/protocol
 import session_view/session_channel
@@ -608,7 +609,7 @@ pub fn a_legacy_usage_push_cannot_double_count_the_captured_total_test() {
   let received = inbound.accept_connection_message(model, legacy)
   assert received.usage == model.usage
     as "a pushed ledger name is ignored instead of adding to a captured total"
-  assert received.cache_watch == model.cache_watch
+  assert received.cache.watches == model.cache.watches
 }
 
 pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
@@ -679,11 +680,11 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
     as "a pushed observation cannot double-count an authoritative cut"
   assert settled.notice == "250k tokens this turn"
     as "the settlement label moves off the streaming form"
-  assert dict.get(settled.cache_watch, "main") == Error(Nil)
+  assert dict.get(settled.cache.watches, "main") == Error(Nil)
     as "the usage row waits for a cut that can validate its model"
   let covered = cache_cut(settled, 12, "provider-a")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(covered.cache_watch, "main")
+    dict.get(covered.cache.watches, "main")
   assert previous == reported
     as "the row becomes the detector's baseline on the push"
 
@@ -692,7 +693,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
       tui_model.Model(..covered, monotonic_time_ms: fn() { 120_000 }),
       usage_push("main", reported),
     )
-  assert duplicate.cache_watch == covered.cache_watch
+  assert duplicate.cache.watches == covered.cache.watches
     as "a delayed duplicate cannot reset the observed cache clock"
   assert duplicate.usage == settled.usage
 
@@ -726,11 +727,14 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
       tui_model.Model(
         ..attached(),
         peer: tui_model.Preview,
-        cache_watch: dict.from_list([#("main", watch)]),
+        cache: cache_watch.Ledger(
+          ..attached().cache,
+          watches: dict.from_list([#("main", watch)]),
+        ),
         input: textarea.state_from_string("/model new-provider"),
       ),
     )
-  assert dict.get(selected.cache_watch, "main") == Error(Nil)
+  assert dict.get(selected.cache.watches, "main") == Error(Nil)
 
   let old_first =
     inbound.accept_connection_message(
@@ -743,7 +747,7 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
       usage_push_with("main", 12, Some("old-op"), row),
     )
   let old_second = cache_cut(old_second, 13, "new-provider")
-  assert dict.get(old_second.cache_watch, "main") == Error(Nil)
+  assert dict.get(old_second.cache.watches, "main") == Error(Nil)
     as "both old-provider rows stay outside the new cache baseline"
 
   let new_first =
@@ -753,7 +757,7 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
     )
   let new_first = cache_cut(new_first, 14, "new-provider")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(new_first.cache_watch, "main")
+    dict.get(new_first.cache.watches, "main")
   assert previous == row
   assert new_first.cache_notices == []
     as "the new provider starts a baseline rather than comparing to the old one"
@@ -784,20 +788,20 @@ pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test(
       usage_push_with("main", 11, Some("old-op"), row),
     )
   let switched = cache_cut(pending, 12, "new-provider")
-  assert dict.get(switched.cache_watch, "main") == Error(Nil)
+  assert dict.get(switched.cache.watches, "main") == Error(Nil)
     as "the old operation cannot seed a new provider with no prior watch"
-  assert dict.get(switched.cache_fence, "main") == Ok(Some("old-op"))
+  assert dict.get(switched.cache.fences, "main") == Ok(Some("old-op"))
 
   let pushed =
     inbound.accept_connection_message(
       switched,
       usage_push_with("main", 12, Some("new-op"), row),
     )
-  assert dict.get(pushed.cache_pending, "main") != Error(Nil)
+  assert dict.get(pushed.cache.pending, "main") != Error(Nil)
     as "the new row waits for the covering cut"
   let next = cache_cut(pushed, 13, "new-provider")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(next.cache_watch, "main")
+    dict.get(next.cache.watches, "main")
   assert previous == row
 }
 
@@ -826,14 +830,19 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
       message.UsageCost(1.25, 0.004, 0.0, 0.0, 1.254),
     )
   let assert #(_, Some(watch)) = cache_miss.observe(None, prior, 0)
+  let captured =
+    cache_cut(
+      tui_model.Model(..attached(), peer: tui_model.Preview),
+      11,
+      "old-provider",
+    )
   let old =
     tui_model.Model(
-      ..cache_cut(
-        tui_model.Model(..attached(), peer: tui_model.Preview),
-        11,
-        "old-provider",
+      ..captured,
+      cache: cache_watch.Ledger(
+        ..captured.cache,
+        watches: dict.from_list([#("main", watch)]),
       ),
-      cache_watch: dict.from_list([#("main", watch)]),
       monotonic_time_ms: fn() { 600_000 },
     )
   let pending =
@@ -847,8 +856,8 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
   let switched = cache_cut(pending, 12, "new-provider")
   assert switched.cache_notices == []
     as "the remote switch discards a would-be miss from the old provider"
-  assert dict.get(switched.cache_watch, "main") == Error(Nil)
-  assert dict.get(switched.cache_fence, "main") == Ok(Some("old-op"))
+  assert dict.get(switched.cache.watches, "main") == Error(Nil)
+  assert dict.get(switched.cache.fences, "main") == Ok(Some("old-op"))
 }
 
 /// Initial attachment cannot infer the running operation's accepted model.
@@ -867,7 +876,7 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
   let model = tui_model.Model(..attached(), peer: tui_model.Preview)
   let first =
     cache_cut_with_operation(model, 11, "new-provider", Some("old-op"))
-  assert dict.get(first.cache_fence, "main") == Ok(None)
+  assert dict.get(first.cache.fences, "main") == Ok(None)
     as "a live operation on initial attach has unknown accepted model"
 
   let pending =
@@ -876,8 +885,8 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
       usage_push_with("main", 11, Some("old-op"), row),
     )
   let old = cache_cut(pending, 12, "new-provider")
-  assert dict.get(old.cache_watch, "main") == Error(Nil)
-  assert dict.get(old.cache_fence, "main") == Ok(Some("old-op"))
+  assert dict.get(old.cache.watches, "main") == Error(Nil)
+  assert dict.get(old.cache.fences, "main") == Ok(Some("old-op"))
 
   let pending =
     inbound.accept_connection_message(
@@ -886,7 +895,7 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
     )
   let new = cache_cut(pending, 13, "new-provider")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(new.cache_watch, "main")
+    dict.get(new.cache.watches, "main")
   assert previous == row
   assert new.cache_notices == []
 }
@@ -906,14 +915,14 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
     )
   let model = tui_model.Model(..attached(), peer: tui_model.Preview)
   let first = cache_cut(model, 11, "new-provider")
-  assert dict.get(first.cache_fence, "main") == Error(Nil)
+  assert dict.get(first.cache.fences, "main") == Error(Nil)
     as "the cut shows no operation to fence"
   let late =
     inbound.accept_connection_message(
       first,
       usage_push_with("main", 10, Some("old-op"), row),
     )
-  assert dict.get(late.cache_watch, "main") == Error(Nil)
+  assert dict.get(late.cache.watches, "main") == Error(Nil)
     as "a row from before the first cut cannot seed its current model"
 
   let pending =
@@ -923,7 +932,7 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
     )
   let next = cache_cut(pending, 12, "new-provider")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(next.cache_watch, "main")
+    dict.get(next.cache.watches, "main")
   assert previous == row
 }
 

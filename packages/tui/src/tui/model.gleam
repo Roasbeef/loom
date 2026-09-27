@@ -35,7 +35,7 @@ import session_view/advisor_pending
 import session_view/approval
 import session_view/attempt
 import session_view/block_summary
-import session_view/cache_miss
+import session_view/cache_watch
 import session_view/command
 import session_view/composer
 import session_view/connection_event
@@ -284,25 +284,6 @@ pub type FrameCache {
   )
 }
 
-/// One pushed usage row waiting for a capture that covers its sequence.
-///
-/// The capture supplies the model configuration against which a cache
-/// comparison is safe. Only the latest row per strand is retained; losing an
-/// intermediate comparison can omit a warning but cannot invent one.
-@internal
-pub type CacheObservation {
-  CacheObservation(
-    /// Durable sequence of the observed usage row.
-    seq: Int,
-    /// Provider operation, when the gateway could attribute the row.
-    operation: Option(String),
-    /// Fixed-shape provider counters for this request.
-    usage: message.Usage,
-    /// Terminal-clock instant when the push arrived.
-    at: Int,
-  )
-}
-
 /// Local editing and reading state belongs to an exact session and strand.
 ///
 /// A parked workspace holds the editor itself, including its cursor, rather
@@ -459,21 +440,10 @@ pub type State(view) {
     awaiting_outcome: Option(Submission),
     transcript: List(Line),
     records: List(protocol.EntryRecord),
-    /// The last provider usage row each strand billed, with the instant it
-    /// arrived, which is all the prompt-cache detector remembers. Keyed by
-    /// strand because a sub-agent's request says nothing about whether the
-    /// primary's cached prefix survived the operator's pause.
-    cache_watch: Dict(String, cache_miss.Watch),
-    /// Highest live usage observation already folded on each strand. A
-    /// capture owns cumulative totals; this cursor prevents a delayed push
-    /// from reporting the same settlement twice.
-    cache_seen_seq: Dict(String, Int),
-    /// Latest row per strand awaiting a capture that covers its sequence.
-    cache_pending: Dict(String, CacheObservation),
-    /// A model switch fences the first observed operation on that strand.
-    /// Every row from it may bill the old provider, so only a later operation
-    /// can establish the new provider's baseline.
-    cache_fence: Dict(String, Option(String)),
+    /// The prompt-cache ledger: each strand's last billed row, the pushed
+    /// rows waiting for a capture that covers them, and the strands a model
+    /// switch has fenced (`session_view/cache_watch`).
+    cache: cache_watch.Ledger,
     /// Cache-miss notices raised on this connection, oldest first. They are
     /// transient by design: a reattach rebuilds the durable transcript and
     /// these do not come back, which is acceptable for a notice about the

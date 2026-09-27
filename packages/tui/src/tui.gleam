@@ -50,6 +50,7 @@ import host/endpoint
 import session_view/advisor_history
 import session_view/attempt
 import session_view/block_summary
+import session_view/cache_watch
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
@@ -482,10 +483,7 @@ pub fn new_model_with_clock(
       ),
     ],
     records: [],
-    cache_watch: dict.new(),
-    cache_seen_seq: dict.new(),
-    cache_pending: dict.new(),
-    cache_fence: dict.new(),
+    cache: cache_watch.new(),
     cache_notices: [],
     cache_outlook: "",
     scrollback: history_view.empty(),

@@ -14,12 +14,12 @@
 
 import etui/geometry
 import gleam/bool
-import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import host/bootstrap as host_bootstrap
 import session_view/cache_miss
+import session_view/cache_watch
 import session_view/history_view
 import session_view/session_channel
 import tui/attachment
@@ -330,10 +330,8 @@ fn advance_generation_clock(model: Model) -> Model {
 fn advance_cache_outlook(model: Model) -> Model {
   let label = case tui_model.active_strand_live(model) {
     False ->
-      model.cache_watch
-      |> dict.get(model.active_strand)
-      |> option.from_result
-      |> cache_miss.outlook(model.stamp.now_ms)
+      model.cache
+      |> cache_watch.outlook(model.active_strand, model.stamp.now_ms)
       |> option.map(cache_miss.outlook_label)
       |> option.unwrap("")
     True -> ""
