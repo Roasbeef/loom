@@ -1,14 +1,16 @@
-//// The web view's routes on a real daemon listener (protocol-change/051):
-//// without `--ui` none of them exist; with it, a ticket from `ui.link` is
-//// exchanged once for a cookie, and every request is checked for its host,
-//// its origin or fetch site, its cookie and the credential behind it, and
-//// carries the view's security headers. The page's socket reaches the
-//// upgrade only after every check, and always as an observer.
+//// The web view's routes on a real daemon listener (protocol-change/051 and
+//// its operator addendum): without `--ui` none of them exist; with it, a
+//// ticket from `ui.link` is exchanged once for a cookie scoped to a page
+//// key and a nonce the tab keeps, and every request is checked for its
+//// host, its origin or fetch site, its cookie, its key, its nonce and the
+//// credential behind it, and carries the view's security headers. The
+//// page's socket reaches the upgrade only after every check, with the
+//// membership role capped by the page's ceiling and by Operator.
 ////
 //// The session assembly is inert, as in `daemon_server_test`: these tests
 //// are about routing and authorization. The upgrade is a stub that answers
 //// with the role the router handed it, since the Lustre transport behind it
-//// is exercised by the relay and component tests.
+//// is exercised by the relay, component and operator page tests.
 
 import broker/token
 import client/daemon/domain as domain_service
@@ -73,13 +75,13 @@ fn fixture(run: fn(root.Ready(String), Int, String) -> Nil) -> Nil {
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(
-        server.Ui(sessions:, upgrade: fn(_, attachment, _open) {
-          // The router hands the page's upgrade an observer, whatever the
-          // principal's membership. The stub reports what it was given.
+        server.Ui(sessions:, upgrade: fn(_, attachment, _open, _ceiling) {
+          // The router hands the page's upgrade the capped role. The stub
+          // reports what it was given.
           case attachment.authority {
             access.Participant(access.Observer) -> stub(299, "observer")
-            access.Owner | access.Participant(access.Operator) ->
-              stub(298, "not capped")
+            access.Participant(access.Operator) -> stub(298, "operator")
+            access.Owner -> stub(297, "not capped")
           }
         }),
       ),
@@ -199,8 +201,23 @@ fn create_session(ready: root.Ready(String), key: String, seed: Int) -> String {
   id
 }
 
-// A ticket for `session` from `credential`'s own control connection.
+// A ticket for an observer's page of `session` from `credential`'s own
+// control connection.
 fn link(port: Int, credential: String, session: String) -> String {
+  link_for(port, credential, session, [])
+}
+
+// A ticket for an operator's page, as `loom --ui --operate` asks for one.
+fn operate(port: Int, credential: String, session: String) -> String {
+  link_for(port, credential, session, [#("page", json.String("operator"))])
+}
+
+fn link_for(
+  port: Int,
+  credential: String,
+  session: String,
+  page: List(#(String, json.JsonValue)),
+) -> String {
   let #(socket, _) = daemon_server_test.connect(port, credential, "/v2/control")
   let _hello = daemon_server_test.frame(socket, within_ms: 1000)
   let reply =
@@ -208,7 +225,7 @@ fn link(port: Int, credential: String, session: String) -> String {
       socket,
       1,
       "ui.link",
-      json.Object([#("session_id", json.String(session))]),
+      json.Object([#("session_id", json.String(session)), ..page]),
       within_ms: 1000,
     )
   let _ = ffi_ws.tcp_close(socket)
@@ -233,6 +250,80 @@ fn cookie_of(answer: Answer) -> String {
 
 fn exchange(port: Int, path: String) -> Answer {
   get(port, path, [host(port), #("sec-fetch-site", "none")])
+}
+
+/// What an exchange hands one tab: the cookie, the keyed page it moves to,
+/// and the nonce it keeps.
+type Entered {
+  Entered(cookie: String, page: String, nonce: String)
+}
+
+fn entered(answer: Answer) -> Entered {
+  assert answer.status == 200
+  Entered(
+    cookie: cookie_of(answer),
+    page: attribute(answer.body, "data-next"),
+    nonce: attribute(answer.body, "data-nonce"),
+  )
+}
+
+fn enter(port: Int, path: String) -> Entered {
+  entered(exchange(port, path))
+}
+
+fn attribute(body: String, name: String) -> String {
+  let assert Ok(#(_, rest)) = string.split_once(body, name <> "=\"")
+    as "the exchange page carries the attribute"
+  let assert Ok(#(value, _)) = string.split_once(rest, "\"")
+    as "the attribute is closed"
+  value
+}
+
+// The keyed page, asked for as the exchange page's own move asks for it.
+fn open_page(port: Int, entered: Entered) -> Answer {
+  get(port, entered.page, [
+    host(port),
+    #("sec-fetch-site", "same-origin"),
+    #("cookie", "loom_ui=" <> entered.cookie),
+  ])
+}
+
+// The page's socket, with this origin, the cookie and `nonce` in the query
+// Lustre's client runtime appends.
+fn open_socket(port: Int, entered: Entered, nonce: String) -> Answer {
+  get(port, entered.page <> "/ws?csrf-token=" <> nonce, [
+    host(port),
+    #("cookie", "loom_ui=" <> entered.cookie),
+    #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+  ])
+}
+
+fn member(
+  ready: root.Ready(String),
+  name: String,
+  session: String,
+  role: access.Role,
+) -> String {
+  let credential = name <> "-token"
+  let assert Ok(digest) =
+    credential
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> access.credential_digest
+    as "member digest is valid"
+  let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+    as "fixture administration opens the durable catalogue"
+  let assert Ok(principal) = access.create_member(store, name, name, digest)
+    as "the member is created"
+  assert access.grant(store, principal.id, session, role) == Ok(Nil)
+  assert catalogue.close(store) == Ok(Nil)
+  credential
+}
+
+fn referrer_policy(answer: Answer) -> Result(String, Nil) {
+  list.key_find(answer.headers, "referrer-policy")
 }
 
 pub fn without_ui_the_routes_do_not_exist_test() {
@@ -275,7 +366,7 @@ pub fn with_ui_the_hello_names_the_view_test() {
   })
 }
 
-pub fn a_ticket_becomes_a_cookie_once_test() {
+pub fn a_ticket_becomes_a_keyed_page_once_test() {
   fixture(fn(ready, port, credential) {
     let session = create_session(ready, "once", 901)
     let path = link(port, credential, session)
@@ -286,64 +377,118 @@ pub fn a_ticket_becomes_a_cookie_once_test() {
     let absent = get(port, path, [host(port)])
     assert absent.status == 403
 
-    let entered = exchange(port, path)
-    assert entered.status == 200
-    assert string.contains(entered.body, "web_view_enter.js")
-    let cookie = cookie_of(entered)
-    let assert Ok(set) = list.key_find(entered.headers, "set-cookie")
+    // The exchange answers 200, never a redirect, with the keyed page and
+    // the nonce in its body, and a cookie scoped to the page key.
+    let answer = exchange(port, path)
+    assert string.contains(answer.body, "web_view_enter.js")
+    assert list.key_find(answer.headers, "location") == Error(Nil)
+    let page = entered(answer)
+    assert string.starts_with(page.page, "/ui/p/")
+    assert string.ends_with(page.page, "/sessions/" <> session)
+    assert page.nonce != ""
+    let assert Ok(set) = list.key_find(answer.headers, "set-cookie")
       as "the cookie is set"
     assert string.contains(set, "HttpOnly")
     assert string.contains(set, "SameSite=Strict")
-    assert string.contains(set, "Path=/ui")
+    let key_path = string.replace(page.page, "/sessions/" <> session, "")
+    assert string.ends_with(set, "Path=" <> key_path)
 
     // Spent.
     assert exchange(port, path).status == 401
 
-    // The cookie opens the page; nothing else does.
-    let page =
-      get(port, "/ui/sessions/" <> session, [
+    // The cookie opens the keyed page; nothing else does, and the unkeyed
+    // path holds no page at all.
+    let opened = open_page(port, page)
+    assert opened.status == 200
+    assert string.contains(opened.body, "lustre-server-component")
+    assert string.contains(opened.body, "web_view_page.js")
+    assert !string.contains(opened.body, page.nonce)
+    assert get(port, page.page, [host(port), #("sec-fetch-site", "none")]).status
+      == 401
+    assert get(port, page.page, [
         host(port),
-        #("cookie", "loom_ui=" <> cookie),
-      ])
-    assert page.status == 200
-    assert string.contains(page.body, "lustre-server-component")
-    assert get(port, "/ui/sessions/" <> session, [host(port)]).status == 401
-    assert get(port, "/ui/sessions/" <> session, [
-        host(port),
+        #("sec-fetch-site", "none"),
         #("cookie", "loom_ui=forged"),
       ]).status
       == 401
+    assert get(port, "/ui/sessions/" <> session, [
+        host(port),
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+      == 404
   })
 }
 
-pub fn every_ui_response_is_checked_and_secured_test() {
+// Only a navigation from this origin, or from outside any page, reaches a
+// keyed page: no other site and no other loopback port can frame or open it
+// in front of the person.
+pub fn a_keyed_page_needs_a_first_party_navigation_test() {
   fixture(fn(ready, port, credential) {
-    let session = create_session(ready, "checked", 902)
-    let cookie = cookie_of(exchange(port, link(port, credential, session)))
-    let page = "/ui/sessions/" <> session
-    let with_cookie = #("cookie", "loom_ui=" <> cookie)
+    let session = create_session(ready, "navigation", 906)
+    let page = enter(port, link(port, credential, session))
+    let from = fn(site) {
+      get(port, page.page, [
+        host(port),
+        #("sec-fetch-site", site),
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+    }
+    assert from("same-origin") == 200
+    assert from("none") == 200
+    assert from("same-site") == 403
+    assert from("cross-site") == 403
+    assert get(port, page.page, [
+        host(port),
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+      == 403
+  })
+}
+
+// A cookie is honoured only under the key it was issued with: another live
+// page's key, with this page's cookie, is refused.
+pub fn a_valid_cookie_under_another_key_is_refused_test() {
+  fixture(fn(ready, port, credential) {
+    let first = create_session(ready, "first-key", 907)
+    let second = create_session(ready, "second-key", 908)
+    let one = enter(port, link(port, credential, first))
+    let two = enter(port, link(port, credential, second))
+    let key_of = fn(entered: Entered, session) {
+      string.replace(entered.page, "/sessions/" <> session, "")
+    }
+
+    // The first page's cookie on the first session's path under the second
+    // page's key.
+    let crossed = key_of(two, second) <> "/sessions/" <> first
+    assert get(port, crossed, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> one.cookie),
+      ]).status
+      == 401
+    assert get(port, crossed <> "/ws?csrf-token=" <> one.nonce, [
+        host(port),
+        #("cookie", "loom_ui=" <> one.cookie),
+        #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      ]).status
+      == 401
+    assert open_page(port, one).status == 200
+  })
+}
+
+pub fn the_socket_needs_origin_cookie_key_and_nonce_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "socket", 902)
+    let page = enter(port, link(port, credential, session))
+    let socket = page.page <> "/ws?csrf-token=" <> page.nonce
+    let with_cookie = #("cookie", "loom_ui=" <> page.cookie)
+    let origin = "http://127.0.0.1:" <> int.to_string(port)
 
     // A rebinding attack's host is refused before anything else.
-    assert get(port, page, [#("host", "evil.example"), with_cookie]).status
+    assert get(port, socket, [#("host", "evil.example"), with_cookie]).status
       == 403
 
-    // Every document carries the policy, a refusal included.
-    let refused = get(port, page, [host(port)])
-    assert refused.status == 401
-    let assert Ok(policy) =
-      list.key_find(refused.headers, "content-security-policy")
-      as "a refusal carries the policy"
-    assert string.contains(policy, "form-action 'none'")
-    let stylesheet = get(port, "/ui/assets/web_view.css", [host(port)])
-    assert stylesheet.status == 200
-    assert list.key_find(stylesheet.headers, "content-security-policy")
-      |> result.is_ok
-    assert get(port, "/ui/assets/elsewhere.js", [host(port)]).status == 404
-
-    // The socket needs this origin, then reaches the upgrade as an observer
-    // although the ticket was minted by the owner.
-    let socket = page <> "/ws"
-    let origin = "http://127.0.0.1:" <> int.to_string(port)
+    // This origin, and nothing else.
     assert get(port, socket, [host(port), with_cookie]).status == 403
     assert get(port, socket, [
         host(port),
@@ -351,17 +496,96 @@ pub fn every_ui_response_is_checked_and_secured_test() {
         #("origin", "http://evil.example"),
       ]).status
       == 403
-    assert get(port, socket, [host(port), with_cookie, #("origin", origin)]).status
-      == 299
+
+    // The nonce the exchange handed this tab, and nothing else.
+    assert get(port, page.page <> "/ws", [
+        host(port),
+        with_cookie,
+        #("origin", origin),
+      ]).status
+      == 403
+    assert open_socket(port, page, "forged").status == 403
+    assert open_socket(port, page, page.nonce <> "0").status == 403
+
+    // With all of them, the upgrade is reached as an observer, although the
+    // ticket was minted by the owner: an observer's page is the default.
+    assert open_socket(port, page, page.nonce).status == 299
+  })
+}
+
+// The ceiling caps and never grants: an operator's page is an operator's for
+// the owner and for an operator, and an observer's for an observer.
+pub fn an_operators_page_caps_the_membership_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "operate", 909)
+    let as_owner = enter(port, operate(port, credential, session))
+    assert open_socket(port, as_owner, as_owner.nonce).status == 298
+
+    let operator = member(ready, "ui-operator", session, access.Operator)
+    let as_operator = enter(port, operate(port, operator, session))
+    assert open_socket(port, as_operator, as_operator.nonce).status == 298
+
+    let observer = member(ready, "ui-observer", session, access.Observer)
+    let as_observer = enter(port, operate(port, observer, session))
+    assert open_socket(port, as_observer, as_observer.nonce).status == 299
+
+    // A page asked for without `--operate` stays an observer's.
+    let plain = enter(port, link(port, operator, session))
+    assert open_socket(port, plain, plain.nonce).status == 299
+  })
+}
+
+// Referrer-Policy is load-bearing: the exchange's URL carries the ticket and
+// the page's carries its key, and neither may leave in a Referer.
+pub fn every_document_and_script_withholds_the_referrer_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "referrer", 910)
+    let answer = exchange(port, link(port, credential, session))
+    assert referrer_policy(answer) == Ok("no-referrer")
+    let page = entered(answer)
+    assert referrer_policy(open_page(port, page)) == Ok("no-referrer")
+    let enter_script = get(port, "/ui/assets/web_view_enter.js", [host(port)])
+    assert enter_script.status == 200
+    assert referrer_policy(enter_script) == Ok("no-referrer")
+    let page_script = get(port, "/ui/assets/web_view_page.js", [host(port)])
+    assert page_script.status == 200
+    assert referrer_policy(page_script) == Ok("no-referrer")
+
+    // A refusal carries the policy too.
+    let refused = get(port, page.page, [host(port)])
+    assert refused.status == 403
+    assert referrer_policy(refused) == Ok("no-referrer")
+    let assert Ok(policy) =
+      list.key_find(refused.headers, "content-security-policy")
+      as "a refusal carries the policy"
+    assert string.contains(policy, "form-action 'none'")
+    assert get(port, "/ui/assets/elsewhere.js", [host(port)]).status == 404
+  })
+}
+
+// A redemption ends the principal's other pages for the session, because a
+// key-scoped cookie never reaches the exchange to name the page it replaces.
+pub fn a_second_exchange_ends_the_first_page_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "replaced", 911)
+    let first = enter(port, link(port, credential, session))
+    assert open_page(port, first).status == 200
+    let second = enter(port, link(port, credential, session))
+    assert open_page(port, second).status == 200
+    assert open_page(port, first).status == 401
+    assert open_socket(port, first, first.nonce).status == 401
   })
 }
 
 pub fn a_revoked_credential_refuses_the_page_request_test() {
   fixture(fn(ready, port, _) {
     let session = create_session(ready, "revoked", 903)
-    let member = "ui-member-token"
+    let credential = member(ready, "ui-member", session, access.Operator)
+    let page = enter(port, link(port, credential, session))
+    assert open_page(port, page).status == 200
+
     let assert Ok(digest) =
-      member
+      credential
       |> bit_array.from_string
       |> bootstrap.sha256
       |> bit_array.base16_encode
@@ -370,20 +594,9 @@ pub fn a_revoked_credential_refuses_the_page_request_test() {
       as "member digest is valid"
     let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
       as "fixture administration opens the durable catalogue"
-    let assert Ok(principal) =
-      access.create_member(store, "ui-member", "Member", digest)
-      as "the member is created"
-    assert access.grant(store, principal.id, session, access.Operator)
-      == Ok(Nil)
-
-    let cookie = cookie_of(exchange(port, link(port, member, session)))
-    let page = "/ui/sessions/" <> session
-    let with_cookie = #("cookie", "loom_ui=" <> cookie)
-    assert get(port, page, [host(port), with_cookie]).status == 200
-
     assert access.revoke_credential(store, digest) == Ok(Nil)
-    assert get(port, page, [host(port), with_cookie]).status == 401
     assert catalogue.close(store) == Ok(Nil)
+    assert open_page(port, page).status == 401
   })
 }
 
@@ -391,25 +604,19 @@ pub fn a_ticket_for_another_session_is_refused_and_signs_nothing_out_test() {
   fixture(fn(ready, port, credential) {
     let first = create_session(ready, "first", 904)
     let second = create_session(ready, "second", 905)
-    let cookie = cookie_of(exchange(port, link(port, credential, first)))
-    let with_cookie = #("cookie", "loom_ui=" <> cookie)
+    let page = enter(port, link(port, credential, first))
 
-    // The second session's ticket, presented on the first session's path
-    // with the first page's cookie: refused, spent, and no cookie is set.
+    // The second session's ticket, presented on the first session's path:
+    // refused, spent, and no cookie is set.
     let misdirected =
       string.replace(link(port, credential, second), second, first)
     let refused =
-      get(port, misdirected, [
-        host(port),
-        #("sec-fetch-site", "none"),
-        with_cookie,
-      ])
+      get(port, misdirected, [host(port), #("sec-fetch-site", "none")])
     assert refused.status == 403
     assert list.key_find(refused.headers, "set-cookie") == Error(Nil)
 
     // The first page still opens with the cookie it had.
-    assert get(port, "/ui/sessions/" <> first, [host(port), with_cookie]).status
-      == 200
+    assert open_page(port, page).status == 200
   })
 }
 

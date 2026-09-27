@@ -18,6 +18,7 @@ import client/daemon/manager
 import client/daemon/protocol
 import client/daemon/root
 import client/daemon/ui_http
+import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/peer_mail
 import client/peers
@@ -67,13 +68,15 @@ pub type Ui(instance) {
     /// The ticket and UI-session tables.
     sessions: ui_sessions.Sessions,
     /// Upgrades a checked page request to the component's socket; like
-    /// `session_upgrade`, it transfers the attachment's permit. The last
-    /// argument says whether the page's UI session is still live; the
-    /// socket checks it with every authorization.
+    /// `session_upgrade`, it transfers the attachment's permit. The third
+    /// argument says whether the page's UI session is still live, which the
+    /// socket checks with every authorization; the fourth is the page's
+    /// ceiling, which the relay caps every authorization with.
     upgrade: fn(
       Request(mist.Connection),
       Attachment(instance),
       fn() -> Result(Nil, Nil),
+      access.Role,
     ) -> Response(mist.ResponseData),
   )
 }
@@ -83,8 +86,9 @@ type Role {
   /// The principal's membership role, as a terminal socket carries it.
   MembershipRole
 
-  /// Observer whatever the membership says: the web view's cap.
-  ObserverRole
+  /// The membership role capped by a web page's ceiling and by Operator
+  /// (`ui_relay.capped`).
+  PageRole(ceiling: access.Role)
 }
 
 /// One authorized resident target; it cannot be retargeted by a later command.
@@ -161,27 +165,49 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
     Error(Nil) -> ui_http.refused(plain(403, "forbidden host"))
     Ok(host) ->
       case ui_http.route(request) {
-        ui_http.Socket(id) -> web_socket(config, ui, request, host, id)
+        ui_http.Socket(key, id, nonce) ->
+          web_socket(config, ui, request, host, key, id, nonce)
         route -> ui_http.secured(web_document(config, ui, request, route), host)
       }
   }
 }
 
-// The page's socket: this origin, then the page's grant, then the same
-// resident-session resolution a terminal's socket uses, capped to observer.
+// The page's socket: this origin, then the page's grant under its key, then
+// the tab's nonce, then the same resident-session resolution a terminal's
+// socket uses, with the membership role capped by the page's ceiling.
 fn web_socket(
   config: Config(instance),
   ui: Ui(instance),
   request,
   host: String,
+  key: String,
   id: String,
+  nonce: Option(String),
 ) {
   let checked = {
     use Nil <- result.try(case ui_http.origin_matches(request, host) {
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden origin"))
     })
-    page_grant(config, ui, request, id)
+    use #(state, page, cookie) <- result.try(page_grant(
+      config,
+      ui,
+      request,
+      key,
+      id,
+    ))
+
+    // The nonce is what the tab kept and no other port can read. A socket
+    // without it, or with another, is refused before any session is touched.
+    use Nil <- result.try(case nonce {
+      Some(nonce) ->
+        case ui_sessions.admits(page, nonce) {
+          True -> Ok(Nil)
+          False -> Error(plain(403, "forbidden page"))
+        }
+      None -> Error(plain(403, "forbidden page"))
+    })
+    Ok(#(state, ui_sessions.grant(page), cookie))
   }
   case checked {
     Error(response) -> ui_http.secured(response, host)
@@ -193,8 +219,10 @@ fn web_socket(
         state,
         grant.credential,
         id,
-        ObserverRole,
-        fn(request, attachment) { ui.upgrade(request, attachment, open) },
+        PageRole(grant.ceiling),
+        fn(request, attachment) {
+          ui.upgrade(request, attachment, open, grant.ceiling)
+        },
       )
     }
   }
@@ -207,37 +235,43 @@ fn web_document(
   route: ui_http.Route,
 ) {
   case route {
-    ui_http.Unknown | ui_http.Socket(_) -> plain(404, "unknown endpoint")
+    ui_http.Unknown | ui_http.Socket(..) -> plain(404, "unknown endpoint")
     ui_http.Asset(asset) -> web_asset(asset)
-    ui_http.Page(id) ->
-      case page_grant(config, ui, request, id) {
-        Error(response) -> response
-        Ok(_) -> document(200, "text/html; charset=utf-8", page.shell(id))
+
+    // A keyed page is reached only by a navigation from this origin or from
+    // outside any page, so no other page can put it in front of the person.
+    ui_http.Page(key, id) ->
+      case ui_http.navigation_allowed(request) {
+        False -> plain(403, "forbidden navigation")
+        True ->
+          case page_grant(config, ui, request, key, id) {
+            Error(response) -> response
+            Ok(_) -> document(200, "text/html; charset=utf-8", page.shell(id))
+          }
       }
 
     // A ticket presented against another session's path is spent without a
-    // UI session, and the browser's existing one is left as it was.
+    // UI session. A redeemed one ends the principal's other pages for the
+    // session and hands this tab the new page's key, in the cookie's path,
+    // and its nonce, in the body, never in a redirect.
     ui_http.Exchange(id, ticket) ->
       case ui_http.exchange_allowed(request) {
         False -> plain(403, "forbidden exchange")
         True ->
-          case
-            ui_sessions.redeem(
-              ui.sessions,
-              ticket,
-              id,
-              ui_http.session_cookie(request),
-            )
-          {
+          case ui_sessions.redeem(ui.sessions, ticket, id) {
             Error(ui_sessions.UnknownTicket) ->
               plain(401, "unknown or expired ticket")
             Error(ui_sessions.OtherSession) ->
               plain(403, "ticket names another session")
             Ok(redeemed) ->
-              document(200, "text/html; charset=utf-8", page.enter())
+              document(
+                200,
+                "text/html; charset=utf-8",
+                page.enter(page.session_path(redeemed.key, id), redeemed.nonce),
+              )
               |> response.set_header(
                 "set-cookie",
-                ui_http.set_cookie(redeemed.cookie),
+                ui_http.set_cookie(redeemed.cookie, redeemed.key),
               )
           }
       }
@@ -250,6 +284,8 @@ fn web_asset(asset: ui_http.Asset) {
       document(200, "text/css; charset=utf-8", page.stylesheet())
     ui_http.EnterScript ->
       document(200, "text/javascript; charset=utf-8", page.enter_script())
+    ui_http.PageScript ->
+      document(200, "text/javascript; charset=utf-8", page.page_script())
     ui_http.Runtime ->
       case
         page.runtime_file()
@@ -263,20 +299,32 @@ fn web_asset(asset: ui_http.Asset) {
   }
 }
 
-// The cookie's UI session, re-authorized from scratch: it must be live, name
-// this session, and its minting credential must still authenticate and still
-// be a member. The answer carries the readiness the socket's upgrade reuses,
-// and the cookie, which the socket keeps checking.
-fn page_grant(config: Config(instance), ui: Ui(instance), request, id: String) {
+// The cookie's UI session, re-authorized from scratch: it must be live, be
+// the one the path's page key names, name this session, and its minting
+// credential must still authenticate and still be a member. The answer
+// carries the readiness the socket's upgrade reuses, the UI session, and the
+// cookie, which the socket keeps checking.
+fn page_grant(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  key: String,
+  id: String,
+) {
   use cookie <- result.try(
     ui_http.session_cookie(request)
     |> option.to_result(Nil)
     |> result.map_error(fn(_) { plain(401, "no page session") }),
   )
-  use grant <- result.try(
+  use page <- result.try(
     ui_sessions.lookup(ui.sessions, cookie)
     |> result.map_error(fn(_) { plain(401, "unknown or expired page session") }),
   )
+  use Nil <- result.try(case ui_sessions.keyed(page, key) {
+    True -> Ok(Nil)
+    False -> Error(plain(401, "page key names another page session"))
+  })
+  let grant = ui_sessions.grant(page)
   use Nil <- result.try(case grant.session_id == id {
     True -> Ok(Nil)
     False -> Error(plain(403, "page session names another session"))
@@ -293,7 +341,7 @@ fn page_grant(config: Config(instance), ui: Ui(instance), request, id: String) {
     manager.session_authority(state.registry, grant.credential, id)
     |> result.map_error(fn(_) { plain(403, "not a member of this session") }),
   )
-  Ok(#(state, grant, cookie))
+  Ok(#(state, page, cookie))
 }
 
 fn document(status: Int, content_type: String, body: String) {
@@ -364,8 +412,9 @@ fn nonempty(value) {
 
 // Resolves one resident session for an authenticated upgrade and hands the
 // attachment to `upgrade`. A terminal socket carries the principal's
-// membership role; the web view's socket carries observer whatever the
-// membership says, and so is admitted with an observer's parser permit.
+// membership role; the web view's socket carries that role capped by the
+// page's ceiling and by Operator, and is admitted with that role's parser
+// permit.
 fn resident_upgrade(
   config: Config(instance),
   request,
@@ -401,7 +450,7 @@ fn resident_upgrade(
     Ok(#(principal, membership, incarnation, instance)) -> {
       let authority = case role {
         MembershipRole -> membership
-        ObserverRole -> access.Participant(access.Observer)
+        PageRole(ceiling:) -> ui_relay.capped(membership, ceiling)
       }
       let class = case authority {
         access.Participant(access.Observer) -> root.Observer
@@ -993,11 +1042,19 @@ fn dispatch(
     // A ticket for this principal's browser to open one session's page. It
     // is minted only for a member of that session, and records the digest of
     // the credential asking, so every later check of the page re-checks it.
-    protocol.UiLink(id) -> {
+    protocol.UiLink(id, page: ceiling) -> {
       use ui <- result.try(option.to_result(config.ui, "unavailable"))
       use _ <- result.try(authorized(state, digest, id))
       use issued <- result.try(
-        ui_sessions.mint(ui.sessions, ui_sessions.Grant(id, digest))
+        ui_sessions.mint(
+          ui.sessions,
+          ui_sessions.Grant(
+            session_id: id,
+            credential: digest,
+            principal: principal.id,
+            ceiling:,
+          ),
+        )
         |> result.replace_error("unavailable"),
       )
       Ok(#(

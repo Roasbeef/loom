@@ -1,138 +1,19 @@
-//// The component keeps option C: an arriving frame is filed and changes
-//// nothing on the page until a tick hands it to the lane. Driven with
-//// Lustre's simulator, which runs `update` and `view` and performs no
+//// The observer's component keeps option C: an arriving frame is filed and
+//// changes nothing on the page until a tick hands it to the lane. Driven
+//// with Lustre's simulator, which runs `update` and `view` and performs no
 //// effect, so the frames are the ones a gateway would send for one credited
 //// transfer and nothing reaches a socket.
 
-import core/codec
-import core/json
-import core/message
-import gleam/bit_array
-import gleam/option.{None}
+import gleam/erlang/process
+import gleam/list
 import gleam/string
+import lustre/dev/query
 import lustre/dev/simulate
 import lustre/effect
 import lustre/element
+import page_fixture
 import session_view/connection_event
-import session_view/snapshot
 import web_view/component
-
-fn reply(id: Int, event: String, body: json.JsonValue) {
-  connection_event.Incoming(
-    json.to_string(
-      json.Object([
-        #("v", json.Int(2)),
-        #("reply_to", json.Int(id)),
-        #("event", json.String(event)),
-        #("body", body),
-      ]),
-    ),
-  )
-}
-
-fn metadata() -> String {
-  json.to_string(
-    json.Object([
-      #("cells", json.Array([])),
-      #("message_count", json.Int(0)),
-      #(
-        "usage",
-        codec.encode_usage(message.Usage(
-          0,
-          0,
-          0,
-          0,
-          None,
-          None,
-          0,
-          message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
-        )),
-      ),
-      #(
-        "host_run_settings",
-        json.Object([
-          #("queue_mode", json.String("one_at_a_time")),
-          #("tool_execution", json.String("parallel")),
-          #("origin", json.Null),
-        ]),
-      ),
-      #("peers", json.Array([])),
-    ]),
-  )
-}
-
-// The three replies of one credited transfer: its begin, its one metadata
-// fragment and its end, answering the lane's requests one, two and three.
-fn transfer() -> List(connection_event.Message) {
-  let data = metadata()
-  [
-    reply(
-      1,
-      "snapshot_begin",
-      json.Object([
-        #("snapshot_id", json.String("1:1")),
-        #("session_id", json.String("A")),
-        #("epoch", json.String("epoch")),
-        #("incarnation", json.String("incarnation")),
-        #("connection_id", json.String("connection")),
-        #(
-          "origin",
-          json.Object([
-            #("principal", json.String("alice")),
-            #("name", json.String("Alice")),
-          ]),
-        ),
-        #("role", json.String("observer")),
-        #("next_seq", json.Int(10)),
-        #("oldest_seq", json.Null),
-        #("window", json.String("recent")),
-        #("complete_history", json.Bool(False)),
-        #("record_bytes_limit", json.Int(snapshot.record_limit)),
-        #("fragment_bytes_limit", json.Int(snapshot.piece_limit)),
-      ]),
-    ),
-    reply(
-      2,
-      "snapshot_chunk",
-      json.Object([
-        #("snapshot_id", json.String("1:1")),
-        #("index", json.Int(0)),
-        #("kind", json.String("metadata")),
-        #("record_id", json.String("metadata")),
-        #("record_seq", json.Null),
-        #("total_bytes", json.Int(string.byte_size(data))),
-        #("offset", json.Int(0)),
-        #(
-          "data",
-          json.String(bit_array.base64_encode(bit_array.from_string(data), True)),
-        ),
-      ]),
-    ),
-    reply(
-      3,
-      "snapshot_end",
-      json.Object([
-        #("snapshot_id", json.String("1:1")),
-        #("index", json.Int(1)),
-        #("next_seq", json.Int(10)),
-        #("more_after", json.Null),
-      ]),
-    ),
-  ]
-}
-
-fn start() -> component.Start(Nil) {
-  component.Start(
-    session_id: "A",
-    expected: snapshot.Expected("A", "epoch", "incarnation"),
-    transport: component.Transport(
-      connect: fn(_) { Ok(Nil) },
-      transmit: fn(_, _) { Nil },
-      shut: fn(_) { Nil },
-      now: fn() { 0 },
-    ),
-  )
-}
 
 fn simulation() {
   simulate.application(
@@ -140,7 +21,7 @@ fn simulation() {
     update: component.update,
     view: component.view,
   )
-  |> simulate.start(start())
+  |> simulate.start(page_fixture.start())
 }
 
 fn arrive(simulation, frames: List(connection_event.Message)) {
@@ -151,9 +32,13 @@ fn arrive(simulation, frames: List(connection_event.Message)) {
   }
 }
 
+fn wire() {
+  process.new_subject()
+}
+
 pub fn arrivals_are_filed_and_reduced_only_at_a_tick_test() {
-  let opened = simulate.message(simulation(), component.Opened(Nil, 0))
-  let filed = arrive(opened, transfer())
+  let opened = simulate.message(simulation(), component.Opened(wire(), 0))
+  let filed = arrive(opened, page_fixture.transfer("observer", []))
 
   // Every frame of a complete transfer has arrived, and the page still says
   // it is connecting: nothing was reduced.
@@ -162,20 +47,17 @@ pub fn arrivals_are_filed_and_reduced_only_at_a_tick_test() {
 
   let ticked = simulate.message(filed, component.Ticked(0))
   assert component.status(simulate.model(ticked)) == component.Following
-  assert string.contains(
-    element.to_string(simulate.view(ticked)),
-    "following · read-only",
-  )
+  assert string.contains(element.to_string(simulate.view(ticked)), "following")
 }
 
 pub fn a_tick_before_the_transport_opens_keeps_what_was_filed_test() {
   // Frames filed before the transport reported open, and a tick that finds
   // no lane, must not lose them: the first tick with a lane reduces them.
-  let early = arrive(simulation(), transfer())
+  let early = arrive(simulation(), page_fixture.transfer("observer", []))
   let idle = simulate.message(early, component.Ticked(0))
   assert component.status(simulate.model(idle)) == component.Connecting
 
-  let opened = simulate.message(idle, component.Opened(Nil, 0))
+  let opened = simulate.message(idle, component.Opened(wire(), 0))
   let ticked = simulate.message(opened, component.Ticked(0))
   assert component.status(simulate.model(ticked)) == component.Following
 }
@@ -185,8 +67,8 @@ pub fn a_closed_connection_is_drawn_at_the_next_tick_test() {
   // page's socket, which closes two ticks later. The ended state is drawn
   // by the first of them.
   let ticked =
-    simulate.message(simulation(), component.Opened(Nil, 0))
-    |> arrive(transfer())
+    simulate.message(simulation(), component.Opened(wire(), 0))
+    |> arrive(page_fixture.transfer("observer", []))
     |> simulate.message(component.Ticked(0))
   let closed =
     simulate.message(
@@ -200,4 +82,59 @@ pub fn a_closed_connection_is_drawn_at_the_next_tick_test() {
     element.to_string(simulate.view(drawn)),
     "disconnected",
   )
+}
+
+pub fn a_refused_open_ends_the_page_test() {
+  let refused =
+    simulate.message(simulation(), component.Refused("access was revoked"))
+  assert component.status(simulate.model(refused))
+    == component.Ended("access was revoked")
+}
+
+// Protocol-change/051, the operator addendum: an observer's page is a fixed
+// line and attaches no handler, so there is nothing a browser can fire, and
+// a pending escalation draws no card and no button.
+pub fn an_observer_page_has_no_handler_and_no_card_test() {
+  let page =
+    simulate.message(simulation(), component.Opened(wire(), 0))
+    |> arrive(
+      page_fixture.transfer("observer", [
+        page_fixture.escalation("esc-1", 7, "fs_write", "write the file"),
+      ]),
+    )
+    |> simulate.message(component.Ticked(0))
+  let html = element.to_string(simulate.view(page))
+  assert string.contains(html, "Observer · read-only")
+  assert !string.contains(html, "<button")
+  assert !string.contains(html, "<form")
+  assert !string.contains(html, "<textarea")
+
+  let clicked =
+    simulate.click(page, on: query.element(query.class("observer-bar")))
+  let assert Ok(simulate.Problem(name: "EventHandlerNotFound", ..)) =
+    list.last(simulate.history(clicked))
+    as "an observer page holds no click handler"
+
+  let submitted =
+    simulate.submit(page, on: query.element(query.tag("main")), fields: [
+      #("draft", "hello"),
+    ])
+  let assert Ok(simulate.Problem(name: "EventHandlerNotFound", ..)) =
+    list.last(simulate.history(submitted))
+    as "an observer page holds no submit handler"
+}
+
+// Guide §4: a tick that brought nothing new changes nothing the view reads,
+// so Lustre's diff of the memoized transcript is empty.
+pub fn an_idle_tick_leaves_the_model_as_it_was_test() {
+  let page =
+    simulate.message(simulation(), component.Opened(wire(), 0))
+    |> arrive(page_fixture.transfer("observer", []))
+    |> simulate.message(component.Ticked(0))
+  let before = simulate.model(page)
+  let after = simulate.model(simulate.message(page, component.Ticked(0)))
+  assert component.rows(after) == component.rows(before)
+  assert component.status(after) == component.status(before)
+  assert element.to_string(component.view(after))
+    == element.to_string(component.view(before))
 }

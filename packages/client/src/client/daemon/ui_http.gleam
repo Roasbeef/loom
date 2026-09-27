@@ -23,15 +23,21 @@ import web_view/page
 pub const cookie_name = "loom_ui"
 
 /// One `/ui` request, by route.
+///
+/// A page and its socket live under the page key its UI session was given
+/// at the exchange (`/ui/p/<key>`), which is also the path its cookie is
+/// scoped to (protocol-change/051, the operator addendum). The exchange and
+/// the assets carry no key.
 pub type Route {
-  /// `GET /ui/sessions/<id>`: the page.
-  Page(session_id: String)
+  /// `GET /ui/p/<key>/sessions/<id>`: the page.
+  Page(key: String, session_id: String)
 
   /// `GET /ui/sessions/<id>?ticket=<ticket>`: the ticket exchange.
   Exchange(session_id: String, ticket: String)
 
-  /// `GET /ui/sessions/<id>/ws`: the component's socket.
-  Socket(session_id: String)
+  /// `GET /ui/p/<key>/sessions/<id>/ws`: the component's socket. `nonce`
+  /// is the socket URL's `csrf-token`, the page nonce the tab kept.
+  Socket(key: String, session_id: String, nonce: Option(String))
 
   /// `GET /ui/assets/<name>`, for one of the fixed asset names.
   Asset(asset: Asset)
@@ -50,6 +56,9 @@ pub type Asset {
 
   /// The exchange page's script.
   EnterScript
+
+  /// The session page's script.
+  PageScript
 }
 
 /// Routes a `/ui` request; every route is a `GET`. The session ID is returned as the path gave it;
@@ -62,27 +71,32 @@ pub type Asset {
 /// ```
 pub fn route(request: Request(body)) -> Route {
   case request.method, request.path_segments(request) {
+    // Only the exchange lives at the unkeyed session path. A page asked for
+    // there has no key, so no cookie scoped to a key reaches it.
     http.Get, ["ui", "sessions", id] ->
-      case ticket(request) {
+      case query(request, "ticket") {
         Some(ticket) -> Exchange(id, ticket)
-        None -> Page(id)
+        None -> Unknown
       }
-    http.Get, ["ui", "sessions", id, "ws"] -> Socket(id)
+    http.Get, ["ui", "p", key, "sessions", id] -> Page(key, id)
+    http.Get, ["ui", "p", key, "sessions", id, "ws"] ->
+      Socket(key, id, query(request, "csrf-token"))
     http.Get, ["ui", "assets", name] ->
       case name {
         _ if name == page.runtime_asset -> Asset(Runtime)
         _ if name == page.stylesheet_asset -> Asset(Stylesheet)
         _ if name == page.enter_asset -> Asset(EnterScript)
+        _ if name == page.page_asset -> Asset(PageScript)
         _ -> Unknown
       }
     _, _ -> Unknown
   }
 }
 
-fn ticket(request: Request(body)) -> Option(String) {
+fn query(request: Request(body), name: String) -> Option(String) {
   request.get_query(request)
   |> result.unwrap([])
-  |> list.key_find("ticket")
+  |> list.key_find(name)
   |> option.from_result
 }
 
@@ -141,6 +155,21 @@ fn valid_port(suffix: String) -> Bool {
 /// // ui_http.exchange_allowed(request)
 /// ```
 pub fn exchange_allowed(request: Request(body)) -> Bool {
+  navigation_allowed(request)
+}
+
+/// Whether a navigation to a keyed page may proceed: `Sec-Fetch-Site` is
+/// `same-origin`, the exchange page's move or a reload, or `none`, a link
+/// or bookmark opened from outside a page. A missing header, `same-site`
+/// (another loopback port) or `cross-site` is refused, so no other page can
+/// put the keyed page in front of the person.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.navigation_allowed(request)
+/// ```
+pub fn navigation_allowed(request: Request(body)) -> Bool {
   case request.get_header(request, "sec-fetch-site") {
     Ok("none") | Ok("same-origin") -> True
     Ok(_) | Error(Nil) -> False
@@ -175,21 +204,26 @@ pub fn session_cookie(request: Request(body)) -> Option(String) {
   |> option.from_result
 }
 
-/// The `Set-Cookie` value for a new UI session.
+/// The `Set-Cookie` value for a new UI session whose page key is `key`.
 ///
 /// `HttpOnly` keeps it from every script, `SameSite=Strict` keeps a
-/// cross-site navigation from carrying it, and `Path=/ui` keeps it off
-/// every other path on this host. It has no `Max-Age`, so the browser
-/// drops it when its session ends; the daemon's own lifetime bounds it
-/// either way.
+/// cross-site navigation from carrying it, and `Path=/ui/p/<key>` keeps it
+/// off every path that does not name the page key, on this port and on
+/// every other port of the host, since browsers do not scope a cookie by
+/// port. It has no `Max-Age`, so the browser drops it when its session
+/// ends; the daemon's own lifetime bounds it either way.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_http.set_cookie("abc")
+/// // ui_http.set_cookie("abc", "key")
 /// ```
-pub fn set_cookie(value: String) -> String {
-  cookie_name <> "=" <> value <> "; HttpOnly; SameSite=Strict; Path=/ui"
+pub fn set_cookie(value: String, key: String) -> String {
+  cookie_name
+  <> "="
+  <> value
+  <> "; HttpOnly; SameSite=Strict; Path="
+  <> page.keyed_prefix(key)
 }
 
 /// Adds the view's headers to a refusal made before the host was trusted.

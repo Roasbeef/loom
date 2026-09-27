@@ -14,6 +14,14 @@
 //// check-then-delete split across two calls would let both succeed, which
 //// is why redemption is one message and not a lookup followed by a delete.
 ////
+//// Redeeming a ticket mints three secrets for the UI session it becomes
+//// (protocol-change/051, the operator addendum): the cookie, the page key
+//// the cookie's path is scoped to, and the page nonce the browser tab keeps
+//// in `sessionStorage` and presents on the socket. The table keeps only
+//// their digests. A redemption also ends every other UI session of the same
+//// principal for the same session, because the key-scoped cookie never
+//// reaches the exchange to name the page it replaces.
+////
 //// Each table is a per-key deadline table inside this one actor, which
 //// `docs/weft.md` ("Per-key deadline tables stay") allows. Every read checks
 //// the deadline itself, so an expired ticket or session is refused the
@@ -21,11 +29,11 @@
 //// entries nobody asked about again.
 
 import broker/internal/call
+import broker/internal/ffi_crypto
 import broker/token
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
-import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -52,7 +60,20 @@ pub type Grant {
     /// check re-authenticates it, so revoking that credential ends the UI
     /// session.
     credential: access.Digest,
+    /// The principal that asked, whose other UI sessions for the same
+    /// session a redemption ends.
+    principal: String,
+    /// The most the page may do, chosen when the link was minted: observer
+    /// unless `loom --ui --operate` asked for operator. It caps the
+    /// membership role and never grants one (`ui_relay.capped`).
+    ceiling: access.Role,
   )
+}
+
+/// A live UI session: what it grants, and the digests of the page key its
+/// cookie is scoped to and of the nonce its browser tab presents.
+pub opaque type Page {
+  Page(grant: Grant, key: String, nonce: String)
 }
 
 /// A freshly minted ticket.
@@ -65,9 +86,10 @@ pub type Issued {
   )
 }
 
-/// A redeemed ticket: the new UI session's cookie and what it grants.
+/// A redeemed ticket: the new UI session's three secrets, in plaintext for
+/// the one response that hands them to the browser, and what it grants.
 pub type Redeemed {
-  Redeemed(cookie: String, grant: Grant)
+  Redeemed(cookie: String, key: String, nonce: String, grant: Grant)
 }
 
 /// Why a ticket was not redeemed.
@@ -119,24 +141,23 @@ type Message {
   Redeem(
     ticket: String,
     session_id: String,
-    previous: Option(String),
     reply: Subject(Result(Redeemed, Refusal)),
   )
-  Lookup(cookie: String, reply: Subject(Result(Grant, Nil)))
+  Lookup(cookie: String, reply: Subject(Result(Page, Nil)))
   Sizes(reply: Subject(#(Int, Int)))
   Sweep
 }
 
 // One live ticket or UI session and the instant it stops being honoured.
-type Entry {
-  Entry(grant: Grant, expires_at: Int)
+type Entry(value) {
+  Entry(value: value, expires_at: Int)
 }
 
 type State {
   State(
     settings: Settings,
-    tickets: Dict(String, Entry),
-    sessions: Dict(String, Entry),
+    tickets: Dict(String, Entry(Grant)),
+    sessions: Dict(String, Entry(Page)),
   )
 }
 
@@ -168,42 +189,84 @@ pub fn mint(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
   |> result.replace_error(Nil)
 }
 
-/// Redeems `ticket` once, for the page of `session_id`. A request that
-/// already carried a cookie names it as `previous`. A successful redemption
-/// deletes that UI session: a ticket replaces it outright, and nothing
-/// carries over. A refused redemption leaves it alone, so a stale or
-/// misdirected link cannot sign a working page out.
+/// Redeems `ticket` once, for the page of `session_id`. A successful
+/// redemption ends every UI session of the ticket's principal for the same
+/// session: a ticket replaces them outright, and nothing carries over. A
+/// refused redemption leaves them alone, so a stale or misdirected link
+/// cannot sign a working page out.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_sessions.redeem(sessions, ticket, session_id, None)
+/// // ui_sessions.redeem(sessions, ticket, session_id)
 /// ```
 pub fn redeem(
   sessions: Sessions,
   ticket: String,
   session_id: String,
-  previous: Option(String),
 ) -> Result(Redeemed, Refusal) {
   call.try_call(sessions.subject, waiting: 1000, sending: Redeem(
     ticket,
     session_id,
-    previous,
     _,
   ))
   |> result.unwrap(Error(UnknownTicket))
 }
 
-/// What a live UI session's cookie grants.
+/// The live UI session a cookie names.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // ui_sessions.lookup(sessions, cookie)
 /// ```
-pub fn lookup(sessions: Sessions, cookie: String) -> Result(Grant, Nil) {
+pub fn lookup(sessions: Sessions, cookie: String) -> Result(Page, Nil) {
   call.try_call(sessions.subject, waiting: 1000, sending: Lookup(cookie, _))
   |> result.unwrap(Error(Nil))
+}
+
+/// What a live UI session grants.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.grant(page).session_id
+/// ```
+pub fn grant(page: Page) -> Grant {
+  page.grant
+}
+
+/// Whether `key`, from a request's path, is the page key this UI session
+/// was given. Compared by digest, in constant time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.keyed(page, key)
+/// ```
+pub fn keyed(page: Page, key: String) -> Bool {
+  same_digest(page.key, digest(key))
+}
+
+/// Whether `nonce`, from a socket's query, is the nonce this UI session
+/// handed its browser tab. Compared by digest, in constant time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.admits(page, nonce)
+/// ```
+pub fn admits(page: Page, nonce: String) -> Bool {
+  same_digest(page.nonce, digest(nonce))
+}
+
+// Two digests are base16 SHA-256, the same length whatever they digest, so
+// a constant-time comparison of them reveals nothing about the secret.
+fn same_digest(stored: String, presented: String) -> Bool {
+  ffi_crypto.constant_time_equal(
+    bit_array.from_string(stored),
+    bit_array.from_string(presented),
+  )
 }
 
 /// A check that the UI session behind `cookie` still grants `grant`.
@@ -226,7 +289,7 @@ pub fn still_open(
 ) -> fn() -> Result(Nil, Nil) {
   fn() {
     use current <- result.try(lookup(sessions, cookie))
-    case current == grant {
+    case current.grant == grant {
       True -> Ok(Nil)
       False -> Error(Nil)
     }
@@ -264,7 +327,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Mint(grant:, reply:) -> {
       let ticket = secret(state.settings)
-      let entry = Entry(grant, now + state.settings.ticket_ms)
+      let entry =
+        Entry(value: grant, expires_at: now + state.settings.ticket_ms)
       process.send(reply, Issued(ticket, state.settings.ticket_ms))
       actor.continue(
         State(
@@ -276,9 +340,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     // The whole redemption happens in this one turn: the ticket is removed
     // whether or not it was still live, and only a live ticket for this
-    // session drops the old UI session and becomes a new one. Nothing
-    // between those steps can interleave with another redemption.
-    Redeem(ticket:, session_id:, previous:, reply:) -> {
+    // session ends the principal's other UI sessions for it and becomes a
+    // new one. Nothing between those steps can interleave with another
+    // redemption.
+    Redeem(ticket:, session_id:, reply:) -> {
       let key = digest(ticket)
       let found = live(state.tickets, key, now)
       let tickets = dict.delete(state.tickets, key)
@@ -292,13 +357,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.continue(State(..state, tickets:))
         }
         Ok(grant) -> {
-          let sessions = case previous {
-            Some(cookie) -> dict.delete(state.sessions, digest(cookie))
-            None -> state.sessions
-          }
+          let sessions =
+            dict.filter(state.sessions, fn(_, entry) {
+              entry.value.grant.principal != grant.principal
+              || entry.value.grant.session_id != grant.session_id
+            })
           let cookie = secret(state.settings)
-          let entry = Entry(grant, now + state.settings.session_ms)
-          process.send(reply, Ok(Redeemed(cookie, grant)))
+          let key = secret(state.settings)
+          let nonce = secret(state.settings)
+          let entry =
+            Entry(
+              value: Page(grant:, key: digest(key), nonce: digest(nonce)),
+              expires_at: now + state.settings.session_ms,
+            )
+          process.send(reply, Ok(Redeemed(cookie:, key:, nonce:, grant:)))
           actor.continue(
             State(
               ..state,
@@ -337,9 +409,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
 // An entry is honoured strictly before its deadline, and the check is made
 // on every read, so the sweep is never what enforces expiry.
-fn live(table: Dict(String, Entry), key: String, now: Int) {
+fn live(table: Dict(String, Entry(value)), key: String, now: Int) {
   case dict.get(table, key) {
-    Ok(entry) if entry.expires_at > now -> Ok(entry.grant)
+    Ok(entry) if entry.expires_at > now -> Ok(entry.value)
     Ok(_) | Error(Nil) -> Error(Nil)
   }
 }

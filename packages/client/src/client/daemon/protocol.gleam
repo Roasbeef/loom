@@ -110,8 +110,11 @@ pub type Command {
 
   /// Mints a single-use ticket that lets this principal's browser open the
   /// web view of one session (protocol-change/051). Served only when the
-  /// daemon was started with `--ui`.
-  UiLink(session_id: String)
+  /// daemon was started with `--ui`. `page` is the page's ceiling, from the
+  /// optional `page` field: `observer` when absent, `operator` only when the
+  /// launcher was asked for an operator's page (`loom --ui --operate`). It
+  /// caps the membership role and never grants one.
+  UiLink(session_id: String, page: access.Role)
 
   /// Lists authorized metadata after one canonical identity.
   ListSessions(after: String, revision: Option(Int))
@@ -351,7 +354,11 @@ fn decode_fields(
       RevokeCredentials(principal, epoch)
     }
     "status" -> Ok(Status)
-    "ui.link" -> result.map(session_id(fields), UiLink)
+    "ui.link" -> {
+      use id <- result.try(session_id(fields))
+      use page <- result.map(page_ceiling(fields))
+      UiLink(id, page)
+    }
     "sessions.list" -> {
       use after <- result.try(cursor(fields))
       use revision <- result.try(optional_revision(fields))
@@ -487,6 +494,19 @@ fn configuration_field(
 fn session_id(fields: List(#(String, JsonValue))) -> Result(String, String) {
   use text <- result.try(text_field(fields, "session_id", 64))
   canonical_id(text)
+}
+
+// A page's ceiling. An absent field is an observer's page, which is what
+// a launcher that predates the field asks for.
+fn page_ceiling(
+  fields: List(#(String, JsonValue)),
+) -> Result(access.Role, String) {
+  case list.key_find(fields, "page") {
+    Error(Nil) -> Ok(access.Observer)
+    Ok(json.String("observer")) -> Ok(access.Observer)
+    Ok(json.String("operator")) -> Ok(access.Operator)
+    Ok(_) -> Error("page must be \"observer\" or \"operator\"")
+  }
 }
 
 fn canonical_id(text: String) -> Result(String, String) {
