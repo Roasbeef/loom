@@ -979,6 +979,7 @@ pub fn release(model: Model, arrival: job.Arrival) -> Model {
       ..,
     ) -> emit(model, effect.CloseControl(daemon_selection.control(host)))
     job.AttachArrived(reply: job.Settled(_), ..)
+    | job.AttachArrived(reply: job.Finished(_), ..)
     | job.ReconnectArrived(..)
     | job.ControlArrived(..)
     | job.ActivityArrived(..)

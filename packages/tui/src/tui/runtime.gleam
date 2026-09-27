@@ -64,6 +64,7 @@ import tui/model.{
 import tui/msg.{type Msg, type Stamp, Msg, Stamp}
 import tui/recording
 import tui/session_channel
+import weft
 
 /// Reads the clocks and writes them onto the model, for a caller that
 /// drives a reducer outside `tui.step`.
@@ -190,6 +191,7 @@ pub fn message(event: backend.InputEvent, model: Model) -> Msg {
 /// let model = runtime.hold(model, job.ControlArrived(key, weft.AllDelivered))
 /// ```
 pub fn hold(model: Model, arrival: job.Arrival) -> Model {
+  let arrival = checked(model, arrival)
   let model =
     Model(..model, running: job_runner.observed(model.running, arrival))
   let admitted = case arrival {
@@ -205,6 +207,40 @@ pub fn hold(model: Model, arrival: job.Arrival) -> Model {
   case admitted {
     Ok(model) -> model
     Error(Nil) -> tui_model.release(model, arrival)
+  }
+}
+
+// An attachment job's end permits adoption only on a socket that is still
+// alive, and whether it is is a process read, which the step does not do.
+// So the host reads it here, as it hands the end over, and the attempt gets
+// `Finished` with the answer instead of the relay's `AllDelivered`. The
+// read is taken only for the attempt the end belongs to; an end for any
+// other key is dropped by the admission below whatever it carries. A socket
+// can die after this read as it could after the step's read before phase
+// 3; the adopted lane's own transport-loss handling covers that case.
+fn checked(model: Model, arrival: job.Arrival) -> job.Arrival {
+  case arrival {
+    job.AttachArrived(key:, reply: job.Settled(weft.AllDelivered)) ->
+      case attachment.job_key(model.candidate) == Some(key) {
+        False -> arrival
+        True ->
+          job.AttachArrived(
+            key:,
+            reply: job.Finished(liveness(model.candidate)),
+          )
+      }
+    job.AttachArrived(..)
+    | job.ControlArrived(..)
+    | job.ReconnectArrived(..)
+    | job.ActivityArrived(..)
+    | job.ConfigurationArrived(..) -> arrival
+  }
+}
+
+fn liveness(candidate: attachment.Status) -> job.SocketLiveness {
+  case result.try(attachment.adoptable_socket(candidate), connection.adopt) {
+    Ok(Nil) -> job.SocketAlive
+    Error(reason) -> job.SocketGone(reason:)
   }
 }
 
