@@ -35,9 +35,14 @@
 //// reads every running job's replies and `hold` admits each into the slot
 //// that names its key, or drops it when no slot does.
 ////
+//// And it reads the file a pasted path names. `read_paste` runs before
+//// the step and writes what the read found onto the model, so the
+//// composer attaches a dropped image without the step opening a file.
+////
 //// This module and `tui/job_runner`, which it calls, are the impure half
 //// of the step. Nothing in the reducer imports either.
 
+import etui/backend
 import gleam/erlang/process
 import gleam/int
 import gleam/io
@@ -52,6 +57,7 @@ import tui/connection
 import tui/daemon
 import tui/effect.{type Effect}
 import tui/herdr
+import tui/image_drop
 import tui/job
 import tui/job_runner
 import tui/model.{
@@ -115,6 +121,45 @@ pub fn receive(model: Model) -> Model {
     replay_inbox: buffered.top_up(model.replay_inbox, up_to: 1),
     candidate: attachment.top_up(model.candidate),
   )
+}
+
+/// Reads the file a paste event names, before the step, and writes what the
+/// read found onto the model as `Model.dropped`.
+///
+/// A terminal delivers a dragged file as a paste of its path. The read is
+/// done here rather than as a job because a job's answer arrives a step
+/// later: a key typed between the paste and that answer would be applied
+/// first, so an Enter could submit the prompt without the image, and pasted
+/// text that names no image would be inserted after the keys that followed
+/// it. Read here, the paste is still handled in one step.
+///
+/// Every event overwrites the field, so a read never outlives the event it
+/// was taken for, and an image the read held is not kept on the model after
+/// the composer has taken it. Nothing is read for a paste that does not
+/// name exactly one path. The read happens whatever the step then does with
+/// the paste, so a path pasted into an overlay that ignores pastes is read
+/// and then dropped; the bounds on the read (`image_drop.max_image_bytes`)
+/// apply either way.
+///
+/// `tui.update` calls this once per event, after `receive`. A caller that
+/// runs `tui.step` itself with a paste naming an image calls it first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = runtime.read_paste(backend.Paste("/tmp/shot.png"), model)
+/// ```
+pub fn read_paste(event: backend.InputEvent, model: Model) -> Model {
+  case event, model.dropped {
+    backend.Paste(text), _ ->
+      Model(..model, dropped: image_drop.read_dropped(text))
+
+    // Most events are not pastes and find nothing to clear, so the model is
+    // returned as it was rather than rebuilt.
+    _, image_drop.NothingDropped -> model
+    _, image_drop.Dropped(..) ->
+      Model(..model, dropped: image_drop.NothingDropped)
+  }
 }
 
 /// Admits one job reply into the slot that waits for it, and forgets the

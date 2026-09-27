@@ -68,6 +68,7 @@ import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/frame
 import tui/history_view
+import tui/image_drop
 import tui/inbound
 import tui/interaction
 import tui/internal/ffi_terminal
@@ -592,6 +593,7 @@ pub fn new_model_with_clock(
     transport_time_ms: host_bootstrap.monotonic_time_ms,
     stamp:,
     terminal: runtime.terminal_identity(),
+    dropped: image_drop.NothingDropped,
     last_frame_ms: stamp.now_ms,
     activity_revision: 0,
     quiet_for_ms: pacing.quiet_after_ms,
@@ -1380,10 +1382,11 @@ fn attach_daemon(
 ///
 /// This is the function etui and the virtual backend call: `runtime.stamp`,
 /// which reads the clocks once for this event, `runtime.receive`, which
-/// moves the waiting traffic and job replies into the model, then `step`,
-/// then `runtime.settle`, which performs what the step returned and stores
-/// the job table it leaves. Everything that inspects a transition without
-/// acting on it calls `step` instead.
+/// moves the waiting traffic and job replies into the model,
+/// `runtime.read_paste`, which reads the file a pasted path names, then
+/// `step`, then `runtime.settle`, which performs what the step returned and
+/// stores the job table it leaves. Everything that inspects a transition
+/// without acting on it calls `step` instead.
 ///
 /// ## Examples
 ///
@@ -1392,7 +1395,10 @@ fn attach_daemon(
 /// ```
 @internal
 pub fn update(event: backend.InputEvent, model: Model) -> Model {
-  runtime.settle(step(event, runtime.receive(runtime.stamp(model))))
+  runtime.settle(step(
+    event,
+    runtime.read_paste(event, runtime.receive(runtime.stamp(model))),
+  ))
 }
 
 /// Applies one terminal event and returns the effects it decided on,
@@ -1403,9 +1409,14 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 /// from a caller that drove a reducer outside the loop. The returned model
 /// has an empty outbox. Recording appends are effects like the rest: the
 /// input's own line comes first in the list, and every line it caused
-/// follows in the order it was decided. The control, reconnect, activity
-/// and attachment jobs are started and cancelled by `StartJob` and
-/// `CancelJob` effects; file reads still happen during the step.
+/// follows in the order it was decided. The control, reconnect, activity,
+/// attachment and configuration jobs are started and cancelled by
+/// `StartJob` and `CancelJob` effects.
+///
+/// The step reads no file. A pasted image is read by `runtime.read_paste`
+/// before the step, and the step attaches what that read found, so a test
+/// that calls `step` directly with a paste naming an image calls
+/// `runtime.read_paste` first, or the paste is inserted as text.
 ///
 /// The step reads the connection, replay and attachment inboxes, and every
 /// job's messages, only through what `runtime.receive` put in the model, so

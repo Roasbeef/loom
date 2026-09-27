@@ -118,8 +118,10 @@ fn handle_composer_paste(model: Model, text: String) -> Model {
   }
 }
 
+// The runtime read the file this paste names before the step
+// (`runtime.read_paste`); the step only asks what that read found.
 fn paste_unlocked(model: Model, text: String) -> Model {
-  case image_drop.load_paste(text) {
+  case image_drop.dropped_image(model.dropped, text) {
     Error(reason) -> tui_model.append_error(model, reason)
     Ok(Some(image)) -> add_attachment(model, composer.ImageAttachment(image))
     Ok(None) ->

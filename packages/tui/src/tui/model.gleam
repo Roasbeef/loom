@@ -58,6 +58,7 @@ import tui/focused_goal_panel
 import tui/goal_view
 import tui/herdr
 import tui/history_view
+import tui/image_drop
 import tui/job
 import tui/job_runner
 import tui/live_jobs
@@ -838,6 +839,11 @@ pub type Model {
     /// This terminal's identity in a session creation key: the OS process
     /// and the BEAM process that created the model, read once at creation.
     terminal: String,
+    /// What the runtime read, before this event's step, from the file a
+    /// pasted path names. Only `runtime.read_paste` writes it, once per
+    /// event, so the step reads no file and a read never outlives the event
+    /// it was taken for.
+    dropped: image_drop.Dropped,
     last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,
