@@ -20,7 +20,7 @@ lane, the lane sees every strand, and the transcript shows one of them.
 The view is off unless the daemon was started with `--ui`. With it off, the
 listener routes exactly `/v2/control` and `/v2/sessions/<id>/ws`, and the
 control `hello` does not mention the view. A person gets a page by running
-`loom --ui --session <id>`, which prints a single-use link.
+`loom ui --session <id>`, which prints a single-use link.
 
 This document describes how the view is built. The decisions behind it are
 in [ADR-014](../adr/014-second-runtime.md) (one engine, two views) and
@@ -130,7 +130,7 @@ attachment, the relay reports it, the socket waits a quarter second so
 the component's patch for the ended state is sent, and then closes. [lustre.md](../lustre.md#lifecycle-and-cleanup)
 walks that chain one link at a time.
 
-## From `loom --ui` to a live socket
+## From `loom ui` to a live socket
 
 A page is reached in four requests: one control command from the person's
 own `loom`, then three HTTP requests from the browser.
@@ -139,7 +139,7 @@ own `loom`, then three HTTP requests from the browser.
 
 ```mermaid
 sequenceDiagram
-    participant L as loom --ui
+    participant L as loom ui
     participant D as loomd control socket
     participant T as ui_sessions
     L->>D: authenticate, read hello
@@ -153,8 +153,8 @@ sequenceDiagram
     L->>L: print origin + path, then open it if --open
 ```
 
-`loom --ui --session <id> [--operate] [--open]` is `tui.run_view`
-(`packages/tui/src/tui.gleam:935`). It resolves the daemon with
+`loom ui --session <id> [--operate] [--open]` is `tui.run_view`
+(`packages/tui/src/tui.gleam:1005`). It resolves the daemon with
 `bootstrap.resolve_viewing_daemon`, which adds `--ui` to the launch
 arguments when it has to start one. A daemon that is already running and
 whose `hello` has no `ui` field was started without the view; `loom`
@@ -162,6 +162,13 @@ prints that, exits with status 1, and leaves that daemon alone, because
 other people's terminals may be attached to it. Otherwise it opens the
 session if it is not resident and sends `ui.link` with `page:"operator"`
 when `--operate` was given and `page:"observer"` otherwise.
+
+The command also takes the daemon options a local launch takes
+(`--state-dir`, `--config`, `--server`, `--workspace`), in any order.
+`loom --ui ...` is the older spelling and still works: `parse_launch`
+takes `--ui` out wherever it appears in argv and hands the rest to the
+same parser, `tui.view_request`, so both spellings accept the same
+options in the same orders.
 
 The daemon answers `ui.link` only for a member of the session
 (`manager.session_authority`), and refuses it with `unavailable` when the
@@ -218,7 +225,7 @@ sequenceDiagram
    and the page script. The script reads the nonce back, sets it as the
    element's `csrf-token` attribute, and only then sets `route`, because
    the client runtime reads the token when `route` is set. A tab with no
-   nonce opens no socket and tells the person to run `loom --ui` again.
+   nonce opens no socket and tells the person to run `loom ui` again.
 3. **The socket.** The client runtime opens
    `/ui/p/<key>/sessions/<id>/ws?csrf-token=<nonce>`. The router checks the
    `Origin`, the nonce, the cookie under the key, the credential and the
@@ -400,7 +407,7 @@ would try to trick the person into approving:
 What the layers do not defend: a process that can read the browser's
 profile gets the cookie, and with the key and a live tab's nonce, an
 operator's page for one session for up to 8 hours or until revocation.
-`loom --ui --open` passes the ticket in the opener's argument vector,
+`loom ui --open` passes the ticket in the opener's argument vector,
 which other local users can read with `ps` while the opener runs; printing
 the link without `--open` avoids that. A daemon restart ends every UI
 session, since the tables live in memory.
@@ -471,7 +478,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep. |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role, frame filtering, shutdown. |
 | `packages/client/src/client/daemon/ui_relay.gleam` | The relay into the gateway, the role cap, and the four ways a page ends. |
-| `packages/tui/src/tui.gleam` (`run_view`), `packages/tui/src/tui/view_link.gleam` | `loom --ui`: daemon resolution, `ui.link`, printing and opening the link. |
+| `packages/tui/src/tui.gleam` (`run_view`), `packages/tui/src/tui/view_link.gleam` | `loom ui`: daemon resolution, `ui.link`, printing and opening the link. |
 | `packages/session_view/src/session_view/operator.gleam` | What an operator's input becomes on the wire, shared with the terminal. |
 
 Tests: `web_view/test/component_test` and `operator_page_test` drive the

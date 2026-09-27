@@ -152,7 +152,7 @@ inside the provider's cached prefix.
 ## The web view
 
 With `--ui`, `daemon/main` starts `daemon/ui_sessions` and the server
-serves the `/ui` routes (`protocol-change/051`, ADR-014). `loom --ui`
+serves the `/ui` routes (`protocol-change/051`, ADR-014). `loom ui`
 asks the control endpoint for a single-use ticket; the browser exchanges
 it for a cookie scoped to one page path. `daemon/ui_socket` runs the page's
 websocket and starts a `web_view` Lustre server component, and

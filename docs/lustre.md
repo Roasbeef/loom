@@ -267,7 +267,7 @@ What the client runtime does, from
   arm in `mist/internal/websocket.gleam`), so a page Loom closes stays
   closed. A connection that drops without a close frame (the daemon
   restarted) is retried, and each retry is refused with a `401` until the
-  person runs `loom --ui` again.
+  person runs `loom ui` again.
 
 ### The wire format
 

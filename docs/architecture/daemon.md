@@ -264,7 +264,7 @@ A control socket then sends a `hello` event carrying the protocol version,
 the daemon epoch, the principal ID, the daemon's build version and commit,
 and its limits, and, only when the web view is on, a `ui` field naming its
 route prefix. Clients compare the epoch against the endpoint record and
-the build against their own, and `loom --ui` reads the `ui` field to tell
+the build against their own, and `loom ui` reads the `ui` field to tell
 whether the running daemon serves the view.
 
 ## Opening a session

@@ -117,7 +117,7 @@ pub type Command {
   /// web view of one session (protocol-change/051). Served only when the
   /// daemon was started with `--ui`. `page` is the page's ceiling, from the
   /// optional `page` field: `observer` when absent, `operator` only when the
-  /// launcher was asked for an operator's page (`loom --ui --operate`). It
+  /// launcher was asked for an operator's page (`loom ui --operate`). It
   /// caps the membership role and never grants one.
   UiLink(session_id: String, page: access.Role)
 

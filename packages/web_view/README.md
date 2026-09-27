@@ -164,7 +164,7 @@ Paths are relative to `packages/web_view/src/`: `component` is
 - [`CLAUDE.md`](CLAUDE.md): key types, traffic and invariants, to read
   before changing this package.
 - [The web view](../../docs/architecture/web-view.md): the architecture
-  map, from `loom --ui` to a live socket, and the security layers.
+  map, from `loom ui` to a live socket, and the security layers.
 - [Writing the web view with Lustre](../../docs/lustre.md): how Lustre
   server components work, the rules for view code, and the checklist for a
   change here.

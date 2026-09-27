@@ -115,10 +115,11 @@ type Launch {
   Demo
   Local(bootstrap.Options, selected: String)
 
-  // `loom --ui --session <id>` prints a link that opens the session's web
+  // `loom ui --session <id>` prints a link that opens the session's web
   // view (protocol-change/051), an observer's page unless `--operate` asks
   // for an operator's, and with `--open` also opens it. It installs no
-  // terminal state.
+  // terminal state. `--ui` anywhere in argv is the older spelling of the
+  // same command.
   View(request: ViewRequest)
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
@@ -239,6 +240,7 @@ pub fn main() {
         | ["sessions", ..]
         | ["claim", ..]
         | ["enroll", ..]
+        | ["ui", ..]
         | ["--ui", ..]
         | ["update", ..]
         | ["version", ..]
@@ -345,6 +347,7 @@ fn help_for(arguments: List(String)) -> Option(String) {
         Ok("ext") -> Some(extension_usage())
         Ok("update") -> Some(update_options.usage())
         Ok("version") -> Some(version_usage())
+        Ok("ui") | Ok("--ui") -> Some(ui_usage())
         Ok(_other) | Error(Nil) -> Some(launch_usage())
       }
   }
@@ -352,8 +355,15 @@ fn help_for(arguments: List(String)) -> Option(String) {
 
 fn is_topic(word: String) -> Bool {
   case word {
-    "replay" | "sessions" | "ext" | "update" | "version" | "claim" | "enroll" ->
-      True
+    "replay"
+    | "sessions"
+    | "ext"
+    | "update"
+    | "version"
+    | "claim"
+    | "enroll"
+    | "ui"
+    | "--ui" -> True
     _ -> False
   }
 }
@@ -804,30 +814,72 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
-    ["--ui", ..rest] ->
-      case view_request(rest) {
-        Ok(request) -> View(request:)
-        Error(reason) -> Invalid(reason)
-      }
+    ["ui", ..rest] -> view_launch(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
     ["claim", ..rest] -> ClaimAccess(arguments: rest)
     ["enroll", ..rest] -> Enroll(arguments: rest)
+
+    // `--ui` is the web view command's older spelling, kept so existing
+    // scripts keep working. It is looked for anywhere rather than only first,
+    // because the daemon options it shares with a local launch are as likely
+    // to be written before it as after; a first-position match is what made
+    // `loom --state-dir X --ui --session Z` a refused local launch.
     _ ->
-      case
-        session_control.flag_value(arguments, "--addr"),
-        session_control.flag_value(arguments, "--session")
-      {
-        Ok(address), Ok(session) ->
-          case launch_token(arguments) {
-            Ok(token) -> Remote(address:, session:, token:)
-            Error(reason) -> Invalid(reason)
-          }
-        Ok(_), Error(_) -> Invalid(launch_usage())
-        Error(_), selection ->
-          case parse_local_options(arguments, default_bootstrap_options()) {
-            Ok(options) -> Local(options, result.unwrap(selection, ""))
-            Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
-          }
+      case take_switch(arguments, "--ui") {
+        #(True, rest) -> view_launch(rest)
+        #(False, _) -> parse_terminal_launch(arguments)
+      }
+  }
+}
+
+// The web view command, from the words that follow `ui` or that remain once
+// `--ui` is taken out. Both spellings reach this one parser, so they accept
+// the same options in the same orders.
+fn view_launch(arguments: List(String)) -> Launch {
+  case view_request(arguments) {
+    Ok(request) -> View(request:)
+    Error(reason) -> Invalid(reason)
+  }
+}
+
+/// Classifies a whole argument vector as the launcher does, answering the
+/// web view request when it names one and the refusal otherwise. It is the
+/// test seam for the routing in front of `view_request`: which spellings
+/// reach it, and that options before `--ui` are still read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(request) = tui.launch_view(["ui", "--session", "s"])
+/// assert request.session == "s"
+/// let assert Error(_) = tui.launch_view(["--demo"])
+/// ```
+@internal
+pub fn launch_view(arguments: List(String)) -> Result(ViewRequest, String) {
+  case parse_launch(arguments) {
+    View(request:) -> Ok(request)
+    Invalid(reason) -> Error(reason)
+    _other -> Error("not a web view launch")
+  }
+}
+
+// An interactive launch: a remote session when `--addr` is given, otherwise
+// a local one over the bootstrap ladder.
+fn parse_terminal_launch(arguments: List(String)) -> Launch {
+  case
+    session_control.flag_value(arguments, "--addr"),
+    session_control.flag_value(arguments, "--session")
+  {
+    Ok(address), Ok(session) ->
+      case launch_token(arguments) {
+        Ok(token) -> Remote(address:, session:, token:)
+        Error(reason) -> Invalid(reason)
+      }
+    Ok(_), Error(_) -> Invalid(launch_usage())
+    Error(_), selection ->
+      case parse_local_options(arguments, default_bootstrap_options()) {
+        Ok(options) -> Local(options, result.unwrap(selection, ""))
+        Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
       }
   }
 }
@@ -880,7 +932,7 @@ fn sessions_usage() -> String {
   <> "  session the daemon still holds open; stop it first"
 }
 
-/// What `loom --ui` was asked for: the daemon options, the session to link,
+/// What `loom ui` was asked for: the daemon options, the session to link,
 /// which page to link, and whether to open the link as well as print it.
 @internal
 pub type ViewRequest {
@@ -892,8 +944,10 @@ pub type ViewRequest {
   )
 }
 
-/// Parses the words after `loom --ui`: `--session <id>`, an optional
-/// `--operate`, an optional `--open`, and the shared local options.
+/// Parses the words after `loom ui` (or what is left of argv once `--ui`
+/// is taken out): `--session <id>`, an optional `--operate`, an optional
+/// `--open`, and the shared local options `--state-dir`, `--config`,
+/// `--server` and `--workspace`, in any order.
 /// `--operate` asks for an operator's page; the daemon still caps it with
 /// the principal's membership.
 ///
@@ -918,7 +972,7 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
     #(False, remaining) -> #(view_link.PrintLink, remaining)
   }
   case session_control.flag_value(rest, "--session") {
-    Error(_) -> Error("loom --ui needs --session <id>\n" <> launch_usage())
+    Error(_) -> Error("loom ui needs --session <id>\n" <> ui_usage())
     Ok(session) ->
       case
         parse_local_options(
@@ -927,7 +981,7 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
         )
       {
         Ok(options) -> Ok(ViewRequest(options:, session:, page:, delivery:))
-        Error(reason) -> Error(reason <> "\n" <> launch_usage())
+        Error(reason) -> Error(reason <> "\n" <> ui_usage())
       }
   }
 }
@@ -987,7 +1041,7 @@ fn run_view(request: ViewRequest) -> Nil {
         print_view_output,
       )
     Error(reason) -> {
-      io.println_error("loom --ui: " <> reason)
+      io.println_error("loom ui: " <> reason)
       ffi_terminal.halt(1)
       Nil
     }
@@ -1001,7 +1055,7 @@ fn run_view(request: ViewRequest) -> Nil {
 fn print_view_output(output: view_link.Output) -> Nil {
   case output {
     view_link.Link(link) -> io.println(link)
-    view_link.Note(note) -> io.println_error("loom --ui: " <> note)
+    view_link.Note(note) -> io.println_error("loom ui: " <> note)
   }
 }
 
@@ -1020,7 +1074,7 @@ pub fn view_served(view: control_protocol.WebView) -> Result(Nil, String) {
     control_protocol.NoWebView ->
       Error(
         "the running daemon was started without --ui. Stop it and run "
-        <> "loom --ui again to start one that serves the web view. It was "
+        <> "loom ui again to start one that serves the web view. It was "
         <> "left running because other terminals may be attached to it.",
       )
   }
@@ -1255,10 +1309,11 @@ fn launch_usage() -> String {
   <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"
-  <> "  --ui --session <id> [--operate] [--open]\n"
+  <> "  ui --session <id> [--operate] [--open]\n"
   <> "                      Print a link to the session's web view; read-only\n"
   <> "                      unless --operate, which lets an operator act.\n"
   <> "                      --open also opens it in the default browser.\n"
+  <> "                      --ui is still accepted as another spelling.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
@@ -1270,6 +1325,15 @@ fn launch_usage() -> String {
   <> "may differ between runs\n"
   <> "  --width/--height size the replay until the recording's own first "
   <> "resize supersedes them"
+}
+
+fn ui_usage() -> String {
+  "usage: loom ui --session <id> [--operate] [--open] "
+  <> "[--state-dir <path>] [--config <loom.toml>] [--server <path>]\n"
+  <> "  Print a link to the session's web view, starting a daemon that serves\n"
+  <> "  it when none runs. The page is read-only unless --operate asks for an\n"
+  <> "  operator's; --open also opens it in the default browser. Options may\n"
+  <> "  come in any order. `loom --ui ...` is the same command."
 }
 
 fn replay_usage() -> String {

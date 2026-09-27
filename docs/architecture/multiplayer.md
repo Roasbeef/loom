@@ -505,14 +505,14 @@ mark.
 A page is one more attachment to the session's gateway, made by a relay
 process inside the daemon rather than by a socket from a terminal
 ([the web view](web-view.md)). It carries the principal of the member
-whose own `loom --ui` minted its link, so its presence, its authorship and
+whose own `loom ui` minted its link, so its presence, its authorship and
 its revocation work exactly as a terminal's do: every request and every
 push re-checks the minting credential and the membership, and a revoked
 credential or membership closes the page at its next frame.
 
 A page's role is the smallest of the member's role, the ceiling the link
 was minted with, and Operator. A link is an observer's unless it was
-minted with `loom --ui --operate`, so an operator's routine page is
+minted with `loom ui --operate`, so an operator's routine page is
 read-only, and no page ever carries `Owner`. The capped role is fixed for
 the page's life: a change to the membership closes the page, and a reload
 admits a new one at whatever the record then allows. An operator's page
