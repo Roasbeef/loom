@@ -5,17 +5,74 @@ turn" and "a settled message and a usage row exist".
 
 It is a typed registry of provider configurations and role routes, a pure
 incremental parser for the server-sent-events framing every provider
-streams over, two wire adapters, retry and overflow classification, and
-one narrow seam through which an API key reaches an outbound header and
+streams over, four wire adapters, retry and overflow classification, the
+image budget and pricing steps every attempt passes through, and one
+narrow seam through which an API key reaches an outbound header and
 nowhere else. Everything above the raw HTTP chunk stream is pure Gleam —
 the sans-io pattern — so the interesting parts are property-testable
 without a socket or a process.
+
+It is a separate package because it is the one place Loom decodes a
+vendor's wire format and holds a credential. Four vendors' request shapes,
+stream events, stop reasons and error bodies are translated here into
+`core`'s message types, so no package above this one parses provider JSON,
+and an API key never leaves the request this package builds. Callers see
+one contract, the `StreamHandle` of spec Part 1 §1.5: `runtime` consumes it
+through its effect surface, and `client` builds the gateway from the
+operator's model catalogue.
 
 Three things are injected at construction and nothing else touches the
 world: an HTTP transport, a secret store, and a clock. `provider/http`
 ships `httpc_transport()` for production; the two FFI modules that drive
 OTP's `httpc` in asynchronous streaming mode and read an environment
 variable are the package's complete inventory of impurity.
+
+## Where it sits
+
+`provider` depends on `core`, `gleam_erlang` and `weft`, and nothing else
+(`gleam.toml`). `runtime`, `client` and `conformance` depend on it. Inside
+the package, `provider/gateway` is the only module that imports the
+adapters, so the gateway alone chooses a dialect for a configured
+endpoint.
+
+```mermaid
+graph TD
+  subgraph pkg["packages/provider"]
+    GW["provider/gateway<br/>Gateway, ProviderConfig,<br/>resolve, request, prepare"]
+    CU["provider/custodian<br/>the witnessed run whose exit proves drain"]
+    AD["provider/adapter/*<br/>anthropic, openai, responses, gemini"]
+    IN["provider/internal/*<br/>wire, diagnostic,<br/>responses_items, responses_request"]
+    ST["provider/stream<br/>StreamHandle, SseParser,<br/>ResponseMachine, run_tracked"]
+    HT["provider/http<br/>Transport, RunningRequest,<br/>httpc_transport"]
+    SMALL["provider/model, retry, pricing,<br/>image_budget, secret"]
+    FFI["internal/ffi_httpc, internal/ffi_env<br/>over provider_ffi.erl"]
+  end
+
+  CORE["core<br/>json, message, corruption, origin, clock"]
+  WEFT["weft<br/>managed runs, state_machine"]
+  UP["runtime, client, conformance"]
+
+  UP --> GW
+  UP --> ST
+  GW --> AD
+  GW --> CU
+  GW --> ST
+  GW --> SMALL
+  AD --> IN
+  AD --> ST
+  AD --> HT
+  ST --> HT
+  HT --> FFI
+  SMALL --> FFI
+  GW --> WEFT
+  CU --> WEFT
+  AD --> CORE
+  ST --> CORE
+  SMALL --> CORE
+```
+
+The `SMALL --> FFI` edge is `provider/secret`, whose `env()` backend reads
+the process environment through `internal/ffi_env`.
 
 ## One request, arriving in parts
 
@@ -28,24 +85,24 @@ whole request subtree has drained.
 sequenceDiagram
   participant C as caller (a strand)
   participant G as gateway pump process
-  participant R as stream.run
+  participant R as stream.run_tracked
   participant T as transport owner
   participant M as ResponseMachine
 
   C->>G: gateway.request(gw, ProviderRequest)
   Note over C,G: returns StreamHandle(events, cancel, owner) at once
-  G->>R: stream.run(transport, http_request, machine, deliver, within:)
+  G->>R: stream.run_tracked(transport, http_request, machine, deliver, started, within:)
   R->>T: prepare_streaming(request, private_http_events)
-  T-->>R: PreparedRequest(owner, cancel, begin)
+  T-->>R: PreparedRequest(running, begin), running = RunningRequest(owner, cancel)
   Note over R,T: publish and monitor owner before begin
   R->>T: begin()
   T-->>R: http.ResponseStatus(status, headers)
   R->>M: on_status
-  T-->>R: http.ResponseChunk(bytes)
-  R->>M: on_chunk — SseParser.feed, then the adapter accumulator
+  T-->>R: http.ResponseChunk(chunk)
+  R->>M: on_chunk, which runs SseParser.feed and then the adapter accumulator
   M-->>R: [Delta, Delta, ...]
   R-->>C: Delta(TextDelta / ToolCallDelta / ThinkingDelta)
-  T-->>R: http.ResponseChunk(bytes)
+  T-->>R: http.ResponseChunk(chunk)
   R->>M: on_chunk
   M-->>R: [Settled(message, usage)]
   R-->>C: Settled — exactly one terminal, nothing after it
@@ -59,9 +116,16 @@ sequenceDiagram
   end
 ```
 
+The participant `G` stands for three processes that `gateway.prepare`
+starts: a `provider/custodian` run, a guard written as a
+`weft/state_machine` over `gateway.Phase`, and a private pump that walks
+the fallback chain. `run_tracked`'s `started`
+callback is how the pump publishes each transport owner to the guard
+before `begin` is granted. `CLAUDE.md` "Traffic" names every guard state.
+
 The contract the rest of the harness leans on is narrow enough to depend
 on: **zero or more `Delta` events, then exactly one `Settled` or
-`Failed`, and nothing after.** `stream.run` enforces the at-most-once
+`Failed`, and nothing after.** `stream.run_tracked` enforces the at-most-once
 delivery itself, dropping anything a machine emits past the first
 terminal, so an adapter bug cannot double-settle. Deltas are ephemeral
 display data and prove nothing about settlement — the settled message is
@@ -69,7 +133,7 @@ always the authority, and `stream.await_terminal` is the convenience that
 collects both.
 
 Cancellation uses the same single owner as settlement and fallback. The pump
-monitors its direct consumer; `stream.run` monitors the active transport
+monitors its direct consumer; `stream.run_tracked` monitors the active transport
 owner; every fallback attempt has a fresh private HTTP subject. When cancel,
 consumer death, or timeout wins, the transport cancellation capability runs
 before the terminal-acknowledgement grace. Expiry reports
@@ -100,7 +164,10 @@ returning nothing.
 The framing parser is a fold — bytes in, events out, carry state threaded
 — so feeding the same byte stream in any chunking yields the same events.
 Chunk boundaries split lines and even split UTF-8 codepoints, which is
-what the carry buffer is for.
+what the carry buffer is for. `SseParser` is one opaque record, so the
+states below are conditions on its fields (`carry`, `scanned`,
+`data_lines`) rather than constructors; the emitted values are the two
+`SseEvent` constructors, `SseMessage` and `SseMalformed`.
 
 ```mermaid
 stateDiagram-v2
@@ -155,7 +222,7 @@ work.
 flowchart TD
   REQ["gateway.request(gw, req)"] --> T{"req.target"}
 
-  T -->|"ForRole(role)"| CH["usable_chain: the role's ordered chain,<br/>filtered to targets whose provider is registered"]
+  T -->|"ForRole(role, thinking)"| CH["usable_chain: the role's ordered chain,<br/>filtered to targets whose provider is registered"]
   CH -->|empty| NI["Failed(NoIdentity) — in band, never a crash"]
   CH -->|"[first, ..rest]"| A["attempt_one against first"]
 
@@ -163,6 +230,7 @@ flowchart TD
   ONE --> TERM
 
   A --> TERM{"the attempt's terminal event"}
+  A -->|"cancelled, unconfirmed,<br/>or drain proof lost"| STOP["Failed(ProviderCancelled, CancellationUnconfirmed<br/>or DrainProofLost), never walks"]
   TERM -->|"Settled"| DONE["delivered as-is — a settled response never falls back"]
   TERM -->|"Failed and the chain is exhausted"| LAST["delivered as-is — the last real error,<br/>not a summary of the walk"]
   TERM -->|Failed| CL{"retry.classify(error)"}
@@ -170,6 +238,10 @@ flowchart TD
   CL -->|"Retryable(backoff_hint_ms)"| NEXT["attempt_one against the next target"]
   NEXT --> TERM
 ```
+
+`ForRole.thinking` is applied to the whole chain before the first attempt
+(`protocol-change/009`), so a fallback target is asked for the reasoning
+budget the caller asked for rather than its own route row's level.
 
 `resolve(gw, role)` answers the same question without dispatching: the
 first target in the role's chain whose provider is registered, which is
@@ -255,31 +327,62 @@ every field a telemetry record carries passes through
 See [`docs/architecture/effects.md`](../../docs/architecture/effects.md)
 for that end of it.
 
-## The two dialects
+## The four dialects
 
-Two adapters live under `src/provider/adapter/`, one per wire dialect,
-each supplying request construction, a response accumulator, a total
-stop-reason mapping, and its own caching posture. Their `api_name`
-constants are what durable state records.
+Four adapters live under `src/provider/adapter/`, one per wire dialect.
+Each supplies request construction, a `ResponseMachine`, a total
+stop-reason mapping, and its own caching posture. The `ProviderConfig`
+constructor an operator's catalogue produces selects the adapter, and the
+adapter's `api_name` constant is what durable state records on a settled
+message.
 
-The first is block-structured and streams named events. Its requests
-carry four prompt-cache breakpoints, placed deterministically from the
-request's own contents: two one-hour on the tool array and the system
-block, two five-minute on the last block of each of the final two *user*
-turns. Placement is adapter-local on purpose — **no caching knob crosses
-the package boundary** — because two builds of the same `ProviderRequest`
-must be byte-identical for a cache hit to be possible at all. That is
-also why the system prompt goes out as a one-element block array rather
-than a bare string: the string form renders identically but has nowhere
-to hang a breakpoint. The arithmetic behind the four positions, and what
-each one is paying for, is in
+| Adapter | `ProviderConfig` | `api_name` | Stream framing |
+|---|---|---|---|
+| `adapter/anthropic` | `AnthropicProvider` | `anthropic-messages` | Named events, `message_start` through `message_stop`. |
+| `adapter/openai` | `OpenAiCompatibleProvider` | `openai-completions` | Unnamed chunk documents, terminated by `[DONE]`. |
+| `adapter/responses` | `OpenAiResponsesProvider` | `openai-responses` | Named item and part lifecycle events, then a terminal response object. |
+| `adapter/gemini` | `GeminiProvider` | `gemini-generate-content` | Unnamed whole `GenerateContentResponse` documents, no terminator. |
+
+Before any adapter runs, the gateway applies the attempt's image budget
+(`provider/image_budget`), which turns the oldest historical images into
+text placeholders once a request exceeds the endpoint's limit. After a
+settlement, and before the fallback walk sees it, the gateway prices the
+usage with the provider's rate card (`provider/pricing`). Adapters never
+price anything: the same dialect is spoken by a first-party host, a
+reseller and a local proxy at different prices.
+
+The Anthropic dialect is block-structured and streams named events. Its
+requests carry four prompt-cache breakpoints, placed deterministically
+from the request's own contents: two one-hour on the tool array and the
+system block, two five-minute on the last block of each of the final two
+*user* turns. Placement is adapter-local on purpose — **no caching knob
+crosses the package boundary** — because two builds of the same
+`ProviderRequest` must be byte-identical for a cache hit to be possible
+at all. That is also why the system prompt goes out as a one-element
+block array rather than a bare string: the string form renders
+identically but has nowhere to hang a breakpoint. The arithmetic behind
+the four positions, and what each one is paying for, is in
 [`packages/prompt/README.md`](../prompt/README.md).
 
-The second dialect **declares no breakpoints on purpose.** Its caching is
-automatic and prefix-matched server-side, so the adapter owes it only a
-stable prefix — system message first, fixed field order — and nothing
-else. Its optional routing hint is not sent, because it needs a stable
-session identifier no `ProviderRequest` field supplies.
+The other three dialects **declare no breakpoints on purpose.** OpenAI
+chat-completions and Gemini cache automatically, prefix-matched on the
+server, so each adapter owes only a stable prefix: system content first,
+fixed field order. The chat-completions adapter does not send the
+optional `prompt_cache_key` routing hint, because it needs a stable
+session identifier that no `ProviderRequest` field supplies.
+
+The Responses dialect is stateless by construction. Every request posts
+to `/responses` with `store: false` and carries the reconstructed history
+itself, never `previous_response_id`, so the local transcript stays the
+one owner of the conversation. Its encrypted reasoning items are opaque
+replay data, stored once on the first thinking block of an item. ADR-012
+records why subscription credentials are out of scope for this dialect.
+
+Gemini has two quirks worth knowing before reading its adapter. It has no
+tool-use finish reason, so a `STOP` on a response that carried a function
+call settles as `ToolUse`. And any part may carry a `thoughtSignature`
+that must be replayed with its block; a replayed call with no signature
+carries the sentinel the API accepts in its place.
 
 One consequence is worth stating plainly: a rewritten prefix is a cost,
 never a correctness problem. The cache key is the prompt bytes, so a
@@ -287,21 +390,90 @@ precise rewrite or a compaction cannot serve stale content. Breakpoints
 at or after the changed position simply miss and are written again.
 Nothing invalidates anything.
 
-## Where to look
+## A tour of the modules
 
-| Path | What it holds |
-|---|---|
-| `src/provider/gateway.gleam` | The registry and builder, `resolve`, `request`, the cancellable pump owner, and the fallback walk. |
-| `src/provider/stream.gleam` | `StreamHandle`, `StreamEvent`, cancellation arbitration, the pure parser, `ResponseMachine`, and `run`. |
-| `src/provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget`, `ProviderRequest`, `ToolSpec` — the durable identity and the static model facts an adapter needs. |
-| `src/provider/adapter/` | The two wire adapters: request construction, accumulation, stop-reason mapping, overflow, cache breakpoints. |
-| `src/provider/retry.gleam` | `classify`, `backoff_ms`, and the overflow message patterns. |
-| `src/provider/secret.gleam` | The lookup seam and its backends. |
-| `src/provider/http.gleam` | The injected `RunningRequest` transport contract and `httpc_transport()`. |
+Read them in this order; paths are relative to `src/provider/`.
 
-[`CLAUDE.md`](CLAUDE.md) is the reference doc for changing this code. For
-the plane this package sits in — the one door, the wire, the jail — read
-[`docs/architecture/effects.md`](../../docs/architecture/effects.md);
-"From WP-F" in [`docs/spec-gaps.md`](../../docs/spec-gaps.md) records
-where the implementation refined the spec, including the quantified
-"negligible output" and the deferred keychain backends.
+- `model.gleam`: `Role`, `ResolvedModel`, `RequestTarget`,
+  `ProviderRequest` and `ToolSpec`, the durable identity
+  (`{provider, model_id}`) plus the static facts an adapter needs.
+- `stream.gleam`: the consumer contract (`StreamHandle`, `StreamEvent`,
+  `Delta`, `ProviderError`), drain observation (`DrainWitness`,
+  `DrainOutcome`), the pure `SseParser`, `ResponseMachine`, and
+  `run_tracked`, which drives one attempt.
+- `http.gleam`: the injected `Transport`, whose `prepare_streaming`
+  returns a parked `PreparedRequest`, and `httpc_transport()` for
+  production.
+- `adapter/anthropic.gleam`, `adapter/openai.gleam`,
+  `adapter/responses.gleam`, `adapter/gemini.gleam`: one dialect each, as
+  in the table above.
+- `internal/wire.gleam`: field readers shared by the adapters, including
+  the usage-count clamp and `tool_arguments`, which settles a call whose
+  arguments do not parse as a malformed-arguments call rather than failing
+  the stream.
+- `internal/responses_items.gleam` and `internal/responses_request.gleam`:
+  the Responses item decoder and replay metadata, and request
+  construction from reconstructed history.
+- `internal/diagnostic.gleam`: the 64 KiB retained budget for a
+  non-success body, byte-bounded diagnostic fields, and exact scrubbing of
+  the request key from errors.
+- `retry.gleam`: `classify`, `backoff_ms`, and the overflow message
+  patterns.
+- `image_budget.gleam`: `count` and `project`, the per-attempt image
+  limit (`default_max_images`, eight).
+- `pricing.gleam`: `Pricing`, one model's rate card in US dollars per
+  million tokens, and `price`.
+- `secret.gleam`: the `SecretStore` lookup seam and its backends.
+- `custodian.gleam`: the weft witnessed run that adopts every owner a
+  request starts; its pid is the public drain witness.
+- `gateway.gleam`: the registry and builder (`new`, `add_provider`,
+  `route`, `price`, `with_attempt_timeout`, `with_image_limit`),
+  `resolve`, `request`, `prepare`, the request guard, and the fallback
+  walk.
+
+## How it is tested
+
+`make check-provider` is the package gate: format check, warning-free
+build, and the tests. `make test-provider` runs the tests alone, and
+`make lint-provider` runs the house-rule lint over these sources.
+
+No test touches a live provider. `test/provider/fixture.gleam` holds
+recorded-style SSE transcripts, fixture transports that replay scripted
+`HttpEvent`s, and a pure driver for response machines, so each adapter
+suite (`test/provider/adapter/*_test.gleam`, `responses_test`,
+`responses_request_test`) runs its machine without a process.
+`stream_test` feeds SSE at every chunk boundary to check that chunking
+never changes the events, and drives a terminator-less stream against the
+carry bound. `gateway_test` pins routing, settlement, fallback and
+cancellation order through fixture transports, and ends with the secret
+leak scan over a full session fixture. `http_test` exercises the
+production `httpc` owner against loopback peers, with
+`test/provider_http_test_ffi.erl` to observe socket closure, so
+cancellation is checked against a real socket without an external
+network. `custodian_test`, `retry_test`, `pricing_test`,
+`image_budget_test`, `failure_context_test` and `origin_projection_test`
+cover their modules directly.
+
+## Reading further
+
+- [`CLAUDE.md`](CLAUDE.md) is the reference for changing this code:
+  key types, the guard's states and timeouts, the wire vocabularies, and
+  every invariant.
+- [`docs/architecture/effects.md`](../../docs/architecture/effects.md)
+  covers the plane this package sits in (the one door, the wire, the
+  jail), and [`docs/architecture/models.md`](../../docs/architecture/models.md)
+  covers the model catalogue that configures the gateway.
+- [ADR-012](../../docs/adr/012-responses-and-subscription-boundaries.md)
+  governs the Responses dialect and the deferred subscription support gate.
+- Protocol changes that touch this package:
+  [009](../../protocol-change/009-forrole-carries-thinking.md)
+  (`ForRole.thinking`),
+  [010](../../protocol-change/010-provider-stream-cancellation.md)
+  (stream cancellation and the drain witness),
+  [016](../../protocol-change/016-record-human-origin.md) (the author
+  label every adapter projects onto a user turn), and
+  [028](../../protocol-change/028-provider-failure-context.md)
+  (`ProviderError.WithContext`).
+- "From WP-F" in [`docs/spec-gaps.md`](../../docs/spec-gaps.md) records
+  where the implementation refined the spec, including the quantified
+  "negligible output" and the deferred keychain backends.
