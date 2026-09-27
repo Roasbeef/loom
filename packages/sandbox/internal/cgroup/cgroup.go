@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // FileWrite is one intended write into the cgroup filesystem.
@@ -406,7 +407,23 @@ func ReadPidsEventsMax(dir string) uint64 {
 	return 0
 }
 
-// Cleanup removes the per-exec cgroup; processes must be dead first.
+// emptyBound caps how long Cleanup waits for a killed jail to leave its
+// cgroup. It is two orders of magnitude above the measured teardown; a
+// process stuck past it is not one another wait would release, and the
+// rmdir that follows reports the cgroup as busy.
+const emptyBound = 2 * time.Second
+
+// Cleanup removes the per-exec cgroup once the kernel reports it empty.
+//
+// The caller's waitpid is not that report. Under bwrap the helper's
+// direct child forks the process that builds the jail's namespaces, and
+// that process is still in the cgroup, SIGKILLed and tearing its
+// namespaces down, when the direct child has already been reaped. rmdir
+// in that window fails with EBUSY. It did so on every execution measured
+// on a Linux signoff host, where 50,000 empty exec cgroups accumulated;
+// removing them returned almost 6 GB of kernel memory, most of it
+// per-cpu. The teardown took 5 to 70 ms there, so Cleanup first waits,
+// up to emptyBound, for cgroup.events to say `populated 0`.
 //
 // rmdir is the only removal a cgroup directory accepts: its interface
 // files are created by the kernel and cannot be unlinked, so RemoveAll
@@ -418,6 +435,7 @@ func ReadPidsEventsMax(dir string) uint64 {
 // (a plain directory the fake base left non-empty); the same recursion
 // is what makes the real case correct.
 func Cleanup(dir string) error {
+	awaitEmpty(dir, emptyBound)
 	entries, err := os.ReadDir(dir)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("cgroup: read %s: %w", dir, err)

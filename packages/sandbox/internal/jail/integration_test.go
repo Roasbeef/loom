@@ -668,6 +668,33 @@ func TestForkBombCapped(t *testing.T) {
 	}
 }
 
+// A settled execution leaves no cgroup behind. Under bwrap the helper's
+// direct child is reaped while the process that built the jail's
+// namespaces is still in the cgroup, killed and tearing them down, and an
+// rmdir in that window fails with EBUSY. Every exec cgroup leaked that way
+// until Cleanup waited for the kernel to report the cgroup empty.
+func TestSettledExecutionRemovesItsCgroup(t *testing.T) {
+	feat := jail.DetectFeatures()
+	if feat.CgroupDir == "" {
+		t.Skipf("no delegated cgroup v2 (%s)", feat.CgroupReason)
+	}
+	pol := testPolicy(t)
+	pol.Limits.Pids = 32
+	c := newCollector()
+	ex := start(t, pol, []string{"/bin/sh", "-c", "true"}, c.sink)
+
+	// The request carries ID 0, and the direct child leads its own group.
+	dir := filepath.Join(feat.CgroupDir, "exec-0-"+strconv.Itoa(ex.Pgid()))
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("exec cgroup %s was not created: %v", dir, err)
+	}
+	_ = ex.WriteStdin(nil, true)
+	_ = ex.Wait()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("exec cgroup %s survived settlement (stat: %v)", dir, err)
+	}
+}
+
 // A policy asking for ceilings only cgroups can hold must come back
 // saying whether it got them. Either outcome is honest; silence is not,
 // and silence is what a full-enforcement demand reads as success.

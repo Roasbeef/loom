@@ -4,6 +4,10 @@ package cgroup
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -33,6 +37,58 @@ func notCgroup2(path string) string {
 			path, uint32(st.Type), uint32(unix.CGROUP2_SUPER_MAGIC))
 	}
 	return ""
+}
+
+// awaitEmpty blocks until cgroup.events in dir reports `populated 0`, or
+// until bound passes. The kernel modifies that file when the subtree's
+// population changes, so an inotify watch wakes the wait on the exact
+// event rather than on a polling interval. The watch is added before the
+// first read: a change landing between the two is then still delivered.
+// A directory with no cgroup.events (a fake base in tests, or one already
+// removed) has nothing to wait for.
+func awaitEmpty(dir string, bound time.Duration) {
+	events := filepath.Join(dir, "cgroup.events")
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
+	if err != nil {
+		return
+	}
+	defer unix.Close(fd)
+	if _, err := unix.InotifyAddWatch(fd, events, unix.IN_MODIFY); err != nil {
+		return
+	}
+
+	deadline := time.Now().Add(bound)
+	buf := make([]byte, 4096)
+	for !unpopulated(events) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return
+		}
+		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		n, err := unix.Poll(fds, int(remaining/time.Millisecond)+1)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil || n == 0 {
+			return
+		}
+		_, _ = unix.Read(fd, buf)
+	}
+}
+
+// unpopulated reads cgroup.events; an unreadable file counts as empty,
+// because there is then no cgroup whose population could hold rmdir off.
+func unpopulated(events string) bool {
+	raw, err := os.ReadFile(events)
+	if err != nil {
+		return true
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == "populated 0" {
+			return true
+		}
+	}
+	return false
 }
 
 // writableProcs reports whether the caller may write pids into the
