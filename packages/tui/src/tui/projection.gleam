@@ -312,11 +312,12 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         True -> model.record_line_cache
         False -> dict.new()
       }
+      let presentation = tui_model.presentation(model)
       let #(lines, compact_call_cache, compact_entry_cache) =
         transcript_lines.record_lines(
           model.records,
-          tui_model.presentation(model),
-          transcript_lines.active_notices(tui_model.presentation(model)),
+          presentation,
+          transcript_lines.active_notices(presentation),
           visible_advisor_history(model),
         )
       let #(record_rows, record_line_cache, record_gutters) =
@@ -696,19 +697,16 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
 // The live tail is a bounded, disposable observation. Scrollback retains one
 // immutable projection so later fragments cannot reflow text under the reader.
 fn transient_lines(model: Model) -> List(Line) {
+  let presentation = tui_model.presentation(model)
   transcript_lines.stream_lines(
-    transcript_lines.display_streams(tui_model.presentation(model)),
+    transcript_lines.display_streams(presentation),
     model.active_strand,
     transcript_lines.details_extent(model.details_expanded),
     model.summaries,
     model.generation_elapsed_s,
   )
-  |> list.append(
-    transcript_lines.tool_tail_lines(tui_model.presentation(model)),
-  )
-  |> list.append(
-    transcript_lines.pending_input_lines(tui_model.presentation(model)),
-  )
+  |> list.append(transcript_lines.tool_tail_lines(presentation))
+  |> list.append(transcript_lines.pending_input_lines(presentation))
   |> list.append(pending_nudge_lines(model))
   |> separated_from_screen(model)
 }
