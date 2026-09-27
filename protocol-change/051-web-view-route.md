@@ -475,3 +475,14 @@ The seam is `tui/view_link`: `opener_for` chooses the command,
 `platform_opener` builds the opener from injected find and launch
 functions, and `deliver` takes the opener and the printer, so the tests
 drive every failure without a browser.
+
+## Addendum: remote access (2026-09-26)
+
+The Open item "Remote access" is taken up by
+[protocol-change/052](052-web-view-remote-origin.md), proposed and not yet
+implemented. It keeps this proposal's loopback admission unchanged and
+adds a second page origin: a TLS-terminating proxy on the daemon's host,
+at a host name listed with `loomd --ui-origin`, with a `__Host-` `Secure`
+cookie, an exact `https` `Origin` rule and a `wss:` socket policy. A
+teammate mints their own ticket with `loom --ui --addr wss://…` and their
+member credential.
