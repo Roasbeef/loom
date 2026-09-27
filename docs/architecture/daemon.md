@@ -48,6 +48,12 @@ one job:
   and serves the `/v2/control` socket. **`client/daemon/session_socket`**
   serves `/v2/sessions/<id>/ws` and connects each socket to one session's
   gateway.
+- **The web view**, only when the daemon is started with `--ui`:
+  `client/daemon/ui_sessions` owns the ticket and UI-session tables,
+  `client/daemon/ui_socket` serves each page's WebSocket and runs its
+  Lustre component, and `client/daemon/ui_relay` attaches that component
+  to the session's gateway in place of a socket. [The web view](web-view.md)
+  describes them.
 - **`client/serve`** assembles a session. The daemon calls three of its
   functions: `serve.build_domain` for a domain's shared services,
   `serve.resolve_managed` to turn a catalogue registration into settings,
@@ -76,8 +82,9 @@ the wrapper execs the VM, and `client/daemon/main` runs these steps:
 
 1. **Parse flags.** `main.parse` reads `--state-dir` (default
    `$HOME/.loom`), `--bind` (a literal `127.0.0.1:port` or `[::1]:port`;
-   port 0 asks the kernel for one), `--capacity` (1 to 1024, default 8), and
-   `--owner-name`. The remaining flags (`--config`, `--helper`,
+   port 0 asks the kernel for one), `--capacity` (1 to 1024, default 8),
+   `--owner-name`, and `--ui`, which turns the web view on for the life of
+   the daemon. The remaining flags (`--config`, `--helper`,
    `--read-scope`, `--network`, `--codemode-seed`, `--codemode-seams`,
    `--best-effort`, `--full-enforcement`) are not interpreted here, except
    that `--read-scope` and `--network` values are validated and the two
@@ -113,7 +120,10 @@ the wrapper execs the VM, and `client/daemon/main` runs these steps:
 
    Restoring the catalogue in this step creates an empty registry. No
    session opens.
-5. **Start the listener.** `root.start_listener` prepares a parked
+5. **Start the listener.** With `--ui`, `main.run` first starts the
+   `ui_sessions` actor, linked to the main process, and hands the router
+   the web view's configuration; without it the router has none and every
+   `/ui` path is a 404. `root.start_listener` then prepares a parked
    `listener` owner, monitors it, and only then sends it `Begin`, which
    starts Mist. The listener reports the port the kernel chose.
 6. **Publish readiness.** `main.publish_endpoint` takes `launch.lock` again
@@ -121,8 +131,9 @@ the wrapper execs the VM, and `client/daemon/main` runs these steps:
    host, the actual port, the epoch, and the build identity. A launcher
    waiting on the record treats the daemon as ready only after an
    authenticated control hello names that epoch.
-7. **Wait.** `main.run` prints the control URL, relays SIGTERM into a
-   subject, and blocks until either a signal arrives or the root exits.
+7. **Wait.** `main.run` prints the control URL (and, with `--ui`, a line
+   saying the web view is on), relays SIGTERM into a subject, and blocks
+   until either a signal arrives or the root exits.
 
 If any step from 4 onwards fails, `main.run` logs `daemon.start_failed`,
 calls `root.shutdown` with a 30-second budget, and halts with status 1. The
@@ -209,9 +220,12 @@ and lifecycle commands. `/v2/sessions/<id>/ws` carries one session's
 conversation. [Client](client.md) ("The authenticated v2 boundary")
 describes the wire contract, and
 [protocol 015](../../protocol-change/015-daemon-control-and-session-attachments.md)
-defines it.
+defines it. A daemon started with `--ui` also routes `/ui/...`, where a
+browser is admitted by a ticket, a cookie, a page key and a nonce instead
+of a bearer header; [the web view](web-view.md) follows that admission, and
+its socket then reserves and transfers a permit exactly as below.
 
-Admission on either route has the same shape:
+Admission on either `/v2` route has the same shape:
 
 1. `server.handle` asks the root for readiness (a one-second budget), takes
    the `Authorization: Bearer` header, hashes it with SHA-256, and asks the
@@ -243,8 +257,10 @@ parser that might still be running is never uncounted.
 
 A control socket then sends a `hello` event carrying the protocol version,
 the daemon epoch, the principal ID, the daemon's build version and commit,
-and its limits. Clients compare the epoch against the endpoint record and
-the build against their own.
+and its limits, and, only when the web view is on, a `ui` field naming its
+route prefix. Clients compare the epoch against the endpoint record and
+the build against their own, and `loom --ui` reads the `ui` field to tell
+whether the running daemon serves the view.
 
 ## Opening a session
 
@@ -360,6 +376,7 @@ keep working while the daemon drains; mutations need the root to be in
 | Read | `Status` | Any authenticated principal |
 | Read | `ListSessions`, `GetSession`, `GetOperation` | A member of the session; listing shows only the sessions the credential may see |
 | Read | `ListArchivedSessions`, `WorkspaceDefault` | Owner |
+| Read | `UiLink` (`ui.link`), refused with `unavailable` without `--ui` | A member of the session; mints a single-use ticket for a web page |
 | Session lifecycle | `CreateSession`, `OpenSession`, `StopSession`, `DeleteSession` | Create, stop and delete are owner-only; open needs Operator or Owner |
 | Metadata | `RenameSession`, `ArchiveSession`, `RestoreSession`, `SetDefault`, `IsolateSession` | Owner |
 | Membership | `Invite`, `SetRole`, `RevokeMembership`, `RotateCredential`, `RevokeCredentials` | Owner |
@@ -551,6 +568,8 @@ the daemon stays blocked until a person restarts it.
 | `client/daemon/listener.gleam` | The parked Mist owner and its bounded close. |
 | `client/daemon/server.gleam` | HTTP routing, bearer authentication, the control socket and command dispatch. |
 | `client/daemon/session_socket.gleam` | The session socket: permit transfer, gateway attach, per-frame authorization, pushed frames. |
+| `client/daemon/ui_http.gleam`, `ui_sessions.gleam`, `ui_socket.gleam`, `ui_relay.gleam` | The web view, with `--ui`: request checks, the ticket and UI-session actor, the page's socket and component, and the relay into the gateway. |
+| `web_view/component.gleam`, `web_view/operator_page.gleam`, `web_view/page.gleam` | The Lustre server components a page runs, and the documents served around them. |
 | `client/daemon/protocol.gleam` | The v2 control envelope and command decoder. |
 | `client/daemon/domain.gleam` | One domain's shared history and maintenance services. |
 | `client/daemon/limits.gleam` | The `[daemon]` table and its refusal messages. |

@@ -12,7 +12,9 @@ keeps a catalogue of sessions and admits a session assembly for each session it
 opens. The gateway is each session's client-facing admission point; it
 authenticates connections, admits commands through the runtime described in
 [orchestration](orchestration.md), and serves transcript transfers. `loom` is
-the native Gleam terminal client. The conversation itself lives in the
+the native Gleam terminal client. A daemon started with `--ui` also serves
+a page per session to a browser, [the web view](web-view.md), which drives
+the same client engine as the terminal. The conversation itself lives in the
 durability plane ([durability](durability.md)), and the effect plane
 ([effects](effects.md)) enforces the sandbox policy an approval widens.
 
@@ -265,7 +267,10 @@ model's request.
 The loopback listener serves two routes: `/v2/control` handles catalogue and
 lifecycle requests, and `/v2/sessions/<session-id>/ws` carries conversation
 commands and credited transfers. Both use text WebSocket frames carrying `v: 2`
-JSON envelopes. The conversation vocabulary keeps commands such as `prompt`,
+JSON envelopes. A daemon started with `--ui` also serves the web view's
+`/ui/...` routes, which authenticate a browser with a ticket and a cookie
+rather than a bearer ([the web view](web-view.md),
+[protocol 051](../../protocol-change/051-web-view-route.md)). The conversation vocabulary keeps commands such as `prompt`,
 `steer`, and `fork`, but the v1 envelopes and full-snapshot exchange in the
 historical sections are not the current wire contract.
 [Protocol 015](../../protocol-change/015-daemon-control-and-session-attachments.md)
@@ -346,7 +351,7 @@ newer pushed answer. Compact tool groups preserve call identity.
 request-scoped streams.
 
 `/notes` reads current values through `client/notes_view` and validates them in
-`tui/notes_view`, independently of the conversation transfer. The panel names
+`session_view/notes_view`, independently of the conversation transfer. The panel names
 the capture and last-write revisions and labels excerpts. The agent
 inspector's Notes tab follows its selected strand independently of the
 composer, with stable note-key selection and rejection of stale replies.
@@ -1117,7 +1122,7 @@ sequenceDiagram
     participant S as session store
 
     T->>W: upgrade + Authorization: Bearer
-    Note over W: constant-time compare;<br/>401 before any socket state
+    Note over W: constant-time compare,<br/>401 before any socket state
     W->>H: attach(sink) → connection id
     T->>H: subscribe {session}
     H->>S: scans + register reads
@@ -1497,6 +1502,8 @@ or `/healthz`.
 |---|---|
 | `client/daemon/main.gleam`, `root.gleam`, `manager.gleam` | The default entrypoint, stable root ownership, catalogue admission, and session/domain retirement. |
 | `client/daemon/server.gleam`, `protocol.gleam`, `session_socket.gleam` | Authenticated v2 control codecs and routes, resident-only attachment, and bounded socket admission. |
+| `client/daemon/ui_http.gleam`, `ui_sessions.gleam`, `ui_socket.gleam`, `ui_relay.gleam` | The web view's request checks, its ticket and UI-session actor, the page's WebSocket, and the relay into the gateway ([the web view](web-view.md)). |
+| `packages/web_view/src/web_view/component.gleam`, `operator_page.gleam`, `page.gleam` | The observer's and the operator's Lustre server components, and the page shell, scripts, stylesheet and content security policy. |
 | `client/protocol.gleam` | Total conversation codecs, credited transfer envelopes, and grant vocabulary. |
 | `client/gateway.gleam`, `client/daemon/transfer.gleam` | Original authenticated connection handles, command admission, authorization, and bounded snapshot/reconciliation state. |
 | `client/worktree_diff.gleam` | Bounded Git observations through the attached workspace's existing broker and read-only policy. |
@@ -1522,7 +1529,8 @@ or `/healthz`.
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
 | `packages/tui/src/tui.gleam` | Entry points, launch parsing, and the event dispatch (`update`, `apply_input`, `settle_update`). |
 | `packages/tui/src/tui/model.gleam` | The `Model` record, the types it names, and the helpers every reducer shares. |
-| `packages/session_view/src/session_view/transcript_lines.gleam`, `render.gleam`, `layout.gleam`, `projection.gleam` | Transcript line construction, frame painting, screen geometry, and the cached transcript projection. |
+| `packages/session_view/src/session_view/transcript_lines.gleam`, `transcript.gleam` | Transcript line construction, and the projection of one capture for a host that keeps no presentation state. |
+| `packages/tui/src/tui/render.gleam`, `layout.gleam`, `projection.gleam`, `live_tail.gleam` | Frame painting, screen geometry, the cached transcript projection, and the live answer's incremental rows. |
 | `packages/tui/src/tui/inbound.gleam`, `outbound.gleam`, `surfaces.gleam`, `session_control.gleam` | Channel traffic in and out, side-surface reads, and daemon control requests. |
 | `packages/tui/src/tui/interaction.gleam`, `submit.gleam`, `tick.gleam` | Key, paste and mouse handling, composer submission, and the periodic drain. |
 | `packages/tui/src/tui/agent_view.gleam`, `agents.gleam` | Captured task/status projection and identity-based agent inspection. |
@@ -1534,12 +1542,13 @@ or `/healthz`.
 | `packages/host/src/host/websocket.gleam`, `packages/tui/src/tui/connection.gleam` | Shared owned WebSocket transport and its thin terminal event adapter. |
 | `packages/host/src/host/bootstrap.gleam`, `endpoint.gleam` | Shared private files, kernel locks, paused launch, and birth-qualified endpoint fences. |
 | `packages/tui/src/tui/daemon/bootstrap.gleam` | Default daemon discovery, authenticated readiness, and serialized launch policy. |
-| `packages/tui/src/tui/daemon.gleam`, `attachment.gleam`, `session_channel.gleam` | Catalogue operations, candidate ownership, and credited conversation transfer. |
+| `packages/tui/src/tui/daemon.gleam`, `attachment.gleam` | Catalogue operations and candidate ownership. |
+| `packages/session_view/src/session_view/session_channel.gleam`, `operator.gleam` | The credited conversation lane both hosts drive, and what an operator's input becomes on the wire. |
 | `packages/tui/src/tui/bootstrap.gleam` | The default bootstrap forwarding seam. |
 | `packages/tui/src/tui_ffi.erl` | Terminal-specific OS integration; shared bootstrap primitives live in the host package. |
 | `packages/tui/src/tui/queue_editor.gleam` | Complete queued drafts, revisions, namespace identity, and uncertain-save state. |
 | `packages/session_view/src/session_view/worktree_view.gleam` | Validated worktree boards, request correlation, file selection, and refresh state. |
-| `packages/tui/src/tui/completion_summary.gleam`, `live_jobs.gleam` | Captured operation evidence and separately timestamped current job rosters. |
+| `packages/tui/src/tui/completion_summary.gleam`, `packages/session_view/src/session_view/live_jobs.gleam` | Captured operation evidence and separately timestamped current job rosters. |
 | `packages/session_view/src/session_view/protocol.gleam` | Total event decoding and outbound command encoding. |
 
 Each unqualified Gleam path is relative to its package's source root;

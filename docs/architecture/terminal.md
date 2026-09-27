@@ -11,7 +11,7 @@ the daemon; [the client plane](client.md) describes that side, and the
 beneath it. The terminal sits outside all three planes, on the far side of the
 gateway.
 
-The package has about 90 modules. `tui.gleam` holds the entry points and the
+The package has about 80 modules. `tui.gleam` holds the entry points and the
 `update` dispatch that etui (the terminal UI library) drives; the immutable
 `Model` lives in `tui/model`, `view` in `tui/render`, and the rest of what
 used to share that one file is split by responsibility into the modules the
@@ -20,7 +20,11 @@ daemon bootstrap, two connections (a daemon control connection and a
 per-session conversation channel), pure projections that turn a captured
 snapshot into rows, one module per panel, Markdown rendering, Herdr
 integration, recording and replay, and the `loom update` release installer.
-This document walks through them in that order.
+This document walks through them in that order. The session lane, the
+protocol decoders, snapshot adoption and the transcript's line builders are
+not in this package: they live in `packages/session_view`, which the
+daemon's web view drives as well
+([the client engine and its hosts](client.md#the-client-engine-and-its-hosts)).
 
 ## What `loom` does before the loop
 
@@ -33,7 +37,11 @@ terminal state exists. Only three variants start the interactive loop:
 - `Remote` attaches to an explicit address with an explicit token.
 
 The rest never enter the alternate screen. `Version` prints the client's own
-build identity. `Forward` runs `loomd ext …` as a pass-through child and exits
+build identity. `View` is `loom --ui --session <id>`: it resolves the daemon
+(starting one with `--ui` if none runs), asks it for a single-use link to
+the session's web page with `ui.link`, prints the link, and with `--open`
+also hands it to the platform's opener; [the web view](web-view.md) follows
+that link. `Forward` runs `loomd ext …` as a pass-through child and exits
 with its status. `Update` runs the release installer. `Replay` plays a
 recording through a virtual backend and prints frames. `Sessions` lists or
 deletes catalogue rows over the control connection and prints one line per
@@ -111,7 +119,8 @@ from a Lustre component.
 is where socket traffic enters the model. `tui/tick.update_tick` drains, in
 order, the replay inbox, control replies, the candidate attachment's
 traffic, the reconnect outcome, the picker's activity
-answer, and up to 64 messages from the conversation socket. `settle_tick` then services the auxiliary reads (queue,
+answer, a new session's configuration, and up to 64 messages from the
+conversation socket. `settle_tick` then services the auxiliary reads (queue,
 worktree, notes, jobs, context, advisor nudges, goal), ticks the conversation
 channel, and updates the quiet timer. A key press,
 wheel notch or held drag also drains up to 64 socket messages before it is
@@ -226,10 +235,11 @@ against a live socket calls `session_channel.take_outputs` and performs each
 output, and one polling a bare attachment performs the outputs `poll`
 returns. The next `update` also performs anything left in the outbox, so a
 missing flush delays an effect rather than losing it.
-[ADR-013](../adr/013-tui-effects-as-values.md) records this design, and
-[issue #530](https://github.com/Roasbeef/loom/issues/530) describes the later
-phases, which turn the remaining drains and job starts into messages and
-effects as well.
+[ADR-013](../adr/013-tui-effects-as-values.md) records this design and, in
+its addenda, each later phase of
+[issue #530](https://github.com/Roasbeef/loom/issues/530): the drains and
+job starts that became messages and effects, the client's own message type,
+and the move of the session lane into `packages/session_view`.
 
 ### Jobs are started by the runtime
 
@@ -857,14 +867,18 @@ the module named.
 - **Durable and transient rows do not alias**, so an answer is not drawn twice
   at the moment it commits (`tui/inbound`, `tui/projection`).
 - **Every inbox the terminal reads, the terminal created** (`attachment`,
-  `daemon`, `sessions`).
+  `daemon`, `job_runner`).
 - **A decision echoes exactly what was displayed** (`approval`,
   `approval_panel`).
 - **A step performs no fire-and-forget I/O.** Writes, closes, cancels,
   discards, the clipboard sequence, Herdr reports and recording appends are
   returned as effects and performed by the runtime, in the order the step
   decided them (`tui/effect`, `tui/runtime`, `tui_model.hold_channel`).
-- **A replay performs no outbound effect** (`Peer.Replaying`).
+- **A replay performs no outbound effect.** During `loom replay` the model
+  has no lane, no recorder and no Herdr reporter, so no step can queue a
+  write, a note or a report; the `Peer.Replaying` arms that remain change
+  only local state and rendering (ADR-013's phase 3 addendum has the
+  survey).
 
 The main failure behaviours follow from those. A socket failure closes the
 conversation channel, clears streams, marks outstanding reads failed, and
@@ -897,12 +911,16 @@ things changed:
 
 ## Where the code lives
 
-Paths are relative to `packages/tui/src`.
+Paths are relative to the package's source root: `tui/...` is under
+`packages/tui/src`, and `session_view/...` is under
+`packages/session_view/src`.
 
 | Module | What it owns |
 |---|---|
-| `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
+| `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, `loom --ui` (`run_view`), and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
 | `tui/effect` | The closed vocabulary of effects a step decides on. |
+| `tui/terminal_lane` | The session lane with the terminal's socket and recorder filled in, and `perform`, the one place a lane's outputs touch the websocket or the recording. |
+| `tui/view_link` | Printing the `loom --ui` link and handing it to the platform's opener. |
 | `tui/model` | `Model`, the frame cache, the `Reconnect` state, the effect outbox (`emit`, `record`, `hold_channel`) and the other types every reducer shares. |
 | `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
 | `tui/msg` | What the step is given: `Input(at, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`. |

@@ -7,7 +7,7 @@ the v2 conversation protocol, the decoders for what the daemon sends, the
 projection of a completed capture into a view, and the line builders that
 turn that view into transcript lines. It was extracted from `packages/tui`
 in phase 4 of issue #530 (ADR-013) so that a second host, the daemon's
-read-only web view, can drive the same code the terminal does instead of a
+web view, can drive the same code the terminal does instead of a
 copy of it.
 
 "No host owns it" is literal. The package imports `core`, `machine` and
@@ -102,9 +102,13 @@ attachment list), `context_view`, `file_read_view`, `goal_view`,
 - **Depends on**: `core` (json, codec, entries, messages, ids, todo_list),
   `machine` (`codec`, `operation`, `strand` for decoding register cells),
   `gleam_stdlib`. Nothing else, by R6.
-- **Depended on by**: `tui`, which is the terminal host. `client` takes it
-  as a dev dependency because its tests drive the terminal's lane. The
-  daemon's web view will be the second host.
+- **Depended on by**: `tui`, the terminal host, and `web_view`, the second
+  host: the Lustre server components the daemon serves with `loomd --ui`,
+  which drive the lane, the inbox, `operator` and `transcript.project_rows`
+  (ADR-014). `client` depends on it at runtime too, for the
+  `connection_event.Message` its web-view relay sends and the
+  `snapshot.Expected` its page socket builds, and its tests drive both
+  hosts' lanes.
 - **No module here imports `tui`**, and none may: the package is below the
   terminal in the dependency graph.
 
@@ -142,7 +146,12 @@ through `submit`, the session's mutations. A read-only host never calls
 - `docs/adr/013-tui-effects-as-values.md`: why the lane's effects are
   values; its phase 3 addendum, "What phase 4 extracts", set this
   package's scope.
+- `docs/adr/014-second-runtime.md`: one engine, two views, and why
+  session logic lives here rather than in a host.
+- `docs/architecture/client.md`, "The client engine and its hosts": the
+  layering this package sits in, and where each host performs effects.
 - `docs/architecture/terminal.md`: the terminal host that drives it.
+- `docs/architecture/web-view.md`: the web host that drives it.
 - `docs/client-protocol.md`: the protocol the lane speaks.
 - `protocol/models/terminal-attachment/`: the P model of the lane, the
   attachment worker and the gateway.

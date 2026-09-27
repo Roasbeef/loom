@@ -8,7 +8,9 @@ session's one writer, and delivers every committed entry, token stream
 and presence change to every attached terminal. This page follows one
 collaborator's command from authentication to its durable record and on
 to every attached terminal's screen. It assumes you know what a session,
-a strand and the daemon are, and nothing about this subsystem.
+a strand and the daemon are, and nothing about this subsystem. A person
+can also follow a session from a browser page when the daemon runs with
+`--ui`; "A page in a browser" below says how a page fits the same model.
 
 The [client protocol reference](../client-protocol.md) defines every
 message on the wire; this page explains the design behind them.
@@ -443,6 +445,29 @@ Stream fragments and presence do not survive a new session incarnation.
 A prompt or approval whose outcome is unknown stays marked unconfirmed and
 is never resent automatically; later transcript updates do not clear that
 mark.
+
+### A page in a browser
+
+A page is one more attachment to the session's gateway, made by a relay
+process inside the daemon rather than by a socket from a terminal
+([the web view](web-view.md)). It carries the principal of the member
+whose own `loom --ui` minted its link, so its presence, its authorship and
+its revocation work exactly as a terminal's do: every request and every
+push re-checks the minting credential and the membership, and a revoked
+credential or membership closes the page at its next frame.
+
+A page's role is the smallest of the member's role, the ceiling the link
+was minted with, and Operator. A link is an observer's unless it was
+minted with `loom --ui --operate`, so an operator's routine page is
+read-only, and no page ever carries `Owner`. The capped role is fixed for
+the page's life: a change to the membership closes the page, and a reload
+admits a new one at whatever the record then allows. An operator's page
+can send a prompt or a steer to `main` and answer an escalation with
+allow once or deny; it never offers allow for the session. Its decisions
+race with the terminals' on the same record sequence, as described under
+"Configuration, presence, and approvals". When a browser redeems a new
+link, the daemon ends every earlier page of the same principal for the
+same session.
 
 ## Sharing scope
 
