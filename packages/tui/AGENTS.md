@@ -246,13 +246,17 @@ composer; image bytes must be reattached by the operator.
 
 ## Web view link (`loom --ui`)
 
-`loom --ui --session <id>` (`tui.run_view`) resolves the daemon through
+`loom --ui --session <id> [--operate]` (`tui.run_view`) resolves the daemon through
 `bootstrap.resolve_viewing_daemon`, which adds `--ui` to the launch
 arguments only when it starts one. A running daemon whose `hello` has
 `view: NoWebView` is refused by `view_served` with status 1 and never
 stopped or relaunched. Otherwise the session is opened through
 `daemon_selection.open` and the path `UiLink` returns is printed joined to
-the listener's http origin. `daemon/protocol.Hello.view` is `NoWebView`
+the listener's http origin. `UiLink(session_id, page)` carries a
+`WebPage`: `ObserverPage` by default, which names no `page` field on the
+wire, and `OperatorPage` with `--operate`, which sends `page:"operator"`.
+The page is a ceiling the daemon caps the principal's membership with; it
+never grants a role (protocol-change/051, the operator addendum). `daemon/protocol.Hello.view` is `NoWebView`
 or `WebViewAt(path)` from the optional `ui` field
 (`protocol-change/051`). `projection.record_projection` names the call the
 record cache makes for durable lines, so the web view's parity test can

@@ -113,8 +113,13 @@ type Launch {
   Local(bootstrap.Options, selected: String)
 
   // `loom --ui --session <id>` prints a link that opens the session's web
-  // view (protocol-change/051). It installs no terminal state.
-  View(options: bootstrap.Options, session: String)
+  // view (protocol-change/051), an observer's page unless `--operate` asks
+  // for an operator's. It installs no terminal state.
+  View(
+    options: bootstrap.Options,
+    session: String,
+    page: control_protocol.WebPage,
+  )
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
@@ -242,7 +247,7 @@ pub fn main() {
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
         Sessions(options:, command:) -> run_sessions(options, command)
-        View(options:, session:) -> run_view(options, session)
+        View(options:, session:, page:) -> run_view(options, session, page)
         Invalid(reason) -> rejected_launch(reason)
         Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
       }
@@ -861,8 +866,15 @@ fn sessions_usage() -> String {
 // length of the command. Nothing is retained: the connection closes before
 // the exit status is chosen, so a refusal and a success leave the daemon in
 // the same state as far as this launcher is concerned.
-// `--ui` is followed by `--session <id>` and the shared local options.
+// `--ui` is followed by `--session <id>`, an optional `--operate`, and the
+// shared local options. `--operate` asks for an operator's page; the daemon
+// still caps it with the principal's membership.
 fn parse_view(arguments: List(String)) -> Launch {
+  let #(operate, arguments) = take_switch(arguments, "--operate")
+  let page = case operate {
+    True -> control_protocol.OperatorPage
+    False -> control_protocol.ObserverPage
+  }
   case session_control.flag_value(arguments, "--session") {
     Error(_) -> Invalid("loom --ui needs --session <id>\n" <> launch_usage())
     Ok(session) ->
@@ -872,7 +884,7 @@ fn parse_view(arguments: List(String)) -> Launch {
           default_bootstrap_options(),
         )
       {
-        Ok(options) -> View(options:, session:)
+        Ok(options) -> View(options:, session:, page:)
         Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
       }
   }
@@ -890,7 +902,11 @@ fn without_flag(arguments: List(String), flag: String) -> List(String) {
 // running daemon that does not serve the view, opens the session if it is
 // not resident, and prints the link its `ui.link` returns. It never stops
 // or relaunches a running daemon: other people's terminals may be on it.
-fn run_view(options: bootstrap.Options, session: String) -> Nil {
+fn run_view(
+  options: bootstrap.Options,
+  session: String,
+  page: control_protocol.WebPage,
+) -> Nil {
   let outcome = {
     use connected <- result.try(bootstrap.resolve_viewing_daemon(
       options,
@@ -908,7 +924,7 @@ fn run_view(options: bootstrap.Options, session: String) -> Nil {
       ))
       use _target <- result.try(daemon_selection.open(host, session))
       use reply <- result.try(
-        daemon.request(control, control_protocol.UiLink(session), 5000)
+        daemon.request(control, control_protocol.UiLink(session, page), 5000)
         |> result.map_error(daemon_selection.failure),
       )
       case reply {
@@ -1143,7 +1159,9 @@ fn launch_usage() -> String {
   <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"
-  <> "  --ui --session <id> Print a link to the session's read-only web view.\n"
+  <> "  --ui --session <id> [--operate]\n"
+  <> "                      Print a link to the session's web view; read-only\n"
+  <> "                      unless --operate, which lets an operator act.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
