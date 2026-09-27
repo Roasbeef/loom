@@ -42,9 +42,9 @@ the worked example: a manifest, a schema and one tool, installed with
 
 ## Where it sits
 
-`ext` sits below the extension's own modules and above `cap`, and it has
-one consumer in the harness tree — the vetting allowlist that admits it —
-and no importer at all.
+`ext` sits below the extension's own modules and above `cap`. No package
+in the tree lists it as a dependency and no harness module imports it;
+three harness modules refer to it by name, as the dashed edges below show.
 
 ```mermaid
 graph TD
@@ -53,7 +53,9 @@ graph TD
     EXTSRC["the extension's own modules<br/>(weather/forecast, …)"]
     RT["ext/runtime<br/>serve, serving, answer, Declared"]
     E["ext<br/>Ctx, Content, Terminate,<br/>Outcome, Refusal, Tool, decode_args"]
-    H["ext/hook<br/>Hook, Verdict, Call, Context,<br/>RunStart, event, answer, rendered"]
+    H["ext/hook<br/>Hook, Verdict, Call, Context, RunStart,<br/>Compaction, Usage, event, answer, rendered"]
+    MEM["ext/memory<br/>remember, recall"]
+    CAPINT["cap/internal/channel, dispatch, wire"]
     CAPRT["cap/runtime<br/>serve, Asked, Answer, Invocation"]
     CAPREP["cap/report<br/>emit, object, string, field, as_string"]
     JSON["gleam_json"]
@@ -69,6 +71,10 @@ graph TD
   ENTRY --> EXTSRC
   EXTSRC --> E
   EXTSRC --> H
+  EXTSRC --> MEM
+  MEM --> E
+  MEM --> CAPINT
+  MEM --> JSON
   RT --> E
   RT --> H
   RT --> CAPRT
@@ -434,20 +440,27 @@ loop over a faked transport, which is what the dev-only `gleam_erlang` and
 survives its first answer, `a_crashing_tool_is_an_answer_test` proves a
 `panic` becomes `crashed` rather than a dead satellite, and
 `a_cap_call_presents_the_invocation_token_test` proves a tool's `cap_call`
-is framed with the token that arrived on the `hook_call`.
+is framed with the token that arrived on the `hook_call`. Two more,
+`a_remember_carries_the_key_and_the_rendered_value_test` and
+`a_recall_carries_the_key_alone_test`, drive `ext/memory` through the same
+loop and assert on the outbound `ext.remember` and `ext.recall` frames;
+nothing answers them, because the round trip belongs to the end-to-end
+suite that boots a real satellite.
 
 `test/ext/hook_test.gleam` covers the wire shapes one event at a time, plus
 the two `rendered` cases: a document re-renders unchanged, and a `Dynamic`
 that no JSON parser produced is an `Error`.
 
-Run them with `make check-ext`.
+Run them with `make check-ext`, the package gate (format check,
+warning-free build, and the tests), or `make test-ext` for the tests
+alone; `make lint-ext` runs the house-rule lint over these sources.
 
 ## Where to look
 
 | Path | What it holds |
 |---|---|
 | `src/ext.gleam` | The author-facing vocabulary: `Ctx`, `Content`, `Terminate`, `Outcome`, `Refusal`, `Tool`, and the `text` / `json` / `refuse` / `decode_args` helpers. |
-| `src/ext/hook.gleam` | `Hook`, `Verdict`, `Call`, `Context`, `RunStart`; `event`, `answer`, `rendered`, and the JSON marshalling of every hook wire shape. |
+| `src/ext/hook.gleam` | `Hook`, `Verdict`, `Call`, `Context`, `RunStart`, `Compaction`, `Usage`, `UsageOrigin`; `event`, `answer`, `rendered`, and the JSON marshalling of every hook wire shape. |
 | `src/ext/memory.gleam` | `remember` and `recall`: the durable cells under the reserved `ext/<name>/` prefix this extension owns. |
 | `src/ext/runtime.gleam` | `serve`, `serving`, `answer`, `Declared`, and the five in-band codes. |
 

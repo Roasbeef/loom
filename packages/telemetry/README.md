@@ -1,17 +1,29 @@
 # telemetry
 
-`telemetry` is structured logging, and precisely nothing else (spec
-§3.4): one JSON line per event, emitted through Erlang's own `logger`,
-carrying `{session, strand, op, step}` correlation on every line that
-knows those coordinates. It is a leaf package over `core` alone, so
-every impure package in the tree can depend on it without picking up
-anything but the standard library — and it is deliberately
-write-only. Nothing here reads a log line back, and nothing here may
-ever be given authority over a durable row: the conversation store stays
-the record, and the usage ledger stays the billing source of truth. A
-package that was handed no logger uses `telemetry/log.discard()`, which
-emits nothing — logging can never be the reason a library test needs a
+`telemetry` is structured logging and nothing else (spec §3.4): one JSON
+line per event, emitted through Erlang's own `logger`, carrying
+`{session, strand, op, step}` correlation on every line that knows those
+coordinates. It is a separate package so that every impure package can
+share one logging seam and one redaction rule without taking on anything
+heavier. Its only dependencies are `core` (for the `core/json` serializer)
+and `gleam_erlang` (for the `Subject` a test sink sends to), and it starts
+no process.
+
+The package is write-only. Nothing here reads a log line back, and no log
+line may be given authority over a durable row: the conversation store
+stays the record, and the usage ledger stays the billing source of truth.
+A package that was handed no logger uses `telemetry/log.discard()`, which
+emits nothing, so logging is never the reason a library test needs a
 running VM.
+
+```mermaid
+flowchart LR
+    core["core (core/json)"] --> telemetry
+    gleam_erlang --> telemetry
+    telemetry --> runtime["runtime: the drive loop<br/>and every effect it spawns"]
+    telemetry --> client["client: the daemon boot, its services,<br/>and the logger injected into api.Options"]
+    telemetry --> events["events: the projection driver"]
+```
 
 ## Why correlation is a value, not `logger`'s process metadata
 
@@ -20,9 +32,10 @@ anywhere in the tree, because the obvious design is the wrong one, and
 it fails silently.
 
 Erlang `logger`'s process metadata is per-process and is **not**
-inherited across `spawn`. Loom's effect sandwich is nothing but spawns —
-every provider request, every tool run, every parked escalation call
-happens on a fresh process `runtime/strand_runtime.spawn_effect` starts.
+inherited across `spawn`. Loom's effect sandwich is nothing but spawns:
+every provider request, every tool run and every parked escalation call
+happens on a fresh process that `runtime/strand_runtime` starts through
+`spawn_effect` or `spawn_provider_effect`.
 A metadata-only design would therefore lose correlation at exactly the
 point interleaved strands make it matter, and the failure mode is
 worse than a crash: the lines still appear, they just read as one
@@ -36,7 +49,7 @@ flowchart TD
         E1 --> L1["log line with no context"]
     end
     subgraph Right["value-carried (what this package does)"]
-        D2["driver process<br/>holds Logger{context: {session, strand}}"] -->|"spawn_effect(logger, ...) —<br/>closure captures the Logger value"| E2["effect process<br/>closes over the SAME Logger"]
+        D2["driver process<br/>holds Logger{context: {session, strand}}"] -->|"spawn_effect(reaper, logger, body):<br/>the closure captures the Logger value"| E2["effect process<br/>closes over the SAME Logger"]
         E2 --> L2["log line with full context"]
         E2 -->|"log.adopt(logger) —<br/>fallback, for lines this package didn't author"| M2["logger metadata now ALSO stamped —<br/>correlates a foreign OTP crash report"]
     end
@@ -60,21 +73,21 @@ No log line may carry a token, an API key, or a capability token (spec
 
 ```mermaid
 flowchart TD
-    F["a Field about to be rendered"]
-    KR{"key rule: does the FIELD'S KEY<br/>name a credential<br/>(secret_key)?"}
-    SR{"shape rule: does the TEXT contain<br/>a vendor-prefixed token, or an unbroken<br/>run >= credential_run chars?"}
-    ID{"is the value typed as Ident?"}
-    OUT_R["Redacted — whole value replaced"]
-    OUT_S["only the matched span replaced —<br/>line stays a diagnostic"]
+    F["a Field about to be rendered: field.scrub"]
+    KR{"key rule: does the field's key<br/>name a credential? secret_key"}
+    TX{"is the value Text?"}
+    SR{"shape rule, per token: a vendor prefix,<br/>or an unbroken run of at least<br/>credential_run characters? secret_shaped"}
+    OUT_R["Redacted: the whole value replaced"]
+    OUT_S["only the matching token replaced,<br/>so the line stays a diagnostic"]
     OUT_OK["value passes through unchanged"]
 
     F --> KR
     KR -->|"yes, whatever the value holds"| OUT_R
-    KR -->|no| SR
+    KR -->|no| TX
+    TX -->|"no: Ident, Count, Flag or Redacted"| OUT_OK
+    TX -->|yes| SR
     SR -->|no match| OUT_OK
-    SR -->|match| ID
-    ID -->|yes — a deliberate, greppable exemption| OUT_OK
-    ID -->|no| OUT_S
+    SR -->|match| OUT_S
 ```
 
 The key rule catches a secret filed under an honest name regardless of
@@ -109,7 +122,7 @@ sequenceDiagram
   participant H as Erlang logger<br/>default handler + telemetry_ffi
 
   D->>D: for_step(logger, op:, step:) — the context narrows, never widens
-  D->>E: spawn_effect(logger, body) — the closure captures the Logger value
+  D->>E: spawn_effect(reaper, logger, body), whose closure captures the Logger value
   E->>E: log.adopt(logger) — the same context into this process's metadata,<br/>so a foreign OTP crash report lands correlated too
   E->>L: log.info(logger, "tool.settled", fields)
   L->>L: level.permits(threshold: logger.threshold, level:)
@@ -141,52 +154,80 @@ could skip the check. And everything between `write` and `emit` is pure:
 are testable by grepping plain bytes, and the formatter on the other side
 of the FFI has nothing left to decide.
 
-The sink is the seam. `log.erlang` renders and emits; `log.to_subject`
-sends the `Record` itself to a test inbox, which is how the redaction
-tests read fields back without a handler; `log.tee` runs two; and
-`log.discard` is a sink that does nothing, which is what a package handed
-no logger uses so that logging is never the reason a library test needs a
-running VM.
+The `Sink` type, `fn(Record) -> Nil`, is where output is swapped.
+`log.erlang` builds a logger whose sink renders and emits. `log.to_subject`
+is a sink that sends the `Record` itself to a caller's subject, which is how
+`log_test` reads records back without a handler. `log.tee` fans one record
+out to two sinks, which is also where an OpenTelemetry exporter would
+attach; none has been built. `log.discard` is a logger whose sink does
+nothing.
 
 ## What else the invariants pin down
 
-A log record carries no timestamp of its own — the handler stamps
-`logger`'s own clock, because `core`'s injected `Clock` is threaded
+A log record carries no timestamp of its own. The handler stamps
+`logger`'s own clock instead, because `core`'s injected `Clock` is threaded
 through id minting, and a log call that consumed a step from it would
-change what the system durably records for the sake of observing it.
-Rendering (`telemetry/record.render`) is pure — no clock, no process, no
-handler — which is what makes the redaction rules testable by grepping
-plain bytes rather than standing up a VM. And only an entry point calls
-`telemetry/handler.install`: a library that installed a handler would
-silently reconfigure the VM of whatever embedded it.
+change what the system durably records for the sake of observing it. Only
+an entry point calls `telemetry/handler.install`: a library that installed
+a handler would silently reconfigure the VM of whatever embedded it.
 
 ## The modules
 
+Read them in this order. Paths are relative to `src/`, so
+`telemetry/context` is `src/telemetry/context.gleam`.
+
 | Module | What it holds |
 |---|---|
-| `telemetry/level` | The four levels, `parse`, `permits`, the level policy (read its module doc before adding a call site). |
-| `telemetry/context` | The four correlation slots, `merge`, `fields`. |
-| `telemetry/field` | `Field`/`Value`, `scrub`/`scrub_text`, the two redaction rules as pure functions. |
-| `telemetry/record` | One event, and its pure, total rendering to one JSON line. |
-| `telemetry/log` | The injected `Logger` seam: `new`, `discard`, `scoped`/`for_strand`/`for_step`, `debug`/`info`/`warn`/`error`, `adopt`. |
-| `telemetry/handler` | Boot-time installation and `LOOM_LOG_LEVEL` resolution. |
+| `telemetry/level` | `Level` (`Debug`, `Info`, `Warning`, `Error`), `parse`, `permits`, `severity`, and the level policy in its module doc; read it before adding a call site. |
+| `telemetry/context` | `Context`, the four optional correlation slots, with `merge` and `fields`. `with_op` clears the step. |
+| `telemetry/field` | `Field` and `Value` (`Text`, `Ident`, `Count`, `Flag`, `Redacted`), and the two redaction rules as pure functions: `scrub`, `scrub_text`, `secret_key`, `secret_shaped`. |
+| `telemetry/record` | `Record`, one event, and its pure, total rendering to one JSON line (`to_json`, `render`). |
+| `telemetry/log` | The opaque `Logger` and the `Sink` type: `new`, `discard`, `erlang`, `to_subject`, `tee`, `scoped`/`for_strand`/`for_step`, `debug`/`info`/`warn`/`error`, `adopt` and `process_context`. |
+| `telemetry/handler` | `install`, the boot-time handler installation, and `threshold_named`, the `LOOM_LOG_LEVEL` resolution. |
+| `telemetry/internal/ffi_logger` and `telemetry_ffi.erl` | The only FFI: thin calls into OTP `logger`, plus the handler's `format/2`, which calls back into `field.scrub_text` for lines this package did not author. |
 
-Paths are relative to `packages/telemetry/src/` — `telemetry/context` is
-`packages/telemetry/src/telemetry/context.gleam`.
+## How it is tested
+
+Four test modules under `test/telemetry/`:
+
+- `record_test` parses rendered lines back through `core/json` and checks
+  their shape: level, event, the known context slots, and first-wins
+  duplicate keys.
+- `redaction_test` plants a provider key, a 64-hex clearance token and a
+  43-character channel token, each under a denylisted key and under an
+  innocent one, renders the records, and greps the bytes for every planted
+  secret. It also checks that a loom-minted id survives, so a scrubber that
+  erased everything would fail.
+- `log_test` captures records through `log.to_subject`, checks the
+  threshold, and pins the propagation decision: a spawned process that
+  captured the `Logger` writes lines carrying the full context.
+- `handler_test` drives `telemetry_ffi:format/2` directly through the
+  test-only `support/internal/ffi_format`, so the handler's rendering of
+  foreign lines is checked without installing a handler.
+
+Run them with `make check-telemetry` (format, warning-free build and
+tests) or `make test-telemetry` (tests only); `make lint-telemetry` runs
+the house-rule lint.
 
 ## Reading further
 
-- [`CLAUDE.md`](CLAUDE.md) — the reference doc for changing this code:
+- [`CLAUDE.md`](CLAUDE.md): the reference doc for changing this code:
   key types, real dependency edges, and the invariants that break things
   when violated. Read it before editing.
-- [`docs/loom-implementation-spec.md`](../../docs/loom-implementation-spec.md)
-  — §3.4, what this package exists for; §3.3.4, the secret invariant it
+- [`docs/architecture/telemetry.md`](../../docs/architecture/telemetry.md):
+  the package in the context of the three planes, and how it differs
+  from the event bus.
+- [`docs/loom-implementation-spec.md`](../../docs/loom-implementation-spec.md):
+  §3.4, what this package exists for, and §3.3.4, the secret invariant it
   enforces.
-- [`docs/architecture/effects.md`](../../docs/architecture/effects.md) —
+- [`docs/architecture/effects.md`](../../docs/architecture/effects.md):
   where secrets are allowed to live, and why logs are not on that list.
-- [`packages/runtime/CLAUDE.md`](../runtime/CLAUDE.md) — the injected
-  logger threaded through the drive loop, and `spawn_effect`'s use of
+- [`packages/runtime/CLAUDE.md`](../runtime/CLAUDE.md): the injected
+  logger threaded through the drive loop, and the effect spawns' use of
   `log.adopt`.
-- [`docs/spec-gaps.md`](../../docs/spec-gaps.md) — "From §3.4
+- [`docs/spec-gaps.md`](../../docs/spec-gaps.md): "From §3.4
   (`telemetry`)": the propagation decision, the level policy, and what
   was deliberately left as a seam (OpenTelemetry export).
+
+No ADR or protocol-change governs this package; its decisions are recorded
+in the spec and in `docs/spec-gaps.md`.

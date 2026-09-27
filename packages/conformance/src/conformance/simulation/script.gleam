@@ -13,11 +13,12 @@
 //// state space contains, which is the whole reason this runner exists.
 ////
 //// Turns are keyed by *phase*, never by a counter: the number of
-//// assistant messages in the projected context, plus a hundred once a
-//// summary is in it. Errored, aborted, and deferred responses never
-//// enter a projection, so a phase is the same on a crashed run as on a
-//// clean one — which is what makes a script mean the same thing under
-//// every schedule.
+//// assistant messages in the projected context, and whether a summary is
+//// in it. Once any summary is present, `settle_for` answers with the op's
+//// `post` settlement whatever the message count. Errored, aborted, and
+//// deferred responses never enter a projection, so a phase is the same on
+//// a crashed run as on a clean one — which is what makes a script mean the
+//// same thing under every schedule.
 
 import conformance/simulation/random.{type Rng}
 import gleam/int

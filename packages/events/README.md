@@ -5,19 +5,40 @@ rebuildable read models folded from a session's committed stream, and a
 full-text index over a repository's sessions.
 
 Nothing in this package holds authority. Every read model is a fold over
-the durable store, every index row is derived, and every event is a hint
-that something changed. Deleting a projection's checkpoint or the whole
-search database costs a longer catch-up and nothing else.
+the durable store, every index row is derived, and every event is either
+a hint that something changed or display text that the next event
+replaces. Deleting a projection's checkpoint or the whole search
+database costs a longer catch-up and nothing else.
+
+It is a separate package because these read models must be deletable
+without touching a session. It never commits to a session store; the
+search index writes only to its own database file. It depends on
+`storage` for the `Storage` scans it pulls through, on `core` for the
+entry and id types, and on `telemetry` for the logger a pull fault is
+reported on. It does not import `session` or `runtime`.
+
+```mermaid
+flowchart LR
+    client --> events
+    events --> storage
+    events --> core
+    events --> telemetry
+    storage --> core
+```
 
 ## Events are hints; pulls are truth
 
 This is the doctrine the package exists to enforce, and it is one
-sentence: **an event never carries content and is never applied as data —
-it only prompts a catch-up pull from the durable store.**
+sentence: **an event never carries durable content and is never applied
+as data — it only prompts a catch-up pull from the durable store.**
+
+The diagram shows the doctrine with a publisher that follows each commit
+with a hint. No production code publishes the hint topics yet; see
+"What is wired today" below.
 
 ```mermaid
 sequenceDiagram
-  participant W as the storage writer
+  participant W as a committing publisher
   participant B as events/bus (pg)
   participant D as projection driver
   participant S as the session store
@@ -50,6 +71,21 @@ loss tolerable: drop any subset of events and every read model still
 converges on the next hint, on an explicit `sync`, or on restart, and the
 package's lost-event tests assert exactly that.
 
+A seventh topic, `Outputs`, carries text that is more than a label, and
+the rule still holds for it. `ToolOutput(strand, op, step, source_index,
+call_id, stream, tail, total_bytes)` is the bounded rolling tail of a
+tool call that is still running (`protocol-change/031`). Every event is
+a complete snapshot of that window, so a lost event is restated by the
+next one, and the durable tool result replaces it when the call
+settles. `BlockSummary(subject, text)` is a summarizer's short label for
+a long reasoning block or a delivered advisor message
+(`protocol-change/050`). A label for a committed block is also stored
+in a reserved register cell, which is the truth a reattaching terminal
+reads; a label for a block still streaming is stored nowhere and is
+replaced by the next one. `subscribe_hints` joins the six hint topics
+without `Outputs`, so a pull-driven subscriber is not woken by output
+chunks that change nothing in the store.
+
 The bus itself owns no actor. It is `pg` process-group membership plus
 plain sends, keyed `#(session, topic)` inside one node-global scope, so
 per-session isolation needs no per-session processes and a lookup is a
@@ -63,14 +99,19 @@ and only with the caller's typed payload, and `published_payload` is the
 matching unwrap. That pairing is what makes the unchecked coercion back
 to a typed payload sound.
 
-**What is wired today.** `bus.publish` has no caller outside this
-package's own tests. The runtime's storage writer publishes its own
-minimal post-commit notification, and `bus.bridge` is the adoption seam —
-it turns any subscription-shaped event source into bus publishes without
-this package importing the runtime, because the mapping closure belongs
-to whichever layer can see both types. Section 17 of
-[`docs/code-tour.md`](../../docs/code-tour.md) is the current account of
-what is and is not connected.
+**What is wired today.** Production publishes only the `Outputs`
+topic. `client/serve` starts the bus, the gateway's tool-output observer
+publishes `ToolOutput`, and `client/blocksummary` publishes
+`BlockSummary`. The gateway subscribes a terminal to `Outputs` over the
+network, or to every topic for an in-process host. Nothing publishes
+the six hint topics outside this package's tests, and nothing outside
+them starts a projection driver. The runtime's storage writer publishes
+its own minimal post-commit notification (`runtime/writer.Committed`),
+and `bus.bridge` is the adoption seam: it turns any subscription-shaped
+event source into bus publishes without this package importing the
+runtime, because the mapping closure belongs to whichever layer can see
+both types. Section 17 of [`docs/code-tour.md`](../../docs/code-tour.md)
+is the longer account of what is and is not connected.
 
 ## A projection, and the frontier rule
 
@@ -191,19 +232,60 @@ generation the store reports.
 nothing else.** Thinking blocks and tool-call arguments are deliberately
 left out.
 
+`sync_batch` is the second indexing path, for a caller that must not
+hold the index's write lock while it reads a slow source. It reads at
+most `limit` entries outside the transaction, then commits them only if
+the stored cursor still matches what it planned against; otherwise it
+changes nothing. `register_source` records a host-supplied path for a
+session so exact history reads can find it, and `remove` drops a
+session's rows, cursor and source together. On the query side, `query`
+spans every session, `query_in_session` filters to one in SQL before
+the limit applies, `query_authorized` filters to the caller's current
+authorized set, and `recent_in_session` returns one session's newest
+entries without a query string. A non-positive `limit` reaches SQL as
+no limit, so callers clamp it (`tools/history` clamps to 1 through 50).
+
 ## Where to look
 
 | Path | What it holds |
 |---|---|
-| `src/events/bus.gleam` | Topics, the thin events, `publish`/`subscribe`/`select_published`, and `bridge`. |
-| `src/events/projection.gleam` | `Projection`, `Checkpoint`, `catch_up` with the frontier rule, `rebuild`, and the driver actor. |
-| `src/events/search.gleam` | The FTS5 index, the one-transaction `sync`, `query`, `remove`, and `entry_text`. |
-| `src/events/sql/search.sql` | The named static statements. `src/events/sql.gleam` is generated from it by parrot — do not edit; regenerate with `scripts/gen-sql.sh`. |
-| `src/events/internal/ffi_pg.gleam` | The confined binding over OTP's `pg`, and this package's complete impurity. |
+| `src/events/bus.gleam` | Topics, the thin events and the two `Outputs` events, `SessionKey`, `publish`/`subscribe`/`select_published`, and `bridge`. |
+| `src/events/projection.gleam` | `Projection`, `Checkpoint`, `catch_up` with the frontier rule, `rebuild`, `stats_projection`, and the driver actor. |
+| `src/events/search.gleam` | The FTS5 index, the one-transaction `sync`, `sync_batch`, the queries, `remove`, and `entry_text`. |
+| `sql/schema.sql` | The search database's DDL, kept by hand; a test pins `search.schema()` to it. |
+| `src/events/sql/search.sql` | The named static statements. `src/events/sql.gleam` is generated from it by parrot; do not edit it, and regenerate with `make gen-sql`. |
+| `src/events/internal/ffi_pg.gleam`, `src/events_ffi.erl` | The confined binding over OTP's `pg`, and this package's complete impurity. |
 
-[`CLAUDE.md`](CLAUDE.md) is the reference doc for changing this code. The
-plane these read models sit on — seqs, write-once rows, the store as the
-only authority — is
-[`docs/architecture/durability.md`](../../docs/architecture/durability.md);
+## How it is tested
+
+`test/events/bus_test.gleam` covers per-session topic delivery,
+isolation between sessions, legal loss, and the `bridge` seam.
+`test/events/projection_test.gleam` checks that `catch_up` equals
+`rebuild`, that a driver converges when hints are dropped, and that a
+checkpoint resumes without refolding. `test/events/search_test.gleam`
+covers pull-based sync, idempotent cursors, rewrite-generation
+invalidation and ranked queries against a real index file, and
+`search_authorized_test` checks that the authorization filter applies
+before the limit. `test/events_test.gleam` pins the hand-written DDL to
+`sql/schema.sql` and the generated statements to `search.sql`. The session stores are in-memory fixtures from
+`test/support/fixtures.gleam`.
+
+Run the package gate, which is format check, warning-free build, and
+tests, with `make check-events`.
+
+## Reading further
+
+[`CLAUDE.md`](CLAUDE.md) is the reference doc for changing this code.
+[`docs/architecture/events.md`](../../docs/architecture/events.md) is
+the architecture account of the bus, the projections and search. The
+plane these read models sit on (seqs, write-once rows, the store as the
+only authority) is
+[`docs/architecture/durability.md`](../../docs/architecture/durability.md).
 [`docs/adr/004-parrot-sql-codegen.md`](../../docs/adr/004-parrot-sql-codegen.md)
 records why one module is generated and what stays hand-written.
+[`protocol-change/008-canonical-session-id.md`](../../protocol-change/008-canonical-session-id.md)
+is why the bus keys sessions by `SessionKey`,
+[`protocol-change/031-tool-output-stream.md`](../../protocol-change/031-tool-output-stream.md)
+defines `ToolOutput`, and
+[`protocol-change/050-reasoning-summaries.md`](../../protocol-change/050-reasoning-summaries.md)
+defines `BlockSummary`.

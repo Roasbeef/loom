@@ -25,6 +25,15 @@ pub type Storage(handle) {
 `session` erases the handle type to `Storage(Nil)`, which is why nothing
 above this package ever names a backend.
 
+The package holds two more things that sit beside that record rather
+than inside it. `storage/snapshot` is a bounded read path the client
+gateway uses to send a session to a remote client without widening the
+frozen `Storage` record. And the daemon's own metadata (the session
+catalogue, principals and credentials, and memory domains) lives here
+as a data-access layer over a second SQLite file, separate from every
+conversation file. Both are covered in
+[Beside the session file](#beside-the-session-file) below.
+
 ## Three stores, and one of them is mutable
 
 Every durable payload lives in exactly one of three stores. **Entries**
@@ -79,6 +88,7 @@ erDiagram
     }
     session {
         integer created_at
+        text parent_session_id
         integer storage_version
         integer next_seq
         integer message_count
@@ -103,7 +113,11 @@ queries filter and order on, so no plan ever decodes a payload to decide
 whether it wants the row. The single `session` row carries both the seq
 allocator and the statistics projection (and, in its `metadata` blob, the
 rewrite generation counter), which is why every commit reads it before it
-writes it.
+writes it. It also carries the session's canonical id (in `metadata`)
+and its parent's (in `parent_session_id`), written by
+`sqlite.record_identity`. Those two are a projection of the `session/id`
+and `session/parent` register cells, readable without the writer lease
+(`protocol-change/008`).
 
 ## A branch is a walk, not a row
 
@@ -332,27 +346,153 @@ swap with failures propagated rather than discarded. Every rewrite bumps a
 `generation` counter, which is how an external index learns its cursors
 are invalid.
 
+## Beside the session file
+
+### Bounded snapshot reads
+
+A remote client that attaches to a session needs its registers and its
+history, and the session may be large. `storage/snapshot.Reader` is a
+record of three functions that both backends supply
+(`memory.snapshot_reader`, `sqlite.snapshot_reader`), and `session`
+carries one beside the `Storage` record. `capture` copies a bounded cut
+of register metadata, the statistics and the seq high-water mark in one
+backend call. `page` then lists descriptors of the write-once entries
+below that mark, and `fragment` returns a slice of one entry's bytes.
+Nothing is held between calls: no transaction, cursor or process. The
+bounds are constants in `storage/snapshot`: 1,024 cells and 1 MiB of
+metadata per cut, 100 descriptors per page, 190 KiB per fragment, and
+no record above 32 MiB. Every call takes a wait budget, capped at five
+seconds, and a `ReadTimedOut` ends only the wait, not the read.
+
+`storage/internal/history_source` is the SQLite-only relative: an owned
+read-only connection to a session file, used by the client's shared
+history reader for exact history recall. It never creates a missing
+file and never takes the writer lease.
+
+### The daemon's catalogue file
+
+The daemon (`client/daemon`) keeps its metadata in one SQLite file of
+its own. Listing sessions, looking up a creation request or reading a
+workspace default reads only that file and never opens a conversation.
+Three modules share one `storage/catalogue.Catalogue` connection:
+
+- `storage/catalogue` owns session registrations. `reserve` is
+  idempotent by creation key; `Reserved` and `Saved` record whether the
+  session file was initialized, not whether a runtime is live. It also
+  owns display-name overrides (`rename`), archiving (`set_visibility`),
+  workspace defaults, and bounded pages.
+- `storage/access` owns principals, SHA-256 credential digests, and
+  per-session operator and observer membership. Plaintext tokens never
+  enter it, and a revoked digest stays as a tombstone.
+- `storage/domain` owns memory and history domains: which memory and
+  index paths a session reads from and writes to.
+
+The catalogue schema is versioned with `PRAGMA user_version`, currently
+3; versions 1 and 2 migrate on open. `storage/sqlite_policy` holds the
+connection and journal settings that session files, the catalogue and
+the `events` search index share, plus the rule that refuses a path
+SQLite cannot open before the binding sees it (the `CLAUDE.md`
+invariants explain the binding defect behind it).
+
+```mermaid
+flowchart LR
+    subgraph daemon["client/daemon"]
+        MGR["session manager"]
+        CAT["catalogue owner"]
+    end
+    subgraph pkg["storage"]
+        SQ["storage/sqlite<br/>+ storage/snapshot"]
+        CA["storage/catalogue<br/>storage/access<br/>storage/domain"]
+    end
+    F1[("one .db file<br/>per session")]
+    F2[("catalogue file")]
+    MGR -->|"via session and runtime"| SQ --> F1
+    CAT --> CA --> F2
+```
+
+### Generated SQL
+
+The catalogue, access, domain, snapshot and history-source queries are
+named SQL in `src/storage/sql/*.sql`, compiled by parrot and sqlc into
+`storage/sql` (ADR-004). The DDL in `sql/` is embedded as string
+constants: `sql/schema.sql` as `storage/sql_schema`, `sql/session.sql`
+as `storage/session_schema`, and the two catalogue migrations as
+`storage/catalogue_names_schema` and `storage/catalogue_archives_schema`.
+All of these are committed; `make gen-sql` regenerates them and needs
+the `sqlite3` CLI. `catalogue_test` and `snapshot_test` compare each
+embedded schema with its file in `sql/`, so a DDL edit without
+regeneration fails the tests.
+
 ## The modules
+
+In reading order: the handle, the two backends, the shared pipeline,
+then the reads and files beside them.
 
 | Module | What it holds |
 |---|---|
 | `storage/storage` | The backend-agnostic handle, the three scan query types and their builders, `StorageError`, the normative commit rules. |
 | `storage/memory` | The pure `MemoryState` model plus its actor wrapper. |
-| `storage/sqlite` | Schema, migrate-on-open, the fenced lease, the commit path, the segmented branch index, plan introspection, the precise rewrite. |
-| `storage/internal/branch` | The shared incremental stop/filter/cursor/limit pipeline. |
+| `storage/sqlite` | Schema, migrate-on-open, the fenced lease, the commit path, the segmented branch index, plan introspection, the identity projection, the precise rewrite. |
+| `storage/internal/branch` | `Refine`, the shared incremental stop/filter/cursor/limit pipeline. |
+| `storage/snapshot` | `Reader`, `Plan`, `Cut` and `Descriptor`: bounded snapshot reads and their limits. |
+| `storage/internal/snapshot_memory`, `snapshot_sqlite`, `snapshot_call` | The two backends' snapshot implementations, and the monitored call that turns a slow or dead backend into `ReadTimedOut` or `ReaderUnavailable`. |
+| `storage/internal/history_source` | The owned read-only connection for exact history recall. |
+| `storage/catalogue` | The daemon's session registrations, names, visibility and defaults, plus the `atomic` and `coherent` transaction adapters. |
+| `storage/access` | Principals, credential digests, and session membership. |
+| `storage/domain` | Memory and history domain configuration. |
+| `storage/sqlite_policy` | Shared connection and journal settings, and the unopenable-path refusal. |
+| `storage/sql`, `sql_schema`, `session_schema`, `catalogue_names_schema`, `catalogue_archives_schema` | Generated by `make gen-sql`; never edited by hand. |
 
-Paths are relative to `packages/storage/src/` — `storage/sqlite` is
+Paths are relative to `packages/storage/src/`, so `storage/sqlite` is
 `packages/storage/src/storage/sqlite.gleam`.
+
+The package depends on `core` alone among Loom packages, plus
+`sqlight_loom`, `parrot`, `simplifile`, `gleam_erlang` and `gleam_otp`.
+`session`, `runtime`, `events`, `client` and `conformance` depend on
+it.
+
+## How it is tested
+
+The contract both backends share is tested in the `conformance`
+package, not here: `conformance/storage_suite` is run against each
+backend by `packages/conformance/test/conformance/storage_suite_test.gleam`
+(see [Two backends, one definition of correct](#two-backends-one-definition-of-correct)).
+The tests in this package cover what the suite does not.
+`memory_test` and `branch_test` drive the pure `MemoryState` functions
+and the `Refine` pipeline with no process. `sqlite_test` is a smoke
+test of open, commit, plan, the lease lifecycle and reopen.
+`snapshot_test` checks the snapshot contract against both backends.
+`catalogue_test`, `access_test`, `domain_test`, `history_source_test`
+and `sqlite_policy_test` run against real SQLite files. A test that
+opens a database file takes its directory from `fixtures.scratch` in
+`test/support/fixtures.gleam`, which deletes and recreates it first, so
+a `-wal` file left by an interrupted run cannot make the next open see
+the database as locked.
+
+Run the package gate with `make check-storage`, and the cross-backend
+suite with `make check-conformance`.
 
 ## Reading further
 
-- [`CLAUDE.md`](CLAUDE.md) — the reference doc for changing this code: key
+- [`CLAUDE.md`](CLAUDE.md): the reference doc for changing this code, with key
   types, real dependency edges, actor and wire traffic, and the invariants
   that break things when violated. Read it before editing.
-- [`docs/architecture/durability.md`](../../docs/architecture/durability.md)
-  — the plane in full: the three stores, identity, the segmented index,
+- [`docs/architecture/durability.md`](../../docs/architecture/durability.md):
+  the plane in full: the three stores, identity, the segmented index,
   query plans as contract, crash behaviour.
-- [`docs/adr/002-sqlite-binding.md`](../../docs/adr/002-sqlite-binding.md)
-  — why `sqlight`.
-- [`protocol-change/005-lease-lost-commit-error.md`](../../protocol-change/005-lease-lost-commit-error.md)
-  — why a stolen lease is a typed refusal.
+- [`docs/adr/002-sqlite-binding.md`](../../docs/adr/002-sqlite-binding.md):
+  why `sqlight`.
+- [`protocol-change/005-lease-lost-commit-error.md`](../../protocol-change/005-lease-lost-commit-error.md):
+  why a stolen lease is a typed refusal.
+- [`docs/adr/004-parrot-sql-codegen.md`](../../docs/adr/004-parrot-sql-codegen.md):
+  why the named queries are generated with parrot and sqlc.
+- [`protocol-change/008-canonical-session-id.md`](../../protocol-change/008-canonical-session-id.md):
+  the session id that `record_identity` projects into the file.
+- [`protocol-change/019-session-display-names.md`](../../protocol-change/019-session-display-names.md)
+  and [`protocol-change/035-session-archive.md`](../../protocol-change/035-session-archive.md):
+  the catalogue's name overrides and archive overlay.
+- [`docs/architecture/daemon.md`](../../docs/architecture/daemon.md):
+  the daemon that owns the catalogue file.
+- [`packages/session/README.md`](../session/README.md): the layer that
+  wraps one open handle, owns the migration chain, and drives the
+  rewrite.

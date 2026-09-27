@@ -15,10 +15,27 @@ Prompt words live in a pack rather than in code so they can be mutated,
 scored and replaced without a recompile — swapping the default for
 something else is a file, not a release. Nothing here performs I/O:
 reading a pack file, building the host description, and pinning the
-rendered string are all somebody else's job. The dependency set is
-`core` plus the standard library, and a test in `test/prompt/purity_test`
-reads `src/` and fails if an import, an `@external`, or a numeric
-environment field ever appears.
+rendered string are all somebody else's job, and the one caller that
+does them is `client/system_prompt`. The dependency set is `core` plus
+the standard library. `test/prompt/purity_test` reads `src/` and fails
+on an import from outside `gleam/`, `core/` and `prompt/`, on a volatile
+import such as `core/clock`, `core/ids` or `gleam/erlang`, on an
+`@external`, or on a numeric `Environment` field.
+
+Two rules hold that purity in place, and they overlap on purpose. The
+purity test above protects byte stability, the property the rest of this
+page is about. Lint rule R6 protects portability: `prompt` is one of the
+four packages R6 holds to the portable subset, with `core`, `machine`
+and `session_view`, so it may carry no `@external` of any target and no
+`gleam_erlang` or `gleam_otp` in source or in `gleam.toml`. R6 gates
+`make check` at error level. It keeps the package compilable to Gleam's
+JavaScript target, which is enough to *decide but not act*: a JavaScript
+host could render the same system prompt the server pins. It does not
+put the harness in a browser, and no gate compiles `prompt` for
+JavaScript today. The `simplifile` dev dependency is allowed, since R6
+refuses only `gleam_erlang` and `gleam_otp` and `simplifile` has a
+JavaScript target. `docs/gleam-style.md` Part IV §5 has the whole
+argument.
 
 ## The format
 
@@ -30,7 +47,7 @@ comment. Anything else is corruption.
 
 ```
 %% loom-prompt-pack 1
-%% version loom-default-4
+%% version loom-default-9
 
 %% section identity
 You are an agent working inside Loom, a coding-agent harness running on
@@ -51,10 +68,13 @@ description selects. That is how the sandbox section says one thing on a
 fully enforced host and another on a degraded one without either wording
 living in Gleam.
 
-The default system pack carries seven canonical sections — `identity`,
-`tool_discipline`, `delegation`, `conduct`, `environment`, `sandbox`,
-`repository_guidance` — plus the fragments the last two select between.
-`pack.canonical_sections` is that list, in render order.
+The default system pack carries eight canonical sections: `identity`,
+`tool_discipline`, `available_tools`, `delegation`, `conduct`,
+`environment`, `sandbox` and `repository_guidance`. It also carries the
+ten fragments that `available_tools`, `sandbox` and `repository_guidance`
+select between (`pack.required_fragments`). `pack.canonical_sections` is
+the list of sections that `problems` checks a pack against; `render`
+follows the pack's own file order.
 
 ## Decoding and rendering
 
@@ -64,7 +84,7 @@ flowchart TD
   SRC --> DEC["pack.decode"]
   DEC -->|corruption| CR["core/corruption.CorruptionReport<br/>naming the offending line"]
   DEC -->|ok| PK["pack.Pack<br/>version, digest, sections in file order"]
-  ENV["pack.environment(...)<br/>every list field trimmed, sorted, de-duplicated"]
+  ENV["pack.environment(...)<br/>every list field trimmed and de-duplicated,<br/>all but available_tools sorted"]
   PK --> R["pack.render"]
   ENV --> R
   R --> OUT["one string, pinned for the life of the session"]
@@ -83,10 +103,10 @@ The substitution itself has two tiers, and the shape is deliberate:
 
 ```mermaid
 flowchart TD
-  E["pack.Environment<br/>workspace, platform, shell, tools,<br/>enforcement, network, protected paths, repository guidance"]
-  E --> L["literal tier<br/>workspace, platform, shell, tools,<br/>protected_paths, network_allow, repository_guidance_text"]
+  E["pack.Environment<br/>workspace, platform, shell, tools, available tools,<br/>enforcement, network, protected paths, repository guidance"]
+  E --> L["literal tier<br/>workspace, platform, shell, tools, protected_paths,<br/>network_allow, available_tools_list, repository_guidance_text"]
   E --> S["selection tier<br/>which fragment does this host get?"]
-  S --> F["_enforcement_enforced / _enforcement_degraded / _enforcement_best_effort<br/>_network_blocked / _network_proxied / _network_open<br/>_protected_paths, _repository_guidance"]
+  S --> F["_enforcement_enforced / _enforcement_platform /<br/>_enforcement_degraded / _enforcement_best_effort<br/>_network_blocked / _network_proxied / _network_open<br/>_protected_paths, _available_tools, _repository_guidance"]
   L --> FF["fragment bodies filled from the literal tier only"]
   F --> FF
   L --> SUB["substitute into the non-fragment sections"]
@@ -142,8 +162,10 @@ system block, which is why it gets its own earlier breakpoint: a system
 prompt that does move still leaves the tool array cached behind the
 breakpoint ahead of it. It is also why the tool array on the wire must be
 sorted — a caller's discovery order would otherwise reach the cached
-bytes. `pack.tools` returns the environment's normalized tool list for
-exactly that reason, and it is the one field this package hands back.
+bytes. `pack.tools` returns the environment's sorted tool list for
+exactly that reason. (`pack.available_tools` is the only other field read
+back, and it keeps the host's registration order, because it is prose
+for a reader rather than a cache key.)
 
 **The head takes the one-hour lifetime and the tail takes five minutes.**
 A one-hour write costs twice base input rather than 1.25x, but the head
@@ -186,7 +208,8 @@ turn can hold is cacheable while a thinking block, which can end an
 assistant turn, is not.
 
 None of this is a knob. Placement is a function of the request's own
-contents, computed inside the adapter, so two builds of the same request
+contents, computed inside the Anthropic adapter
+(`provider/adapter/anthropic`), so two builds of the same request
 are byte-identical and a hit is possible at all. What this package owes
 that arrangement is the stability contract above.
 
@@ -231,17 +254,52 @@ demand different behaviour, so the prompt distinguishes them.
 
 ## Where to look
 
+The package is two modules.
+
 | Path | What it holds |
 |---|---|
-| `src/prompt/pack.gleam` | The format, the total decoder, the `Environment`, `render`, `problems`/`severity`/`assess`, and `section`/`fill`. |
-| `src/prompt/default.gleam` | The shipped system pack and summarization pack, as pack source. Content, not code. |
-| `src/prompt/summary.gleam` | The summary request: input selection, the two halves of its one user message, and the transcript serializer. |
-| `test/prompt/purity_test.gleam` | Reads `src/` and fails on an import, an `@external`, or a numeric environment field. |
+| `src/prompt/pack.gleam` | The format, the total decoder and `encode`, the opaque `Environment`, `render`, `problems`/`severity`/`assess`, and `section`/`fill`. |
+| `src/prompt/default.gleam` | `default.source`, the shipped system pack as pack source. Content, not code. |
 
-[`CLAUDE.md`](CLAUDE.md) is the reference doc for changing this code —
-the type list, the exact invariants, and what breaks when one is
-violated. For the surrounding design see
-[`docs/design-notes/agent-comms-and-system-prompt.md`](../../docs/design-notes/agent-comms-and-system-prompt.md)
-Part B, [`docs/design-notes/compaction-and-memory.md`](../../docs/design-notes/compaction-and-memory.md)
-Part 2, and [`docs/architecture/orchestration.md`](../../docs/architecture/orchestration.md)
-for the plane the rendered prompt is consumed in.
+## Tests
+
+`make check-prompt` is the package gate: `gleam format --check`, a
+warning-free build, and the EUnit suite through `scripts/test.sh`.
+`make test-prompt` runs the tests alone, and `make lint-prompt` runs the
+house lint, R6 included, over the package.
+
+- `pack_test` covers the format: decoding, each refusal, `encode`, and
+  the pieces `render` builds on.
+- `render_test` covers substitution, fragment selection, the
+  repository-guidance frame, and the byte-stability contract.
+- `default_test` checks the shipped pack as content. It decodes with no
+  `problems`, carries the canonical sections in design order, keeps its
+  build-constant sections free of placeholders, states the sandbox
+  posture behaviourally on every host, and has the delegation section
+  state the facts about the `agent_*` tools that their schemas cannot
+  carry.
+- `purity_test` reads this package's own `src/` and fails on a forbidden
+  import, an `@external`, or a numeric `Environment` field. It is the
+  one test here that touches the filesystem, which is why `simplifile`
+  is a dev dependency.
+
+## Reading further
+
+- [`CLAUDE.md`](CLAUDE.md) is the reference doc for changing this code:
+  the type list, the exact invariants, and what breaks when one is
+  violated.
+- [`docs/architecture/prompt.md`](../../docs/architecture/prompt.md)
+  describes how a request's prompt is assembled from this pack, project
+  instructions, the tool array and skills, and what must stay stable for
+  caching.
+- [`docs/design-notes/agent-comms-and-system-prompt.md`](../../docs/design-notes/agent-comms-and-system-prompt.md)
+  Part B is the design this package implements.
+- [`docs/review/m5-agent-comms-judgment.md`](../../docs/review/m5-agent-comms-judgment.md)
+  is the review whose judgment the sandbox wording follows.
+- [`docs/architecture/compaction.md`](../../docs/architecture/compaction.md)
+  and [`docs/design-notes/compaction-and-memory.md`](../../docs/design-notes/compaction-and-memory.md)
+  Part 2 explain the notes-based checkpoint that replaced the
+  summarization pack.
+- [`docs/gleam-style.md`](../../docs/gleam-style.md) Part IV §5 and
+  [`packages/lint/src/lint/portable.gleam`](../lint/src/lint/portable.gleam)
+  state the portable-subset rule R6 enforces here.
