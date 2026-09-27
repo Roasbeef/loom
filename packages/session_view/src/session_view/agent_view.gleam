@@ -6,6 +6,11 @@
 //// total machine decoders supply waits, cancellation, and terminal outcomes.
 //// Only bounded excerpts survive history eviction. No read or mutation starts
 //// here, including when a pending approval becomes visible.
+////
+//// The projection is shared: the terminal's agent rail, inspector and strip
+//// and the web view's agent chips all read these rows, so a strand's status
+//// means the same thing on both hosts. `agent_roster` decides which rows a
+//// strip lists and what figures each shows.
 
 import core/entry
 import core/ids
@@ -20,17 +25,16 @@ import gleam/result
 import gleam/string
 import machine/codec
 import machine/operation
+import session_view/agent_activity
 import session_view/approval
 import session_view/protocol
+import session_view/reviewer_status
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/text_hygiene
 import session_view/tool_activity
-import tui/agent_activity
-import tui/reviewer_status
 
 /// Presentation vocabulary, never a second operation state machine.
-@internal
 pub type Status {
   /// Captured work is in progress.
   Working
@@ -58,7 +62,6 @@ pub type Status {
 }
 
 /// One strand's bounded presentation, shared by the rail and inspector.
-@internal
 pub type Row {
   Row(
     /// Stable identity; display names never route messages.
@@ -97,7 +100,6 @@ pub type Row {
 /// ```gleam
 /// assert agent_view.legacy([]) == []
 /// ```
-@internal
 pub fn legacy(strands: List(protocol.Strand)) -> List(Row) {
   list.map(strands, fn(strand) {
     Row(
@@ -135,7 +137,6 @@ pub fn legacy(strands: List(protocol.Strand)) -> List(Row) {
 /// ```gleam
 /// // agent_view.observe(previous, window, view, reviewers)
 /// ```
-@internal
 pub fn observe(
   previous: List(Row),
   window: snapshot.Window,
@@ -491,7 +492,6 @@ fn pending_text(
 /// ```gleam
 /// assert agent_view.needs_attention(agent_view.Failed)
 /// ```
-@internal
 pub fn needs_attention(status: Status) -> Bool {
   case status {
     NeedsInput | Failed | Halted -> True
@@ -506,7 +506,6 @@ pub fn needs_attention(status: Status) -> Bool {
 /// ```gleam
 /// assert agent_view.label(agent_view.NeedsInput) == "Needs input"
 /// ```
-@internal
 pub fn label(status: Status) -> String {
   case status {
     Working -> "Working"

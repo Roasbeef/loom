@@ -920,7 +920,7 @@ Paths are relative to `packages/tui/src`.
 | `tui/queue_panel`, `tui/queue_editor` | Held-input inspector and the revision-fenced queue editor. |
 | `session_view/approval`, `tui/approval_panel` | Exact approval capture and the approval dialog. |
 | `session_view/worktree_view`, `tui/diff_panel` | Git worktree observation and the changes navigator. |
-| `tui/agents`, `tui/agent_view`, `tui/agent_activity`, `tui/agent_messages`, `tui/agent_message_panel`, `tui/reviewer_status` | The agent rail and inspector projections. |
+| `tui/agents`, `session_view/agent_view`, `session_view/agent_activity`, `session_view/agent_roster`, `tui/agent_messages`, `tui/agent_message_panel`, `session_view/reviewer_status` | The agent rail and inspector projections. |
 | `session_view/notes_view`, `tui/note_panel` | The notes observation and browser. |
 | `tui/completion_summary`, `tui/summary_panel`, `session_view/live_jobs` | Completion evidence, the summary panel, and the jobs roster. |
 | `session_view/context_view`, `tui/context_panel` | The context observation and inspector. |

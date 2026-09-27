@@ -32,6 +32,7 @@ import gleam/set
 import host/build_identity
 import session_view/advisor_history
 import session_view/advisor_pending
+import session_view/agent_view
 import session_view/approval
 import session_view/attempt
 import session_view/block_summary
@@ -45,6 +46,7 @@ import session_view/history_view
 import session_view/live_jobs
 import session_view/notes_view
 import session_view/protocol.{Strand}
+import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
@@ -57,7 +59,6 @@ import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agent_messages
 import tui/agent_strip
-import tui/agent_view
 import tui/agents
 import tui/appearance
 import tui/approval_panel
@@ -79,7 +80,6 @@ import tui/pacing
 import tui/peer_links
 import tui/queue_editor
 import tui/recording
-import tui/reviewer_status
 import tui/selection
 import tui/session_selector
 import tui/summary_panel

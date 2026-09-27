@@ -1378,7 +1378,7 @@ or `/healthz`.
 | `packages/session_view/src/session_view/transcript_lines.gleam`, `render.gleam`, `layout.gleam`, `projection.gleam` | Transcript line construction, frame painting, screen geometry, and the cached transcript projection. |
 | `packages/tui/src/tui/inbound.gleam`, `outbound.gleam`, `surfaces.gleam`, `session_control.gleam` | Channel traffic in and out, side-surface reads, and daemon control requests. |
 | `packages/tui/src/tui/interaction.gleam`, `submit.gleam`, `tick.gleam` | Key, paste and mouse handling, composer submission, and the periodic drain. |
-| `packages/tui/src/tui/agent_view.gleam`, `agents.gleam` | Captured task/status projection and identity-based agent inspection. |
+| `packages/session_view/src/session_view/agent_view.gleam`, `packages/tui/src/tui/agents.gleam` | Captured task/status projection and identity-based agent inspection. |
 | `packages/tui/src/tui/agent_message_panel.gleam`, `focused_goal_panel.gleam` | Selectable observed-send presentation and the server-owned goal inspector. |
 | `packages/tui/src/tui/note_panel.gleam` | Shared standalone and agent-inspector note selection, detail modes, and body paging. |
 | `packages/tui/src/tui/queue_panel.gleam`, `diff_panel.gleam` | Captured queue-excerpt inspection and shared worktree navigation geometry. |

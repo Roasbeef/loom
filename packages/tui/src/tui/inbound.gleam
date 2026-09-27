@@ -34,6 +34,8 @@ import gleam/string
 import host/build_identity
 import machine/strand as machine_strand
 import session_view/advisor_history
+import session_view/agent_roster
+import session_view/agent_view
 import session_view/approval
 import session_view/block_summary
 import session_view/cache_miss
@@ -45,6 +47,7 @@ import session_view/context_view
 import session_view/history_view
 import session_view/operator
 import session_view/protocol.{Strand}
+import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
@@ -59,7 +62,6 @@ import session_view/worktree_view
 import tui/agent_message_panel
 import tui/agent_messages
 import tui/agent_strip
-import tui/agent_view
 import tui/agents
 import tui/approval_panel
 import tui/bootstrap
@@ -83,7 +85,6 @@ import tui/queue_editor
 import tui/queue_panel
 import tui/recording
 import tui/render
-import tui/reviewer_status
 import tui/surfaces
 
 /// The authenticated build belongs to the retained control host. Projecting
@@ -2976,9 +2977,9 @@ pub fn tick_strip(model: Model) -> Model {
     True -> {
       let #(strip, repaint) = agent_strip.tick(model.strip, model.stamp.now_ms)
       case repaint {
-        agent_strip.Changed ->
+        agent_roster.Changed ->
           tui_model.invalidate_frame(Model(..model, strip:))
-        agent_strip.Unchanged -> Model(..model, strip:)
+        agent_roster.Unchanged -> Model(..model, strip:)
       }
     }
   }

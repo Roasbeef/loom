@@ -31,6 +31,7 @@ import session_view/connection_event
 import session_view/goal_view
 import session_view/notes_view
 import session_view/protocol.{type Strand, Strand}
+import session_view/reviewer_status
 import session_view/session_channel
 import session_view/transcript_line
 import session_view/transcript_lines
@@ -42,7 +43,6 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
-import tui/reviewer_status
 import tui/surfaces
 import tui/workspace
 import tui_test/pushed
