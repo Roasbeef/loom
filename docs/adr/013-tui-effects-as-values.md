@@ -368,7 +368,7 @@ The survey of mailbox reads, at the commit this slice started from:
   which read through `connection.receive`, and the four places that call it:
   the wheel and drag arms of `apply_input`
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
-  key drain (`tui/interaction.gleam:1224` (`drain_connection`)) and the tick
+  key drain (`tui/interaction.gleam:1233` (`drain_connection`)) and the tick
   (`tui/tick.gleam:131` (`drain_connection`)). The attachment's reads:
   `tui/attachment.gleam:496` (`prepare`),
   `tui/attachment.gleam:550` (`drain`) and
@@ -608,6 +608,12 @@ the client test driver.
   that block at quit are the switch's and the attempt's, which this slice
   does not touch; the job cancels were `weft.cancel` before and are now,
   and do not block. `effects_test` pins the list.
+- *An adoption cancels a relaunch in flight.* An adopted attachment proves
+  the daemon answers, so the step that adopts queues `CancelJob` for a
+  relaunch still running, and then clears the slot. Before this slice the
+  adoption only cleared the slot, which left the relaunch free to take the
+  launch lock and start a second daemon; with its replies read by key, that
+  cost was invisible rather than absent.
 - *A cancelled job delivers nothing.* The reducer clears the slot in the
   step that queues the cancel, so `hold` finds no slot with that key. The
   runner keeps the job in its table until its relay's last message, so
@@ -650,7 +656,7 @@ job's reply went unread.
 job allocates its key with `tui_model.allocate_job`, gives it replies with
 `runtime.hold`, and calls the drain or `step`. A test that performs
 effects passes a table to `runtime.perform` and gets one back, and
-`runtime.no_jobs()` is an empty one. A test that needs a real worker
+`job_runner.new()` is an empty one. A test that needs a real worker
 starts one with `job_runner.start_task`, which takes the work as a
 function; `job_runner.start` is that function applied to a spec. A test
 that waits for a real reply selects on `job_runner.selector`.
@@ -692,6 +698,7 @@ failed; each was then reverted.
 | quit cancels the relaunch before the control job | `effects_test.quit_with_a_channel_queues_every_close_and_cancel_test` |
 | the tick drains the relaunch before the control job | `a_tick_drains_the_jobs_in_their_fixed_order_test` |
 | `runtime.receive` stops reading jobs once no slot waits | `a_spent_reconnect_leaves_nothing_in_the_mailbox_test` |
+| adoption clears the relaunch slot without cancelling it | `an_adoption_cancels_a_relaunch_still_in_flight_test` |
 
 **Compile time.** The drains the tick now calls are cross-module calls,
 and `update` applies `settle` to the step's result, so the slice adds no

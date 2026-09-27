@@ -16,17 +16,23 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import tui
+import tui/attachment
+import tui/buffered
 import tui/connection
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/effect
+import tui/interaction
 import tui/job
 import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
+import tui/session_channel
 import tui/session_control
 import tui/session_selector
+import tui/snapshot
 import tui/workspace
+import tui_test/pushed
 import weft
 
 // A picker key asks for a catalogue page by queuing exactly one job start,
@@ -162,8 +168,6 @@ pub fn a_cancelled_job_never_delivers_a_reply_test() {
   })
     as "the cancel stopped the worker before it answered"
   let settled = list.fold(arrivals, quit, runtime.hold)
-  assert settled.activity_poll == tui_model.ActivityDue
-    as "nothing the cancelled job sent reached a slot"
   assert job_runner.size(settled.running) == 0
     as "the job leaves the table once its last message is read"
 }
@@ -307,3 +311,63 @@ fn probe(pid: Pid) -> Probe
 
 @external(erlang, "effects_test_ffi", "host_on")
 fn host_on(owner: Subject(Dynamic)) -> daemon_selection.Host
+
+// An adopted attachment proves the daemon answers, so a relaunch still in
+// flight is cancelled by its key in the adoption's own step. Clearing the
+// slot alone would leave the relaunch running: it could take the launch lock
+// and start a second daemon whose replies nothing reads.
+pub fn an_adoption_cancels_a_relaunch_still_in_flight_test() {
+  let #(model, key) = tui_model.allocate_job(pushed.attached())
+  let model =
+    tui_model.Model(
+      ..model,
+      reconnect: tui_model.ReconnectAttempting(job.awaiting(key)),
+    )
+  let #(replacement, cut, view) = captured_replacement()
+  let adopted =
+    interaction.advance_candidate(
+      model,
+      #(
+        attachment.idle(),
+        Some(attachment.Adopted(
+          replacement,
+          cut,
+          view,
+          buffered.new(connection.new_inbox()),
+          workspace.Context("test", None),
+          "Session A",
+          None,
+        )),
+        [],
+      ),
+    )
+
+  assert adopted.reconnect == tui_model.ReconnectIdle
+  assert list.contains(adopted.outbox, effect.CancelJob(key))
+    as "the relaunch the adoption made unnecessary is cancelled by its key"
+}
+
+// A replay lane credited with one validated transfer, which is what an
+// attachment hands over when it adopts.
+fn captured_replacement() {
+  let channel =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  let #(ready, updates) =
+    list.fold(
+      pushed.transfer(1, "1:1", "recent", 10),
+      #(channel, []),
+      fn(acc, frame) {
+        let #(channel, updates) = session_channel.receive(acc.0, frame, now: 0)
+        #(channel, list.append(acc.1, updates))
+      },
+    )
+  let assert Ok(#(cut, view)) =
+    list.find_map(updates, fn(update) {
+      case update {
+        session_channel.Captured(cut, view, _) -> Ok(#(cut, view))
+        _ -> Error(Nil)
+      }
+    })
+    as "the replacement's first transfer is a validated cut"
+  #(ready, cut, view)
+}

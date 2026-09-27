@@ -47,8 +47,8 @@ import tui/model.{
   type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Attached,
   DaemonSelector, DiffHidden, DiffVisible, Disconnected, FrameCache,
   GoalInspector, Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older,
-  OverlaySubmission, PeerLinkManager, Preview, ReconnectIdle, Replaying,
-  SessionSelector, TerminalClipboard,
+  OverlaySubmission, PeerLinkManager, Preview, ReconnectAttempting,
+  ReconnectIdle, ReconnectSpent, Replaying, SessionSelector, TerminalClipboard,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -362,6 +362,15 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         adopted
         |> outbound.send_frame(protocol.models(1))
         |> inbound.request_visible_worktree
+
+      // An adoption proves the daemon answers, so a relaunch still in flight
+      // is no longer needed. Cancelling it stops a second daemon start that
+      // the cleared slot would otherwise leave running until it gave up.
+      let adopted = case adopted.reconnect {
+        ReconnectIdle | ReconnectSpent -> adopted
+        ReconnectAttempting(job: awaiting) ->
+          tui_model.emit(adopted, effect.CancelJob(job.key(awaiting)))
+      }
       let adopted = Model(..adopted, reconnect: ReconnectIdle)
       case cancelled {
         Some(notice) -> tui_model.append_system(adopted, notice)
