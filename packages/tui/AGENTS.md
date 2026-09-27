@@ -296,9 +296,12 @@ list:
 - `tui/job`: background jobs as data, and pure. `Key` is allocated from
   `Model.next_job` and never reused; `Awaiting(reply)` is a slot's key and
   the replies received for it, and `admit` accepts a reply only under that
-  key; `Spec` is `Control(host, ControlJob)`, `Reconnect(options)` or
-  `Activity(host, ids)`; `Arrival` is one relay message tagged with its
-  key. `ControlOutcome` and `Removal` live here.
+  key; `Spec` is `Control(host, ControlJob)`, `Reconnect(options)`,
+  `Activity(host, ids)` or `Attach(route, within_ms)`; `Arrival` is one
+  job message tagged with its key. An attachment job's messages are
+  `Published(Prepared)`, the worker's socket together with the frames
+  subject it delivers to, and `Settled(reply)`, the relay's account.
+  `ControlOutcome` and `Removal` live here.
 - `tui/job_runner`: the impure half of jobs, called only by the runtime.
   `Running`, the opaque table on `Model.running`, maps each key to its
   cancel signal and a selector over its reply subject. `start` turns a
@@ -306,9 +309,16 @@ list:
   function, for tests), `cancel` cancels by key, `receive` reads every
   running job's messages, `observed` drops a job after its last message,
   and `selector` lets an actor-hosted test driver select every job's
-  replies. The control, relaunch and activity worker bodies live here.
+  replies. `start_attach` creates an attachment job's frames subject and
+  its `Prepared` subject in the terminal's process; `dropped` closes the
+  socket of a `Prepared` the runtime drops and empties its frames subject,
+  and `cancel` does the same for a `Prepared` it finds waiting when it
+  cancels an attachment job. The control, relaunch, activity and
+  attachment worker bodies live here.
 - `tui/buffered`: `Inbox(a)`, a terminal-owned subject with the messages
-  already received from it, oldest first. `top_up` is the only read of the
+  already received from it, oldest first. `discard` empties a subject the
+  model has stopped reading, as the `Discard` effect and an abandoned
+  attempt's cleanup. `top_up` is the only read of the
   mailbox for a step, `take` is pure, `receive` is the held-first read for
   code outside the step, `push` appends a message a reader outside the step
   selected, and `sender` is the send side, whose direct reads bypass the
@@ -511,7 +521,8 @@ boundaries and the split's measurements under Invariants.
   not open the picker or reload its page. The owner and epoch checks remain
   server-side; a lost reply is not retried. `Model.session_label` pairs one
   name with its identity, so legacy switches cannot carry an old title.
-  The name travels through `attachment.Target` and `Adopted` with the selected
+  The name travels through `daemon_selection.Target`, the job's `Prepared`
+  and `Adopted` with the selected
   workspace and becomes visible only when that attachment is adopted.
   `workspace.session_name` uses cached workspace/branch context for new names,
   normalizes terminal text, and preserves graphemes within 256 UTF-8 bytes.
@@ -774,14 +785,20 @@ boundaries and the split's measurements under Invariants.
   never reused and is looked up in the runtime's own table, so it names
   the same job at perform time that it named when the reducer decided. `session_channel.Out` is
   `Transmit(socket, frame)` or `Shut(socket)`; `attachment.Out` is a
-  candidate channel output or `Acknowledge(to)`. `Model.outbox` holds
+  candidate channel output, `Acknowledge(to)` or `Abandon(status)`, and
+  `tui_model.emit_attachment` queues an `Abandon` behind a `CancelJob` for
+  the attempt's key. `Model.outbox` holds
   pending effects newest first and is empty between steps. ADR-013 records
   the design (issue #530, phase 1).
-- `tui/attachment.Status` owns one provisional replacement. A deadline-bounded
-  Weft task publishes its socket to terminal-owned subjects. The terminal
-  validates the initial cut, acknowledges it, observes task completion and
-  checks adoption before replacing the old socket. `start_relayed` lets the
-  native driver select the same outcomes as the interactive loop.
+- `tui/attachment.Status` owns one provisional replacement: the key of its
+  `job.Attach` job and what the runtime admitted for it, in a stage that is
+  `Resolving` until the job's `Prepared` is admitted, `Published` until the
+  next poll starts the candidate lane on its socket, and `Connecting` while
+  that lane captures. `opening(key, trace)` builds one and starts nothing;
+  `admit` takes the job's messages under its key, and one `Prepared` only;
+  `accept` takes a frame an actor-hosted driver selected through `select`.
+  The terminal validates the initial cut, acknowledges it, observes task
+  completion and checks adoption before replacing the old socket.
 - `tui/session_channel.Channel` is terminal-owned state, not another actor.
   It admits one request at a time, grants one snapshot fragment per reply, and
   reconciles at 250ms while idle. It holds no clock: `tick`, `receive`,
@@ -1521,8 +1538,9 @@ untouched.
   followed by `perform`. `runtime.receive` tops up each buffered inbox the
   model holds to the most the step can take from it: `Model.inbox` to
   `connection_batch` (64), `Model.replay_inbox` to one event, and through
-  `attachment.top_up` the candidate's `prepared` to one while no candidate
-  exists, its `frames` to forty until capture, and its `outcomes` to one.
+  `attachment.top_up` the candidate's frames to forty until capture, after
+  it has admitted every job's messages, so a `Prepared` admitted in that
+  receive has its first frames topped up with it.
   `inbound.drain_connection`, `tick.drain_replay` and the attachment's
   `prepare`, `drain` and `settle` take from those buffers and read no
   mailbox; traffic that arrives during the step waits for the next one.
@@ -1533,9 +1551,8 @@ untouched.
   inside the inbox value, so the adoption swap is one assignment and the
   old socket's held messages leave the model with it; that is the rule the
   terminal-attachment P model checks as S2. Anything that reads an inbox
-  outside the step keeps held messages first: `attachment.cancel` reads a
-  `Prepared` at quit through `buffered.receive`, `attachment.accept`
-  appends a selected message behind the held ones with `buffered.push`
+  outside the step keeps held messages first: `attachment.accept`
+  appends a selected frame behind the held ones with `buffered.push`
   and then advances as the poll does, and the client test driver reduces
   held connection messages before a selected one. A test that calls `step` directly and wants it to
   see queued traffic calls `runtime.receive` first, and a test injects
@@ -1544,20 +1561,24 @@ untouched.
 - **Jobs start after the step and answer by key.** A reducer allocates a
   key and queues `StartJob(key, spec)` through `tui_model.start_job`; the
   slot that waits for the job (`ControlRequest.job`,
-  `ReconnectAttempting`, `ActivityAsking`) holds the key and the replies
-  received for it. The step creates no subject, no cancel signal and no
-  process. `runtime.perform` starts and cancels jobs in `Model.running`,
+  `ReconnectAttempting`, `ActivityAsking`, `Model.candidate`) holds the key
+  and the messages received for it. The step creates no subject, no cancel
+  signal and no process. `runtime.perform` starts and cancels jobs in `Model.running`,
   which no reducer reads, and `runtime.settle` stores the table back, so
   `tui.update` is `settle(step(event, receive(stamp(model))))`.
   `runtime.receive` reads every running job's messages, at most two per
-  one-task relay, and `runtime.hold` admits each into the slot of its kind
-  only when the slot holds the same key; any other reply is dropped there.
+  one-task relay and a `Prepared` besides, and `runtime.hold` admits each
+  into the slot of its kind only when the slot holds the same key; any
+  other message is dropped there, and a dropped `Prepared` has its socket
+  closed and its frames subject emptied (`job_runner.dropped`).
   Clearing a slot drops its held replies with it, so a reducer that stops
   waiting for a job never sees its replies again. The runner keeps a job
   until its relay's last message is read, whatever its slot holds, so no
   job's messages stay in the mailbox. Quit clears each slot as it queues
-  `CancelJob` for the control job, the relaunch and the activity poll, in
-  that order, after the lane close and the attempt's `Abandon`. The launch
+  the lane close, then `CancelJob` for the attempt ahead of its `Abandon`,
+  then `CancelJob` for the control job, the relaunch and the activity poll,
+  in that order. A failed attempt queues the same `CancelJob` and
+  `Abandon` pair, through `tui_model.emit_attachment`. The launch
   paths flush their first catalogue load so it starts before the loop.
   A test allocates a key with `tui_model.allocate_job`, hands a slot a
   reply with `runtime.hold`, and calls the drain or `step`; a test that
@@ -1565,7 +1586,10 @@ untouched.
   selects `job_runner.selector(model.running)` and hands what it selects
   to `runtime.hold`. `test/jobs_test.gleam` pins the start, the key fence,
   distinct keys, the cancel, the read to a relay's last message and the
-  drain order (ADR-013, S4 addendum).
+  drain order, and `test/attachment_jobs_test.gleam` the attachment's
+  start, its frames inbox coming only from `Prepared`, the close of a
+  dropped `Prepared` and the cancel of a failed attempt (ADR-013, S4 and S5
+  addenda).
 - **Auxiliary panels draw borders, not interiors.** The ordinary conversation
   has no rectangle and the composer has horizontal rules. `render_panel_border` puts the same
   bytes on the wire as etui's `block.render` over a blank canvas, and the test
@@ -1687,9 +1711,10 @@ untouched.
   not a socket-drain proof.
 - **Every inbox the terminal reads is created by the terminal.** A `Subject`
   delivers to the process that created it, and receiving on one owned by
-  another process panics. `attachment.start` creates frames, preparation and
-  outcome subjects in the terminal before the worker starts. The worker owns
-  only its acknowledgement subject. The shared socket guardian monitors the
+  another process panics. `job_runner.start_attach` creates the frames and
+  `Prepared` subjects and the relay's subject in the terminal, when the
+  runtime performs the attachment's `StartJob`, before the worker starts; the
+  step creates none. The worker owns only its acknowledgement subject. The shared socket guardian monitors the
   terminal owner through cancellation and adoption. Actor-backed native tests
   reduce already selected messages directly rather than requeueing them.
   Because `update` tops up the model's inboxes on every event, even a
@@ -1742,11 +1767,12 @@ untouched.
   `take_outputs` then `perform`. The next `update` also performs anything
   left in the outbox. One consequence is that a send leaves at the end of
   its step, so a zero-timeout drain later in that step cannot see its
-  reply. The attachment start and file reads remain in the step until
-  later slices of phase 2 of issue #530. Clock reads left the step in phase 2's first slice, the
+  reply. File reads remain in the step until a later slice of phase 2 of
+  issue #530, and adoption still reads a socket's liveness through
+  `connection.adopt`, until phase 3. Clock reads left the step in phase 2's first slice, the
   connection, replay and attachment drains in its second, recording
-  writes in its third, and the control, reconnect and activity jobs in its
-  fourth: see the clock, traffic and job invariants above and the
+  writes in its third, the control, reconnect and activity jobs in its
+  fourth, and the attachment job in its fifth: see the clock, traffic and job invariants above and the
   recording invariant below.
 - **The recording is written in the order its causes were decided.**
   `tui.step` queues the input's own line first, before the reducer runs,

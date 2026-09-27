@@ -93,13 +93,15 @@ or the candidate attachment. Each of those inboxes is a `tui/buffered.Inbox`,
 a subject together with the messages already taken out of its mailbox.
 `runtime.receive` tops each one up before the step, to the most the step can
 consume from it: the connection inbox to `connection_batch` (64), the replay
-inbox to one event, the candidate's `Prepared` to one while no candidate
-exists, its frames to 40 until the initial cut is captured, and its worker
-outcome to one. The drains take from those buffers, and traffic that arrives
+inbox to one event, and the candidate's frames to 40 until the initial cut is
+captured. The drains take from those buffers, and traffic that arrives
 during the step waits for the next one. An inbox the step did not drain keeps
 what it holds and receives nothing more, so every buffer stays within its
-bound. The control, reconnect and activity replies reach the step the same
-way ("Jobs are started by the runtime" below).
+bound. The control, reconnect, activity and attachment jobs' own messages,
+the attachment's `Prepared` and worker outcome among them, reach the step
+the same way ("Jobs are started by the runtime" below), and are received
+before the frames, so a `Prepared` and the first frames it names arrive in
+the same step.
 
 Because an inbox's buffer lives inside the inbox value, an adoption that
 replaces `Model.inbox` drops what the old socket's inbox had received along
@@ -192,14 +194,16 @@ effects as well.
 
 ### Jobs are started by the runtime
 
-The daemon control request, the relaunch after a daemon death and the
-picker's activity poll each block on a socket, so each runs as a one-task
-weft run. The step does not start them. A reducer describes the job as a
-`tui/job.Spec` (`Control(host, request)`, `Reconnect(options)` or
-`Activity(host, ids)`), allocates a key from `Model.next_job`, and queues
+The daemon control request, the relaunch after a daemon death, the
+picker's activity poll and the provisional attachment each block on a
+socket, so each runs as a one-task weft run. The step does not start them.
+A reducer describes the job as a `tui/job.Spec` (`Control(host, request)`,
+`Reconnect(options)`, `Activity(host, ids)` or `Attach(route, within_ms)`),
+allocates a key from `Model.next_job`, and queues
 `effect.StartJob(key, spec)`; the slot that waits for the job
-(`ControlRequest`, `ReconnectAttempting`, `ActivityAsking`) holds the key
-and the replies received for it. Keys are never reused.
+(`ControlRequest`, `ReconnectAttempting`, `ActivityAsking`,
+`Model.candidate`) holds the key and the messages received for it. Keys are
+never reused.
 
 After the step, `tui/job_runner` starts the run in the terminal's process
 and records its cancel signal and reply subject under the key in
@@ -212,7 +216,19 @@ reducer that clears a slot drops what it held. The runner keeps a job until
 its relay's last message is read, whatever its slot holds, so no job leaves
 messages in the terminal's mailbox. The tick takes the replies at its fixed
 points through `session_control.drain_control`, `drain_reconnect` and
-`drain_activity`. Quit clears each slot and cancels each job by its key.
+`drain_activity`, and through `attachment.poll` for the attempt. Quit
+clears each slot and cancels each job by its key.
+
+An attachment job is the one that hands the terminal a socket, so its
+drops act. The runner creates the frames subject when it starts the job
+and passes it to the worker, whose `job.Prepared` names it; that is the
+only way the attempt learns its frames inbox. A `Prepared` no attempt
+admits, for a key nobody holds or a second one for the same attempt, has
+its socket closed and its frames subject emptied by the runtime
+(`job_runner.dropped`), and cancelling an attachment job does the same for
+a `Prepared` still waiting in the mailbox. A failed or abandoned attempt
+queues `CancelJob` for its key ahead of its own `Abandon`
+(`tui_model.emit_attachment`).
 The S4 addendum to [ADR-013](../adr/013-tui-effects-as-values.md) records
 the design and the alternatives it rejected.
 
@@ -401,9 +417,11 @@ command fails the replay of any recording that carries it.
 ### Opening a session is provisional
 
 Selecting a session never tears down the current one first.
-`attachment.start_recorded` runs the control `open` and the socket startup in
-a weft task under one 90-second deadline, and publishes the new socket to
-subjects the terminal created. The terminal feeds the candidate's frames
+`session_control.begin_open` queues a `job.Attach` job and holds its key in
+`attachment.opening`; the runtime runs the control `open` and the socket
+startup in a weft task under one 90-second deadline, and the worker
+publishes the new socket in a `job.Prepared` that names the frames subject
+the runtime created for it. The terminal feeds the candidate's frames
 through its own `session_channel`, validates the expected session, epoch and
 incarnation and the complete initial cut, and acknowledges it. Only then, once
 the task has also completed, does `attachment.Outcome` report `Adopted`, and
@@ -412,8 +430,9 @@ provisional socket; the old session keeps running and stays on screen.
 
 Every inbox the terminal reads is created by the terminal process, because a
 `Subject` delivers to the process that created it and receiving on another
-process's subject panics. The attachment worker owns only the acknowledgement
-subject that the terminal writes to. Since `update` tops up the model's
+process's subject panics. The runtime creates the attachment job's subjects
+when it performs the job's `StartJob`, in the terminal process; the worker
+owns only the acknowledgement subject that the terminal writes to. Since `update` tops up the model's
 inboxes on every event, it must run in the process that created the model.
 A test that hands a model to an actor builds the model inside the actor.
 
@@ -817,7 +836,7 @@ Paths are relative to `packages/tui/src`.
 | `tui/session_channel` | The credited conversation lane: phases, one outstanding request, one unsent mutation, 250 ms catch-up, pushed frames. |
 | `tui/snapshot`, `tui/snapshot_view` | Assembling a credited transfer into a validated cut, and projecting it into strands, operations, configuration and presence. |
 | `tui/protocol` | The client's view of the ClientGateway event union and its command constructors. |
-| `tui/attachment` | One provisional session replacement and its adoption. |
+| `tui/attachment` | One provisional session replacement, the reducer's view of its `job.Attach` job, and its adoption. |
 | `tui/daemon` | The `/v2/control` connection: weft state machine, one outstanding request. |
 | `tui/daemon/protocol` | The independent, total control codec. |
 | `tui/daemon/bootstrap` | Shared-daemon discovery, cold start under the launch lock, and reconnect observation. |
