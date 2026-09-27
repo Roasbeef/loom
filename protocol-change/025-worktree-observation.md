@@ -126,9 +126,9 @@ almost all of it sandbox setup. Four probes and 24 patch calls then spend
 the whole deadline, and the call it cut short failed the observation even
 though status had already fixed an exact census.
 
-We now treat a patch call as unreached when the guard refuses it after the
-deadline, or when it settles as an execution failure once the deadline has
-passed. The broker's budget cancels such a call, often before the jail has
+We now treat a patch call as unreached when the capture's guard or the
+broker's budget refuses it after the deadline, or when it settles as an
+execution failure once the deadline has passed. The broker's budget cancels such a call, often before the jail has
 reported its enforcement, so it settles as a degraded execution. Its file
 and every later file are counted in `omitted`, and the board is `limited`,
 as for the byte ceiling. Status and the metadata probes still fail the
