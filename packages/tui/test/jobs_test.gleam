@@ -128,8 +128,9 @@ pub fn a_late_reply_from_an_earlier_job_does_not_reach_its_successor_test() {
 }
 
 // A quit cancels the running activity poll by its key and clears the slot
-// in the same step. The worker is still running when the cancel lands, so
-// its relay reports it abandoned rather than completed, and neither of its
+// in the same step. The worker has not answered when the cancel lands, so
+// its relay reports it abandoned, or never started when the cancel beat
+// the task to its slot, rather than completed, and neither of its
 // messages reaches the cleared slot. The relay's last message is read, and
 // the job leaves the table.
 pub fn a_cancelled_job_never_delivers_a_reply_test() {
@@ -159,6 +160,10 @@ pub fn a_cancelled_job_never_delivers_a_reply_test() {
   assert list.any(arrivals, fn(arrival) {
     case arrival {
       job.ActivityArrived(reply: weft.PulledOutcome(weft.Abandoned(..)), ..)
+      | job.ActivityArrived(
+          reply: weft.PulledOutcome(weft.NeverStarted(..)),
+          ..,
+        )
       | job.ActivityArrived(
           reply: weft.PulledOutcome(weft.CancellationUnconfirmed(..)),
           ..,
