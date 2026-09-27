@@ -54,9 +54,13 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
 
 - `daemon/ui_sessions`: one `weft/actor` owning the ticket table (60 s,
   single use) and the UI-session table (8 h), both keyed by the SHA-256 of
-  the secret. Redemption is one message, so a ticket cannot succeed twice;
-  a ticket presented with an existing cookie replaces that UI session.
-  `actor.periodic` sweeps; every read checks the deadline itself.
+  the secret. Redemption is one message, so a ticket cannot succeed twice.
+  `redeem` takes the path's session and answers `UnknownTicket` or
+  `OtherSession`; only a live ticket for that session replaces the
+  browser's UI session, and a refused one leaves it alone (a ticket for
+  another session is spent). `still_open` is the check an open page runs
+  with every frame. `actor.periodic` sweeps; every read checks the
+  deadline itself.
 - `daemon/ui_http`: pure checks. `loopback_host` (Host is `127.0.0.1`,
   `[::1]` or `localhost`, any port), `exchange_allowed` (`Sec-Fetch-Site`
   is `none` or `same-origin`), `origin_matches` (the socket's `Origin` is
@@ -78,9 +82,11 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
 - `daemon/ui_relay`: the page's stand-in for a session socket. It attaches
   with `attach_authenticated_flushing`, its own pid as the socket, a
   binding and `check` capped to `Participant(Observer)`, and the check is
-  `manager.frame_authority` with the minting credential's digest. It ends
-  on `Shut`, the component's exit, the gateway's exit and the gateway's
-  `close`, detaching in each.
+  `while_open(frame_authority, still_open)`: the minting credential's
+  digest and the page's UI session, so revocation, expiry and replacement
+  all end the page. It ends on `Shut`, the component's exit, the gateway's
+  exit and the gateway's `close`, detaching in each; `ui_socket` closes two
+  component ticks after the gateway's end so the ended state is drawn.
 
 ## Purpose
 
