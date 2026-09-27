@@ -301,6 +301,7 @@ pub fn dropped(arrival: Arrival) -> Nil {
       ..,
     ) -> daemon.close(daemon_selection.control(host))
     job.AttachArrived(reply: job.Settled(_), ..)
+    | job.AttachArrived(reply: job.Finished(_), ..)
     | job.ControlArrived(..)
     | job.ReconnectArrived(..)
     | job.ActivityArrived(..)

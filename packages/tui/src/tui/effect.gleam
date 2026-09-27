@@ -53,12 +53,8 @@ pub type Effect {
   /// An output of a provisional attachment attempt.
   Attachment(attachment.Out)
 
-  /// Writes a frame to a conversation socket that has no channel, which is
-  /// the preview peer's path before any session is adopted.
-  Send(socket: connection.Connection, frame: String)
-
-  /// Closes a conversation socket the model no longer routes through a
-  /// channel, such as a preview peer or a replaced attachment's socket.
+  /// Closes a conversation socket that no channel owns: the socket a
+  /// dropped attachment `Prepared` carries.
   CloseSocket(socket: connection.Connection)
 
   /// Closes a daemon control connection.

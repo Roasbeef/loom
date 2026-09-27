@@ -324,8 +324,28 @@ pub type AttachReply {
   /// The worker's socket, open and waiting to be acknowledged.
   Published(prepared: Prepared)
 
-  /// The weft relay's account of the worker.
+  /// The weft relay's account of the worker. The relay's last message,
+  /// `AllDelivered`, is what permits adoption, and the host does not pass
+  /// it on as it is: it reads whether the published socket's process is
+  /// still alive and hands the attempt `Finished` instead.
   Settled(reply: weft.Pulled(Nil, String))
+
+  /// The relay's `AllDelivered`, with whether the socket the attempt would
+  /// adopt was still alive when the host received it (`runtime.hold`).
+  /// Reading that is a process read, so the host does it and the attempt,
+  /// which only decides, adopts or fails on the answer.
+  Finished(socket: SocketLiveness)
+}
+
+/// Whether the socket an attempt would adopt still has a live process
+/// behind it, read by the host when the attachment job ended.
+pub type SocketLiveness {
+  /// The socket's actor was alive when the host looked.
+  SocketAlive
+
+  /// The socket cannot be adopted, and why: its actor had exited, or the
+  /// attempt's lane has no socket at all.
+  SocketGone(reason: String)
 }
 
 /// What a control job's relay sends.
@@ -395,6 +415,7 @@ pub fn is_last(arrival: Arrival) -> Bool {
     ActivityArrived(reply:, ..) -> ends_run(reply)
     ConfigurationArrived(reply:, ..) -> ends_run(reply)
     AttachArrived(reply: Settled(reply:), ..) -> ends_run(reply)
+    AttachArrived(reply: Finished(_), ..) -> True
     AttachArrived(reply: Published(_), ..) -> False
   }
 }

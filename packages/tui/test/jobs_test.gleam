@@ -33,6 +33,7 @@ import tui/session_selector
 import tui/snapshot
 import tui/workspace
 import tui_test/pushed
+import tui_test/stepping
 import weft
 
 // A picker key asks for a catalogue page by queuing exactly one job start,
@@ -43,7 +44,7 @@ pub fn a_picker_key_queues_one_job_start_and_starts_nothing_test() {
   let host = host_on(owner)
   let model = tui_model.Model(..blank(), daemon_host: Some(host))
 
-  let #(loading, effects) = tui.step(backend.KeyPress("left"), model)
+  let #(loading, effects) = stepping.step(backend.KeyPress("left"), model)
   let assert Some(tui_model.ControlRequest(job: awaiting, result: None)) =
     loading.control_request
     as "the page load holds the control slot"
@@ -269,7 +270,7 @@ pub fn a_tick_drains_the_jobs_in_their_fixed_order_test() {
       weft.PulledOutcome(weft.Failed(0, "relaunch failed second")),
     ))
 
-  let #(ticked, _) = tui.step(backend.Tick, model)
+  let #(ticked, _) = stepping.step(backend.Tick, model)
   let failures =
     list.filter_map(ticked.transcript, fn(line) {
       case line {

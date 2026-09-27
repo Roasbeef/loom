@@ -47,6 +47,57 @@ captured execution, workflow and peer-message facts without starting work.
 Protocol 048 owns the backend contracts. The sections below record
 earlier validation and follow-ups as a historical handoff.
 
+## Terminal client: issue #530 through phase 3
+
+The terminal's step (`tui.step`) is a function from the client's own
+message and the model to the next model and a list of effects, and it
+reads no clock, file, mailbox, process or environment variable.
+[ADR-013](adr/013-tui-effects-as-values.md) records each phase in an
+addendum. Phase 1 made fire-and-forget effects values. Phase 2 (S1 to S6)
+moved clock reads, mailbox reads, recording, job starts and file reads out
+of the step. Phase 3, on `tui/domain-msg` stacked on phase 2's
+`tui/file-reads-as-effects`, replaced etui's input event with `msg.Msg`:
+`Input(at, event)`, which the step reduces, and `Arrived(arrivals)`, which
+it only files (`tui/admission`). It also moved the adopted socket's
+liveness read into the host and read the client build identity once at
+model creation, and deleted the unreachable arms that wrote to a peer's
+socket with no lane.
+
+Next is phase 4: extract the platform-free core behind `msg.Msg` and
+`effect.Effect` (the step, `tui/admission`, the reducers and projection)
+from the terminal's host (`tui/runtime`, `tui/job_runner`, `tui/keymap`
+and etui), and spike a read-only Lustre server component in the daemon
+that renders from it. Its host dispatches `Arrived` from a selector that
+tags each frame with its subject and each job message with its key,
+dispatches `Input(stamp, Ticked)` from a timer, and interprets the
+effects. Exit criteria: the terminal still passes `make check-tui` and
+`make check-client` unchanged, the replay goldens are byte-identical, and
+the spike renders an attached session read-only.
+
+Rulings to preserve:
+
+- Arrivals are filed, never reduced. Any host that wakes on arrival
+  delivers `Arrived` and then a `Ticked` input, so Escape still acts
+  before traffic is reduced (ADR-010) and the drain order holds.
+- The buffer bound is the host's. Admission never drops a frame for
+  capacity; a host reads no more from a mailbox than a buffer has room
+  for.
+- Admission files a frame only into the inbox whose subject it names, so
+  no message from a replaced inbox reaches the reducer after an adoption.
+- Where a host dispatches `Input` events is host code, not a mode enum in
+  the core.
+
+Open, deliberately:
+
+- Waking the loop on arrival instead of at the poll timeout is deferred
+  until idle push latency is measured; today it is up to 250 ms. It needs
+  etui's loop to select on caller subjects, a change to the
+  `Roasbeef/etui` fork.
+- `msg.Event` still carries etui's `keys.Key` and `backend.MouseButton`.
+- The test fixture `pushed.attached()` is a replaying peer with a lane, a
+  state the shipped client never reaches; two `Replaying` arms and the
+  composer's pending-marker guard stay because of it.
+
 ## Shell approval recovery on main
 
 A running shell can hit a kernel permission error after earlier effects. It

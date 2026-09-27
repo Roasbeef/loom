@@ -7,9 +7,8 @@
 //// surface that asked records its request ID, a composer submission
 //// clears the draft only once it was sent, and a frame that was
 //// definitely not sent restores the draft with an error. Without a
-//// channel, the frame is queued as an `effect.Send` to the socket when
-//// the peer is attached, and goes nowhere otherwise. Either way the write
-//// itself happens after the step, in `tui/runtime`.
+//// channel the frame goes nowhere: only the channel holds a socket. The
+//// write itself happens after the step, in `tui/runtime`.
 ////
 //// `mutation_refusal` is the check made before encoding a command that
 //// changes session state, so a read-only or unsynchronized attachment
@@ -21,7 +20,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import tui/command
 import tui/context_view
-import tui/effect
 import tui/model.{
   type Model, Attached, ComposerSubmission, ConfirmGoal, Disconnected,
   HoldGoalReport, Model, OverlaySubmission, Preview, PromptNext, Replaying,
@@ -54,7 +52,7 @@ pub fn mutation_refusal(
   case mutates, model.peer, model.channel {
     False, _, _ -> None
     True, Disconnected, _ -> Some("no conversation is attached; draft retained")
-    True, Attached(_), Some(channel) ->
+    True, Attached, Some(channel) ->
       case session_channel.mutation_available(channel) {
         True -> None
         False ->
@@ -62,7 +60,7 @@ pub fn mutation_refusal(
             "attachment is read-only or its command slot is busy; draft retained",
           )
       }
-    True, Attached(_), None ->
+    True, Attached, None ->
       Some("conversation has not synchronized; draft retained")
     True, Preview, _ | True, Replaying, _ -> None
   }
@@ -151,7 +149,11 @@ pub fn send_frame(model: Model, frame: String) -> Model {
         session_channel.submit(channel, frame, now: model.stamp.transport_ms)
       apply_submission(tui_model.hold_channel(model, channel), disposition)
     }
-    None -> send_preview_frame(model, frame)
+
+    // No lane means nowhere to write. An attached peer always has its lane,
+    // so this is the preview, a replay, or a launch that has not adopted a
+    // session yet, and none of them may pretend to have sent anything.
+    None -> model
   }
 }
 
@@ -286,15 +288,4 @@ pub fn clear_composer_text(model: Model) -> Model {
     history_index: 0,
     history_draft: "",
   )
-}
-
-fn send_preview_frame(model: Model, frame: String) -> Model {
-  case model.peer {
-    Attached(socket:) ->
-      Model(..model, next_id: model.next_id + 1)
-      |> tui_model.emit(effect.Send(socket, frame))
-
-    // Neither peer has anywhere to write, and neither may pretend it does.
-    Preview | Replaying | Disconnected -> model
-  }
 }

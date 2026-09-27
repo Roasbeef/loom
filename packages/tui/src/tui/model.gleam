@@ -20,7 +20,6 @@ import core/ids
 import core/json
 import core/message
 import core/todo_list
-import etui/backend
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/span
@@ -31,6 +30,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
+import host/build_identity
 import tui/advisor_history
 import tui/advisor_pending
 import tui/agent_messages
@@ -58,11 +58,11 @@ import tui/focused_goal_panel
 import tui/goal_view
 import tui/herdr
 import tui/history_view
-import tui/image_drop
 import tui/job
 import tui/job_runner
 import tui/live_jobs
 import tui/model_selector
+import tui/msg
 import tui/note_panel
 import tui/notes_view
 import tui/pacing
@@ -301,9 +301,12 @@ pub type Submission {
 /// into the same `None`, which is exactly the bug this replaced.
 @internal
 pub type Peer {
-  /// A live ClientGateway websocket. Commands are written to it and the
-  /// server's own events come back as transcript.
-  Attached(socket: connection.Connection)
+  /// A live ClientGateway conversation. Commands are written through the
+  /// adopted session channel, which holds the socket, and the server's own
+  /// events come back as transcript. The socket is not repeated here: a
+  /// second copy of the handle is what let a reducer write to a socket with
+  /// no lane in front of it, a state the shipped client never reaches.
+  Attached
 
   /// A live launch without an adopted socket; never fabricates preview replies.
   Disconnected
@@ -476,30 +479,6 @@ pub type StrandWorkspace {
     prefix: Int,
     /// Original viewport height for anchor relocation after a resize.
     height: Int,
-  )
-}
-
-/// The clock readings one event is applied at.
-///
-/// `tui.update` takes them through `runtime.stamp` before it steps, and
-/// every reducer reads them here instead of calling a clock. A step
-/// therefore reads no clock, every reducer in one step sees the same
-/// instant, and a test that calls `tui.step` directly chooses the time by
-/// setting this field. There are two monotonic readings because they time
-/// different things: a test may fix the presentation clock to pin frames
-/// while a live socket in the same test still needs real deadlines.
-@internal
-pub type Stamp {
-  Stamp(
-    /// The presentation clock, `Model.monotonic_time_ms`: frame pacing,
-    /// activity elapsed time, generation throughput, the cache outlook and
-    /// the jobs and activity-poll ages.
-    now_ms: Int,
-    /// The host's monotonic clock, which times the session lanes' request
-    /// deadlines and idle refresh.
-    transport_ms: Int,
-    /// The host's wall clock, which only a session creation key reads.
-    wall_ms: Int,
   )
 }
 
@@ -831,26 +810,29 @@ pub type Model {
     frame_debt: pacing.FrameDebt,
     /// The presentation clock, shared by pacing, activity, and throughput.
     /// Scripts inject this clock without changing transport deadlines. Only
-    /// `runtime.stamp` calls it, once per event, before the step.
+    /// the runtime calls it: `runtime.message`, once per event, when it
+    /// builds the step's message, and `runtime.stamp` for a caller that
+    /// drives a reducer outside the step.
     monotonic_time_ms: fn() -> Int,
     /// The transport clock the session channel's deadlines and refresh are
     /// measured on. It is the host's monotonic clock in a live terminal and
     /// a test driver holding a live socket; a fixture that puts a socketless
     /// replay lane on a model freezes it, so the lane's timers cannot depend
     /// on where the host's arbitrary monotonic origin happens to sit. Only
-    /// `runtime.stamp` calls it.
+    /// the runtime calls it, as it does the presentation clock.
     transport_time_ms: fn() -> Int,
-    /// The clock readings the current event is applied at. Every reducer
-    /// that needs the time reads it here, so a step reads no clock.
-    stamp: Stamp,
+    /// The clock readings the current event is applied at. The step copies
+    /// them from its message before any reducer runs, and every reducer that
+    /// needs the time reads them here, so a step reads no clock.
+    stamp: msg.Stamp,
     /// This terminal's identity in a session creation key: the OS process
     /// and the BEAM process that created the model, read once at creation.
     terminal: String,
-    /// What the runtime read, before this event's step, from the file a
-    /// pasted path names. Only `runtime.read_paste` writes it, once per
-    /// event, so the step reads no file and a read never outlives the event
-    /// it was taken for.
-    dropped: image_drop.Dropped,
+    /// The build this client runs, which the build-mismatch notice compares
+    /// with the daemon's. It comes from two environment variables that do
+    /// not change while the process runs, so it is read once, when the model
+    /// is created, rather than on every coherent cut that draws the notice.
+    client_build: build_identity.Identity,
     last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,
@@ -997,6 +979,7 @@ pub fn release(model: Model, arrival: job.Arrival) -> Model {
       ..,
     ) -> emit(model, effect.CloseControl(daemon_selection.control(host)))
     job.AttachArrived(reply: job.Settled(_), ..)
+    | job.AttachArrived(reply: job.Finished(_), ..)
     | job.ReconnectArrived(..)
     | job.ControlArrived(..)
     | job.ActivityArrived(..)
@@ -1072,20 +1055,23 @@ pub fn record(model: Model, event: recording.Recorded) -> Model {
   }
 }
 
-/// Queues the recording line for one input event, if it is one that replays
-/// and the terminal is recording.
+/// Opens a step for one input: stores the instant it is applied at and
+/// queues its recording line, if it is one that replays and the terminal
+/// is recording.
 ///
-/// `tui.step` calls this before the reducer runs, so the input's line is
-/// the first effect of its step and precedes every line the input causes.
+/// `tui.step` calls this before the reducer runs, so every reducer reads
+/// the input's time from `Model.stamp`, and the input's line is the first
+/// effect of its step and precedes every line the input causes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let model = tui_model.record_input(model, backend.KeyPress("a"))
+/// let model = tui_model.start_step(model, model.stamp, msg.Ticked)
 /// ```
 @internal
-pub fn record_input(model: Model, event: backend.InputEvent) -> Model {
-  case recording.of_input(event) {
+pub fn start_step(model: Model, at: msg.Stamp, event: msg.Event) -> Model {
+  let model = Model(..model, stamp: at)
+  case msg.recorded(event) {
     Some(recorded) -> record(model, recorded)
     None -> model
   }

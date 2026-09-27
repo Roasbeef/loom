@@ -41,9 +41,10 @@ its socket closed and its frames inbox discarded (`job_runner.dropped`,
 announced as `ePreparedDropped`). The model admits a job message when it
 arrives rather than at the next `runtime.receive`; the candidate changes
 only in a reducer step, so both see the same candidate. Each frames inbox's
-buffer stands for its mailbox together with what `runtime.receive` has
-already moved into its `tui/buffered.Inbox` before the step
-(`buffered.top_up`, called through `attachment.top_up` for the candidate's);
+buffer stands for its mailbox together with what the host has already
+read before the step and admission has filed into its
+`tui/buffered.Inbox` (`runtime.arrivals`, `attachment.frame_room`,
+`tui/admission`);
 the model drops what arrives for an inbox that was never created or has
 been discarded. The
 reducer reads those buffers where the code takes from its buffered inboxes
@@ -75,7 +76,7 @@ modelled (see below).
 | Event | Code |
 |---|---|
 | `eWrite`, `eShut` | `session_channel.Transmit` / `Shut` performed by `session_channel.perform`; also the close inside `attachment.cancel` |
-| `eFrame` | a `connection.Message` delivered to a frames inbox, later moved into its `buffered.Inbox` by `runtime.receive` |
+| `eFrame` | a `connection.Message` delivered to a frames inbox, later read by the host and filed into its `buffered.Inbox` by admission (`runtime.receive`, `tui/admission`) |
 | `ePrepared`, `eOutcome`, `eAck`, `eCancel` | `job.AttachArrived` with `job.Published(prepared)` and with `job.Settled` (the weft relay's `AllDelivered` or a failure), both tagged with the job's key; `attachment.Acknowledge`; `weft.cancel`, which `job_runner.cancel` sends when the runtime performs `effect.CancelJob` |
 | `eWorkerClose`, `eGuardianKill` | the worker's own `connection.close` when its acknowledgement wait times out; the guardian killing a socket after its startup worker exits abnormally |
 | `eOpOpen`, `eOpSubmit`, `eOpEscape`, `eOpQuit` | `session_control.begin_open`, Enter through `outbound.send_frame`, Escape through `inbound.cancel_pending`, Ctrl-C through `submit.quit` |
@@ -115,7 +116,7 @@ Each spec is in `PSpec/Specs.p`, named after the code rule it encodes.
 
 | Spec | Rule | Code |
 |---|---|---|
-| S1 `ReplacementIsFailPreserving` | The visible session changes only for an attempt whose initial cut was validated, whose worker completed after the acknowledgement, and whose adoption check passed. A failed attempt never becomes visible. | `attachment.poll`, `attachment.adopt`, `interaction.candidate_outcome`; tui CLAUDE.md "Session replacement is fail-preserving" |
+| S1 `ReplacementIsFailPreserving` | The visible session changes only for an attempt whose initial cut was validated, whose worker completed after the acknowledgement, and whose adoption check passed. A failed attempt never becomes visible. | `attachment.poll`, `attachment.adopt` (on the socket check `runtime.hold` read), `interaction.candidate_outcome`; tui CLAUDE.md "Session replacement is fail-preserving" |
 | S2 `NoStaleRepaint` | Every message reduced into the visible lane came from the socket that lane was adopted with. | `interaction.candidate_outcome` (the swap of the whole buffered `Model.inbox`, with `attachment.Adopted.inbox` carrying the frames the candidate left held), `inbound.drain_connection`, `tick.update_tick`; "Every inbox the terminal reads is created by the terminal" |
 | S3 `MutationCustody` | A mutation is written once and applied by the daemon at most once. A lost reply is reported `UnknownOutcome` exactly once, on the attachment that sent it. A waiting command is sent exactly once or reported `DefinitelyNotSent` exactly once, and never crosses to another attachment. Liveness: while the terminal runs, no command stays waiting or sent and unresolved forever. | ADR-010; `session_channel.admit`, `flush_queued`, `fail`, `retire`, `cancel_unsent`; "Uncertainty survives attachment replacement" |
 | S4 `NoWriteAfterShut` | No write reaches a socket after the terminal closed it. | `session_channel.close`, `runtime.take` |
@@ -338,3 +339,23 @@ Phase 2 S2 keeps the rule by where it puts the buffer. Each
 from its mailbox, so the swap in `interaction.candidate_outcome` replaces the
 old inbox and its buffer in one assignment, and no drain can reach either
 afterwards.
+
+### What phase 3 changed
+
+Phase 3 of issue #530 splits what the host receives from what the step
+reduces ([ADR-013](../../../docs/adr/013-tui-effects-as-values.md), the
+phase 3 addendum). The host reads each mailbox up to the room its buffer
+has and hands the messages to `tui/admission`, which files each frame
+into the inbox whose subject it was read from and drops a frame from any
+other subject; a tick or a key still does the reducing. That is the
+model's buffer: a frame is filed where it arrived, and the reducer reads
+the buffer at the points the model's `Terminal` step does. The swap rule
+above now holds twice over: the adoption replaces the inbox with its
+buffer, and admission refuses a frame whose subject is not the adopted
+inbox's or the waiting attempt's.
+
+The adoption check moved from the step to the host. When the host hands
+the attachment job's end to the attempt it reads whether the socket's
+actor is alive and delivers `job.Finished` with the answer. The model
+does not model process liveness, so no machine or spec changes; S1's
+"adoption check passed" is now the answer the attempt was handed.

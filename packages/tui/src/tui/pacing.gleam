@@ -15,10 +15,10 @@
 //// so the Erlang inliner has nothing to expand at these call sites. The
 //// glue that reads and writes the model stays in `tui`, and is thin.
 
-import etui/backend
 import etui/keys
 import gleam/bool
 import gleam/int
+import tui/msg
 
 // Recent terminal or websocket activity keeps input and stream latency
 // below a perceptible delay. After a quiet window, the loop backs off so
@@ -291,29 +291,26 @@ pub fn tick_traffic(before before: Int, after after: Int) -> TickTraffic {
 /// ## Examples
 ///
 /// ```gleam
-/// assert pacing.frame_boundary(backend.Tick, pacing.TranscriptQuiet)
+/// assert pacing.frame_boundary(msg.Ticked, pacing.TranscriptQuiet)
 ///   == pacing.FlushPoint
-/// assert pacing.frame_boundary(backend.Tick, pacing.TranscriptMoved)
+/// assert pacing.frame_boundary(msg.Ticked, pacing.TranscriptMoved)
 ///   == pacing.Paced
 /// ```
-pub fn frame_boundary(
-  event: backend.InputEvent,
-  traffic: TickTraffic,
-) -> FrameBoundary {
+pub fn frame_boundary(event: msg.Event, traffic: TickTraffic) -> FrameBoundary {
   case event {
-    backend.Resize(..) -> FlushPoint
-    backend.Tick ->
+    msg.Resized(..) -> FlushPoint
+    msg.Ticked ->
       case traffic {
         TranscriptQuiet -> FlushPoint
         TranscriptMoved -> Paced
       }
-    backend.KeyPress(_)
-    | backend.Paste(_)
-    | backend.MouseScroll(..)
-    | backend.MousePress(..)
-    | backend.MouseRelease(..)
-    | backend.MouseDrag(..)
-    | backend.MouseMove(..) -> Paced
+    msg.KeyPressed(..)
+    | msg.Pasted(..)
+    | msg.Scrolled(..)
+    | msg.Pressed(..)
+    | msg.Released(..)
+    | msg.Dragged(..)
+    | msg.Moved(..) -> Paced
   }
 }
 
@@ -368,20 +365,19 @@ pub fn frame_decision(
 /// ## Examples
 ///
 /// ```gleam
-/// assert pacing.viewport_address(backend.Tick) == pacing.AddressesElsewhere
-/// assert pacing.viewport_address(backend.MouseScroll(0, 0, True))
+/// assert pacing.viewport_address(msg.Ticked) == pacing.AddressesElsewhere
+/// assert pacing.viewport_address(msg.Scrolled(0, 0, recording.ScrollUp))
 ///   == pacing.AddressesTranscript
 /// ```
-pub fn viewport_address(event: backend.InputEvent) -> ViewportAddress {
+pub fn viewport_address(event: msg.Event) -> ViewportAddress {
   case event {
-    backend.Tick | backend.MouseMove(..) | backend.Paste(_) ->
-      AddressesElsewhere
-    backend.Resize(..)
-    | backend.MouseScroll(..)
-    | backend.MousePress(..)
-    | backend.MouseRelease(..)
-    | backend.MouseDrag(..) -> AddressesTranscript
-    backend.KeyPress(raw) -> key_viewport_address(keys.match(raw))
+    msg.Ticked | msg.Moved(..) | msg.Pasted(..) -> AddressesElsewhere
+    msg.Resized(..)
+    | msg.Scrolled(..)
+    | msg.Pressed(..)
+    | msg.Released(..)
+    | msg.Dragged(..) -> AddressesTranscript
+    msg.KeyPressed(key:, ..) -> key_viewport_address(key)
   }
 }
 

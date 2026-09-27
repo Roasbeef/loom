@@ -77,7 +77,7 @@ pub fn submit(model: Model) -> Model {
         ),
         model.peer
       {
-        True, Attached(_) ->
+        True, Attached ->
           Model(..model, pending_submission: Some(ComposerSubmission))
         _, _ -> model
       }
@@ -484,7 +484,7 @@ fn send_prompt_content(
       notice: "image prompt sent to " <> model.active_strand,
     )
   case model.peer {
-    Attached(..) ->
+    Attached ->
       outbound.send_frame(
         sent,
         protocol.prompt_content(model.next_id, model.active_strand, content),
@@ -835,11 +835,7 @@ pub fn quit(model: Model) -> Model {
   let model = case model.channel {
     Some(channel) ->
       tui_model.hold_channel(model, session_channel.close(channel))
-    None ->
-      case model.peer {
-        Attached(socket:) -> tui_model.emit(model, effect.CloseSocket(socket))
-        Preview | Replaying | Disconnected -> model
-      }
+    None -> model
   }
 
   // The attempt moves into its cancel effect, which closes what it opened.

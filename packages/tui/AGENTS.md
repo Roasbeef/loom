@@ -279,8 +279,9 @@ list:
   `active_strand_phase`). Importers alias it as `tui_model`, because `model`
   is the local variable in nearly every function and would shadow the module
   name. Constructors stay unqualified. It also owns the effect outbox, the
-  step's one queue: `emit` queues an effect, `record` and `record_input`
-  queue a recording line when the terminal is recording, and
+  step's one queue: `emit` queues an effect, `record` queues a recording
+  line when the terminal is recording, `start_step` stores an input's
+  stamp and queues its recording line before the reducer runs, and
   `hold_channel` stores a transitioned adopted lane and moves what it
   queued into the outbox. `start_job` allocates a job key from
   `Model.next_job` and queues its `StartJob`; `allocate_job` only
@@ -288,12 +289,33 @@ list:
 - `tui/runtime`: `take`, `perform`, `settle` and `flush`, which empty a
   step's outbox and perform what it held, in the order it was decided,
   threading the job table through and storing it back on the model;
-  `stamp`, which reads the clocks for one event before the step; `receive`,
-  which tops up the model's inboxes and reads every running job's replies
-  before the step; `read_paste`, which reads the file a pasted path names
-  before the step and stores what it found as `Model.dropped`; and `hold`,
-  which admits one job reply into the slot that holds its key or drops it. `tui.gleam` and test drivers import it;
-  no reducer module does.
+  `message`, which builds the step's `msg.Input` from an etui event,
+  reading the clocks and a pasted file into it; `stamp`, which writes the
+  clocks onto the model for a caller that runs a reducer outside the step;
+  `receive`, which reads every running job's replies and each inbox's
+  mailbox up to the room its buffer has (`arrivals`) and has admission
+  file them; and `hold`, which does the host's bookkeeping for one job
+  message (forgetting a finished job, and turning an attachment job's end
+  into `job.Finished` with the adopted socket's liveness read) and has
+  admission file it. `tui.gleam` and test drivers import it; no reducer
+  module does.
+- `tui/msg`: what the step is given. `Msg` is `Input(at, event)`, one
+  event and its `Stamp`, which the step reduces, or `Arrived(arrivals)`,
+  traffic the host received, which the step only files. `Event` is in the
+  client's terms (`KeyPressed(text, key)`, `Pasted(text, image)`,
+  `Resized`, `Scrolled`, `Pressed`, `Dragged`, `Released`, `Moved`,
+  `Ticked`); `Arrival` is `Frame(source, message)` tagged with the inbox
+  subject it was read from, `Replayed(event)` or `JobReplied(arrival)`.
+  `recorded` gives the recording line an event is written as. It imports
+  nothing of the model, which stores its `Stamp`.
+- `tui/keymap`: `translate`, etui's input event to a `msg.Event`. It only
+  parses; what a key means stays in the reducer.
+- `tui/admission`: `admit`, the pure filing of arrivals that the step runs
+  for `msg.Arrived` and the terminal's host calls directly. A frame goes to
+  the adopted inbox or the waiting attempt whose subject it names and is
+  otherwise not filed; a job reply goes to the slot that holds its key or
+  is dropped with its resource released through `tui_model.release`.
+  It never drops a frame for capacity.
 - `tui/job`: background jobs as data, and pure. `Key` is allocated from
   `Model.next_job` and never reused; `Awaiting(reply)` is a slot's key and
   the replies received for it, and `admit` accepts a reply only under that
@@ -303,7 +325,9 @@ list:
   the local launch options; `Arrival` is one
   job message tagged with its key. An attachment job's messages are
   `Published(Prepared)`, the worker's socket together with the frames
-  subject it delivers to, and `Settled(reply)`, the relay's account.
+  subject it delivers to, `Settled(reply)`, the relay's account, and
+  `Finished(SocketLiveness)`, the relay's end with the host's read of
+  whether the socket the attempt would adopt is alive.
   `ControlOutcome` and `Removal` live here.
 - `tui/job_runner`: the impure half of jobs, called only by the runtime.
   `Running`, the opaque table on `Model.running`, maps each key to its
@@ -321,11 +345,11 @@ list:
 - `tui/buffered`: `Inbox(a)`, a terminal-owned subject with the messages
   already received from it, oldest first. `discard` empties a subject the
   model has stopped reading, as the `Discard` effect and an abandoned
-  attempt's cleanup. `top_up` is the only read of the
-  mailbox for a step, `take` is pure, `receive` is the held-first read for
-  code outside the step, `push` appends a message a reader outside the step
-  selected, and `sender` is the send side, whose direct reads bypass the
-  buffer.
+  attempt's cleanup. `waiting` is the only read of the mailbox for a
+  step, reading up to the room the host gives it; `push` files a message
+  behind the held ones and `take` is pure; `top_up` is `waiting` then
+  `push`; `receive` is the held-first read for code outside the step; and
+  `sender` is the send side, whose direct reads bypass the buffer.
 - `tui/transcript_lines`: `Line`s from durable entries, streams and tool
   calls. A new kind of transcript row starts in `entry_lines`,
   `message_lines`, `assistant_block_lines`, `record_lines`,
@@ -907,11 +931,9 @@ boundaries and the split's measurements under Invariants.
   prefix or bounded body; a one-task `weft` run with a deadline bounds
   descriptor opens and reads to one second, and its cancellation kills and
   joins the worker before the caller sees the timeout. It performs no path
-  expansion or shell evaluation. The runtime reads, the step does not:
-  `read_dropped` performs the read and returns a `Dropped` value recorded
-  against the pasted text, and `dropped_image`, which the composer's paste
-  handler calls, is pure and answers `Ok(None)` for a read taken for other
-  text.
+  expansion or shell evaluation. The host reads, the step does not:
+  `runtime.message` calls `load_paste` for a paste and carries what it
+  found in `msg.Pasted`, and the composer's paste handler attaches that.
 - `tui/block_summary.{Key, Subject, Reads, Labels, floor_bytes, max_blocks,
   new, stored, live, carried, receive, receive_board, want,
   next_read, refused, retain_live, decode_board}` — summarizer labels for
@@ -1493,7 +1515,7 @@ untouched.
 - **Tick settling has the same parameter boundary.** `update_tick` drains
   the replay, control, the candidate, reconnect, the activity poll and the
   connection, in that order, before passing the result to `settle_tick`.
-  Every drain takes from what `runtime.receive` put in the model, so none of them adds a mailbox read
+  Every drain takes from what admission filed before the step, so none of them adds a mailbox read
   to the step. The helper applies the existing read-service chain to its
   `drained` parameter and retains the original model for quiet-time and activity
   comparisons. Adding the notes read to the former single body exposed another
@@ -1517,56 +1539,71 @@ untouched.
   measurements, not budgets.
 - **Presentation uses one caller-owned clock, read once per event.**
   `new_model` supplies the host's monotonic clock; `new_model_with_clock`
-  lets a test supply its own. `tui.update` calls `runtime.stamp` before
-  `step`, which reads `Model.monotonic_time_ms`, `Model.transport_time_ms`
-  and the wall clock once each into `Model.stamp`, and the step reads no
-  clock: frame pacing, generation throughput, activity elapsed time, the
+  lets a test supply its own. `tui.update` calls `runtime.message`, which
+  reads `Model.monotonic_time_ms`, `Model.transport_time_ms` and the wall
+  clock once each into the input's `msg.Stamp`; the step stores it as
+  `Model.stamp` before any reducer runs (`tui_model.start_step`) and
+  reads no clock: frame pacing, generation throughput, activity elapsed time, the
   cache outlook, the jobs and activity-poll ages and the strip all read
   `stamp.now_ms`, the session lanes read `stamp.transport_ms`, and the
   creation key reads `stamp.wall_ms` with `Model.terminal`, the OS and BEAM
-  process identity read once when the model is created. The stamp is a
-  cross-module call on `update`'s parameter, never a local step in
-  `tui.gleam`, for the inliner reason above. The two monotonic readings are
+  process identity read once when the model is created. The build the
+  mismatch notice compares with the daemon's is read once too, into
+  `Model.client_build`. The message is a cross-module call on `update`'s
+  parameter, never a local step in `tui.gleam`, for the inliner reason
+  above. The two monotonic readings are
   separate because a test may fix the presentation clock to pin frames
   while its live socket still needs real deadlines; in the shipped client
   both are the host's monotonic clock. The transport clock is injected
   like the presentation clock: a fixture that puts a socketless replay lane
   on a model freezes it at zero, so that lane's refresh and deadline cannot
-  depend on where the host's arbitrary monotonic origin sits. A test that calls `step` directly runs at
-  whatever stamp the model carries (the creation-time reading for a fresh
-  model) and sets `stamp` to choose another, and a driver that runs a
-  reducer outside `update` calls `runtime.stamp` first. Daemon bootstrap
+  depend on where the host's arbitrary monotonic origin sits. A test steps
+  through `tui_test/stepping`, which builds the input at the stamp the
+  model carries (the creation-time reading for a fresh model), and sets
+  `stamp` to choose another; a driver that runs a reducer outside the step
+  calls `runtime.stamp` first. Daemon bootstrap
   and recording timestamps are outside the step and keep their real
   clocks. `test/clock_test.gleam` exercises the event handler at negative
   epochs, pins repeated scripted intermediate frames with a fixed clock,
   runs a step under a clock that panics when called, counts one reading
   per `update`, and fires a lane's refresh and deadline from the `now` it
   is passed.
-- **The step reads the traffic the runtime received before it.**
-  `tui.update` is `step(event, runtime.receive(runtime.stamp(model)))`
-  followed by `perform`. `runtime.receive` tops up each buffered inbox the
-  model holds to the most the step can take from it: `Model.inbox` to
-  `connection_batch` (64), `Model.replay_inbox` to one event, and through
-  `attachment.top_up` the candidate's frames to forty until capture, after
-  it has admitted every job's messages, so a `Prepared` admitted in that
-  receive has its first frames topped up with it.
-  `inbound.drain_connection`, `tick.drain_replay` and the attachment's
-  `prepare`, `drain` and `settle` take from those buffers and read no
-  mailbox; traffic that arrives during the step waits for the next one.
-  The orderings stay in the step and are unchanged: Escape with a waiting
-  command cancels before any traffic is reduced and leaves the batch held,
-  the tick settles the candidate before it drains the connection, and a
-  drain after a mid-tick adoption reads the adopted inbox. The buffer is
-  inside the inbox value, so the adoption swap is one assignment and the
-  old socket's held messages leave the model with it; that is the rule the
-  terminal-attachment P model checks as S2. Anything that reads an inbox
-  outside the step keeps held messages first: `attachment.accept`
-  appends a selected frame behind the held ones with `buffered.push`
-  and then advances as the poll does, and the client test driver reduces
-  held connection messages before a selected one. A test that calls `step` directly and wants it to
-  see queued traffic calls `runtime.receive` first, and a test injects
-  traffic through `buffered.sender`. `test/runtime_receive_test.gleam` pins the bound, the Escape
-  exception, the held-first read, the swap and the candidate-first tick.
+- **Traffic is filed before the step and reduced in it.**
+  `tui.update` is `settle(step(message(event, model), receive(model)))`.
+  `runtime.receive` hands every job message over first (`hold`), so a
+  `Prepared` admitted in that receive has its first frames read with it,
+  then reads each inbox's mailbox up to the room its buffer has left
+  (`arrivals`): `Model.inbox` to `connection_batch` (64),
+  `Model.replay_inbox` to one event, and the candidate's frames to forty
+  until capture (`attachment.frame_room`). `tui/admission` files what it
+  read, the same function the step runs for `msg.Arrived`, and reduces
+  nothing. `inbound.drain_connection`, `tick.drain_replay` and the
+  attachment's `prepare`, `drain` and `settle` take from those buffers and
+  read no mailbox; traffic that arrives during the step waits for the next
+  one. The orderings stay in the step: Escape with a waiting command
+  cancels before any traffic is reduced and leaves the batch held, the
+  tick settles the candidate before it drains the connection, and a drain
+  after a mid-tick adoption reads the adopted inbox. The bound is the
+  host's, kept by reading no more than there is room for; admission never
+  drops a frame for capacity, since that would be a gap in the lane's
+  sequence. A frame is tagged with the inbox subject it was read from, and
+  admission files it only into the adopted inbox or the waiting attempt
+  with that subject; the buffer is inside the inbox value, so the adoption
+  swap is one assignment and the old socket's held messages leave the
+  model with it. That is the rule the terminal-attachment P model checks
+  as S2. A host that wakes on arrival delivers `Arrived` and then an input
+  with `Ticked`, and never reduces on an arrival alone. Anything that
+  reads an inbox outside the step keeps held messages first:
+  `attachment.accept` appends a selected frame behind the held ones with
+  `buffered.push` and then advances as the poll does, and the client test
+  driver reduces held connection messages before a selected one. A test
+  that calls `step` directly and wants it to see queued traffic calls
+  `runtime.receive` first or steps a `msg.Arrived`, and a test injects
+  traffic through `buffered.sender`. `test/runtime_receive_test.gleam`
+  pins the bound, the Escape exception, the held-first read, the swap and
+  the candidate-first tick, and `test/admission_test.gleam` the filing,
+  the stale-subject refusal, the room the host reads and generated runs
+  against phase 2's receive (ADR-013, phase 3 addendum).
 - **Jobs start after the step and answer by key.** A reducer allocates a
   key and queues `StartJob(key, spec)` through `tui_model.start_job`; the
   slot that waits for the job (`ControlRequest.job`,
@@ -1575,11 +1612,15 @@ untouched.
   and the messages received for it. The step creates no subject, no cancel
   signal and no process. `runtime.perform` starts and cancels jobs in `Model.running`,
   which no reducer reads, and `runtime.settle` stores the table back, so
-  `tui.update` is `settle(step(event, receive(stamp(model))))`.
+  `tui.update` is `settle(step(message(event, model), receive(model)))`.
   `runtime.receive` reads every running job's messages, at most two per
-  one-task relay and a `Prepared` besides, and `runtime.hold` admits each
-  into the slot of its kind only when the slot holds the same key; any
-  other message is dropped there. A dropped `Prepared` has its socket
+  one-task relay and a `Prepared` besides, and `runtime.hold` has
+  admission file each into the slot of its kind only when the slot holds
+  the same key; any other message is dropped there. An attachment job's
+  end is handed over as `job.Finished` with the host's read of whether the
+  adopted socket's actor is alive, and the attempt adopts or fails on
+  that answer, so the step reads no process
+  (`test/socket_liveness_test.gleam`). A dropped `Prepared` has its socket
   closed and its frames subject emptied, and a dropped relaunch
   `Completed` its control closed, by `CloseSocket`, `Discard` and
   `CloseControl` effects `hold` queues, so `receive` and `hold` only read
@@ -1607,13 +1648,10 @@ untouched.
   dropped `Prepared` and the cancel of a failed attempt (ADR-013, S4 and S5
   addenda).
 - **The step reads no file.** A terminal delivers a dragged file as a paste
-  of its path. `tui.update` calls `runtime.read_paste` after
-  `runtime.receive` and before the step; it reads the file when a paste
-  names exactly one path and writes the result on `Model.dropped`, and
-  every event overwrites the field, so a read and the image bytes it holds
-  never outlive their event. The paste handler asks
-  `image_drop.dropped_image`, which uses a read only for the paste text it
-  was taken for. The read is before the step rather than a job because a
+  of its path. `runtime.message` reads the file when a paste names exactly
+  one path and carries what it found in `msg.Pasted`, so a read travels
+  inside its own paste's message and cannot outlive it or be attached to
+  another paste. The read is before the step rather than a job because a
   job answers a step later, and a key typed in between would be applied
   first: an Enter could submit without the image. A new session's
   configuration, which reads `HOME` and asks the file system about
@@ -1623,8 +1661,8 @@ untouched.
   the tick that takes it, in the order the step used to make them, so a
   local failure still sends nothing and retains no key. A
   terminal without local launch options has nothing to resolve and creates
-  in the step. A test that calls `step` directly with a paste naming an
-  image calls `runtime.read_paste` first; a test that presses `n` with
+  in the step. A test that needs a paste's read builds the input with
+  `runtime.message`, or a `msg.Pasted` itself; a test that presses `n` with
   local options ticks until `Model.configuring` is `None` before it looks
   for the creation key. `test/file_reads_test.gleam` pins both moves
   (ADR-013, S6 addendum).
@@ -1805,15 +1843,23 @@ untouched.
   `take_outputs` then `perform`. The next `update` also performs anything
   left in the outbox. One consequence is that a send leaves at the end of
   its step, so a zero-timeout drain later in that step cannot see its
-  reply. Adoption still reads a socket's liveness through
-  `connection.adopt`, and `inbound.daemon_build_lines` reads this client's
-  build identity from two environment variables on every coherent cut;
-  both stay in the step until phase 3. Clock reads left the step in phase
-  2's first slice, the connection, replay and attachment drains in its
-  second, recording writes in its third, the control, reconnect and
-  activity jobs in its fourth, the attachment job in its fifth, and file
-  reads in its sixth: see the clock, traffic, job and file invariants above
-  and the recording invariant below.
+  reply. Clock reads left the step in phase 2's first slice, the
+  connection, replay and attachment drains in its second, recording writes
+  in its third, the control, reconnect and activity jobs in its fourth, the
+  attachment job in its fifth, and file reads in its sixth; phase 3 took
+  the adopted socket's liveness read into `runtime.hold` and the client
+  build identity to model creation (`Model.client_build`). The step now
+  reads no clock, file, mailbox, process or environment variable: see the
+  clock, traffic, job and file invariants above and the recording
+  invariant below.
+- **An attached peer always has its lane.** `Peer.Attached` carries no
+  socket. The adoption in `interaction.candidate_outcome` is its only
+  constructor and sets `Model.channel` in the same update, and nothing
+  clears the channel again, so every write and close goes through the
+  lane. The arms that closed or wrote to a peer's socket with no lane were
+  unreachable and are gone with `effect.Send` (ADR-013, phase 3 addendum).
+  The remaining `Peer` branches change state or rendering, not only
+  effects, and a replay's writes are stopped by its having no lane.
 - **The recording is written in the order its causes were decided.**
   `tui.step` queues the input's own line first, before the reducer runs,
   and every attempt note is queued where its cause was decided, in the

@@ -39,10 +39,16 @@ import weft
 // The job's key, the relay outcomes the runtime admitted for it, oldest
 // first, and the recorder the attempt's notes name.
 type Run {
-  Run(
-    outcomes: job.Awaiting(weft.Pulled(Nil, String)),
-    trace: Option(recording.Trace),
-  )
+  Run(outcomes: job.Awaiting(Settlement), trace: Option(recording.Trace))
+}
+
+// What the attempt holds of its job's end, in the order it arrived: the
+// relay's messages about the worker, and the end the host checked the
+// socket for.
+type Settlement {
+  Relayed(weft.Pulled(Nil, String))
+
+  Ended(job.SocketLiveness)
 }
 
 // A candidate's frames are drained at most this many per step, and the
@@ -159,6 +165,32 @@ pub fn job_key(status: Status) -> Option(job.Key) {
   }
 }
 
+/// The socket this attempt's lane would adopt, or why there is none.
+///
+/// The host asks for it when the attachment job ends, reads whether the
+/// socket's actor is alive, and hands the attempt the answer as
+/// `job.Finished`. An attempt whose lane has no socket is a replay lane,
+/// which is never adopted as a live one. An attempt with no lane yet has no
+/// socket to check; its adoption fails on its stage whatever the answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert attachment.adoptable_socket(attachment.idle()) |> result.is_error
+/// ```
+@internal
+pub fn adoptable_socket(
+  status: Status,
+) -> Result(connection.Connection, String) {
+  case status {
+    Opening(_, Connecting(candidate, _)) ->
+      channel.socket(candidate.channel)
+      |> option.to_result("replay channels cannot be adopted as live sockets")
+    Idle | Opening(_, Resolving) | Opening(_, Published(..)) ->
+      Error("replacement task ended without a validated initial cut")
+  }
+}
+
 /// Binds the recorder after launch but before any terminal poll can consume data.
 ///
 /// A worker may already have published its `Prepared`; only a poll
@@ -191,7 +223,7 @@ pub fn with_trace(status: Status, trace: Option(recording.Trace)) -> Status {
 ///
 /// ```gleam
 /// let assert Ok(status) =
-///   attachment.admit(status, key, job.Settled(weft.AllDelivered))
+///   attachment.admit(status, key, job.Finished(job.SocketAlive))
 /// ```
 pub fn admit(
   status: Status,
@@ -201,7 +233,10 @@ pub fn admit(
   case status, reply {
     Idle, _ -> Error(Nil)
     Opening(run, stage), job.Settled(outcome) ->
-      job.admit(run.outcomes, key, outcome)
+      job.admit(run.outcomes, key, Relayed(outcome))
+      |> result.map(fn(outcomes) { Opening(Run(..run, outcomes:), stage) })
+    Opening(run, stage), job.Finished(liveness) ->
+      job.admit(run.outcomes, key, Ended(liveness))
       |> result.map(fn(outcomes) { Opening(Run(..run, outcomes:), stage) })
     Opening(run, Resolving), job.Published(prepared) ->
       case job.key(run.outcomes) == key {
@@ -254,36 +289,80 @@ pub fn poll(
   }
 }
 
-/// Receives the attempt's frames, up to what the next step can consume,
-/// without blocking.
+/// The frames subject the host should read for this attempt, and how many
+/// messages the next step has room for, when the attempt still reads
+/// frames.
 ///
-/// `runtime.receive` calls it before every step, after it has admitted the
-/// job's own messages, so a `Prepared` admitted in the same receive has its
-/// first frames topped up with it. Frames are received until the initial
-/// cut is captured, forty at most; frames that arrive after the capture
-/// stay in the mailbox for the adopted lane, as they always have. The
-/// `Prepared` and the worker's outcomes are job messages, which the runtime
-/// admits through `admit`.
+/// The host reads at most that many before every step and delivers them
+/// as `msg.Frame` arrivals, after it has delivered the job's own messages,
+/// so a `Prepared` admitted in the same receive has its first frames read
+/// with it. Frames are read until the initial cut is captured, forty held
+/// at most; frames that arrive after the capture stay in the mailbox for
+/// the adopted lane, as they always have. The `Prepared` and the worker's
+/// outcomes are job messages, which admission files through `admit`.
+///
+/// After the capture this gives no room, so a host that delivers
+/// `msg.Arrived` from a selector of its own has no number to enforce for
+/// the attempt's frames and must bound them itself. In the terminal that
+/// window lasts at most the two ticks between the acknowledgement and the
+/// adoption, and the terminal's host reads nothing from the frames subject
+/// during it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let pending = attachment.top_up(pending)
+/// case attachment.frame_room(pending) {
+///   Ok(#(subject, room)) -> buffered.waiting(subject, room)
+///   Error(Nil) -> []
+/// }
 /// ```
-pub fn top_up(status: Status) -> Status {
+@internal
+pub fn frame_room(
+  status: Status,
+) -> Result(#(Subject(connection.Message), Int), Nil) {
   case status {
-    Idle | Opening(_, Resolving) -> status
+    Opening(_, Published(_, frames))
+    | Opening(_, Connecting(Candidate(captured: None, ..), frames)) ->
+      Ok(#(buffered.sender(frames), frame_batch - buffered.held(frames)))
+    Idle
+    | Opening(_, Resolving)
+    | Opening(_, Connecting(Candidate(captured: Some(_), ..), _)) -> Error(Nil)
+  }
+}
+
+/// Files one frame the host received from `source` into this attempt's
+/// frames inbox, behind the frames it already holds.
+///
+/// The error means the frame is not this attempt's: the attempt has no
+/// frames inbox yet, or the inbox is another subject. A frame is filed
+/// whatever the attempt's stage, so one that arrives after the capture is
+/// kept for the adopted lane, which the adoption hands the inbox to.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(pending) = attachment.push_frame(pending, source, message)
+/// ```
+@internal
+pub fn push_frame(
+  status: Status,
+  source: Subject(connection.Message),
+  message: connection.Message,
+) -> Result(Status, Nil) {
+  case status {
     Opening(run, Published(prepared, frames)) ->
-      Opening(
-        run,
-        Published(prepared, buffered.top_up(frames, up_to: frame_batch)),
-      )
-    Opening(run, Connecting(Candidate(captured: None, ..) as candidate, frames)) ->
-      Opening(
-        run,
-        Connecting(candidate, buffered.top_up(frames, up_to: frame_batch)),
-      )
-    Opening(_, Connecting(Candidate(captured: Some(_), ..), _)) -> status
+      case buffered.sender(frames) == source {
+        True ->
+          Ok(Opening(run, Published(prepared, buffered.push(frames, message))))
+        False -> Error(Nil)
+      }
+    Opening(run, Connecting(candidate, frames)) ->
+      case buffered.sender(frames) == source {
+        True ->
+          Ok(Opening(run, Connecting(candidate, buffered.push(frames, message))))
+        False -> Error(Nil)
+      }
+    Idle | Opening(_, Resolving) -> Error(Nil)
   }
 }
 
@@ -323,7 +402,7 @@ pub fn select(
 /// same drain the poll runs takes them in order, stopping at the capture.
 /// Before the lane exists, and after the capture, the frame is only held:
 /// the next poll drains it, or the adoption hands the inbox with it to the
-/// adopted lane, which is where the interactive loop's top-up would have
+/// adopted lane, which is where the interactive loop's receive would have
 /// put it. Like `poll`, it returns what it
 /// decided rather than performing it, and it measures the candidate
 /// channel's deadlines against `now`.
@@ -361,6 +440,11 @@ pub fn accept(
       None,
       [],
     )
+
+    // Held for the adopted lane after the capture, with no bound here:
+    // `frame_room` gives none after the capture, so a host that selects
+    // frames itself must bound them. In the terminal this lasts at most the
+    // two ticks between the acknowledgement and the adoption.
     Opening(
       run,
       Connecting(Candidate(captured: Some(_), ..) as candidate, frames),
@@ -524,12 +608,31 @@ fn settle(status: Status) -> #(Status, Option(Outcome), List(Out)) {
 
 fn apply_outcome(
   status: Status,
+  settlement: Settlement,
+) -> #(Status, Option(Outcome), List(Out)) {
+  case settlement {
+    Ended(liveness) -> adopt(status, liveness)
+    Relayed(outcome) -> apply_relayed(status, outcome)
+  }
+}
+
+fn apply_relayed(
+  status: Status,
   outcome: weft.Pulled(Nil, String),
 ) -> #(Status, Option(Outcome), List(Out)) {
   case outcome {
     weft.NotYet -> #(status, None, [])
     weft.PulledOutcome(weft.Completed(..)) -> #(status, None, [])
-    weft.AllDelivered -> adopt(status)
+
+    // The host turns the relay's end into `Ended` with the socket checked
+    // (`runtime.hold`), so an unchecked end reaches an attempt only from a
+    // caller that bypassed the host. It is refused rather than adopted,
+    // because adopting without the check is the one thing it must not do.
+    weft.AllDelivered ->
+      adopt(
+        status,
+        job.SocketGone("the socket was not checked before adoption"),
+      )
     weft.PulledOutcome(weft.Failed(error: reason, ..)) -> failed(status, reason)
     weft.PulledOutcome(weft.Crashed(reason:, ..))
     | weft.PulledOutcome(weft.DrainProofLost(reason:, ..))
@@ -544,11 +647,15 @@ fn apply_outcome(
   }
 }
 
-// The worker has completed, which it does only after the acknowledgement.
-// `connection.adopt` reads whether the socket's actor is still alive; that
-// liveness read is the one process read left in the step (ADR-013, the S5
-// addendum).
-fn adopt(status: Status) -> #(Status, Option(Outcome), List(Out)) {
+// The worker has completed, which it does only after the acknowledgement,
+// and the host has read whether the socket's actor is still alive
+// (`runtime.hold`, phase 3 of issue #530). An attempt that captured its cut
+// adopts on a live socket and fails on a gone one; the check is the host's
+// so that the step reads no process.
+fn adopt(
+  status: Status,
+  liveness: job.SocketLiveness,
+) -> #(Status, Option(Outcome), List(Out)) {
   case status {
     Opening(
       _,
@@ -557,17 +664,13 @@ fn adopt(status: Status) -> #(Status, Option(Outcome), List(Out)) {
         frames,
       ),
     ) ->
-      case
-        channel.socket(channel)
-        |> option.to_result("replay channels cannot be adopted as live sockets")
-        |> result.try(connection.adopt)
-      {
-        Ok(Nil) -> #(
+      case liveness {
+        job.SocketAlive -> #(
           Idle,
           Some(Adopted(channel, cut, view, frames, workspace, name, key)),
           [],
         )
-        Error(reason) -> failed(status, reason)
+        job.SocketGone(reason:) -> failed(status, reason)
       }
     Idle
     | Opening(_, Resolving)

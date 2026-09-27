@@ -38,6 +38,7 @@ import tui/snapshot
 import tui/virtual_backend
 import tui/workspace
 import tui_test/pushed
+import tui_test/stepping
 import weft
 import weft/poll
 
@@ -70,7 +71,7 @@ pub fn a_prompt_queues_its_input_then_its_request_then_its_frame_test() {
   let model = tui.update(backend.Paste("one prompt"), model)
   let _ = drain(sink)
 
-  let #(_, effects) = tui.step(backend.KeyPress("enter"), model)
+  let #(_, effects) = stepping.step(backend.KeyPress("enter"), model)
   let assert [first, ..] = effects as "the step decided something"
   assert first == effect.Record(recorder, recording.Key("enter"))
     as "the input's line is the first effect of its step"
@@ -121,7 +122,7 @@ pub fn an_adoption_queues_the_retired_lanes_close_before_the_adoption_test() {
   let _ = drain(sink)
 
   let #(adopted, effects) =
-    tui.step(backend.Tick, runtime.receive(runtime.stamp(captured)))
+    stepping.step(backend.Tick, runtime.receive(runtime.stamp(captured)))
   assert !attachment.busy(adopted.candidate) as "premise: the step adopted"
   assert list.filter_map(effects, lifecycle(_, old_socket))
     == ["closed 1", "shut old socket", "adopted 2"]
@@ -187,7 +188,7 @@ pub fn a_failing_replacement_keeps_its_notes_and_drops_its_writes_test() {
     |> runtime.hold(job.AttachArrived(key, job.Published(prepared_on(frames))))
 
   let #(failed, effects) =
-    tui.step(backend.Tick, runtime.receive(runtime.stamp(model)))
+    stepping.step(backend.Tick, runtime.receive(runtime.stamp(model)))
   assert !attachment.busy(failed.candidate) as "premise: the attempt failed"
 
   // The lane's own close here and the abandon's second one below are a
@@ -309,7 +310,7 @@ fn scripted_session(path: String) -> String {
     tui_model.Model(
       ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
       recorder: Some(recorder),
-      peer: tui_model.Attached(socket),
+      peer: tui_model.Attached,
       channel: Some(channel),
       session: "A",
       next_attempt: 2,
@@ -391,7 +392,7 @@ fn captured_session(recorder: recording.Recorder) {
         workspace.Context(path: "/w/demo", branch: None),
       ),
       recorder: Some(recorder),
-      peer: tui_model.Attached(socket),
+      peer: tui_model.Attached,
       session: "A",
       transport_time_ms: fn() { 0 },
     )
@@ -414,12 +415,12 @@ fn replay_step(model: tui_model.Model, step: virtual_backend.Step) {
   case step {
     virtual_backend.Attempt(event) -> {
       process.send(buffered.sender(model.replay_inbox), event)
-      tui.step(backend.Tick, runtime.receive(model))
+      stepping.step(backend.Tick, runtime.receive(model))
     }
-    virtual_backend.Input(event) -> tui.step(event, runtime.receive(model))
+    virtual_backend.Input(event) -> stepping.step(event, runtime.receive(model))
     virtual_backend.Deliver(message) -> {
       process.send(buffered.sender(model.inbox), message)
-      tui.step(backend.Tick, runtime.receive(model))
+      stepping.step(backend.Tick, runtime.receive(model))
     }
   }
 }

@@ -20,6 +20,7 @@ import tui/buffered
 import tui/connection
 import tui/frame
 import tui/model as tui_model
+import tui/msg
 import tui/pacing
 import tui/runtime
 import tui/session_channel
@@ -28,6 +29,7 @@ import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
 import tui_test/pushed
+import tui_test/stepping
 
 fn initial(now: Int) -> tui_model.Model {
   tui.new_model_with_clock(
@@ -228,7 +230,7 @@ const assistant_phase = "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand
 // Moves the event's presentation reading without touching the clock, which
 // is what a caller of `tui.step` does to choose the time.
 fn stamped_at(model: tui_model.Model, now: Int) -> tui_model.Model {
-  tui_model.Model(..model, stamp: tui_model.Stamp(..model.stamp, now_ms: now))
+  tui_model.Model(..model, stamp: msg.Stamp(..model.stamp, now_ms: now))
 }
 
 pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
@@ -245,14 +247,14 @@ pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
     buffered.sender(model.inbox),
     connection.Incoming(assistant_phase),
   )
-  let #(started, _) = tui.step(backend.Tick, runtime.receive(model))
+  let #(started, _) = stepping.step(backend.Tick, runtime.receive(model))
   assert started.generation_started_ms == Some(-10_000)
-  let #(live, _) = tui.step(backend.Tick, started)
+  let #(live, _) = stepping.step(backend.Tick, started)
   assert live.activity_started_ms == Some(-10_000)
 
   // Three seconds of stamp are three seconds of activity, with the clock
   // still refusing every call.
-  let #(later, _) = tui.step(backend.Tick, stamped_at(live, -7000))
+  let #(later, _) = stepping.step(backend.Tick, stamped_at(live, -7000))
   assert later.activity_elapsed_s == 3
 
   // The frame decision, a delta, a usage settlement and the input events
@@ -266,12 +268,12 @@ pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
     connection.Incoming(gateway.usage("main", 10, 300, 0.0)),
   )
   let #(settled, _) =
-    tui.step(backend.Tick, runtime.receive(stamped_at(later, -8000)))
+    stepping.step(backend.Tick, runtime.receive(stamped_at(later, -8000)))
   assert settled.output_rate_tps == Some(150)
-  let #(resized, _) = tui.step(backend.Resize(100, 30), settled)
+  let #(resized, _) = stepping.step(backend.Resize(100, 30), settled)
   assert resized.last_frame_ms == -8000
-  let #(typed, _) = tui.step(backend.KeyPress("a"), resized)
-  let #(_, _) = tui.step(backend.MouseScroll(5, 5, True), typed)
+  let #(typed, _) = stepping.step(backend.KeyPress("a"), resized)
+  let #(_, _) = stepping.step(backend.MouseScroll(5, 5, True), typed)
 }
 
 pub fn update_reads_the_presentation_clock_once_per_event_test() {
@@ -361,16 +363,16 @@ pub fn a_step_ticks_the_lane_at_the_stamped_transport_reading_test() {
   let at = fn(model: tui_model.Model, transport: Int) {
     tui_model.Model(
       ..model,
-      stamp: tui_model.Stamp(..model.stamp, transport_ms: transport),
+      stamp: msg.Stamp(..model.stamp, transport_ms: transport),
     )
   }
   let assert Some(lane) = model.channel
   assert !session_channel.in_flight(lane)
 
-  let #(early, _) = tui.step(backend.Tick, at(model, 249))
+  let #(early, _) = stepping.step(backend.Tick, at(model, 249))
   let assert Some(lane) = early.channel
   assert !session_channel.in_flight(lane)
-  let #(due, _) = tui.step(backend.Tick, at(model, 250))
+  let #(due, _) = stepping.step(backend.Tick, at(model, 250))
   let assert Some(lane) = due.channel
   assert session_channel.in_flight(lane)
     as "the step's lane tick runs at the stamp, not at a clock it reads"

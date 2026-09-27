@@ -217,8 +217,7 @@ fn await(driver, predicate) {
 
 fn attached(sample: tui_driver.Sample, id) {
   case sample.model.peer, sample.model.captured {
-    tui_model.Attached(_), Some(#(cut, _)) ->
-      cut.attachment.expected.session == id
+    tui_model.Attached, Some(#(cut, _)) -> cut.attachment.expected.session == id
     _, _ -> False
   }
 }

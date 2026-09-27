@@ -1082,6 +1082,6 @@ pub fn displayed_agents(model: Model) -> List(agent_view.Row) {
           approvals: [],
         )
       })
-    Attached(_) | Preview | Replaying -> rows
+    Attached | Preview | Replaying -> rows
   }
 }

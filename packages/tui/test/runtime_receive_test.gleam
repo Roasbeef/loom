@@ -28,6 +28,7 @@ import tui/interaction
 import tui/job
 import tui/job_runner
 import tui/model as tui_model
+import tui/msg
 import tui/runtime
 import tui/session_channel
 import tui/snapshot
@@ -146,6 +147,28 @@ pub fn adoption_leaves_the_old_inbox_buffer_behind_test() {
   let ticked = tui.update(backend.Tick, drained)
   assert ticked.notices == before + 1
     as "no notice from the replaced inbox is reduced after the swap"
+
+  // The host reads the adopted inbox's subject from then on, never the
+  // replaced one's: a notice the old socket sends after the swap is not
+  // read, and one delivered as if it had been is not filed.
+  let replaced = buffered.sender(model.inbox)
+  process.send(replaced, pushed.notice("main", 14))
+  assert list.all(runtime.arrivals(ticked), fn(arrival) {
+    case arrival {
+      msg.Frame(source:, ..) -> source == buffered.sender(ticked.inbox)
+      msg.Replayed(..) | msg.JobReplied(..) -> True
+    }
+  })
+    as "the host reads only the adopted inbox's subject"
+  let #(stale, _) =
+    tui.step(
+      msg.Arrived([msg.Frame(replaced, pushed.notice("main", 15))]),
+      ticked,
+    )
+  assert buffered.held(stale.inbox) == buffered.held(ticked.inbox)
+  let after = tui.update(backend.Tick, stale)
+  assert after.notices == before + 1
+    as "no notice from the replaced socket is reduced, however it arrives"
 }
 
 // The frames a candidate received after its initial cut are not the

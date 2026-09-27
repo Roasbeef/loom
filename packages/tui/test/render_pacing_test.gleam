@@ -23,6 +23,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/keymap
 import tui/model as tui_model
 import tui/pacing
 import tui/protocol
@@ -240,13 +241,25 @@ pub fn a_tick_carrying_a_delta_waits_for_the_frame_interval_test() {
 }
 
 pub fn frame_boundary_paces_only_the_tick_that_carried_traffic_test() {
-  assert pacing.frame_boundary(backend.Tick, pacing.TranscriptMoved)
+  assert pacing.frame_boundary(
+      keymap.translate(backend.Tick, Ok(None)),
+      pacing.TranscriptMoved,
+    )
     == pacing.Paced
-  assert pacing.frame_boundary(backend.Tick, pacing.TranscriptQuiet)
+  assert pacing.frame_boundary(
+      keymap.translate(backend.Tick, Ok(None)),
+      pacing.TranscriptQuiet,
+    )
     == pacing.FlushPoint
-  assert pacing.frame_boundary(backend.Resize(80, 24), pacing.TranscriptMoved)
+  assert pacing.frame_boundary(
+      keymap.translate(backend.Resize(80, 24), Ok(None)),
+      pacing.TranscriptMoved,
+    )
     == pacing.FlushPoint
-  assert pacing.frame_boundary(backend.KeyPress("a"), pacing.TranscriptQuiet)
+  assert pacing.frame_boundary(
+      keymap.translate(backend.KeyPress("a"), Ok(None)),
+      pacing.TranscriptQuiet,
+    )
     == pacing.Paced
 }
 

@@ -87,20 +87,36 @@ import tui/worktree_view
 /// The authenticated build belongs to the retained control host. Projecting
 /// its mismatch on every coherent cut keeps attachment and later captures from
 /// erasing the update notice when they replace the transcript presentation.
+/// `ours` is `Model.client_build`, read when the model was created, so a cut
+/// reads no environment variable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lines = inbound.daemon_build_lines(model.daemon_host, model.client_build)
+/// ```
 @internal
-pub fn daemon_build_lines(host: Option(daemon_selection.Host)) -> List(Line) {
+pub fn daemon_build_lines(
+  host: Option(daemon_selection.Host),
+  ours: build_identity.Identity,
+) -> List(Line) {
   case host {
     None -> []
     Some(host) ->
-      build_mismatch_lines(daemon.hello(daemon_selection.control(host)).build)
+      build_mismatch_lines(
+        daemon.hello(daemon_selection.control(host)).build,
+        ours,
+      )
   }
 }
 
-fn build_mismatch_lines(build: Option(control_protocol.Build)) -> List(Line) {
+fn build_mismatch_lines(
+  build: Option(control_protocol.Build),
+  ours: build_identity.Identity,
+) -> List(Line) {
   case build {
     None -> []
     Some(theirs) -> {
-      let ours = build_identity.current()
       let theirs = build_identity.Identity(theirs.version, theirs.commit)
       case build_identity.matches(ours, theirs) {
         True -> []
@@ -453,7 +469,7 @@ pub fn request_decisions(model: Model, ids: List(String)) -> Model {
     // attached" error here would be a line no live session ever produced.
     Replaying -> model
 
-    Attached(_) | Disconnected | Preview ->
+    Attached | Disconnected | Preview ->
       case model.channel {
         None -> tui_model.append_error(model, "conversation is not attached")
         Some(channel) ->
@@ -582,7 +598,7 @@ fn render_cut(
     Line(System, boundary),
     Line(System, attachment_banner),
     ..list.append(
-      daemon_build_lines(model.daemon_host),
+      daemon_build_lines(model.daemon_host, model.client_build),
       list.append(
         configuration_lines(view, active),
         list.append(
@@ -944,7 +960,7 @@ pub fn decide(
 /// the connection inbox before this step.
 ///
 /// It reads no mailbox. A message that arrived during the step waits for
-/// the next one, whose top-up receives it behind anything still held.
+/// the next one, whose receive files it behind anything still held.
 /// Each message is taken from whatever inbox the model holds at that
 /// moment, so a drain that follows an adoption in the same step reads the
 /// adopted inbox and never the one it replaced.
@@ -2065,14 +2081,11 @@ fn settle_usage(
     // rule that stops a replay echoing a prompt.
     True, Replaying, _ | True, Disconnected, _ -> #(model.output_rate_tps, None)
 
-    True, Attached(..), Some(started) | True, Preview, Some(started) -> #(
+    True, Attached, Some(started) | True, Preview, Some(started) -> #(
       transcript_lines.output_rate(settled.output, model.stamp.now_ms - started),
       None,
     )
-    True, Attached(..), None | True, Preview, None -> #(
-      model.output_rate_tps,
-      None,
-    )
+    True, Attached, None | True, Preview, None -> #(model.output_rate_tps, None)
   }
   Model(..model, generation_started_ms:, output_rate_tps:, notice:)
 }
@@ -2196,7 +2209,7 @@ fn configured_model(
 fn replaying(model: Model) -> Bool {
   case model.peer {
     Replaying -> True
-    Attached(..) | Preview | Disconnected -> False
+    Attached | Preview | Disconnected -> False
   }
 }
 
@@ -2484,7 +2497,7 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
       notice: "prompt sent to " <> strand,
     )
   case model.peer {
-    Attached(..) ->
+    Attached ->
       outbound.send_frame(sent, protocol.prompt(model.next_id, strand, text))
 
     // The server echoed this turn back as an entry, and the recording has
@@ -2527,14 +2540,13 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
 @internal
 pub fn expect_own_turn(model: Model, submission: Submission) -> Model {
   case model.peer, tui_model.active_strand_live(model) {
-    Attached(..), True ->
+    Attached, True ->
       Model(..model, awaiting_outcome: Some(submission))
       |> tui_model.invalidate_transcript
     Replaying, True ->
       Model(..model, queued: in_commit_order(model.queued, submission))
       |> tui_model.invalidate_transcript
-    Attached(..), False | Replaying, False | Preview, _ | Disconnected, _ ->
-      model
+    Attached, False | Replaying, False | Preview, _ | Disconnected, _ -> model
   }
 }
 
@@ -2674,7 +2686,7 @@ fn reconcile_interrupt(
 // A replay remains a replay and cannot fabricate responses after recorded loss.
 fn after_close(peer: Peer) -> Peer {
   case peer {
-    Attached(..) | Disconnected -> Disconnected
+    Attached | Disconnected -> Disconnected
     Preview -> Preview
     Replaying -> Replaying
   }
@@ -2840,8 +2852,8 @@ pub fn select_workspace(
 @internal
 pub fn request_visible_worktree(model: Model) -> Model {
   case model.peer, layout.diff_shown(model) {
-    Attached(_), True -> refresh_worktree(model)
-    Attached(_), False | Preview, _ | Replaying, _ | Disconnected, _ -> model
+    Attached, True -> refresh_worktree(model)
+    Attached, False | Preview, _ | Replaying, _ | Disconnected, _ -> model
   }
 }
 
@@ -2849,7 +2861,7 @@ pub fn request_visible_worktree(model: Model) -> Model {
 @internal
 pub fn refresh_worktree(model: Model) -> Model {
   case model.peer, model.channel {
-    Attached(_), Some(_) ->
+    Attached, Some(_) ->
       surfaces.service_worktree_read(
         Model(
           ..model,
