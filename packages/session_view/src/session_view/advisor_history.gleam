@@ -93,6 +93,27 @@ pub fn project(view: snapshot_view.View, window: snapshot.Window) -> Board {
   Board(items, advisor.unloaded)
 }
 
+/// The part of the board a strand's transcript shows.
+///
+/// The commentary is projected into the primary's transcript, so only
+/// `main` shows it. The advisor's own strand already holds the same text as
+/// its ordinary entries, and drawing the board there too would print it
+/// twice; any other strand never shows the advisor's commentary at all.
+/// Every host asks this rather than deciding for itself, so the terminal
+/// and the web view cannot disagree about where the commentary appears.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert advisor_history.visible(board, "sub").items == []
+/// ```
+pub fn visible(board: Board, strand: String) -> Board {
+  case strand {
+    "main" -> board
+    _ -> Board([], option.None)
+  }
+}
+
 fn text_blocks(value: entry.Entry) -> List(Item) {
   case value {
     entry.MessageEntry(

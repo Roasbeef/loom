@@ -72,7 +72,8 @@ pub fn project(
       branch.records,
       presentation,
       [],
-      advisor_history.project(view, cut.window),
+      advisor_history.project(view, cut.window)
+        |> advisor_history.visible(strand),
     )
   lines
 }

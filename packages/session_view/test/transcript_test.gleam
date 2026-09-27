@@ -1,6 +1,7 @@
 //// `transcript.project` draws one strand of a capture from the records on
 //// that strand's ancestry, oldest first, and nothing from another strand's
-//// branch that shares the same window.
+//// branch that shares the same window. The advisor's commentary board is
+//// drawn only on `main`.
 
 import core/clock
 import core/entry
@@ -10,6 +11,7 @@ import core/message
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript
@@ -104,4 +106,70 @@ pub fn a_strand_is_drawn_from_its_own_ancestry_oldest_first_test() {
 
 pub fn an_empty_window_draws_no_records_test() {
   assert transcript.project(cut([]), view([#("main", 1)]), "main") == []
+}
+
+fn advised(seq: Int, parent: Int, text: String) -> snapshot.Item {
+  snapshot.Loaded(
+    entry.MessageEntry(
+      id(seq),
+      Some(id(parent)),
+      seq,
+      1000,
+      message.AssistantMessage(
+        [message.AssistantText(text, None)],
+        "test",
+        "test",
+        "test",
+        None,
+        None,
+        None,
+        usage(),
+        message.Stop,
+        None,
+        None,
+        None,
+        None,
+        1000,
+      ),
+      False,
+    ),
+    100,
+  )
+}
+
+fn usage() -> message.Usage {
+  message.Usage(
+    0,
+    0,
+    0,
+    0,
+    None,
+    None,
+    0,
+    message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+  )
+}
+
+fn mentions(lines: List(transcript_line.Line), text: String) -> Int {
+  list.count(lines, fn(line) { string.contains(line.text, text) })
+}
+
+pub fn only_main_shows_the_advisor_board_test() {
+  // The advisor forks from main's root and comments once. "sub" shares the
+  // root and nothing else.
+  let commentary = "Watch the edge case."
+  let items = [
+    advised(3, 2, commentary),
+    said(2, Some(1), "advisor feed"),
+    said(1, None, "first"),
+  ]
+  let captured = cut(items)
+  let shown = view([#("main", 1), #("advisor", 3), #("sub", 1)])
+
+  // Main draws the commentary from the board. The advisor draws it once, as
+  // its own entry, and another strand never draws it.
+  assert mentions(transcript.project(captured, shown, "main"), commentary) > 0
+  assert mentions(transcript.project(captured, shown, "advisor"), commentary)
+    == 1
+  assert mentions(transcript.project(captured, shown, "sub"), commentary) == 0
 }

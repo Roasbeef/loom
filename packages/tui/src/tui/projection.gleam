@@ -800,12 +800,9 @@ pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
 }
 
 // Advisor-only commentary is visible beside the primary's captured entries.
-// The advisor's own branch retains its ordinary transcript instead.
+// Which strands show it is session_view's rule, shared with every host.
 fn visible_advisor_history(model: Model) -> advisor_history.Board {
-  case model.active_strand {
-    "main" -> model.advisor_history
-    _ -> advisor_history.Board([], None)
-  }
+  advisor_history.visible(model.advisor_history, model.active_strand)
 }
 
 // The row and anchor projections merge the same captured blocks. The stable
