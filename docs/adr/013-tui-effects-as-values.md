@@ -368,11 +368,11 @@ The survey of mailbox reads, at the commit this slice started from:
   which read through `connection.receive`, and the four places that call it:
   the wheel and drag arms of `apply_input`
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
-  key drain (`tui/interaction.gleam:1202` (`drain_connection`)) and the tick
+  key drain (`tui/interaction.gleam:1213` (`drain_connection`)) and the tick
   (`tui/tick.gleam:131` (`drain_connection`)). The attachment's reads:
-  `tui/attachment.gleam:496` (`prepare`),
-  `tui/attachment.gleam:550` (`drain`) and
-  `tui/attachment.gleam:609` (`settle`). The replay drain:
+  `tui/attachment.gleam:397` (`prepare`),
+  `tui/attachment.gleam:455` (`drain`) and
+  `tui/attachment.gleam:502` (`settle`). The replay drain:
   `tui/tick.gleam:172` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:129` (`drain_reconnect`)), the control reply
@@ -382,10 +382,11 @@ The survey of mailbox reads, at the commit this slice started from:
   `tui/sessions`, a module S5 deleted with the unreachable local switch.
   Each answers a job the step started, and they move when job starts
   become keyed effects.
-- **Outside the step, and staying there.** The worker's acknowledgement wait
-  (`tui/attachment.gleam:202` (`acknowledged`)) runs in the worker, and
-  `attachment.cancel` (`tui/attachment.gleam:758` (`buffered.receive`)) runs
-  as an effect. `sessions.discard`, now `buffered.discard`, is the
+- **Outside the step, and staying there.** The worker's acknowledgement wait,
+  now in the runner (`tui/job_runner.gleam:391` (`acknowledged`)), runs in
+  the worker, and `attachment.cancel` runs as an effect; since S5 it reads
+  no mailbox, and the attachment job's cancel drains the job's messages
+  instead (`tui/job_runner.gleam:249` (`drain`)). `sessions.discard`, now `buffered.discard`, is the
   `Discard` effect. The bootstrap snapshot wait
   (`tui/bootstrap.gleam:1199` (`await_snapshot`)) runs before the loop, the
   daemon control handshake in `tui/daemon.gleam` runs in its own process, and
@@ -666,7 +667,7 @@ that waits for a real reply selects on `job_runner.selector`.
 (`sessions.start`) and the attachment attempt (`attachment.start_recorded`)
 and pulls the switch's run, which S5 moves. Adoption calls
 `connection.adopt` (in the local switch's adoption, which S5 deleted, and
-at `tui/attachment.gleam:657` (`connection.adopt`)), which creates nothing
+at `tui/attachment.gleam:552` (`connection.adopt`)), which creates nothing
 but reads whether the replacement socket's actor is alive. That read
 stays in the step until phase 3, which replaces etui's events with a
 domain message type; the runtime can then read the liveness when it
@@ -713,3 +714,173 @@ after: `tui` 0.46 s and 0.022 s before, 0.47 s and 0.023 s after;
 0.32 s and 0.012 s, 0.32 s and 0.013 s. `tui@runtime` grew with the
 routing it now does, from 0.21 s and 0.006 s to 0.33 s and 0.012 s. The
 new `tui@job` compiles in 0.15 s and `tui@job_runner` in 0.17 s.
+
+## Addendum: phase 2 S5, attachment jobs as data, and the local switch removed (2026-09-26)
+
+The fifth slice of phase 2 makes the provisional attachment a keyed job,
+the last job the step still started itself, and deletes the local session
+switch, which the slice would otherwise have converted. Nothing above is
+changed by it; the S2 and S4 surveys' citations move to where their symbols
+now are, and name the deleted module where one no longer exists.
+
+**The local switch was unreachable, and is gone.** `submit.open_legacy_session_selector`
+was the only way into the `SessionSelector` overlay, whose Enter started the
+`tui/sessions` worker that the tick pulled and
+`inbound.handle_session_switch_message` adopted. Nothing called it: it has
+had no caller in `packages/tui` or `packages/client` since `c12d22eb`
+renamed it from `open_session_selector` and pointed `/sessions` at daemon
+control. The deletion removes the overlay and its exhaustive arms,
+`Model.session_switch`, the tick's switch drain, the switch message handler
+and its adoption, `effect.CancelSessionSwitch`, `tui/sessions`, and the
+record-based discovery in `tui/bootstrap` that fed it, 1,102 lines of
+source and 1,509 in all. `sessions.discard`, the one live piece, is now
+`buffered.discard`.
+
+**The attachment is a job.** Opening or creating a session allocates a key
+and queues `StartJob(key, job.Attach(route, within_ms))`, where
+`job.AttachRoute` is `OpenSession(host, session)` or `CreateSession(host,
+key, workspace, name, config)`. The candidate is `attachment.opening(key,
+trace)`, which records the key and starts nothing. `job_runner.start_attach`
+creates the frames subject, the `Prepared` subject and the relay's subject in
+the terminal's process when the runtime performs the start, and the worker
+connects its socket to the frames subject and names it in the `job.Prepared`
+it publishes. The candidate learns its frames inbox from that `Prepared` and
+from nowhere else, so the step creates no subject. The job's messages,
+`job.Published(prepared)` and `job.Settled(reply)`, arrive tagged with the
+key as `job.AttachArrived`, and `runtime.hold` admits them through
+`attachment.admit`, which takes them only under the candidate's key and
+takes one `Prepared` per attempt. The source-subject comparisons in
+`attachment.accept`, the `Event` type that carried the sources, and the
+`CloseStray` output are gone; `accept` now takes a frame a test driver
+selected from the frames inbox, and `select` offers only that inbox, since
+the driver selects the job's own messages through `job_runner.selector`.
+`daemon_selection.Target`, which moved from `tui/attachment`, is what the
+worker resolves; the move breaks the import cycle a keyed attachment would
+otherwise close, since `tui/job` imports `tui/daemon/selection`.
+
+The status is a stage. It is `Resolving` until its `Prepared` is admitted,
+`Published` until the next poll starts the candidate lane on the socket, and
+`Connecting` while the lane captures its cut. Each holds only what exists at
+that point, so a lane without a frames inbox, or a frames inbox without the
+socket that feeds it, cannot be expressed.
+
+**A dropped `Prepared` has its socket closed.** A `Prepared` no attempt
+admits, because no attempt holds its key or the attempt already took one,
+carries an open socket nobody else will close on the terminal's behalf.
+`runtime.hold` passes it to `job_runner.dropped`, which closes the socket
+and empties the frames subject it names. This is the one drop that acts, and
+it makes `hold` perform that one kind of I/O; every other drop is only
+forgotten. `job_runner.cancel` on an attachment job cancels the worker and
+then drains the job's messages without waiting, dropping any `Prepared` it
+finds the same way and emptying the frames subject, which is the bounded
+drain quit had before: a socket published just before the cancel is closed
+though no later step will read it. The runner keeps an attachment job until
+its relay's last message is read, as it keeps every job. A `Prepared` the
+worker sends before it returns reaches the terminal's mailbox before the
+relay's last message does, because a local send is queued at once and the
+relay sends only after the worker has exited; that is what lets the runner
+forget the job at the relay's last message without leaving a `Prepared`
+behind.
+
+**Cancel and cleanup are two effects.** `attachment.cancel`, which
+performs `Abandon`, now closes only what the status holds: an admitted
+`Prepared`'s socket, or the lane with its recorded close, and the frames
+inbox. Stopping the worker is the job cancel's part.
+`tui_model.emit_attachment` queues every attachment output, and puts a
+`CancelJob` for the attempt's key ahead of each `Abandon`, so a failed
+attempt and a quit both cancel the job before the cleanup.
+
+**Orderings kept.**
+
+- *Quit.* The lane close, then `CancelJob` for the attempt and its
+  `Abandon`, then the control job, relaunch and activity poll cancels, then
+  the control close. The recording still notes the adopted lane's close
+  ahead of the attempt's, and the attempt's recorded close still lands at
+  the `Abandon`'s place. `effects_test` pins the list with an attempt in
+  flight.
+- *Nothing after a cancel.* Quit and failure clear the candidate in the
+  step that queues the cancel, so nothing the job sends afterwards is
+  admitted, and a late `Prepared` is closed.
+- *The frames arrive with the `Prepared`.* `runtime.receive` now admits job
+  messages before it tops up the inboxes, so a `Prepared` admitted in one
+  receive has its first frames topped up in the same receive, as the old
+  poll read the frames mailbox in the tick that took the `Prepared`.
+- *Tick drain order.* Unchanged, less the deleted switch drain.
+- *Same process.* The subjects are created while the runtime performs the
+  start inside `update`, in the process that created the model.
+
+**What the step still does itself.** It reads files, which a later slice
+moves, and adoption still calls `connection.adopt`
+(`tui/attachment.gleam:552` (`connection.adopt`)), which creates nothing but
+reads whether the socket's actor is alive. That read stays until phase 3,
+when the runtime can read the liveness as it delivers the message that
+carries the socket and hand the answer to the reducer.
+
+**The client test driver.** It selects the candidate's frames through
+`attachment.select` and everything else through the job selector. An actor
+discards a message its selector does not match, and the frames inbox is
+known only once its `Prepared` has been admitted, so a frame that reaches
+the driver's actor before that is discarded; before the lane subscribes, the
+socket sends only `Connected`, which the lane ignores. The shipped loop
+selects nothing and loses nothing: frames wait in the mailbox for the
+top-up.
+
+**Tests and mutations.** `attachment_jobs_test` pins the slice: opening a
+session queues exactly one `StartJob(key, job.Attach(..))` and starts
+nothing; frames sent before the `Prepared` is admitted are not reduced, and
+the tick after it captures from them and acknowledges; a stale `Prepared`, a
+`Prepared` with no attempt at all, and a second one for the same attempt
+each have their socket closed; after a quit nothing the cancelled job sends
+reaches an attempt; and a failed attempt cancels its job ahead of its
+cleanup. The S2 swap regression and the adoption hand-over test
+(`runtime_receive_test`) and the adoption recording tests
+(`recording_effects_test`) now hand the attempt its `Prepared` with
+`runtime.hold`, which retires `runtime_receive_test_ffi`, and pass. Each
+mutation below was applied alone and reverted.
+
+| Mutation | Tests that failed |
+|---|---|
+| `job_runner.dropped` leaves the socket open | `a_stale_prepared_has_its_socket_closed_test`, `a_second_prepared_for_the_same_attempt_is_closed_test`, `an_arrival_for_a_cancelled_attach_key_is_never_delivered_test` |
+| `job_runner.dropped` leaves the frames subject full | `a_stale_prepared_has_its_socket_closed_test` |
+| `attachment.admit` takes a `Prepared` under any key | `a_stale_prepared_has_its_socket_closed_test` |
+| `attachment.admit` takes a second `Prepared` | `a_second_prepared_for_the_same_attempt_is_closed_test` |
+| `emit_attachment` queues `Abandon` without `CancelJob` | `an_arrival_for_a_cancelled_attach_key_is_never_delivered_test`, `a_failed_attempt_cancels_its_job_ahead_of_its_cleanup_test`, `effects_test.quit_with_a_channel_queues_every_close_and_cancel_test` |
+| `runtime.receive` tops up before it admits | none |
+
+The last is not caught, and breaks no rule: a `Prepared` admitted after the
+top-up has its first frames read one tick later. Catching it needs a
+`Prepared` that arrives through a real job in the same receive, which only a
+live socket produces.
+
+**Model.** The P model's `AttachmentWorker` now stands for the worker
+`job_runner.start_attach` runs, and the terminal's step no longer creates
+it: `beginOpen` queues `EFF_START`, and performing it creates the frames
+inbox and the worker and records the worker under the key. `ePrepared` and
+`eOutcome` carry the key, the candidate admits them under its own key, and
+the model drops anything else, closing a dropped `Prepared`'s socket and
+announcing `ePreparedDropped`. A new liveness spec, S8
+`DroppedPreparedClosed`, requires that close; S6 cannot see it, because the
+worker's cancellation also brings the socket down through its guardian.
+A new probe finds a dropped `Prepared` within 76 schedules. All ten
+test cases pass at 30,000 schedules each, the ten probes find their
+witnesses, and the full mutation table gives the same verdicts as before.
+One report changed: M8 in `tcQuitLate` is now named by S6 rather than S5;
+both are hot at the end of that run, and the checker names one. Two
+mutations are new. M18 drops a `Prepared` without closing it and only S8
+catches it, in 80 schedules. M19 queues an `Abandon` without its
+`CancelJob`, and S5 and S6 catch it in 2. The model's README has the
+table.
+
+**Compile time.** No local step was added to the modules the inliner
+revisits (`docs/execution.md` §8). Measured with `erlc +time` on the
+generated modules, median of three, wall time and `core_inline_module`
+before the attachment change (after the deletion) and after it: `tui`
+0.45 s and 0.022 s, 0.45 s and 0.022 s; `tui@tick` 0.46 s and 0.020 s,
+0.47 s and 0.021 s; `tui@session_control` 0.88 s and 0.059 s, 0.92 s and
+0.061 s; `tui@inbound` 2.37 s and 0.125 s, 2.44 s and 0.132 s;
+`tui@interaction` 2.47 s and 0.165 s, 2.55 s and 0.176 s; `tui@submit`
+1.05 s and 0.047 s, 1.09 s and 0.050 s; `tui@attachment` 0.20 s and
+0.008 s, 0.21 s and 0.007 s; `tui@runtime` 0.32 s and 0.012 s, 0.35 s and
+0.013 s; `tui@job_runner` 0.16 s and 0.005 s, 0.17 s and 0.006 s. The
+deletion itself took `tui@submit` from 1.25 s to 1.05 s and `tui@inbound`
+from 2.53 s to 2.37 s.
