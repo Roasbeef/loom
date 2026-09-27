@@ -43,6 +43,45 @@ intent; `gateway.request_identity` never mints a replacement. This lets the
 terminal distinguish provider completion from the delivery of its saved answer.
 See `protocol-change/036-stream-response-handoff.md`.
 
+## Web view (`loomd --ui`)
+
+`protocol-change/051` and ADR-014. `daemon/main` parses `--ui` into
+`Config.view` (`ViewOff | ViewOn`). With it, `run` starts
+`daemon/ui_sessions` and passes `server.Ui(sessions, upgrade)` to
+`listen_serving`; without it `server.Config.ui` is `None`, every `/ui` path
+is a 404, the control `hello` has no `ui` field and `ui.link` answers
+`unavailable`.
+
+- `daemon/ui_sessions`: one `weft/actor` owning the ticket table (60 s,
+  single use) and the UI-session table (8 h), both keyed by the SHA-256 of
+  the secret. Redemption is one message, so a ticket cannot succeed twice;
+  a ticket presented with an existing cookie replaces that UI session.
+  `actor.periodic` sweeps; every read checks the deadline itself.
+- `daemon/ui_http`: pure checks. `loopback_host` (Host is `127.0.0.1`,
+  `[::1]` or `localhost`, any port), `exchange_allowed` (`Sec-Fetch-Site`
+  is `none` or `same-origin`), `origin_matches` (the socket's `Origin` is
+  `http://` and the host), the `loom_ui` cookie (`HttpOnly`,
+  `SameSite=Strict`, `Path=/ui`) and `secured`, the headers every `/ui`
+  response carries.
+- `daemon/server`: `web_view` routes `/ui/sessions/<id>` (page, or the
+  ticket exchange with `?ticket=`), `/ui/sessions/<id>/ws` and three fixed
+  assets, in 051's order of checks. `page_grant` re-checks the cookie, its
+  session, and `manager.authenticate` and `session_authority` for the
+  minting credential on every request. The socket goes through
+  `resident_upgrade` with `ObserverRole`, which caps the attachment's
+  authority and parser permit to observer. `UiLink` mints a ticket for a
+  member of the session.
+- `daemon/ui_socket`: the page's mist socket. It transfers the permit in
+  its first handler turn, starts one `web_view/component` per connection
+  with a transport over `ui_relay`, carries Lustre's messages both ways,
+  closes on the relay's `Ended`, and shuts the component down on close.
+- `daemon/ui_relay`: the page's stand-in for a session socket. It attaches
+  with `attach_authenticated_flushing`, its own pid as the socket, a
+  binding and `check` capped to `Participant(Observer)`, and the check is
+  `manager.frame_authority` with the minting credential's digest. It ends
+  on `Shut`, the component's exit, the gateway's exit and the gateway's
+  `close`, detaching in each.
+
 ## Purpose
 
 The single daemon and ClientGateway: one listener manages independently
