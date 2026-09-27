@@ -420,3 +420,233 @@ and short-lived.
   decided.
 - **A default session.** `loom --ui` takes `--session`. Choosing the
   session a terminal would attach to when it is omitted is left for later.
+
+## Addendum: operators act from the page (2026-09-26)
+
+**Status**: PROPOSED · **Raised by**: issue #530, the web view's first
+interactive milestone ([ADR-014](../docs/adr/014-second-runtime.md),
+"Direction")
+
+The first interactive milestone gives the page a composer and approval
+buttons. Its two commands are `Submit(text)`, a prompt to the addressed
+strand, and `Decide(approval, choice)`, the answer to one pending
+escalation. Both reach the gateway as the same v2 frames a terminal
+sends, written by the same engine code (`session_view`'s lane, through
+`session_channel.submit`). The proposal above caps every page to observer
+and says the later phase "removes the cap wholesale". This addendum
+records how the cap comes off, and what else changes because a page can
+now act.
+
+Everything here applies only with `loomd --ui`. An observer's page draws
+what it draws today and can send nothing, as today.
+
+### What a page is worth now
+
+The proposal above prices a stolen `loom_ui` cookie at "observer access to
+the one session the ticket named". An operator's cookie is worth more: it
+can send prompts that run tools, and it can approve escalations. The
+escalation is the check a person makes before an agent gets more
+authority than its policy gives it. So the threat that matters most is the
+session's own agent obtaining an operator's cookie and answering its own
+escalations. The agent's tools can reach the loopback listener unless the
+session runs with `--network off`, and it can put text in front of the
+person: in the transcript, in a file, in a URL printed to the terminal.
+
+Three ways an attacker could act through an operator's page, and what
+stops each:
+
+1. **Send commands with the person's browser.** A page on another site,
+   or on another loopback port, opens a WebSocket to the daemon, or
+   submits a form to it. See "Commands over the socket" below.
+2. **Take the cookie and act without the browser.** A program that holds
+   the cookie can open the socket with any `Origin` it likes, because
+   only browsers enforce `Origin`. See "The cookie leaves only for its own
+   page" below.
+3. **Run script inside the page.** Script on the page's own origin drives
+   the page's socket as the person would. See "Nothing from the
+   transcript becomes markup" below.
+
+### The role comes from the membership record, re-read on every frame
+
+The relay no longer overrides the role. The binding it attaches with
+carries the authority `manager.frame_authority` answers for the minting
+credential when the socket is admitted, and its `check` passes the answer
+through unchanged. The membership record is the only place the page's role
+comes from. There is no ticket scope and no role chosen for the page,
+which is the rule the proposal above set for this phase. `Owner` passes
+through as `Owner`, because that is what the credential holds. The page is
+still bound to one session. Within that session the gateway gives an owner
+one thing an operator lacks: worktree bytes. This milestone's page never
+asks for them.
+
+The gateway already calls `check` at every request and every push
+(`gateway.check_binding`), and refuses the frame unless the principal and
+the authority equal the binding's. So a change of role in either
+direction, a revoked credential, a removed membership or an ended UI
+session (`ui_relay.while_open`) closes the attachment at the next frame.
+The page never changes role while it is open. The page's socket then
+closes, and a reload admits a page for whatever role the record now holds.
+
+The permit class follows the admitted role, as it does for a terminal
+(`server.resident_upgrade` with the membership role instead of the
+observer role). The page socket's inbound frame limit does not. It stays
+at 64 KiB for an observer, and is 1 MiB for an operator or an owner, not
+the terminal's 32 MiB. The page sends Lustre events, and this milestone's
+largest is a text prompt. Pasted images, which are what need the terminal's
+limit, are not in this milestone.
+
+### Two components, chosen by role at admission
+
+The page socket starts one of two Lustre applications, chosen from the
+authority the relay was admitted with:
+
+- **The observer component** is today's component, unchanged. Its message
+  type has no command constructor, and its view attaches no event handler,
+  so the browser has nothing to send.
+- **The operator component** has the same messages plus `Submit(text)` and
+  `Decide(approval, choice)`, and its view attaches handlers for the
+  composer and the approval card.
+
+The daemon's gateway refuses a mutation from an observer binding however
+the frame was produced, as it does today. The component's type is the
+second layer: an observer's component cannot produce a command, and no
+message can widen its type while it runs. Either layer alone refuses an
+observer's command, and the tests check each one on its own.
+
+### Commands over the socket
+
+A command reaches the daemon only as a Lustre event on an established page
+socket. No HTTP route performs a command. Every route is a `GET`, and the
+policy's `form-action 'none'` refuses form submission from the page.
+Opening the socket needs two things a cross-origin page cannot supply:
+
+- **`Origin` equal to `http://` and the request's `Host`, port included**
+  (`ui_http.origin_matches`). A page on another loopback port is same-site
+  for cookies but not same-origin. The browser sends that page's own
+  origin, which does not match, so the upgrade is refused.
+- **The `loom_ui` cookie**, which is `SameSite=Strict`, so a cross-site page
+  cannot make the browser send it.
+
+Inside the socket, Lustre dispatches a browser event only to a handler in
+the tree the component rendered, and a frame that does not decode is
+dropped. So a forged event can name only a control the person's own page
+shows. `frame-ancestors 'none'` stays, so no other page can frame the
+composer or the approval buttons and trick a click onto them.
+
+### The cookie leaves only for its own page
+
+Browsers scope cookies by host and path, not port. The proposal above
+records the consequence: any program listening on another loopback port
+receives `loom_ui` when the browser requests a `/ui/...` path there. For an
+observer's cookie that was an accepted cost. For an operator's it is how
+the agent could get the cookie. The agent starts a server on a loopback
+port and prints `http://127.0.0.1:<port>/ui/...` for the person to open.
+Opening the link sends the cookie, because a navigation opened from outside
+the browser counts as same-site.
+
+So the cookie's path becomes unguessable:
+
+- The ticket exchange mints a **page key** (16 random bytes, base16, from
+  the same source as the cookie) and stores it with the UI session.
+- The cookie is set with `Path=/ui/p/<key>`.
+- The exchange page moves the browser to `/ui/p/<key>/sessions/<id>`. The
+  page and its socket are served there, and only there:
+  `/ui/p/<key>/sessions/<id>` and `/ui/p/<key>/sessions/<id>/ws`. The
+  unkeyed page route answers `404`. The exchange stays at
+  `/ui/sessions/<id>?ticket=<t>`, and the assets stay at `/ui/assets/<name>`
+  and need no cookie.
+- A keyed request is refused with `401` unless its key names the UI session
+  its cookie names.
+
+The key is not a credential. It authenticates nothing without the cookie,
+and the cookie authenticates nothing without the key's path. It does
+decide where the browser sends the cookie. A link an agent writes cannot
+contain a key it has never seen, and the key is never shown to the agent:
+it goes only to the browser, in the exchange's response. This applies to
+every page, observers included, so that a page promoted to operator later
+cannot be left with the broader cookie. An observer's page is otherwise
+unchanged; only its address moves under the key.
+
+A program that can read the browser's profile gets the cookie and the key
+together. That is outside what this addendum defends, as it was before;
+the session's read scope decides whether the agent's tools can read the
+profile.
+
+### Nothing from the transcript becomes markup
+
+Script on the page's origin can drive an operator's socket. The page's
+defence is the policy it already carries (`script-src 'self'`, no inline
+script, no `unsafe-eval`) together with these rules for the view:
+
+- Session content (entries, tool output, approval text, names) is drawn
+  only as text nodes. Lustre escapes these through houdini. The view never
+  inserts raw HTML.
+- No attribute that loads or navigates (`href`, `src`, `action`) takes its
+  value from session content. A path or URL in the transcript is drawn as
+  text.
+
+`component_test` checks both by drawing a transcript that holds markup and
+a `javascript:` URL, and asserting that the HTML carries them as escaped
+text.
+
+### Decisions bind to what was drawn
+
+`Decide` carries the escalation's ID and the sequence it was drawn at, and
+the engine encodes it with `approval.approve` or `approval.deny`, which
+send `expected_seq`. An escalation that changed after the card was drawn
+is refused by the gateway rather than decided. This milestone offers
+**allow once** and **deny**. **Allow for this session**
+(`approve_for_session`) is left out. A remembered grant outlives the page
+that gave it, and a page opened from a stolen cookie could otherwise leave
+authority behind that lasts after the page closes.
+
+### What was considered
+
+- **A role scope on the ticket** (`loom --ui` asks for an operator page or
+  an observer page). It would stop an operator's routine read-only page
+  from carrying operator rights. It adds a second place a role is decided,
+  which the proposal above ruled out, and a person who wants a read-only
+  page can mint one from an observer credential. Not taken. If the owner
+  wants operator pages to be an explicit choice, this is the shape to use:
+  a ceiling on the ticket, never a grant.
+- **A command nonce in the page, required on the socket.** Whoever holds
+  the cookie can fetch the page and read the nonce, so it stops nothing
+  the cookie alone does not. Not taken.
+- **Operator pages only with `--network off`.** That couples the view to
+  the sandbox's policy and refuses the common development setup. The page
+  key closes the port leak instead. Not taken.
+
+### Cost
+
+- The Cost entry above on the shared loopback cookie changes. The cookie
+  is sent only to paths under its page key, so a listener on another port
+  receives it only through a link that already contains the key. A
+  program that holds both gets the membership role for up to 8 hours, or
+  until revocation, a membership change or a role change.
+- Page addresses carry the key, so a bookmarked page address does not
+  survive its UI session. It did not work after the session ended before
+  this change either.
+- The page socket's operator frame limit (1 MiB) is below the terminal's.
+  Image prompts from the page will need it raised, under their own
+  review.
+
+### Verification
+
+- An operator's page submits a prompt that reaches the daemon, and decides
+  an approval.
+- An observer's page is refused by both layers, each tested alone. The
+  observer component's type has no command, and a mutation frame sent
+  through an observer's relay is answered `forbidden` by the gateway.
+- Demoting the principal from operator to observer while the page is open
+  closes the socket at the next frame, and the reload admits the observer
+  component.
+- Mutations of the role gate, each applied alone and reverted, each fail a
+  named test:
+  - the relay caps to observer again;
+  - the relay passes `Operator` whatever the record says;
+  - the relay's `check` drops the equality with the binding;
+  - the socket starts the operator component for an observer;
+  - the page key check is skipped;
+  - the upgrade's `Origin` check is skipped.
+- A keyed route with another UI session's key, or with no cookie, is
+  refused, and the unkeyed page route is `404`.
