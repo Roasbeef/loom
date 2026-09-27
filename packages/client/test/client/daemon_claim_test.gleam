@@ -485,6 +485,16 @@ pub fn claim_lifetime_bounds_and_exclusive_enrollment_test() {
       )
       == json.String("bad_request")
 
+    // The daemon's own reply, read off the wire rather than through the CLI
+    // that re-encodes it, carries a claim and no bearer.
+    let plain = invite_with(5, "plain", [])
+    assert field(plain, "event") == json.String("sessions.invite")
+    let assert json.String(issued) = field(field(plain, "body"), "claim")
+      as "the raw invitation reply carries a claim"
+    assert claim.validate_token(issued) == Ok(Nil)
+    assert !has_field(field(plain, "body"), "bearer")
+    assert !string.contains(json.to_string(plain), "bearer")
+
     // Enrollment by digest: the credential exists at once and no claim does.
     let enrolled =
       invite_with(4, "enrolled", [#("credential_digest", json.String(digest))])
