@@ -8,6 +8,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import tui
+import tui/buffered
 import tui/connection
 import tui/frame
 import tui/model as tui_model
@@ -18,7 +19,7 @@ import tui_test/gateway
 
 fn deliver(model: tui_model.Model, text: String) -> tui_model.Model {
   process.send(
-    model.inbox,
+    buffered.sender(model.inbox),
     connection.Incoming(gateway.stream_delta("main", "text", text)),
   )
   tui.update(backend.Tick, model)
@@ -62,7 +63,7 @@ pub fn scrolling_inside_a_live_answer_freezes_until_end_test() {
 pub fn a_wheel_notch_drains_the_socket_without_waiting_for_a_tick_test() {
   let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
   process.send(
-    reading.inbox,
+    buffered.sender(reading.inbox),
     connection.Incoming(gateway.stream_delta("main", "text", "\n\nQueued.")),
   )
 
@@ -77,7 +78,7 @@ pub fn a_held_drag_drains_the_socket_too_test() {
   let pressed =
     tui.update(backend.MousePress(5, 5, backend.MouseLeft), streaming())
   process.send(
-    pressed.inbox,
+    buffered.sender(pressed.inbox),
     connection.Incoming(gateway.stream_delta("main", "text", "\n\nQueued.")),
   )
 

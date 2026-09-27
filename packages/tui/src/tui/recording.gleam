@@ -33,6 +33,16 @@
 //// a replay that quietly skipped a frame would answer a question about the
 //// client with an answer about the recording.
 ////
+//// ## When a line is written
+////
+//// The terminal's step decides every line and writes none. It queues each
+//// one as an effect naming the recorder, and the runtime appends them after
+//// the step, in the order the step decided them, with the rest of the
+//// step's effects. The input line is queued first, before the reducer runs,
+//// so it precedes every line the input caused; the lines one event caused
+//// all precede the next event's. ADR-009 needs that order, and its addendum
+//// on recording as effects says what else changed and what did not.
+////
 //// ## What a replay may do
 ////
 //// A replay reproduces inbound traffic and rendering, and nothing else. It
@@ -51,6 +61,7 @@
 
 import core/json
 import etui/backend
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -123,8 +134,33 @@ pub type Moment {
 
 /// An open recording. Opaque: the path and the epoch are the whole of it,
 /// and neither is anyone else's business.
+///
+/// A recorder is a handle, not a writer. The terminal's step never appends
+/// a line itself: it queues an effect naming the recorder and the event, and
+/// the runtime calls `append` after the step. The handle travels in the
+/// effect so that a line decided before a recorder was replaced still goes
+/// to the recorder that was open when it was decided.
 pub opaque type Recorder {
   Recorder(path: String, started_ms: Int)
+
+  // A test that watches what a lane recorded receives each event as a
+  // message instead of reading a file back. The terminal never builds one.
+  Observed(sink: Subject(Recorded))
+}
+
+/// The recorder and attempt identity an attachment's lane records under.
+///
+/// This is data rather than a callback. A lane holding a trace queues each
+/// attempt event as an output naming this recorder, in the order it decided
+/// the events, and the runtime writes them after the step with everything
+/// else the step decided.
+pub type Trace {
+  Trace(
+    /// Where the lane's attempt events are written.
+    recorder: Recorder,
+    /// Terminal-local attempt identity, never a credential or socket address.
+    id: attempt.Id,
+  )
 }
 
 /// Opens a recording, truncating anything already at the path.
@@ -147,6 +183,19 @@ pub fn start(path: String) -> Result(Recorder, String) {
   }
 }
 
+/// A recorder that sends each recorded event to `sink` instead of writing a
+/// file, for a test that watches what a lane recorded as it is performed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let recorder = recording.observed(process.new_subject())
+/// ```
+@internal
+pub fn observed(sink: Subject(Recorded)) -> Recorder {
+  Observed(sink:)
+}
+
 /// Binds attempt identity to this optional recorder without copying credentials.
 ///
 /// ## Examples
@@ -154,52 +203,28 @@ pub fn start(path: String) -> Result(Recorder, String) {
 /// ```gleam
 /// let trace = recording.trace(recorder, attempt.Id(1))
 /// ```
-pub fn trace(
-  recorder: Option(Recorder),
-  id: attempt.Id,
-) -> Option(attempt.Trace) {
-  case recorder {
-    Some(recorder) ->
-      Some(attempt.Trace(id, fn(event) { append(recorder, Attempt(event)) }))
-    None -> None
-  }
+pub fn trace(recorder: Option(Recorder), id: attempt.Id) -> Option(Trace) {
+  option.map(recorder, Trace(_, id))
 }
 
-/// Appends one input event, if it is one that replays.
+/// Appends one event to the recording, with its offset read now.
 ///
-/// Takes the optional recorder rather than making every call site test it,
-/// because the overwhelmingly common case is a session with no recording
-/// and the check belongs in one place.
+/// This is the perform half of a recording effect, and the only place a
+/// line is written after `start`. The runtime calls it for each recording
+/// effect a step returned, in the order the step decided them. The offset
+/// is the host's monotonic clock at the moment of the write, measured from
+/// the one `start` read, so every line of a recording is timed by one clock
+/// whether it was decided by a step or by a cancel the runtime performed.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// recording.note_input(model.recorder, backend.KeyPress("a"))
+/// recording.append(recorder, recording.Key("a"))
 /// ```
-pub fn note_input(
-  recorder: Option(Recorder),
-  event: backend.InputEvent,
-) -> Nil {
-  case recorder, of_input(event) {
-    Some(recorder), Some(recorded) -> append(recorder, recorded)
-    None, _ | _, None -> Nil
-  }
-}
-
-/// Appends one inbox message.
-///
-/// ## Examples
-///
-/// ```gleam
-/// recording.note_message(model.recorder, connection.Connected)
-/// ```
-pub fn note_message(
-  recorder: Option(Recorder),
-  message: connection.Message,
-) -> Nil {
+pub fn append(recorder: Recorder, event: Recorded) -> Nil {
   case recorder {
-    Some(recorder) -> append(recorder, Arrived(message:))
-    None -> Nil
+    Recorder(path:, started_ms:) -> write(path, started_ms, event)
+    Observed(sink:) -> process.send(sink, event)
   }
 }
 
@@ -373,14 +398,14 @@ pub fn decode_text(text: String) -> Result(List(Moment), String) {
 // One append per event. A recording is written by a person's hand or by a
 // websocket, so the syscall rate is bounded by those and buffering would
 // only risk losing the tail of the run that is being diagnosed.
-fn append(recorder: Recorder, event: Recorded) -> Nil {
-  let at_ms = host_bootstrap.monotonic_time_ms() - recorder.started_ms
+fn write(path: String, started_ms: Int, event: Recorded) -> Nil {
+  let at_ms = host_bootstrap.monotonic_time_ms() - started_ms
   let line = encode_line(Moment(at_ms:, event:)) <> "\n"
 
   // A failed append is deliberately silent. The terminal owns the screen,
   // so there is nowhere to print, and a recording that stops recording is
   // not a reason to take a live session down.
-  let _ = simplifile.append(recorder.path, line)
+  let _ = simplifile.append(path, line)
   Nil
 }
 

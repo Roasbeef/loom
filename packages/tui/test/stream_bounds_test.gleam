@@ -110,8 +110,15 @@ type Holder {
   Holder(model: tui_model.Model, seen: Int)
 }
 
+// The model is built inside the holder, because `tui.update` receives from
+// the model's inboxes before each step and only the process that created a
+// subject may receive from it.
 fn holder() -> actor.StartResult(Subject(Command)) {
-  actor.new(Holder(pushed.attached(), 0))
+  actor.new_with_initialiser(1000, fn(subject) {
+    actor.initialised(Holder(pushed.attached(), 0))
+    |> actor.returning(subject)
+    |> Ok
+  })
   |> actor.on_message(fn(holder, command) {
     case command {
       Drained(reply) -> {

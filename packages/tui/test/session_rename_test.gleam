@@ -1,11 +1,12 @@
 import etui/backend
 import etui/widgets/textarea
-import gleam/erlang/process
 import gleam/option.{None, Some}
 import tui
 import tui/connection
 import tui/daemon/protocol
+import tui/job
 import tui/model as tui_model
+import tui/runtime
 import tui/session_control
 import tui/session_selector
 import tui/workspace
@@ -28,36 +29,33 @@ pub fn rename_without_attachment_reports_no_session_test() {
 pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
   let model =
     tui.new_model(connection.new_inbox(), workspace.Context("/work/loom", None))
-  let replies = process.new_subject()
   let row =
     protocol.Session("selected", "/work/loom", "review auth", 1, protocol.Saved)
   let page = protocol.Page(9, [row], None)
+  let #(model, key) = tui_model.allocate_job(model)
   let pending =
     tui_model.Model(
       ..model,
       session: row.session_id,
-      control_request: Some(tui_model.ControlRequest(
-        weft.cancel_signal(),
-        replies,
-        None,
+      control_request: Some(tui_model.ControlRequest(job.awaiting(key), None)),
+    )
+
+  // Both replies are admitted before either is taken, as when the runtime
+  // receives the relay's two messages together; the drain takes one each.
+  let held =
+    pending
+    |> runtime.hold(job.ControlArrived(
+      key,
+      weft.PulledOutcome(weft.Completed(
+        0,
+        job.PageLoaded(page, row.session_id, session_selector.Active),
       )),
-    )
-  let received =
-    session_control.accept_control_event(
-      pending,
-      tui_model.ControlEvent(
-        replies,
-        weft.PulledOutcome(weft.Completed(
-          0,
-          tui_model.PageLoaded(page, row.session_id, session_selector.Active),
-        )),
-      ),
-    )
-  let after =
-    session_control.accept_control_event(
-      received,
-      tui_model.ControlEvent(replies, weft.AllDelivered),
-    )
+    ))
+    |> runtime.hold(job.ControlArrived(key, weft.AllDelivered))
+  let received = session_control.drain_control(held)
+  assert received.overlay == pending.overlay
+    as "the page waits for the worker to drain"
+  let after = session_control.drain_control(received)
   let assert tui_model.DaemonSelector(selector) = after.overlay
     as "the refreshed page is rendered only after the worker drains"
   assert selector.page == page

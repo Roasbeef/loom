@@ -12,6 +12,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import tui
+import tui/buffered
 import tui/connection
 import tui/frame
 import tui/inbound
@@ -238,7 +239,7 @@ pub fn missing_notes_board_reports_unavailability_for_the_inspected_target_test(
 pub fn changing_inspected_note_preserves_underlying_transcript_position_test() {
   let initial = tui.update(backend.Resize(90, 24), model())
   process.send(
-    initial.inbox,
+    buffered.sender(initial.inbox),
     connection.Incoming(gateway.stream_delta(
       "main",
       "text",

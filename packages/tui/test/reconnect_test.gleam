@@ -8,16 +8,18 @@
 //// fixture that needed one would prove nothing about which branch was chosen.
 
 import etui/widgets/textarea as text_area
-import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import tui
 import tui/bootstrap
 import tui/connection
+import tui/effect
 import tui/inbound
+import tui/job
 import tui/model as tui_model
 import tui/protocol
+import tui/runtime
 import tui/session_channel
 import tui/session_control
 import tui/snapshot
@@ -101,16 +103,17 @@ pub fn an_operator_quit_and_a_remote_attachment_do_not_reconnect_test() {
 
 pub fn a_failed_reconnect_is_reported_once_and_stays_disconnected_test() {
   let attempted = lose_the_channel(disconnected())
-  let assert tui_model.ReconnectAttempting(replies:, ..) = attempted.reconnect
+  let assert tui_model.ReconnectAttempting(awaiting) = attempted.reconnect
 
   let failed =
-    session_control.accept_reconnect_event(
+    runtime.hold(
       attempted,
-      session_control.ReconnectEvent(
-        replies,
+      job.ReconnectArrived(
+        job.key(awaiting),
         weft.PulledOutcome(weft.Failed(index: 0, error: "loomd was not found")),
       ),
     )
+    |> session_control.drain_reconnect
   assert failed.reconnect == tui_model.ReconnectSpent
   assert failed.peer == tui_model.Disconnected
   assert list.any(failed.transcript, fn(line) {
@@ -128,20 +131,32 @@ pub fn a_failed_reconnect_is_reported_once_and_stays_disconnected_test() {
   assert again.reconnect == tui_model.ReconnectSpent
 }
 
-pub fn a_reconnect_event_from_another_attempt_is_ignored_test() {
+pub fn a_reply_for_another_attempt_is_not_admitted_test() {
   let attempted = lose_the_channel(disconnected())
-  // A reply arriving on a mailbox this attempt does not own names some other
-  // run, so it must not move this model.
-  let elsewhere = process.new_subject()
-  let ignored =
-    session_control.accept_reconnect_event(
+
+  // A key this attempt was not given names some other job, so its reply
+  // is dropped before any reducer sees it and the slot holds nothing.
+  let #(attempted, elsewhere) = tui_model.allocate_job(attempted)
+  let held =
+    runtime.hold(
       attempted,
-      session_control.ReconnectEvent(
+      job.ReconnectArrived(
         elsewhere,
         weft.PulledOutcome(weft.Failed(index: 0, error: "some other run")),
       ),
     )
-  assert ignored.reconnect == attempted.reconnect
+  assert held.reconnect == attempted.reconnect
+  assert session_control.drain_reconnect(held).reconnect == attempted.reconnect
+}
+
+// The loss starts the relaunch by queuing it, not by running it: the step
+// allocates the key the slot holds and asks the runtime for the job under
+// that same key.
+pub fn a_reconnect_is_queued_as_a_job_under_the_slots_key_test() {
+  let #(attempted, effects) = runtime.take(lose_the_channel(disconnected()))
+  let assert tui_model.ReconnectAttempting(awaiting) = attempted.reconnect
+  assert effects
+    == [effect.StartJob(job.key(awaiting), job.Reconnect(options()))]
 }
 
 // --- the resume marker -----------------------------------------------------

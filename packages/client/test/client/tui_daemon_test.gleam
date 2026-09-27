@@ -28,7 +28,10 @@ import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol
 import tui/daemon/selection
+import tui/effect
+import tui/job
 import tui/model as tui_model
+import tui/runtime
 import tui/session_selector
 import tui/workspace
 import weft
@@ -76,7 +79,8 @@ pub fn tui_daemon_catalogue_recovery_keeps_frames_live_and_cancels_hello_test() 
       assert advanced.height == 37
       assert advanced.daemon_host == model.daemon_host
       assert process.receive(incoming, 0) == Error(Nil)
-      weft.cancel(run.cancel)
+      let _running =
+        runtime.perform([effect.CancelJob(job.key(run.job))], advanced.running)
       assert process.receive(closed, 1000) == Ok(Nil)
         as "worker cancellation closes the socket even before hello"
 
@@ -92,7 +96,7 @@ pub fn tui_daemon_creation_recovery_keeps_unknown_key_without_replay_test() {
     close_and_join(control)
     peer_listener(None, fn(port, peers, incoming, closed) {
       let model = retired_control_model(control, port)
-      let creating = tui.update(backend.KeyPress("n"), model)
+      let creating = configured(tui.update(backend.KeyPress("n"), model))
       let assert Some(key) = creating.creation_key
         as "explicit creation retains its identity before the worker starts"
       assert attachment.busy(creating.candidate)
@@ -127,10 +131,10 @@ pub fn tui_daemon_creation_recovery_keeps_unknown_key_without_replay_test() {
         )
         as "the failed candidate settles without resending its mutation"
       let retry =
-        tui.update(
+        configured(tui.update(
           backend.KeyPress("n"),
           tui_model.Model(..settled, overlay: model.overlay),
-        )
+        ))
       assert retry.creation_key == Some(key)
       assert retry.next_attempt == creating.next_attempt
       assert retry.daemon_host == model.daemon_host
@@ -138,6 +142,27 @@ pub fn tui_daemon_creation_recovery_keeps_unknown_key_without_replay_test() {
       assert process.receive(incoming, 0) == Error(Nil)
     })
   })
+}
+
+// A creation resolves its configuration in a job before it retains a key
+// (ADR-013, phase 2 S6), so the key press starts that job and the tick that
+// takes its reply makes the creation's checks. This ticks until it has.
+fn configured(model: tui_model.Model) -> tui_model.Model {
+  let assert poll.Answer(configured) =
+    poll.fold_until(
+      clock: poll.monotonic(),
+      within: 2000,
+      every: poll.Fixed(5),
+      from: model,
+      attempt: fn(current: tui_model.Model) {
+        case current.configuring {
+          None -> poll.Settled(current)
+          Some(_) -> poll.Pending(tui.update(backend.Tick, current))
+        }
+      },
+    )
+    as "the configuration job answers"
+  configured
 }
 
 pub fn tui_daemon_real_control_create_default_stop_lazy_open_test() {

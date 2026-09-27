@@ -36,7 +36,7 @@ import tui/model.{
   type Model, AgentInspector, ApprovalInspector, Attached, ConfirmGoal,
   DaemonSelector, Disconnected, GoalInspector, HoldGoalReport, Model,
   ModelSelector, NoOverlay, OverlaySubmission, PeerLinkManager, Preview,
-  Replaying, ReportGoal, SessionSelector,
+  Replaying, ReportGoal,
 } as tui_model
 import tui/outbound
 import tui/protocol
@@ -69,7 +69,6 @@ pub fn notes_surface(model: Model) -> Bool {
     False, NoOverlay
     | False, ModelSelector(_)
     | False, GoalInspector(_)
-    | False, SessionSelector(_)
     | False, DaemonSelector(_)
     | False, PeerLinkManager(_)
     | False, AgentInspector(_)

@@ -4,6 +4,15 @@
 //// quoting forms terminals themselves add, never invokes a shell, and reads a
 //// regular file only after its declared size fits the prompt limit. The local
 //// path remains presentation state and is never part of a protocol block.
+////
+//// The read happens before the step, not in it. `tui/runtime` calls
+//// `read_dropped` with the text of a paste event and stores the `Dropped`
+//// value on the model, and the composer's paste handler asks
+//// `dropped_image` what that read found. The step therefore touches no
+//// file, and a paste whose image attaches is still one event: the image is
+//// in the composer when the step that handled the paste returns, so a key
+//// pressed after the paste finds it there and pasted text that is not an
+//// image keeps its place among the keys around it.
 
 import gleam/bit_array
 import gleam/list
@@ -32,10 +41,73 @@ pub type Image {
   )
 }
 
+/// What the runtime read, before a step, for the path one paste names.
+///
+/// The value belongs to the event it was read for. `runtime.read_paste`
+/// writes it before every step, so it never outlives that step's event, and
+/// `dropped_image` uses it only for the paste text it was read for.
+pub type Dropped {
+  /// The event was not a paste naming exactly one path, so nothing was read.
+  NothingDropped
+
+  /// A paste of `text` named one path, and reading that path gave `read`.
+  Dropped(
+    /// The pasted text exactly as the event carried it.
+    text: String,
+    /// What `load_path` returned for the path the text names.
+    read: Result(Option(Image), String),
+  )
+}
+
+/// Reads the file a paste names, if it names one path, and records what the
+/// read found against the pasted text.
+///
+/// This performs the file-system reads. Only the runtime calls it, before
+/// the step; the step calls `dropped_image` instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert image_drop.read_dropped("ordinary words") == image_drop.NothingDropped
+/// ```
+pub fn read_dropped(text: String) -> Dropped {
+  case pasted_path(text) {
+    None -> NothingDropped
+    Some(path) -> Dropped(text:, read: load_path(path))
+  }
+}
+
+/// What the read before the step found for this paste's text.
+///
+/// A read recorded for other text answers `Ok(None)`, the answer for a
+/// paste that names no image, so the paste stays text. A step that was not
+/// preceded by `runtime.read_paste` therefore reads nothing and attaches
+/// nothing, and a read left from an earlier paste cannot attach its image
+/// to a later one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert image_drop.dropped_image(image_drop.NothingDropped, "a.png") == Ok(None)
+/// ```
+pub fn dropped_image(
+  dropped: Dropped,
+  text: String,
+) -> Result(Option(Image), String) {
+  case dropped {
+    Dropped(text: read_for, read:) if read_for == text -> read
+    Dropped(..) | NothingDropped -> Ok(None)
+  }
+}
+
 /// Loads a pasted path when it names a supported image.
 ///
 /// `Ok(None)` means the paste stays ordinary text. Inspection or read failures
 /// return an explanation so the caller can leave the editor untouched.
+///
+/// Nothing in the terminal calls this: the runtime reads through
+/// `read_dropped`, which records the same result against the pasted text.
+/// It is kept for the tests that check what reading one path returns.
 ///
 /// ## Examples
 ///

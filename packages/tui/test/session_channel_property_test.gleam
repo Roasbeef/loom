@@ -443,6 +443,10 @@ fn observe(
     }
     session_channel.Transmit(socket, frame) ->
       transmitted(oracle, socket, frame)
+
+    // These lanes are started without a trace, so nothing may be recorded.
+    session_channel.Note(..) ->
+      Error("an untraced lane queued a recording note")
   }
 }
 

@@ -261,8 +261,9 @@ spec ShutAtMostOnce observes eShut {
 
 // S5. The worker is never stranded.
 //
-// attachment.acknowledging and attachment.cancel; packages/tui/CLAUDE.md
-// "Every inbox the terminal reads is created by the terminal". A worker
+// attachment.acknowledging, and job_runner.cancel through
+// tui_model.emit_attachment; packages/tui/CLAUDE.md "Every inbox the
+// terminal reads is created by the terminal". A worker
 // that published Prepared is eventually acknowledged, cancelled, or ended by
 // its own deadline. Runs in which the deadline never fires are the ones that
 // test this: the protocol must not rely on the deadline for progress.
@@ -294,7 +295,8 @@ spec WorkerNeverStranded observes ePrepared, eWorkerEnded {
 
 // S6. Quit releases everything the terminal owned.
 //
-// submit.quit, attachment.cancel and session_channel.close. After quit,
+// submit.quit, job_runner.cancel, attachment.cancel and
+// session_channel.close. After quit,
 // every socket opened for the terminal and every attachment worker it
 // started eventually stops, whether closed by the terminal, killed by its
 // guardian after cancellation, or closed from the daemon side.
@@ -354,6 +356,41 @@ spec QuitReleasesEverything observes eQuit, eSocketOpened, eSocketDown, eWorkerS
       goto Released;
     } else {
       goto Releasing;
+    }
+  }
+}
+
+// S8. A Prepared the runtime drops has its socket closed by the terminal.
+//
+// runtime.hold and job_runner.dropped (ADR-013, the S5 addendum). A
+// Prepared that no attempt admits, because it is for a key no attempt holds
+// or is a second one for the same attempt, carries an open socket nobody
+// else will close on the terminal's behalf, so the runtime closes it when
+// it drops it. The worker's cancellation would also bring the socket down
+// through its guardian, which is why S6 alone cannot see this rule: the
+// terminal must not rely on that for a socket it was handed.
+spec DroppedPreparedClosed observes ePreparedDropped, eShut {
+  var owed: set[machine];
+
+  start cold state Settled {
+    on ePreparedDropped do (p: tSockPayload) {
+      owed += (p.sock);
+      goto Owed;
+    }
+    on eShut do (p: tSockPayload) {
+      owed -= (p.sock);
+    }
+  }
+
+  hot state Owed {
+    on ePreparedDropped do (p: tSockPayload) {
+      owed += (p.sock);
+    }
+    on eShut do (p: tSockPayload) {
+      owed -= (p.sock);
+      if (sizeof(owed) == 0) {
+        goto Settled;
+      }
     }
   }
 }

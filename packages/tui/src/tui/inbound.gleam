@@ -25,7 +25,6 @@ import etui/widgets/textarea as text_area
 import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -44,6 +43,7 @@ import tui/approval
 import tui/approval_panel
 import tui/block_summary
 import tui/bootstrap
+import tui/buffered
 import tui/cache_miss
 import tui/command
 import tui/completion_summary
@@ -53,8 +53,8 @@ import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
-import tui/effect
 import tui/history_view
+import tui/job
 import tui/layout
 import tui/model.{
   type Interrupt, type Line, type Model, type Peer, type Reconnect,
@@ -63,8 +63,8 @@ import tui/model.{
   Attached, CacheNotice, CacheObservation, DaemonSelector, Disconnected,
   GoalInspector, HeldPrompt, HoldGoalReport, Interjection, Interrupt, Line,
   Model, ModelSelector, NoOverlay, PeerLinkManager, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SessionSelector,
-  StrandWorkspace, Stream, System, ToolTail, UnconfirmedSubmission, User,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, StrandWorkspace,
+  Stream, System, ToolTail, UnconfirmedSubmission, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -76,16 +76,13 @@ import tui/recording
 import tui/render
 import tui/reviewer_status
 import tui/session_channel
-import tui/sessions
 import tui/snapshot
 import tui/snapshot_view
 import tui/stream_identity
 import tui/surfaces
 import tui/todo_panel
 import tui/transcript_lines
-import tui/workspace
 import tui/worktree_view
-import weft
 
 /// The authenticated build belongs to the retained control host. Projecting
 /// its mismatch on every coherent cut keeps attachment and later captures from
@@ -122,11 +119,6 @@ fn build_mismatch_lines(build: Option(control_protocol.Build)) -> List(Line) {
     }
   }
 }
-
-// The bounded relaunch budget. It is the same ninety seconds the initial
-// local launch is allowed, because the work is the same: a launch lock, a
-// daemon start, and two authenticated probes.
-const reconnect_timeout_ms = 90_000
 
 /// Decides whether one unexpected daemon death earns a reconnect.
 ///
@@ -190,28 +182,13 @@ fn begin_reconnect(model: Model) -> Model {
   case reconnect_decision(model) {
     ReconnectRefused(_) -> model
     ReconnectWanted(session, options) -> {
-      let cancel = weft.cancel_signal()
-      let replies = process.new_subject()
-
-      // The relaunch runs in its own bounded task because it blocks: it may
-      // take the launch lock, start a daemon, and authenticate two sockets.
-      // Nothing but the two scalars it needs is captured, because weft copies
-      // a fun's environment into the worker — and a closure over a model
-      // field would copy the transcript, the row caches and the cached frame
-      // with it.
-      let owner = process.self()
-      let _relay =
-        weft.new([
-          fn() {
-            daemon_selection.relaunch(options, owner, reconnect_timeout_ms)
-          },
-        ])
-        |> weft.deadline(reconnect_timeout_ms)
-        |> weft.cancel_with(cancel)
-        |> weft.start_relayed(replies)
+      // The relaunch runs as a job because it blocks: it may take the
+      // launch lock, start a daemon, and authenticate two sockets. The
+      // spec carries the launch options and nothing else of the model.
+      let #(model, key) = tui_model.start_job(model, job.Reconnect(options))
       Model(
         ..model,
-        reconnect: ReconnectAttempting(cancel, replies),
+        reconnect: ReconnectAttempting(job.awaiting(key)),
         notice: "reconnecting to session " <> session,
       )
       |> tui_model.invalidate_frame
@@ -230,7 +207,7 @@ pub fn tick_channel(model: Model) -> Model {
         session_channel.tick(channel, now: model.stamp.transport_ms)
       list.fold(
         updates,
-        Model(..model, channel: Some(channel)),
+        tui_model.hold_channel(model, channel),
         apply_channel_update,
       )
       |> service_history
@@ -483,7 +460,7 @@ pub fn request_decisions(model: Model, ids: List(String)) -> Model {
           case
             session_channel.lookup(channel, ids, now: model.stamp.transport_ms)
           {
-            Ok(channel) -> Model(..model, channel: Some(channel))
+            Ok(channel) -> tui_model.hold_channel(model, channel)
             Error(reason) ->
               tui_model.append_error(
                 model,
@@ -963,135 +940,26 @@ pub fn decide(
   }
 }
 
-/// Applies a message from the local session-switch worker: a failure is
-/// reported in the transcript, and a ready socket is adopted as the new
-/// attachment. Closing the socket it replaces, or one it could not adopt,
-/// and flushing the inbox that socket fed are queued for the runtime rather
-/// than performed during the step.
-@internal
-pub fn handle_session_switch_message(
-  model: Model,
-  message: sessions.Message,
-) -> Model {
-  case message {
-    sessions.Failed(session, reason) ->
-      tui_model.append_error(
-        Model(..model, session_switch: sessions.Idle),
-        "open session " <> session <> ": " <> reason,
-      )
-      |> tui_model.mark_activity
-    sessions.WorkerCrashed(session, reason) ->
-      tui_model.append_error(
-        Model(..model, session_switch: sessions.Idle),
-        "open session " <> session <> " crashed: " <> reason,
-      )
-      |> tui_model.mark_activity
-    sessions.Ready(choice, options, target, inbox, socket) ->
-      case connection.adopt(socket) {
-        Error(reason) ->
-          Model(..model, session_switch: sessions.Idle)
-          |> tui_model.emit(effect.CloseSocket(socket))
-          |> tui_model.emit(effect.Discard(inbox))
-          |> tui_model.append_error(
-            "open session " <> target.session <> ": " <> reason,
-          )
-          |> tui_model.mark_activity
-        Ok(Nil) -> adopt_session(model, choice, options, target, inbox, socket)
-      }
-  }
-}
-
-fn adopt_session(
-  model: Model,
-  choice: bootstrap.SessionChoice,
-  options: bootstrap.Options,
-  target: bootstrap.Target,
-  inbox: Subject(connection.Message),
-  socket: connection.Connection,
-) -> Model {
-  let model = select_workspace(model, target.session, "main")
-  let model = case model.peer {
-    Attached(socket: previous) ->
-      tui_model.emit(model, effect.CloseSocket(previous))
-    Preview | Replaying | Disconnected -> model
-  }
-
-  // Frames the old socket already delivered would otherwise sit unread in
-  // the terminal mailbox for every later selective receive to scan past. The
-  // close notice it sends after this point is the only residue, one frame.
-  // The flush is queued behind the close, as the two used to run, and runs
-  // after the step; the model stops reading this inbox at the swap below.
-  let model = tui_model.emit(model, effect.Discard(model.inbox))
-  Model(
-    ..model,
-    help_open: False,
-    notes_open: False,
-    note_board: None,
-    note_selected: None,
-    notes_requested: None,
-    overlay: NoOverlay,
-    session: target.session,
-    local_options: Some(options),
-    inbox:,
-    peer: Attached(socket:),
-    session_switch: sessions.Idle,
-    next_id: 4,
-    transcript: [Line(System, "connecting to session " <> target.session)],
-    records: [],
-    models: [],
-    skills: [],
-    queued: [],
-    awaiting_outcome: None,
-    current_model: "loading…",
-    workspace: workspace.discover_from(choice.workspace),
-    strands: [],
-    agent_summary: agents.summary([]),
-    reviewer_rows: [],
-    active_strand: "main",
-    usage: zero_usage(),
-    interrupt: None,
-    submitting: None,
-    streams: [],
-    reading_lines: None,
-    tool_tails: [],
-    scroll_offset: 0,
-    rendered_revision: -1,
-    rendered_row_count: 0,
-    rendered_rows: [],
-    revealed_rows: 0,
-    rendered_anchors: [],
-    rendered_gutters: [],
-    record_rows: [],
-    record_gutters: [],
-    record_line_cache: dict.new(),
-    compact_call_cache: dict.new(),
-    compact_entry_cache: dict.new(),
-    pending_records: [],
-    record_cache_valid: False,
-    record_cache_width: 0,
-    record_cache_strand: "",
-    frame_cache: None,
-    notice: "connecting to session " <> target.session,
-    repaint_phase: !model.repaint_phase,
-  )
-  |> tui_model.invalidate_transcript
-  |> tui_model.mark_activity
-  |> tui_model.invalidate_frame
-}
-
-/// Applies at most `remaining` messages from the connection inbox.
+/// Applies at most `remaining` of the messages the runtime received into
+/// the connection inbox before this step.
+///
+/// It reads no mailbox. A message that arrived during the step waits for
+/// the next one, whose top-up receives it behind anything still held.
+/// Each message is taken from whatever inbox the model holds at that
+/// moment, so a drain that follows an adoption in the same step reads the
+/// adopted inbox and never the one it replaced.
 @internal
 pub fn drain_connection(model: Model, remaining: Int) -> Model {
-  // The budget is checked before receiving: an eager second case subject
-  // would remove and discard the first message belonging to the next batch.
+  // The budget is checked before taking, so a message beyond it stays held
+  // for the next step rather than being taken and lost.
   case remaining <= 0 {
     True -> model
     False ->
-      case connection.receive(model.inbox) {
-        Error(Nil) -> model
-        Ok(message) ->
+      case buffered.take(model.inbox) {
+        #(_, Error(Nil)) -> model
+        #(inbox, Ok(message)) ->
           drain_connection(
-            handle_connection_message(model, message),
+            handle_connection_message(Model(..model, inbox:), message),
             remaining - 1,
           )
       }
@@ -1130,14 +998,16 @@ fn handle_connection_message(
         )
       list.fold(
         updates,
-        Model(..model, channel: Some(channel)),
+        tui_model.hold_channel(model, channel),
         apply_channel_update,
       )
     }
-    None -> {
-      recording.note_message(model.recorder, incoming)
-      handle_presentation_message(model, incoming)
-    }
+
+    // A message with no channel has no attempt to note it under, so it is
+    // recorded as the untagged arrival the preview peer has always written.
+    None ->
+      tui_model.record(model, recording.Arrived(incoming))
+      |> handle_presentation_message(incoming)
   }
 }
 
@@ -1254,7 +1124,6 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         NoOverlay -> NoOverlay
         AgentInspector(selected) -> AgentInspector(selected)
         GoalInspector(state) -> GoalInspector(state)
-        SessionSelector(selector) -> SessionSelector(selector)
         DaemonSelector(selector) -> DaemonSelector(selector)
         PeerLinkManager(state) -> PeerLinkManager(state)
         ApprovalInspector(panel) -> ApprovalInspector(panel)
@@ -2552,7 +2421,7 @@ pub fn cancel_pending(model: Model, reason: String) -> Model {
       let #(channel, updates) = session_channel.cancel_unsent(channel, reason)
       list.fold(
         updates,
-        Model(..model, channel: Some(channel)),
+        tui_model.hold_channel(model, channel),
         apply_channel_update,
       )
     }
@@ -2576,8 +2445,7 @@ pub fn service_history(model: Model) -> Model {
         Error(_) -> model
         Ok(channel) ->
           Model(
-            ..model,
-            channel: Some(channel),
+            ..tui_model.hold_channel(model, channel),
             scrollback: history_view.sent(model.scrollback, before),
           )
       }

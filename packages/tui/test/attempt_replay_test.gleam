@@ -24,6 +24,7 @@ import tui/advisor_pending
 import tui/attachment
 import tui/attempt
 import tui/attempt_replay
+import tui/buffered
 import tui/composer
 import tui/connection
 import tui/frame
@@ -389,7 +390,7 @@ pub fn attempt_replay_last_unconfirmed_submission_survives_adopting_another_sess
       list.map(source, virtual_backend.Attempt),
       inbox,
     )
-    |> virtual_backend.with_attempts(model.replay_inbox)
+    |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox))
   let assert Ok(run) = tui.run_script(model, script)
     as "the same reducer renders the recorded lost-response path without a socket"
   assert run.final.session == "B"
@@ -460,7 +461,7 @@ pub fn credited_idle_cut_repaints_settled_answer_without_keyboard_input_test() {
       list.map(source, virtual_backend.Attempt),
       inbox,
     )
-    |> virtual_backend.with_attempts(model.replay_inbox)
+    |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox))
   let assert Ok(run) = tui.run_script(model, script)
     as "credited traffic and idle ticks alone drive the real buffered loop"
   assert run.final.replay_error == None
@@ -567,7 +568,7 @@ fn replay_run(source: List(attempt.Event)) {
       list.map(source, virtual_backend.Attempt),
       inbox,
     )
-    |> virtual_backend.with_attempts(model.replay_inbox)
+    |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox))
   let assert Ok(run) = tui.run_script(model, script)
     as "the shipped reducer replays credited traffic without a socket"
   run
@@ -1090,7 +1091,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
         replacement,
         cut,
         view,
-        connection.new_inbox(),
+        buffered.new(connection.new_inbox()),
         workspace.Context("B", None),
         "Session B",
         None,
@@ -1146,7 +1147,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
         back,
         cut,
         view,
-        connection.new_inbox(),
+        buffered.new(connection.new_inbox()),
         workspace.Context("A", None),
         "Session A",
         None,
@@ -1199,7 +1200,7 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
         replacement,
         cut,
         view,
-        connection.new_inbox(),
+        buffered.new(connection.new_inbox()),
         workspace.Context("B", None),
         "Session B",
         None,
@@ -1730,7 +1731,7 @@ fn receive_session(model, session) {
       replacement,
       cut,
       view,
-      connection.new_inbox(),
+      buffered.new(connection.new_inbox()),
       workspace.Context("/work", None),
       session,
       None,

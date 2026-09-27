@@ -1,11 +1,12 @@
-// The attachment worker: the Weft task body in attachment.start_recorded.
+// The attachment worker: the weft task body job_runner.start_attach runs
+// when the runtime performs effect.StartJob(key, job.Attach(..)).
 //
-// It resolves the target, connects a socket whose frames go to the
-// terminal-created frames inbox, publishes Prepared to the terminal-created
-// prepared inbox, and waits for the acknowledgement. An acknowledged worker
-// returns normally, which the weft relay reports as AllDelivered on the
-// outcomes inbox. The worker owns only its acknowledgement subject, which in
-// the model is the worker itself.
+// It resolves the target, connects a socket whose frames go to the frames
+// inbox the runtime created for the job, publishes Prepared naming that
+// inbox, tagged with the job's key, and waits for the acknowledgement. An
+// acknowledged worker returns normally, which the weft relay reports as
+// AllDelivered, tagged with the same key. The worker owns only its
+// acknowledgement subject, which in the model is the worker itself.
 //
 // Cancellation (weft.cancel) kills the worker; the socket guardian then sees
 // the startup worker exit abnormally and kills the socket (AttemptGone in
@@ -18,18 +19,14 @@
 machine AttachmentWorker {
   var terminal: machine;
   var attempt: int;
-  var preparedInbox: int;
   var framesInbox: int;
-  var outcomesInbox: int;
   var sock: machine;
 
   start state Init {
-    entry (p: (terminal: machine, attempt: int, preparedInbox: int, framesInbox: int, outcomesInbox: int)) {
+    entry (p: (terminal: machine, attempt: int, framesInbox: int)) {
       terminal = p.terminal;
       attempt = p.attempt;
-      preparedInbox = p.preparedInbox;
       framesInbox = p.framesInbox;
-      outcomesInbox = p.outcomesInbox;
       announce eWorkerStarted, (attempt = attempt,);
       if ($) {
         new Deadline(this);
@@ -47,7 +44,7 @@ machine AttachmentWorker {
         goto Ended;
       }
       sock = new Socket((terminal = terminal, inbox = framesInbox, attempt = attempt));
-      send terminal, ePrepared, (inbox = preparedInbox, attempt = attempt, sock = sock, worker = this);
+      send terminal, ePrepared, (attempt = attempt, sock = sock, worker = this, framesInbox = framesInbox);
       goto AwaitingAck;
     }
 
@@ -92,7 +89,7 @@ machine AttachmentWorker {
   }
 
   fun report(completed: bool) {
-    send terminal, eOutcome, (inbox = outcomesInbox, attempt = attempt, completed = completed);
+    send terminal, eOutcome, (attempt = attempt, completed = completed);
   }
 }
 

@@ -6,13 +6,12 @@
 
 import gleam/bit_array
 import gleam/erlang/process
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
 import host/bootstrap as host_bootstrap
 import host/endpoint as daemon_endpoint
-import tui/attachment
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
@@ -23,6 +22,26 @@ import weft/poll
 /// One control connection and its conversation routing authority.
 pub opaque type Host {
   Host(control: daemon.Connection, address: uri.Uri, token: String)
+}
+
+/// Authenticated selection resolved by explicit control open, never by
+/// listing. The attachment job's worker connects to it and publishes the
+/// socket, with the identity the terminal checks before adoption.
+pub type Target {
+  Target(
+    /// V2 conversation route for exactly the selected session.
+    address: String,
+    /// Bearer credential, never included in diagnostics.
+    token: String,
+    /// Expected session, daemon epoch and runtime incarnation.
+    expected: snapshot.Expected,
+    /// Canonical workspace returned by the authorized catalogue record.
+    workspace: workspace.Context,
+    /// Display name from the authorized catalogue, adopted with this identity.
+    session_name: String,
+    /// Only successful adoption of this creation may clear its retained key.
+    creation_key: Option(String),
+  )
 }
 
 /// Retains the authenticated control and canonical route, not a session socket.
@@ -161,7 +180,7 @@ pub fn with_live_control(
 /// ```gleam
 /// // selection.open(host, selected_id)
 /// ```
-pub fn open(host: Host, session: String) -> Result(attachment.Target, String) {
+pub fn open(host: Host, session: String) -> Result(Target, String) {
   use selected <- result.try(
     daemon.request(host.control, protocol.GetSession(session), 5000)
     |> result.map_error(failure)
@@ -243,7 +262,7 @@ pub fn create_named(
   workspace: String,
   name: String,
   configuration: String,
-) -> Result(attachment.Target, String) {
+) -> Result(Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
@@ -489,7 +508,7 @@ fn target(host: Host, session, workspace, name, creation_key, status) {
       query: None,
       fragment: None,
     )
-  Ok(attachment.Target(
+  Ok(Target(
     uri.to_string(address),
     host.token,
     snapshot.Expected(session, epoch, incarnation),

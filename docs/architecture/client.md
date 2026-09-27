@@ -666,8 +666,7 @@ Cancellation starts socket cleanup, but the attempt's exit alone does not prove
 the socket has finished closing.
 
 The implementation is in
-[`tui/bootstrap.gleam`](../../packages/tui/src/tui/bootstrap.gleam),
-[`tui/sessions.gleam`](../../packages/tui/src/tui/sessions.gleam), and
+[`tui/bootstrap.gleam`](../../packages/tui/src/tui/bootstrap.gleam) and
 [`client/serve.gleam`](../../packages/client/src/client/serve.gleam).
 The terminal and daemon share the OS primitives in
 [`host/bootstrap.gleam`](../../packages/host/src/host/bootstrap.gleam);
@@ -1389,7 +1388,7 @@ or `/healthz`.
 | `packages/host/src/host/bootstrap.gleam`, `endpoint.gleam` | Shared private files, kernel locks, paused launch, and birth-qualified endpoint fences. |
 | `packages/tui/src/tui/daemon/bootstrap.gleam` | Default daemon discovery, authenticated readiness, and serialized launch policy. |
 | `packages/tui/src/tui/daemon.gleam`, `attachment.gleam`, `session_channel.gleam` | Catalogue operations, candidate ownership, and credited conversation transfer. |
-| `packages/tui/src/tui/bootstrap.gleam`, `sessions.gleam` | The default bootstrap forwarding seam plus historical local-session helpers retained for internal tests. |
+| `packages/tui/src/tui/bootstrap.gleam` | The default bootstrap forwarding seam. |
 | `packages/tui/src/tui_ffi.erl` | Terminal-specific OS integration; shared bootstrap primitives live in the host package. |
 | `packages/tui/src/tui/queue_editor.gleam` | Complete queued drafts, revisions, namespace identity, and uncertain-save state. |
 | `packages/tui/src/tui/worktree_view.gleam` | Validated worktree boards, request correlation, file selection, and refresh state. |

@@ -20,6 +20,7 @@ import gleam/string
 import machine/strand
 import tui
 import tui/attachment
+import tui/buffered
 import tui/cache_miss
 import tui/connection
 import tui/frame
@@ -99,7 +100,7 @@ fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
 }
 
 fn deliver(model: tui_model.Model, wire: String) -> tui_model.Model {
-  process.send(model.inbox, connection.Incoming(wire))
+  process.send(buffered.sender(model.inbox), connection.Incoming(wire))
   tui.update(backend.Tick, model)
 }
 
@@ -553,7 +554,7 @@ fn adopt_session(model: tui_model.Model, session: String) -> tui_model.Model {
       replacement,
       cut,
       view,
-      connection.new_inbox(),
+      buffered.new(connection.new_inbox()),
       workspace.Context("/work-" <> session, None),
       "Session " <> session,
       None,

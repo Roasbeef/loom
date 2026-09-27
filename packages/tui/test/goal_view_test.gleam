@@ -27,6 +27,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import tui
 import tui/advisor_pending
+import tui/buffered
 import tui/command
 import tui/connection
 import tui/focused_goal_panel
@@ -1095,7 +1096,7 @@ fn deliver(
   model: tui_model.Model,
   message: connection.Message,
 ) -> tui_model.Model {
-  process.send(model.inbox, message)
+  process.send(buffered.sender(model.inbox), message)
   tui.update(backend.Tick, model)
 }
 

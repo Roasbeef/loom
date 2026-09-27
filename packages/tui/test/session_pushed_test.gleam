@@ -3,9 +3,9 @@
 //// These fixtures drive `tui/session_channel` through real v2 bodies and the
 //// credited transfer decoder, so what they prove about a notice — that it
 //// moves a catch-up earlier and changes nothing else — is proved against the
-//// same code path a live socket takes. The trace records what a socketless
-//// lane would have written, which is how a test sees which request a
-//// transition issued rather than only its outcome.
+//// same code path a live socket takes. The trace queues the notes a
+//// socketless lane would have recorded, which is how a test sees which
+//// request a transition issued rather than only its outcome.
 
 import core/codec
 import core/json
@@ -23,6 +23,7 @@ import tui/attempt
 import tui/cache_miss
 import tui/connection
 import tui/protocol
+import tui/recording
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -193,12 +194,11 @@ fn feed(channel, messages) {
   })
 }
 
-// A lane which has completed its initial capture at sequence ten, plus the
-// recorder that saw every request it issued.
+// A lane which has completed its initial capture at sequence ten, still
+// holding the notes of every request that capture issued.
 fn synchronized() {
-  let issued = process.new_subject()
   let trace =
-    attempt.Trace(attempt.Id(1), fn(event) { process.send(issued, event) })
+    recording.Trace(recording.observed(process.new_subject()), attempt.Id(1))
   let channel =
     session_channel.replay_traced(
       snapshot.Expected("A", "epoch", "incarnation"),
@@ -207,27 +207,33 @@ fn synchronized() {
   let #(ready, updates) = feed(channel, transfer(1, "1:1", "recent", 10))
   let assert [session_channel.Captured(..)] = updates
     as "the initial capture completes before any push is delivered"
-  #(ready, issued)
+  ready
 }
 
-// The requests the lane wrote, newest last. Received and lifecycle events are
-// dropped: only what went out identifies the transition under test.
-fn requests(issued) {
-  drain(issued, [])
+// The requests the lane has noted since its queue was last emptied, newest
+// last. Received and lifecycle notes are dropped: only what went out
+// identifies the transition under test.
+fn requests(channel) {
+  let #(_, outputs) = session_channel.take_outputs(channel)
+  list.filter_map(outputs, fn(output) {
+    case output {
+      session_channel.Note(_, attempt.Issued(_, request)) -> Ok(request)
+      _ -> Error(Nil)
+    }
+  })
 }
 
-fn drain(issued, collected) {
-  case process.receive(issued, 0) {
-    Error(Nil) -> list.reverse(collected)
-    Ok(attempt.Issued(_, request)) -> drain(issued, [request, ..collected])
-    Ok(_) -> drain(issued, collected)
-  }
+// The same lane with its queue emptied, so `requests` answers only for the
+// transitions that follow.
+fn quiet(channel) {
+  session_channel.take_outputs(channel).0
 }
 
 pub fn a_notice_in_ready_issues_its_catch_up_before_the_idle_refresh_test() {
-  let #(ready, issued) = synchronized()
-  let assert [attempt.Request(2, "snapshot_next", _), ..] = requests(issued)
+  let ready = synchronized()
+  let assert [attempt.Request(2, "snapshot_next", _), ..] = requests(ready)
     as "the initial capture spends its credits and leaves the lane ready"
+  let ready = quiet(ready)
 
   let #(notified, updates) =
     session_channel.receive(ready, notice("main", 10), now: 0)
@@ -235,7 +241,7 @@ pub fn a_notice_in_ready_issues_its_catch_up_before_the_idle_refresh_test() {
     as "a notice is reported as received and changes nothing visible"
   assert session_channel.in_flight(notified)
     as "the catch-up goes out on the notice, not at the next idle refresh"
-  assert requests(issued)
+  assert requests(notified)
     == [attempt.Request(4, "catch_up", attempt.Cursor(10))]
     as "the catch-up asks from the cursor the completed cut left"
 
@@ -247,8 +253,7 @@ pub fn a_notice_in_ready_issues_its_catch_up_before_the_idle_refresh_test() {
 }
 
 pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {
-  let #(ready, issued) = synchronized()
-  let _ = requests(issued)
+  let ready = quiet(synchronized())
 
   let #(same, updates) =
     session_channel.receive(ready, notice("main", 9), now: 0)
@@ -256,7 +261,7 @@ pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {
     as "the arrival is reported even though the sequence is already held"
   assert !session_channel.in_flight(same)
     as "a sequence the lane already holds asks for nothing"
-  assert requests(issued) == []
+  assert requests(same) == []
 
   // Before the first cut there is no cursor to catch up from, and the initial
   // capture is already fetching everything the notice could describe.
@@ -267,8 +272,7 @@ pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {
 }
 
 pub fn a_notice_in_flight_is_spent_at_the_next_ready_transition_test() {
-  let #(ready, issued) = synchronized()
-  let _ = requests(issued)
+  let ready = quiet(synchronized())
 
   // One notice opens a transfer, and a second lands in the middle of it.
   let #(capturing, _) =
@@ -279,7 +283,7 @@ pub fn a_notice_in_flight_is_spent_at_the_next_ready_transition_test() {
     session_channel.receive(capturing, notice("main", 12), now: 0)
   assert updates == [session_channel.Noticed(12)]
     as "a notice mid-transfer defers rather than failing"
-  let _ = requests(issued)
+  let deferred = quiet(deferred)
 
   // The lane's own clock has not reached its refresh instant, so the capture
   // that goes out here is the deferred notice being spent and nothing else.
@@ -290,23 +294,21 @@ pub fn a_notice_in_flight_is_spent_at_the_next_ready_transition_test() {
   let assert [
     attempt.Request(6, "snapshot_next", _),
     attempt.Request(7, "catch_up", attempt.Cursor(12)),
-  ] = requests(issued)
+  ] = requests(spent)
     as "the transfer's last credit, then the deferred notice's catch-up"
 
   // And it is spent exactly once: the second capture leaves nothing owed, so
   // the lane goes back to waiting for its refresh instant.
   let #(settled, _) = feed(spent, transfer(7, "1:3", "catch_up", 12))
   assert !session_channel.in_flight(settled)
-  let _ = requests(issued)
-  let #(_, updates) = session_channel.tick(settled, now: 0)
+  let #(ticked, updates) = session_channel.tick(quiet(settled), now: 0)
   assert updates == []
-  assert requests(issued) == []
+  assert requests(ticked) == []
     as "a spent notice does not keep issuing catch-ups of its own"
 }
 
 pub fn a_stream_delta_is_read_in_every_open_phase_without_moving_it_test() {
-  let #(ready, issued) = synchronized()
-  let _ = requests(issued)
+  let ready = quiet(synchronized())
   let streamed = [
     session_channel.Streamed(
       strand: "main",
@@ -322,7 +324,7 @@ pub fn a_stream_delta_is_read_in_every_open_phase_without_moving_it_test() {
   assert updates == streamed
   assert !session_channel.in_flight(after_ready)
     as "a fragment in Ready starts no request"
-  assert requests(issued) == []
+  assert requests(after_ready) == []
 
   // The three in-flight phases: awaiting a begin, mid-transfer, and awaiting
   // an auxiliary reply. A fragment leaves each of them exactly where it was.
@@ -354,7 +356,7 @@ pub fn a_stream_delta_is_read_in_every_open_phase_without_moving_it_test() {
 }
 
 pub fn a_pushed_error_is_an_auxiliary_refusal_and_leaves_the_socket_open_test() {
-  let #(ready, _) = synchronized()
+  let ready = synchronized()
   let #(open, updates) =
     session_channel.receive(
       ready,
@@ -387,8 +389,7 @@ pub fn a_pushed_error_is_an_auxiliary_refusal_and_leaves_the_socket_open_test() 
 }
 
 pub fn an_unknown_push_is_dropped_and_a_mismatched_reply_still_fails_test() {
-  let #(ready, issued) = synchronized()
-  let _ = requests(issued)
+  let ready = quiet(synchronized())
   let #(same, updates) =
     session_channel.receive(
       ready,
@@ -418,7 +419,7 @@ pub fn an_unknown_push_is_dropped_and_a_mismatched_reply_still_fails_test() {
 }
 
 pub fn a_queued_prompt_is_an_acknowledged_submission_not_a_conflict_test() {
-  let #(ready, _) = synchronized()
+  let ready = synchronized()
   let #(sent, disposition) =
     session_channel.submit(
       ready,
@@ -444,7 +445,7 @@ pub fn a_queued_prompt_is_an_acknowledged_submission_not_a_conflict_test() {
 // The terminal's own model, holding a synchronized lane, so that a pushed
 // frame can be followed all the way to what a reader would see.
 fn attached() {
-  let #(ready, _) = synchronized()
+  let ready = synchronized()
   tui_model.Model(
     ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
     peer: tui_model.Replaying,
@@ -610,8 +611,7 @@ pub fn a_legacy_usage_push_cannot_double_count_the_captured_total_test() {
 }
 
 pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
-  let #(ready, issued) = synchronized()
-  let _ = requests(issued)
+  let ready = quiet(synchronized())
   let reported =
     message.Usage(
       0,
@@ -639,7 +639,7 @@ pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
     as "the lane forwards the row instead of dropping it"
   assert !session_channel.in_flight(after_ready)
     as "a usage row starts no request"
-  assert requests(issued) == []
+  assert requests(after_ready) == []
 
   // Mid-transfer: applied without touching the phase, and the transfer
   // continues from the credit it held.

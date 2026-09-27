@@ -51,6 +51,7 @@ import support/provider_http
 import support/tui_driver
 import tui/attachment
 import tui/bootstrap
+import tui/buffered
 import tui/daemon
 import tui/daemon/protocol
 import tui/daemon/selection
@@ -808,7 +809,8 @@ fn live_tool_switches(
   assert attachment_of(refused) == original_alice
   assert refused.model.session == original
   assert refused.model.records == highlighted.model.records
-  assert refused.model.inbox == highlighted.model.inbox
+  assert buffered.sender(refused.model.inbox)
+    == buffered.sender(highlighted.model.inbox)
   let assert Some(retained) = refused.model.channel
     as "the rejected candidate cannot take custody of A1's socket"
   assert session_channel.socket(retained) == session_channel.socket(channel)
@@ -1110,7 +1112,8 @@ fn failed_switch_preserves_channel(
   assert refused.model.session == highlighted.model.session
   assert attachment_of(refused) == original
   assert refused.model.records == highlighted.model.records
-  assert refused.model.inbox == highlighted.model.inbox
+  assert buffered.sender(refused.model.inbox)
+    == buffered.sender(highlighted.model.inbox)
   let assert Some(retained_channel) = refused.model.channel
     as "candidate refusal preserves the adopted original channel"
   assert session_channel.socket(retained_channel)

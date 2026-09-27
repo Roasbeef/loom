@@ -40,6 +40,7 @@ import tui
 import tui/agents
 import tui/approval
 import tui/approval_panel
+import tui/buffered
 import tui/connection
 import tui/frame
 import tui/model as tui_model
@@ -318,7 +319,7 @@ fn last_rows(
     virtual_backend.script(
       backend.TerminalSize(width:, height:),
       steps,
-      model.inbox,
+      buffered.sender(model.inbox),
     )
   let assert Ok(run) = tui.run_script(model, script)
     as "the scripted backend cannot refuse to start"

@@ -29,8 +29,10 @@ import tui/agents
 import tui/approval
 import tui/approval_panel
 import tui/attachment
+import tui/buffered
 import tui/command
 import tui/composer
+import tui/connection
 import tui/context_panel
 import tui/context_view
 import tui/daemon/protocol as control_protocol
@@ -40,13 +42,14 @@ import tui/frame
 import tui/history_view
 import tui/image_drop
 import tui/inbound
+import tui/job
 import tui/layout
 import tui/model.{
   type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Attached,
   DaemonSelector, DiffHidden, DiffVisible, Disconnected, FrameCache,
   GoalInspector, Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older,
-  OverlaySubmission, PeerLinkManager, Preview, ReconnectIdle, Replaying,
-  SessionSelector, TerminalClipboard,
+  OverlaySubmission, PeerLinkManager, Preview, ReconnectAttempting,
+  ReconnectIdle, ReconnectSpent, Replaying, TerminalClipboard,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -59,9 +62,8 @@ import tui/queue_panel
 import tui/render
 import tui/selection
 import tui/session_channel
-import tui/session_control.{Archive, Restore}
+import tui/session_control
 import tui/session_selector
-import tui/sessions
 import tui/snapshot_view
 import tui/submit
 import tui/summary_panel
@@ -89,7 +91,6 @@ pub fn handle_paste(model: Model, text: String) -> Model {
     AgentInspector(_)
     | ModelSelector(_)
     | GoalInspector(_)
-    | SessionSelector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_)
     | PeerLinkManager(_) -> model
@@ -117,8 +118,10 @@ fn handle_composer_paste(model: Model, text: String) -> Model {
   }
 }
 
+// The runtime read the file this paste names before the step
+// (`runtime.read_paste`); the step only asks what that read found.
 fn paste_unlocked(model: Model, text: String) -> Model {
-  case image_drop.load_paste(text) {
+  case image_drop.dropped_image(model.dropped, text) {
     Error(reason) -> tui_model.append_error(model, reason)
     Ok(Some(image)) -> add_attachment(model, composer.ImageAttachment(image))
     Ok(None) ->
@@ -157,18 +160,22 @@ fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
   }
 }
 
-/// Applies one driver-selected candidate event before later queued traffic.
+/// Applies one frame a test driver selected from the candidate's frames
+/// inbox, behind the frames already held.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.accept_candidate_event(model, event)
+/// // interaction.accept_candidate_frame(model, message)
 /// ```
 @internal
-pub fn accept_candidate_event(model: Model, event: attachment.Event) -> Model {
+pub fn accept_candidate_frame(
+  model: Model,
+  message: connection.Message,
+) -> Model {
   advance_candidate(
     model,
-    attachment.accept(model.candidate, event, now: model.stamp.transport_ms),
+    attachment.accept(model.candidate, message, now: model.stamp.transport_ms),
   )
 }
 
@@ -177,7 +184,9 @@ pub fn accept_candidate_event(model: Model, event: attachment.Event) -> Model {
 ///
 /// The outputs are queued before the outcome is applied. They belong to the
 /// attempt, which an adoption or a failure is about to take off the model,
-/// so this is the last point at which the step still holds them.
+/// so this is the last point at which the step still holds them. They
+/// include everything the candidate's channel queued, its recording notes
+/// among them, so an adopted channel arrives with nothing left to move.
 ///
 /// ## Examples
 ///
@@ -194,10 +203,7 @@ pub fn advance_candidate(
   ),
 ) -> Model {
   let #(candidate, outcome, outputs) = advanced
-  let model =
-    list.fold(outputs, model, fn(model, output) {
-      tui_model.emit(model, effect.Attachment(output))
-    })
+  let model = list.fold(outputs, model, tui_model.emit_attachment)
   candidate_outcome(model, candidate, outcome)
 }
 
@@ -266,16 +272,21 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       let model =
         Model(..model, scrollback: history_view.cancel(model.scrollback))
 
-      // The retired channel's close is still queued on it, and this is
-      // the last moment the step holds it.
-      let model = tui_model.release_channel(model)
-
-      // Only then is the old inbox's flush decided, queued behind that
-      // close. Deciding it before the retirement would discard frames the
-      // retirement is entitled to reduce. The flush itself runs after the
-      // step, which is safe because the model stops reading that inbox at
-      // the swap below and nothing selects on it again.
-      let model = tui_model.emit(model, effect.Discard(model.inbox))
+      // The old inbox's flush is decided only after the retirement, so it
+      // is queued behind the retired lane's close, which `retire_previous`
+      // moved into the outbox. Deciding it before the retirement would
+      // discard frames the retirement is entitled to reduce. The flush
+      // itself runs after the step, which is safe because the model stops
+      // reading that inbox at the swap below and nothing selects on it
+      // again.
+      //
+      // The swap replaces the whole `buffered.Inbox`, so the messages the
+      // runtime had already received from the old socket leave the model
+      // with it, and no later drain in this step or any other can reduce
+      // one into the adopted lane. The adopted inbox arrives with the
+      // frames the candidate received and left for it.
+      let model =
+        tui_model.emit(model, effect.Discard(buffered.sender(model.inbox)))
       let adopted =
         Model(
           ..model,
@@ -339,15 +350,30 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         )
         |> inbound.apply_cut(cut, view)
 
-      // The adoption marker is written after the cut, not before it. ADR-009
+      // The adoption marker is queued after the cut, not before it. ADR-009
       // makes that ordering a correctness rule: a recording is replayed by
       // the same reducer, and a marker ahead of its cut would move the
-      // visible session before the frames that justify it.
-      session_channel.adopted(channel)
+      // visible session before the frames that justify it. It is noted on
+      // the lane as the cut left it, so nothing the cut decided is undone.
+      let adopted = case adopted.channel {
+        Some(held) ->
+          tui_model.hold_channel(adopted, session_channel.adopted(held))
+        None -> adopted
+      }
       let adopted =
         adopted
         |> outbound.send_frame(protocol.models(1))
         |> inbound.request_visible_worktree
+
+      // An adoption proves the daemon answers, so a relaunch still in flight
+      // is no longer needed. Cancelling it stops a second daemon start that
+      // the cleared slot would otherwise leave running until it gave up.
+      let adopted = case adopted.reconnect {
+        ReconnectIdle | ReconnectSpent -> adopted
+        ReconnectAttempting(job: awaiting) ->
+          tui_model.release_reconnect(adopted, awaiting)
+          |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
+      }
       let adopted = Model(..adopted, reconnect: ReconnectIdle)
       case cancelled {
         Some(notice) -> tui_model.append_system(adopted, notice)
@@ -366,7 +392,7 @@ fn retire_previous(model: Model) -> Model {
         session_channel.retire(previous, "attachment replaced")
       list.fold(
         updates,
-        Model(..model, channel: Some(closed)),
+        tui_model.hold_channel(model, closed),
         inbound.apply_channel_update,
       )
     }
@@ -414,8 +440,6 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
         ModelSelector(selector) -> update_model_selector(key, model, selector)
         AgentInspector(selected) -> update_agent_inspector(key, model, selected)
         GoalInspector(state) -> update_goal_inspector(key, model, state)
-        SessionSelector(selector) ->
-          update_session_selector(key, model, selector)
         DaemonSelector(selector) -> update_daemon_selector(key, model, selector)
         PeerLinkManager(state) ->
           session_control.update_peer_link_manager(key, model, state)
@@ -429,24 +453,6 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
           }
         NoOverlay -> update_main_key(key, model)
       }
-  }
-}
-
-fn update_session_selector(
-  key: keys.Key,
-  model: Model,
-  selector: sessions.State,
-) -> Model {
-  case sessions.update(key, selector) {
-    sessions.Continue(next) -> Model(..model, overlay: SessionSelector(next))
-    sessions.Close ->
-      Model(
-        ..model,
-        overlay: NoOverlay,
-        repaint_phase: !model.repaint_phase,
-        notice: "session selection cancelled",
-      )
-    sessions.Choose(choice) -> submit.begin_session_switch(model, choice)
   }
 }
 
@@ -502,9 +508,9 @@ fn update_daemon_selector(
     session_selector.Delete(session_id) ->
       session_control.begin_delete(model, session_id)
     session_selector.Archive(session_id) ->
-      session_control.begin_removal(model, session_id, Archive)
+      session_control.begin_removal(model, session_id, job.Archive)
     session_selector.Restore(session_id) ->
-      session_control.begin_removal(model, session_id, Restore)
+      session_control.begin_removal(model, session_id, job.Restore)
     session_selector.ShowCollection(collection) ->
       session_control.load_catalogue_collection(model, "", None, collection)
     session_selector.Rename(session_id, name) ->
@@ -1207,7 +1213,7 @@ pub fn update_ready_key(key: keys.Key, model: Model) -> Model {
     Some(_), keys.Ctrl("c") ->
       submit.quit(inbound.cancel_pending(model, "terminal closed"))
     _, _ -> {
-      let model = inbound.drain_connection(model, 64)
+      let model = inbound.drain_connection(model, tui_model.connection_batch)
       case model.pending_submission, key {
         None, _ -> update_key_over_selection(key, model)
         Some(_), keys.PageUp -> scroll_transcript(model, True, 10)

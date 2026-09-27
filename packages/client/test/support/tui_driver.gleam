@@ -6,6 +6,25 @@
 //// into terminal-owned inboxes, selected by its actor between scripts.
 //// An already selected event is reduced directly before later queued traffic;
 //// requeueing it into a concurrently written inbox could reverse wire order.
+////
+//// The actor selects on the mailboxes, which never return what the shipped
+//// loop's runtime already received into the model's inboxes. Those held
+//// messages are older than anything selected, so they are reduced first:
+//// here for the connection inbox, and inside `attachment.accept` for the
+//// candidate's frames.
+////
+//// It also selects every running job's messages, the attachment's
+//// `Prepared` and outcomes among them, because an actor discards a message
+//// its selector does not match. A selected message goes to `runtime.hold`,
+//// exactly as one the runtime received would, and the settling ticks of the
+//// next run take it from its slot. The candidate's frames inbox is known
+//// only once its `Prepared` has been admitted, so a frame that reaches the
+//// actor before that is discarded. Usually that is `Connected`, which the
+//// lane ignores. A gateway that refuses after the upgrade can send
+//// `Closed` or `NetworkFault` first, and then the driver's lane fails at
+//// its deadline instead of at once; the shipped loop, which selects
+//// nothing, would still see the close.
+////
 //// A sample is not a server barrier: the test must wait for the condition
 //// it needs, under a real deadline, before asserting convergence.
 
@@ -16,14 +35,16 @@ import gleam/option.{None, Some}
 import gleam/result
 import tui
 import tui/attachment
+import tui/buffered
 import tui/connection
 import tui/frame
 import tui/inbound
 import tui/interaction
+import tui/job
+import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_channel
-import tui/session_control
 import tui/virtual_backend
 import tui/workspace
 import weft/actor
@@ -32,8 +53,8 @@ import weft/actor
 pub opaque type Message {
   Play(events: List(backend.InputEvent), reply: Subject(Sample))
   Inbound(message: connection.Message)
-  Candidate(message: attachment.Event)
-  Catalogue(message: tui_model.ControlEvent)
+  Candidate(message: connection.Message)
+  Job(arrival: job.Arrival)
   Stop
 }
 
@@ -149,17 +170,20 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
     // driver may have idled since the last script.
     Inbound(message) -> {
       let model = runtime.stamp(model)
-      let run = run(inbound.accept_connection_message(model, message), [])
+      let model =
+        reduce_held(model)
+        |> inbound.accept_connection_message(message)
+      let run = run(model, [])
       continue(Driver(..driver, model: run.final))
     }
     Candidate(message) -> {
       let model = runtime.stamp(model)
-      let run = run(interaction.accept_candidate_event(model, message), [])
+      let run = run(interaction.accept_candidate_frame(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
-    Catalogue(message) -> {
-      let model = runtime.stamp(model)
-      let run = run(session_control.accept_control_event(model, message), [])
+    Job(arrival) -> {
+      let model = runtime.hold(runtime.stamp(model), arrival)
+      let run = run(model, [])
       continue(Driver(..driver, model: run.final))
     }
 
@@ -176,19 +200,29 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
 }
 
 fn selector(driver: Driver) {
-  let selector =
-    process.new_selector()
-    |> process.select(driver.commands)
-    |> process.select_map(driver.model.inbox, Inbound)
-    |> fn(selector) {
-      attachment.select(driver.model.candidate, selector, Candidate)
-    }
-  case driver.model.control_request {
-    None -> selector
-    Some(run) ->
-      process.select_map(selector, run.replies, fn(reply) {
-        Catalogue(tui_model.ControlEvent(run.replies, reply))
-      })
+  process.new_selector()
+  |> process.select(driver.commands)
+  |> process.select_map(buffered.sender(driver.model.inbox), Inbound)
+  |> fn(selector) {
+    attachment.select(driver.model.candidate, selector, Candidate)
+  }
+  |> process.merge_selector(process.map_selector(
+    job_runner.selector(driver.model.running),
+    Job,
+  ))
+}
+
+// Reduces what the last script's runtime received and its steps left in the
+// connection inbox. It takes only held messages and reads no mailbox: the
+// message the actor just selected is newer than all of them and older than
+// everything still queued, so it must go between the two.
+fn reduce_held(model: tui_model.Model) -> tui_model.Model {
+  case buffered.take(model.inbox) {
+    #(_, Error(Nil)) -> model
+    #(inbox, Ok(held)) ->
+      tui_model.Model(..model, inbox:)
+      |> inbound.accept_connection_message(held)
+      |> reduce_held
   }
 }
 
@@ -204,7 +238,7 @@ fn run(
     virtual_backend.script(
       backend.TerminalSize(width: model.width, height: model.height),
       steps,
-      model.inbox,
+      buffered.sender(model.inbox),
     )
   let assert Ok(run) = tui.run_script(model, script)
     as "the real virtual terminal loop must complete its input script"
@@ -212,7 +246,11 @@ fn run(
 }
 
 fn disconnect(model: tui_model.Model) -> Nil {
-  attachment.cancel(model.candidate)
+  let _ =
+    runtime.flush(tui_model.emit_attachment(
+      model,
+      attachment.Abandon(model.candidate),
+    ))
   case model.channel {
     Some(channel) -> {
       let #(_, outputs) =
