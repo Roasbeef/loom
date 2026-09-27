@@ -35,6 +35,7 @@ import tui/model as tui_model
 import tui/notes_view
 import tui/protocol
 import tui/queue_editor
+import tui/queued_input
 import tui/render
 import tui/session_channel
 import tui/snapshot
@@ -349,11 +350,11 @@ fn fixture_pending(
 
 fn fixture_queue_editor() -> queue_editor.State {
   let document =
-    queue_editor.Document(
+    queued_input.Document(
       "fixture-queued",
       "main",
       12,
-      queue_editor.Queue,
+      queued_input.Queue,
       "Prepare the native layout report with the wide and compact evidence attached.\n\nKeep this authoritative original separate from the local unsaved line.",
       1,
     )

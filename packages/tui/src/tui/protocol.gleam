@@ -18,7 +18,7 @@ import tui/context_view
 import tui/goal_view
 import tui/live_jobs
 import tui/notes_view
-import tui/queue_editor
+import tui/queued_input
 import tui/skills
 import tui/worktree_view
 
@@ -125,7 +125,7 @@ pub type Event {
   NotesSnapshot(board: notes_view.Board)
 
   /// Complete authoritative text for one revision-fenced queued edit.
-  QueuedInputSnapshot(document: queue_editor.Document)
+  QueuedInputSnapshot(document: queued_input.Document)
 
   /// A bounded asynchronous Git observation with its actual request identity.
   WorktreeSnapshot(observation: worktree_view.Event)
@@ -808,7 +808,7 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     }
     "queued_input" -> {
       use board <- result.try(required_value(fields, "board"))
-      queue_editor.decode(board) |> result.map(QueuedInputSnapshot)
+      queued_input.decode(board) |> result.map(QueuedInputSnapshot)
     }
     "schedules" -> result.map(decode_schedules(fields), SchedulesSnapshot)
     "config" -> {
@@ -1202,7 +1202,7 @@ pub fn queued_input(id: Int, strand: String, input_id: String) -> String {
 /// ```
 pub fn edit_queued_input(
   id: Int,
-  document: queue_editor.Document,
+  document: queued_input.Document,
   text: String,
 ) -> String {
   command(id, "edit_queued_input", [

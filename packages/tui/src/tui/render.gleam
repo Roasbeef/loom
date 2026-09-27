@@ -64,6 +64,7 @@ import tui/peer_links
 import tui/protocol
 import tui/queue_editor
 import tui/queue_panel
+import tui/queued_input
 import tui/selection
 import tui/session_selector
 import tui/snapshot_view
@@ -1973,8 +1974,8 @@ fn render_queue_draft(
       let inner = layout.panel_inner(area)
       let editor_area = layout.queue_draft_area(area)
       let priority = case draft.document.kind {
-        queue_editor.Queue -> "queue"
-        queue_editor.Steer -> "steer"
+        queued_input.Queue -> "queue"
+        queued_input.Steer -> "steer"
       }
       let delivery = case draft.delivery {
         queue_editor.Editable -> "editable revision"

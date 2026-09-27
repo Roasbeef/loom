@@ -24,6 +24,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/queue_editor
+import tui/queued_input
 import tui/recording
 import tui/render
 import tui/runtime
@@ -711,17 +712,17 @@ pub fn explicit_refresh_after_stale_refusal_keeps_same_item_draft_test() {
 
 pub fn full_document_decoder_bounds_encoded_bytes_and_image_counts_test() {
   let assert Ok(document) =
-    queue_editor.decode(board("A", 3, string.repeat("x", 600), 2))
+    queued_input.decode(board("A", 3, string.repeat("x", 600), 2))
     as "a complete value beyond the queue excerpt remains editable"
   assert document.attachment_count == 2
   assert string.length(document.text) == 600
   let escaped = string.repeat("\u{0000}", 9000)
   assert string.byte_size(escaped) < 48_000
-  let assert Error(_) = queue_editor.decode(board("A", 3, escaped, 2))
+  let assert Error(_) = queued_input.decode(board("A", 3, escaped, 2))
     as "JSON escaping counts toward the encoded document bound"
-  let assert Error(_) = queue_editor.decode(board("A", 3, "text", -1))
+  let assert Error(_) = queued_input.decode(board("A", 3, "text", -1))
     as "image counts cannot be negative"
-  let assert Error(_) = queue_editor.decode(board("A", -1, "text", 0))
+  let assert Error(_) = queued_input.decode(board("A", -1, "text", 0))
     as "queue revisions cannot be negative"
 }
 
