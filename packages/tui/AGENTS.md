@@ -1574,7 +1574,9 @@ untouched.
   `Completed` its control closed, by `CloseSocket`, `Discard` and
   `CloseControl` effects `hold` queues, so `receive` and `hold` only read
   mailboxes; `job_runner.dropped` does the same closes directly for what a
-  cancel drains.
+  cancel drains. A reducer that clears a relaunch slot, an adoption or a
+  quit, first releases what it holds through the same
+  `tui_model.release` (`release_reconnect`).
   Clearing a slot drops its held replies with it, so a reducer that stops
   waiting for a job never sees its replies again. The runner keeps a job
   until its relay's last message is read, whatever its slot holds, so no

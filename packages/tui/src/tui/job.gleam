@@ -128,6 +128,22 @@ pub fn admit(
   }
 }
 
+/// The replies the slot holds and no reducer has taken, oldest first.
+///
+/// A reducer that clears a slot passes these to `tui_model.release`, so a
+/// reply that holds a resource is released rather than dropped with the
+/// slot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// job.held(job.awaiting(key))
+/// // -> []
+/// ```
+pub fn held(awaiting: Awaiting(reply)) -> List(reply) {
+  awaiting.held
+}
+
 /// Takes the oldest reply the slot holds.
 ///
 /// ## Examples

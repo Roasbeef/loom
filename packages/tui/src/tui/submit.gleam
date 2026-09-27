@@ -866,6 +866,7 @@ pub fn quit(model: Model) -> Model {
     ReconnectIdle | ReconnectSpent -> model
     ReconnectAttempting(job: awaiting) ->
       Model(..model, reconnect: ReconnectSpent)
+      |> tui_model.release_reconnect(awaiting)
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
   let model = case model.activity_poll {

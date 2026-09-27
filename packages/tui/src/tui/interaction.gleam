@@ -369,7 +369,8 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       let adopted = case adopted.reconnect {
         ReconnectIdle | ReconnectSpent -> adopted
         ReconnectAttempting(job: awaiting) ->
-          tui_model.emit(adopted, effect.CancelJob(job.key(awaiting)))
+          tui_model.release_reconnect(adopted, awaiting)
+          |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
       }
       let adopted = Model(..adopted, reconnect: ReconnectIdle)
       case cancelled {

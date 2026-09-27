@@ -80,6 +80,7 @@ import tui/tool_activity
 import tui/transcript_anchor
 import tui/workspace
 import tui/worktree_view
+import weft
 
 /// Who a transcript line belongs to, which is the whole of its styling.
 @internal
@@ -953,6 +954,64 @@ pub fn hold_channel(model: Model, channel: session_channel.Channel) -> Model {
       [effect.Channel(output), ..outbox]
     })
   Model(..model, channel: Some(channel), outbox:)
+}
+
+/// Queues the release of what a job reply holds, when nobody will take it.
+///
+/// Most replies are data. Two hold a resource nobody else will release: an
+/// attachment's `Prepared` holds an open socket and names its frames
+/// subject, and a relaunch's `Completed(host)` holds a control connection.
+/// For those this queues `CloseSocket` then `Discard`, or `CloseControl`,
+/// which the runtime performs after the step. `runtime.hold` calls it for a
+/// reply no slot admits, and `release_reconnect` for the replies a cleared
+/// relaunch slot still held, so a reply is released the same way whether
+/// it was dropped on arrival or with its slot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_model.release(model, arrival)
+/// ```
+@internal
+pub fn release(model: Model, arrival: job.Arrival) -> Model {
+  case arrival {
+    job.AttachArrived(reply: job.Published(prepared), ..) ->
+      model
+      |> emit(effect.CloseSocket(prepared.socket))
+      |> emit(effect.Discard(prepared.frames))
+    job.ReconnectArrived(
+      reply: weft.PulledOutcome(weft.Completed(value: host, ..)),
+      ..,
+    ) -> emit(model, effect.CloseControl(daemon_selection.control(host)))
+    job.AttachArrived(reply: job.Settled(_), ..)
+    | job.ReconnectArrived(..)
+    | job.ControlArrived(..)
+    | job.ActivityArrived(..) -> model
+  }
+}
+
+/// Releases what a relaunch slot still holds, for a reducer about to clear
+/// it.
+///
+/// A relaunch that completed carries the control connection it opened.
+/// When its outcome was admitted but not yet taken, and the slot is then
+/// cleared, by an adoption earlier in the same tick or by a quit, the
+/// connection would leave the model with the slot and stay open until the
+/// terminal exited.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_model.release_reconnect(model, awaiting)
+/// ```
+@internal
+pub fn release_reconnect(
+  model: Model,
+  awaiting: job.Awaiting(job.ReconnectReply),
+) -> Model {
+  list.fold(job.held(awaiting), model, fn(model, reply) {
+    release(model, job.ReconnectArrived(job.key(awaiting), reply))
+  })
 }
 
 /// Queues one output of the provisional attachment.

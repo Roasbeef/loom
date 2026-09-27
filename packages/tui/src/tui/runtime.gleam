@@ -50,7 +50,6 @@ import tui/attachment
 import tui/buffered
 import tui/connection
 import tui/daemon
-import tui/daemon/selection as daemon_selection
 import tui/effect.{type Effect}
 import tui/herdr
 import tui/job
@@ -62,7 +61,6 @@ import tui/model.{
 } as tui_model
 import tui/recording
 import tui/session_channel
-import weft
 
 /// Reads the clocks for one event and writes them onto the model.
 ///
@@ -131,7 +129,8 @@ pub fn receive(model: Model) -> Model {
 /// socket and names its frames subject, and a relaunch's `Completed` holds
 /// a control connection. Dropping either queues the effects that release
 /// it, `CloseSocket` then `Discard`, or `CloseControl`, which the runtime
-/// performs after the next step like any other. `hold` itself performs
+/// performs after the next step like any other (`tui_model.release`, which
+/// a reducer clearing a slot also uses). `hold` itself performs
 /// nothing, so `receive` only reads mailboxes. `receive` calls this for
 /// everything it read; a test calls it to hand a step a reply without
 /// running a job, and a test driver calls it with a reply its actor
@@ -155,28 +154,7 @@ pub fn hold(model: Model, arrival: job.Arrival) -> Model {
   }
   case admitted {
     Ok(model) -> model
-    Error(Nil) -> release(model, arrival)
-  }
-}
-
-// Queues the release of what a dropped reply holds. The effects are the
-// ones any other close uses, so the runtime performs them in the order
-// they are queued, after the next step.
-fn release(model: Model, arrival: job.Arrival) -> Model {
-  case arrival {
-    job.AttachArrived(reply: job.Published(prepared), ..) ->
-      model
-      |> tui_model.emit(effect.CloseSocket(prepared.socket))
-      |> tui_model.emit(effect.Discard(prepared.frames))
-    job.ReconnectArrived(
-      reply: weft.PulledOutcome(weft.Completed(value: host, ..)),
-      ..,
-    ) ->
-      tui_model.emit(model, effect.CloseControl(daemon_selection.control(host)))
-    job.AttachArrived(reply: job.Settled(_), ..)
-    | job.ReconnectArrived(..)
-    | job.ControlArrived(..)
-    | job.ActivityArrived(..) -> model
+    Error(Nil) -> tui_model.release(model, arrival)
   }
 }
 

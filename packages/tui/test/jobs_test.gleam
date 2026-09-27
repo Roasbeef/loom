@@ -377,6 +377,63 @@ pub fn an_adoption_cancels_a_relaunch_still_in_flight_test() {
     as "the relaunch the adoption made unnecessary is cancelled by its key"
 }
 
+// A relaunch that completed in the same tick an adoption lands has its
+// outcome admitted into the slot before the candidate is polled, and the
+// adoption then clears the slot. The outcome's control connection is
+// released with the slot rather than left open: the adoption queues its
+// close ahead of the relaunch's cancel.
+pub fn an_adoption_releases_a_relaunch_outcome_it_clears_test() {
+  let owner: Subject(Dynamic) = process.new_subject()
+  let host = host_on(owner)
+  let #(model, key) = tui_model.allocate_job(pushed.attached())
+  let model =
+    tui_model.Model(
+      ..model,
+      reconnect: tui_model.ReconnectAttempting(job.awaiting(key)),
+    )
+    |> runtime.hold(job.ReconnectArrived(
+      key,
+      weft.PulledOutcome(weft.Completed(0, host)),
+    ))
+  let assert tui_model.ReconnectAttempting(held) = model.reconnect
+    as "premise: the outcome is admitted and not yet taken"
+  assert job.held(held) != []
+  let #(replacement, cut, view) = captured_replacement()
+  let adopted =
+    interaction.advance_candidate(
+      model,
+      #(
+        attachment.idle(),
+        Some(attachment.Adopted(
+          replacement,
+          cut,
+          view,
+          buffered.new(connection.new_inbox()),
+          workspace.Context("test", None),
+          "Session A",
+          None,
+        )),
+        [],
+      ),
+    )
+
+  assert adopted.reconnect == tui_model.ReconnectIdle
+  let lifecycle =
+    list.filter_map(list.reverse(adopted.outbox), fn(decided) {
+      case decided {
+        effect.CloseControl(_) -> Ok("close control")
+        effect.CancelJob(cancelled) if cancelled == key -> Ok("cancel relaunch")
+        _ -> Error(Nil)
+      }
+    })
+  assert lifecycle == ["close control", "cancel relaunch"]
+    as "the cleared slot's outcome is released ahead of the cancel"
+  assert list.contains(
+    adopted.outbox,
+    effect.CloseControl(daemon_selection.control(host)),
+  )
+}
+
 // A replay lane credited with one validated transfer, which is what an
 // attachment hands over when it adopts.
 fn captured_replacement() {
