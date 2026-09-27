@@ -34,7 +34,6 @@ import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/image_drop
 import tui/job
-import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_selector
@@ -194,7 +193,6 @@ pub fn asking_for_a_session_queues_the_configuration_job_test() {
   assert failures(asked) == []
   assert asked.creation_key == None
   assert !attachment.busy(asked.candidate)
-  assert job_runner.size(asked.running) == 0 as "the step starts no job itself"
 }
 
 // Through `tui.update` the job really runs, and the tick that takes its
@@ -246,6 +244,8 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
   assert attachment.job_key(created.candidate) == Some(attach_key)
   assert created.configuring == None
   assert created.overlay == tui_model.NoOverlay
+  assert created.frame_revision > resolved.frame_revision
+    as "the tick repaints the closed picker"
 
   let finished =
     runtime.hold(

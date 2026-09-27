@@ -512,8 +512,13 @@ fn apply_configuration_reply(
   let finished = Model(..model, configuring: None)
   case reply {
     weft.NotYet -> model
+    // The key press that asked for this painted the picker still open, and
+    // the tick repaints only when the frame revision moves, so the closed
+    // picker and the creation notice need an invalidation of their own. The
+    // failure arms below get theirs from `append_error`.
     weft.PulledOutcome(weft.Completed(value: config, ..)) ->
       create_session_configured(finished, config)
+      |> tui_model.invalidate_frame
     weft.PulledOutcome(weft.Failed(error:, ..)) ->
       tui_model.append_error(finished, error)
     weft.PulledOutcome(weft.Crashed(reason:, ..))
