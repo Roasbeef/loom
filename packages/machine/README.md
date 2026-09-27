@@ -12,10 +12,40 @@ pub fn next_action(
 ```
 
 It performs no I/O, spawns nothing, waits on nothing, keeps nothing
-between calls, and cannot crash. It depends on `core` and on nothing
-else — not `storage`, not `provider`, not `gleam_erlang` — and it has no
-FFI, deliberately: purity here is what makes the whole state space
-testable without a single process.
+between calls, and cannot crash. It depends on `core` and `gleam_stdlib`
+and on nothing else: not `storage`, not `provider`, not `gleam_erlang`.
+Purity here is what makes the whole state space testable without a
+single process.
+
+That purity is a rule, not a habit. `machine` is one of the four
+packages lint rule R6 holds to the portable subset, with `core`, `prompt`
+and `session_view`: no `@external` of any target, and no `gleam_erlang`
+or `gleam_otp` in source or in `gleam.toml`. R6 gates `make check` at
+error level. The rule protects two properties at once. The planner stays
+property-testable over plain values, and the package stays compilable to
+Gleam's JavaScript target, which is enough to *decide but not act*: a
+JavaScript host could run `next_action` over fetched state to show what
+the harness would do next, while every effect still goes through the
+server. It does not put the harness in a browser, because `gleam_otp` has
+no JavaScript target and the sandbox and the two-channel doctrine need
+processes. No gate compiles `machine` for JavaScript today; R6 keeps the
+precondition. `session_view` depends on `machine`, so an external here
+would also break that package's rule. `docs/gleam-style.md` Part IV §5
+has the whole argument.
+
+```mermaid
+flowchart BT
+    M["machine"] --> C["core"]
+    SES["session<br/>typed register access"] --> M
+    RT["runtime<br/>the strand driver"] --> M
+    CL["client"] --> M
+    TUI["tui"] --> M
+    SV["session_view"] --> M
+    CONF["conformance<br/>scenarios and invariant checks"] --> M
+```
+
+An arrow points from a package to one it depends on; every edge above is
+a `gleam.toml` dependency.
 
 The runtime drives it. Every pass of the strand driver's loop is the
 same four steps — load the registers, build `PlannerInputs`, call
@@ -215,7 +245,7 @@ flowchart TD
     C2{"overflow: an error message matching a canonical pattern,<br/>or a length stop whose output is below intended_output_limit"}
     C3{"stop reason is Deferred with a handle whose id is non-empty<br/>and whose provider, model_id and api equal the captured request"}
     C4{"stop reason is Errored"}
-    C5{"the content carries tool-call blocks"}
+    C5{"stop reason is ToolUse,<br/>or the content carries tool-call blocks"}
 
     IN --> C0
     C0 -->|yes| A0["CancelledClassification<br/>commits normalized to aborted, at a may-finish checkpoint"]
@@ -367,15 +397,22 @@ is the deep doc for all of it.
 
 ## Reading `machine/planner`
 
-It is one public function and five thousand lines, and the module doc is
+It is one public function and about 4,400 lines, and the module doc is
 the map: it enumerates the sections and says what each one *decides*,
 which is enough to find the section you want without reading the ones
-you do not. Two conventions hold throughout. Every type the module has
+you do not. Three conventions hold throughout. Every type the module has
 is declared before the first function body, the private ones included,
 so no handler thousands of lines down introduces a name cold. And a
 phase's entry function is a dispatch table whose arms *name* the
-decision rather than making it — `settle_assistant` is the clearest
-example, seven arms each of which is one call.
+decision rather than making it. `settle_assistant` is the clearest
+example: eight arms, one per `Classification` constructor, each of which
+is a single call or, for `CorruptClassification`, a `Fault`.
+
+A handler takes the *bundle* its values arrived in rather than the
+bundle exploded into parameters. There are four: `RunPass`,
+`AssistantAttempt`, `StructuralTask` and `Fetch`, each the record its
+values were destructured out of. A handler that changes a field does it
+with a record update at the one hop that makes the change.
 
 Corruption has its own `use` forms, `or_fault` and `or_fault_unless`,
 because Gleam has no early return and `result.try` cannot serve where
@@ -398,6 +435,41 @@ nesting a `case` whose error arm is `Fault(report:)`.
 Paths are relative to `packages/machine/src/` — `machine/planner` is
 `packages/machine/src/machine/planner.gleam`.
 
+## Tests
+
+`make check-machine` is the package gate: `gleam format --check`, a
+warning-free build, and the EUnit suite through `scripts/test.sh`.
+`make test-machine` runs the tests alone, and `make lint-machine` runs
+the house lint, R6 included, over the package.
+
+Because the planner is a pure function, no test starts a process. The
+suite drives `next_action` against `test/support/store.gleam`, a
+`Dict`-backed fake store that applies each emitted transaction with the
+storage rules the machine relies on: seq expectations, write-once
+entries and usage rows, in-order application, and strictly increasing
+seqs. `test/support/scenario.gleam` is the driver. Each step rebuilds
+`PlannerInputs` from the store alone, decoding `op.state` and every
+referenced register through the real codecs, so every step is also a
+crash-restore.
+
+- `scenario_test` replays pi's worked examples transaction for
+  transaction: §0.4, §0.5 (a crash mid-tool) and the §3.9 overflow
+  example.
+- `flow_test`, `failure_test` and `parallel_test` cover the other flows:
+  deferred polling, steering, threshold compaction, navigation, retry
+  waits, failure drains, orphans, and `Parallel` against `Sequential`
+  batches.
+- `classification_test` pins the first-match-wins order, and
+  `acceptance_test` and `queue_test` cover acceptance, rejections,
+  queue admission and abort.
+- `codec_test` round-trips every register payload, including a state
+  list that reaches every `OperationState` constructor, and decodes
+  adversarial input.
+- `property_test` runs seeded random scripts with an automatic responder
+  for every `AwaitEffect` key and checks three properties: every tool
+  call eventually has a result, nothing transitions out of a terminal
+  state, and a committed `aborted` response implies a cancelled run.
+
 ## Reading further
 
 - [`CLAUDE.md`](CLAUDE.md) — the reference doc for changing this code:
@@ -418,3 +490,7 @@ Paths are relative to `packages/machine/src/` — `machine/planner` is
 - [`docs/spec-gaps.md`](../../docs/spec-gaps.md) — "From WP-D
   (`machine`)": the absent list store, prefix scans, entry labels, and
   the retryability convention.
+- [`docs/gleam-style.md`](../../docs/gleam-style.md) Part IV §5 and
+  [`packages/lint/src/lint/portable.gleam`](../lint/src/lint/portable.gleam):
+  the portable-subset rule R6 enforces here, what it protects, and what
+  it does not mean.
