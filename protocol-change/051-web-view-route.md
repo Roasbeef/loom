@@ -110,23 +110,21 @@ flag:
 - The control `hello` carries no `ui` field.
 - The control command `ui.link` is refused with `unavailable`.
 
-`loom --ui [--session <id>]` resolves the daemon through the existing
+`loom --ui --session <id>` resolves the daemon through the existing
 discovery path (`tui/daemon/bootstrap.resolve`, under `launch.lock`).
 
 - **No daemon is running.** `loom` adds `--ui` to the launch arguments it
   already passes (`bootstrap.Launch.arguments`), so the daemon it starts
   serves the view.
-- **A daemon is running and its `hello` names `ui`.** `loom` requests a
-  link for the session and prints it. It opens the browser only when the
-  person asks with `--open`.
+- **A daemon is running and its `hello` names `ui`.** `loom` opens the
+  session if it is not resident (`sessions.open`, as a terminal does),
+  requests a link for it and prints the URL. It does not open a browser;
+  the person opens the printed link.
 - **A daemon is running and its `hello` does not name `ui`.** `loom`
   prints that the running daemon was started without `--ui`, and that
   stopping it and running `loom --ui` again starts one that serves the
   view. It exits with status 1. It does not stop, replace or relaunch a
   running daemon, because other people's terminals may be attached to it.
-
-`--session` defaults to the session `loom` would otherwise attach to
-(`sessions.default`).
 
 ### The control `hello`
 
@@ -145,17 +143,20 @@ guessing.
 ```
 c→s: {v:2, id, cmd:"ui.link", body:{session:<canonical-session-id>}}
 s→c: {v:2, reply_to, event:"ui.link",
-      body:{path:"/ui/sessions/<id>?ticket=<ticket>", expires_ms:<int>}}
+      body:{path:"/ui/sessions/<id>?ticket=<ticket>", expires_in_ms:<int>}}
 ```
 
 The daemon checks the caller's session membership exactly as a
 `/v2/sessions/<id>/ws` upgrade does (`manager.session_authority`), and
-refuses with `forbidden` otherwise. The ticket is 32 random bytes,
-base64url encoded. The daemon keeps only its SHA-256 digest, together with
-the principal, the session, the digest of the credential that asked, and
-an expiry 60 seconds away. A ticket can be exchanged once. The reply
-carries a path, not a full URL; `loom` joins it to the address it
-discovered.
+refuses with `forbidden` otherwise. The ticket is 32 bytes from OTP's
+`crypto:strong_rand_bytes`, through `broker/token.production_entropy`, the
+source invitations already use, and is sent base16 encoded. The daemon
+keeps only its SHA-256 digest, together with the principal, the session
+and the digest of the credential that asked for it. `expires_in_ms` is a
+duration, the ticket's remaining lifetime in milliseconds (60,000 when
+issued), not an instant, so the client needs no clock agreement with the
+daemon. The reply carries a path, not a full URL; `loom` joins it to the
+address it discovered.
 
 ### Routes
 
@@ -164,64 +165,117 @@ Present only with `--ui`. `<id>` is a canonical session ID, parsed with
 
 | Method and path | Purpose |
 |---|---|
-| `GET /ui/sessions/<id>?ticket=<t>` | Exchange a ticket for a cookie, then `303` to the same path without the query. |
+| `GET /ui/sessions/<id>?ticket=<t>` | Exchange a ticket for a cookie, and answer with a same-origin page that moves to `/ui/sessions/<id>`. |
 | `GET /ui/sessions/<id>` | The page: a shell holding one `<lustre-server-component>` whose route is the socket below. |
 | `GET /ui/sessions/<id>/ws` | WebSocket upgrade for the Lustre transport. One server component per connection. |
-| `GET /ui/assets/lustre-server-component-5.7.1.mjs` | Lustre's client runtime, served from the `lustre` application's `priv` directory. |
+| `GET /ui/assets/<name>` | Lustre's client runtime (served from the `lustre` application's `priv` directory), the page's stylesheet, and the exchange page's script. A fixed list; any other name is a 404. |
 
 The session ID is in every per-session path. A later page that shows
-several sessions or agents mounts one `<lustre-server-component>` per view,
-each with its own `/ui/sessions/<id>/ws` route, and so its own component
-keyed by the person and that session. Nothing in this proposal assumes
-one session per page.
+several sessions or agents mounts one `<lustre-server-component>` per
+view, each with its own `/ui/sessions/<id>/ws` route, and so its own
+component keyed by the person and that session.
 
-### Browser authentication
+### Tickets and UI sessions
 
-The ticket exchange creates a UI session: 32 random bytes, sent as the
-cookie `loom_ui` with `HttpOnly`, `SameSite=Strict` and `Path=/ui`, and
-with no `Max-Age`, so it ends with the browser session. The daemon keeps
-the cookie's SHA-256 digest mapped to the principal, the credential digest
-that asked for the ticket, and the set of sessions granted to it. A second
-ticket for another session, presented with the same cookie, adds that
-session to the set, which is what a multi-session page will need. UI
-sessions live in memory and end with the daemon's epoch.
+One `weft/actor` owns two tables: tickets and UI sessions. Every mint,
+redemption and lookup is a call to it, so redemption is serialized: two
+mist handlers that present the same ticket at once reach the actor one
+after the other, the first removes the ticket and the second finds
+nothing. Each table is a per-key deadline table inside that one actor,
+which `docs/weft.md` ("Per-key deadline tables stay") allows, and
+`actor.periodic` sweeps both every 60 seconds. A lookup also checks the
+expiry itself, so the sweep only reclaims memory and is not what enforces
+a deadline.
 
-Each page load and each socket upgrade re-authorizes from scratch:
+- **A ticket** lives 60 seconds and can be redeemed once.
+- **A UI session** lives 8 hours from the exchange, however it is used.
+  That is a working day: long enough that a page left open for a day's
+  work keeps working, short enough that a cookie copied out of a browser
+  stops working the same day. Renewing it costs one `loom --ui`. The
+  cookie carries no `Max-Age`, so the browser also drops it when the
+  browser session ends.
 
-1. The cookie's digest names a UI session. Otherwise `401`.
-2. The UI session's credential digest still authenticates
-   (`manager.authenticate`). A revoked or rotated credential therefore ends
-   every UI session it created. Otherwise `401`.
-3. The session in the path is in the UI session's set, and the principal
-   is still a member (`manager.session_authority`). Otherwise `403`.
+Redeeming a ticket creates a new UI session bound to the ticket's
+principal, session and minting credential digest, and returns a new
+cookie. If the request already carries a `loom_ui` cookie, that UI session
+is deleted first. A ticket replaces the UI session outright; nothing is
+merged. A UI session grants exactly one session, the ticket's.
+
+The cookie is `loom_ui`: 32 random bytes from the same source, base16
+encoded, with `HttpOnly`, `SameSite=Strict` and `Path=/ui`. The daemon
+keeps only its SHA-256 digest. UI sessions live in memory and end with the
+daemon.
+
+### Checks on every `/ui` request
+
+In this order, each refusal ending the request:
+
+1. **Host.** `Host` is a loopback name (`127.0.0.1`, `[::1]` or
+   `localhost`) with any port. The listener binds only loopback, and a
+   browser reaching it through a local forward (for example `ssh -L`)
+   presents the forward's port. A rebinding attack presents its own host
+   name. Otherwise `403`.
+2. **Ticket exchange only: `Sec-Fetch-Site`** is `none` (a link pasted or
+   opened from outside a browser page) or `same-origin`. A top-level
+   navigation sends no `Origin`, so `Origin` cannot be required here. The
+   ticket is the CSRF secret: a cross-site page cannot know a ticket, and
+   this check refuses the exchange when another site drives the browser
+   to a ticket it somehow learned. Otherwise `403`.
+3. **WebSocket upgrade only: `Origin`** is present and equals `http://`
+   followed by the request's `Host`. Browsers always send `Origin` on a
+   WebSocket upgrade. Otherwise `403`.
+4. **Cookie** (every route except the exchange and the assets). The
+   cookie's digest names a live UI session, whose session is the one in
+   the path. Otherwise `401`.
+5. **Credential.** The UI session's minting credential digest still
+   authenticates (`manager.authenticate`), and its principal is still a
+   member of the session (`manager.session_authority`). A revoked or
+   rotated credential therefore ends every UI session it created.
+   Otherwise `401` or `403`.
 
 The upgrade then acquires a parser permit with `root.acquire`, like any
 session socket, so the page counts against `max_connections` and the
 reserved-byte limit. After admission the gateway's `check` capability
-re-runs step 3 on every request and every push, as it does for a
-terminal, so a membership revoked while a page is open closes it.
+re-authorizes every request and every push with the same call a terminal
+socket makes, `manager.frame_authority` (`session_socket.authorize`),
+given the minting credential's digest. A credential or membership revoked
+while a page is open therefore stops its pushes and closes it.
 
 The daemon's owner credential never reaches a browser. The browser holds
 a ticket for at most 60 seconds and then a cookie. Both are random values
 the daemon generated; neither is derived from a credential, and neither
-authenticates anywhere but `/ui`. When the owner uses `loom --ui`, the
-page acts as the owner principal on the one session it was granted, and
-is capped to read-only in this phase (below).
+authenticates anywhere but `/ui`.
 
-### Host and Origin checks
+### Response headers
 
-Every `/ui` request is refused with `403` unless:
+Every `/ui` response carries:
 
-- `Host` is a loopback name (`127.0.0.1`, `[::1]` or `localhost`) with any
-  port. The listener binds only loopback, and a browser reaching it
-  through a local forward (for example `ssh -L`) presents the forward's
-  port. A rebinding attack presents its own host name and is refused.
-- On the socket upgrade and the ticket exchange, `Origin` is present and
-  equals `http://` followed by the request's `Host`.
+```
+Content-Security-Policy: default-src 'none'; script-src 'self';
+  style-src 'self'; style-src-attr 'unsafe-inline';
+  connect-src 'self' ws://<Host>; img-src 'self';
+  base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Cache-Control: no-store
+```
 
-Responses carry `Content-Security-Policy: default-src 'self'; connect-src
-'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff` and
-`Referrer-Policy: no-referrer`.
+The page's stylesheet is a `<link>` to `/ui/assets/web_view.css`, and its
+scripts are files under `/ui/assets`, so no inline script or `<style>`
+element is needed. `style-src-attr 'unsafe-inline'` is there because
+Lustre's client runtime applies a `style` attribute by setting it, which
+a policy without it would refuse; the skeleton's view sets none, and the
+allowance covers attributes only, never a stylesheet. `connect-src` names
+the WebSocket origin explicitly as well as `'self'`, for browsers that do
+not map `'self'` onto `ws:`.
+
+The exchange answers `200` with a same-origin page whose script
+(`/ui/assets/web_view_enter.js`) runs `location.replace(location.pathname)`.
+A `303` would carry the cookie's first use on the redirect of a
+navigation that started on another site, where a `SameSite=Strict` cookie
+is not sent, so a link clicked from a cross-site page would land on a
+`401`. The page's own navigation is same-origin, so the cookie is sent,
+and `replace` keeps the ticket URL out of the history.
 
 ### Read-only enforcement
 
@@ -230,29 +284,54 @@ Two independent layers. Either one alone keeps the page from mutating.
 - **In the daemon, by role.** In this phase the relay's gateway `Binding`
   carries `access.Participant(access.Observer)` whatever the principal's
   membership is, and its `check` caps the resolved authority to the same.
-  The gateway already refuses every command outside its `read_only` list
-  for an observer, so a mutation frame from the relay is refused however
-  it was produced. A later phase lifts the cap for an operator by issuing
-  tickets with an operator scope. That is a change to this route's
-  policy, not to the gateway.
+  The gateway refuses every command outside its `read_only` list for an
+  observer, so a mutation frame from the relay is refused however it was
+  produced.
 - **In the component, by type.** The component's message type is the
   lane's arrivals and a tick, plus nothing else, and its view attaches no
   event handlers. Lustre dispatches a browser event only to a handler
   present in the rendered tree, so a browser has nothing to send. The
   component calls no `session_channel.submit`.
 
+When a later phase lets an operator mutate from the page, it removes the
+cap wholesale, so the role on the binding is the principal's membership
+role and nothing else. It does not add a second role source such as a
+ticket scope; the daemon's membership record stays the one place a
+person's authority is decided.
+
 ### The relay
 
-One process per page socket, in `packages/client`. It holds the
-authenticated `Attachment`, attaches to the gateway with
-`attach_authenticated_flushing`, and plays the part `session_socket` plays
-for a terminal: a frame the lane transmits becomes one bounded
-`gateway.connection_request`, whose reply goes to the component as
-`connection_event.Incoming`; a frame the gateway pushes arrives on the
+One process per page socket, in `packages/client`, built on `weft/actor`.
+It plays the part `session_socket` plays for a terminal. It holds the
+authenticated attachment and attaches to the gateway with
+`attach_authenticated_flushing`, giving its own pid as the `socket`, so
+the gateway monitors the relay and removes the attachment and its
+presence when the relay exits. A frame the lane transmits becomes one
+bounded `gateway.connection_request`, whose reply goes to the component
+as `connection_event.Incoming`; a frame the gateway pushes arrives on the
 sink and goes to the component the same way. One mailbox serializes both,
-as in `session_socket`, so a reply and a push never interleave. The relay
-detaches when the component shuts the lane (`Shut`) and exits with it.
-It is built on `weft/actor`.
+as in `session_socket`, so a reply and a push never interleave.
+
+The relay ends in exactly four ways, and each leaves no process and no
+presence behind:
+
+- **`Shut`.** The lane closes its socket: the relay detaches from the
+  gateway and exits.
+- **The browser goes away.** The mist socket closes and shuts the
+  component down. The relay monitors the component, detaches on its
+  `DOWN` and exits.
+- **The gateway goes away** (the session stops, or the daemon shuts
+  down). The relay monitors the gateway connection's pid, as
+  `session_socket` does with `GatewayDown`, tells the page's socket to
+  close, and exits.
+- **The gateway closes the attachment** (a check refused, for example on
+  revocation). The gateway calls the attachment's `close`, which reaches
+  the relay; the relay tells the page's socket to close and exits, and
+  the socket's close shuts the component down.
+
+Backpressure is the terminal socket's: the relay's and the component's
+mailboxes are unbounded, and what bounds a slow browser is the mist
+socket's TCP writes, as for a terminal attached over `session_socket`.
 
 The component is the lane's host. Its socket handle type is the relay's
 subject, and its `Transmit`/`Shut` interpreter has the terminal's shape
@@ -272,17 +351,20 @@ holds the component and the view, and through it in `packages/client`:
 
 The page's WebSocket runs on the daemon's existing `mist` fork
 ([ADR-011](../docs/adr/011-bounded-websocket-forks.md)), whose frame
-bounds apply to it.
+bounds apply to it. `web_view` ships inside the daemon's release because
+`client` depends on it; there is no separate artifact for it.
 
 ## Impact
 
-- `client/daemon/main`: parses `--ui` into the daemon configuration.
+- `client/daemon/main`: parses `--ui`, starts the ticket actor, and passes
+  the view's configuration to the router.
 - `client/daemon/server`: routes `/ui/...` when on; adds `ui.link` and the
-  `hello` field; holds the ticket and UI-session tables.
-- `packages/client`: the relay, and the Lustre socket handler that
-  registers each browser connection with its component.
+  `hello` field.
+- `packages/client`: the ticket actor, the `/ui` request checks, the
+  relay, and the Lustre socket handler that registers each browser
+  connection with its component.
 - `packages/web_view` (new): the component, its model, update and view,
-  over `session_view`.
+  over `session_view`, and the page and asset content.
 - `packages/tui`: `--ui`, the `hello` field, `ui.link`, and the message
   when the running daemon lacks the view.
 - `docs/client-protocol.md` and spec Part 1.6: the conditional routes, the
@@ -294,13 +376,38 @@ bounds apply to it.
   and with `--ui` the `/ui` routes as well".
 - The daemon grows an HTTP surface that serves a page, and with it the
   class of browser attacks this proposal defends against. The flag keeps
-  it off by default, and every defence here must have a test before the
-  flag ships (ADR-014, "Verification").
+  it off by default.
+- **The cookie is shared with every other service on loopback.** Browsers
+  scope cookies by host and ignore the port, so a same-site navigation to
+  any `127.0.0.1` port under `/ui/...` sends `loom_ui` to whatever listens
+  there, and a program that is not a browser can present a stolen cookie
+  with any `Origin` it likes. What such a holder gets is capped: observer
+  access to the one session the ticket named, for at most 8 hours, and
+  only until the minting credential or the membership is revoked. A
+  session's own tool processes can reach the listener only as far as the
+  sandbox's network policy lets them (`--network`, whose default is full
+  access); `--network off` keeps them off loopback, and with it off any
+  `/ui` route. A tool still holds no cookie unless it can read the
+  browser's profile, which the read scope decides.
 - Two more third-party packages ship in the daemon, used only with `--ui`.
 - UI sessions are in memory. A daemon restart ends every open page, and
   the person runs `loom --ui` again.
 - The skeleton caps every page to observer. A person with operator rights
-  sees a read-only page until a later phase issues operator tickets.
+  sees a read-only page until a later phase lifts the cap.
+
+## Decision
+
+**Proposed.** Serve the view from `loomd` behind `--ui`, with its traffic
+through the gateway's authenticated in-process attach and its browser
+authenticated by a single-use ticket exchanged for a cookie. Loopback was
+rejected because it needs a plaintext bearer inside the daemon, and the
+legacy `gateway.attach` because it has no role and speaks a dialect the
+lane cannot. A bearer in the page was rejected because it would put a
+credential that authorizes every one of the person's sessions where any
+script on the page could read it. The ticket costs one control command
+and an in-memory table, and in exchange the only secrets a browser ever
+holds are daemon-generated, scoped to one session, capped to observer,
+and short-lived.
 
 ## Open
 
@@ -308,6 +415,8 @@ bounds apply to it.
   endpoint would present a non-loopback `Host`, which this proposal
   refuses. Allowing it needs a configured allowed origin and the `Secure`
   cookie attribute, and is left to the phase that needs it.
-- **Browser launch.** `--open` needs a platform command to open a URL
-  (`open`, `xdg-open`). Printing the link is the default until that is
+- **Opening the browser.** `loom --ui` prints the link. Opening it needs a
+  platform command (`open`, `xdg-open`), and is deferred until that is
   decided.
+- **A default session.** `loom --ui` takes `--session`. Choosing the
+  session a terminal would attach to when it is omitted is left for later.
