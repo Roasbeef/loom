@@ -67,3 +67,6 @@ the relay into the session's gateway.
   the web host.
 - `protocol-change/051-web-view-route.md`: the routes, authentication and
   the relay.
+- `docs/lustre.md`: how Lustre 5.7.1 server components work, how they map
+  onto this package, `ui_socket` and `ui_relay`, the view's security and
+  accessibility rules, and the checklist for a change here.
