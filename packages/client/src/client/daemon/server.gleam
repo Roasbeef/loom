@@ -310,6 +310,12 @@ fn web_asset(asset: ui_http.Asset) {
 // credential must still authenticate and still be a member. The answer
 // carries the readiness the socket's upgrade reuses, the UI session, and the
 // cookie, which the socket keeps checking.
+//
+// A browser sends every `loom_ui` cookie whose path covers the request, and
+// a longer path sorts first, so a server on another loopback port that knows
+// the key could plant one that shadows the real cookie. Every value is
+// therefore tried, and the one whose UI session is live under this key wins;
+// a planted value names no UI session and is passed over.
 fn page_grant(
   config: Config(instance),
   ui: Ui(instance),
@@ -317,19 +323,17 @@ fn page_grant(
   key: String,
   id: String,
 ) {
-  use cookie <- result.try(
-    ui_http.session_cookie(request)
-    |> option.to_result(Nil)
-    |> result.map_error(fn(_) { plain(401, "no page session") }),
+  use #(cookie, page) <- result.try(
+    ui_http.session_cookies(request)
+    |> list.find_map(fn(cookie) {
+      use page <- result.try(ui_sessions.lookup(ui.sessions, cookie))
+      case ui_sessions.keyed(page, key) {
+        True -> Ok(#(cookie, page))
+        False -> Error(Nil)
+      }
+    })
+    |> result.map_error(fn(_) { plain(401, "no page session under this key") }),
   )
-  use page <- result.try(
-    ui_sessions.lookup(ui.sessions, cookie)
-    |> result.map_error(fn(_) { plain(401, "unknown or expired page session") }),
-  )
-  use Nil <- result.try(case ui_sessions.keyed(page, key) {
-    True -> Ok(Nil)
-    False -> Error(plain(401, "page key names another page session"))
-  })
   let grant = ui_sessions.grant(page)
   use Nil <- result.try(case grant.session_id == id {
     True -> Ok(Nil)

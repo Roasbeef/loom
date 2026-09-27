@@ -116,11 +116,27 @@ pub fn routes_are_gets_under_ui_test() {
 }
 
 pub fn the_cookie_is_read_and_set_with_its_attributes_test() {
-  assert ui_http.session_cookie(
+  assert ui_http.session_cookies(
       get("/ui/sessions/s", [#("cookie", "other=1; loom_ui=abc")]),
     )
-    == Some("abc")
-  assert ui_http.session_cookie(get("/ui/sessions/s", [])) == None
+    == ["abc"]
+  assert ui_http.session_cookies(get("/ui/sessions/s", [])) == []
+
+  // Every value is kept, in the order the browser sent them, so a value
+  // planted under a longer path cannot shadow the real one; the count is
+  // bounded.
+  assert ui_http.session_cookies(
+      get("/ui/p/k/sessions/s", [
+        #("cookie", "loom_ui=planted; loom_ui=real; other=2"),
+      ]),
+    )
+    == ["planted", "real"]
+  assert ui_http.session_cookies(
+      get("/ui/p/k/sessions/s", [
+        #("cookie", "loom_ui=a; loom_ui=b; loom_ui=c; loom_ui=d; loom_ui=e"),
+      ]),
+    )
+    == ["a", "b", "c", "d"]
   let set = ui_http.set_cookie("abc", "k1")
   assert string.starts_with(set, "loom_ui=abc;")
   assert string.contains(set, "HttpOnly")

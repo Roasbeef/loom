@@ -191,17 +191,31 @@ pub fn origin_matches(request: Request(body), host: String) -> Bool {
   }
 }
 
-/// The `loom_ui` cookie, when the request carries one.
+/// The most `loom_ui` values a request is searched for. A browser sends one
+/// per cookie whose path covers the request, which is one for a page opened
+/// normally; the bound keeps a request stuffed with planted values from
+/// costing a UI-session lookup each.
+pub const max_session_cookies = 4
+
+/// Every `loom_ui` value the request carries, in the order the browser sent
+/// them, up to `max_session_cookies`. The caller accepts the one whose UI
+/// session is live under the page's key, so a value planted under a longer
+/// path, which the browser sends first, cannot shadow the real one.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_http.session_cookie(request) == Some("…")
+/// // ui_http.session_cookies(request) == ["planted", "real"]
 /// ```
-pub fn session_cookie(request: Request(body)) -> Option(String) {
+pub fn session_cookies(request: Request(body)) -> List(String) {
   request.get_cookies(request)
-  |> list.key_find(cookie_name)
-  |> option.from_result
+  |> list.filter_map(fn(pair) {
+    case pair.0 == cookie_name {
+      True -> Ok(pair.1)
+      False -> Error(Nil)
+    }
+  })
+  |> list.take(max_session_cookies)
 }
 
 /// The `Set-Cookie` value for a new UI session whose page key is `key`.

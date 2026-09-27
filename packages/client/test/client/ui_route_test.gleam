@@ -476,6 +476,36 @@ pub fn a_valid_cookie_under_another_key_is_refused_test() {
   })
 }
 
+// A server on another loopback port that knows the key can plant a
+// `loom_ui` cookie under a longer path, which the browser sends first. The
+// planted value names no UI session, so the real one behind it still opens
+// the page and its socket.
+pub fn a_planted_cookie_does_not_shadow_the_real_one_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "planted", 912)
+    let page = enter(port, operate(port, credential, session))
+    let both = #("cookie", "loom_ui=planted; loom_ui=" <> page.cookie)
+    assert get(port, page.page, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        both,
+      ]).status
+      == 200
+    assert get(port, page.page <> "/ws?csrf-token=" <> page.nonce, [
+        host(port),
+        both,
+        #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      ]).status
+      == 298
+    assert get(port, page.page, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=planted"),
+      ]).status
+      == 401
+  })
+}
+
 pub fn the_socket_needs_origin_cookie_key_and_nonce_test() {
   fixture(fn(ready, port, credential) {
     let session = create_session(ready, "socket", 902)
