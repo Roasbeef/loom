@@ -8,7 +8,6 @@
 import core/json
 import gleam/bool
 import gleam/list
-import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tui/connection
@@ -113,30 +112,6 @@ pub type Event {
     /// The local diagnostic, without credentials or request bodies.
     reason: String,
   )
-}
-
-/// An optional recorder callback, invoked only by the terminal itself.
-pub type Trace {
-  Trace(
-    /// Terminal-local attempt identity, never a credential or socket address.
-    id: Id,
-    /// Appends synchronously before the terminal processes the next event.
-    note: fn(Event) -> Nil,
-  )
-}
-
-/// Writes a local event if recording is enabled.
-///
-/// ## Examples
-///
-/// ```gleam
-/// attempt.note(None, attempt.Closed(attempt.Id(1)))
-/// ```
-pub fn note(trace: Option(Trace), event: Event) -> Nil {
-  case trace {
-    Some(trace) -> trace.note(event)
-    None -> Nil
-  }
 }
 
 /// Encodes a format-two attempt event as the fields of one recorded line.

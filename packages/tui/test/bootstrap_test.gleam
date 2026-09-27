@@ -1,4 +1,3 @@
-import core/json
 import etui/backend
 import etui/widgets/textarea as text_area
 import filepath
@@ -6,7 +5,6 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
@@ -22,11 +20,13 @@ import tui/daemon/protocol as control
 import tui/daemon/selection
 import tui/inbound
 import tui/interaction
+import tui/job
+import tui/job_runner
 import tui/model as tui_model
+import tui/runtime
 import tui/session_channel
 import tui/session_control
 import tui/session_selector
-import tui/sessions
 import tui/workspace
 import weft
 import weft/poll
@@ -210,104 +210,6 @@ pub fn private_directory_listing_is_bounded_test() {
     == Error("directory exceeds the entry limit")
   let assert Ok(entries) = host_bootstrap.list_directory_bounded(root, 2)
   assert list.length(entries) == 2
-  let _ = simplifile.delete(root)
-}
-
-pub fn local_session_discovery_validates_launcher_records_test() {
-  let root = test_root("session-discovery")
-  let workspace = filepath.join(root, "workspace")
-  let state = filepath.join(root, "state")
-  let session_directory = filepath.join(state, "sessions")
-  let session = filepath.join(session_directory, "review.db")
-  let endpoint_directory = filepath.join(state, "endpoints")
-  let _ = simplifile.delete(root)
-  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
-  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(state)
-  let assert Ok(Nil) =
-    host_bootstrap.ensure_private_directory(session_directory)
-  let assert Ok(Nil) =
-    host_bootstrap.ensure_private_directory(endpoint_directory)
-  let assert Ok(Nil) = simplifile.write(session, "")
-  let assert Ok(canonical_workspace) =
-    host_bootstrap.canonical_directory(workspace)
-  let assert Ok(canonical_state) = host_bootstrap.canonical_directory(state)
-  let assert Ok(canonical_session) = host_bootstrap.canonical_path(session)
-  let key = digest_prefix(canonical_session, 24)
-  let endpoint = filepath.join(endpoint_directory, key <> ".json")
-  let record =
-    json.Object([
-      #("version", json.Int(2)),
-      #("gateway_protocol", json.Int(1)),
-      #("status", json.String("ready")),
-      #("workspace", json.String(canonical_workspace)),
-      #("session_file", json.String(canonical_session)),
-      #("session", json.String("review")),
-      #("address", json.String("ws://127.0.0.1:44123/v1/ws")),
-      #(
-        "token_file",
-        json.String(filepath.join(
-          filepath.join(canonical_state, "tokens"),
-          key <> ".token",
-        )),
-      ),
-      #(
-        "log_file",
-        json.String(filepath.join(
-          filepath.join(canonical_state, "logs"),
-          key <> ".log",
-        )),
-      ),
-      #("server_pid", json.Int(0)),
-      #("server_birth", json.String("")),
-      #("started_at_ms", json.Int(host_bootstrap.system_time_ms())),
-    ])
-    |> json.to_string
-  let assert Ok(Nil) = host_bootstrap.atomic_write_private(endpoint, record)
-  let assert Ok(Nil) =
-    host_bootstrap.atomic_write_private(
-      filepath.join(endpoint_directory, "malformed.json"),
-      "not json",
-    )
-
-  // A second, otherwise identical record proves the exclusion below is the
-  // status alone: it is listed while ready and vanishes once it says
-  // starting, as a record a failed spawn abandoned would.
-  let pending = filepath.join(session_directory, "pending.db")
-  let assert Ok(Nil) = simplifile.write(pending, "")
-  let assert Ok(canonical_pending) = host_bootstrap.canonical_path(pending)
-  let pending_key = digest_prefix(canonical_pending, 24)
-  let pending_endpoint =
-    filepath.join(endpoint_directory, pending_key <> ".json")
-  let pending_record =
-    record
-    |> string.replace(canonical_session, canonical_pending)
-    |> string.replace("\"review\"", "\"pending\"")
-    |> string.replace(key, pending_key)
-  let options = bootstrap.Options(workspace, session, "/bin/loomd", state, "")
-  let assert Ok(Nil) =
-    host_bootstrap.atomic_write_private(pending_endpoint, pending_record)
-  let assert Ok([_, _]) = bootstrap.discover_sessions(options)
-    as "a ready sibling record is listed"
-  let assert Ok(Nil) =
-    host_bootstrap.atomic_write_private(
-      pending_endpoint,
-      string.replace(pending_record, "\"ready\"", "\"starting\""),
-    )
-  let assert Ok([choice]) = bootstrap.discover_sessions(options)
-  assert choice
-    == bootstrap.SessionChoice(
-      session: "review",
-      workspace: canonical_workspace,
-      session_file: canonical_session,
-    )
-  assert bootstrap.session_options(options, choice)
-    == bootstrap.Options(
-      workspace: canonical_workspace,
-      session_file: canonical_session,
-      server: "/bin/loomd",
-      state_directory: state,
-      config: "",
-    )
   let _ = simplifile.delete(root)
 }
 
@@ -513,16 +415,16 @@ fn run_real_server_lifecycle(server: String) -> Nil {
         ),
       ),
     )
-  let refused = tui.update(backend.KeyPress("n"), invalid)
+  let refused = configured(tui.update(backend.KeyPress("n"), invalid))
   assert refused.creation_key == None
   assert text_area.value(refused.input) == "retained draft"
   assert !attachment.busy(refused.candidate)
   let creating =
-    tui.update(
+    configured(tui.update(
       backend.KeyPress("n"),
       tui_model.Model(..refused, local_options: Some(options)),
-    )
-  let switched = wait_for_attachment(creating.candidate, 20_000)
+    ))
+  let switched = wait_for_attachment(creating, 20_000)
   let assert attachment.Adopted(channel, cut, _, _, _, selected_name, _) =
     switched
     as "the terminal validates the bounded capture before actual adoption"
@@ -559,44 +461,6 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     == Some(#(target.expected.session, target.session_name))
   close_channel(channel)
 
-  // A cancelled attempt must take its unadopted socket down. Two paths
-  // cover it: a task that has returned its socket but whose outcome nobody
-  // pulled is closed by the cancel's drain, and a task still running has
-  // its socket killed through the link. Both attempts publish the socket's
-  // pid on the side so the proof never pulls the outcome itself.
-  let told = process.new_subject()
-  let choice = bootstrap.SessionChoice(target.expected.session, workspace, "")
-  let returned =
-    sessions.start_with(
-      choice.session,
-      fn(frames) {
-        let opened = open_fixture_socket(choice, options, target, frames)
-        process.send(told, socket_owner(opened))
-        opened
-      },
-      within: 90_000,
-    )
-  let assert Ok(Ok(returned_pid)) = process.receive(told, 40_000)
-    as "a second switch should connect"
-  assert process.is_alive(returned_pid)
-  sessions.cancel(returned)
-  assert_process_exits(returned_pid, 100)
-  let running =
-    sessions.start_with(
-      choice.session,
-      fn(frames) {
-        let opened = open_fixture_socket(choice, options, target, frames)
-        process.send(told, socket_owner(opened))
-        process.sleep_forever()
-        opened
-      },
-      within: 90_000,
-    )
-  let assert Ok(Ok(running_pid)) = process.receive(told, 40_000)
-    as "a third switch should connect"
-  assert process.is_alive(running_pid)
-  sessions.cancel(running)
-  assert_process_exits(running_pid, 100)
   daemon.close(second.control)
 
   // Workspace selection does not select a daemon. Detaching both terminals
@@ -627,18 +491,23 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   // Drive the shipped loss transition without first waiting for VM exit.
   // The bounded observation must bridge that interval and publish one new
   // host. The actual successful event then starts the normal adoption path.
+  // The flush performs the relaunch the loss queued, as the loop would
+  // after the step that saw the loss.
   let reconnecting =
     inbound.apply_channel_update(
       adopted,
       session_channel.Failed("daemon exited"),
     )
-  let assert tui_model.ReconnectAttempting(replies:, ..) =
-    reconnecting.reconnect
+    |> runtime.flush
+  let assert tui_model.ReconnectAttempting(_) = reconnecting.reconnect
     as "the attached local terminal owns one reconnect attempt"
-  let assert Ok(reconnected) = process.receive(replies, 40_000)
+  let assert Ok(reconnected) =
+    process.selector_receive(job_runner.selector(reconnecting.running), 40_000)
     as "the bounded relaunch produces an outcome"
-  let assert weft.PulledOutcome(weft.Completed(value: restarted_host, ..)) =
-    reconnected
+  let assert job.ReconnectArrived(
+    reply: weft.PulledOutcome(weft.Completed(value: restarted_host, ..)),
+    ..,
+  ) = reconnected
     as "native retirement permits a replacement daemon"
   let assert Ok(Some(record)) = endpoint.load(first.paths)
     as "the replacement publishes its own native fence and epoch"
@@ -660,11 +529,10 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert saved.session_id == target.expected.session
   assert saved.status == control.Saved
   let reattaching =
-    session_control.accept_reconnect_event(
-      reconnecting,
-      session_control.ReconnectEvent(replies, reconnected),
-    )
-  let reopened = wait_for_attachment(reattaching.candidate, 20_000)
+    runtime.hold(reconnecting, reconnected)
+    |> session_control.drain_reconnect
+    |> runtime.flush
+  let reopened = wait_for_attachment(reattaching, 20_000)
   let assert attachment.Adopted(
     reopened_channel,
     reopened_cut,
@@ -722,59 +590,74 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   Nil
 }
 
-// Only the existing generic cancellation harness remains here. Its callback
-// opens the already-authorized v2 target; no legacy discovery or protocol runs.
-fn open_fixture_socket(choice, options, target: attachment.Target, frames) {
-  use socket <- result.map(connection.connect(
-    target.address,
-    target.token,
-    frames,
-  ))
-  sessions.Opened(
-    choice,
-    options,
-    bootstrap.Target(target.address, target.expected.session, target.token),
-    socket,
-  )
-}
-
 fn close_channel(channel: session_channel.Channel) -> Nil {
   let #(_, outputs) =
     session_channel.take_outputs(session_channel.close(channel))
   list.each(outputs, session_channel.perform)
 }
 
-fn wait_for_attachment(status, within) {
+// Drives a model's attachment attempt outside the terminal loop until it
+// settles: before each poll the runtime receives the job's messages and the
+// attempt's frames, and after it the flush performs what the poll decided,
+// which includes what the candidate's channel queued, in the order the
+// runtime would after a step.
+// A creation resolves its configuration in a job before it retains a key
+// (ADR-013, phase 2 S6), so the key press starts that job and the tick that
+// takes its reply makes the creation's checks and starts the attachment.
+// This ticks until it has.
+fn configured(model: tui_model.Model) -> tui_model.Model {
+  let assert poll.Answer(configured) =
+    poll.fold_until(
+      clock: poll.monotonic(),
+      within: 5000,
+      every: poll.Fixed(5),
+      from: model,
+      attempt: fn(current: tui_model.Model) {
+        case current.configuring {
+          None -> poll.Settled(current)
+          Some(_) -> poll.Pending(tui.update(backend.Tick, current))
+        }
+      },
+    )
+    as "the configuration job answers"
+  configured
+}
+
+fn wait_for_attachment(model: tui_model.Model, within: Int) {
   case
     poll.fold_until(
       clock: poll.monotonic(),
       within: within,
       every: poll.Fixed(5),
-      from: status,
-      attempt: fn(status) {
-        // Driven outside the terminal loop, so this poll performs what
-        // the candidate's channel queued and what the poll itself decided,
-        // in the order the runtime would after a step.
+      from: model,
+      attempt: fn(model) {
+        let model = runtime.receive(model)
         let #(next, outcome, decided) =
-          attachment.poll(status, now: host_bootstrap.monotonic_time_ms())
+          attachment.poll(
+            model.candidate,
+            now: host_bootstrap.monotonic_time_ms(),
+          )
+        let model =
+          list.fold(
+            decided,
+            tui_model.Model(..model, candidate: next),
+            tui_model.emit_attachment,
+          )
+          |> runtime.flush
         case outcome {
-          Some(outcome) -> {
-            list.each(decided, attachment.perform)
-            poll.Settled(outcome)
-          }
-          None -> {
-            let #(next, queued) = attachment.take_outputs(next)
-            list.each(queued, attachment.perform)
-            list.each(decided, attachment.perform)
-            poll.Pending(next)
-          }
+          Some(outcome) -> poll.Settled(outcome)
+          None -> poll.Pending(model)
         }
       },
     )
   {
     poll.Answer(outcome) -> outcome
     poll.RanOut(pending) -> {
-      attachment.cancel(pending)
+      let _ =
+        runtime.flush(tui_model.emit_attachment(
+          pending,
+          attachment.Abandon(pending.candidate),
+        ))
       panic as "the bounded credited attachment did not settle"
     }
     poll.Failure(reason) -> panic as string.inspect(reason)
@@ -812,39 +695,11 @@ fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
     as "the native process must be observed absent before replacement"
 }
 
-fn socket_owner(
-  opened: Result(sessions.Opened, String),
-) -> Result(process.Pid, Nil) {
-  case opened {
-    Ok(sessions.Opened(socket:, ..)) -> connection.owner(socket)
-    Error(_reason) -> Error(Nil)
-  }
-}
-
-fn assert_process_exits(pid: process.Pid, attempts: Int) -> Nil {
-  let observed =
-    poll.until(within: attempts * 10, every: 10, attempt: fn() {
-      case process.is_alive(pid) {
-        False -> poll.Done(Nil)
-        True -> poll.Retry
-      }
-    })
-  assert observed == poll.Answered(Nil)
-    as "the abandoned socket actor should have exited"
-}
-
 fn test_root(name: String) -> String {
   "build/bootstrap-test-"
   <> name
   <> "-"
   <> string.inspect(host_bootstrap.system_time_ms())
-}
-
-fn digest_prefix(value: String, length: Int) -> String {
-  host_bootstrap.sha256(<<value:utf8>>)
-  |> bit_array.base16_encode
-  |> string.lowercase
-  |> string.slice(at_index: 0, length:)
 }
 
 // The update notice is a projection of retained authenticated identity. Each

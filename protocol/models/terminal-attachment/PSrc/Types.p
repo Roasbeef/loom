@@ -5,7 +5,9 @@
 // (the websocket transport and the daemon's gateway handler for that
 // connection), and the environment (Operator, Deadline, Fuse). Everything
 // the terminal reads arrives in an inbox the terminal created and names by
-// an integer, which stands for a terminal-owned `Subject`.
+// an integer, which stands for a terminal-owned `Subject`. An attachment
+// job's own messages, its Prepared and its outcome, are tagged with the
+// job's key instead, which is the attempt number.
 
 // ---------------------------------------------------------------------------
 // Wire frames.
@@ -45,8 +47,9 @@ event eFrame: tFramePayload;
 type tWritePayload = (sock: machine, req: tReq);
 event eWrite: tWritePayload;
 
-// A close the terminal performs: session_channel.Shut, attachment.CloseStray,
-// or the close inside attachment.cancel.
+// A close the terminal performs: session_channel.Shut, the close inside
+// attachment.cancel, or job_runner.dropped closing the socket of a Prepared
+// no attempt admitted.
 type tSockPayload = (sock: machine);
 event eShut: tSockPayload;
 
@@ -68,21 +71,26 @@ event eFuse;
 // Attachment worker events.
 // ---------------------------------------------------------------------------
 
-// attachment.Prepared, sent to the attempt's terminal-owned prepared inbox.
-type tPreparedPayload = (inbox: int, attempt: int, sock: machine, worker: machine);
+// job.Prepared, tagged with the job's key (job.AttachArrived with
+// job.Published). `framesInbox` is the frames subject the runtime created
+// when it started the job and the worker connected the socket to; the
+// attempt learns it from here and from nowhere else.
+type tPreparedPayload = (attempt: int, sock: machine, worker: machine, framesInbox: int);
 event ePrepared: tPreparedPayload;
 
-// The weft relay's outcome for the attempt, sent to the outcomes inbox.
-// `completed` is weft.AllDelivered after a normal return; false stands for
-// Failed, Crashed, Abandoned and the other failure variants.
-type tOutcomePayload = (inbox: int, attempt: int, completed: bool);
+// The weft relay's outcome for the attempt, tagged with the job's key
+// (job.AttachArrived with job.Settled). `completed` is weft.AllDelivered
+// after a normal return; false stands for Failed, Crashed, Abandoned and the
+// other failure variants. It is the job's last message.
+type tOutcomePayload = (attempt: int, completed: bool);
 event eOutcome: tOutcomePayload;
 
 // attachment.Acknowledge, the reply that releases the waiting worker.
 type tAttemptPayload = (attempt: int);
 event eAck: tAttemptPayload;
 
-// weft.cancel on the attempt's cancel signal.
+// weft.cancel on the attempt's cancel signal, which job_runner.cancel sends
+// when the runtime performs effect.CancelJob.
 event eCancel: tAttemptPayload;
 
 // The attempt's 90 s deadline (weft.deadline plus the acknowledgement wait).
@@ -156,6 +164,9 @@ event eApplied: tAppliedPayload;
 
 // submit.quit ran.
 event eQuit;
+
+// runtime.hold dropped a Prepared no attempt admitted (job_runner.dropped).
+event ePreparedDropped: tSockPayload;
 
 // Worker and socket lifetimes, for the custody specs.
 event eWorkerStarted: tAttemptPayload;

@@ -12,6 +12,7 @@ import gleam/list
 import gleam/option.{None}
 import tui
 import tui/agents
+import tui/buffered
 import tui/connection
 import tui/model as tui_model
 import tui/recording
@@ -58,7 +59,7 @@ pub fn run(path: String, expected_records: Int) -> Nil {
       recording.to_steps(moments),
       inbox,
     )
-    |> virtual_backend.with_attempts(model.replay_inbox)
+    |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox))
   let start = now(Microsecond)
   let assert Ok(completed) = tui.run_script(model, script)
     as "the virtual terminal must finish"

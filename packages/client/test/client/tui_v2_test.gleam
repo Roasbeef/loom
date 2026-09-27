@@ -16,11 +16,13 @@ import host/bootstrap as host_bootstrap
 import support/tui_driver
 import tui
 import tui/attempt
+import tui/buffered
 import tui/connection
 import tui/daemon
 import tui/daemon/selection
 import tui/inbound
 import tui/model as tui_model
+import tui/recording
 import tui/runtime
 import tui/session_channel
 import weft/poll
@@ -39,14 +41,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     let assert Ok(socket) = connection.connect(target.address, token, inbox)
       as "the real conversation socket belongs to this terminal inbox"
     let issued = process.new_subject()
-    let trace =
-      attempt.Trace(attempt.Id(1), fn(event) {
-        case event {
-          attempt.Issued(_, attempt.Request(id, "prompt", _)) ->
-            process.send(issued, id)
-          _ -> Nil
-        }
-      })
+    let trace = recording.Trace(recording.observed(issued), attempt.Id(1))
     let channel =
       session_channel.start_recorded(
         socket,
@@ -60,9 +55,9 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
       tui_model.Model(
         ..tui.new_model(inbox, target.workspace),
         peer: tui_model.Attached(socket),
-        channel: Some(channel),
         session: session,
       )
+      |> tui_model.hold_channel(channel)
       |> runtime.flush
     let #(initial, ending) = hold_snapshot_end(model, 32)
     let initial =
@@ -96,7 +91,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
       as "a genuinely incomplete cut retains the draft"
     assert refused.next_id == waiting.next_id
     assert refused.pending_submission == Some(tui_model.ComposerSubmission)
-    assert process.receive(issued, 0) == Error(Nil)
+    assert prompts(issued) == []
     let refused = tui.update(backend.KeyPress("enter"), refused)
     let refused =
       tui.update(backend.Paste("must not replace queued intent"), refused)
@@ -108,10 +103,10 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     let admitted = tui.update(backend.Tick, refused)
     assert textarea.value(admitted.input) == ""
     assert admitted.next_id == refused.next_id + 1
-    let assert Ok(_) = process.receive(issued, 1000)
+    let assert [_] = prompts(issued)
       as "exactly one prompt was issued after the completed cut"
-    assert process.receive(issued, 0) == Error(Nil)
-    let assert Ok(connection.Incoming(reply)) = process.receive(inbox, 2000)
+    let assert #(_, Ok(connection.Incoming(reply))) =
+      buffered.receive(admitted.inbox, 2000)
       as "the real server acknowledges the transmitted mutation"
     let assert Ok(json.Object(fields)) = json.parse(reply) as "response is JSON"
     assert list.key_find(fields, "event") == Ok(json.String("mutation_outcome"))
@@ -120,10 +115,28 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
   })
 }
 
+// The prompt requests the lane has recorded since the last call. Its other
+// notes, the subscribe, credits and frames, are read and set aside. The
+// recorder is written when the runtime performs a step's effects, so by the
+// time `update` returns every note of that step is already here.
+fn prompts(issued) {
+  collect_prompts(issued, [])
+}
+
+fn collect_prompts(issued, collected) {
+  case process.receive(issued, 0) {
+    Error(Nil) -> list.reverse(collected)
+    Ok(recording.Attempt(attempt.Issued(_, attempt.Request(id, "prompt", _)))) ->
+      collect_prompts(issued, [id, ..collected])
+    Ok(_) -> collect_prompts(issued, collected)
+  }
+}
+
 fn hold_snapshot_end(model: tui_model.Model, remaining: Int) {
   assert remaining > 0 as "fixture transfers have a finite frame budget"
-  let assert Ok(incoming) = process.receive(model.inbox, 1000)
+  let assert #(inbox, Ok(incoming)) = buffered.receive(model.inbox, 1000)
     as "each credited response arrives within its deadline"
+  let model = tui_model.Model(..model, inbox:)
   let ended = case incoming {
     connection.Incoming(text) -> {
       let assert Ok(json.Object(fields)) = json.parse(text)

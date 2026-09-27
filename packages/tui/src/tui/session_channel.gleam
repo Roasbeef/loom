@@ -40,6 +40,7 @@ import tui/approval
 import tui/attempt
 import tui/connection
 import tui/protocol
+import tui/recording
 import tui/session_wire
 import tui/snapshot
 import tui/snapshot_view
@@ -207,21 +208,31 @@ type Phase {
   Closed
 }
 
-/// What a channel transition asks the transport to do.
+/// What a channel transition asks the transport and the recorder to do.
 ///
-/// The channel decides what to write and when to close; it never writes or
-/// closes itself. A transition appends its outputs to the channel's outbox
-/// and the terminal's runtime takes and performs them after the reducer
-/// step that produced them, so every function below is a pure transition
-/// over its arguments. Each output names the socket it was decided for:
-/// an attachment replaced later in the same step must not redirect a write
-/// that was meant for the connection it replaced.
+/// The channel decides what to write, when to close and what to record; it
+/// never writes, closes or records itself. A transition appends its outputs
+/// to the channel's outbox, the reducer that called it moves them into the
+/// model's outbox before it stores the channel, and the terminal's runtime
+/// performs them after the step, so every function below is a pure
+/// transition over its arguments. Each output names what it acts on: an
+/// attachment replaced later in the same step must not redirect a write
+/// that was meant for the connection it replaced, and a note decided under
+/// one recorder goes to that recorder.
+///
+/// A lane's notes and writes share one queue because the recording orders
+/// them by cause (ADR-009): a request's `Issued` note is queued before its
+/// frame, and a frame's `Received` note before anything the frame made the
+/// lane send.
 pub type Out {
   /// One protocol frame to write.
   Transmit(socket: connection.Connection, frame: String)
 
   /// A close of the lane's socket.
   Shut(socket: connection.Connection)
+
+  /// One attempt event for the lane's recording.
+  Note(recorder: recording.Recorder, event: attempt.Event)
 }
 
 /// One bounded protocol lane, held by the terminal which owns its inbox.
@@ -230,7 +241,7 @@ pub opaque type Channel {
     socket: Option(connection.Connection),
     /// Pending outputs, newest first, until `take_outputs` hands them over.
     outbox: List(Out),
-    trace: Option(attempt.Trace),
+    trace: Option(recording.Trace),
     issued: attempt.Request,
     expected: snapshot.Expected,
     phase: Phase,
@@ -276,15 +287,12 @@ pub fn start(
 pub fn start_recorded(
   socket,
   expected,
-  trace: Option(attempt.Trace),
+  trace: Option(recording.Trace),
   now now: Int,
 ) -> Channel {
-  let channel = initial(Some(socket), expected, trace, now)
-  case trace {
-    Some(trace) -> trace.note(attempt.Started(trace.id, expected))
-    None -> Nil
-  }
-  emit(channel, protocol.subscribe(1, expected.session))
+  initial(Some(socket), expected, trace, now)
+  |> note(attempt.Started(_, expected))
+  |> emit(protocol.subscribe(1, expected.session))
 }
 
 /// Starts a reattachment that resumes from a cut this terminal already holds.
@@ -306,32 +314,28 @@ pub fn start_resumed(
   socket: connection.Connection,
   expected: snapshot.Expected,
   retained: snapshot.Captured,
-  trace: Option(attempt.Trace),
+  trace: Option(recording.Trace),
   now now: Int,
 ) -> Channel {
-  let channel =
-    Channel(
-      socket: Some(socket),
-      outbox: [],
-      trace: trace,
-      issued: attempt.Request(1, "subscribe", attempt.Cursor(retained.next_seq)),
-      expected: expected,
-      phase: AwaitingBegin,
-      request_id: 1,
-      next_id: 2,
-      deadline: now + 30_000,
-      attachment: Some(retained.attachment),
-      cut: Some(retained),
-      queued: None,
-      refresh_at: now,
-      refresh: Idle,
-      trigger: Requested,
-    )
-  case trace {
-    Some(trace) -> trace.note(attempt.Started(trace.id, expected))
-    None -> Nil
-  }
-  emit(channel, protocol.subscribe_from(1, expected.session, retained.next_seq))
+  Channel(
+    socket: Some(socket),
+    outbox: [],
+    trace: trace,
+    issued: attempt.Request(1, "subscribe", attempt.Cursor(retained.next_seq)),
+    expected: expected,
+    phase: AwaitingBegin,
+    request_id: 1,
+    next_id: 2,
+    deadline: now + 30_000,
+    attachment: Some(retained.attachment),
+    cut: Some(retained),
+    queued: None,
+    refresh_at: now,
+    refresh: Idle,
+    trigger: Requested,
+  )
+  |> note(attempt.Started(_, expected))
+  |> emit(protocol.subscribe_from(1, expected.session, retained.next_seq))
 }
 
 /// Creates effect-free replay state without a socket, process or wall clock.
@@ -350,8 +354,9 @@ pub fn replay(expected: snapshot.Expected) -> Channel {
 }
 
 /// Records what a socketless lane would have written, for tests that need to
-/// see which request a transition issued rather than only its outcome. Its
-/// time starts at zero, as `replay`'s does.
+/// see which request a transition issued rather than only its outcome. The
+/// lane queues its notes and nothing else, since it has no socket. Its time
+/// starts at zero, as `replay`'s does.
 ///
 /// ## Examples
 ///
@@ -361,7 +366,7 @@ pub fn replay(expected: snapshot.Expected) -> Channel {
 @internal
 pub fn replay_traced(
   expected: snapshot.Expected,
-  trace: attempt.Trace,
+  trace: recording.Trace,
 ) -> Channel {
   initial(None, expected, Some(trace), 0)
 }
@@ -386,17 +391,12 @@ fn initial(socket, expected, trace, now: Int) {
   )
 }
 
-// The trace note stays a synchronous append: the recording orders a
-// request's issue against the input that caused it, and that order is only
-// kept while every recording write happens where it did before. The write
-// itself becomes an output. A socketless lane has nowhere to write, so it
-// records the issue and queues nothing, which is what lets replay run the
-// same transitions.
+// The issue is noted before the frame is queued, so a recording never holds
+// a frame on the wire that it has no request for. A socketless lane has
+// nowhere to write, so it notes the issue and queues no frame, which is
+// what lets replay run the same transitions.
 fn emit(channel: Channel, frame: String) -> Channel {
-  case channel.trace {
-    Some(trace) -> trace.note(attempt.Issued(trace.id, channel.issued))
-    None -> Nil
-  }
+  let channel = note(channel, attempt.Issued(_, channel.issued))
   case channel.socket {
     Some(socket) ->
       Channel(..channel, outbox: [Transmit(socket, frame), ..channel.outbox])
@@ -404,11 +404,24 @@ fn emit(channel: Channel, frame: String) -> Channel {
   }
 }
 
+// A lane with no trace records nothing, and one with a trace queues the
+// event under its own attempt identity, behind whatever it queued before.
+fn note(channel: Channel, event: fn(attempt.Id) -> attempt.Event) -> Channel {
+  case channel.trace {
+    Some(recording.Trace(recorder:, id:)) ->
+      Channel(..channel, outbox: [Note(recorder, event(id)), ..channel.outbox])
+    None -> channel
+  }
+}
+
 /// Hands over the outputs queued since the last call, oldest first.
 ///
-/// The runtime calls this after every reducer step. A caller that drives a
-/// channel outside the terminal loop, such as a test holding a live socket,
-/// takes the outputs itself and passes each to `perform`.
+/// A reducer calls this, through `tui_model.hold_channel`, after every
+/// transition of the adopted lane, and the attachment calls it for its
+/// candidate's lane, so the outputs join the step's one queue in the order
+/// they were decided. A caller that drives a channel outside the terminal
+/// loop, such as a test holding a live socket, takes the outputs itself and
+/// passes each to `perform`.
 ///
 /// ## Examples
 ///
@@ -420,10 +433,10 @@ pub fn take_outputs(channel: Channel) -> #(Channel, List(Out)) {
   #(Channel(..channel, outbox: []), list.reverse(channel.outbox))
 }
 
-/// Performs one output against its socket.
+/// Performs one output against its socket or its recorder.
 ///
-/// This is the only place a channel's decisions touch the transport, and
-/// it runs outside every transition.
+/// This is the only place a channel's decisions touch the transport or the
+/// recording, and it runs outside every transition.
 ///
 /// ## Examples
 ///
@@ -434,6 +447,8 @@ pub fn perform(output: Out) -> Nil {
   case output {
     Transmit(socket, frame) -> connection.send(socket, frame)
     Shut(socket) -> connection.close(socket)
+    Note(recorder, event) ->
+      recording.append(recorder, recording.Attempt(event))
   }
 }
 
@@ -611,10 +626,10 @@ pub fn receive(
   message: connection.Message,
   now now: Int,
 ) -> #(Channel, List(Update)) {
-  case channel.trace {
-    Some(trace) -> trace.note(attempt.Received(trace.id, message))
-    None -> Nil
-  }
+  // Every message is noted before it is reduced, so its note precedes
+  // anything the message makes the lane send, including a close.
+  let channel = note(channel, attempt.Received(_, message))
+
   case message {
     connection.Connected -> #(channel, [])
 
@@ -1078,13 +1093,10 @@ pub fn close(channel: Channel) -> Channel {
     // that `fail` already closed, and a second `Shut` or a second recorded
     // close would describe an event that did not happen.
     Closed -> channel
-    AwaitingBegin | Receiving(..) | AwaitingReply(..) | Ready -> {
-      case channel.trace {
-        Some(trace) -> trace.note(attempt.Closed(trace.id))
-        None -> Nil
-      }
-      close_socket(Channel(..channel, phase: Closed, queued: None))
-    }
+    AwaitingBegin | Receiving(..) | AwaitingReply(..) | Ready ->
+      Channel(..channel, phase: Closed, queued: None)
+      |> note(attempt.Closed)
+      |> close_socket
   }
 }
 
@@ -1150,16 +1162,16 @@ fn close_socket(channel: Channel) -> Channel {
 
 /// Records adoption only after the terminal commits the validated replacement.
 ///
+/// The note is queued on the lane like its other outputs; the caller moves
+/// it into the step's queue when it stores the lane.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// session_channel.adopted(channel)
+/// let lane = session_channel.adopted(lane)
 /// ```
-pub fn adopted(channel: Channel) -> Nil {
-  case channel.trace {
-    Some(trace) -> trace.note(attempt.Adopted(trace.id))
-    None -> Nil
-  }
+pub fn adopted(channel: Channel) -> Channel {
+  note(channel, attempt.Adopted)
 }
 
 fn capture_again(channel: Channel, cursor, trigger: Capture, now: Int) {

@@ -29,6 +29,7 @@ import gleam/result
 import gleam/string
 import tui
 import tui/agents
+import tui/buffered
 import tui/connection
 import tui/frame
 import tui/layout
@@ -490,7 +491,7 @@ fn run(model: tui_model.Model, steps: List(virtual_backend.Step)) -> Pane {
     virtual_backend.script(
       backend.TerminalSize(width: 60, height: 30),
       steps,
-      model.inbox,
+      buffered.sender(model.inbox),
     )
   let assert Ok(finished) = tui.run_script(model, script)
     as "the scripted backend cannot refuse to start"

@@ -2,24 +2,26 @@
 //// when to paint.
 ////
 //// `update_tick` drains the replay, the attachment candidate, daemon
-//// control, the session switch, reconnection and a bounded batch of
-//// socket traffic, and then hands the drained model to `settle_tick`,
-//// which services the side-surface reads and advances the session
-//// channel's timers. `settle_tick` takes the drained model as a parameter
-//// on purpose: see the comment above it. The frame cache and the viewport
-//// pacing that decide whether a tick repaints live here as well, as does
-//// the Herdr pane reporter.
+//// control, reconnection, the activity poll, a session creation's
+//// configuration and a bounded batch of socket traffic, and then hands the
+//// drained model to `settle_tick`, which services the side-surface reads
+//// and advances the session channel's timers. Every drain takes from what
+//// the runtime received before the step rather than from a mailbox.
+//// `settle_tick` takes the drained model as a parameter on purpose: see
+//// the comment above it. The frame cache
+//// and the viewport pacing that decide whether a tick repaints live here
+//// as well, as does the Herdr pane reporter.
 
 import etui/geometry
 import gleam/bool
 import gleam/dict
-import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import host/bootstrap as host_bootstrap
 import tui/attachment
 import tui/attempt_replay
+import tui/buffered
 import tui/cache_miss
 import tui/effect
 import tui/herdr
@@ -27,46 +29,12 @@ import tui/history_view
 import tui/inbound
 import tui/interaction
 import tui/layout
-import tui/model.{
-  type Model, ControlEvent, FrameCache, Model, ReconnectAttempting,
-  ReconnectIdle, ReconnectSpent, Replaying,
-} as tui_model
+import tui/model.{type Model, FrameCache, Model, Replaying} as tui_model
 import tui/pacing
 import tui/render
 import tui/session_channel
-import tui/session_control.{ReconnectEvent}
-import tui/sessions
+import tui/session_control
 import tui/surfaces
-
-fn drain_reconnect(model: Model) -> Model {
-  case model.reconnect {
-    ReconnectIdle | ReconnectSpent -> model
-    ReconnectAttempting(replies:, ..) ->
-      case process.receive(replies, 0) {
-        Error(Nil) -> model
-        Ok(reply) ->
-          session_control.accept_reconnect_event(
-            model,
-            ReconnectEvent(replies, reply),
-          )
-      }
-  }
-}
-
-fn drain_control(model: Model) -> Model {
-  case model.control_request {
-    None -> model
-    Some(run) ->
-      case process.receive(run.replies, 0) {
-        Error(Nil) -> model
-        Ok(reply) ->
-          session_control.accept_control_event(
-            model,
-            ControlEvent(run.replies, reply),
-          )
-      }
-  }
-}
 
 /// Starts the Herdr pane reporter when the launch environment carries a
 /// pane. Started here rather than in `main` so the launchers that are not
@@ -153,10 +121,11 @@ pub fn publish_herdr(model: Model) -> Model {
 pub fn update_tick(model: Model) -> Model {
   let animated =
     inbound.tick_strip(advance_activity_indicator(drain_replay(model)))
-  let switched = drain_candidate(drain_control(drain_session_switch(animated)))
-  let switched = drain_reconnect(switched)
+  let switched = drain_candidate(session_control.drain_control(animated))
+  let switched = session_control.drain_reconnect(switched)
   let switched = session_control.drain_activity(switched)
-  let drained = inbound.drain_connection(switched, 64)
+  let switched = session_control.drain_configuration(switched)
+  let drained = inbound.drain_connection(switched, tui_model.connection_batch)
   settle_tick(model, drained)
 }
 
@@ -193,8 +162,14 @@ fn settle_tick(model: Model, drained: Model) -> Model {
   Model(..drained, quiet_for_ms:)
 }
 
+// One recorded attempt event per tick, taken from what the runtime received
+// before the step. An event that arrives outside replay is taken and
+// dropped, as it always was, so it cannot wait in the inbox for a later
+// replay to apply.
 fn drain_replay(model: Model) -> Model {
-  case model.peer, process.receive(model.replay_inbox, 0) {
+  let #(replay_inbox, next) = buffered.take(model.replay_inbox)
+  let model = Model(..model, replay_inbox:)
+  case model.peer, next {
     Replaying, Ok(event) ->
       case attempt_replay.apply(model.replay_state, event) {
         Error(reason) ->
@@ -520,11 +495,4 @@ fn drain_candidate(model: Model) -> Model {
     model,
     attachment.poll(model.candidate, now: model.stamp.transport_ms),
   )
-}
-
-fn drain_session_switch(model: Model) -> Model {
-  case sessions.receive(model.session_switch) {
-    Error(Nil) -> model
-    Ok(message) -> inbound.handle_session_switch_message(model, message)
-  }
 }

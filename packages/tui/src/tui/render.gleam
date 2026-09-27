@@ -53,9 +53,9 @@ import tui/model.{
   type Line, type Model, AgentInspector, ApprovalInspector, Assistant,
   DaemonSelector, Disconnected, Failure, FrameCache, GoalInspector, Line, Model,
   ModelSelector, NoOverlay, PeerLinkManager, PromptNext, Reasoning,
-  ReasoningDigest, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  SessionSelector, Spacer, SteerNow, SummarizedAdvice, SummarizedReasoning,
-  System, ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  ReasoningDigest, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Spacer,
+  SteerNow, SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -66,7 +66,6 @@ import tui/queue_editor
 import tui/queue_panel
 import tui/selection
 import tui/session_selector
-import tui/sessions
 import tui/snapshot_view
 import tui/summary_panel
 import tui/text_hygiene
@@ -209,7 +208,6 @@ pub fn render_frame(
         state,
         goal_availability(model),
       )
-    SessionSelector(selector) -> sessions.render(base, screen, selector)
     DaemonSelector(selector) -> session_selector.render(base, screen, selector)
     PeerLinkManager(state) -> peer_links.render(base, screen, state)
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
@@ -264,7 +262,6 @@ pub fn render_frame(
     ModelSelector(_), _
     | AgentInspector(_), _
     | GoalInspector(_), _
-    | SessionSelector(_), _
     | DaemonSelector(_), _
     | PeerLinkManager(_), _
     | ApprovalInspector(_), _
@@ -1143,7 +1140,6 @@ fn note_context(model: Model, target: String) -> List(String) {
             NoOverlay
             | ModelSelector(_)
             | GoalInspector(_)
-            | SessionSelector(_)
             | DaemonSelector(_)
             | PeerLinkManager(_)
             | ApprovalInspector(_) -> ["No observed notes for " <> target]
@@ -1160,7 +1156,6 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
     NoOverlay
     | ModelSelector(_)
     | GoalInspector(_)
-    | SessionSelector(_)
     | DaemonSelector(_)
     | PeerLinkManager(_)
     | ApprovalInspector(_) -> ["No observed notes for " <> target]
@@ -1745,7 +1740,6 @@ fn render_command_palette(
     | _, ModelSelector(_)
     | _, AgentInspector(_)
     | _, GoalInspector(_)
-    | _, SessionSelector(_)
     | _, DaemonSelector(_)
     | _, PeerLinkManager(_)
     | _, ApprovalInspector(_)

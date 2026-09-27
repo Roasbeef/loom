@@ -14,12 +14,10 @@ import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 import tui/agents
 import tui/approval
 import tui/attachment
-import tui/bootstrap
 import tui/command
 import tui/composer
 import tui/context_view
@@ -27,13 +25,14 @@ import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/image_drop
 import tui/inbound
+import tui/job
 import tui/layout
 import tui/model.{
-  type Model, type Submission, AgentInspector, Assistant, Attached,
-  ComposerSubmission, DiffHidden, DiffVisible, Disconnected, HeldPrompt,
-  Interjection, Interrupt, Line, Model, ModelSelector, NoOverlay,
-  OverlaySubmission, Preview, PromptNext, ReconnectAttempting, ReconnectIdle,
-  ReconnectSpent, Replaying, SessionSelector, SteerNow, User,
+  type Model, type Submission, ActivityAsking, ActivityDue, ActivityResting,
+  AgentInspector, Assistant, Attached, ComposerSubmission, DiffHidden,
+  DiffVisible, Disconnected, HeldPrompt, Interjection, Interrupt, Line, Model,
+  ModelSelector, NoOverlay, OverlaySubmission, Preview, PromptNext,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SteerNow, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -42,7 +41,6 @@ import tui/protocol
 import tui/queue_editor
 import tui/session_channel
 import tui/session_control
-import tui/sessions
 import tui/surfaces
 import tui/text_hygiene
 import tui/worktree_view
@@ -118,95 +116,6 @@ pub fn open_session_selector(model: Model) -> Model {
       tui_model.append_error(
         model,
         "daemon control is unavailable; reconnect explicitly",
-      )
-  }
-}
-
-/// Historical host-fixture selector; live terminals always use daemon control.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tui.open_legacy_session_selector(fixture)
-/// ```
-@internal
-pub fn open_legacy_session_selector(model: Model) -> Model {
-  case model.peer {
-    // The selector is built from the local launcher catalogue, which a
-    // recording does not carry and a replaying machine need not have. It
-    // says so in the notice rather than inventing a listing or an error
-    // the live client never showed.
-    Replaying -> Model(..model, notice: "/sessions is not replayed")
-
-    Attached(..) | Preview | Disconnected ->
-      case model.local_options {
-        None ->
-          tui_model.append_error(
-            model,
-            "/sessions is available only for local attachments",
-          )
-        Some(options) -> open_local_session_selector(model, options)
-      }
-  }
-}
-
-fn open_local_session_selector(
-  model: Model,
-  options: bootstrap.Options,
-) -> Model {
-  case sessions.busy(model.session_switch) {
-    True ->
-      tui_model.append_error(model, "a session switch is already in progress")
-    False ->
-      case bootstrap.discover_sessions(options) {
-        Error(reason) -> tui_model.append_error(model, reason)
-        Ok([]) ->
-          tui_model.append_error(model, "no locally managed sessions found")
-        Ok(choices) -> {
-          let current =
-            bootstrap.session_file(options)
-            |> result.unwrap("")
-          Model(
-            ..model,
-            overlay: SessionSelector(sessions.new(choices, current)),
-            repaint_phase: !model.repaint_phase,
-            notice: "session selector",
-          )
-        }
-      }
-  }
-}
-
-/// Starts opening the chosen local session, after cancelling any unsent
-/// frame for the old target.
-@internal
-pub fn begin_session_switch(
-  model: Model,
-  choice: bootstrap.SessionChoice,
-) -> Model {
-  let model =
-    inbound.cancel_pending(model, "target change from " <> model.session)
-  case model.peer, model.local_options {
-    // Unreachable: a replay never opens the selector this arrives from.
-    // Enumerated rather than swept up, so a future path into it starts no
-    // daemon and opens no socket.
-    Replaying, _ -> Model(..model, overlay: NoOverlay)
-
-    Attached(..), None | Preview, None | Disconnected, None ->
-      tui_model.append_error(
-        Model(..model, overlay: NoOverlay),
-        "/sessions is available only for local attachments",
-      )
-    Attached(..), Some(options)
-    | Preview, Some(options)
-    | Disconnected, Some(options)
-    ->
-      Model(
-        ..model,
-        overlay: NoOverlay,
-        session_switch: sessions.start(choice, options),
-        repaint_phase: !model.repaint_phase,
-        notice: "opening session " <> choice.session,
       )
   }
 }
@@ -914,23 +823,42 @@ pub fn toggle_details(model: Model) -> Model {
 /// Queues the cancellation of every background worker and request and the
 /// close of the attachment, and marks the model as quitting.
 ///
-/// Nothing is cancelled or closed during the step. The cancels keep the order
-/// they were once performed in; the channel's own close is collected with
-/// the channel and so leaves ahead of them, which is harmless because they
-/// act on unrelated resources. The runtime runs all of them after the step,
-/// before the loop sees `quit` and exits.
+/// Nothing is cancelled or closed during the step. The adopted lane's close
+/// is queued first and the cancels after it, in the order they were once
+/// performed. The runtime runs all of them after the step, before the loop
+/// sees `quit` and exits.
 @internal
 pub fn quit(model: Model) -> Model {
-  // The attempt moves into its cancel effect. Leaving it on the model would
-  // let the runtime also collect the outputs its channel still queues, and
-  // the cancel performs those itself before its close.
+  // The adopted lane closes ahead of the provisional attempt. A recording
+  // has always noted the adopted lane's close before the attempt's, whose
+  // close the `Abandon` below decides only when the runtime performs it.
+  let model = case model.channel {
+    Some(channel) ->
+      tui_model.hold_channel(model, session_channel.close(channel))
+    None ->
+      case model.peer {
+        Attached(socket:) -> tui_model.emit(model, effect.CloseSocket(socket))
+        Preview | Replaying | Disconnected -> model
+      }
+  }
+
+  // The attempt moves into its cancel effect, which closes what it opened.
   let model =
     Model(..model, candidate: attachment.idle())
-    |> tui_model.emit(effect.CancelSessionSwitch(model.session_switch))
-    |> tui_model.emit(effect.Attachment(attachment.Abandon(model.candidate)))
+    |> tui_model.emit_attachment(attachment.Abandon(model.candidate))
+
+  // Every running job is cancelled by its key, and its slot is cleared in
+  // the same step, so nothing a cancelled job sends afterwards is admitted
+  // into a slot. The control job goes first and the relaunch after it, in
+  // the order they were once cancelled; the activity poll, which used to
+  // run on to its own deadline, follows them, and a session creation's
+  // configuration job, which did not exist while the step resolved the
+  // configuration itself, is cancelled last.
   let model = case model.control_request {
     None -> model
-    Some(run) -> tui_model.emit(model, effect.CancelTask(run.cancel))
+    Some(run) ->
+      Model(..model, control_request: None)
+      |> tui_model.emit(effect.CancelJob(job.key(run.job)))
   }
 
   // A relaunch may be mid-start when the operator quits. Cancelling it stops
@@ -938,25 +866,27 @@ pub fn quit(model: Model) -> Model {
   // control owner it may already have minted.
   let model = case model.reconnect {
     ReconnectIdle | ReconnectSpent -> model
-    ReconnectAttempting(cancel:, ..) ->
-      tui_model.emit(model, effect.CancelTask(cancel))
+    ReconnectAttempting(job: awaiting) ->
+      Model(..model, reconnect: ReconnectSpent)
+      |> tui_model.release_reconnect(awaiting)
+      |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
+  }
+  let model = case model.activity_poll {
+    ActivityDue | ActivityResting(..) -> model
+    ActivityAsking(job: awaiting, ..) ->
+      Model(..model, activity_poll: ActivityDue)
+      |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
+  }
+  let model = case model.configuring {
+    None -> model
+    Some(awaiting) ->
+      Model(..model, configuring: None)
+      |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
   let model = case model.daemon_host {
     None -> model
     Some(host) ->
       tui_model.emit(model, effect.CloseControl(daemon_selection.control(host)))
-  }
-
-  // The channel queues its own close, which the runtime performs after
-  // this step along with everything else the step decided.
-  let model = case model.channel {
-    Some(channel) ->
-      Model(..model, channel: Some(session_channel.close(channel)))
-    None ->
-      case model.peer {
-        Attached(socket:) -> tui_model.emit(model, effect.CloseSocket(socket))
-        Preview | Replaying | Disconnected -> model
-      }
   }
   Model(..model, quit: True)
 }

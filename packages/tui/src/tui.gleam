@@ -58,6 +58,7 @@ import tui/attempt
 import tui/attempt_replay
 import tui/block_summary
 import tui/bootstrap
+import tui/buffered
 import tui/completion_summary
 import tui/connection
 import tui/context_view
@@ -67,9 +68,12 @@ import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/frame
 import tui/history_view
+import tui/image_drop
 import tui/inbound
 import tui/interaction
 import tui/internal/ffi_terminal
+import tui/job
+import tui/job_runner
 import tui/layout
 import tui/model.{
   type Model, Assistant, DiffAutomatic, Disconnected, HoldGoalReport, Line,
@@ -86,7 +90,6 @@ import tui/runtime
 import tui/session_channel
 import tui/session_control
 import tui/session_table
-import tui/sessions
 import tui/summary_panel
 import tui/surfaces
 import tui/text_hygiene
@@ -531,9 +534,8 @@ pub fn new_model_with_clock(
     session: "demo",
     session_label: None,
     local_options: None,
-    inbox:,
+    inbox: buffered.new(inbox),
     peer: Preview,
-    session_switch: sessions.Idle,
     candidate: attachment.idle(),
     channel: None,
     captured: None,
@@ -544,13 +546,14 @@ pub fn new_model_with_clock(
     activity_poll: tui_model.ActivityDue,
     reconnect: ReconnectIdle,
     creation_key: None,
+    configuring: None,
     approvals: [],
     prompted_approvals: [],
     inspecting_approval: None,
     unconfirmed: None,
     next_attempt: 1,
     replay_state: attempt_replay.new(),
-    replay_inbox: process.new_subject(),
+    replay_inbox: buffered.new(process.new_subject()),
     replay_error: None,
     next_id: 1,
     usage: inbound.zero_usage(),
@@ -591,6 +594,7 @@ pub fn new_model_with_clock(
     transport_time_ms: host_bootstrap.monotonic_time_ms,
     stamp:,
     terminal: runtime.terminal_identity(),
+    dropped: image_drop.NothingDropped,
     last_frame_ms: stamp.now_ms,
     activity_revision: 0,
     quiet_for_ms: pacing.quiet_after_ms,
@@ -598,6 +602,8 @@ pub fn new_model_with_clock(
     herdr_reporter: None,
     herdr_published: None,
     outbox: [],
+    next_job: job.first(),
+    running: job_runner.new(),
     selection: None,
     selection_frame: None,
     selection_gutters: [],
@@ -1202,7 +1208,7 @@ pub fn replay_steps(
   use run <- result.try(run_script(
     model,
     virtual_backend.script(size, steps, inbox)
-      |> virtual_backend.with_attempts(model.replay_inbox),
+      |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox)),
   ))
   case run.final.replay_error {
     None -> Ok(run.frames)
@@ -1275,7 +1281,8 @@ fn frame_separator(index: Int) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// let attached = tui.connect_remote(model, model.inbox, address, session, token)
+/// let inbox = buffered.sender(model.inbox)
+/// let attached = tui.connect_remote(model, inbox, address, session, token)
 /// ```
 @internal
 pub fn connect_remote(
@@ -1285,7 +1292,7 @@ pub fn connect_remote(
   session: String,
   token: String,
 ) -> Model {
-  let base = live_base(Model(..base, inbox: inbox))
+  let base = live_base(Model(..base, inbox: buffered.new(inbox)))
   let connected = {
     use address <- result.try(daemon_selection.control_address(address))
     use control <- result.try(
@@ -1298,10 +1305,15 @@ pub fn connect_remote(
     Error(reason) -> tui_model.append_error(base, reason)
     Ok(host) -> {
       let model = Model(..base, daemon_host: Some(host))
+
+      // The first request starts before the loop does, as it did when the
+      // reducer started jobs itself: the flush performs the `StartJob` the
+      // catalogue load queued rather than leaving it for the first event.
       case session {
         "" -> session_control.load_catalogue(model, "", None)
         id -> session_control.begin_open(model, id)
       }
+      |> runtime.flush
     }
   }
 }
@@ -1355,10 +1367,14 @@ fn attach_daemon(
           daemon_host: Some(host),
           transcript: inbound.daemon_build_lines(Some(host)),
         )
+
+      // Flushed for the reason `connect_remote` gives: the first request
+      // starts at launch rather than at the loop's first event.
       case selected {
         "" -> session_control.load_catalogue(model, "", None)
         id -> session_control.begin_open(model, id)
       }
+      |> runtime.flush
     }
   }
 }
@@ -1366,9 +1382,12 @@ fn attach_daemon(
 /// Applies one terminal event and performs the effects it decided on.
 ///
 /// This is the function etui and the virtual backend call: `runtime.stamp`,
-/// which reads the clocks once for this event, then `step`, then
-/// `runtime.perform` on what the step returned. Everything that inspects a
-/// transition without acting on it calls `step` instead.
+/// which reads the clocks once for this event, `runtime.receive`, which
+/// moves the waiting traffic and job replies into the model,
+/// `runtime.read_paste`, which reads the file a pasted path names, then
+/// `step`, then `runtime.settle`, which performs what the step returned and
+/// stores the job table it leaves. Everything that inspects a transition
+/// without acting on it calls `step` instead.
 ///
 /// ## Examples
 ///
@@ -1377,9 +1396,10 @@ fn attach_daemon(
 /// ```
 @internal
 pub fn update(event: backend.InputEvent, model: Model) -> Model {
-  let #(model, effects) = step(event, runtime.stamp(model))
-  runtime.perform(effects)
-  model
+  runtime.settle(step(
+    event,
+    runtime.read_paste(event, runtime.receive(runtime.stamp(model))),
+  ))
 }
 
 /// Applies one terminal event and returns the effects it decided on,
@@ -1388,9 +1408,21 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 /// The reducer queues its I/O as `effect.Effect` values rather than doing
 /// it, and this collects them, together with whatever was still queued
 /// from a caller that drove a reducer outside the loop. The returned model
-/// has empty queues. Phase 1 of issue #530 covers the fire-and-forget
-/// effects; mailbox drains, job starts, file reads and recording appends
-/// still happen during the step.
+/// has an empty outbox. Recording appends are effects like the rest: the
+/// input's own line comes first in the list, and every line it caused
+/// follows in the order it was decided. The control, reconnect, activity,
+/// attachment and configuration jobs are started and cancelled by
+/// `StartJob` and `CancelJob` effects.
+///
+/// The step reads no file. A pasted image is read by `runtime.read_paste`
+/// before the step, and the step attaches what that read found, so a test
+/// that calls `step` directly with a paste naming an image calls
+/// `runtime.read_paste` first, or the paste is inserted as text.
+///
+/// The step reads the connection, replay and attachment inboxes, and every
+/// job's messages, only through what `runtime.receive` put in the model, so
+/// a test that calls `step` directly and wants it to see queued traffic
+/// receives first, or hands it a job message with `runtime.hold`.
 ///
 /// The step reads no clock. It applies the event at `model.stamp`, which
 /// `update` writes before calling it; a test calling `step` directly gets
@@ -1407,9 +1439,10 @@ pub fn step(
   event: backend.InputEvent,
   model: Model,
 ) -> #(Model, List(effect.Effect)) {
-  // Before the event is interpreted, so a recording holds what the client
-  // was given rather than what it made of it.
-  recording.note_input(model.recorder, event)
+  // Queued before the event is interpreted, so a recording holds what the
+  // client was given rather than what it made of it, and the input's line
+  // is ahead of every line the reducer queues for it.
+  let model = tui_model.record_input(model, event)
 
   let updated = apply_input(event, model)
   runtime.take(settle_update(event, model, updated))
@@ -1469,7 +1502,7 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
     // keeps the history page this gesture asked for from waiting on that
     // pause and then landing with every capture queued behind it.
     backend.MouseScroll(x, y, up) ->
-      inbound.drain_connection(model, 64)
+      inbound.drain_connection(model, tui_model.connection_batch)
       |> interaction.clear_selection
       |> interaction.scroll_at(geometry.Position(x, y), case up {
         True -> Older
@@ -1489,7 +1522,7 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
     // long as the button is down. The selection reads the frame it began
     // on, so the traffic applied here cannot move the cells under it.
     backend.MouseDrag(x, y, backend.MouseLeft) ->
-      inbound.drain_connection(model, 64)
+      inbound.drain_connection(model, tui_model.connection_batch)
       |> interaction.extend_selection(geometry.Position(x, y))
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame

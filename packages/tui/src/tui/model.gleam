@@ -20,12 +20,12 @@ import core/ids
 import core/json
 import core/message
 import core/todo_list
+import etui/backend
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/span
 import etui/widgets/textarea as text_area
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -45,19 +45,22 @@ import tui/attempt
 import tui/attempt_replay
 import tui/block_summary
 import tui/bootstrap
+import tui/buffered
 import tui/cache_miss
 import tui/command
 import tui/completion_summary
 import tui/composer
 import tui/connection
 import tui/context_view
-import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/focused_goal_panel
 import tui/goal_view
 import tui/herdr
 import tui/history_view
+import tui/image_drop
+import tui/job
+import tui/job_runner
 import tui/live_jobs
 import tui/model_selector
 import tui/note_panel
@@ -71,7 +74,6 @@ import tui/reviewer_status
 import tui/selection
 import tui/session_channel
 import tui/session_selector
-import tui/sessions
 import tui/snapshot
 import tui/snapshot_view
 import tui/summary_panel
@@ -214,7 +216,6 @@ pub type Overlay {
   ModelSelector(model_selector.State)
   AgentInspector(selected: agents.Inspector)
   GoalInspector(state: focused_goal_panel.State)
-  SessionSelector(sessions.State)
   DaemonSelector(session_selector.State)
   PeerLinkManager(peer_links.State)
   ApprovalInspector(approval_panel.State)
@@ -349,52 +350,19 @@ pub type Interrupt {
   )
 }
 
-/// What a finished daemon control job produced.
+/// The picker's one daemon control job: the slot that waits for its
+/// replies, and the outcome received before its relay said it was done.
 ///
-/// Catalogue and peer requests share one job slot. The outcome identifies
-/// which requested operation completed without adding overlapping pending
-/// fields to the model.
-@internal
-pub type ControlOutcome {
-  /// One authorized page and the identity to highlight in it.
-  PageLoaded(
-    page: control_protocol.Page,
-    selected: String,
-    collection: session_selector.Collection,
-  )
-
-  /// The daemon removed this registration and its database.
-  SessionDeleted(session_id: String)
-
-  /// Acknowledged archive preserves files while removing the active row.
-  SessionArchived(session_id: String)
-
-  /// Acknowledged restoration removes the row from the archive page.
-  SessionRestored(session_id: String)
-
-  /// The daemon acknowledged a rename with its canonical catalogue row.
-  SessionRenamed(row: control_protocol.Session)
-
-  /// One session catalogue and exact peer inspection for the modal.
-  PeerWorkspaceLoaded(page: control_protocol.Page, document: json.JsonValue)
-
-  /// One more revision-fenced target-session catalogue page.
-  PeerSessionsLoaded(page: control_protocol.Page)
-
-  /// One refreshed grant document after a request or mutation.
-  PeerInspectionLoaded(document: json.JsonValue, after: Option(String))
-
-  /// A link or unlink acknowledgement whose body preserves partial results.
-  PeerOperationCompleted(document: json.JsonValue)
-}
-
-/// One relayed control job, selected by the terminal and its actor-backed driver.
+/// A control job's relay sends the outcome and then `AllDelivered`, and
+/// the outcome is applied only at `AllDelivered`, so it is kept here in
+/// between.
 @internal
 pub type ControlRequest {
   ControlRequest(
-    cancel: weft.Cancel,
-    replies: Subject(weft.Pulled(ControlOutcome, String)),
-    result: Option(Result(ControlOutcome, String)),
+    /// The job's key and the replies received for it.
+    job: job.Awaiting(job.ControlReply),
+    /// The outcome already received, applied when the relay finishes.
+    result: Option(Result(job.ControlOutcome, String)),
   )
 }
 
@@ -417,20 +385,11 @@ pub type ActivityPoll {
 
   /// One request is in flight for exactly these identities.
   ActivityAsking(
-    /// The worker's relayed outcome.
-    replies: Subject(weft.Pulled(List(control_protocol.Activity), String)),
+    /// The job's key and the replies received for it.
+    job: job.Awaiting(job.ActivityReply),
     /// The identities the request named, which `observe` needs to tell an
     /// omitted identity from one that was never asked about.
     asked: List(String),
-  )
-}
-
-/// An already selected control job message retains its original source tag.
-@internal
-pub type ControlEvent {
-  ControlEvent(
-    source: Subject(weft.Pulled(ControlOutcome, String)),
-    reply: weft.Pulled(ControlOutcome, String),
   )
 }
 
@@ -738,9 +697,11 @@ pub type Model {
     /// One catalogue display name, paired with the identity that owns it.
     session_label: Option(#(String, String)),
     local_options: Option(bootstrap.Options),
-    inbox: Subject(connection.Message),
+    /// The adopted connection's socket traffic, with what the runtime already
+    /// received from it for the next step. An adoption replaces the whole
+    /// value, so the old socket's held messages leave the model with it.
+    inbox: buffered.Inbox(connection.Message),
     peer: Peer,
-    session_switch: sessions.SwitchStatus,
     /// One provisional replacement, whose original deadline includes capture.
     candidate: attachment.Status,
     /// Serial credited state for the adopted socket only.
@@ -774,6 +735,13 @@ pub type Model {
     reconnect: Reconnect,
     /// Retained after an uncertain create so another key cannot duplicate it.
     creation_key: Option(String),
+    /// The configuration job a session creation waits for before it
+    /// retains a creation key, while one is running. The creation resolves
+    /// its configuration from the local launch options first, so a local
+    /// failure sends nothing and retains no key; the resolution reads the
+    /// file system, so it runs as a job and the creation continues when
+    /// `session_control.drain_configuration` takes the reply.
+    configuring: Option(job.Awaiting(job.ConfigurationReply)),
     /// Current pending requests and at most sixteen bounded resolved summaries.
     approvals: List(approval.Review),
     /// Questions already presented locally, keyed by their exact durable sequence.
@@ -786,7 +754,8 @@ pub type Model {
     next_attempt: Int,
     /// Two-slot effect-free replay state and its terminal-owned delivery lane.
     replay_state: attempt_replay.State,
-    replay_inbox: Subject(attempt.Event),
+    /// Filled one event at a time, since a tick applies at most one.
+    replay_inbox: buffered.Inbox(attempt.Event),
     /// A malformed local recording stops replay rather than skipping a frame.
     replay_error: Option(String),
     next_id: Int,
@@ -877,13 +846,17 @@ pub type Model {
     /// This terminal's identity in a session creation key: the OS process
     /// and the BEAM process that created the model, read once at creation.
     terminal: String,
+    /// What the runtime read, before this event's step, from the file a
+    /// pasted path names. Only `runtime.read_paste` writes it, once per
+    /// event, so the step reads no file and a read never outlives the event
+    /// it was taken for.
+    dropped: image_drop.Dropped,
     last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,
-    /// The open `--record` file, when the launch asked for one. Present
-    /// in the model rather than beside the loop because the inbox is
-    /// drained inside `update_tick`, so there is no other point at which
-    /// both a websocket message and the recording are in scope.
+    /// The open `--record` file, when the launch asked for one. Present in
+    /// the model because the reducers that decide recording lines, input
+    /// and channelless messages alike, name it in the effects they queue.
     recorder: Option(recording.Recorder),
     /// The mouse selection being dragged or left highlighted after a copy.
     /// Held in screen cells over the frame on display, so it is cleared by
@@ -902,13 +875,29 @@ pub type Model {
     herdr_reporter: Option(herdr.Reporter),
     /// The pane state and session last reported, so only a change sends.
     herdr_published: Option(herdr.Publication),
-    /// Effects this step has decided on, newest first. The reducer only
-    /// appends here, through `emit`; `runtime.take` empties it at the end of
-    /// every step and performs what it held, so between two steps it is
-    /// always empty.
+    /// Effects this step has decided on, newest first, and the only queue a
+    /// step has. The reducer only appends here, through `emit`, `record` and
+    /// `hold_channel`; `runtime.take` empties it at the end of every step,
+    /// so between two `update` calls it is empty. A caller that runs a
+    /// reducer outside `update` leaves its effects here until it calls
+    /// `runtime.flush` or the next step collects them.
     outbox: List(effect.Effect),
+    /// The key the next background job is given. Keys are never reused,
+    /// so a reply tagged with one belongs to exactly one job.
+    next_job: job.Key,
+    /// The runtime's table of running jobs, by key. No reducer reads or
+    /// writes it: `runtime.perform` changes it after the step and
+    /// `runtime.receive` reads it before the next one. It is on the model
+    /// because the model is the only state the loop keeps between events.
+    running: job_runner.Running,
   )
 }
+
+/// The most connection messages one step reduces: a tick's drain, and the
+/// drain a key, a wheel notch or a drag runs before it acts. The runtime
+/// tops `Model.inbox` up to this many before each step, so the step can
+/// always reach its full batch and the buffer never holds more.
+pub const connection_batch = 64
 
 /// Whether this terminal may reconnect itself to a restarted daemon.
 ///
@@ -924,12 +913,10 @@ pub type Reconnect {
   ReconnectIdle
 
   /// One bounded relaunch is in flight; its outcome is drained by the tick.
+  /// The terminal cancels it by its key when it quits.
   ReconnectAttempting(
-    /// The signal that stops a relaunch whose outcome outlives the operator's
-    /// patience, cancelled when the terminal quits.
-    cancel: weft.Cancel,
-    /// Terminal-owned mailbox for the relayed outcome.
-    replies: Subject(weft.Pulled(daemon_selection.Host, String)),
+    /// The job's key and the replies received for it.
+    job: job.Awaiting(job.ReconnectReply),
   )
 
   /// This daemon death has had its one attempt. Nothing runs again until an
@@ -956,32 +943,151 @@ pub fn mark_activity(model: Model) -> Model {
   )
 }
 
-/// Moves the held channel's queued outputs into the outbox.
+/// Stores `channel` as the adopted lane, moving what it queued into the
+/// outbox.
 ///
-/// A step that replaces or drops its channel must call this first. The
-/// channel queues its writes rather than performing them, so an output
-/// decided earlier in the step would otherwise leave with the channel value
-/// and never reach its socket. Before effects were values that write had
-/// already happened; this keeps it happening.
+/// Every reducer that transitions the adopted lane stores the result
+/// through this, so the lane's writes, closes and recording notes join the
+/// step's one queue at the point they were decided, in order with every
+/// other effect the step queues. The model's lane therefore holds no
+/// outputs between two reducer calls, and replacing or dropping it can lose
+/// nothing it decided.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let model = tui_model.release_channel(model)
-/// Model(..model, channel: Some(replacement))
+/// let #(channel, updates) = session_channel.receive(channel, message, now:)
+/// tui_model.hold_channel(model, channel)
 /// ```
 @internal
-pub fn release_channel(model: Model) -> Model {
-  case model.channel {
+pub fn hold_channel(model: Model, channel: session_channel.Channel) -> Model {
+  let #(channel, outputs) = session_channel.take_outputs(channel)
+  let outbox =
+    list.fold(outputs, model.outbox, fn(outbox, output) {
+      [effect.Channel(output), ..outbox]
+    })
+  Model(..model, channel: Some(channel), outbox:)
+}
+
+/// Queues the release of what a job reply holds, when nobody will take it.
+///
+/// Most replies are data. Two hold a resource nobody else will release: an
+/// attachment's `Prepared` holds an open socket and names its frames
+/// subject, and a relaunch's `Completed(host)` holds a control connection.
+/// For those this queues `CloseSocket` then `Discard`, or `CloseControl`,
+/// which the runtime performs after the step. `runtime.hold` calls it for a
+/// reply no slot admits, and `release_reconnect` for the replies a cleared
+/// relaunch slot still held, so a reply is released the same way whether
+/// it was dropped on arrival or with its slot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_model.release(model, arrival)
+/// ```
+@internal
+pub fn release(model: Model, arrival: job.Arrival) -> Model {
+  case arrival {
+    job.AttachArrived(reply: job.Published(prepared), ..) ->
+      model
+      |> emit(effect.CloseSocket(prepared.socket))
+      |> emit(effect.Discard(prepared.frames))
+    job.ReconnectArrived(
+      reply: weft.PulledOutcome(weft.Completed(value: host, ..)),
+      ..,
+    ) -> emit(model, effect.CloseControl(daemon_selection.control(host)))
+    job.AttachArrived(reply: job.Settled(_), ..)
+    | job.ReconnectArrived(..)
+    | job.ControlArrived(..)
+    | job.ActivityArrived(..)
+    | job.ConfigurationArrived(..) -> model
+  }
+}
+
+/// Releases what a relaunch slot still holds, for a reducer about to clear
+/// it.
+///
+/// A relaunch that completed carries the control connection it opened.
+/// When its outcome was admitted but not yet taken, and the slot is then
+/// cleared, by an adoption earlier in the same tick or by a quit, the
+/// connection would leave the model with the slot and stay open until the
+/// terminal exited.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_model.release_reconnect(model, awaiting)
+/// ```
+@internal
+pub fn release_reconnect(
+  model: Model,
+  awaiting: job.Awaiting(job.ReconnectReply),
+) -> Model {
+  list.fold(job.held(awaiting), model, fn(model, reply) {
+    release(model, job.ReconnectArrived(job.key(awaiting), reply))
+  })
+}
+
+/// Queues one output of the provisional attachment.
+///
+/// An `Abandon` names an attempt whose job may still be running, so the job
+/// is cancelled by its key first and the attempt's own cleanup follows: the
+/// cancel stops the worker and closes a socket it published that the
+/// runtime had not yet admitted, and the `Abandon` closes what the attempt
+/// holds. `interaction.advance_candidate` and `submit.quit` queue every
+/// attachment output through this, so no abandoned attempt leaves its job
+/// running.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.emit_attachment(model, attachment.Abandon(model.candidate))
+/// ```
+@internal
+pub fn emit_attachment(model: Model, output: attachment.Out) -> Model {
+  case output {
+    attachment.Abandon(status) ->
+      case attachment.job_key(status) {
+        Some(key) ->
+          emit(emit(model, effect.CancelJob(key)), effect.Attachment(output))
+        None -> emit(model, effect.Attachment(output))
+      }
+    attachment.FromChannel(_) | attachment.Acknowledge(_) ->
+      emit(model, effect.Attachment(output))
+  }
+}
+
+/// Queues one line for the model's recording, if the terminal is recording.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.record(model, recording.Arrived(connection.Connected))
+/// ```
+@internal
+pub fn record(model: Model, event: recording.Recorded) -> Model {
+  case model.recorder {
+    Some(recorder) -> emit(model, effect.Record(recorder, event))
     None -> model
-    Some(held) -> {
-      let #(held, outputs) = session_channel.take_outputs(held)
-      let outbox =
-        list.fold(outputs, model.outbox, fn(outbox, output) {
-          [effect.Channel(output), ..outbox]
-        })
-      Model(..model, channel: Some(held), outbox:)
-    }
+  }
+}
+
+/// Queues the recording line for one input event, if it is one that replays
+/// and the terminal is recording.
+///
+/// `tui.step` calls this before the reducer runs, so the input's line is
+/// the first effect of its step and precedes every line the input causes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_model.record_input(model, backend.KeyPress("a"))
+/// ```
+@internal
+pub fn record_input(model: Model, event: backend.InputEvent) -> Model {
+  case recording.of_input(event) {
+    Some(recorded) -> record(model, recorded)
+    None -> model
   }
 }
 
@@ -999,6 +1105,41 @@ pub fn release_channel(model: Model) -> Model {
 @internal
 pub fn emit(model: Model, requested: effect.Effect) -> Model {
   Model(..model, outbox: [requested, ..model.outbox])
+}
+
+/// Allocates the next job key without starting anything.
+///
+/// `start_job` is this followed by queuing the start. A test that stands a
+/// slot in for a running job allocates its key here and admits replies to
+/// it through `runtime.hold`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(model, key) = tui_model.allocate_job(model)
+/// ```
+@internal
+pub fn allocate_job(model: Model) -> #(Model, job.Key) {
+  let #(key, next_job) = job.allocate(model.next_job)
+  #(Model(..model, next_job:), key)
+}
+
+/// Allocates a key and queues the start of the job `spec` describes under
+/// it, returning the key for the slot that will wait for its replies.
+///
+/// The step starts nothing: the runtime starts the job after the step,
+/// when it performs the `StartJob` this queues.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(model, key) = tui_model.start_job(model, job.Reconnect(options))
+/// let model = Model(..model, reconnect: ReconnectAttempting(job.awaiting(key)))
+/// ```
+@internal
+pub fn start_job(model: Model, spec: job.Spec) -> #(Model, job.Key) {
+  let #(model, key) = allocate_job(model)
+  #(emit(model, effect.StartJob(key, spec)), key)
 }
 
 /// Marks the cached frame stale so the next paint redraws it.

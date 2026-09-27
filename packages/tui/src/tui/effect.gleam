@@ -20,21 +20,30 @@
 //// candidate. An effect decided against the old handle must reach the old
 //// handle, so the runtime never looks a target up in the model.
 ////
-//// Two kinds of I/O are deliberately not here yet. Recording appends stay
-//// synchronous, because the recording orders an input before the channel
-//// traces it caused, and that order holds only while every recording write
-//// happens where it did. Mailbox drains, background job starts, clock reads
-//// and file reads stay in the reducer, because their results feed the next
-//// model; those become messages in phase 2 of issue #530.
+//// Recording appends are effects too. A step queues the input's own line
+//// first, before the reducer runs, and each channel queues its attempt
+//// notes in the same queue as its writes, so the effects come out in the
+//// order the step decided them and the recording keeps the order ADR-009
+//// requires: an input before everything it caused.
+////
+//// Background jobs are effects too. A reducer names a job with a key it
+//// allocated and queues `StartJob(key, spec)`; the runtime starts it, keeps
+//// its reply subject and cancel signal under the key, and hands its replies
+//// back tagged with the key (`tui/job`). `CancelJob` names the job by the
+//// same key. A key is never reused, so it identifies one job as exactly as
+//// a handle would, and the runtime resolves it in its own table rather than
+//// in anything a reducer changes. The provisional attachment is such a
+//// job; file reads stay in the reducer until a later slice of phase 2 of
+//// issue #530.
 
 import gleam/erlang/process.{type Subject}
 import tui/attachment
 import tui/connection
 import tui/daemon
 import tui/herdr
+import tui/job
+import tui/recording
 import tui/session_channel
-import tui/sessions
-import weft
 
 /// One side effect a reducer step decided on.
 pub type Effect {
@@ -55,17 +64,22 @@ pub type Effect {
   /// Closes a daemon control connection.
   CloseControl(control: daemon.Connection)
 
-  /// Cancels a background worker through its weft signal.
-  CancelTask(signal: weft.Cancel)
+  /// Starts the background job `spec` describes under `key`, which the
+  /// reducer allocated and holds in the slot that waits for its replies.
+  StartJob(key: job.Key, spec: job.Spec)
 
-  /// Cancels a local session-switch worker. This blocks for up to its own
-  /// one-second drain so a socket the worker opened is closed rather than
-  /// leaked.
-  CancelSessionSwitch(status: sessions.SwitchStatus)
+  /// Cancels the background job started under `key`. Nothing it sends
+  /// afterwards reaches a reducer, because the reducer that cancels it
+  /// clears the slot that named the key in the same step.
+  CancelJob(key: job.Key)
 
   /// Empties an inbox the model has stopped reading, so its queued frames
   /// do not sit in the terminal's mailbox forever.
   Discard(inbox: Subject(connection.Message))
+
+  /// Appends one line to a recording: an input the terminal was given, or
+  /// a message that arrived with no channel to note it.
+  Record(recorder: recording.Recorder, event: recording.Recorded)
 
   /// Writes an OSC 52 clipboard sequence to the terminal.
   WriteClipboard(sequence: String)

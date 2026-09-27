@@ -6,7 +6,6 @@ import etui/buffer
 import etui/geometry
 import etui/keys
 import gleam/dict
-import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -15,7 +14,9 @@ import tui
 import tui/connection
 import tui/daemon/protocol
 import tui/frame
+import tui/job
 import tui/model as tui_model
+import tui/runtime
 import tui/session_control
 import tui/session_selector
 import tui/workspace
@@ -210,22 +211,27 @@ pub fn resident_ids_are_bounded_by_the_request_limit_test() {
 // The poll's answer reaches an open picker through the tick's drain, and the
 // poll rests once the worker has delivered everything.
 pub fn a_drained_answer_marks_the_open_picker_test() {
-  let replies = process.new_subject()
-  let model =
-    tui_model.Model(
-      ..tui.new_model_with_clock(
+  let #(model, key) =
+    tui_model.allocate_job(
+      tui.new_model_with_clock(
         connection.new_inbox(),
         workspace.Context("/work", None),
         fn() { -5000 },
       ),
-      overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
-      activity_poll: tui_model.ActivityAsking(replies, ["busy"]),
     )
-  process.send(
-    replies,
-    weft.PulledOutcome(weft.Completed(0, [activity("busy", protocol.Working)])),
-  )
-  process.send(replies, weft.AllDelivered)
+  let model =
+    tui_model.Model(
+      ..model,
+      overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
+      activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
+    )
+    |> runtime.hold(job.ActivityArrived(
+      key,
+      weft.PulledOutcome(
+        weft.Completed(0, [activity("busy", protocol.Working)]),
+      ),
+    ))
+    |> runtime.hold(job.ActivityArrived(key, weft.AllDelivered))
   let answered = session_control.drain_activity(model)
   let assert tui_model.DaemonSelector(selector) = answered.overlay
     as "the picker stays open"
@@ -240,16 +246,22 @@ pub fn a_drained_answer_marks_the_open_picker_test() {
 // An answer that outlived its picker changes nothing, and with no daemon the
 // service never starts a poll.
 pub fn a_closed_picker_ignores_a_late_answer_test() {
-  let replies = process.new_subject()
+  let #(model, key) =
+    tui_model.allocate_job(tui.new_model(
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+    ))
   let model =
     tui_model.Model(
-      ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-      activity_poll: tui_model.ActivityAsking(replies, ["busy"]),
+      ..model,
+      activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
     )
-  process.send(
-    replies,
-    weft.PulledOutcome(weft.Completed(0, [activity("busy", protocol.Working)])),
-  )
+    |> runtime.hold(job.ActivityArrived(
+      key,
+      weft.PulledOutcome(
+        weft.Completed(0, [activity("busy", protocol.Working)]),
+      ),
+    ))
   let after = session_control.drain_activity(model)
   assert after.overlay == tui_model.NoOverlay
   let idle =

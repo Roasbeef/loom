@@ -4,15 +4,17 @@
 import etui/backend
 import etui/keys
 import etui/widgets/textarea as text_area
-import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import tui
+import tui/buffered
 import tui/connection
 import tui/daemon/protocol
 import tui/frame
+import tui/job
 import tui/model as tui_model
+import tui/runtime
 import tui/session_control
 import tui/session_selector
 import tui/virtual_backend
@@ -74,20 +76,17 @@ fn acknowledge(
   model: tui_model.Model,
   renamed: protocol.Session,
 ) -> tui_model.Model {
-  let replies = process.new_subject()
+  let #(model, key) = tui_model.allocate_job(model)
   let waiting =
     tui_model.Model(
       ..model,
       control_request: Some(tui_model.ControlRequest(
-        weft.cancel_signal(),
-        replies,
-        Some(Ok(tui_model.SessionRenamed(renamed))),
+        job.awaiting(key),
+        Some(Ok(job.SessionRenamed(renamed))),
       )),
     )
-  session_control.accept_control_event(
-    waiting,
-    tui_model.ControlEvent(replies, weft.AllDelivered),
-  )
+  runtime.hold(waiting, job.ControlArrived(key, weft.AllDelivered))
+  |> session_control.drain_control
 }
 
 pub fn acknowledged_rename_updates_header_and_picker_without_switching_test() {
@@ -143,7 +142,7 @@ fn header(model: tui_model.Model) -> String {
     virtual_backend.script(
       backend.TerminalSize(width: 100, height: 12),
       [],
-      model.inbox,
+      buffered.sender(model.inbox),
     )
   let assert Ok(run) =
     tui.run_script(tui_model.Model(..model, peer: tui_model.Replaying), script)

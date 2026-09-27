@@ -16,10 +16,12 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import tui
+import tui/buffered
 import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/pacing
+import tui/runtime
 import tui/session_channel
 import tui/snapshot
 import tui/virtual_backend
@@ -40,7 +42,7 @@ fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
 }
 
 fn deliver(model: tui_model.Model, wire: String) -> tui_model.Model {
-  process.send(model.inbox, connection.Incoming(wire))
+  process.send(buffered.sender(model.inbox), connection.Incoming(wire))
   tui.update(backend.Tick, model)
 }
 
@@ -212,7 +214,7 @@ fn scripted_frames() -> List(String) {
         virtual_backend.Input(backend.KeyPress("b")),
         virtual_backend.Input(backend.Tick),
       ],
-      model.inbox,
+      buffered.sender(model.inbox),
     )
   let assert Ok(run) = tui.run_script(model, script)
     as "the shipped loop must run under an injected presentation clock"
@@ -237,9 +239,13 @@ pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
 
   // The first tick drains the transition, which starts the generation
   // clock from the stamp; the second finds the strand live and starts the
-  // activity count from it.
-  process.send(model.inbox, connection.Incoming(assistant_phase))
-  let #(started, _) = tui.step(backend.Tick, model)
+  // activity count from it. A step reads only what `runtime.receive` moved
+  // into the inbox, as `update` would before it, and that reads no clock.
+  process.send(
+    buffered.sender(model.inbox),
+    connection.Incoming(assistant_phase),
+  )
+  let #(started, _) = tui.step(backend.Tick, runtime.receive(model))
   assert started.generation_started_ms == Some(-10_000)
   let #(live, _) = tui.step(backend.Tick, started)
   assert live.activity_started_ms == Some(-10_000)
@@ -252,14 +258,15 @@ pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
   // The frame decision, a delta, a usage settlement and the input events
   // that drain traffic ahead of their own work all run at the stamp too.
   process.send(
-    later.inbox,
+    buffered.sender(later.inbox),
     connection.Incoming(gateway.stream_delta("main", "text", "answer")),
   )
   process.send(
-    later.inbox,
+    buffered.sender(later.inbox),
     connection.Incoming(gateway.usage("main", 10, 300, 0.0)),
   )
-  let #(settled, _) = tui.step(backend.Tick, stamped_at(later, -8000))
+  let #(settled, _) =
+    tui.step(backend.Tick, runtime.receive(stamped_at(later, -8000)))
   assert settled.output_rate_tps == Some(150)
   let #(resized, _) = tui.step(backend.Resize(100, 30), settled)
   assert resized.last_frame_ms == -8000
@@ -282,9 +289,12 @@ pub fn update_reads_the_presentation_clock_once_per_event_test() {
 
   // A live strand and a settled usage row put every presentation reader in
   // the path of these events.
-  process.send(model.inbox, connection.Incoming(assistant_phase))
   process.send(
-    model.inbox,
+    buffered.sender(model.inbox),
+    connection.Incoming(assistant_phase),
+  )
+  process.send(
+    buffered.sender(model.inbox),
     connection.Incoming(gateway.stream_delta("main", "text", "answer")),
   )
   let events = [
@@ -302,7 +312,7 @@ pub fn update_reads_the_presentation_clock_once_per_event_test() {
     as "update stamps each event with exactly one presentation reading"
 
   process.send(
-    model.inbox,
+    buffered.sender(model.inbox),
     connection.Incoming(gateway.usage("main", 10, 300, 0.0)),
   )
   let _ = tui.update(backend.Tick, model)
