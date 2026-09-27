@@ -26,6 +26,7 @@ import tui/model as tui_model
 import tui/recording
 import tui/runtime
 import tui/session_channel
+import tui/terminal_lane
 import weft/poll
 
 pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_test() {
@@ -42,7 +43,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     let assert Ok(socket) = connection.connect(target.address, token, inbox)
       as "the real conversation socket belongs to this terminal inbox"
     let issued = process.new_subject()
-    let trace = recording.Trace(recording.observed(issued), attempt.Id(1))
+    let trace = attempt.Trace(recording.observed(issued), attempt.Id(1))
     let channel =
       session_channel.start_recorded(
         socket,
@@ -77,7 +78,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
         case session_channel.in_flight(next) {
           True -> {
             let #(next, outputs) = session_channel.take_outputs(next)
-            list.each(outputs, session_channel.perform)
+            list.each(outputs, terminal_lane.perform)
             poll.Done(next)
           }
           False -> poll.Retry

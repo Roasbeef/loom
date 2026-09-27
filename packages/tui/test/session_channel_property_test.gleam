@@ -84,9 +84,10 @@ import gleam/string
 import tui/connection
 import tui/connection_event
 import tui/protocol
-import tui/session_channel.{type Channel}
+import tui/session_channel
 import tui/session_wire
 import tui/snapshot
+import tui/terminal_lane.{type Lane as TerminalLane}
 import tui_test/pushed
 
 // --- seeded randomness (core's test/support/generate pattern) -------------
@@ -406,10 +407,10 @@ fn settle(
   before: Oracle,
   fed: Oracle,
   event: Event,
-  channel: Channel,
+  channel: TerminalLane,
   updates: List(session_channel.Update),
   expect: Expect,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let #(channel, outputs) = session_channel.take_outputs(channel)
   use oracle <- result.try(list.try_fold(
     outputs,
@@ -429,7 +430,7 @@ fn settle(
 
 fn observe(
   oracle: Oracle,
-  output: session_channel.Out,
+  output: terminal_lane.Output,
 ) -> Result(Oracle, String) {
   case output {
     session_channel.Shut(socket) -> {
@@ -909,9 +910,9 @@ fn afterwards(before: Oracle, oracle: Oracle) -> Result(Oracle, String) {
 // --- events -----------------------------------------------------------------
 
 fn apply(
-  state: #(Channel, Oracle),
+  state: #(TerminalLane, Oracle),
   event: Event,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let #(channel, oracle) = state
   let oracle = Oracle(..oracle, cause: session_channel.Notified)
   case event {
@@ -949,9 +950,9 @@ fn apply(
 }
 
 fn submit_prompt(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let label = "intent-" <> int.to_string(oracle.counter)
   let oracle = Oracle(..oracle, counter: oracle.counter + 1)
   let #(channel, disposition) =
@@ -987,10 +988,10 @@ fn submit_prompt(
 }
 
 fn submit_read(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
   name: String,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let #(channel, disposition) =
     session_channel.submit(
       channel,
@@ -1085,9 +1086,9 @@ fn disposed(
 }
 
 fn look_up(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let ids = ["esc-" <> int.to_string(oracle.counter)]
   let oracle = Oracle(..oracle, counter: oracle.counter + 1)
   let #(channel, admitted) = case
@@ -1119,9 +1120,9 @@ fn look_up(
 }
 
 fn read_history(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let #(channel, admitted) = case
     session_channel.history(channel, 0, 50, now: oracle.now)
   {
@@ -1191,10 +1192,10 @@ fn read_admitted(
 // The server answers the one outstanding request, well formed. Whatever the
 // request, the answer releases it, and the lane must not fail.
 fn answer(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
   choice: Int,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let event = Answer(choice)
   let released = Oracle(..oracle, awaiting: Idle)
   case oracle.lane, oracle.awaiting {
@@ -1245,13 +1246,13 @@ fn answer(
 }
 
 fn answered(
-  channel: Channel,
+  channel: TerminalLane,
   before: Oracle,
   fed: Oracle,
   event: Event,
   frame: connection_event.Message,
   expect: Expect,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   use #(channel, after) <- result.try(feed(
     channel,
     before,
@@ -1271,13 +1272,13 @@ fn answered(
 }
 
 fn feed(
-  channel: Channel,
+  channel: TerminalLane,
   before: Oracle,
   fed: Oracle,
   event: Event,
   frame: connection_event.Message,
   expect: Expect,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let #(channel, updates) =
     session_channel.receive(channel, frame, now: fed.now)
   settle(before, fed, event, channel, updates, expect)
@@ -1289,9 +1290,9 @@ fn feed(
 // conversation or receiving fragments, the same error is fatal, as
 // `apply_reply` documents.
 fn refuse(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   case oracle.lane, oracle.awaiting {
     Shut, _ ->
       feed(channel, oracle, oracle, Refuse, error_frame(oracle.last_id), Quiet)
@@ -1323,11 +1324,11 @@ fn refuse(
 }
 
 fn refused(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
   id: Int,
   name: String,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let fed = Oracle(..oracle, awaiting: Idle)
   let frame = error_frame(id)
   let expect = Refuses(name, id)
@@ -1345,12 +1346,12 @@ fn refused(
 // A reply naming the wrong request is a protocol violation in every phase:
 // it paints nothing and closes the socket.
 fn stale(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
   event: Event,
   offset: Int,
   body: StaleBody,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   // On an idle lane the likeliest stale reply is a second answer to the
   // request just finished, so non-negative offsets all name that one.
   let reply_to = case oracle.awaiting, offset {
@@ -1381,11 +1382,11 @@ fn stale(
 }
 
 fn fault(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
   event: Event,
   frame: connection_event.Message,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   use #(channel, after) <- result.try(feed(
     channel,
     oracle,
@@ -1404,11 +1405,11 @@ fn fault(
 // at once only from an idle lane whose cut is at or below its sequence;
 // in flight, it is owed to the next ready transition.
 fn notice(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
   event: Event,
   seq: Int,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let above = case oracle.cut {
     Some(cut) -> seq >= cut
     None -> False
@@ -1452,12 +1453,12 @@ fn notice(
 }
 
 fn volunteered(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
   event: Event,
   frame: connection_event.Message,
   expect: Expect,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let expect = case oracle.lane {
     Open -> expect
     Shut -> Quiet
@@ -1483,10 +1484,10 @@ fn volunteered(
 }
 
 fn tick(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
   ms: Int,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let now = oracle.now + ms
   let before = Oracle(..oracle, now:)
   let fed = Oracle(..before, cause: session_channel.Refreshed)
@@ -1551,11 +1552,11 @@ fn timed(before: Oracle, after: Oracle) -> Result(Oracle, String) {
 }
 
 fn ends(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
   event: Event,
   updates: List(session_channel.Update),
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let channel = case event {
     Close -> session_channel.close(channel)
     _ -> channel
@@ -1576,9 +1577,9 @@ fn ends(
 
 // Escape cancels only an unsent mutation; a waiting read keeps its slot.
 fn cancel(
-  channel: Channel,
+  channel: TerminalLane,
   oracle: Oracle,
-) -> Result(#(Channel, Oracle), String) {
+) -> Result(#(TerminalLane, Oracle), String) {
   let #(channel, updates) =
     session_channel.cancel_unsent(channel, "cancelled by Escape")
   use #(channel, after) <- result.try(settle(

@@ -148,20 +148,11 @@ pub opaque type Recorder {
   Observed(sink: Subject(Recorded))
 }
 
-/// The recorder and attempt identity an attachment's lane records under.
-///
-/// This is data rather than a callback. A lane holding a trace queues each
-/// attempt event as an output naming this recorder, in the order it decided
-/// the events, and the runtime writes them after the step with everything
-/// else the step decided.
-pub type Trace {
-  Trace(
-    /// Where the lane's attempt events are written.
-    recorder: Recorder,
-    /// Terminal-local attempt identity, never a credential or socket address.
-    id: attempt.Id,
-  )
-}
+/// The recorder and attempt identity an attachment's lane records under,
+/// with this module's recorder as the recorder. The type and its constructor
+/// live in `tui/attempt`, beside the lane that carries them.
+pub type Trace =
+  attempt.Trace(Recorder)
 
 /// Opens a recording, truncating anything already at the path.
 ///
@@ -204,7 +195,7 @@ pub fn observed(sink: Subject(Recorded)) -> Recorder {
 /// let trace = recording.trace(recorder, attempt.Id(1))
 /// ```
 pub fn trace(recorder: Option(Recorder), id: attempt.Id) -> Option(Trace) {
-  option.map(recorder, Trace(_, id))
+  option.map(recorder, attempt.Trace(_, id))
 }
 
 /// Appends one event to the recording, with its offset read now.

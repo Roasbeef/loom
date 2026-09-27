@@ -38,10 +38,8 @@ import gleam/result
 import gleam/string
 import tui/approval
 import tui/attempt
-import tui/connection
 import tui/connection_event
 import tui/protocol
-import tui/recording
 import tui/session_wire
 import tui/snapshot
 import tui/snapshot_view
@@ -211,6 +209,12 @@ type Phase {
 
 /// What a channel transition asks the transport and the recorder to do.
 ///
+/// The socket and the recorder are type parameters, because what they are
+/// belongs to the host: the terminal's socket is a `host/websocket`
+/// connection and its recorder a file, and a replay has neither. The lane
+/// only carries each handle to the output it queues, and the host that
+/// performs the output is the one that knows what to do with it.
+///
 /// The channel decides what to write, when to close and what to record; it
 /// never writes, closes or records itself. A transition appends its outputs
 /// to the channel's outbox, the reducer that called it moves them into the
@@ -225,24 +229,27 @@ type Phase {
 /// them by cause (ADR-009): a request's `Issued` note is queued before its
 /// frame, and a frame's `Received` note before anything the frame made the
 /// lane send.
-pub type Out {
+pub type Out(socket, recorder) {
   /// One protocol frame to write.
-  Transmit(socket: connection.Connection, frame: String)
+  Transmit(socket: socket, frame: String)
 
   /// A close of the lane's socket.
-  Shut(socket: connection.Connection)
+  Shut(socket: socket)
 
   /// One attempt event for the lane's recording.
-  Note(recorder: recording.Recorder, event: attempt.Event)
+  Note(recorder: recorder, event: attempt.Event)
 }
 
-/// One bounded protocol lane, held by the terminal which owns its inbox.
-pub opaque type Channel {
+/// One bounded protocol lane, held by the host which owns its inbox.
+///
+/// `socket` and `recorder` are the host's handle types, carried unchanged to
+/// the outputs that name them; see `Out`.
+pub opaque type Channel(socket, recorder) {
   Channel(
-    socket: Option(connection.Connection),
+    socket: Option(socket),
     /// Pending outputs, newest first, until `take_outputs` hands them over.
-    outbox: List(Out),
-    trace: Option(recording.Trace),
+    outbox: List(Out(socket, recorder)),
+    trace: Option(attempt.Trace(recorder)),
     issued: attempt.Request,
     expected: snapshot.Expected,
     phase: Phase,
@@ -271,10 +278,10 @@ pub opaque type Channel {
 /// // session_channel.start(socket, selected, now: stamp.transport_ms)
 /// ```
 pub fn start(
-  socket: connection.Connection,
+  socket: socket,
   expected: snapshot.Expected,
   now now: Int,
-) -> Channel {
+) -> Channel(socket, recorder) {
   start_recorded(socket, expected, None, now:)
 }
 
@@ -288,9 +295,9 @@ pub fn start(
 pub fn start_recorded(
   socket,
   expected,
-  trace: Option(recording.Trace),
+  trace: Option(attempt.Trace(recorder)),
   now now: Int,
-) -> Channel {
+) -> Channel(socket, recorder) {
   initial(Some(socket), expected, trace, now)
   |> note(attempt.Started(_, expected))
   |> emit(protocol.subscribe(1, expected.session))
@@ -312,12 +319,12 @@ pub fn start_recorded(
 /// // session_channel.start_resumed(socket, expected, retained, trace, now:)
 /// ```
 pub fn start_resumed(
-  socket: connection.Connection,
+  socket: socket,
   expected: snapshot.Expected,
   retained: snapshot.Captured,
-  trace: Option(recording.Trace),
+  trace: Option(attempt.Trace(recorder)),
   now now: Int,
-) -> Channel {
+) -> Channel(socket, recorder) {
   Channel(
     socket: Some(socket),
     outbox: [],
@@ -350,7 +357,7 @@ pub fn start_resumed(
 /// ```gleam
 /// let lane = session_channel.replay(snapshot.Expected("s", "e", "i"))
 /// ```
-pub fn replay(expected: snapshot.Expected) -> Channel {
+pub fn replay(expected: snapshot.Expected) -> Channel(socket, recorder) {
   initial(None, expected, None, 0)
 }
 
@@ -367,8 +374,8 @@ pub fn replay(expected: snapshot.Expected) -> Channel {
 @internal
 pub fn replay_traced(
   expected: snapshot.Expected,
-  trace: recording.Trace,
-) -> Channel {
+  trace: attempt.Trace(recorder),
+) -> Channel(socket, recorder) {
   initial(None, expected, Some(trace), 0)
 }
 
@@ -396,7 +403,10 @@ fn initial(socket, expected, trace, now: Int) {
 // a frame on the wire that it has no request for. A socketless lane has
 // nowhere to write, so it notes the issue and queues no frame, which is
 // what lets replay run the same transitions.
-fn emit(channel: Channel, frame: String) -> Channel {
+fn emit(
+  channel: Channel(socket, recorder),
+  frame: String,
+) -> Channel(socket, recorder) {
   let channel = note(channel, attempt.Issued(_, channel.issued))
   case channel.socket {
     Some(socket) ->
@@ -407,9 +417,12 @@ fn emit(channel: Channel, frame: String) -> Channel {
 
 // A lane with no trace records nothing, and one with a trace queues the
 // event under its own attempt identity, behind whatever it queued before.
-fn note(channel: Channel, event: fn(attempt.Id) -> attempt.Event) -> Channel {
+fn note(
+  channel: Channel(socket, recorder),
+  event: fn(attempt.Id) -> attempt.Event,
+) -> Channel(socket, recorder) {
   case channel.trace {
-    Some(recording.Trace(recorder:, id:)) ->
+    Some(attempt.Trace(recorder:, id:)) ->
       Channel(..channel, outbox: [Note(recorder, event(id)), ..channel.outbox])
     None -> channel
   }
@@ -422,35 +435,19 @@ fn note(channel: Channel, event: fn(attempt.Id) -> attempt.Event) -> Channel {
 /// candidate's lane, so the outputs join the step's one queue in the order
 /// they were decided. A caller that drives a channel outside the terminal
 /// loop, such as a test holding a live socket, takes the outputs itself and
-/// passes each to `perform`.
+/// performs each as its host does; the terminal's is
+/// `tui/terminal_lane.perform`.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let #(lane, outputs) = session_channel.take_outputs(lane)
-/// list.each(outputs, session_channel.perform)
+/// list.each(outputs, terminal_lane.perform)
 /// ```
-pub fn take_outputs(channel: Channel) -> #(Channel, List(Out)) {
+pub fn take_outputs(
+  channel: Channel(socket, recorder),
+) -> #(Channel(socket, recorder), List(Out(socket, recorder))) {
   #(Channel(..channel, outbox: []), list.reverse(channel.outbox))
-}
-
-/// Performs one output against its socket or its recorder.
-///
-/// This is the only place a channel's decisions touch the transport or the
-/// recording, and it runs outside every transition.
-///
-/// ## Examples
-///
-/// ```gleam
-/// session_channel.perform(output)
-/// ```
-pub fn perform(output: Out) -> Nil {
-  case output {
-    Transmit(socket, frame) -> connection.send(socket, frame)
-    Shut(socket) -> connection.close(socket)
-    Note(recorder, event) ->
-      recording.append(recorder, recording.Attempt(event))
-  }
 }
 
 /// Returns the selected raw socket for liveness/adoption and shutdown only.
@@ -460,7 +457,7 @@ pub fn perform(output: Out) -> Nil {
 /// ```gleam
 /// // connection.adopt(session_channel.socket(channel))
 /// ```
-pub fn socket(channel: Channel) -> Option(connection.Connection) {
+pub fn socket(channel: Channel(socket, recorder)) -> Option(socket) {
   channel.socket
 }
 
@@ -471,7 +468,7 @@ pub fn socket(channel: Channel) -> Option(connection.Connection) {
 /// ```gleam
 /// // session_channel.synchronized(channel)
 /// ```
-pub fn synchronized(channel: Channel) -> Bool {
+pub fn synchronized(channel: Channel(socket, recorder)) -> Bool {
   channel.cut != None
 }
 
@@ -482,7 +479,7 @@ pub fn synchronized(channel: Channel) -> Bool {
 /// ```gleam
 /// // session_channel.replay_adoptable(lane)
 /// ```
-pub fn replay_adoptable(channel: Channel) -> Bool {
+pub fn replay_adoptable(channel: Channel(socket, recorder)) -> Bool {
   channel.socket == None && channel.phase == Ready && channel.cut != None
 }
 
@@ -497,17 +494,17 @@ pub fn replay_adoptable(channel: Channel) -> Bool {
 /// // session_channel.submit(channel, protocol.prompt(1, "main", "hi"), now:)
 /// ```
 pub fn submit(
-  channel: Channel,
+  channel: Channel(socket, recorder),
   frame: String,
   now now: Int,
-) -> #(Channel, Disposition) {
+) -> #(Channel(socket, recorder), Disposition) {
   case admit(channel, frame, now) {
     Ok(#(channel, disposition)) -> #(channel, disposition)
     Error(reason) -> #(channel, DefinitelyNotSent(reason))
   }
 }
 
-fn admit(channel: Channel, frame: String, now: Int) {
+fn admit(channel: Channel(socket, recorder), frame: String, now: Int) {
   use outbound <- result.try(outbound(frame))
   use <- bool.guard(
     channel.phase == Closed,
@@ -539,7 +536,7 @@ fn admit(channel: Channel, frame: String, now: Int) {
 /// ```gleam
 /// // session_channel.can_mutate(channel)
 /// ```
-pub fn can_mutate(channel: Channel) -> Bool {
+pub fn can_mutate(channel: Channel(socket, recorder)) -> Bool {
   case channel.phase, channel.attachment {
     Closed, _ -> False
     _, Some(snapshot.Attachment(role: snapshot.Operator, ..)) -> True
@@ -555,7 +552,7 @@ pub fn can_mutate(channel: Channel) -> Bool {
 /// ```gleam
 /// // session_channel.in_flight(channel)
 /// ```
-pub fn in_flight(channel: Channel) -> Bool {
+pub fn in_flight(channel: Channel(socket, recorder)) -> Bool {
   case channel.phase {
     AwaitingBegin | Receiving(..) | AwaitingReply(..) -> True
     Ready | Closed -> False
@@ -569,7 +566,7 @@ pub fn in_flight(channel: Channel) -> Bool {
 /// ```gleam
 /// // session_channel.mutation_available(channel)
 /// ```
-pub fn mutation_available(channel: Channel) -> Bool {
+pub fn mutation_available(channel: Channel(socket, recorder)) -> Bool {
   let available = case channel.phase {
     Ready -> True
     AwaitingBegin
@@ -589,7 +586,7 @@ pub fn mutation_available(channel: Channel) -> Bool {
 /// ```gleam
 /// // session_channel.has_unsent(channel)
 /// ```
-pub fn has_unsent(channel: Channel) -> Bool {
+pub fn has_unsent(channel: Channel(socket, recorder)) -> Bool {
   case channel.queued {
     Some(Outbound(intent: Mutation, ..)) -> True
     Some(_) | None -> False
@@ -604,9 +601,9 @@ pub fn has_unsent(channel: Channel) -> Bool {
 /// // session_channel.cancel_unsent(channel, "cancelled by Escape")
 /// ```
 pub fn cancel_unsent(
-  channel: Channel,
+  channel: Channel(socket, recorder),
   reason: String,
-) -> #(Channel, List(Update)) {
+) -> #(Channel(socket, recorder), List(Update)) {
   case has_unsent(channel) {
     True -> #(Channel(..channel, queued: None), [
       Submission(DefinitelyNotSent(reason)),
@@ -623,10 +620,10 @@ pub fn cancel_unsent(
 /// // session_channel.receive(channel, incoming, now:)
 /// ```
 pub fn receive(
-  channel: Channel,
+  channel: Channel(socket, recorder),
   message: connection_event.Message,
   now now: Int,
-) -> #(Channel, List(Update)) {
+) -> #(Channel(socket, recorder), List(Update)) {
   // Every message is noted before it is reduced, so its note precedes
   // anything the message makes the lane send, including a close.
   let channel = note(channel, attempt.Received(_, message))
@@ -677,7 +674,11 @@ pub fn receive(
   }
 }
 
-fn apply_pushed(channel: Channel, event: protocol.Event, now: Int) {
+fn apply_pushed(
+  channel: Channel(socket, recorder),
+  event: protocol.Event,
+  now: Int,
+) {
   case event {
     protocol.Committed(strand: _, seq:) -> notified(channel, seq, now)
 
@@ -768,7 +769,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event, now: Int) {
 // Dropping a notice is a statement about what this lane already knows, never
 // about whether the daemon pushed, so the count a reader can trust has to be
 // taken before the drop.
-fn notified(channel: Channel, seq: Int, now: Int) {
+fn notified(channel: Channel(socket, recorder), seq: Int, now: Int) {
   let #(channel, updates) = case channel.cut {
     Some(cut) if seq < cut.next_seq -> #(channel, [])
     Some(_) | None -> capture_or_defer(channel, now)
@@ -779,7 +780,7 @@ fn notified(channel: Channel, seq: Int, now: Int) {
 // A push that arrives before any cut exists says nothing the initial
 // transfer will not deliver, so it is dropped here for every kind of trigger
 // rather than deferred into a redundant second catch-up.
-fn capture_or_defer(channel: Channel, now: Int) {
+fn capture_or_defer(channel: Channel(socket, recorder), now: Int) {
   case channel.phase, channel.cut {
     Ready, Some(cut) -> #(
       capture_again(
@@ -807,7 +808,11 @@ fn capture_or_defer(channel: Channel, now: Int) {
   }
 }
 
-fn apply_reply(channel: Channel, reply: session_wire.Reply, now: Int) {
+fn apply_reply(
+  channel: Channel(socket, recorder),
+  reply: session_wire.Reply,
+  now: Int,
+) {
   case channel.phase, reply {
     // A resumed marker is the subscribe slot's own answer: the server accepted
     // the cursor this lane named and is continuing from it. Everything the
@@ -1031,7 +1036,11 @@ fn matching_presentation(name, intent, event) {
   }
 }
 
-fn credit(channel: Channel, transfer: snapshot.Transfer, lookup) {
+fn credit(
+  channel: Channel(socket, recorder),
+  transfer: snapshot.Transfer,
+  lookup,
+) {
   let #(id, index) = snapshot.credit(transfer)
   let next =
     Channel(
@@ -1058,7 +1067,10 @@ fn credit(channel: Channel, transfer: snapshot.Transfer, lookup) {
 /// ```gleam
 /// // session_channel.tick(channel, now:)
 /// ```
-pub fn tick(channel: Channel, now now: Int) -> #(Channel, List(Update)) {
+pub fn tick(
+  channel: Channel(socket, recorder),
+  now now: Int,
+) -> #(Channel(socket, recorder), List(Update)) {
   case channel.phase {
     Closed -> #(channel, [])
     AwaitingBegin | Receiving(..) | AwaitingReply(..) ->
@@ -1088,7 +1100,7 @@ pub fn tick(channel: Channel, now now: Int) -> #(Channel, List(Update)) {
 /// ```gleam
 /// let lane = session_channel.close(lane)
 /// ```
-pub fn close(channel: Channel) -> Channel {
+pub fn close(channel: Channel(socket, recorder)) -> Channel(socket, recorder) {
   case channel.phase {
     // A lane is closed once. A quit after a transport failure reaches a lane
     // that `fail` already closed, and a second `Shut` or a second recorded
@@ -1111,7 +1123,10 @@ pub fn close(channel: Channel) -> Channel {
 /// ```gleam
 /// // session_channel.retire(channel, "attachment replaced")
 /// ```
-pub fn retire(channel: Channel, reason: String) -> #(Channel, List(Update)) {
+pub fn retire(
+  channel: Channel(socket, recorder),
+  reason: String,
+) -> #(Channel(socket, recorder), List(Update)) {
   case channel.phase {
     Closed -> #(channel, [])
     _ -> {
@@ -1131,7 +1146,7 @@ pub fn retire(channel: Channel, reason: String) -> #(Channel, List(Update)) {
 
 // The outcome is read from the lane as it stood, because closing it is what
 // ends the request that was in flight.
-fn fail(channel: Channel, reason: String) {
+fn fail(channel: Channel(socket, recorder), reason: String) {
   let updates = case channel.phase {
     AwaitingReply(name, Mutation) -> [
       UnknownOutcome(name, channel.request_id),
@@ -1154,7 +1169,9 @@ fn fail(channel: Channel, reason: String) {
   #(close(channel), list.append(unsent, updates))
 }
 
-fn close_socket(channel: Channel) -> Channel {
+fn close_socket(
+  channel: Channel(socket, recorder),
+) -> Channel(socket, recorder) {
   case channel.socket {
     Some(socket) -> Channel(..channel, outbox: [Shut(socket), ..channel.outbox])
     None -> channel
@@ -1171,11 +1188,18 @@ fn close_socket(channel: Channel) -> Channel {
 /// ```gleam
 /// let lane = session_channel.adopted(lane)
 /// ```
-pub fn adopted(channel: Channel) -> Channel {
+pub fn adopted(
+  channel: Channel(socket, recorder),
+) -> Channel(socket, recorder) {
   note(channel, attempt.Adopted)
 }
 
-fn capture_again(channel: Channel, cursor, trigger: Capture, now: Int) {
+fn capture_again(
+  channel: Channel(socket, recorder),
+  cursor,
+  trigger: Capture,
+  now: Int,
+) {
   let next =
     Channel(
       ..channel,
@@ -1204,10 +1228,10 @@ fn capture_again(channel: Channel, cursor, trigger: Capture, now: Int) {
 /// // session_channel.replay_issued(lane, request, now: 0)
 /// ```
 pub fn replay_issued(
-  channel: Channel,
+  channel: Channel(socket, recorder),
   request: attempt.Request,
   now now: Int,
-) -> Result(Channel, String) {
+) -> Result(Channel(socket, recorder), String) {
   use <- bool.guard(
     channel.socket != None,
     Error("cannot replay into a live channel"),
@@ -1248,10 +1272,10 @@ pub fn replay_issued(
 /// // session_channel.lookup(channel, ["approval-id"], now:)
 /// ```
 pub fn lookup(
-  channel: Channel,
+  channel: Channel(socket, recorder),
   ids: List(String),
   now now: Int,
-) -> Result(Channel, String) {
+) -> Result(Channel(socket, recorder), String) {
   use <- bool.guard(
     ids == [] || list.drop(ids, 8) != [],
     Error("lookup requires one to eight identities"),
@@ -1290,11 +1314,11 @@ pub fn lookup(
 /// ```
 @internal
 pub fn history(
-  channel: Channel,
+  channel: Channel(socket, recorder),
   after: Int,
   before: Int,
   now now: Int,
-) -> Result(Channel, String) {
+) -> Result(Channel(socket, recorder), String) {
   use <- bool.guard(
     after < 0 || before <= after || before - after > 101,
     Error("history requires a range of at most one hundred sequences"),
@@ -1318,7 +1342,11 @@ pub fn history(
 // place a deferred notice can be spent. A waiting local command still goes
 // first: it keeps the lane busy, and the notice survives to the transition
 // after that one.
-fn send_queued(channel: Channel, updates: List(Update), now: Int) {
+fn send_queued(
+  channel: Channel(socket, recorder),
+  updates: List(Update),
+  now: Int,
+) {
   let #(channel, updates) = flush_queued(channel, updates, now)
   case channel.phase, channel.refresh, channel.cut {
     Ready, Due, Some(cut) -> #(
@@ -1340,7 +1368,11 @@ fn send_queued(channel: Channel, updates: List(Update), now: Int) {
   }
 }
 
-fn flush_queued(channel: Channel, updates: List(Update), now: Int) {
+fn flush_queued(
+  channel: Channel(socket, recorder),
+  updates: List(Update),
+  now: Int,
+) {
   case channel.queued {
     None -> #(channel, updates)
     Some(outbound) -> {
@@ -1371,7 +1403,7 @@ fn flush_queued(channel: Channel, updates: List(Update), now: Int) {
   }
 }
 
-fn send(channel: Channel, outbound: Outbound, now: Int) {
+fn send(channel: Channel(socket, recorder), outbound: Outbound, now: Int) {
   let frame =
     session_wire.command_prefix
     <> int.to_string(channel.next_id)
@@ -1449,6 +1481,6 @@ fn outbound(frame: String) {
 /// ```gleam
 /// // session_channel.ready_for_read(channel)
 /// ```
-pub fn ready_for_read(channel: Channel) -> Bool {
+pub fn ready_for_read(channel: Channel(socket, recorder)) -> Bool {
   channel.phase == Ready && channel.queued == None && synchronized(channel)
 }

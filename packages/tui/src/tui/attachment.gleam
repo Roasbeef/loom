@@ -34,6 +34,7 @@ import tui/recording
 import tui/session_channel as channel
 import tui/snapshot
 import tui/snapshot_view
+import tui/terminal_lane
 import tui/workspace
 import weft
 
@@ -58,7 +59,7 @@ const frame_batch = 40
 
 type Candidate {
   Candidate(
-    channel: channel.Channel,
+    channel: terminal_lane.Lane,
     acknowledgement: Subject(Nil),
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
     workspace: workspace.Context,
@@ -97,7 +98,7 @@ pub opaque type Status {
 pub type Outcome {
   /// Initial capture and original worker completion have both been observed.
   Adopted(
-    channel: channel.Channel,
+    channel: terminal_lane.Lane,
     cut: snapshot.Captured,
     view: snapshot_view.View,
     /// The frames inbox together with the frames already received from it
@@ -689,7 +690,7 @@ fn adopt(
 // runtime performs it, after the job itself is cancelled by its key.
 fn failed(status, reason) -> #(Status, Option(Outcome), List(Out)) {
   let noted = case status {
-    Opening(Run(trace: Some(recording.Trace(recorder:, id:)), ..), _) -> [
+    Opening(Run(trace: Some(attempt.Trace(recorder:, id:)), ..), _) -> [
       FromChannel(channel.Note(recorder, attempt.Failed(id, reason))),
     ]
     Idle | Opening(Run(trace: None, ..), _) -> []
@@ -760,7 +761,7 @@ fn preceded_by(
 pub type Out {
   /// An output of the candidate's channel, or the attempt's failure note,
   /// which is recorded as one of that lane's notes.
-  FromChannel(channel.Out)
+  FromChannel(terminal_lane.Output)
 
   /// Releases the worker waiting on its acknowledgement subject.
   Acknowledge(to: Subject(Nil))
@@ -783,7 +784,7 @@ pub type Out {
 /// ```
 pub fn perform(output: Out) -> Nil {
   case output {
-    FromChannel(output) -> channel.perform(output)
+    FromChannel(output) -> terminal_lane.perform(output)
     Acknowledge(to) -> process.send(to, Nil)
     Abandon(status) -> cancel(status)
   }
@@ -814,7 +815,7 @@ pub fn cancel(status: Status) -> Nil {
     Opening(_, Connecting(candidate, frames)) -> {
       channel.close(candidate.channel)
       |> channel.take_outputs
-      |> fn(closed) { list.each(closed.1, channel.perform) }
+      |> fn(closed) { list.each(closed.1, terminal_lane.perform) }
       buffered.discard(buffered.sender(frames))
     }
   }

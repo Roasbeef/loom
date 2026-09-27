@@ -46,6 +46,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_channel
+import tui/terminal_lane
 import tui/virtual_backend
 import tui/workspace
 import weft/actor
@@ -256,7 +257,7 @@ fn disconnect(model: tui_model.Model) -> Nil {
     Some(channel) -> {
       let #(_, outputs) =
         session_channel.take_outputs(session_channel.close(channel))
-      list.each(outputs, session_channel.perform)
+      list.each(outputs, terminal_lane.perform)
     }
 
     // With no channel there is no socket: an attached peer always has its

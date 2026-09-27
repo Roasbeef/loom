@@ -12,6 +12,7 @@ import core/json
 import core/message
 import etui/backend
 import etui/widgets/textarea
+import gleam/bit_array
 import gleam/dict
 import gleam/erlang/process
 import gleam/list
@@ -23,15 +24,14 @@ import tui/attempt
 import tui/cache_miss
 import tui/connection
 import tui/connection_event
+import tui/inbound
+import tui/model as tui_model
 import tui/protocol
 import tui/recording
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
 import tui/workspace
-import gleam/bit_array
-import tui/inbound
-import tui/model as tui_model
 
 fn metadata() {
   json.to_string(
@@ -198,7 +198,7 @@ fn feed(channel, messages) {
 // holding the notes of every request that capture issued.
 fn synchronized() {
   let trace =
-    recording.Trace(recording.observed(process.new_subject()), attempt.Id(1))
+    attempt.Trace(recording.observed(process.new_subject()), attempt.Id(1))
   let channel =
     session_channel.replay_traced(
       snapshot.Expected("A", "epoch", "incarnation"),

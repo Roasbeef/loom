@@ -15,6 +15,7 @@ import tui/session_channel
 import tui/session_wire
 import tui/snapshot
 import tui/snapshot_view
+import tui/terminal_lane
 
 // A replay lane's time. A recording carries no clock the lane could honour:
 // its frames arrive as fast as the file is read, so a deadline measured from
@@ -32,7 +33,7 @@ type Credit {
 type Lane {
   Lane(
     id: attempt.Id,
-    channel: session_channel.Channel,
+    channel: terminal_lane.Lane,
     credit: Credit,
     last_request: Int,
     captured: Option(#(snapshot.Captured, snapshot_view.View)),

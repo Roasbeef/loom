@@ -10,17 +10,17 @@
 import core/codec
 import core/json
 import core/message
+import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import tui
 import tui/connection
 import tui/connection_event
+import tui/model as tui_model
 import tui/session_channel
 import tui/snapshot
 import tui/workspace
-import gleam/bit_array
-import gleam/string
-import tui/model as tui_model
 
 /// The one metadata fragment a minimal transfer carries.
 ///

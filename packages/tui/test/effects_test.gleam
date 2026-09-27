@@ -28,6 +28,7 @@ import tui/model as tui_model
 import tui/runtime
 import tui/session_channel
 import tui/snapshot
+import tui/terminal_lane
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -190,7 +191,7 @@ pub fn a_closed_lane_queues_nothing_after_its_close_test() {
   assert updates == [] as "retiring a closed lane reports nothing"
 }
 
-fn output_kind(output: session_channel.Out) -> String {
+fn output_kind(output: terminal_lane.Output) -> String {
   case output {
     session_channel.Transmit(..) -> "transmit"
     session_channel.Shut(..) -> "shut"

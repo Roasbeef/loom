@@ -77,6 +77,7 @@ import tui/session_selector
 import tui/snapshot
 import tui/snapshot_view
 import tui/summary_panel
+import tui/terminal_lane
 import tui/tool_activity
 import tui/transcript_anchor
 import tui/workspace
@@ -684,7 +685,7 @@ pub type Model {
     /// One provisional replacement, whose original deadline includes capture.
     candidate: attachment.Status,
     /// Serial credited state for the adopted socket only.
-    channel: Option(session_channel.Channel),
+    channel: Option(terminal_lane.Lane),
     /// Last complete raw cut and its coherent metadata projection.
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
     /// What made the lane ask for the last cut that changed something
@@ -942,7 +943,7 @@ pub fn mark_activity(model: Model) -> Model {
 /// tui_model.hold_channel(model, channel)
 /// ```
 @internal
-pub fn hold_channel(model: Model, channel: session_channel.Channel) -> Model {
+pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
   let #(channel, outputs) = session_channel.take_outputs(channel)
   let outbox =
     list.fold(outputs, model.outbox, fn(outbox, output) {

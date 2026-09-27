@@ -36,6 +36,7 @@ import tui/recording
 import tui/runtime
 import tui/session_channel
 import tui/snapshot
+import tui/terminal_lane
 import tui/virtual_backend
 import tui/workspace
 import tui_test/pushed
@@ -306,7 +307,7 @@ fn scripted_session(path: String) -> String {
       now: 0,
     )
     |> session_channel.take_outputs
-  list.each(opened, session_channel.perform)
+  list.each(opened, terminal_lane.perform)
   let model =
     tui_model.Model(
       ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),

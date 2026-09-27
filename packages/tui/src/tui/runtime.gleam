@@ -62,7 +62,7 @@ import tui/keymap
 import tui/model.{type Model, Model} as tui_model
 import tui/msg.{type Msg, type Stamp, Stamp}
 import tui/recording
-import tui/session_channel
+import tui/terminal_lane
 import weft
 
 /// Reads the clocks and writes them onto the model, for a caller that
@@ -399,7 +399,7 @@ fn perform_one(
 
 fn perform_io(requested: Effect) -> Nil {
   case requested {
-    effect.Channel(output) -> session_channel.perform(output)
+    effect.Channel(output) -> terminal_lane.perform(output)
     effect.Attachment(output) -> attachment.perform(output)
     effect.CloseSocket(socket) -> connection.close(socket)
     effect.CloseControl(control) -> daemon.close(control)

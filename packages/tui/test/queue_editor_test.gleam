@@ -117,7 +117,7 @@ fn ready(rows) {
 
 fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
   let events = process.new_subject()
-  let trace = recording.Trace(recording.observed(events), attempt.Id(1))
+  let trace = attempt.Trace(recording.observed(events), attempt.Id(1))
   let channel = session_channel.replay_traced(expected, trace)
   let initial =
     tui_model.Model(

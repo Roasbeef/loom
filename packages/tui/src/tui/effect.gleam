@@ -44,12 +44,12 @@ import tui/daemon
 import tui/herdr
 import tui/job
 import tui/recording
-import tui/session_channel
+import tui/terminal_lane
 
 /// One side effect a reducer step decided on.
 pub type Effect {
   /// An output of the adopted session channel: a frame write or a close.
-  Channel(session_channel.Out)
+  Channel(terminal_lane.Output)
 
   /// An output of a provisional attachment attempt.
   Attachment(attachment.Out)

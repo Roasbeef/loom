@@ -10,7 +10,6 @@ import gleam/bool
 import gleam/list
 import gleam/result
 import gleam/string
-
 import tui/connection_event
 import tui/snapshot
 
@@ -19,6 +18,23 @@ pub type Id {
   Id(
     /// Positive local sequence, allocated before explicit selection begins.
     value: Int,
+  )
+}
+
+/// The recorder and attempt identity an attachment's lane records under.
+///
+/// This is data rather than a callback. A lane holding a trace queues each
+/// attempt event as an output naming this recorder, in the order it decided
+/// the events, and the host writes them after the step with everything else
+/// the step decided. The recorder is a type parameter because what a
+/// recorder is belongs to the host: the terminal's is a file, and the lane
+/// only carries it to the output it queues.
+pub type Trace(recorder) {
+  Trace(
+    /// Where the lane's attempt events are written.
+    recorder: recorder,
+    /// Terminal-local attempt identity, never a credential or socket address.
+    id: Id,
   )
 }
 
