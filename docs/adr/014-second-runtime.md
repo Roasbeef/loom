@@ -31,7 +31,12 @@ the protocol decoders, snapshot adoption (`snapshot`, `snapshot_view`,
 `history_view`), and the transcript's line builders (`transcript_lines`,
 reading a `Presentation` record rather than any host's model). It imports
 `core`, `machine` and the standard library only, and lint R6 keeps it
-that way.
+that way. Some of its modules have terminal-sounding names, such as
+`composer`, `queued_input` and `pasted_image`. They are engine modules all
+the same: the rules for how pasted text is shown in the transcript, the
+queued-input document the protocol decodes, and the record of an image
+already read. The terminal's editor, its file read and its drawing stay
+in `tui`.
 
 A host is two things:
 
@@ -100,8 +105,9 @@ message.
    did in phase 4. Job replies already arrive by `job.Key`, so the table
    that maps keys to handles stays in the host.
 
-Doing this in phase 4 would have touched every reducer (about 40,000
-lines) to serve a view that sends nothing.
+Doing this in phase 4 would have touched every reducer (the `tui`
+package's source was 40,965 lines after the P4a moves) to serve a view
+that sends nothing.
 
 ### Delivery under option C
 
