@@ -55,20 +55,23 @@ it four functions: `view`, `update`, a quit predicate, and
 process owns one immutable `Model`; each input event produces the next model,
 and `view` draws a frame from it.
 
-`update` runs five calls in order. `runtime.stamp` reads the clocks once for
-the event, `runtime.receive` moves waiting traffic and job replies into the
-model, `runtime.read_paste` reads the file a pasted path names, `tui.step`
-computes the next model and the effects it decided on, and `runtime.settle`
-carries those effects out and stores the table of running jobs they left on
-the model. The step performs none of the
+`update` runs four calls in order. `runtime.message` translates etui's event
+into the client's own message (`tui/msg`, through `tui/keymap`), reading the
+clocks once and the file a pasted path names into it; `runtime.receive`
+reads waiting traffic and job replies and has the step's admission file
+them into the model; `tui.step` computes the next model and the effects it
+decided on; and `runtime.settle` carries those effects out and stores the
+table of running jobs they left on the model. The step performs none of the
 fire-and-forget effects itself; "Effects are values" below describes that
-split. `step` has three stages:
+split. The step takes a `msg.Msg`: an `Input(at, event)`, which it reduces,
+or `Arrived(arrivals)`, traffic it only files (`tui/admission`) and never
+reduces. An input's step has three stages:
 
-1. `tui_model.record_input` queues the raw event's recording line, if a
-   `--record` file is open, before anything interprets it, so it is the
-   step's first effect.
+1. `tui_model.start_step` stores the input's stamp as `Model.stamp` and
+   queues the event's recording line, if a `--record` file is open, before
+   anything interprets it, so it is the step's first effect.
 2. `apply_input` dispatches on the event: a key, a paste, a resize, a mouse
-   wheel notch, a drag, or `Tick`.
+   wheel notch, a drag, or `Ticked`.
 3. `settle_update` does everything that follows any event. It requests a
    worktree observation if a diff pane just appeared, runs the context, advisor
    and goal refresh edges, decides the Herdr pane report, rebuilds the row
@@ -92,13 +95,20 @@ and no tick would arrive until the hand paused.
 None of those drains reads a mailbox for the conversation socket, the replay
 or the candidate attachment. Each of those inboxes is a `tui/buffered.Inbox`,
 a subject together with the messages already taken out of its mailbox.
-`runtime.receive` tops each one up before the step, to the most the step can
-consume from it: the connection inbox to `connection_batch` (64), the replay
-inbox to one event, and the candidate's frames to 40 until the initial cut is
-captured. The drains take from those buffers, and traffic that arrives
-during the step waits for the next one. An inbox the step did not drain keeps
-what it holds and receives nothing more, so every buffer stays within its
-bound. The control, reconnect, activity and attachment jobs' own messages,
+Before the step, `runtime.arrivals` reads each one's mailbox up to the room
+its buffer has left, the most the step can consume less what it holds: the
+connection inbox to `connection_batch` (64), the replay inbox to one event,
+and the candidate's frames to 40 until the initial cut is captured.
+`tui/admission` files what was read, behind what each buffer holds, and
+reduces nothing. The drains take from those buffers, and traffic that
+arrives during the step waits for the next one. An inbox the step did not
+drain has no room and reads nothing, so every buffer stays within its
+bound. The bound is the host's: admission never drops a frame for
+capacity, because a dropped frame is a gap in the lane's sequence. A frame
+is tagged with the subject it was read from, and admission files it only
+into the adopted inbox or the waiting attempt with that subject. A host
+that wakes when traffic arrives delivers `Arrived` and then a `Ticked`
+input; it never reduces on an arrival alone. The control, reconnect, activity and attachment jobs' own messages,
 the attachment's `Prepared` and worker outcome among them, reach the step
 the same way ("Jobs are started by the runtime" below), and are received
 before the frames, so a `Prepared` and the first frames it names arrive in
@@ -170,11 +180,11 @@ A consequence is that a send decided mid-step leaves at the end of the step. A
 zero-timeout drain later in the same step cannot see its reply, which it never
 reliably could.
 
-Two reads still happen inside the step, and neither touches the file
-system. Adoption asks whether the replacement socket's actor is alive
-(`connection.adopt`), and the build-mismatch notice reads this client's
-build identity from two environment variables on every coherent cut
-(`inbound.daemon_build_lines`); phase 3 takes both. Clock reads, the
+The step reads no clock, file, mailbox, process or environment variable.
+Whether the replacement socket's actor is alive is read by the host when it
+hands the attachment job's end over (`runtime.hold`, which delivers
+`job.Finished` with the answer), and this client's build identity is read
+once when the model is created (`Model.client_build`). Clock reads, the
 connection, replay and attachment drains, every job start, and every file
 read have moved out of the step, as described above and below. Recording
 appends are effects: each line's offset is read
@@ -213,8 +223,8 @@ After the step, `tui/job_runner` starts the run in the terminal's process
 and records its cancel signal and reply subject under the key in
 `Model.running`, a table no reducer reads. `CancelJob(key)` cancels by the
 same key. Before the next step, `runtime.receive` reads every running job's
-messages, at most two per job, and `runtime.hold` admits each into the slot
-of its kind only when that slot holds the reply's key. A reply for any
+messages, at most two per job, and `runtime.hold` has admission file each
+into the slot of its kind only when that slot holds the reply's key. A reply for any
 other key is dropped, and because the replies live inside the slot, a
 reducer that clears a slot drops what it held. The runner keeps a job until
 its relay's last message is read, whatever its slot holds, so no job leaves
@@ -241,10 +251,9 @@ the design and the alternatives it rejected.
 ### Files are read outside the step
 
 The step reads no file. A pasted image is read before the step:
-`runtime.read_paste` reads the file when a paste names exactly one path and
-stores the result on `Model.dropped`, and the composer's paste handler
-attaches what that read found, through `image_drop.dropped_image`, which
-uses a read only for the paste text it was taken for. The read is not a job
+`runtime.message` reads the file when a paste names exactly one path and
+carries the result inside the paste's own message (`msg.Pasted`), and the
+composer's paste handler attaches what that read found. The read is not a job
 because a job answers a step later, and a key typed in between would be
 applied before the image arrived. A new session's configuration is resolved
 by a `job.Configure` job: pressing `n` in the picker starts it, and the
@@ -540,9 +549,10 @@ conversation attached, is the recipient strand known, is the mutation slot
 free) and keeps the draft with a reason if the answer is no. Otherwise the
 command is encoded by a `tui/protocol` constructor and handed to `send_frame`,
 which calls `session_channel.submit`. Every send site switches on
-`tui.Peer`: `Attached` queues a write that the runtime performs at the end of
-the step, `Preview` echoes locally for `--demo`, `Replaying` does only the
-local half, and `Disconnected` refuses.
+`tui.Peer`: `Attached`, which always has its lane, queues a write through
+the lane that the runtime performs at the end of the step, `Preview` echoes
+locally for `--demo`, `Replaying` does only the local half, and
+`Disconnected` refuses. A replay has no lane, so it writes nothing.
 
 On a busy strand, Enter sends `prompt`, which the daemon holds and runs after
 the current operation. Tab switches one draft to `steer`, which the gateway
@@ -842,10 +852,13 @@ Paths are relative to `packages/tui/src`.
 | `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
 | `tui/effect` | The closed vocabulary of effects a step decides on. |
 | `tui/model` | `Model`, the frame cache, the `Reconnect` state, the effect outbox (`emit`, `record`, `hold_channel`) and the other types every reducer shares. |
-| `tui/runtime` | `stamp` and `receive`, which read the clocks and top up the inboxes and job slots before a step; `hold`, which admits one job reply by key; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
+| `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
+| `tui/msg` | What the step is given: `Input(at, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`. |
+| `tui/keymap` | `translate`, etui's input event to a `msg.Event`; parsing only. |
+| `tui/admission` | `admit`: files arrivals into inboxes and job slots, and reduces nothing. |
 | `tui/job` | Jobs as data: `Key`, the slot type `Awaiting`, `Spec`, and the keyed `Arrival`. |
 | `tui/job_runner` | The runtime's table of running jobs: starts a spec as a weft run, cancels by key, receives every job's replies. |
-| `tui/buffered` | `Inbox`: a terminal-owned subject with the messages already received from it, `top_up` before the step, `take` in it, `receive` outside it. |
+| `tui/buffered` | `Inbox`: a terminal-owned subject with the messages already received from it, `waiting` and `push` before the step, `take` in it, `receive` outside it. |
 | `tui/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
