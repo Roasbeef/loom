@@ -25,13 +25,13 @@ import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/transcript_line
 import tui
 import tui/cache_miss
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
 import tui/recording
-import tui/transcript_line
 import tui/workspace
 
 fn metadata() {

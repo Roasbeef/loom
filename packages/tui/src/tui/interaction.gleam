@@ -24,9 +24,11 @@ import gleam/result
 import gleam/string
 import session_view/approval
 import session_view/command
+import session_view/composer
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
+import session_view/pasted_image
 import session_view/protocol.{ModelInfo, Strand}
 import session_view/session_channel
 import session_view/snapshot_view
@@ -38,7 +40,6 @@ import tui/agents
 import tui/approval_panel
 import tui/attachment
 import tui/buffered
-import tui/composer
 import tui/context_panel
 import tui/daemon/protocol as control_protocol
 import tui/effect
@@ -57,7 +58,6 @@ import tui/model.{
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
-import tui/pasted_image
 import tui/peer_links
 import tui/projection
 import tui/queue_editor

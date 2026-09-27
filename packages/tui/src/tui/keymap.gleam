@@ -15,8 +15,8 @@
 import etui/backend
 import etui/keys
 import gleam/option.{type Option}
+import session_view/pasted_image
 import tui/msg.{type Event}
-import tui/pasted_image
 import tui/recording
 
 /// The client event an etui input event is.

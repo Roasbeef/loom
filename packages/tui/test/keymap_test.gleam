@@ -17,9 +17,9 @@ import etui/backend
 import etui/keys
 import gleam/list
 import gleam/option.{None, Some}
+import session_view/pasted_image
 import tui/keymap
 import tui/msg
-import tui/pasted_image
 import tui/recording
 import tui/virtual_backend
 

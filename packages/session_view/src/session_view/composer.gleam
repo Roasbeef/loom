@@ -9,8 +9,8 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/pasted_image
 import session_view/text_hygiene
-import tui/pasted_image
 
 const compact_token_threshold = 400
 

@@ -32,25 +32,25 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/advisor_history
 import session_view/block_summary
+import session_view/composer
+import session_view/file_read_view
 import session_view/notes_view
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/stream_identity
 import session_view/text_hygiene
-import session_view/worktree_view
-import tui/advisor_history
-import tui/composer
-import tui/file_read_view
-import tui/todo_board
-import tui/tool_activity
-import tui/transcript_line.{
+import session_view/todo_board
+import session_view/tool_activity
+import session_view/transcript_line.{
   type CacheNotice, type Line, type Speaker, type Stream, type Submission,
   type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning,
   ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
   ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 }
+import session_view/worktree_view
 
 /// What the line builders read of the client's current state.
 ///

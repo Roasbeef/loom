@@ -25,9 +25,9 @@ import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/text_hygiene
+import session_view/tool_activity
 import tui/agent_activity
 import tui/reviewer_status
-import tui/tool_activity
 
 /// Presentation vocabulary, never a second operation state machine.
 @internal

@@ -19,7 +19,7 @@ import machine/operation
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/text_hygiene
-import tui/tool_activity
+import session_view/tool_activity
 
 /// Names an effect-pending wait's requested runs, never a quiet stream.
 ///

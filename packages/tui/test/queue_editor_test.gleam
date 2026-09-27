@@ -15,6 +15,7 @@ import machine/codec
 import machine/strand
 import session_view/attempt
 import session_view/command
+import session_view/composer
 import session_view/connection_event
 import session_view/protocol
 import session_view/queued_input
@@ -22,7 +23,6 @@ import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
-import tui/composer
 import tui/connection
 import tui/frame
 import tui/inbound

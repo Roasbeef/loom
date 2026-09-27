@@ -19,13 +19,13 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import session_view/connection_event
+import session_view/transcript_line
 import tui
 import tui/buffered
 import tui/connection
 import tui/model as tui_model
 import tui/msg
 import tui/runtime
-import tui/transcript_line
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping

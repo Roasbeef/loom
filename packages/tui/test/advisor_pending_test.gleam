@@ -19,6 +19,7 @@ import session_view/advisor_pending
 import session_view/connection_event
 import session_view/protocol.{type Strand, Strand}
 import session_view/session_channel
+import session_view/transcript_lines
 import session_view/worktree_view
 import tui
 import tui/connection
@@ -27,7 +28,6 @@ import tui/inbound
 import tui/model as tui_model
 import tui/render
 import tui/surfaces
-import tui/transcript_lines
 import tui/workspace
 import tui_test/gateway
 import tui_test/pushed

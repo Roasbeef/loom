@@ -21,6 +21,7 @@ import machine/strand
 import session_view/connection_event
 import session_view/protocol
 import session_view/snapshot_view
+import session_view/tool_activity
 import tui
 import tui/connection
 import tui/frame
@@ -28,7 +29,6 @@ import tui/inbound
 import tui/layout
 import tui/model as tui_model
 import tui/render
-import tui/tool_activity
 import tui/workspace
 import tui_test/gateway
 

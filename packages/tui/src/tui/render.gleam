@@ -33,6 +33,7 @@ import gleam/result
 import gleam/string
 import session_view/advisor_pending
 import session_view/command
+import session_view/composer
 import session_view/context_view
 import session_view/live_jobs
 import session_view/notes_view
@@ -40,6 +41,12 @@ import session_view/protocol
 import session_view/queued_input
 import session_view/snapshot_view
 import session_view/text_hygiene
+import session_view/transcript_line.{
+  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, User,
+}
+import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agent_message_panel
 import tui/agent_messages
@@ -49,7 +56,6 @@ import tui/appearance
 import tui/approval_panel
 import tui/collaboration_view
 import tui/completion_summary
-import tui/composer
 import tui/context_panel
 import tui/diff_panel
 import tui/focused_goal_panel
@@ -70,12 +76,6 @@ import tui/session_selector
 import tui/summary_panel
 import tui/theme
 import tui/todo_panel
-import tui/transcript_line.{
-  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
-  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolPatch, ToolResult, User,
-}
-import tui/transcript_lines
 import tui/workspace
 
 // The frame on screen is whatever `refresh_frame_cache` last decided to

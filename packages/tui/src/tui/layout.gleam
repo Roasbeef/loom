@@ -23,16 +23,19 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/advisor_pending
+import session_view/composer
 import session_view/context_view
 import session_view/goal_view
 import session_view/protocol.{Strand}
 import session_view/snapshot_view
 import session_view/text_hygiene
+import session_view/tool_activity
+import session_view/transcript_line.{Stream}
+import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agent_strip
 import tui/agent_view
 import tui/agents
-import tui/composer
 import tui/diff_panel
 import tui/model.{
   type Model, AgentInspector, ApprovalInspector, Attached, DaemonSelector,
@@ -43,9 +46,6 @@ import tui/queue_editor
 import tui/queue_panel
 import tui/reviewer_status
 import tui/todo_panel
-import tui/tool_activity
-import tui/transcript_line.{Stream}
-import tui/transcript_lines
 
 /// The area inside a one-cell rounded border.
 ///

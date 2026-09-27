@@ -18,6 +18,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import session_view/session_channel
 import session_view/snapshot
+import session_view/transcript_line
 import tui
 import tui/agents
 import tui/attachment
@@ -29,7 +30,6 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/terminal_lane
-import tui/transcript_line
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping

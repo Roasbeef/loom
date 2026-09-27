@@ -15,6 +15,7 @@ import session_view/connection_event
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
+import session_view/transcript_line
 import tui
 import tui/bootstrap
 import tui/connection
@@ -24,7 +25,6 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
-import tui/transcript_line
 import tui/workspace
 import weft
 

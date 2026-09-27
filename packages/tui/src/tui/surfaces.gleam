@@ -31,6 +31,7 @@ import session_view/goal_view
 import session_view/live_jobs
 import session_view/protocol
 import session_view/session_channel
+import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agents
 import tui/focused_goal_panel
@@ -45,7 +46,6 @@ import tui/outbound
 import tui/queue_editor
 import tui/render
 import tui/summary_panel
-import tui/transcript_lines
 
 /// Inspection has its own target. Reading a worker's notes never changes the
 /// active strand, its parked draft, or the next submitted message.

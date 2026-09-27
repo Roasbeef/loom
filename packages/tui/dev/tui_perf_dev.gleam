@@ -14,11 +14,11 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
 import session_view/connection_event
+import session_view/transcript_line
 import tui
 import tui/agents
 import tui/connection
 import tui/model as tui_model
-import tui/transcript_line
 import tui/workspace
 
 /// A presentation model in the replay posture, and the connection subject

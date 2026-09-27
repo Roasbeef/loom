@@ -26,11 +26,13 @@ import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import session_view/composer
+import session_view/pasted_image
+import session_view/transcript_line
 import simplifile
 import tui
 import tui/attachment
 import tui/bootstrap
-import tui/composer
 import tui/connection
 import tui/daemon/protocol
 import tui/daemon/selection as daemon_selection
@@ -38,11 +40,9 @@ import tui/effect
 import tui/image_drop
 import tui/job
 import tui/model as tui_model
-import tui/pasted_image
 import tui/runtime
 import tui/session_selector
 import tui/submit
-import tui/transcript_line
 import tui/workspace
 import tui_test/stepping
 import weft

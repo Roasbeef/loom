@@ -21,9 +21,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/pasted_image.{type Image, Image, max_image_bytes}
 import simplifile
 import tui/internal/ffi_file
-import tui/pasted_image.{type Image, Image, max_image_bytes}
 
 /// Loads a pasted path when it names a supported image.
 ///

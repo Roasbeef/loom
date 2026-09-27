@@ -19,7 +19,7 @@ import gleam/set
 import gleam/string
 import session_view/notes_view
 import session_view/protocol
-import tui/todo_board
+import session_view/todo_board
 import tui/todo_panel
 
 fn board() -> Board {

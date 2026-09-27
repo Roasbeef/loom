@@ -19,24 +19,24 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import session_view/advisor_history
+import session_view/composer
 import session_view/notes_view
-import tui/advisor_history
-import tui/composer
+import session_view/tool_activity
+import session_view/transcript_line.{
+  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, User,
+}
+import session_view/transcript_lines.{
+  BetweenEntries, Projected, Transient, WithinResponse,
+}
 import tui/layout
 import tui/markdown
 import tui/model.{type Model, Model} as tui_model
 import tui/render
 import tui/surfaces
-import tui/tool_activity
 import tui/transcript_anchor
-import tui/transcript_line.{
-  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
-  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolPatch, ToolResult, User,
-}
-import tui/transcript_lines.{
-  BetweenEntries, Projected, Transient, WithinResponse,
-}
 
 /// Terminal polling still produces idle ticks so the websocket inbox can be
 /// drained, but those ticks must not compare or wrap the durable transcript.

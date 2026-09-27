@@ -47,6 +47,7 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/endpoint
+import session_view/advisor_history
 import session_view/attempt
 import session_view/block_summary
 import session_view/connection_event
@@ -54,10 +55,12 @@ import session_view/context_view
 import session_view/history_view
 import session_view/session_channel
 import session_view/text_hygiene
+import session_view/transcript_line.{
+  Assistant, Line, Reasoning, System, ToolResult,
+}
 import session_view/worktree_view
 import simplifile
 import tui/admission
-import tui/advisor_history
 import tui/agent_strip
 import tui/agents
 import tui/appearance
@@ -96,7 +99,6 @@ import tui/session_table
 import tui/summary_panel
 import tui/surfaces
 import tui/tick
-import tui/transcript_line.{Assistant, Line, Reasoning, System, ToolResult}
 import tui/update
 import tui/update/download
 import tui/update/options as update_options

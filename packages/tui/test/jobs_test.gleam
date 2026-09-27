@@ -18,6 +18,7 @@ import gleam/string
 import session_view/attempt
 import session_view/session_channel
 import session_view/snapshot
+import session_view/transcript_line
 import tui
 import tui/attachment
 import tui/buffered
@@ -32,7 +33,6 @@ import tui/model as tui_model
 import tui/runtime
 import tui/session_control
 import tui/session_selector
-import tui/transcript_line
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping

@@ -17,17 +17,20 @@ import gleam/result
 import gleam/string
 import gleeunit
 import session_view/command
+import session_view/composer
 import session_view/connection_event
+import session_view/pasted_image
 import session_view/protocol.{ModelInfo, Strand}
 import session_view/session_channel
 import session_view/text_hygiene
+import session_view/transcript_line
+import session_view/transcript_lines
 import simplifile
 import snapshot_test
 import tui
 import tui/agent_view
 import tui/agents
 import tui/buffered
-import tui/composer
 import tui/connection
 import tui/frame
 import tui/image_drop
@@ -40,15 +43,12 @@ import tui/markdown
 import tui/model as tui_model
 import tui/model_selector
 import tui/pacing
-import tui/pasted_image
 import tui/projection
 import tui/recording
 import tui/render
 import tui/selection
 import tui/submit
 import tui/theme
-import tui/transcript_line
-import tui/transcript_lines
 import tui/virtual_backend
 import tui/workspace
 import tui_test/ffi_term

@@ -39,8 +39,8 @@ import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
 import session_view/attempt
 import session_view/connection_event
+import session_view/pasted_image
 import tui/job
-import tui/pasted_image
 import tui/recording
 
 /// What the step is given.

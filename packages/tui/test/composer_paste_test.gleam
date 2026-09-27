@@ -5,11 +5,11 @@ import etui/backend
 import etui/widgets/textarea
 import gleam/option.{None}
 import gleam/string
+import session_view/composer
+import session_view/pasted_image
 import tui
-import tui/composer
 import tui/connection
 import tui/model as tui_model
-import tui/pasted_image
 import tui/workspace
 
 fn model(draft: String) -> tui_model.Model {

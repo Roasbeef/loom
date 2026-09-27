@@ -16,12 +16,12 @@ import session_view/connection_event
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
+import session_view/tool_activity
+import session_view/transcript_line
 import tui
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
-import tui/tool_activity
-import tui/transcript_line
 import tui/workspace
 import tui_test/ffi_term
 import tui_test/gateway

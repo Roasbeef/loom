@@ -84,6 +84,7 @@ import session_view/protocol as conversation
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/transcript_line
 import simplifile
 import support/internal/ffi_ws.{type Socket}
 import support/provider_http
@@ -93,7 +94,6 @@ import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol
 import tui/daemon/selection
-import tui/transcript_line
 import tui/workspace
 import weft
 import weft/actor

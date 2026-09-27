@@ -44,11 +44,11 @@ import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
 import session_view/connection_event
+import session_view/transcript_line
+import session_view/transcript_lines
 import tui
 import tui/inbound
 import tui/model as tui_model
-import tui/transcript_line
-import tui/transcript_lines
 import tui_test/pushed
 import weft/actor
 

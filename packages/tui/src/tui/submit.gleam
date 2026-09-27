@@ -17,14 +17,18 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/approval
 import session_view/command
+import session_view/composer
 import session_view/context_view
+import session_view/pasted_image
 import session_view/protocol
 import session_view/session_channel
 import session_view/text_hygiene
+import session_view/transcript_line.{
+  type Submission, Assistant, HeldPrompt, Interjection, Line, User,
+}
 import session_view/worktree_view
 import tui/agents
 import tui/attachment
-import tui/composer
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/inbound
@@ -39,13 +43,9 @@ import tui/model.{
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
-import tui/pasted_image
 import tui/queue_editor
 import tui/session_control
 import tui/surfaces
-import tui/transcript_line.{
-  type Submission, Assistant, HeldPrompt, Interjection, Line, User,
-}
 
 /// Opens the agent workspace on the active strand.
 @internal

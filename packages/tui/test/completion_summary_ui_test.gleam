@@ -10,11 +10,11 @@ import etui/geometry
 import etui/widgets/textarea
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/composer
 import session_view/live_jobs
 import session_view/protocol
 import session_view/session_channel
 import tui
-import tui/composer
 import tui/connection
 import tui/frame
 import tui/inbound

@@ -17,7 +17,7 @@ import machine/operation
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/text_hygiene
-import tui/tool_activity
+import session_view/tool_activity
 
 /// One current reviewer with a bounded task excerpt.
 @internal

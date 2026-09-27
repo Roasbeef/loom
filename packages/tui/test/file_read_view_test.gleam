@@ -1,7 +1,7 @@
 //// File-read presentation keeps source content while hiding edit metadata.
 
+import session_view/file_read_view
 import session_view/text_hygiene
-import tui/file_read_view
 
 pub fn anchored_source_keeps_numbers_indentation_and_delimiters_test() {
   let result =
