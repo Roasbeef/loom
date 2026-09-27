@@ -280,7 +280,9 @@ one.
   running daemon from one release to the next).
 - **Concurrency** — `docs/weft.md` (when and why a process is built on
   weft, the in-tree ports to copy from, and how to extend the library).
-- **Style** — `docs/gleam-style.md`.
+- **Style** — `docs/gleam-style.md`, and `docs/lustre.md` for the web
+  view: Lustre 5.7.1 server components, their security rules under
+  protocol-change/051, and a checklist for `web_view` changes.
 
 ## Per-package docs
 
