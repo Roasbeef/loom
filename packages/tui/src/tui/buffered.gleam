@@ -1,5 +1,5 @@
-//// A terminal-owned inbox together with the messages already taken out of
-//// its mailbox.
+//// A terminal-owned inbox: the subject a producer sends to, and the
+//// messages already taken out of its mailbox.
 ////
 //// The terminal's step reads no mailbox. Before each step the host reads a
 //// bounded number of waiting messages for every inbox the model holds
@@ -8,6 +8,11 @@
 //// where they used to call `process.receive(subject, 0)`. `waiting` is the
 //// only function here that reads a mailbox for the step, and `push` and
 //// `take` are pure.
+////
+//// The buffer itself is `session_view/inbox`, which knows nothing of a
+//// mailbox: an `Inbox(a)` here is that buffer with the subject as its
+//// source. This module is the host half, the reads of the subject's
+//// mailbox, which only the process that created the subject may make.
 ////
 //// The received messages live inside the inbox value rather than in a table
 //// beside the model, and that is what makes an adoption safe by
@@ -32,19 +37,12 @@
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import session_view/inbox as buffer
 
 /// A terminal-created subject and the messages already received from it,
-/// oldest first.
-pub opaque type Inbox(a) {
-  Inbox(
-    /// The subject the producers send to. Only the terminal process, which
-    /// created it, can receive from it.
-    subject: Subject(a),
-    /// Messages moved out of the mailbox and not yet taken, oldest first.
-    /// Every read is bounded, so the list is short.
-    held: List(a),
-  )
-}
+/// oldest first: the engine's buffer with the subject as its source.
+pub type Inbox(a) =
+  buffer.Inbox(Subject(a), a)
 
 /// Wraps a subject the calling process owns, with nothing held.
 ///
@@ -54,7 +52,7 @@ pub opaque type Inbox(a) {
 /// let inbox = buffered.new(connection.new_inbox())
 /// ```
 pub fn new(subject: Subject(a)) -> Inbox(a) {
-  Inbox(subject:, held: [])
+  buffer.new(subject)
 }
 
 /// The subject producers send to.
@@ -71,7 +69,7 @@ pub fn new(subject: Subject(a)) -> Inbox(a) {
 /// process.send(buffered.sender(model.inbox), connection.Connected)
 /// ```
 pub fn sender(inbox: Inbox(a)) -> Subject(a) {
-  inbox.subject
+  buffer.source(inbox)
 }
 
 /// How many received messages the inbox holds.
@@ -82,7 +80,7 @@ pub fn sender(inbox: Inbox(a)) -> Subject(a) {
 /// assert buffered.held(buffered.new(process.new_subject())) == 0
 /// ```
 pub fn held(inbox: Inbox(a)) -> Int {
-  list.length(inbox.held)
+  buffer.held(inbox)
 }
 
 /// Moves waiting messages out of the mailbox until the inbox holds
@@ -101,7 +99,7 @@ pub fn held(inbox: Inbox(a)) -> Int {
 /// let inbox = buffered.top_up(inbox, up_to: 64)
 /// ```
 pub fn top_up(inbox: Inbox(a), up_to limit: Int) -> Inbox(a) {
-  list.fold(waiting(inbox.subject, limit - held(inbox)), inbox, push)
+  list.fold(waiting(sender(inbox), limit - held(inbox)), inbox, push)
 }
 
 /// Reads up to `room` messages waiting in a subject's mailbox, oldest
@@ -151,7 +149,7 @@ fn receive_waiting(subject: Subject(a), remaining: Int, newest_first: List(a)) {
 /// let frames = buffered.push(frames, selected)
 /// ```
 pub fn push(inbox: Inbox(a), message: a) -> Inbox(a) {
-  Inbox(..inbox, held: list.append(inbox.held, [message]))
+  buffer.push(inbox, message)
 }
 
 /// Takes the oldest held message, reading no mailbox.
@@ -165,10 +163,7 @@ pub fn push(inbox: Inbox(a), message: a) -> Inbox(a) {
 /// let #(inbox, next) = buffered.take(model.inbox)
 /// ```
 pub fn take(inbox: Inbox(a)) -> #(Inbox(a), Result(a, Nil)) {
-  case inbox.held {
-    [] -> #(inbox, Error(Nil))
-    [message, ..rest] -> #(Inbox(..inbox, held: rest), Ok(message))
-  }
+  buffer.take(inbox)
 }
 
 /// Returns the oldest held message, or waits up to `within_ms` on the
@@ -188,7 +183,7 @@ pub fn take(inbox: Inbox(a)) -> #(Inbox(a), Result(a, Nil)) {
 pub fn receive(inbox: Inbox(a), within_ms: Int) -> #(Inbox(a), Result(a, Nil)) {
   case take(inbox) {
     #(inbox, Ok(message)) -> #(inbox, Ok(message))
-    #(inbox, Error(Nil)) -> #(inbox, process.receive(inbox.subject, within_ms))
+    #(inbox, Error(Nil)) -> #(inbox, process.receive(sender(inbox), within_ms))
   }
 }
 

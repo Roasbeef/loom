@@ -38,6 +38,12 @@ read, takes the lane's outputs and performs them.
   the others are submissions, history pages, lookups, refusals, pushed
   stream fragments and tool tails, commit notices, acknowledgements, lost
   replies and failure.
+- `inbox.Inbox(source, a)` (opaque): what a host received from one
+  source and has not reduced, oldest first, with the host's name for the
+  source. `push` files behind the held messages and `take` returns the
+  oldest; reading a mailbox stays with the host (`tui/buffered` over an
+  Erlang subject). An adoption replaces the whole value, so a replaced
+  source's held messages cannot reach a reducer.
 - `connection_event.Message`: `Connected`, `Incoming(text)`,
   `Closed(reason)`, `NetworkFault(reason)`. The host's transport maps its
   own events into these.

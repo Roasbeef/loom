@@ -374,7 +374,8 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   job, through `dropped`, which also closes a drained relaunch outcome's
   control. The control, relaunch, activity and
   attachment worker bodies live here.
-- `tui/buffered`: `Inbox(a)`, a terminal-owned subject with the messages
+- `tui/buffered`: `Inbox(a)`, `session_view/inbox`'s buffer with a
+  terminal-owned subject as its source: the subject and the messages
   already received from it, oldest first. `discard` empties a subject the
   model has stopped reading, as the `Discard` effect and an abandoned
   attempt's cleanup. `waiting` is the only read of the mailbox for a
