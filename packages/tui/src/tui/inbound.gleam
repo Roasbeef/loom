@@ -81,7 +81,7 @@ import tui/recording
 import tui/render
 import tui/reviewer_status
 import tui/surfaces
-import tui/todo_panel
+import tui/todo_board
 import tui/transcript_lines
 
 /// The authenticated build belongs to the retained control host. Projecting
@@ -688,9 +688,9 @@ fn render_cut(
   // A strand whose capture reaches no `todo` call may still have a board
   // in its notes, the usual case after reattaching to a long session, so
   // its first capture asks for one notes read to seed the panel.
-  let boards = todo_panel.remember(model.todo_boards, branch.records)
+  let boards = todo_board.remember(model.todo_boards, branch.records)
   let #(todo_seed, todo_asked) = case
-    todo_panel.needs_seed(boards, model.todo_asked, active)
+    todo_board.needs_seed(boards, model.todo_asked, active)
   {
     True -> #(Some(active), set.insert(model.todo_asked, active))
     False -> #(model.todo_seed, model.todo_asked)
@@ -1221,7 +1221,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       // asked for it, so the panel is seeded before the notes view decides
       // whether this read is its own.
       let model =
-        Model(..model, todo_boards: todo_panel.seed(model.todo_boards, board))
+        Model(..model, todo_boards: todo_board.seed(model.todo_boards, board))
       case board.strand == surfaces.notes_target(model) {
         True -> {
           let previous = case model.note_board {
@@ -1269,7 +1269,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         Model(
           ..model,
           records: [record, ..model.records],
-          todo_boards: todo_panel.remember(model.todo_boards, [record]),
+          todo_boards: todo_board.remember(model.todo_boards, [record]),
           streams: transcript_lines.clear_streams(model.streams, strand),
           tool_tails: retire_recorded_tail(model.tool_tails, record),
           pending_records: case strand == model.active_strand {

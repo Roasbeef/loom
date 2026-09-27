@@ -48,7 +48,7 @@ import tui/model.{
   ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
   ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 }
-import tui/todo_panel
+import tui/todo_board
 import tui/tool_activity
 
 // A stream stays separate from durable entries because the server may replay
@@ -1016,13 +1016,13 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     // call stays one row, which also keeps the compact height rule: the
     // pending row it replaces was one row too.
     Some(message.ToolResultMessage(is_error: False, details: Some(details), ..))
-      if call.invocation.name == todo_panel.tool_name
+      if call.invocation.name == todo_board.tool_name
     -> [
       Line(
         ToolCall,
         "✓ "
           <> summary
-          <> case todo_panel.result_summary(details) {
+          <> case todo_board.result_summary(details) {
           Some(progress) -> " · " <> progress
           None -> ""
         },
@@ -2054,7 +2054,7 @@ pub fn tool_call_summary(
     "agent_notes", json.Object(fields) ->
       "agent_notes" <> option_text(string_field(fields, "prefix"), " · ")
     "context_remaining", json.Object(_) -> "context remaining"
-    "todo", json.Object(_) -> todo_panel.call_summary(arguments)
+    "todo", json.Object(_) -> todo_board.call_summary(arguments)
     _, _ -> generic_tool_call(name, json.to_string(arguments), details_expanded)
   }
 }
@@ -2149,7 +2149,7 @@ fn tool_result_lines(
     // the progress it left rather than the checklist flattened onto one
     // row; Ctrl+g still shows the whole list the model read back.
     "todo", False, Some(value) ->
-      case details_expanded, todo_panel.result_summary(value) {
+      case details_expanded, todo_board.result_summary(value) {
         False, Some(progress) -> [Line(ToolResult, "todo · " <> progress)]
         True, _ | False, None ->
           plain_result_lines(tool_name, result, details_expanded)

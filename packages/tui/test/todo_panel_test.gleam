@@ -19,6 +19,7 @@ import gleam/set
 import gleam/string
 import session_view/notes_view
 import session_view/protocol
+import tui/todo_board
 import tui/todo_panel
 
 fn board() -> Board {
@@ -39,7 +40,7 @@ fn board() -> Board {
 fn result(details: json.JsonValue, is_error: Bool) -> message.AgentMessage {
   message.ToolResultMessage(
     tool_call_id: "call-1",
-    tool_name: todo_panel.tool_name,
+    tool_name: todo_board.tool_name,
     content: [],
     details: Some(details),
     usage: None,
@@ -93,15 +94,15 @@ pub fn the_newest_successful_result_wins_test() {
     record("main", 2, result(carrying(later), False)),
     record("main", 1, result(carrying(first), False)),
   ]
-  assert todo_panel.newest(records) == Some(later)
-  assert todo_panel.newest([]) == None
+  assert todo_board.newest(records) == Some(later)
+  assert todo_board.newest([]) == None
 }
 
 pub fn boards_are_remembered_per_strand_test() {
   let main = Board([Phase("A", [Task("main task", Active)])])
   let child = Board([Phase("B", [Task("child task", Active)])])
   let boards =
-    todo_panel.remember(dict.new(), [
+    todo_board.remember(dict.new(), [
       record("sub:main/review", 2, result(carrying(child), False)),
       record("main", 1, result(carrying(main), False)),
     ])
@@ -111,15 +112,15 @@ pub fn boards_are_remembered_per_strand_test() {
   // A later capture whose window no longer reaches the `todo` call keeps
   // the board the strand already had.
   let kept =
-    todo_panel.remember(boards, [
+    todo_board.remember(boards, [
       record("main", 9, message.UserMessage([], 0, None)),
     ])
   assert kept == boards
 }
 
 pub fn a_result_without_a_board_carries_nothing_test() {
-  assert todo_panel.from_message(result(json.Object([]), False)) == None
-  assert todo_panel.from_message(result(json.String("noise"), False)) == None
+  assert todo_board.from_message(result(json.Object([]), False)) == None
+  assert todo_board.from_message(result(json.String("noise"), False)) == None
 }
 
 pub fn the_panel_shows_the_focused_phase_and_folds_the_rest_test() {
@@ -191,21 +192,21 @@ pub fn every_row_is_cut_to_the_width_test() {
 }
 
 pub fn a_transcript_row_names_what_the_call_changed_test() {
-  assert todo_panel.call_summary(
+  assert todo_board.call_summary(
       json.Object([
         #("op", json.String("done")),
         #("task", json.String("Judge every unit")),
       ]),
     )
     == "todo · done \"Judge every unit\""
-  assert todo_panel.call_summary(
+  assert todo_board.call_summary(
       json.Object([
         #("op", json.String("block")),
         #("phase", json.String("Delete")),
       ]),
     )
     == "todo · block phase \"Delete\""
-  assert todo_panel.result_summary(carrying(board())) == Some("3/6 done")
+  assert todo_board.result_summary(carrying(board())) == Some("3/6 done")
 }
 
 fn notes(strand: String, rows: List(notes_view.Note)) -> notes_view.Board {
@@ -219,7 +220,7 @@ fn note(key: String, text: String, extent: notes_view.Extent) {
 pub fn a_complete_todo_note_seeds_a_strand_without_a_board_test() {
   let text = json.to_string(todo_list.encode(board()))
   let seeded =
-    todo_panel.seed(
+    todo_board.seed(
       dict.new(),
       notes("main", [
         note("plan", "{}", notes_view.Complete),
@@ -235,22 +236,22 @@ pub fn a_seed_never_replaces_or_guesses_test() {
   let text = json.to_string(todo_list.encode(board()))
   let known =
     dict.from_list([#("main", Board([Phase("K", [Task("k", Active)])]))])
-  assert todo_panel.seed(
+  assert todo_board.seed(
       known,
       notes("main", [note("todo", text, notes_view.Complete)]),
     )
     == known
-  assert todo_panel.seed(
+  assert todo_board.seed(
       dict.new(),
       notes("main", [note("todo", string.drop_end(text, 5), notes_view.Excerpt)]),
     )
     == dict.new()
-  assert todo_panel.seed(
+  assert todo_board.seed(
       dict.new(),
       notes("main", [note("plan", text, notes_view.Complete)]),
     )
     == dict.new()
-  assert todo_panel.seed(
+  assert todo_board.seed(
       dict.new(),
       notes("main", [note("todo", "{\"phases\": 3}", notes_view.Complete)]),
     )
@@ -258,9 +259,9 @@ pub fn a_seed_never_replaces_or_guesses_test() {
 }
 
 pub fn a_strand_is_asked_about_once_test() {
-  assert todo_panel.needs_seed(dict.new(), set.new(), "main")
-  assert !todo_panel.needs_seed(dict.new(), set.from_list(["main"]), "main")
-  assert !todo_panel.needs_seed(
+  assert todo_board.needs_seed(dict.new(), set.new(), "main")
+  assert !todo_board.needs_seed(dict.new(), set.from_list(["main"]), "main")
+  assert !todo_board.needs_seed(
     dict.from_list([#("main", board())]),
     set.new(),
     "main",
@@ -273,7 +274,7 @@ pub fn remember_keeps_the_newest_of_several_boards_for_a_strand_test() {
   let older = Board([Phase("A", [Task("x", Active)])])
   let newer = Board([Phase("A", [Task("x", Done)])])
   let boards =
-    todo_panel.remember(dict.new(), [
+    todo_board.remember(dict.new(), [
       record("main", 20, result(carrying(newer), False)),
       record("main", 10, result(carrying(older), False)),
     ])
