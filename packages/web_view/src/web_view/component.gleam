@@ -1442,6 +1442,12 @@ fn status_glyph(status: agent_view.Status) -> String {
 /// capture costs no diff here and a window that drops its oldest rows
 /// removes them rather than rewriting every piece after them.
 ///
+/// The lane is drawn inside a `<loom-follow>` (`packages/web_client`),
+/// which scrolls the page to a row that lands below the viewport while the
+/// reader is at the bottom, and stops once they scroll up to read. Where
+/// the reader has scrolled is the browser's to know: the server never
+/// renders it, so scrolling costs no message here.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1449,10 +1455,12 @@ fn status_glyph(status: agent_view.Status) -> String {
 /// ```
 pub fn lane_view(pieces: List(turns.Piece)) -> Element(message) {
   use <- element.memo([element.ref(pieces)])
-  keyed.div(
-    [attribute.class("transcript lane"), attribute.role("log")],
-    list.map(pieces, fn(piece) { #(piece_key(piece), piece_element(piece)) }),
-  )
+  element.element("loom-follow", [attribute.class("follow")], [
+    keyed.div(
+      [attribute.class("transcript lane"), attribute.role("log")],
+      list.map(pieces, fn(piece) { #(piece_key(piece), piece_element(piece)) }),
+    ),
+  ])
 }
 
 fn piece_key(piece: turns.Piece) -> String {

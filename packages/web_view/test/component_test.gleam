@@ -182,3 +182,19 @@ pub fn an_idle_tick_leaves_the_model_as_it_was_test() {
   assert element.to_string(component.view(after))
     == element.to_string(component.view(before))
 }
+
+// The lane is drawn inside `<loom-follow>`, the client component that keeps
+// the newest row in view, and it carries no attribute: the element reads
+// the page's scroll position and the lane's size, never session text.
+pub fn the_lane_is_drawn_inside_the_follower_test() {
+  let page =
+    simulate.message(simulation(), component.Opened(wire(), 0))
+    |> arrive(page_fixture.transfer("observer", []))
+  let html = element.to_string(simulate.view(page))
+  let assert Ok(#(_, inside)) =
+    string.split_once(html, "<loom-follow class=\"follow\">")
+    as "the page draws the follower with no attribute but its class"
+  let assert Ok(#(lane, _)) = string.split_once(inside, "</loom-follow>")
+    as "the follower is closed"
+  assert string.contains(lane, "class=\"transcript lane\"")
+}

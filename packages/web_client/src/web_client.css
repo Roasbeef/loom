@@ -115,6 +115,7 @@
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
   .ring.ring-idle{border-color:var(--color-fg-quiet);}
   .ring.ring-elapsed{border:2px dashed var(--color-fg-quiet);}
+  loom-follow.follow{display:flex;flex-direction:column;flex:1 0 auto;min-width:0;}
   .transcript.lane{display:flex;flex-direction:column;gap:10px;min-width:0;flex:1 0 auto;}
   .block{min-width:0;}
   pre.line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}

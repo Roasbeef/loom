@@ -75,8 +75,10 @@ page keys and nonces, and the relay into the session's gateway.
   `Captured` projects the page and `Auxiliary(UsageChanged)` feeds the cache
   ledger and the roster.
 - The page renders `web_client`'s custom elements by tag:
-  `<loom-elapsed offset>` in each chip and `<loom-fold>` around a settled
-  turn's work. They run in the browser and send the server nothing.
+  `<loom-elapsed offset>` in each chip, `<loom-fold>` around a settled
+  turn's work, and `<loom-follow>` around the lane, which keeps the newest
+  row in view while the reader is at the bottom. They run in the browser
+  and send the server nothing.
 - An operator's page also receives Lustre's `EventFired` for its two
   handlers: a click on an approval button and the composer form's submit.
 - Outputs leave through the transport only: `Transmit` and `Shut`, in the
