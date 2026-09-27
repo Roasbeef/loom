@@ -322,6 +322,30 @@ is also bounded: past twice `session_view/transcript_lines.live_stream_limit` (2
 collapse to the newest 24 KiB. [Multiplayer](multiplayer.md#what-the-terminal-does-with-a-pushed-frame)
 explains the memory failure behind that bound.
 
+The live answer is the one transient line that grows on every frame, and
+rendering it from scratch made a frame cost the length of the answer so
+far: sanitizing, parsing and word-wrapping all of it each time, which at
+four thousand deltas was nine times a frame's cost at the start, and made a
+replay of 1,500 deltas fifteen times as slow as one of 800. `tui/live_tail`
+keeps what the last frame decided in `Model.live_tail` and redoes only what
+new text can change. A Markdown block closed by a blank line and followed
+by a line starting with a letter settles: its rows are finished once and
+never parsed again, after rendering the two halves and the whole confirms
+the cut is not inside a fence or an HTML block. Text the hygiene pass
+leaves unchanged (`session_view/text_hygiene.unchanged_prefix`) is checked
+once as it arrives. The open blocks are parsed every frame, and their lines
+are wrapped against the last frame's: a paragraph that only grew re-wraps
+from its last row (`tui/markdown.rewrap`). An answer written as one long
+paragraph never settles, so the open paragraph keeps a checkpoint after its
+plain leading lines, which hold no Markdown punctuation, and only the text
+after it is parsed and joined on (`tui/markdown.join_soft_break`). The rows
+are exactly those `render_line` gives, which `test/live_tail_test.gleam`
+checks over generated streams; text holding a reference definition or a
+footnote is rendered whole, since its meaning crosses blocks. A resize
+changes the wrap width and starts the cache over. What still grows with an
+answer is list work over its rows, a few reductions per row per frame, and
+the parse of an open paragraph after its first Markdown delimiter.
+
 **Local presentation.** Everything the terminal says on its own behalf lives
 in `Model.transcript`, `Model.notice` and the overlay fields. `render_cut`
 rebuilds the transcript header from each cut: a "beginning of conversation" or
@@ -866,6 +890,7 @@ Paths are relative to `packages/tui/src`.
 | `tui/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed) and their edge detectors. |
 | `tui/session_control` | Daemon control requests and reconnection, as job specs, and the drains that take their replies. |
 | `tui/projection` | The record row cache and render cache. |
+| `tui/live_tail` | The live answer's rows, rebuilt each frame from what changed: settled blocks, checked text, and the open tail. |
 | `tui/submit`, `tui/interaction` | Composer submission and keyboard and mouse handling. |
 | `tui/tick` | `update_tick`/`settle_tick`: the drain chain and the read services. |
 | `tui/todo_panel` | The pinned todo panel and the one-line transcript summary of a `todo` call. |
