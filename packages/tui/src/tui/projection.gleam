@@ -312,14 +312,8 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         True -> model.record_line_cache
         False -> dict.new()
       }
-      let presentation = tui_model.presentation(model)
       let #(lines, compact_call_cache, compact_entry_cache) =
-        transcript_lines.record_lines(
-          model.records,
-          presentation,
-          transcript_lines.active_notices(presentation),
-          visible_advisor_history(model),
-        )
+        record_projection(model)
       let #(record_rows, record_line_cache, record_gutters) =
         model.transcript
         |> list.append(lines)
@@ -795,6 +789,33 @@ pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
     False, True -> offset + after - before
     False, False -> offset
   }
+}
+
+/// The durable records' transcript lines, before styling, with the row
+/// caches the next rebuild reuses. This is the terminal's side of the parity
+/// the web view is held to: the same records give the same lines through
+/// `session_view`'s `transcript.project`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(lines, _calls, _narratives) = projection.record_projection(model)
+/// ```
+@internal
+pub fn record_projection(
+  model: Model,
+) -> #(
+  List(Line),
+  Dict(tool_activity.Call, List(Line)),
+  Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
+) {
+  let presentation = tui_model.presentation(model)
+  transcript_lines.record_lines(
+    model.records,
+    presentation,
+    transcript_lines.active_notices(presentation),
+    visible_advisor_history(model),
+  )
 }
 
 // Advisor-only commentary is visible beside the primary's captured entries.
