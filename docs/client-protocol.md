@@ -154,8 +154,17 @@ One listener serves two endpoints.
 | `/v2/control` | Daemon metadata, membership and lifecycle. |
 | `/v2/sessions/<session-id>/ws` | One resident session's conversation. |
 
+A daemon started with `loomd --ui` also serves the web view's routes under
+`/ui/`: the ticket exchange, the page, the page's Lustre WebSocket and a
+fixed list of assets. A browser is admitted to them by a ticket from
+`ui.link` (section 3.22), a cookie, a page key and a nonce, never by a
+bearer header, and they carry Lustre's own messages rather than `v: 2`
+envelopes. [protocol-change/051](../protocol-change/051-web-view-route.md)
+specifies them and [the web view](architecture/web-view.md) describes them.
+Without `--ui`, every `/ui/` path returns HTTP 404.
+
 Any other path returns HTTP 404.
-Source: (`client/daemon/server.gleam:99-104`).
+Source: `handle` (`client/daemon/server.gleam:143-157`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -299,7 +308,7 @@ Immediately after admission the server sends one `hello` event with no
 carries the daemon epoch that most control commands must echo.
 
 ```json
-{"v":2,"event":"hello","body":{"protocol":2,"epoch":"ep-7f3a","principal":"owner-1a2b","limits":{"control_bytes":65536,"observer_bytes":65536,"operator_bytes":33554432,"connections":64,"reserved_message_bytes":536870912}}}
+{"v":2,"event":"hello","body":{"protocol":2,"epoch":"ep-7f3a","principal":"owner-1a2b","build_version":"0.2.0","build_commit":"b4eeb50c","limits":{"control_bytes":65536,"observer_bytes":65536,"operator_bytes":33554432,"connections":64,"reserved_message_bytes":536870912}}}
 ```
 
 | Field | Type | Presence | Meaning |
@@ -307,13 +316,17 @@ carries the daemon epoch that most control commands must echo.
 | `protocol` | integer | required | Always `2`. |
 | `epoch` | string | required | This daemon lifetime's identity. |
 | `principal` | string | required | The authenticated principal's id. |
+| `build_version` | string | required | The daemon's build version. A client compares it with its own and reports a mismatch. |
+| `build_commit` | string | required | The commit the daemon was built from. |
 | `limits.control_bytes` | integer | required | Maximum control message size, in bytes. |
 | `limits.observer_bytes` | integer | required | Maximum session message size for an observer. |
 | `limits.operator_bytes` | integer | required | Maximum session message size for an operator or owner. |
 | `limits.connections` | integer | required | Maximum simultaneous reservations and admitted sockets. |
 | `limits.reserved_message_bytes` | integer | required | Aggregate admission budget across all connections. |
+| `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
-Source: (`client/daemon/server.gleam:270-296`).
+Source: (`client/daemon/server.gleam:554-594`); the `ui` field is
+`hello_view` (`client/daemon/server.gleam:642`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -819,8 +832,9 @@ Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`.
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
-`sessions.default`, `operations.get`, `peers.inspect`, and `sessions.activity`. Every mutating control command
-is refused. Source: (`client/daemon/server.gleam:475-492`).
+`sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
+and `ui.link`. Every mutating control command is refused. Source:
+`control_use` (`client/daemon/server.gleam:758-787`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -954,6 +968,48 @@ reply is a fresh observation; the server does not cache or push activity.
 The command is a read, so it remains available on an existing control socket
 during daemon drain. See
 [Protocol 050](../protocol-change/050-session-activity.md) for the decision.
+
+### 3.22 `ui.link`
+
+A member asks for a single-use link that opens one session's web page in
+a browser. The command exists only on a daemon started with `--ui`, which
+the `hello` states with its `ui` field. The request carries the canonical
+`session_id` and an optional `page`:
+
+```json
+{"v":2,"id":12,"cmd":"ui.link","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","page":"operator"}}
+```
+
+`page` is the page's ceiling: `"observer"`, which is also the value when
+the field is absent, or `"operator"`. Any other value is refused with
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:501`). The
+ceiling caps the page's role and never grants one: the page acts with the
+smallest of the principal's membership role, the ceiling, and Operator.
+
+Reply:
+
+```json
+{"v":2,"reply_to":12,"event":"ui.link","body":{"path":"/ui/sessions/0198c0de-0000-7000-8000-000000000001?ticket=5f1c…","expires_in_ms":60000}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `path` | string | required | The exchange path, holding the ticket. The client joins it to the address it connected to; the reply carries no host. |
+| `expires_in_ms` | integer | required | The ticket's remaining lifetime in milliseconds, 60,000 when issued. It is a duration, so the client needs no clock agreement with the daemon. |
+
+The server checks the caller's membership with the call a session upgrade
+makes, `manager.session_authority`, and refuses a non-member; it refuses
+with `unavailable` when the daemon was started without `--ui` (`UiLink`,
+`client/daemon/server.gleam:1055`). The ticket is 32 random bytes, sent
+base16 encoded; the daemon keeps only its SHA-256 digest, with the
+principal, the session, the digest of the credential that asked and the
+ceiling. It is redeemed at most once, and redeeming it ends every earlier
+page of the same principal for the same session. A client MUST treat the
+ticket as a secret: it MUST NOT log it, and SHOULD print or open the link
+only for the person who asked. The command is a read, so it remains
+available during daemon drain. See
+[protocol-change/051](../protocol-change/051-web-view-route.md) for the
+decision and its operator addendum.
 
 ---
 

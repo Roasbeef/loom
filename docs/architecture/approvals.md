@@ -268,7 +268,7 @@ The gateway hub reads escalation records from the reserved prefix. It
 lists pending ones in its snapshot and emits `escalation` events as records
 change. The `op` and `strand` fields on the wire come from the record's
 `CallScope`, never from which strand happens to be busy. The terminal
-decodes escalation cells from each metadata cut (`tui/approval.records`)
+decodes escalation cells from each metadata cut (`session_view/approval.records`)
 and keeps the current pending set plus up to sixteen resolved summaries.
 
 When a pending record appears, the terminal opens an approval dialog
@@ -284,6 +284,18 @@ when every displayed grant is eligible to be remembered. The dialog refuses
 to offer approval, while still offering denial, when the detail exceeds its
 16 KiB display bound or a grant cannot be encoded. Closing the dialog is
 not a decision, and the record stays reachable through `/approvals`.
+
+An operator's web page ([the web view](web-view.md)) decodes the same
+cells with the same `session_view/approval` code and draws each pending
+record as a card, under stricter rules, because the page shows content the
+session's agent wrote. The card sits in its own region below the composer,
+drawn from the record alone. It offers *deny* first and *allow once*
+second, each naming the tool, and never *allow for session*, because a
+remembered grant would outlive the page that gave it. Nothing on the page
+takes focus when a card appears, and Enter in the composer never decides.
+A decision names the escalation ID and the sequence the card was drawn at,
+and `session_view/operator` encodes it only while that exact record is
+still pending. An observer's page draws no cards.
 
 ## Deciding
 

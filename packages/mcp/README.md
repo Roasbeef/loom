@@ -37,8 +37,9 @@ speaks.
 
 ## Where it sits
 
-`mcp` sits on `core` and the BEAM and nothing else. One package in the
-harness consumes it — `client`, in two places: `client/catalog` decodes the
+`mcp` sits on `core`, the BEAM (`gleam_erlang`, `gleam_otp`) and `weft`,
+whose `poll` clock and `state_machine` the client actor is built on, and
+nothing else. One package in the harness consumes it — `client`, in two places: `client/catalog` decodes the
 `[mcp.<name>]` tables and `client/mcp` starts a client per configured
 server, generates its module, widens the workspace seam and answers its
 capability calls.
@@ -65,6 +66,7 @@ graph TD
 
   CORE["core/json, core/msgpack, core/corruption"]
   OTP["gleam_erlang, gleam_otp"]
+  WEFT["weft/poll, weft/state_machine"]
 
   CL --> TR
   CL --> ST
@@ -75,11 +77,14 @@ graph TD
   CG --> PR
   TR --> FFI
   CL --> OTP
+  CL --> WEFT
   TR --> OTP
+  FFI --> OTP
   JR --> CORE
   PR --> CORE
   ST --> CORE
   IX --> CORE
+  SC --> CORE
 
   CAT --> CMCP
   CMCP --> CL
@@ -104,7 +109,7 @@ graph TD
     TOML["loom.toml [mcp.github]"]
     CAT2["client/catalog"]
     LAYER["client/mcp.start"]
-    START["mcp/client.start<br/>spawn, initialize, initialized"]
+    START["mcp/client.prepare_owned, then connect<br/>spawn, initialize, initialized"]
     LIST["mcp/client.list_tools<br/>nextCursor to exhaustion, max_tool_pages"]
     GEN["mcp/codegen.generate"]
     SRC["cap/mcp/github source text<br/>+ the rendered surface, held in memory"]
@@ -159,7 +164,7 @@ sequenceDiagram
   S-->>C: InitializeResult(protocolVersion, capabilities)
   C->>C: negotiate against supported_versions()
   alt the revision is outside the closed list, or tools is not declared
-    C-->>H: VersionUnsupported / ToolsNotDeclared; retain cleanup custody
+    C-->>H: VersionUnsupported or ToolsNotDeclared, client stays in the cleanup census
   else accepted
     C->>S: {"method":"notifications/initialized"} (a notification)
   end
@@ -171,22 +176,22 @@ sequenceDiagram
     S-->>C: ToolsPage(tools, next_cursor)
   end
   C-->>H: List(ToolDescriptor)
-  H->>G: generate(server, descriptors)
+  H->>G: generate(server, descriptors, digest)
   G->>G: mcp/schema tiers each parameter, mcp/name mangles,<br/>sanitize + truncate every server string, then scan_for_at
-  G-->>H: Generated(source, surface) or a refusal that drops this server
+  G-->>H: Generated(module_name, source, surface) or a refusal that drops this server
 
   Note over P,S: one call, once per execution, on the same client
   P->>R: cap_call mcp.github {tool, arguments}
-  R->>R: interchange.to_json(arguments) — refused here, before any round trip
+  R->>R: interchange.to_json(arguments), refused here before any round trip
   R->>C: call_tool(client, name, arguments, timeout_ms)
   C->>C: mint the id, arm Expire(id), record the in-flight entry
   C->>S: {"method":"tools/call", id, params}
   S-->>C: a response line, deframed by mcp/stdio
   C-->>R: CallToolResult(content, is_error, structured_content)
-  R-->>P: cap_result — client/mcp.tool_result's pinned shape
+  R-->>P: cap_result in client/mcp.tool_result's pinned shape
 
   Note over H,S: shutdown, at session end
-  H->>C: shutdown(client, within)
+  H->>C: stop(client), then shutdown(client, within)
   C->>T: request single-process termination, keep port open
   C->>C: settle every in-flight call as Unavailable, latch dead
   S-->>T: native exit_status
@@ -402,7 +407,11 @@ scripted fake server through the real `ChannelTransport` seam. The port
 tests spawn `/bin/echo`, `/bin/cat` and `/bin/sh` to prove the FFI
 writes, reads, delivers the exit status, and threads argv, env and the
 working directory; on a host missing those binaries they print a loud
-SKIP line rather than failing.
+SKIP line rather than failing. `custody_test` covers staged startup and
+retirement: a prepared client opens nothing, and a killed owner is not
+accepted as proof that its native process exited. `codegen_test` and
+`schema_test` hold the hostile `tools/list` corpus, with
+`test/mcp/fixtures/github.gleam` as the GitHub-shaped listing.
 
 ## Reading further
 
@@ -425,7 +434,8 @@ SKIP line rather than failing.
 - [`packages/client/CLAUDE.md`](../client/CLAUDE.md) —
   `client/protocol`, the house pattern for strict-envelope,
   tolerant-content wire codecs these decoders follow.
-- [`docs/next.md`](../../docs/next.md) — the #106 design rulings, and
-  what this work still owes. The hostile-`tools/list` corpus is built
-  (`codegen_test`, `schema_test`); what remains is the jail decision
-  (#109) and an end-to-end against a server from the wild (#110).
+- [`docs/design-notes/tool-search-and-code-mode.md`](../../docs/design-notes/tool-search-and-code-mode.md)
+  records the proposal that issue #106 decided and shipped. No ADR or
+  protocol-change governs this package. What the work still owes is the
+  jail decision (#109) and an end-to-end against a server from the wild
+  (#110); `docs/architecture/mcp.md` tracks both.

@@ -55,8 +55,10 @@ two runs would be comparing different conversations.
 Instead, each scripted response is keyed by a durable position:
 
 - A generation request is answered by the **phase** of its projected
-  context: how many assistant messages it contains, plus a hundred once it
-  contains a compaction summary. Errored, aborted, and deferred responses
+  context: how many assistant messages it contains, and whether it
+  contains a compaction summary. Once any summary is present,
+  `script.settle_for` answers with the op's `post` settlement regardless
+  of the message count. Errored, aborted, and deferred responses
   never enter a projection, so a synthetic settlement written by recovery
   leaves the phase unchanged. That property is what makes phase a stable
   key.

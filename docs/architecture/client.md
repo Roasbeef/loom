@@ -12,7 +12,9 @@ keeps a catalogue of sessions and admits a session assembly for each session it
 opens. The gateway is each session's client-facing admission point; it
 authenticates connections, admits commands through the runtime described in
 [orchestration](orchestration.md), and serves transcript transfers. `loom` is
-the native Gleam terminal client. The conversation itself lives in the
+the native Gleam terminal client. A daemon started with `--ui` also serves
+a page per session to a browser, [the web view](web-view.md), which drives
+the same client engine as the terminal. The conversation itself lives in the
 durability plane ([durability](durability.md)), and the effect plane
 ([effects](effects.md)) enforces the sandbox policy an approval widens.
 
@@ -20,6 +22,153 @@ The sections up to "Release updates" describe the current default daemon. The
 sections titled "Historical" preserve the earlier single-session
 implementation at `f019322`, which still explains much of the gateway's
 internal design.
+
+## The client engine and its hosts
+
+A Loom client is split into an engine that decides and a host that acts.
+The engine is pure: given what arrived and the time it arrived, it
+returns a new state and a list of effects as data. The host reads what
+the engine may not read (clocks, mailboxes, sockets, files) and performs
+the effects. Two hosts drive the same engine today. The terminal,
+`packages/tui`, is described in [the terminal client](terminal.md). The
+web view, `packages/web_view` with the daemon's `client/daemon/ui_*`
+modules, is described in [the web view](web-view.md).
+[ADR-013](../adr/013-tui-effects-as-values.md) records how the terminal's
+step came to return its effects as values, and
+[ADR-014](../adr/014-second-runtime.md) records the rule that makes a
+second host possible: session logic lives in the engine, and a host owns
+only its runtime and its view.
+
+### Which packages are pure
+
+Four packages are held to a portable subset by lint rule R6, at error
+level: `core`, `machine`, `prompt` and `session_view`
+(`lint/policy.portable_packages`). In those packages R6 refuses three
+things:
+
+- an `@external` of any target, found in the token stream so that even a
+  file the parser rejects is checked;
+- an import under `gleam/erlang` or `gleam/otp`;
+- a `gleam_erlang` or `gleam_otp` key in `gleam.toml`, dev dependencies
+  included.
+
+The rule protects two properties for the first three packages: the
+operation state space can be property-tested without spawning processes,
+and the packages compile to JavaScript, which is enough to replay and
+validate a conversation but never to run the harness
+(`docs/gleam-style.md` Part IV §5 and `lint/portable` argue it).
+`session_view` is on the list for a different reason. It is the client's
+engine, and the rule keeps any host out of it: a socket, a recording
+file, a terminal, a clock and a mailbox each arrive as a BEAM-only import
+or dependency. Where the lane has to name one of the host's handles, it
+takes it as a type parameter, `session_channel.Channel(socket, recorder)`,
+and every transition that checks a deadline takes `now` from its caller.
+
+The terminal's step, `tui.step` with `tui/admission` and the reducers it
+calls, is pure in the same sense but lives in `packages/tui`, which R6
+does not cover. It reads no clock, file, mailbox, process or environment
+variable, and returns every effect it decides; that is held by review and
+by tests such as `effects_test` and the replay goldens rather than by the
+lint. ADR-014 lists the four changes that must happen before the step can
+move into `session_view`.
+
+The client-side packages and their dependencies, with the pure ones
+shaded. An arrow points at what a package depends on. The harness
+packages under `client` also depend on `core` and `machine`, which the
+graph leaves out.
+
+```mermaid
+flowchart BT
+    core["core"]:::pure
+    machine["machine"]:::pure
+    prompt["prompt"]:::pure
+    sv["session_view"]:::pure
+    host["host"]
+    tui["tui<br/>terminal host"]
+    wv["web_view<br/>web host"]
+    client["client<br/>loomd"]
+    harness["runtime, storage, broker,<br/>provider, tools, ..."]
+    etui[/"etui"/]
+    lustre[/"lustre 5.7.1"/]
+    mist[/"mist fork"/]
+    machine --> core
+    prompt --> core
+    sv --> core
+    sv --> machine
+    host --> core
+    tui --> sv
+    tui --> host
+    tui --> etui
+    wv --> sv
+    wv --> lustre
+    client --> wv
+    client --> sv
+    client --> host
+    client --> prompt
+    client --> harness
+    client --> mist
+    client -. "tests only" .-> tui
+    classDef pure fill:#e3f2e6,stroke:#2e7d32,color:#1b3d20
+```
+
+`tui` does not depend on `client`: it speaks to the daemon only over the
+wire. `client` takes `tui` as a dev dependency so its fixtures can drive
+the shipped terminal against a real daemon, and it takes `web_view` as a
+runtime dependency, which is why Lustre ships inside the daemon's release.
+
+### Where effects are performed
+
+The engine decides and each host acts. The same decisions are carried out
+by different code in the two hosts:
+
+| What the host does | Terminal (`tui`) | Web view (`web_view`, `client/daemon/ui_*`) |
+|---|---|---|
+| Reads the clock | `runtime.message` stamps each input once (`msg.Stamp`) | the component's selector mappings read it when a frame or the timer message is received |
+| Reads socket traffic | `runtime.receive` tops up `tui/buffered` inboxes up to their room, and `tui/admission` files them | a Lustre selector delivers `Arrived`, filed into a `session_view/inbox` |
+| Decides when to reduce | a tick or a key, in `tick.update_tick`'s fixed drain order | a 250 ms `Ticked`, or at once when the lane has a request in flight |
+| Runs blocking work | `effect.StartJob`, started as a weft run by `tui/job_runner` | the relay process, `ui_relay`, makes the blocking gateway calls |
+| Writes and closes | `terminal_lane.perform` on `Transmit`, `Shut` and `Note` | `component.perform`, one `effect.from` over `Transmit` and `Shut`, through `ui_relay` |
+| Records | `effect.Record` and `recording.append` | nothing; the recorder type is `Nil` |
+| Draws | `tui/render` into etui buffers, with `tui/live_tail` for the growing answer | `component.view` and `operator_page.view` into Lustre elements |
+
+### Two hosts over one engine
+
+```mermaid
+flowchart TB
+    subgraph engine["session_view: pure, held by R6"]
+        lane["session_channel<br/>the credited lane"]
+        op["operator<br/>submit, decide, drain"]
+        proj["snapshot, snapshot_view<br/>transcript, transcript_lines"]
+    end
+    subgraph term["terminal host: packages/tui"]
+        tstep["tui.step, admission, reducers<br/>pure, not held by R6"]
+        truntime["tui/runtime, job_runner<br/>terminal_lane.perform"]
+        render["tui/render, live_tail"]
+    end
+    subgraph web["web host: packages/web_view and client/daemon/ui_*"]
+        comp["component.update<br/>operator_page.update"]
+        wperf["component.perform<br/>ui_relay"]
+        wview["component.view<br/>operator_page.view"]
+    end
+    truntime -- "msg.Msg" --> tstep
+    tstep -- "effects" --> truntime
+    tstep --> engine
+    render --> proj
+    comp --> engine
+    comp -- "lane outputs" --> wperf
+    wview --> proj
+```
+
+The terminal runs a whole step around the engine: its own message type,
+admission, the reducers and a model with render caches. The web host has
+no step of its own yet. Its component holds the lane, an inbox and the
+rows projected from the last capture, and calls the engine directly:
+`operator.drain` to hand the lane what arrived, `session_channel.tick`,
+`operator.submit` and `operator.decide` for an operator's commands, and
+`transcript.project_rows` when a capture completes. Both hosts keep
+ADR-013's option C: arrivals are filed, and reduction happens at fixed
+points. `client/web_view_parity_test` holds the two hosts to the same
+transcript lines for the same capture.
 
 ## Current default: one daemon, multiple sessions
 
@@ -118,7 +267,10 @@ model's request.
 The loopback listener serves two routes: `/v2/control` handles catalogue and
 lifecycle requests, and `/v2/sessions/<session-id>/ws` carries conversation
 commands and credited transfers. Both use text WebSocket frames carrying `v: 2`
-JSON envelopes. The conversation vocabulary keeps commands such as `prompt`,
+JSON envelopes. A daemon started with `--ui` also serves the web view's
+`/ui/...` routes, which authenticate a browser with a ticket and a cookie
+rather than a bearer ([the web view](web-view.md),
+[protocol 051](../../protocol-change/051-web-view-route.md)). The conversation vocabulary keeps commands such as `prompt`,
 `steer`, and `fork`, but the v1 envelopes and full-snapshot exchange in the
 historical sections are not the current wire contract.
 [Protocol 015](../../protocol-change/015-daemon-control-and-session-attachments.md)
@@ -199,7 +351,7 @@ newer pushed answer. Compact tool groups preserve call identity.
 request-scoped streams.
 
 `/notes` reads current values through `client/notes_view` and validates them in
-`tui/notes_view`, independently of the conversation transfer. The panel names
+`session_view/notes_view`, independently of the conversation transfer. The panel names
 the capture and last-write revisions and labels excerpts. The agent
 inspector's Notes tab follows its selected strand independently of the
 composer, with stable note-key selection and rejection of stale replies.
@@ -970,7 +1122,7 @@ sequenceDiagram
     participant S as session store
 
     T->>W: upgrade + Authorization: Bearer
-    Note over W: constant-time compare;<br/>401 before any socket state
+    Note over W: constant-time compare,<br/>401 before any socket state
     W->>H: attach(sink) → connection id
     T->>H: subscribe {session}
     H->>S: scans + register reads
@@ -1350,6 +1502,8 @@ or `/healthz`.
 |---|---|
 | `client/daemon/main.gleam`, `root.gleam`, `manager.gleam` | The default entrypoint, stable root ownership, catalogue admission, and session/domain retirement. |
 | `client/daemon/server.gleam`, `protocol.gleam`, `session_socket.gleam` | Authenticated v2 control codecs and routes, resident-only attachment, and bounded socket admission. |
+| `client/daemon/ui_http.gleam`, `ui_sessions.gleam`, `ui_socket.gleam`, `ui_relay.gleam` | The web view's request checks, its ticket and UI-session actor, the page's WebSocket, and the relay into the gateway ([the web view](web-view.md)). |
+| `packages/web_view/src/web_view/component.gleam`, `operator_page.gleam`, `page.gleam` | The observer's and the operator's Lustre server components, and the page shell, scripts, stylesheet and content security policy. |
 | `client/protocol.gleam` | Total conversation codecs, credited transfer envelopes, and grant vocabulary. |
 | `client/gateway.gleam`, `client/daemon/transfer.gleam` | Original authenticated connection handles, command admission, authorization, and bounded snapshot/reconciliation state. |
 | `client/worktree_diff.gleam` | Bounded Git observations through the attached workspace's existing broker and read-only policy. |
@@ -1375,7 +1529,8 @@ or `/healthz`.
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
 | `packages/tui/src/tui.gleam` | Entry points, launch parsing, and the event dispatch (`update`, `apply_input`, `settle_update`). |
 | `packages/tui/src/tui/model.gleam` | The `Model` record, the types it names, and the helpers every reducer shares. |
-| `packages/session_view/src/session_view/transcript_lines.gleam`, `render.gleam`, `layout.gleam`, `projection.gleam` | Transcript line construction, frame painting, screen geometry, and the cached transcript projection. |
+| `packages/session_view/src/session_view/transcript_lines.gleam`, `transcript.gleam` | Transcript line construction, and the projection of one capture for a host that keeps no presentation state. |
+| `packages/tui/src/tui/render.gleam`, `layout.gleam`, `projection.gleam`, `live_tail.gleam` | Frame painting, screen geometry, the cached transcript projection, and the live answer's incremental rows. |
 | `packages/tui/src/tui/inbound.gleam`, `outbound.gleam`, `surfaces.gleam`, `session_control.gleam` | Channel traffic in and out, side-surface reads, and daemon control requests. |
 | `packages/tui/src/tui/interaction.gleam`, `submit.gleam`, `tick.gleam` | Key, paste and mouse handling, composer submission, and the periodic drain. |
 | `packages/tui/src/tui/agent_view.gleam`, `agents.gleam` | Captured task/status projection and identity-based agent inspection. |
@@ -1387,12 +1542,13 @@ or `/healthz`.
 | `packages/host/src/host/websocket.gleam`, `packages/tui/src/tui/connection.gleam` | Shared owned WebSocket transport and its thin terminal event adapter. |
 | `packages/host/src/host/bootstrap.gleam`, `endpoint.gleam` | Shared private files, kernel locks, paused launch, and birth-qualified endpoint fences. |
 | `packages/tui/src/tui/daemon/bootstrap.gleam` | Default daemon discovery, authenticated readiness, and serialized launch policy. |
-| `packages/tui/src/tui/daemon.gleam`, `attachment.gleam`, `session_channel.gleam` | Catalogue operations, candidate ownership, and credited conversation transfer. |
+| `packages/tui/src/tui/daemon.gleam`, `attachment.gleam` | Catalogue operations and candidate ownership. |
+| `packages/session_view/src/session_view/session_channel.gleam`, `operator.gleam` | The credited conversation lane both hosts drive, and what an operator's input becomes on the wire. |
 | `packages/tui/src/tui/bootstrap.gleam` | The default bootstrap forwarding seam. |
 | `packages/tui/src/tui_ffi.erl` | Terminal-specific OS integration; shared bootstrap primitives live in the host package. |
 | `packages/tui/src/tui/queue_editor.gleam` | Complete queued drafts, revisions, namespace identity, and uncertain-save state. |
 | `packages/session_view/src/session_view/worktree_view.gleam` | Validated worktree boards, request correlation, file selection, and refresh state. |
-| `packages/tui/src/tui/completion_summary.gleam`, `live_jobs.gleam` | Captured operation evidence and separately timestamped current job rosters. |
+| `packages/tui/src/tui/completion_summary.gleam`, `packages/session_view/src/session_view/live_jobs.gleam` | Captured operation evidence and separately timestamped current job rosters. |
 | `packages/session_view/src/session_view/protocol.gleam` | Total event decoding and outbound command encoding. |
 
 Each unqualified Gleam path is relative to its package's source root;

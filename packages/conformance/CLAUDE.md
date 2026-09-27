@@ -7,8 +7,10 @@ every layer: the storage conformance suite that *defines* backend
 correctness, the wiring and jailed e2e suites that prove the production
 effect seam (`client/wiring`, which once lived here before its promotion),
 and the deterministic simulation runner that turns a seed into a verdict.
-WP-T. Modules live under `src` (not `test`) because backend packages import
-them from their own test mains.
+WP-T. Modules live under `src` (not `test`) so the suites form an importable
+library. No other package depends on `conformance`, so today the only
+importer is this package's own test tree: `storage_suite_test` runs the
+storage suite over the backends.
 
 ## Key Types
 
@@ -140,7 +142,8 @@ them from their own test mains.
   dependency rather than a dev one), plus every Gleam package it tests — `core`, `storage`,
   `session`, `machine`, `runtime`, `provider`, `broker`, `tools`, and
   `client` (whose promoted `client/wiring` the wiring and e2e suites
-  prove) — plus `gleam_erlang`, `gleam_otp`, and `weft` (the one-task
+  prove), and `prompt` (declared in `gleam.toml`, though no module
+  imports it today) — plus `gleam_erlang`, `gleam_otp`, and `weft` (the one-task
   bounded run behind `control.attempt`). This is deliberate and unique.
 - **Depended on by**: nothing. It is the leaf, and stays one: `client/demo`
   copies the simulation's effect-surface shape rather than importing it,

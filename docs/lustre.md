@@ -1,13 +1,15 @@
 # Writing Loom's web view with Lustre
 
 This guide is for people writing Loom's web UI: `packages/web_view`, the
-Lustre server component that `loomd --ui` serves, and the daemon code in
+Lustre server components that `loomd --ui` serves, and the daemon code in
 `packages/client` that carries it (`client/daemon/ui_socket`,
 `client/daemon/ui_relay`). It says how Lustre 5.7.1 works, where that
 matches Loom's engine and where it does not, and what the house rules are
 for code on this seam. Read [ADR-014](adr/014-second-runtime.md) and
 [protocol-change/051](../protocol-change/051-web-view-route.md) first;
-this guide assumes both.
+this guide assumes both. [The web view](architecture/web-view.md) is the
+architecture map: the request path, the processes, and the security
+layers.
 
 Lustre is pinned at `== 5.7.1` in `packages/web_view/gleam.toml`. Every
 claim below is about that version. When the pin moves, re-check section 7
@@ -153,10 +155,14 @@ from the first and return the second from that message's `update`
 
 ADR-013's phase 3 addendum chose option C: arrivals are messages that are
 only filed, and reduction happens at a tick or a key in a fixed order. In
-the component, `Arrived` appends to `filed` and returns `effect.none()`,
-and `Ticked` hands every filed frame to `session_channel.receive` in
-arrival order, then runs `session_channel.tick`. A web host never reduces
-an arrival on its own (that would be design B). `component_test` pins it.
+the component, `Arrived` appends to `filed`, and `Ticked` hands every filed
+frame to `session_channel.receive` in arrival order, through
+`operator.drain`, then runs `session_channel.tick`. One case does not wait
+for the tick: while the lane has a request in flight
+(`session_channel.in_flight`), an arrival runs the same reduction at once,
+without re-arming the timer, so a credited transfer does not pay a tick
+per chunk (ADR-014, the addendum on waking). A push to an idle lane is
+still only filed. `component_test` pins both cases.
 
 ## 2. Server components in depth
 
@@ -262,8 +268,9 @@ runtime with `lustre.send`; it encodes what the runtime sends with
 `server_component.client_message_to_json` ([`lustre/server_component`][doc-sc]).
 `ui_socket` does both, drops a frame that does not decode, as Lustre's
 example does ([basic setup example][ex-basic]), and stops on a failed
-write. The frame size bound is the daemon's mist fork's (ADR-011), set from
-`root.message_limit(root.Observer)`.
+write. The frame size bound is the daemon's mist fork's (ADR-011), set by
+the page's role: `root.message_limit(root.Observer)` for an observer's
+page and `ui_socket.operator_frame_limit` (1 MiB) for an operator's.
 
 ### What the browser can send, and how the runtime refuses it
 
@@ -289,9 +296,12 @@ check first **(source)** ([`runtime.gleam`][src-rt-client],
 - **A context value** is applied only if the application subscribed to that
   key, and in 5.7.1 the server's decoder has no arm for it at all.
 
-Loom's read-only component registers no attribute, no property and no
+Loom's observer component registers no attribute, no property and no
 context, and its view attaches no handler, so every one of these is
-dropped. That is the "by type" layer of 051's read-only enforcement.
+dropped. That is the "by type" layer of 051's read-only enforcement. The
+operator's component, `web_view/operator_page`, attaches exactly two
+kinds of handler, a click on an approval button and the composer form's
+submit, and `ui_socket` forwards nothing else to it.
 
 One thing still happens for a dropped message: the runtime diffs and
 broadcasts a `Reconcile` after every client message, even when nothing
@@ -604,10 +614,9 @@ replaces anything else ([`lustre/element/keyed`][doc-keyed];
 so a stable tree sends little. Three practices keep it stable:
 
 **Derive in `update`, not in `view`.** `view` runs on every message
-(section 2). Today `component.view` calls `transcript.project` through
-`component.lines`, so every arriving frame and every tick re-projects the
-whole transcript. Project once, when a `Captured` update is applied, and
-keep the lines in the model.
+(section 2). `component.apply` projects a capture once, when its
+`Captured` update is applied, and keeps the keyed rows in the model, so a
+frame or a tick that brings no capture costs the view no projection.
 
 **Key the transcript.** An append-only list diffs well without keys: the
 old lines compare equal and the new ones are inserted at the end. A list
@@ -616,10 +625,11 @@ with the line that used to be at its index, and each one is rewritten.
 The history window drops lines at the head. With `lustre/element/keyed`,
 Lustre matches children by key and moves or removes only what changed
 ([`lustre/element/keyed`][doc-keyed]; [rendering lists hint][hint-lists]).
-The key must be an identity the engine owns, such as an entry ID and the
-line's index within that entry. `transcript_line.Line` carries no identity
-today, so keying the transcript is an engine change first. Keys need only
-be unique among siblings ([`lustre/element/keyed`][doc-keyed]).
+The key must be an identity the engine owns. `transcript.project_rows`
+supplies one: each `transcript.Row` carries a key built from the durable
+sequence the line was drawn from, the block at that sequence and the
+line's index within it, in characters that are safe as a list key. Keys
+need only be unique among siblings ([`lustre/element/keyed`][doc-keyed]).
 
 **Memoize what rarely changes.** 5.7.1 has `element.memo(dependencies,
 view)` and `element.ref(value)`. When every dependency is equal to its
@@ -638,15 +648,11 @@ the overhead ... may be more than the naive cost of re-rendering". Memoize
 large subtrees whose inputs change far less often than messages arrive,
 such as the transcript body between captures.
 
-A sketch of the transcript once the engine supplies an identity per row
-(`Row` is illustrative, not an existing type):
+The component's transcript does both, keyed by the engine's identity and
+memoized on the rows (`component.transcript_view`):
 
 ```gleam
-// The transcript is memoized on the projected rows, which the model keeps
-// from the last capture, so a tick that changed nothing skips this subtree.
-// Each row is keyed by the engine's identity, so a window that drops lines
-// at its head removes them instead of rewriting every line after them.
-fn transcript(rows: List(Row)) -> Element(Msg) {
+pub fn transcript_view(rows: List(transcript.Row)) -> Element(message) {
   use <- element.memo([element.ref(rows)])
   keyed.div(
     [attribute.class("transcript"), attribute.role("log")],

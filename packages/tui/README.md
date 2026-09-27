@@ -1,78 +1,145 @@
 # tui
 
-`tui` is Loom's shipped native terminal client. It receives keyboard
-input in a real PTY,
-attaches to the frozen ClientGateway websocket, follows a live session, and
-renders Mork's CommonMark tree directly into etui spans.
+`tui` is Loom's native terminal client, the `loom` command. It finds or
+starts the local `loomd`, authenticates on the daemon's control socket,
+lets the operator pick a session, attaches to that session's websocket,
+and draws the session live with etui. The same binary also carries the
+non-interactive commands: `loom sessions`, `loom replay`, `loom update`,
+`loom version`, `loom ext` (passed through to `loomd`) and `loom --ui`,
+which prints a link to the daemon's web view of a session.
 
-`make tui-shipment` exports the compiled BEAM closure behind `bin/loom`;
-`make dist` packages it separately from the server. The shipment does not
-include ERTS, so the client host needs compatible Erlang/OTP 29 on `PATH`.
+The package is the terminal's host for the client engine. Session logic
+that does not depend on a terminal (the session lane, the protocol
+decoders, snapshot adoption and the transcript's line builders) lives in
+[`packages/session_view`](../session_view), which the daemon's web view
+also runs. What stays here is what only a terminal needs: the reducers
+over the terminal's `Model`, the etui view, and the host code that reads
+clocks, files and mailboxes and performs effects. Its step is a pure
+function that returns its effects as values (ADR-013), so every
+transition can be tested and replayed without a socket.
 
-With `loomd` beside the launcher or on `PATH`, local use is simply:
+## Installing and launching
+
+`make tui-shipment` builds the compiled BEAM closure behind `bin/loom`
+without ERTS, so it needs a compatible Erlang/OTP 29 on `PATH`.
+`make release-client` builds the self-contained client release, which
+carries its own ERTS; `make dist` packages both beside the server
+(`docs/distribution.md`). With `loomd` beside the launcher, named by
+`--server` or `LOOM_SERVER`, or on `PATH`, local use is:
 
 ```sh
 cd ~/src/my-project
 loom
 ```
 
-The no-argument launcher remains a client of the frozen websocket protocol. It
-maps the canonical workspace to private state under `~/.loom`, validates any
-cached endpoint through an authenticated `subscribe`, and starts a detached
-server only when no compatible endpoint exists. Concurrent launchers share an
-operating-system lock, and the server survives terminal exit so later clients
-reuse the same session. Workspace content is data, not launch authority: this
-path neither loads `loom.toml` nor runs the server from the repository.
-Implicit daemon discovery ignores relative `PATH` entries, and bearer tokens
-stay below the private state root even when `--session-file` points elsewhere.
+The launcher reads the daemon's endpoint record under the private state
+root (`~/.loom` unless `--state-dir` says otherwise), checks the daemon's
+v2 control `hello` against the published epoch, and starts a detached
+`loomd` only when no live daemon answers. Concurrent launchers share an
+operating-system lock, and the daemon outlives the terminal, so a later
+`loom` reattaches. Implicit daemon discovery expands only absolute `PATH`
+entries, because a relative entry would resolve through the workspace;
+workspace content is data, not launch authority. With no `--session`, the
+launcher opens the session picker on the daemon's catalogue.
 
-## One model owns the terminal
+## One step, one host
 
-The etui loop carries one immutable `Model`. Keyboard events, websocket
-messages, and periodic inbox drains all produce a new value; `view` only turns
-that value into a buffer. No render function performs I/O, and no networking
-process owns presentation state.
+The loop carries one immutable `Model`. For each etui event,
+`tui.update` runs four calls, and only the third decides anything. Etui
+then draws the new model with `render.view`, a pure function of it:
 
 ```mermaid
 flowchart LR
-    Keys["terminal events"]
-    Tick["40 ms active / 400 ms quiet Tick"]
-    Sock["Stratus socket actor"]
-    Update["update(Model, Message)"]
-    Model["immutable Model"]
-    View["view(Model) or exact cached frame"]
-    Screen["etui buffer"]
-
-    Keys --> Update
-    Tick --> Update
-    Sock -->|"mailbox messages drained on Tick"| Update
-    Model --> Update
-    Update --> Model
-    Model --> View --> Screen
+    Event["etui event"] --> Message["runtime.message<br/>reads clocks and a pasted file"]
+    Mail["socket, job and replay mailboxes"] --> Receive["runtime.receive<br/>reads up to each buffer's room,<br/>admission files the arrivals"]
+    Message --> Step["tui.step(msg, model)<br/>pure"]
+    Receive --> Step
+    Step -->|"Model, List(Effect)"| Settle["runtime.settle<br/>performs the effects in order"]
+    Settle --> View["render.view(model)<br/>etui buffer"]
 ```
 
-The socket is an actor because Stratus owns a live websocket connection. It
-sends decoded text frames into the terminal loop's `Subject`; the loop drains
-that mailbox without blocking whenever etui emits a tick. This boundary keeps
-the mutable resource at the edge and leaves every visible decision in the
-ordinary Gleam model.
+`runtime.message` turns the etui event into a `msg.Input` carrying one
+reading of each clock, so every reducer in a step sees the same instant.
+`runtime.receive` reads the socket inbox, the waiting attachment attempt,
+the replay inbox and every running job's replies, and `tui/admission`
+files each message into the buffer or slot that waits for it without
+reducing anything. `tui.step` then reduces the input; reducers take
+traffic from those buffers at a tick or a key, in a fixed drain order, so
+an Escape still cancels a waiting command before any reply is reduced.
+After phase 3 of ADR-013 the step reads no clock, file, mailbox, process
+or environment variable.
+
+Reducers do not perform I/O. They queue `effect.Effect` values: a frame
+write or close for the session lane, a job start or cancel keyed by a
+never-reused `job.Key`, an inbox discard, a recording line, the OSC 52
+clipboard write, or a Herdr report. Every effect carries the handle it
+acts on, because an adoption can replace the model's socket later in the
+same step and the effect must still reach the socket it was decided for.
+`runtime.settle` performs the list in decision order through
+`tui/terminal_lane.perform`, `tui/job_runner` and `tui/recording`. A test
+calls `tui.step` and asserts on the returned list; `loom replay` and the
+golden recordings drive the same step through a virtual backend.
+
+## Where the modules sit
+
+```mermaid
+flowchart TD
+    subgraph host["host: reads and performs"]
+        Runtime["tui/runtime"]
+        Jobs["tui/job_runner"]
+        Lane["tui/terminal_lane"]
+        Conn["tui/connection, tui/daemon"]
+        Boot["tui/bootstrap"]
+        Keymap["tui/keymap"]
+    end
+    subgraph engine["pure step"]
+        Step["tui.step"]
+        Admission["tui/admission"]
+        Reducers["inbound, interaction, submit,<br/>tick, surfaces, session_control"]
+        Model["tui/model, tui/msg,<br/>tui/effect, tui/job"]
+    end
+    subgraph view["view"]
+        Render["tui/render, tui/layout"]
+        Projection["tui/projection, tui/live_tail,<br/>tui/markdown"]
+    end
+    SV["session_view<br/>lane, decoders, snapshots,<br/>transcript lines"]
+    HostPkg["host package<br/>websocket, endpoint, bootstrap"]
+    Runtime --> Step
+    Step --> Admission
+    Step --> Reducers
+    Reducers --> Model
+    Reducers --> SV
+    Projection --> SV
+    Render --> Projection
+    Lane --> SV
+    Conn --> HostPkg
+    Boot --> HostPkg
+    SV --> Core["core, machine"]
+```
+
+`gleam.toml` has the package edges: `session_view`, `host`, `core` and
+`machine` from the tree, and `etui`, `mork`, `weft`, `gun`, `argv`,
+`simplifile` and `filepath` from outside. `session_view` imports only
+`core`, `machine` and the standard library, and lint R6 holds it there.
+Nothing in `session_view` imports `tui`.
 
 ## Durable rows and live fragments are different things
 
-ClientGateway publishes both durable entries and transient stream fragments.
-They may contain the same answer at different moments: fragments make the
-answer visible while it is generated, then the committed assistant entry
-becomes the authority. Combining both into one transcript would show the
-answer twice when settlement arrives.
+The gateway publishes both durable entries and transient stream
+fragments, and they may carry the same answer at different moments:
+fragments make the answer visible while it is generated, then the
+committed assistant entry becomes the authority. Combining both into one
+transcript would show the answer twice when it settles.
 
-The model therefore keeps two collections. `records` holds entries decoded by
-`core/codec`; `streams` holds newest-first text fragments keyed by strand and
-stream kind. Durable record rows are wrapped once and cached by strand, width,
-and detail mode. A stream revision rewraps only its live fragments. An incoming
-entry clears that strand's fragments and adds only the new durable rows before
-the next render. This is the same two-channel distinction the harness uses:
-live output is useful feedback, but only a committed entry is conversation
-history.
+The model therefore keeps two collections. `records` holds entries
+decoded by the total `core/codec` decoders (through
+`session_view/protocol`); `streams` holds text fragments keyed by strand
+and stream kind. Durable rows are wrapped once and cached by strand,
+width and detail mode, and a stream revision rewraps only its live
+fragments (`tui/live_tail`). An incoming entry clears that strand's
+fragments and adds only the new durable rows. This is the harness's
+two-channel doctrine seen from the client: live output is feedback, and
+only a committed entry is conversation history.
 
 ```mermaid
 sequenceDiagram
@@ -80,248 +147,212 @@ sequenceDiagram
     participant T as tui Model
     participant V as transcript view
 
-    G-->>T: stream_delta(thinking/text/tool_call)
-    T->>T: append transient fragment by strand and kind
-    T-->>V: render live fragment
-    G-->>T: entry(committed assistant message)
-    T->>T: store entry, clear that strand's fragments
+    G-->>T: stream_delta for thinking, text or a tool call
+    T->>T: append a transient fragment by strand and kind
+    T-->>V: render the live fragment
+    G-->>T: entry with the committed assistant message
+    T->>T: store the entry and clear that strand's fragments
     T-->>V: render the durable entry once
 ```
 
-Reasoning and tool material stay subordinate to the answer. The normal view
-uses one readable, bounded preview row for each; `Ctrl+G` or `/details` reveals the
-full durable content. Page Up, Page Down, and the mouse wheel move backward and
-forward through the wrapped transcript while the default position follows its
-newest row. Speaker identity uses compact marks rather than repeating product
-and role names beside every message.
+Reasoning and tool material stay subordinate to the answer. The compact
+view gives each one bounded preview row; `Ctrl+G` or `/details` shows the
+full durable content. Page Up, Page Down and the mouse wheel move through
+the wrapped transcript, and the default position follows the newest row.
 
-## Commands are part of the visible language
+## Commands
 
-Ordinary input is a prompt. An input beginning with `/` is a client command,
-so the operator never has to remember a second punctuation dialect inherited
-from another TUI. Typing `/` opens a filtered palette; Up and Down move the
-selection and Tab completes it without submitting.
+Ordinary input is a prompt. Input beginning with `/` is a client command.
+Typing `/` opens a filtered palette; Up and Down move the selection and
+Tab completes it without submitting. The common commands:
 
 | Command | Effect |
 |---|---|
-| `/model` | Open the searchable model selector. |
-| `/model <name>` | Select one catalogue entry directly. |
-| `/agents` | Open the strand and sub-agent inspector. |
-| `/notes` | Show the latest durable agent-note digest outside the operator transcript. |
-| `/strand <name>` | Move the transcript to an existing strand. |
-| `/fork <name>` | Fork the active strand through ClientGateway. |
-| `/compact` | Request standalone compaction. |
-| `/abort` | Abort the active strand operation. |
+| `/model`, `/model <name>` | Open the searchable model selector, or pick one entry. |
+| `/sessions` | Open the session picker on the daemon's catalogue. |
+| `/agents` | Open the strand and sub-agent inspector (also `Ctrl+O` or `F2`). |
+| `/strand <name>`, `/fork <name>` | Move to an existing strand, or fork the active one. |
+| `/approve`, `/deny` | Answer a pending approval; the approval dialog opens on its own. |
+| `/notes` | Show the latest durable agent-note board. |
+| `/queue`, `/steer` | Inspect or add queued input, or inject into the live operation. |
+| `/goal` | Show the session goal's status; `/goal ` with arguments acts on it. |
+| `/diff` | Show the current worktree changes. |
+| `/add-dir <path>`, `/add-write-dir <path>` | Grant the session read, or read and write, access to a directory. |
+| `/compact`, `/abort` | Request compaction, or abort the active operation. |
+| `/rename <name>` | Rename the session. |
 | `/details` | Expand or collapse reasoning and tool records. |
-| `/clear` | Clear local, non-durable notices. |
-| `/help` | Show the complete command map in the transcript pane. |
+| `/help` | Show every command in the transcript pane. |
 | `/quit` | Leave the client without changing the session. |
 
-`/model` is a focused overlay rather than a prompt for an exact identifier. It
-searches the configured name, provider dialect, and provider model ID; exact,
-prefix, and substring matches outrank initials-style fuzzy matches. The
-server's active routes are marked, but being active never lets a non-match
-survive a search.
+`/model` searches the configured name, provider dialect and provider
+model ID; exact, prefix and substring matches outrank initials-style
+fuzzy matches. The agent inspector keeps the draft: arrows inspect
+another agent, Enter opens its transcript and changes the recipient,
+`n` visits the next agent that needs attention, `a` opens that agent's
+pending approval, and Tab moves into its composer. Drafts, attachments
+and input history belong to a `(session, strand)` pair, so switching
+agents restores each one's editor, and an unsent draft never falls back
+to another agent.
 
-Press `F2` to inspect agents while retaining the current draft. `/agents`
-opens the same workspace. The task roster shows accepted work, current activity,
-recorded outcomes, and attention states. Arrows inspect another agent; only
-Enter opens its transcript and changes the recipient. `n` visits the next
-attention state, `a` opens that agent's exact pending approval, PgUp/PgDn scroll
-the detail, and Escape returns to the conversation. The composer remains visible:
-Tab moves from inspection into editing the existing recipient's draft, and
-Escape returns to inspection. Its title names the recipient and actual Enter/Tab
-behavior. `Shift+Tab` toggles the Studio rail when the terminal is wide enough;
-Advisor has its own section and changes retain their observation status.
-
-Drafts, attachments, and command history belong to a session and strand.
-Reading windows and positions restore across strand switches within the current
-session; a session change releases old history buffers. Opening another agent
-restores that agent's editor; returning brings back the original draft. A
-removed recipient stays unavailable until the operator chooses an available
-strand, and its unsent text never falls back to another agent. Task and update
-excerpts come from captured operation evidence. Missing evidence is unavailable;
-a completed strand does not mean the session goal is complete.
-
-Full advisor nudges remain visible in compact mode. Observed pending nudges are
-labeled as not delivered and are scrollable without growing the composer. The
-goal panel and advisor attribution retain their existing ownership.
-
-The semantic palette uses readable secondary text without ANSI dim. Truecolor
-terminals use a light palette when `COLORFGBG` reports background 7 or 15, and a
-dark palette otherwise. Without a truecolor capability hint, Loom uses the
-terminal's ANSI colors and default background. A nonempty `NO_COLOR` disables
-color. Status labels and focus marks remain visible in every palette.
-
-For repeatable native review without provider calls, run `gleam dev agents dark`
-from this package; substitute `light`, `ansi`, or `plain` to check a palette.
-These are illustrative decoded captures, not live provider sessions. Native
-before/after frames and the implementation's validation limits are recorded in
-[the agent workspace review](../../docs/design-notes/tui-agent-workspace.md).
-
-The server's run-start note digest currently crosses the frozen entry schema as
-an ordinary user-role message with a server-owned fenced preamble. The client
-recognizes that exact envelope and withholds it from the normal transcript;
-`/notes` is the explicit inspection surface. This convention is a projection
-rule, not durable provenance. A future wire revision would need a distinct
-machine-context tag to remove the string discriminator.
+A newly pending approval opens `approval_panel`, which shows the captured
+action and the exact authority requested. No choice is selected on
+opening. Allow once, Allow for session and Deny are chosen explicitly and
+confirmed with Enter, and a decision echoes the exact captured action,
+grants and sequence (`protocol-change/041`); the panel never widens or
+invents authority.
 
 ## Markdown remains data
 
 Assistant text crosses two transformations before etui sees it. First,
-`text_hygiene` replaces terminal controls, bidirectional controls, invisible
-formatters, variation selectors, and tag characters with a visible replacement
-glyph. Newlines survive only in the multiline path used by the block parser.
-Then Mork parses the safe text into its public `Document` tree, and the adapter
-maps that tree to etui lines and styles.
+`session_view/text_hygiene` replaces terminal controls, bidirectional
+controls, invisible formatters, variation selectors and tag characters
+with a visible replacement glyph. Then Mork parses the safe text into its
+`Document` tree, and `tui/markdown` maps that tree to etui lines and
+styles. There is no HTML render-and-reparse step and no ANSI
+intermediate: raw HTML is shown as quiet text, links keep an OSC 8
+destination through etui's own span field, and model-authored escape
+bytes cannot become terminal instructions.
 
-Fenced Gleam blocks receive lightweight token highlighting after Mork has
-identified the block and its language. The highlighter splits the original
-line into styled spans without rewriting its text, so indentation and invalid
-syntax remain exactly as the model emitted them. Other fenced languages retain
-the code-rail treatment without pretending that Loom has parsed them.
+Fenced Gleam blocks get token highlighting that splits the original line
+into styled spans without rewriting it, so indentation and invalid syntax
+stay as the model wrote them. An unresolved `code_mode` call shows up to
+six lines of its source; a confirmed success shows a result summary, and
+`Ctrl+G` shows the full program and result. Failures keep multiline
+diagnostics, bounded to eight lines and 1,600 characters with an
+expansion hint. The footer shows the gateway's usage ledger (input,
+output, cache reads, cache writes and server-reported cost); the client
+keeps no pricing table.
 
-An unresolved `code_mode` call shows up to six fenced Gleam source rows.
-Confirmed success shows a compact result summary; Ctrl+G or `/details` reveals
-the complete submitted source and exact result. Code
-rows bypass etui's prose word wrapper so leading indentation survives the
-terminal projection. Its result is labelled separately from the sandbox
-enforcement summary, so report values such as file counts cannot be mistaken
-for client metadata.
+Colors come from `appearance.Palette`, chosen once at launch from
+`COLORTERM`, `TERM`, `COLORFGBG` and `NO_COLOR`. Status labels and
+selection marks carry their meaning without color.
 
-Tool activity uses a call-and-result hierarchy rather than a flat stream of
-JSON. Bash calls expose the command, structured patch calls render a bounded
-unified diff, and failures retain a distinct mark and multiline diagnostics.
-Long errors show an explicit Ctrl+G expansion hint after eight lines or 1,600
-characters. Ordinary conversation has an open reading surface and a separate
-composer; detailed token/cache accounting appears with the expanded view. Incremental tool-call JSON is
-not rendered as text while it is incomplete, which prevents repeated partial
-keys from bleeding together during streaming.
+## Running the client from the package
 
-The prompt keeps its original editor state and submission bytes, but its view
-wraps to terminal cells. It grows from one to four visible rows and then scrolls
-with the cursor, so long instructions remain inspectable without consuming the
-whole transcript.
-
-The footer renders the authoritative usage ledger from ClientGateway: input,
-output, cache-read, cache-write, and accumulated server-reported cost. The
-client does not maintain a pricing table or estimate cost from model names.
-
-There is no HTML render-and-reparse step and no ANSI intermediate. Raw HTML is
-shown as quiet text, not interpreted. Links retain an OSC 8 destination through
-etui's own span field, while model-authored escape bytes cannot become terminal
-instructions. Leading `---` remains visible chat content rather than being
-silently consumed as document frontmatter.
-
-## Running the client
-
-The dependency floor is Gleam 1.18 or newer and Erlang/OTP 29 or newer. From
-this package, the self-contained interaction preview is:
+The dependency floor is Gleam 1.18 and Erlang/OTP 29. From this
+directory:
 
 ```sh
-gleam run -- --demo
+gleam run -- --demo        # a self-contained preview with no daemon
+gleam run                  # the normal local launch
 ```
 
-The normal local path needs `loomd` beside the shipped launcher, named by
-`--server` or `LOOM_SERVER`, or available on `PATH`:
-
-```sh
-gleam run
-```
-
-`--workspace`, `--session-file`, and `--state-dir` override the local defaults.
-Automatic startup is supported on macOS and Linux. A remote or manually
-managed server still uses its websocket address, session id, and bearer token.
-A token file is preferred because it avoids placing the credential in shell
-history or process arguments:
+`--workspace`, `--state-dir`, `--server` and `--config` override the local
+defaults. A remote or manually managed daemon takes its v2 address, a
+session id and a bearer token; a token file keeps the credential out of
+shell history and process arguments:
 
 ```sh
 gleam run -- \
-  --addr ws://127.0.0.1:8080/v1/ws \
-  --session session \
-  --token-file /path/to/session.db.token
+  --addr ws://127.0.0.1:8080/v2/control \
+  --session <id> \
+  --token-file /path/to/owner.token
 ```
 
-Websocket setup is isolated in a monitored helper with a five-second deadline.
-A dependency initialiser panic or a silent dial failure becomes a local startup
-error instead of killing or hanging the terminal process. Once setup succeeds,
-the socket actor is linked to the client again so runtime failures keep their
-original supervision behavior.
+A `/v1/ws` address is refused: the v1 gateway is gone. Cleartext
+credentials are allowed only for literal loopback hosts; a remote daemon
+needs `wss`. Websocket setup runs through `host/websocket` with a
+five-second deadline, and after the handshake a weft lifetime actor owns
+the connection and monitors both the attempt and the terminal's inbox,
+so a network failure becomes a `Closed` notice instead of killing the
+terminal. After a lost connection a local terminal makes one bounded
+reconnect attempt, and a held prompt returns to the composer.
 
-The package has focused gates, and root `make check` runs both as part of the
-repository-wide gate:
+`loom --ui --session <id>` prints a link to the daemon's web view of that
+session (`protocol-change/051`). The page is read-only unless `--operate`
+asks for an operator's page, and `--open` also starts the platform's
+browser opener. A running daemon started without `--ui` is refused with
+status 1 and left alone.
+
+## A tour of the modules
+
+`tui.gleam` holds the entry points (`main`, launch parsing, `new_model`,
+`update`, `step`, `run_script`, `replay_steps`, `connect_remote`) and the
+event dispatch. The modules under `tui/`, roughly in the order a reader
+needs them:
+
+- `tui/msg`: `Msg` is `Input(at, event)`, one event with its clock
+  `Stamp`, or `Arrived(arrivals)`, traffic the host received.
+- `tui/model`: the `Model` record, the effect outbox with `emit`, and the
+  helpers every reducer shares. `presentation` builds the
+  `transcript_lines.Presentation` that `session_view`'s line builders
+  read.
+- `tui/effect`: `Effect`, the closed vocabulary of effects a step can
+  decide on.
+- `tui/job`: background jobs as data. `Spec` names the work (a control
+  request, a reconnect, an activity poll, an attachment, a session
+  configuration) and `Key` names the job.
+- `tui/admission`: `admit`, the pure filing of arrivals into the inbox or
+  slot that waits for them.
+- `tui/inbound`, `tui/interaction`, `tui/submit`, `tui/tick`,
+  `tui/surfaces`, `tui/session_control`: the reducers for received
+  traffic; keys, pastes and the mouse; composer submission; the tick and
+  its drain order; the notes, queue, diff and goal reads; and daemon
+  control and reconnection.
+- `tui/attachment`: one provisional attachment attempt, adopted only
+  after a validated cut, a completed worker and a passed adoption check.
+- `tui/runtime`, `tui/job_runner`, `tui/terminal_lane`, `tui/buffered`:
+  the host. They read clocks, files and mailboxes, perform effects, run
+  jobs as one-task weft runs, and own the terminal's lane handles.
+- `tui/connection`, `tui/daemon`, `tui/daemon/protocol`,
+  `tui/daemon/selection`, `tui/bootstrap`: the session socket over
+  `host/websocket`, the control connection and its total codec, session
+  opening, and daemon discovery and launch.
+- `tui/render`, `tui/layout`, `tui/projection`, `tui/live_tail`,
+  `tui/markdown`: the pure view, the record row caches and the streaming
+  tail.
+- `tui/agents`, `tui/agent_view`, `tui/agent_strip`, `tui/approval_panel`,
+  `tui/session_selector`, `tui/todo_panel`: the agent workspace, the
+  per-agent strip, the approval dialog, the session picker and the todo
+  board.
+- `tui/recording`, `tui/virtual_backend`, `tui/frame`: `--record` files,
+  the scripted backend `loom replay` and the golden tests drive the loop
+  through, and the frame-to-text rendering both of them print.
+- `tui/view_link`, `tui/update/*`, `tui/herdr`: `loom --ui`, `loom
+  update`, and the Herdr pane reporter.
+
+## Testing
 
 ```sh
 make check-tui
-make lint-tui
 ```
 
-The development-only benchmark first compares the old etui panel clear with
-the border-only renderer over the same immutable buffer. It then replays forty
-queued key events through an in-memory backend, comparing the old
-one-event-per-frame policy with etui's bounded buffered loop. Run it more than
-once on the same machine and runtime before comparing commits:
+runs the format check, a warning-free build and the tests under
+`test/`; `make lint-tui` runs the house-rule lint, which only the bare
+`make check` includes. The tests drive the real step:
+`effects_test`, `jobs_test`, `admission_test` and `keymap_test` pin the
+effect lists, job keys and filing; `session_channel_property_test`
+generates schedules of submissions, replies, pushed frames and ticks
+against the lane; and `test/snapshots/` and `test/recordings/` hold the
+golden frames and the golden recording that the tests compare byte for
+byte. The
+terminal's end-to-end tests against a real daemon live in
+`packages/client/test/client/` (`tui_e2e_test`, `tui_v2_test`,
+`tui_approval_effect_test`), because `client` is the package that can
+boot one. A P model of the attachment protocol is in
+`protocol/models/terminal-attachment/` (ADR-013's protocol-model
+addendum).
 
-```sh
-make bench-tui
-```
+`gleam dev agents dark` (or `light`, `ansi`, `plain`) runs a
+provider-free fixture of the agent workspace through the shipped loop.
+`make bench-tui` runs the frame-rendering and queued-input benchmarks in
+`dev/`; `docs/performance.md` describes the pseudo-terminal workload for
+measuring real terminal bytes and latency.
 
-The panel table reports milliseconds per invocation. The queued-input section
-reports microseconds per forty-event burst for an exact cached frame and an
-invalidated 200-by-50 Loom-style frame. It includes in-memory terminal setup
-and cleanup on both paths; the bounded path also includes the public loop's
-cleanup guard. Fixed lifecycle cost therefore obscures the tiny cached-frame
-difference. It does not count real terminal bytes or input latency, which still
-requires the pseudo-terminal workload in
-`docs/performance.md`.
+## Reading further
 
-On the machine used for issue #114, an already-resolved warning-free build is
-about 0.3 seconds. A clean build, including resolution and download of nineteen
-packages, took 10.72 seconds; the compiler portion took 1.22 seconds. These are
-measurements of the candidate package, not the full repository gate.
-
-## Deliberate limitations
-
-The current etui revision is pinned because the keyboard and raw-terminal
-fixes exercised here are newer than its latest tagged release. The repository
-now has a Gleam 1.18 and OTP 29 floor, but the client archive still does not
-carry its own ERTS.
-
-Two behavioral gaps matter more than polish. Approval must show a bounded,
-sanitized action and echo the exact action plus grants required by
-protocol-change/007. Reconnect must honor ClientGateway's sparse sequence
-semantics, overlap durable replay safely, and fail in-flight requests rather
-than leaving them suspended. The shipped client renders pending escalations but
-does not approve them, and a dropped websocket ends the current connection.
-Neither gap weakens the server's frozen protocol or approval enforcement.
-
-Image drag and drop uses the accepted
-[`protocol-change/011`](../../protocol-change/011-prompt-content-blocks.md)
-`prompt_content` command, so an older gateway refuses the unknown command
-instead of silently dropping image blocks. The client recognizes PNG, JPEG,
-GIF, and WebP by magic bytes, keeps local paths off the wire, retains at most
-four images and 20 MiB of raw image data per prompt, and bounds descriptor
-opens and reads with a monitored one-second deadline.
-
-## Where to look
-
-| Path | What it holds |
-|---|---|
-| `src/tui.gleam` | The model, update loop, viewport, overlays, and command dispatch. |
-| `src/tui/protocol.gleam` | Total ClientGateway event decoding and outbound command encoding. |
-| `src/tui/connection.gleam` | The websocket-owning Stratus actor and terminal inbox. |
-| `src/tui/markdown.gleam` | Mork `Document` to styled etui line rendering. |
-| `src/tui/model_selector.gleam` | Search ranking, selection state, and modal rendering. |
-| `src/tui/agents.gleam` | Stable inspection, role sections, and responsive task/detail rendering. |
-| `src/tui/agent_activity.gleam` | Captured dependency waits and operation-owned recent tools. |
-| `src/tui/text_hygiene.gleam` | The terminal-control boundary shared by every visible field. |
-| `test/` | Command, selector, markdown, and text-hygiene regression tests. |
-
-Read [`CLAUDE.md`](CLAUDE.md) before changing the package. It names the exact
-dependency edges, traffic, and invariants that code must preserve. The broader
-evaluation, including the visual references and adoption gates, lives in
-[`docs/design-notes/etui-client.md`](../../docs/design-notes/etui-client.md).
-The authoritative wire bodies remain in
-[`packages/client/protocol.md`](../client/protocol.md).
-The profiling workflow and the limits of the current render cache live in
-[`docs/performance.md`](../../docs/performance.md).
+- [`CLAUDE.md`](CLAUDE.md): the key types, dependency edges, traffic and
+  invariants, module by module. Read it before changing the package.
+- [ADR-013](../../docs/adr/013-tui-effects-as-values.md): the step with
+  effects as values, and the phase addenda that took clocks, mailboxes,
+  jobs, files and recording out of it.
+- [ADR-014](../../docs/adr/014-second-runtime.md): one client engine, two
+  views, and what ties the step to the terminal today.
+- [`docs/architecture/terminal.md`](../../docs/architecture/terminal.md)
+  and [`docs/architecture/client.md`](../../docs/architecture/client.md):
+  the terminal and the launcher, endpoint record and v2 wire.
+- [`packages/client/protocol.md`](../client/protocol.md): the wire
+  bodies.
+- [`docs/design-notes/etui-client.md`](../../docs/design-notes/etui-client.md)
+  and [`docs/design-notes/tui-agent-workspace.md`](../../docs/design-notes/tui-agent-workspace.md):
+  the etui evaluation and the agent workspace review.
