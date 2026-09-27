@@ -110,6 +110,7 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
       "",
     )
   let session = created.expected.session
+  await_resident(connected.control, session, paths)
 
   // An invitation needs a session_only domain, so the session is stopped
   // and isolated with the owner's command line before anyone is invited.
@@ -133,8 +134,18 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
       "--share-existing-transcript",
     ])
   assert isolated == 0
-  let assert Ok(_) = selection.open(host, session)
-    as "the owner reopens the isolated session"
+  let failures_before = list.length(start_failures(paths))
+  case selection.open(host, session) {
+    Ok(_) -> Nil
+    Error(reason) ->
+      panic as {
+        "the owner could not reopen the isolated session: "
+        <> reason
+        <> "\ndaemon log: "
+        <> string.join(list.drop(start_failures(paths), failures_before), "\n")
+      }
+  }
+  await_resident(connected.control, session, paths)
 
   // The owner invites through the shipped command line. Its output carries a
   // claim and a claim command, and no bearer.
@@ -231,6 +242,56 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
     assert !contains(content, bit_array.from_string(issued))
     assert !contains(content, bit_array.from_string(credential))
   })
+}
+
+// Waits for a session to become resident. A start failure ends the wait at
+// once, with the daemon log's classified cause in the message, rather than
+// leaving the fixture to run into its deadline with nothing to read.
+fn await_resident(control, session: String, paths: endpoint.Paths) -> Nil {
+  let before = list.length(start_failures(paths))
+  let outcome =
+    poll.until(within: 20_000, every: 50, attempt: fn() {
+      case daemon.request(control, protocol.GetSession(session), 2000) {
+        Ok(protocol.SessionReply(protocol.Session(
+          status: protocol.Resident(..),
+          ..,
+        ))) -> poll.Done(Nil)
+        Ok(_) ->
+          case list.drop(start_failures(paths), before) {
+            [] -> poll.Retry
+            causes -> poll.Fail(string.join(causes, "\n"))
+          }
+        Error(reason) -> poll.Fail(string.inspect(reason))
+      }
+    })
+  case outcome {
+    poll.Answered(Nil) -> Nil
+    other ->
+      panic as {
+        "session "
+        <> session
+        <> " did not become resident: "
+        <> string.inspect(other)
+        <> "\ndaemon log: "
+        <> string.join(start_failures(paths), "\n")
+      }
+  }
+}
+
+// The daemon log's start-failure and other error records. The start
+// failures carry only fixed stage and class labels and a session identity,
+// never a path or a secret.
+fn start_failures(paths: endpoint.Paths) -> List(String) {
+  case simplifile.read(paths.log) {
+    Error(_) -> []
+    Ok(text) ->
+      string.split(text, "\n")
+      |> list.filter(fn(line) {
+        string.contains(line, "session_start_failed")
+        || string.contains(line, "domain_start_failed")
+        || string.contains(line, "\"level\":\"error\"")
+      })
+  }
 }
 
 // Runs the shipped `loomd access` command against this fixture's state
