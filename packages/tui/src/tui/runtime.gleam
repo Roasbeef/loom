@@ -122,13 +122,22 @@ pub fn receive(model: Model) -> Model {
 /// The traffic waiting for the model's inboxes, read from each mailbox up
 /// to the room its buffer has left: the connection inbox to
 /// `connection_batch`, the drain a tick or a key runs; the replay inbox to
-/// one event, which is all a tick applies; and the waiting attempt's frames
-/// to its batch, until its initial cut is captured
-/// (`attachment.frame_room`).
+/// one event, which is all a tick applies, and only while the peer is
+/// `Replaying`; and the waiting attempt's frames to its batch, until its
+/// initial cut is captured (`attachment.frame_room`).
 ///
 /// Each subject is read from the model it is given, so after an adoption
 /// the adopted inbox's subject is read and the replaced one never again. An
 /// inbox the step did not drain has no room and reads nothing.
+///
+/// Every read here is a selective receive, which scans the whole mailbox
+/// when nothing in it matches, so a read that cannot find anything is not
+/// free: under a socket backlog it costs one pass over the backlog on every
+/// event. The replay inbox is the one that is empty for the life of a live
+/// terminal, since only the virtual backend of a replay sends to it
+/// (`tui.replay_steps`) and a replay's peer is `Replaying` from its first
+/// event to its last; no transition leaves or enters that peer. So the read
+/// is skipped outside a replay rather than taken and found empty.
 ///
 /// ## Examples
 ///
@@ -143,12 +152,15 @@ pub fn arrivals(model: Model) -> List(msg.Arrival) {
       tui_model.connection_batch - buffered.held(model.inbox),
     )
     |> list.map(msg.Frame(connection, _))
-  let replayed =
-    buffered.waiting(
-      buffered.sender(model.replay_inbox),
-      1 - buffered.held(model.replay_inbox),
-    )
-    |> list.map(msg.Replayed)
+  let replayed = case model.peer {
+    tui_model.Replaying ->
+      buffered.waiting(
+        buffered.sender(model.replay_inbox),
+        1 - buffered.held(model.replay_inbox),
+      )
+      |> list.map(msg.Replayed)
+    tui_model.Attached | tui_model.Disconnected | tui_model.Preview -> []
+  }
   let from_attempt = case attachment.frame_room(model.candidate) {
     Error(Nil) -> []
     Ok(#(frames, room)) ->

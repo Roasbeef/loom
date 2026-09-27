@@ -310,7 +310,7 @@ pub fn dropped(arrival: Arrival) -> Nil {
 }
 
 /// Receives, without waiting, every message the running jobs have sent,
-/// oldest first within each job.
+/// oldest first.
 ///
 /// `runtime.receive` calls this before every step and passes each arrival
 /// to `runtime.hold`, which also removes a job from the table once its last
@@ -322,14 +322,34 @@ pub fn dropped(arrival: Arrival) -> Nil {
 /// let arrivals = job_runner.receive(running)
 /// ```
 pub fn receive(running: Running) -> List(Arrival) {
-  dict.fold(running.handles, [], fn(received, _key, handle) {
-    drain(handle.arrivals, received)
-  })
-  |> list.reverse
+  // One pass over the mailbox for every job, rather than one per job. A
+  // selective receive that matches nothing scans the whole mailbox, and this
+  // runs before every event, so under a socket backlog each extra pass
+  // costs one scan of the backlog per keypress (ADR-013, the addendum on
+  // one mailbox scan). An empty table reads nothing, since a receive on a
+  // selector with no handlers would scan the backlog to find nothing.
+  //
+  // The merged selector returns the jobs' messages in mailbox order, where
+  // one selector per job returned them grouped by job. That changes nothing
+  // a reducer sees. Restricted to one job, mailbox order is the order the
+  // per-job receive produced, so each job's own messages keep their order:
+  // a job's relay is one sender, and an attachment's `Prepared` and its
+  // relay's messages were already read in mailbox order by its own
+  // selector. Across jobs the order carries no meaning, because each
+  // arrival is tagged with its own key by the handler of the subject it came
+  // from, and `runtime.hold` admits it only into the slot that names that
+  // key, or releases what it holds; no job's arrival reads or writes
+  // another job's slot or table entry. The reducers then take from the
+  // slots in the tick's fixed drain order, not in arrival order.
+  case dict.is_empty(running.handles) {
+    True -> []
+    False -> drain(selector(running), []) |> list.reverse
+  }
 }
 
-// Everything one job has sent so far. A one-task relay sends at most two
-// messages, so this ends quickly.
+// Everything the selected jobs have sent so far. A one-task relay sends at
+// most two messages and an attachment's worker one more, so this ends after
+// at most three messages per job.
 fn drain(
   arrivals: Selector(Arrival),
   received: List(Arrival),

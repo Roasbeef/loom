@@ -17,6 +17,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import tui
 import tui/attachment
+import tui/attempt
 import tui/buffered
 import tui/connection
 import tui/daemon/protocol as control_protocol
@@ -281,6 +282,181 @@ pub fn a_tick_drains_the_jobs_in_their_fixed_order_test() {
   let assert [first, second] = failures as "each drain wrote one line"
   assert string.contains(first, "control failed first")
   assert string.contains(second, "relaunch failed second")
+}
+
+// The runtime reads every running job's messages in one pass over the
+// mailbox, so replies from different jobs come back interleaved in the order
+// they arrived rather than grouped by job. Each must still land in the slot
+// that names its own job. Three jobs of three kinds have all answered before
+// a keypress on a live terminal, whose replay inbox is empty and unread; the
+// key admits each outcome into its own slot, reads every relay to its last
+// message, and leaves nothing in the mailbox. A runtime that tagged an
+// arrival with another job's key would leave a slot empty here.
+pub fn a_keypress_admits_every_jobs_reply_into_its_own_slot_test() {
+  let report = process.new_subject()
+  process.spawn(fn() { process.send(report, answered_keypress()) })
+  let assert Ok(#(pressed, queued)) = process.receive(report, 5000)
+    as "the terminal process reports back"
+
+  let assert Some(tui_model.ControlRequest(job: control, ..)) =
+    pressed.control_request
+    as "the control slot still waits for the tick to take its reply"
+  assert list.any(job.held(control), fn(reply) {
+    reply == weft.PulledOutcome(weft.Failed(0, "control down"))
+  })
+    as "the control job's outcome is in the control slot"
+
+  let assert tui_model.ReconnectAttempting(job: relaunch) = pressed.reconnect
+    as "the relaunch slot still waits for the tick to take its reply"
+  assert list.any(job.held(relaunch), fn(reply) {
+    reply == weft.PulledOutcome(weft.Failed(0, "relaunch down"))
+  })
+    as "the relaunch's outcome is in the relaunch slot"
+
+  let assert tui_model.ActivityAsking(job: activity, ..) = pressed.activity_poll
+    as "the activity slot still waits for the tick to take its reply"
+  assert list.any(job.held(activity), fn(reply) {
+    reply == weft.PulledOutcome(weft.Completed(0, []))
+  })
+    as "the activity poll's outcome is in the activity slot"
+
+  assert job_runner.size(pressed.running) == 0
+    as "every relay was read to its last message"
+  assert buffered.held(pressed.replay_inbox) == 0
+  assert queued == 0 as "nothing the jobs sent stayed in the mailbox"
+}
+
+// A live terminal, whose peer is not `Replaying`, never reads its replay
+// inbox, so a read that could only come back empty costs no scan of the
+// mailbox. A replay reads it on every event, a keypress included, and holds
+// the event for the next tick while the running job's reply is admitted
+// beside it.
+pub fn only_a_replay_reads_its_replay_inbox_test() {
+  let report = process.new_subject()
+  process.spawn(fn() {
+    process.send(report, #(replayed_keypress(tui_model.Preview), probe_self()))
+  })
+  let assert Ok(#(#(live, _), live_queue)) = process.receive(report, 5000)
+    as "the live terminal process reports back"
+  assert buffered.held(live.replay_inbox) == 0
+    as "a live terminal leaves its replay inbox unread"
+  assert live_queue == 1 as "the unread event is still in the mailbox"
+
+  process.spawn(fn() {
+    process.send(report, #(replayed_keypress(tui_model.Replaying), probe_self()))
+  })
+  let assert Ok(#(#(replay, applied), replay_queue)) =
+    process.receive(report, 5000)
+    as "the replaying terminal process reports back"
+  assert buffered.held(replay.replay_inbox) == 1
+    as "a replay's keypress admits the recorded event"
+  let assert Some(tui_model.ControlRequest(job: control, ..)) =
+    replay.control_request
+    as "the control slot still waits for the tick to take its reply"
+  assert list.any(job.held(control), fn(reply) {
+    reply == weft.PulledOutcome(weft.Failed(0, "control down"))
+  })
+    as "the job's reply is admitted beside the replay event"
+  assert replay_queue == 0
+  assert buffered.held(applied.replay_inbox) == 0
+    as "the next tick applies the held event"
+}
+
+// A terminal with a control job, a relaunch and an activity poll running,
+// each of which answers at once, pressed once after all six relay messages
+// have arrived. Returns the model and how many messages its mailbox holds.
+fn answered_keypress() -> #(tui_model.Model, Int) {
+  let #(model, control) = tui_model.allocate_job(blank())
+  let #(model, relaunch) = tui_model.allocate_job(model)
+  let #(model, activity) = tui_model.allocate_job(model)
+  let running =
+    model.running
+    |> job_runner.start_task(
+      control,
+      fn() { Error("control down") },
+      5000,
+      job.ControlArrived,
+    )
+    |> job_runner.start_task(
+      relaunch,
+      fn() { Error("relaunch down") },
+      5000,
+      job.ReconnectArrived,
+    )
+    |> job_runner.start_task(
+      activity,
+      fn() { Ok([]) },
+      5000,
+      job.ActivityArrived,
+    )
+  let model =
+    tui_model.Model(
+      ..model,
+      running:,
+      control_request: Some(tui_model.ControlRequest(
+        job.awaiting(control),
+        None,
+      )),
+      reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
+      activity_poll: tui_model.ActivityAsking(job.awaiting(activity), ["a"]),
+    )
+
+  // Each one-task relay sends its outcome and then `AllDelivered`.
+  await_queue(6, 250)
+  let pressed = tui.update(backend.KeyPress("j"), model)
+  #(pressed, probe_self())
+}
+
+// A terminal of the given peer with one answered control job and one
+// recorded attempt event sent to its replay inbox, pressed once and then
+// ticked once. Returns the model after the keypress and after the tick.
+fn replayed_keypress(
+  peer: tui_model.Peer,
+) -> #(tui_model.Model, tui_model.Model) {
+  let #(model, control) = tui_model.allocate_job(blank())
+  let running =
+    job_runner.start_task(
+      model.running,
+      control,
+      fn() { Error("control down") },
+      5000,
+      job.ControlArrived,
+    )
+  let model =
+    tui_model.Model(
+      ..model,
+      peer:,
+      running:,
+      control_request: Some(tui_model.ControlRequest(
+        job.awaiting(control),
+        None,
+      )),
+    )
+  process.send(
+    buffered.sender(model.replay_inbox),
+    attempt.Adopted(attempt.Id(1)),
+  )
+
+  // The relay's two messages and the recorded event.
+  await_queue(3, 250)
+  let pressed = tui.update(backend.KeyPress("j"), model)
+  #(pressed, tui.update(backend.Tick, pressed))
+}
+
+// Waits, a few milliseconds at a time, until this process's mailbox holds
+// at least `count` messages or `attempts` waits have passed.
+fn await_queue(count: Int, attempts: Int) -> Nil {
+  case probe_self() >= count || attempts == 0 {
+    True -> Nil
+    False -> {
+      process.sleep(4)
+      await_queue(count, attempts - 1)
+    }
+  }
+}
+
+fn probe_self() -> Int {
+  probe(process.self()).message_queue_len
 }
 
 // --- helpers ---------------------------------------------------------------
