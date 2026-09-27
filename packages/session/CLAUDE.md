@@ -88,9 +88,9 @@ these forks because they define the same modules.
   without the payload codecs.
 - **Depended on by**: `runtime` (the writer and the driver both hold a
   `Session`), `client` (the gateway holds one), `conformance` (the
-  instrumented simulation store wraps one). `events` declares the
-  dependency in its `gleam.toml` (the spec DAG's `K → A,B,C`) but imports
-  nothing from it today.
+  instrumented simulation store wraps one). `events` does not depend on
+  `session`, although the spec DAG writes `K → A,B,C`: its `gleam.toml`
+  names only `core`, `storage` and `telemetry` from the tree.
 - **FFI**: none.
 
 ## Traffic

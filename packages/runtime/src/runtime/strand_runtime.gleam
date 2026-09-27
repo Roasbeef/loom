@@ -21,11 +21,12 @@
 //// replacement waits for that owner to drain before recovery may dispatch.
 //// Converting such a death directly into a retryable provider result would
 //// let the current incarnation retry beside cleanup it no longer owns.
-//// Every effect process is also linked to the incarnation's **reaper** (a tiny
-//// trapping companion process that dies when the driver does), so a
-//// driver restart cannot leak a live effect into the next incarnation:
-//// the exclusivity gate and the replay decision both read the
-//// incarnation-local `live` list, and both are sound only because no
+//// Every effect process also adopts itself into the incarnation's
+//// **reaper**, a weft witnessed run that traps the driver's exit, asks each
+//// adopted effect to stop, and does not finish until every one of them has
+//// exited. A driver restart therefore cannot leak a live effect into the
+//// next incarnation: the exclusivity gate and the replay decision both read
+//// the incarnation-local `live` list, and both are sound only because no
 //// effect outlives its incarnation.
 ////
 //// Doorbells: `Nudge` triggers a re-plan and its loss is harmless by
