@@ -27,12 +27,26 @@
 //// The worker bodies live here, not in the reducers that ask for them:
 //// `session_control` decides which request to make and what to do with its
 //// outcome, and this module is the only place the request is made.
+////
+//// An attachment job is the one that hands the terminal a socket. Its
+//// worker publishes a `job.Prepared` on a second subject, and the runtime
+//// creates the frames subject the socket delivers to and passes it to the
+//// worker, which names it in the `Prepared`. Whatever drops a `Prepared`
+//// owns its socket at that moment, so `dropped` closes the socket and
+//// empties the frames subject, and `cancel` does the same for any
+//// `Prepared` it finds still waiting in the mailbox. A `Prepared` sent
+//// before the worker returns reaches the terminal's mailbox before the
+//// relay's last message does, because a local send is queued at once and
+//// the relay sends only after the worker has exited; that is what lets the
+//// runner forget an attachment job at the relay's last message.
 
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Selector}
+import gleam/erlang/process.{type Selector, type Subject}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import tui/buffered
+import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
@@ -44,12 +58,17 @@ pub opaque type Running {
   Running(handles: Dict(Key, Handle))
 }
 
-// What the runtime holds for one job: the signal that cancels it, and a
-// selector over its reply subject that tags each message with the job's
-// key. The selector is data, built once at start, so receiving from the
-// job needs nothing else.
+// What the runtime holds for one job: the signal that cancels it, a
+// selector over its subjects that tags each message with the job's key,
+// and, for an attachment job, the frames subject its socket delivers to.
+// The selector is data, built once at start, so receiving from the job
+// needs nothing else.
 type Handle {
-  Handle(cancel: weft.Cancel, arrivals: Selector(Arrival))
+  Handle(
+    cancel: weft.Cancel,
+    arrivals: Selector(Arrival),
+    frames: Option(Subject(connection.Message)),
+  )
 }
 
 /// A table with no jobs, for a new model.
@@ -116,7 +135,51 @@ pub fn start(running: Running, key: Key, spec: job.Spec) -> Running {
         activity_timeout_ms,
         job.ActivityArrived,
       )
+
+    job.Attach(route:, within_ms:) ->
+      start_attach(running, key, fn() { resolve(route) }, within_ms)
   }
+}
+
+/// Starts an attachment job whose route resolves through `resolve`.
+///
+/// `start` is this with the resolution a route describes. The runtime
+/// creates the frames subject here, in the terminal's process, and the
+/// worker connects its socket to it, publishes the socket as a
+/// `job.Prepared` naming that subject, and waits up to `within_ms` for the
+/// terminal to acknowledge the initial cut. A test stands in a resolution
+/// of its own that fails, or names a fixture server.
+///
+/// ## Examples
+///
+/// ```gleam
+/// job_runner.start_attach(running, key, fn() { Error("refused") }, 5000)
+/// ```
+@internal
+pub fn start_attach(
+  running: Running,
+  key: Key,
+  resolve: fn() -> Result(daemon_selection.Target, String),
+  within_ms: Int,
+) -> Running {
+  let frames = connection.new_inbox()
+  let prepared = process.new_subject()
+  let cancel = weft.cancel_signal()
+  let replies = process.new_subject()
+  let _relay =
+    weft.new([fn() { attach(resolve, within_ms, frames, prepared) }])
+    |> weft.deadline(within_ms)
+    |> weft.cancel_with(cancel)
+    |> weft.start_relayed(replies)
+  let arrivals =
+    process.new_selector()
+    |> process.select_map(prepared, fn(published) {
+      job.AttachArrived(key, job.Published(published))
+    })
+    |> process.select_map(replies, fn(reply) {
+      job.AttachArrived(key, job.Settled(reply))
+    })
+  insert(running, key, Handle(cancel, arrivals, Some(frames)))
 }
 
 /// Starts `work` as a one-task weft run bounded by `within_ms`, relaying
@@ -149,15 +212,25 @@ pub fn start_task(
   let arrivals =
     process.new_selector()
     |> process.select_map(replies, fn(reply) { tag(key, reply) })
-  Running(handles: dict.insert(running.handles, key, Handle(cancel, arrivals)))
+  insert(running, key, Handle(cancel, arrivals, None))
+}
+
+fn insert(running: Running, key: Key, handle: Handle) -> Running {
+  Running(handles: dict.insert(running.handles, key, handle))
 }
 
 /// Cancels the job named `key`, if it is still running.
 ///
-/// The job stays in the table: its relay still sends the cancelled
-/// outcome and its last message, and `receive` reads them so they do not
-/// stay in the mailbox. The reducer that cancelled it has already cleared
-/// the slot that named the key, so neither reaches a reducer.
+/// The reducer that cancelled it has already cleared the slot that named
+/// the key, so nothing the job sends afterwards reaches a reducer. An
+/// attachment job is then drained at once, without waiting: a `Prepared`
+/// already in the mailbox is dropped, closing its socket, and the frames
+/// subject is emptied. That is the attempt's bounded drain at quit, and it
+/// is why a socket published just before the cancel is closed even though
+/// no later step will read it. The job stays in the table until its relay's
+/// last message is read: the relay still sends the cancelled outcome and
+/// that last message, and `receive` reads them so they do not stay in the
+/// mailbox.
 ///
 /// ## Examples
 ///
@@ -166,10 +239,45 @@ pub fn start_task(
 /// ```
 pub fn cancel(running: Running, key: Key) -> Running {
   case dict.get(running.handles, key) {
-    Ok(handle) -> weft.cancel(handle.cancel)
-    Error(Nil) -> Nil
+    Error(Nil) -> running
+    Ok(Handle(frames: None, ..) as handle) -> {
+      weft.cancel(handle.cancel)
+      running
+    }
+    Ok(Handle(frames: Some(frames), ..) as handle) -> {
+      weft.cancel(handle.cancel)
+      let drained = drain(handle.arrivals, []) |> list.reverse
+      list.each(drained, dropped)
+      buffered.discard(frames)
+      list.fold(drained, running, observed)
+    }
   }
-  running
+}
+
+/// Performs what dropping an arrival requires: a `Prepared` carries an open
+/// socket the terminal will not adopt, so the socket is closed and the
+/// frames subject it delivers to is emptied. Every other arrival is only
+/// forgotten.
+///
+/// `runtime.hold` calls this for a message no slot admits, and `cancel`
+/// for what it drains.
+///
+/// ## Examples
+///
+/// ```gleam
+/// job_runner.dropped(job.AttachArrived(key, job.Published(prepared)))
+/// ```
+pub fn dropped(arrival: Arrival) -> Nil {
+  case arrival {
+    job.AttachArrived(reply: job.Published(prepared), ..) -> {
+      connection.close(prepared.socket)
+      buffered.discard(prepared.frames)
+    }
+    job.AttachArrived(reply: job.Settled(_), ..)
+    | job.ControlArrived(..)
+    | job.ReconnectArrived(..)
+    | job.ActivityArrived(..) -> Nil
+  }
 }
 
 /// Receives, without waiting, every message the running jobs have sent,
@@ -250,6 +358,59 @@ pub fn size(running: Running) -> Int {
 
 // ---------------------------------------------------------------------------
 // The workers
+
+// The attachment worker. The acknowledgement subject is the worker's own,
+// created here, because the worker is the process that waits on it. A wait
+// that runs out closes the socket the worker opened, since no terminal will
+// take it.
+fn attach(
+  resolve: fn() -> Result(daemon_selection.Target, String),
+  within_ms: Int,
+  frames: Subject(connection.Message),
+  prepared: Subject(job.Prepared),
+) -> Result(Nil, String) {
+  use target <- result.try(resolve())
+  use socket <- result.try(connection.connect(
+    target.address,
+    target.token,
+    frames,
+  ))
+  let acknowledged = process.new_subject()
+  process.send(
+    prepared,
+    job.Prepared(
+      socket:,
+      expected: target.expected,
+      workspace: target.workspace,
+      session_name: target.session_name,
+      creation_key: target.creation_key,
+      acknowledgement: acknowledged,
+      frames:,
+    ),
+  )
+  case process.receive(acknowledged, within_ms) {
+    Ok(Nil) -> Ok(Nil)
+    Error(Nil) -> {
+      connection.close(socket)
+      Error("initial conversation capture was not acknowledged")
+    }
+  }
+}
+
+// An attachment resolves through the terminal's control route, borrowed
+// while it lives or replaced for this one request.
+fn resolve(route: job.AttachRoute) -> Result(daemon_selection.Target, String) {
+  case route {
+    job.OpenSession(host:, session:) -> {
+      use host <- daemon_selection.with_live_control(host)
+      daemon_selection.open(host, session)
+    }
+    job.CreateSession(host:, key:, workspace:, name:, config:) -> {
+      use host <- daemon_selection.with_live_control(host)
+      daemon_selection.create_named(host, key, workspace, name, config)
+    }
+  }
+}
 
 fn control_deadline(request: job.ControlJob) -> Int {
   case request {

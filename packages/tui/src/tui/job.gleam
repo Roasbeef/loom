@@ -1,8 +1,9 @@
 //// The terminal's background jobs, described as data.
 ////
-//// A daemon control request, the relaunch after an unexpected daemon death
-//// and the session picker's activity poll each run in a weft task, because
-//// each one blocks on a socket and the terminal must not. The step used to
+//// A daemon control request, the relaunch after an unexpected daemon death,
+//// the session picker's activity poll and the provisional attachment's
+//// startup each run in a weft task, because each one blocks on a socket and
+//// the terminal must not. The step used to
 //// start those tasks itself: it created the reply `Subject` and the
 //// `weft.Cancel`, spawned the relay, and kept both in the model so a later
 //// step could read the reply and tell a current reply from a stale one by
@@ -25,12 +26,16 @@
 //// reused while the terminal runs, so a key names exactly one job.
 
 import core/json
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option}
 import tui/bootstrap
+import tui/connection
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/session_selector
+import tui/snapshot
+import tui/workspace
 import weft
 
 /// The name a reducer gives one job when it starts it.
@@ -239,6 +244,64 @@ pub type Spec {
   /// The picker's activity poll for these resident identities, on a
   /// control connection the worker opens and closes itself.
   Activity(host: daemon_selection.Host, ids: List(String))
+
+  /// A provisional attachment: resolve the route through daemon control,
+  /// connect a conversation socket, publish it as `Prepared`, and wait for
+  /// the terminal's acknowledgement, all within `within_ms`.
+  Attach(route: AttachRoute, within_ms: Int)
+}
+
+/// How an attachment job resolves the session it connects to.
+pub type AttachRoute {
+  /// Opens an existing catalogue session.
+  OpenSession(host: daemon_selection.Host, session: String)
+
+  /// Creates a session under a retained creation key, then opens it.
+  CreateSession(
+    host: daemon_selection.Host,
+    key: String,
+    workspace: String,
+    name: String,
+    config: String,
+  )
+}
+
+/// What an attachment worker publishes once its socket is open.
+///
+/// The runtime creates the frames subject when it starts the job and hands
+/// it to the worker, which connects the socket to it and names it here. This
+/// is how the candidate learns its frames inbox: from the `Prepared` that
+/// carries the socket feeding it, never from the step that asked for the
+/// job, which creates no subject. A `Prepared` the terminal will not use
+/// still holds an open socket, so whoever drops one closes the socket and
+/// discards the frames subject.
+pub type Prepared {
+  Prepared(
+    /// The open conversation socket, not yet adopted.
+    socket: connection.Connection,
+    /// The session, epoch and incarnation the initial cut must match.
+    expected: snapshot.Expected,
+    /// Canonical workspace returned by the authorized catalogue record.
+    workspace: workspace.Context,
+    /// Display name from the authorized catalogue.
+    session_name: String,
+    /// The creation key only a successful adoption may clear.
+    creation_key: Option(String),
+    /// The subject the worker waits on for the terminal's acknowledgement.
+    acknowledgement: Subject(Nil),
+    /// The terminal-owned subject the socket delivers frames to.
+    frames: Subject(connection.Message),
+  )
+}
+
+/// One message an attachment job sends: its `Prepared`, sent by the worker
+/// itself, or one of the relay's messages about the worker's outcome.
+pub type AttachReply {
+  /// The worker's socket, open and waiting to be acknowledged.
+  Published(prepared: Prepared)
+
+  /// The weft relay's account of the worker.
+  Settled(reply: weft.Pulled(Nil, String))
 }
 
 /// What a control job's relay sends.
@@ -267,6 +330,9 @@ pub type Arrival {
 
   /// A reply from the activity poll.
   ActivityArrived(key: Key, reply: ActivityReply)
+
+  /// A message from an attachment job.
+  AttachArrived(key: Key, reply: AttachReply)
 }
 
 /// The key an arrival is tagged with.
@@ -295,6 +361,8 @@ pub fn is_last(arrival: Arrival) -> Bool {
     ControlArrived(reply:, ..) -> ends_run(reply)
     ReconnectArrived(reply:, ..) -> ends_run(reply)
     ActivityArrived(reply:, ..) -> ends_run(reply)
+    AttachArrived(reply: Settled(reply:), ..) -> ends_run(reply)
+    AttachArrived(reply: Published(_), ..) -> False
   }
 }
 

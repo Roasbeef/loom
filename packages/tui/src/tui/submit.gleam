@@ -845,7 +845,7 @@ pub fn quit(model: Model) -> Model {
   // The attempt moves into its cancel effect, which closes what it opened.
   let model =
     Model(..model, candidate: attachment.idle())
-    |> tui_model.emit(effect.Attachment(attachment.Abandon(model.candidate)))
+    |> tui_model.emit_attachment(attachment.Abandon(model.candidate))
 
   // Every running job is cancelled by its key, and its slot is cleared in
   // the same step, so nothing a cancelled job sends afterwards is admitted

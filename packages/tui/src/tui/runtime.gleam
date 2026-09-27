@@ -90,10 +90,13 @@ pub fn stamp(model: Model) -> Model {
 /// the step did not drain keeps what it holds and receives nothing more, so
 /// no buffer grows past its bound.
 ///
-/// Every running job's replies are received in full and passed to `hold`.
-/// A job's relay sends at most two messages, so that is bounded too, and
-/// reading a job's messages even after its slot was cleared is what keeps
-/// them from staying in the mailbox.
+/// Every running job's replies are received in full and passed to `hold`
+/// first. A job sends at most three messages, an attachment's `Prepared`
+/// and its relay's two, so that is bounded too, and reading a job's
+/// messages even after its slot was cleared is what keeps them from
+/// staying in the mailbox. The jobs go first so that an attachment's
+/// `Prepared`, which names the frames inbox, is admitted before the
+/// candidate's frames are topped up, and the first frames arrive with it.
 ///
 /// `tui.update` calls this once per event, after `stamp`. A caller that
 /// runs `tui.step` itself and expects it to see traffic calls it first.
@@ -104,14 +107,13 @@ pub fn stamp(model: Model) -> Model {
 /// let model = runtime.receive(runtime.stamp(model))
 /// ```
 pub fn receive(model: Model) -> Model {
-  let model =
-    Model(
-      ..model,
-      inbox: buffered.top_up(model.inbox, up_to: tui_model.connection_batch),
-      replay_inbox: buffered.top_up(model.replay_inbox, up_to: 1),
-      candidate: attachment.top_up(model.candidate),
-    )
-  list.fold(job_runner.receive(model.running), model, hold)
+  let model = list.fold(job_runner.receive(model.running), model, hold)
+  Model(
+    ..model,
+    inbox: buffered.top_up(model.inbox, up_to: tui_model.connection_batch),
+    replay_inbox: buffered.top_up(model.replay_inbox, up_to: 1),
+    candidate: attachment.top_up(model.candidate),
+  )
 }
 
 /// Admits one job reply into the slot that waits for it, and forgets the
@@ -121,9 +123,12 @@ pub fn receive(model: Model) -> Model {
 /// reply's key. Otherwise it belongs to a job no reducer waits for any
 /// more, one that was cancelled or whose slot moved on, and it is dropped
 /// here; that comparison of keys is the only fence a job reply passes.
-/// `receive` calls this for everything it read. It reads no mailbox, so a
-/// test calls it to hand a step a reply without running a job, and a test
-/// driver calls it with a reply its actor selected.
+/// Dropping an attachment's `Prepared` is the one drop that acts: its socket
+/// is open and nobody else will close it, so `job_runner.dropped` closes it
+/// and empties the frames subject it delivers to. `receive` calls this for
+/// everything it read. It reads no mailbox, so a test calls it to hand a
+/// step a reply without running a job, and a test driver calls it with a
+/// reply its actor selected.
 ///
 /// ## Examples
 ///
@@ -137,6 +142,14 @@ pub fn hold(model: Model, arrival: job.Arrival) -> Model {
     job.ControlArrived(key:, reply:) -> hold_control(model, key, reply)
     job.ReconnectArrived(key:, reply:) -> hold_reconnect(model, key, reply)
     job.ActivityArrived(key:, reply:) -> hold_activity(model, key, reply)
+    job.AttachArrived(key:, reply:) ->
+      case attachment.admit(model.candidate, key, reply) {
+        Ok(candidate) -> Model(..model, candidate:)
+        Error(Nil) -> {
+          job_runner.dropped(arrival)
+          model
+        }
+      }
   }
 }
 

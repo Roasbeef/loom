@@ -955,6 +955,35 @@ pub fn hold_channel(model: Model, channel: session_channel.Channel) -> Model {
   Model(..model, channel: Some(channel), outbox:)
 }
 
+/// Queues one output of the provisional attachment.
+///
+/// An `Abandon` names an attempt whose job may still be running, so the job
+/// is cancelled by its key first and the attempt's own cleanup follows: the
+/// cancel stops the worker and closes a socket it published that the
+/// runtime had not yet admitted, and the `Abandon` closes what the attempt
+/// holds. `interaction.advance_candidate` and `submit.quit` queue every
+/// attachment output through this, so no abandoned attempt leaves its job
+/// running.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.emit_attachment(model, attachment.Abandon(model.candidate))
+/// ```
+@internal
+pub fn emit_attachment(model: Model, output: attachment.Out) -> Model {
+  case output {
+    attachment.Abandon(status) ->
+      case attachment.job_key(status) {
+        Some(key) ->
+          emit(emit(model, effect.CancelJob(key)), effect.Attachment(output))
+        None -> emit(model, effect.Attachment(output))
+      }
+    attachment.FromChannel(_) | attachment.Acknowledge(_) ->
+      emit(model, effect.Attachment(output))
+  }
+}
+
 /// Queues one line for the model's recording, if the terminal is recording.
 ///
 /// ## Examples

@@ -133,6 +133,10 @@ fn reconnect_failed(model: Model, reason: String) -> Model {
   )
 }
 
+// One deadline covers the whole attachment: the control open or create, the
+// socket handshake and the initial cut.
+const attach_timeout_ms = 90_000
+
 /// Opens a catalogue session through daemon control as a recorded
 /// attachment candidate, after cancelling any unsent frame for the old target.
 @internal
@@ -144,21 +148,23 @@ pub fn begin_open(model: Model, session: String) -> Model {
       tui_model.append_error(model, "a session switch is already in progress")
     False, None ->
       tui_model.append_error(model, "daemon control is disconnected")
-    False, Some(host) ->
+    False, Some(host) -> {
+      let #(model, key) =
+        tui_model.start_job(
+          model,
+          job.Attach(job.OpenSession(host, session), attach_timeout_ms),
+        )
       Model(
         ..model,
         overlay: NoOverlay,
         next_attempt: model.next_attempt + 1,
-        candidate: attachment.start_recorded(
-          fn() {
-            use host <- daemon_selection.with_live_control(host)
-            daemon_selection.open(host, session)
-          },
-          90_000,
+        candidate: attachment.opening(
+          key,
           recording.trace(model.recorder, attempt.Id(model.next_attempt)),
         ),
         notice: "opening session " <> session,
       )
+    }
   }
 }
 
@@ -482,24 +488,24 @@ fn create_session_configured(model: Model, config: String) -> Model {
         <> "-"
         <> int.to_string(model.next_id)
 
-      // Bound outside the closure for the same reason the catalogue job binds
-      // its two: a reference to `model.workspace` would put the whole
-      // presentation state, cached frame included, in the worker's copied
-      // environment.
-      let workspace = model.workspace.path
-      let name = workspace.session_name(model.workspace)
+      let route =
+        job.CreateSession(
+          host,
+          key,
+          model.workspace.path,
+          workspace.session_name(model.workspace),
+          config,
+        )
+      let #(model, job_key) =
+        tui_model.start_job(model, job.Attach(route, attach_timeout_ms))
       Model(
         ..model,
         creation_key: Some(key),
         overlay: NoOverlay,
         next_id: model.next_id + 1,
         next_attempt: model.next_attempt + 1,
-        candidate: attachment.start_recorded(
-          fn() {
-            use host <- daemon_selection.with_live_control(host)
-            daemon_selection.create_named(host, key, workspace, name, config)
-          },
-          90_000,
+        candidate: attachment.opening(
+          job_key,
           recording.trace(model.recorder, attempt.Id(model.next_attempt)),
         ),
         notice: "creating a new session",

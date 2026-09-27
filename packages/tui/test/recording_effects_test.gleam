@@ -28,6 +28,7 @@ import tui/buffered
 import tui/connection
 import tui/effect
 import tui/inbound
+import tui/job
 import tui/job_runner
 import tui/model as tui_model
 import tui/recording
@@ -107,33 +108,16 @@ pub fn an_adoption_queues_the_retired_lanes_close_before_the_adoption_test() {
   let assert Some(old_socket) = session_channel.socket(retired)
     as "premise: the adopted lane has a socket"
 
-  // The replacement plays its worker's part: a prepared socket and one
+  // The test plays the replacement job's part: a published socket and one
   // complete transfer, then the worker's completion.
-  let status =
-    attachment.start_recorded(
-      fn() {
-        process.sleep(60_000)
-        Error("the test plays the worker")
-      },
-      120_000,
-      recording.trace(Some(recorder), attempt.Id(2)),
-    )
-  let #(prepared, frames, outcomes) = attempt_subjects(status)
-  process.send(
-    prepared,
-    prepared_message(
-      socket_on(process.new_subject()),
-      snapshot.Expected("A", "epoch", "incarnation"),
-      workspace.Context("/w/demo", None),
-      "Session A",
-      None,
-      process.new_subject(),
-    ),
-  )
-  list.each(pushed.transfer(1, "1:1", "recent", 10), process.send(frames, _))
+  let #(model, key) =
+    playing_the_worker(model, recording.trace(Some(recorder), attempt.Id(2)))
+  let captured = tui.update(backend.Tick, model)
   let captured =
-    tui.update(backend.Tick, tui_model.Model(..model, candidate: status))
-  process.send(outcomes, weft.AllDelivered)
+    runtime.hold(
+      captured,
+      job.AttachArrived(key, job.Settled(weft.AllDelivered)),
+    )
   let _ = drain(sink)
 
   let #(adopted, effects) =
@@ -142,7 +126,36 @@ pub fn an_adoption_queues_the_retired_lanes_close_before_the_adoption_test() {
   assert list.filter_map(effects, lifecycle(_, old_socket))
     == ["closed 1", "shut old socket", "adopted 2"]
     as "the retired lane's close is queued before the adoption and kept"
-  attachment.cancel(status)
+}
+
+// An attempt waiting for the attachment job `key` names, with that job's
+// socket already published: a stand-in socket, and a frames subject this
+// process owns carrying one complete transfer. The step creates no subject,
+// so the test creates the frames subject the runtime would, and hands it
+// over in the `Prepared` the way the worker does.
+fn playing_the_worker(
+  model: tui_model.Model,
+  trace: Option(recording.Trace),
+) -> #(tui_model.Model, job.Key) {
+  let #(model, key) = tui_model.allocate_job(model)
+  let frames = connection.new_inbox()
+  list.each(pushed.transfer(1, "1:1", "recent", 10), process.send(frames, _))
+  let model =
+    tui_model.Model(..model, candidate: attachment.opening(key, trace))
+    |> runtime.hold(job.AttachArrived(key, job.Published(prepared_on(frames))))
+  #(model, key)
+}
+
+fn prepared_on(frames: Subject(connection.Message)) -> job.Prepared {
+  job.Prepared(
+    socket: socket_on(process.new_subject()),
+    expected: snapshot.Expected("A", "epoch", "incarnation"),
+    workspace: workspace.Context("/w/demo", None),
+    session_name: "Session A",
+    creation_key: None,
+    acknowledgement: process.new_subject(),
+    frames:,
+  )
 }
 
 // A replacement whose lane fails part way through a poll is discarded as it
@@ -153,39 +166,25 @@ pub fn an_adoption_queues_the_retired_lanes_close_before_the_adoption_test() {
 pub fn a_failing_replacement_keeps_its_notes_and_drops_its_writes_test() {
   let sink = process.new_subject()
   let recorder = recording.observed(sink)
-  let status =
-    attachment.start_recorded(
-      fn() {
-        process.sleep(60_000)
-        Error("the test plays the worker")
-      },
-      120_000,
-      recording.trace(Some(recorder), attempt.Id(2)),
-    )
-  let #(prepared, frames, _) = attempt_subjects(status)
-  process.send(
-    prepared,
-    prepared_message(
-      socket_on(process.new_subject()),
-      snapshot.Expected("A", "epoch", "incarnation"),
-      workspace.Context("/w/demo", None),
-      "Session A",
-      None,
-      process.new_subject(),
-    ),
-  )
+  let #(model, key) =
+    tui_model.allocate_job(tui.new_model(
+      connection.new_inbox(),
+      workspace.Context(path: "/w/demo", branch: None),
+    ))
+  let frames = connection.new_inbox()
   let assert [begin, ..] = pushed.transfer(1, "1:1", "recent", 10)
     as "the transfer opens with its begin frame"
   process.send(frames, begin)
   process.send(frames, connection.Incoming("not a frame"))
   let model =
     tui_model.Model(
-      ..tui.new_model(
-        connection.new_inbox(),
-        workspace.Context(path: "/w/demo", branch: None),
+      ..model,
+      candidate: attachment.opening(
+        key,
+        recording.trace(Some(recorder), attempt.Id(2)),
       ),
-      candidate: status,
     )
+    |> runtime.hold(job.AttachArrived(key, job.Published(prepared_on(frames))))
 
   let #(failed, effects) =
     tui.step(backend.Tick, runtime.receive(runtime.stamp(model)))
@@ -342,14 +341,21 @@ fn scripted_session(path: String) -> String {
   let model = tui.update(backend.Tick, model)
 
   // A switch whose worker fails before it prepares a socket records only its
-  // failure, and leaves the adopted lane in place.
+  // failure, and leaves the adopted lane in place. The worker is a real job,
+  // started the way the runtime starts one, with a resolution that fails.
+  let #(model, key) = tui_model.allocate_job(model)
   let model =
     tui_model.Model(
       ..model,
       next_attempt: 3,
-      candidate: attachment.start_recorded(
+      running: job_runner.start_attach(
+        model.running,
+        key,
         fn() { Error("no route to the selected session") },
         5000,
+      ),
+      candidate: attachment.opening(
+        key,
         recording.trace(Some(recorder), attempt.Id(2)),
       ),
     )
@@ -542,25 +548,3 @@ fn without_offset(line: String) -> String {
 
 @external(erlang, "effects_test_ffi", "socket_on")
 fn socket_on(owner: Subject(Dynamic)) -> connection.Connection
-
-// The attempt's own inboxes and the worker's `Prepared`, which the test
-// plays in the worker's place; `runtime_receive_test_ffi` says why they are
-// reached this way.
-@external(erlang, "runtime_receive_test_ffi", "attempt_subjects")
-fn attempt_subjects(
-  status: attachment.Status,
-) -> #(
-  Subject(Dynamic),
-  Subject(connection.Message),
-  Subject(weft.Pulled(Nil, String)),
-)
-
-@external(erlang, "runtime_receive_test_ffi", "prepared")
-fn prepared_message(
-  socket: connection.Connection,
-  expected: snapshot.Expected,
-  workspace: workspace.Context,
-  name: String,
-  creation_key: Option(String),
-  acknowledgement: Subject(Nil),
-) -> Dynamic

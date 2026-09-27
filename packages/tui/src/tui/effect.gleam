@@ -32,9 +32,9 @@
 //// back tagged with the key (`tui/job`). `CancelJob` names the job by the
 //// same key. A key is never reused, so it identifies one job as exactly as
 //// a handle would, and the runtime resolves it in its own table rather than
-//// in anything a reducer changes. The attachment attempt still starts its
-//// own worker; it becomes a job in a later slice of phase 2 of issue #530,
-//// and file reads stay in the reducer.
+//// in anything a reducer changes. The provisional attachment is such a
+//// job; file reads stay in the reducer until a later slice of phase 2 of
+//// issue #530.
 
 import gleam/erlang/process.{type Subject}
 import tui/attachment

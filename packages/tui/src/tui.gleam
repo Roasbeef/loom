@@ -1403,16 +1403,14 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 /// from a caller that drove a reducer outside the loop. The returned model
 /// has an empty outbox. Recording appends are effects like the rest: the
 /// input's own line comes first in the list, and every line it caused
-/// follows in the order it was decided. The control, reconnect and
-/// activity jobs are started and cancelled by `StartJob` and `CancelJob`
-/// effects; the attachment worker and file reads still happen during the
-/// step.
+/// follows in the order it was decided. The control, reconnect, activity
+/// and attachment jobs are started and cancelled by `StartJob` and
+/// `CancelJob` effects; file reads still happen during the step.
 ///
-/// The step reads the connection, replay and attachment inboxes, and the
-/// control, reconnect and activity replies, only through what
-/// `runtime.receive` put in the model, so a test that calls `step` directly
-/// and wants it to see queued traffic receives first, or hands it a job
-/// reply with `runtime.hold`.
+/// The step reads the connection, replay and attachment inboxes, and every
+/// job's messages, only through what `runtime.receive` put in the model, so
+/// a test that calls `step` directly and wants it to see queued traffic
+/// receives first, or hands it a job message with `runtime.hold`.
 ///
 /// The step reads no clock. It applies the event at `model.stamp`, which
 /// `update` writes before calling it; a test calling `step` directly gets

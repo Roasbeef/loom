@@ -17,7 +17,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None, Some}
 import gleam/string
 import tui
 import tui/attachment
@@ -25,6 +25,8 @@ import tui/buffered
 import tui/connection
 import tui/inbound
 import tui/interaction
+import tui/job
+import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_channel
@@ -151,34 +153,21 @@ pub fn adoption_leaves_the_old_inbox_buffer_behind_test() {
 // hands that inbox to the model with them still held, so the adopted lane
 // reduces them in the adoption's own tick.
 pub fn adoption_hands_frames_held_after_capture_to_the_adopted_lane_test() {
-  let status =
-    attachment.start(
-      fn() {
-        process.sleep(60_000)
-        Error("the test plays the worker")
-      },
-      120_000,
-    )
-  let #(prepared, frames, outcomes) = attempt_subjects(status)
+  let #(model, key) = tui_model.allocate_job(fresh())
 
-  // The worker's part: a prepared socket, one complete transfer and two
-  // commit notices after its end.
+  // The worker's part: a published socket naming the frames subject, one
+  // complete transfer and two commit notices after its end.
+  let frames = connection.new_inbox()
   let acknowledgement = process.new_subject()
-  process.send(
-    prepared,
-    prepared_message(
-      socket_on(process.new_subject()),
-      snapshot.Expected("A", "epoch", "incarnation"),
-      workspace.Context("test", None),
-      "Session A",
-      None,
-      acknowledgement,
-    ),
-  )
   list.each(pushed.transfer(1, "1:1", "recent", 10), process.send(frames, _))
   process.send(frames, pushed.notice("main", 11))
   process.send(frames, pushed.notice("main", 12))
-  let model = tui_model.Model(..fresh(), candidate: status)
+  let model =
+    tui_model.Model(..model, candidate: attachment.opening(key, None))
+    |> runtime.hold(job.AttachArrived(
+      key,
+      job.Published(prepared(frames, acknowledgement)),
+    ))
   let before = model.notices
 
   // One tick creates the candidate and captures its cut; the drain stops
@@ -188,23 +177,33 @@ pub fn adoption_hands_frames_held_after_capture_to_the_adopted_lane_test() {
   assert process.receive(acknowledgement, 0) == Ok(Nil)
   assert captured.notices == before
 
-  process.send(outcomes, weft.AllDelivered)
+  let captured =
+    runtime.hold(
+      captured,
+      job.AttachArrived(key, job.Settled(weft.AllDelivered)),
+    )
   let adopted = tui.update(backend.Tick, captured)
   assert !attachment.busy(adopted.candidate)
   assert adopted.session == "A"
   assert adopted.notices == before + 2
     as "both notices held after the capture reach the adopted lane"
-  attachment.cancel(status)
 }
 
 // A tick settles the provisional attachment before it drains the connection.
 // The failing attempt's outcome and a connection fault are received before
 // the same step, and the failure is reduced first.
 pub fn a_tick_settles_the_candidate_before_it_drains_the_connection_test() {
+  let #(model, key) = tui_model.allocate_job(fresh())
   let model =
     tui_model.Model(
-      ..fresh(),
-      candidate: attachment.start(fn() { Error("refused") }, 5000),
+      ..model,
+      running: job_runner.start_attach(
+        model.running,
+        key,
+        fn() { Error("refused") },
+        5000,
+      ),
+      candidate: attachment.opening(key, None),
     )
   let settled = tick_until_settled(model, 0, 400)
   let lines = failures(settled)
@@ -312,24 +311,21 @@ fn captured_replacement() {
   #(ready, cut, view)
 }
 
-@external(erlang, "runtime_receive_test_ffi", "attempt_subjects")
-fn attempt_subjects(
-  status: attachment.Status,
-) -> #(
-  Subject(Dynamic),
-  Subject(connection.Message),
-  Subject(weft.Pulled(Nil, String)),
-)
-
-@external(erlang, "runtime_receive_test_ffi", "prepared")
-fn prepared_message(
-  socket: connection.Connection,
-  expected: snapshot.Expected,
-  workspace: workspace.Context,
-  name: String,
-  creation_key: Option(String),
+// The `Prepared` an attachment worker publishes, for a stand-in socket.
+fn prepared(
+  frames: Subject(connection.Message),
   acknowledgement: Subject(Nil),
-) -> Dynamic
+) -> job.Prepared {
+  job.Prepared(
+    socket: socket_on(process.new_subject()),
+    expected: snapshot.Expected("A", "epoch", "incarnation"),
+    workspace: workspace.Context("test", None),
+    session_name: "Session A",
+    creation_key: None,
+    acknowledgement:,
+    frames:,
+  )
+}
 
 @external(erlang, "effects_test_ffi", "socket_on")
 fn socket_on(owner: Subject(Dynamic)) -> connection.Connection

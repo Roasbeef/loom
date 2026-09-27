@@ -424,7 +424,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
       backend.KeyPress("n"),
       tui_model.Model(..refused, local_options: Some(options)),
     )
-  let switched = wait_for_attachment(creating.candidate, 20_000)
+  let switched = wait_for_attachment(creating, 20_000)
   let assert attachment.Adopted(channel, cut, _, _, _, selected_name, _) =
     switched
     as "the terminal validates the bounded capture before actual adoption"
@@ -531,7 +531,8 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let reattaching =
     runtime.hold(reconnecting, reconnected)
     |> session_control.drain_reconnect
-  let reopened = wait_for_attachment(reattaching.candidate, 20_000)
+    |> runtime.flush
+  let reopened = wait_for_attachment(reattaching, 20_000)
   let assert attachment.Adopted(
     reopened_channel,
     reopened_cut,
@@ -595,30 +596,46 @@ fn close_channel(channel: session_channel.Channel) -> Nil {
   list.each(outputs, session_channel.perform)
 }
 
-fn wait_for_attachment(status, within) {
+// Drives a model's attachment attempt outside the terminal loop until it
+// settles: before each poll the runtime receives the job's messages and the
+// attempt's frames, and after it the flush performs what the poll decided,
+// which includes what the candidate's channel queued, in the order the
+// runtime would after a step.
+fn wait_for_attachment(model: tui_model.Model, within: Int) {
   case
     poll.fold_until(
       clock: poll.monotonic(),
       within: within,
       every: poll.Fixed(5),
-      from: status,
-      attempt: fn(status) {
-        // Driven outside the terminal loop, so this poll performs what it
-        // decided, which includes what the candidate's channel queued, in
-        // the order the runtime would after a step.
+      from: model,
+      attempt: fn(model) {
+        let model = runtime.receive(model)
         let #(next, outcome, decided) =
-          attachment.poll(status, now: host_bootstrap.monotonic_time_ms())
-        list.each(decided, attachment.perform)
+          attachment.poll(
+            model.candidate,
+            now: host_bootstrap.monotonic_time_ms(),
+          )
+        let model =
+          list.fold(
+            decided,
+            tui_model.Model(..model, candidate: next),
+            tui_model.emit_attachment,
+          )
+          |> runtime.flush
         case outcome {
           Some(outcome) -> poll.Settled(outcome)
-          None -> poll.Pending(next)
+          None -> poll.Pending(model)
         }
       },
     )
   {
     poll.Answer(outcome) -> outcome
     poll.RanOut(pending) -> {
-      attachment.cancel(pending)
+      let _ =
+        runtime.flush(tui_model.emit_attachment(
+          pending,
+          attachment.Abandon(pending.candidate),
+        ))
       panic as "the bounded credited attachment did not settle"
     }
     poll.Failure(reason) -> panic as string.inspect(reason)

@@ -32,6 +32,7 @@ import tui/attachment
 import tui/buffered
 import tui/command
 import tui/composer
+import tui/connection
 import tui/context_panel
 import tui/context_view
 import tui/daemon/protocol as control_protocol
@@ -157,18 +158,22 @@ fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
   }
 }
 
-/// Applies one driver-selected candidate event before later queued traffic.
+/// Applies one frame a test driver selected from the candidate's frames
+/// inbox, behind the frames already held.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.accept_candidate_event(model, event)
+/// // interaction.accept_candidate_frame(model, message)
 /// ```
 @internal
-pub fn accept_candidate_event(model: Model, event: attachment.Event) -> Model {
+pub fn accept_candidate_frame(
+  model: Model,
+  message: connection.Message,
+) -> Model {
   advance_candidate(
     model,
-    attachment.accept(model.candidate, event, now: model.stamp.transport_ms),
+    attachment.accept(model.candidate, message, now: model.stamp.transport_ms),
   )
 }
 
@@ -196,10 +201,7 @@ pub fn advance_candidate(
   ),
 ) -> Model {
   let #(candidate, outcome, outputs) = advanced
-  let model =
-    list.fold(outputs, model, fn(model, output) {
-      tui_model.emit(model, effect.Attachment(output))
-    })
+  let model = list.fold(outputs, model, tui_model.emit_attachment)
   candidate_outcome(model, candidate, outcome)
 }
 

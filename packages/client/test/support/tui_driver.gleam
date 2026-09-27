@@ -11,12 +11,16 @@
 //// loop's runtime already received into the model's inboxes. Those held
 //// messages are older than anything selected, so they are reduced first:
 //// here for the connection inbox, and inside `attachment.accept` for the
-//// candidate's.
+//// candidate's frames.
 ////
-//// It also selects every running job's replies, because an actor discards
-//// a message its selector does not match. A selected reply goes to
-//// `runtime.hold`, exactly as a reply the runtime received would, and the
-//// settling ticks of the next run take it from its slot.
+//// It also selects every running job's messages, the attachment's
+//// `Prepared` and outcomes among them, because an actor discards a message
+//// its selector does not match. A selected message goes to `runtime.hold`,
+//// exactly as one the runtime received would, and the settling ticks of the
+//// next run take it from its slot. The candidate's frames inbox is known
+//// only once its `Prepared` has been admitted, so a frame that reaches the
+//// actor before that is discarded; before the lane subscribes the socket
+//// sends only `Connected`, which the lane ignores.
 ////
 //// A sample is not a server barrier: the test must wait for the condition
 //// it needs, under a real deadline, before asserting convergence.
@@ -46,7 +50,7 @@ import weft/actor
 pub opaque type Message {
   Play(events: List(backend.InputEvent), reply: Subject(Sample))
   Inbound(message: connection.Message)
-  Candidate(message: attachment.Event)
+  Candidate(message: connection.Message)
   Job(arrival: job.Arrival)
   Stop
 }
@@ -171,7 +175,7 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
     }
     Candidate(message) -> {
       let model = runtime.stamp(model)
-      let run = run(interaction.accept_candidate_event(model, message), [])
+      let run = run(interaction.accept_candidate_frame(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
     Job(arrival) -> {
@@ -239,7 +243,11 @@ fn run(
 }
 
 fn disconnect(model: tui_model.Model) -> Nil {
-  attachment.cancel(model.candidate)
+  let _ =
+    runtime.flush(tui_model.emit_attachment(
+      model,
+      attachment.Abandon(model.candidate),
+    ))
   case model.channel {
     Some(channel) -> {
       let #(_, outputs) =
