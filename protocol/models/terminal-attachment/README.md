@@ -22,24 +22,37 @@ which rules are left to them.
 |---|---|
 | `Terminal` (`PSrc/Terminal.p`) | `tui.step` followed by `runtime.perform`: one reducer step, then its effects in a separate P step. Messages may arrive between the two, as they may in the BEAM mailbox; no other reducer step runs until the effects are performed. |
 | channel functions (`PSrc/Channel.p`) | `tui/session_channel`, as pure functions over a value that queue `Transmit`/`Shut` outputs and `Update`s for the caller to take. |
-| `AttachmentWorker` (`PSrc/Worker.p`) | The Weft task body in `attachment.start_recorded`: resolve, connect, publish `Prepared`, wait for the acknowledgement. |
+| `AttachmentWorker` (`PSrc/Worker.p`) | The weft task body `job_runner.start_attach` runs when the runtime performs `StartJob(key, job.Attach(..))`: resolve, connect to the frames inbox the runtime created, publish `Prepared` naming that inbox and tagged with the job's key, wait for the acknowledgement. |
 | `Socket` (`PSrc/Socket.p`) | The stratus socket and its guardian (`host/websocket`) together with the daemon's `ClientGateway` handler for that one connection (`packages/client/protocol.md`). |
 | `Operator`, `Deadline`, `Fuse` (`PTst/Environment.p`, `PSrc`) | The environment: operator keys and clock readings, the attempt's 90 s deadline, and a connection broken from the daemon or network side. |
 
-The terminal's inboxes are integers standing for terminal-created `Subject`s.
-`attachment.start_recorded` creates the prepared, frames and outcomes inboxes
-before the worker starts, and the model does the same. Each inbox's buffer
-stands for its mailbox together with what `runtime.receive` has already moved
-into its `tui/buffered.Inbox` before the step (`buffered.top_up`, called
-through `attachment.top_up` for the candidate's three); the model drops what
-arrives for an inbox that was never created or has been discarded. The
+The terminal's frames inboxes are integers standing for terminal-created
+`Subject`s. Since phase 2's fifth slice the attachment worker is a keyed job:
+the reducer step that opens a session only allocates the attempt number,
+which is the job's key, and queues `EFF_START` (`effect.StartJob`); the
+runtime, performing it, creates the frames inbox and the worker
+(`job_runner.start_attach`) and records the worker under the key in `jobs`
+(`Model.running`). The worker's `Prepared` names the frames inbox, and the
+candidate learns it from there. The job's own messages, `ePrepared` and
+`eOutcome`, carry the key rather than an inbox: `runtime.hold` admits each
+into the candidate only when the candidate holds that key
+(`attachment.admit`), and drops it otherwise, and a dropped `Prepared` has
+its socket closed and its frames inbox discarded (`job_runner.dropped`,
+announced as `ePreparedDropped`). The model admits a job message when it
+arrives rather than at the next `runtime.receive`; the candidate changes
+only in a reducer step, so both see the same candidate. Each frames inbox's
+buffer stands for its mailbox together with what `runtime.receive` has
+already moved into its `tui/buffered.Inbox` before the step
+(`buffered.top_up`, called through `attachment.top_up` for the candidate's);
+the model drops what arrives for an inbox that was never created or has
+been discarded. The
 reducer reads those buffers where the code takes from its buffered inboxes
 (`buffered.take`): `tick.update_tick` polls the candidate (`attachment.poll`,
 through `prepare`, `drain` and `settle`) before it drains `Model.inbox`
 (`inbound.drain_connection`), and a key drains ready traffic before it acts
 (`interaction.update_ready_key`). The code bounds each top-up by what one step
-can consume (64 connection messages, 40 candidate frames, one of each other
-kind); the model does not, and a step here takes everything that has
+can consume (64 connection messages, 40 candidate frames); the model does
+not, and a step here takes everything that has
 arrived, which covers every ordering a bounded top-up allows.
 
 The model collects a step's effects as phase 1 did: the adopted lane's
@@ -63,7 +76,7 @@ modelled (see below).
 |---|---|
 | `eWrite`, `eShut` | `session_channel.Transmit` / `Shut` performed by `session_channel.perform`; also the close inside `attachment.cancel` |
 | `eFrame` | a `connection.Message` delivered to a frames inbox, later moved into its `buffered.Inbox` by `runtime.receive` |
-| `ePrepared`, `eOutcome`, `eAck`, `eCancel` | `attachment.Prepared`, the weft relay's outcome (`AllDelivered` or a failure), `attachment.Acknowledge`, `weft.cancel` |
+| `ePrepared`, `eOutcome`, `eAck`, `eCancel` | `job.AttachArrived` with `job.Published(prepared)` and with `job.Settled` (the weft relay's `AllDelivered` or a failure), both tagged with the job's key; `attachment.Acknowledge`; `weft.cancel`, which `job_runner.cancel` sends when the runtime performs `effect.CancelJob` |
 | `eWorkerClose`, `eGuardianKill` | the worker's own `connection.close` when its acknowledgement wait times out; the guardian killing a socket after its startup worker exits abnormally |
 | `eOpOpen`, `eOpSubmit`, `eOpEscape`, `eOpQuit` | `session_control.begin_open`, Enter through `outbound.send_frame`, Escape through `inbound.cancel_pending`, Ctrl-C through `submit.quit` |
 | `eClockRefresh`, `eClockDeadline` | a tick after the 250 ms idle refresh fell due; a tick after a request deadline passed (`session_channel.tick`) |
@@ -107,11 +120,12 @@ Each spec is in `PSpec/Specs.p`, named after the code rule it encodes.
 | S3 `MutationCustody` | A mutation is written once and applied by the daemon at most once. A lost reply is reported `UnknownOutcome` exactly once, on the attachment that sent it. A waiting command is sent exactly once or reported `DefinitelyNotSent` exactly once, and never crosses to another attachment. Liveness: while the terminal runs, no command stays waiting or sent and unresolved forever. | ADR-010; `session_channel.admit`, `flush_queued`, `fail`, `retire`, `cancel_unsent`; "Uncertainty survives attachment replacement" |
 | S4 `NoWriteAfterShut` | No write reaches a socket after the terminal closed it. | `session_channel.close`, `runtime.take` |
 | S4b `ShutAtMostOnce` | The terminal closes each socket at most once. | `session_channel.close`, `session_channel.receive` (finding F1) |
-| S5 `WorkerNeverStranded` | A worker that published `Prepared` is eventually acknowledged, cancelled, or ended by its own deadline. | `attachment.acknowledging`, `attachment.cancel` |
-| S6 `QuitReleasesEverything` | After quit, every socket and worker the terminal owned eventually stops. | `submit.quit`, `attachment.cancel` (which reads a held `Prepared` through `buffered.receive`), `session_channel.close` |
+| S5 `WorkerNeverStranded` | A worker that published `Prepared` is eventually acknowledged, cancelled, or ended by its own deadline. | `attachment.acknowledging`; `job_runner.cancel` through `tui_model.emit_attachment` |
+| S6 `QuitReleasesEverything` | After quit, every socket and worker the terminal owned eventually stops. | `submit.quit`, `job_runner.cancel`, `attachment.cancel`, `session_channel.close` |
+| S8 `DroppedPreparedClosed` | A `Prepared` the runtime drops, because no attempt holds its key or the attempt already took one, has its socket closed by the terminal. The worker's cancellation would also bring the socket down through its guardian, which is why S6 cannot see this rule. | `runtime.hold`, `job_runner.dropped` (ADR-013, the S5 addendum) |
 | S7 `OneRequestInFlight` | Per socket, a request is written only after the daemon answered the previous one, and request ids strictly increase. | `session_channel.admit`, `send`, `credit`, `capture_again`, `send_queued`; "A commit notice is idempotent and order-free" |
 
-S5 and S6 are liveness specs, and S3 has a liveness half. P reports a
+S5, S6 and S8 are liveness specs, and S3 has a liveness half. P reports a
 liveness violation when a run ends with the monitor in a hot state.
 
 ### Alignment with the property tests
@@ -177,12 +191,20 @@ per-inbox buffers already stood for mailbox and buffer together, read only
 while the model holds the inbox, which is the rule the code now keeps by
 construction.
 
-All nine probes find a witness within 230 schedules: a lost reply reported
+After phase 2 S5 made the attachment worker a keyed job (ADR-013, "Addendum:
+phase 2 S5"), the model changed as "What is modelled" describes, and S8 and
+its single-spec case `tcDroppedClosedQuitEarly` were added. All ten cases
+were rerun at 30,000 schedules each with no bugs, and the mutation table
+below was rerun in full.
+
+All ten probes find a witness within 230 schedules: a lost reply reported
 `UnknownOutcome`, a retained command sent, a retained command reported not
 sent, a second adoption, a retirement producing `UnknownOutcome`, a frame
 from a replaced socket arriving after adoption, a candidate failing while a
-session is visible, a prepared worker cancelled, and a deferred commit notice
-spent as a catch-up.
+session is visible, a prepared worker cancelled, a deferred commit notice
+spent as a catch-up, and (`tcProbePreparedDropped`, in 76 schedules) a
+`Prepared` the runtime dropped because quit had already cleared the
+candidate it was for.
 
 ### Finding F1: a closed lane closed its socket again
 
@@ -238,7 +260,7 @@ at up to 10,000 schedules (the checker stops at the first counterexample):
 | M5 drop the acknowledgement | `tcReplace` | S5, liveness |
 | M6 `retire` drops `UnknownOutcome` | `tcReplace` | S3, "lane closed without an UnknownOutcome" |
 | M7 a commit notice captures while a request is in flight | `tcReplace` | S7, "written while request … is unanswered" |
-| M8 quit does not abandon the candidate | `tcQuitLate`, `tcCustodyQuitLate` | S5, and S6 alone, liveness |
+| M8 quit does not abandon the candidate | `tcQuitLate`, `tcCustodyQuitLate` | S6, liveness (S5 before phase 2 S5; see below) |
 | M9 the unsent command moves to the adopted lane | `tcReplace` | S3, "lane closed with command … still waiting" |
 | M10 acknowledge before the cut is captured | `tcReplace` | not caught; correct, see below |
 | M11 skip the `Discard` of the old inbox | `tcReplace` | not caught; correct, see below |
@@ -248,6 +270,8 @@ at up to 10,000 schedules (the checker stops at the first counterexample):
 | M15 quit leaves the adopted lane open | `tcQuitLate` | S6, liveness |
 | M16 `close` on a `Closed` lane queues `Shut` again (F1) | `tcShutOnceAtQuit` | S4b, "closed … a second time" |
 | M17 transport loss re-fails a `Closed` lane | `tcShutOnceReplace`, `tcReplace` | not caught; see below |
+| M18 the runtime drops a `Prepared` without closing its socket | `tcDroppedClosedQuitEarly`, `tcCustodyQuitEarly` | S8, liveness, in 80 schedules; S6 does not catch it, see below |
+| M19 an `Abandon` is queued without the job's `CancelJob` | `tcQuitLate`, `tcCustodyQuitLate` | S5 and S6, liveness, in 2 schedules |
 
 ### What the uncaught mutations say
 
@@ -276,6 +300,25 @@ queues no second `Shut`, so S4b does not see it. What remains is a duplicate
 a closed lane is inert to every event is what covers it. M16 is caught only
 at quit for the same reason: in `tcShutOnceReplace` the only way to reach
 `close` on a closed lane is through `receive`, which M16 leaves guarded.
+
+### What phase 2 S5 changed in the table
+
+Every mutation that was caught is still caught, and every one that was not
+is still not. One report changed: M8 in `tcQuitLate` is now reported by S6
+where it used to be reported by S5. Both specs are hot at the end of that
+run, because a quit that forgets the candidate leaves its worker waiting on
+its acknowledgement and its socket open, and the checker names one of them.
+The first failing schedule it finds is a different one now that the worker
+starts in the perform step rather than the reducer step.
+
+M18 is the rule S5 introduced, and only S8 sees it. Every `Prepared` the
+runtime drops belongs to an attempt the terminal also cancelled, so its
+worker is killed and its socket's guardian closes the socket; S6 therefore
+passes with the terminal's own close removed. S8 states the rule directly:
+the terminal closes a socket it was handed and dropped, rather than relying
+on the guardian. M19 removes the other half, the job cancel that
+`tui_model.emit_attachment` queues ahead of every `Abandon`, and a quit then
+leaves the worker waiting for an acknowledgement that never comes.
 
 ### The rule phase 2 must keep
 

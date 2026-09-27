@@ -135,6 +135,15 @@ spec ProbeDeferredNotice observes eWrite, eFrame {
   }
 }
 
+// The runtime dropped a Prepared no attempt admitted.
+spec ProbePreparedDropped observes ePreparedDropped {
+  start state Watching {
+    on ePreparedDropped do (p: tSockPayload) {
+      assert false, "witness: a Prepared was dropped";
+    }
+  }
+}
+
 test tcProbeUnknown [main = TestReplace]: assert ProbeUnknownOutcome in (union System, { TestReplace });
 test tcProbeRetainedSent [main = TestReplace]: assert ProbeRetainedSent in (union System, { TestReplace });
 test tcProbeRetainedNotSent [main = TestReplace]: assert ProbeRetainedNotSent in (union System, { TestReplace });
@@ -144,6 +153,7 @@ test tcProbeLateOldFrame [main = TestReplace]: assert ProbeLateOldFrame in (unio
 test tcProbeFailedWhileVisible [main = TestReplace]: assert ProbeFailedWhileVisible in (union System, { TestReplace });
 test tcProbePreparedCancelled [main = TestQuit]: assert ProbePreparedThenCancelled in (union System, { TestQuit });
 test tcProbeDeferredNotice [main = TestReplace]: assert ProbeDeferredNotice in (union System, { TestReplace });
+test tcProbePreparedDropped [main = TestQuitEarly]: assert ProbePreparedDropped in (union System, { TestQuitEarly });
 
 // Single-spec tests, so a mutation is attributed to the spec that owns the
 // rule rather than to whichever spec a run happens to break first.

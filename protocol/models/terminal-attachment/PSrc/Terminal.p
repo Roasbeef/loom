@@ -7,34 +7,49 @@
 // reducer step runs until the effects are performed: operator input and
 // ticks are deferred while the Terminal is in `Performing`.
 //
-// Every inbox is created by the terminal (attachment.start_recorded makes
-// the prepared, frames and outcomes subjects before the worker starts) and
-// named here by an integer. `framesBox`, `preparedBox` and `outcomesBox`
-// stand for each inbox's mailbox together with what runtime.receive has
-// already moved into its tui/buffered.Inbox; a message for an inbox that was
-// never created or has been discarded is dropped, which is what a discarded
-// `Subject` amounts to once nothing selects on it again. The reducer reads
-// those buffers the way tick.update_tick and interaction.update_ready_key
-// take from the buffered inboxes (buffered.take), and the discipline
-// modelled here, read an inbox only while the model holds it, is what the
-// code keeps by carrying each buffer inside the inbox value the adoption
-// swap replaces. The per-step bounds the code applies to a top-up are not
-// modelled: a step here takes everything that has arrived, which includes
-// every ordering a bounded top-up allows.
+// The attachment worker is a keyed job. The reducer step that opens a
+// session only allocates the attempt number, which is the job's key, and
+// queues EFF_START (effect.StartJob); the runtime performs it, creating the
+// frames inbox and the worker (job_runner.start_attach), and records the
+// worker under the key in `jobs` (Model.running). Frames inboxes are named
+// by an integer, which stands for a terminal-owned `Subject`, and
+// `framesBox` stands for each inbox's mailbox together with what
+// runtime.receive has already moved into its tui/buffered.Inbox; a message
+// for an inbox that was never created or has been discarded is dropped,
+// which is what a discarded `Subject` amounts to once nothing selects on it
+// again.
+//
+// The job's own messages carry its key. runtime.hold admits a Prepared or
+// an outcome into the candidate only when the candidate holds that key
+// (attachment.admit), and drops it otherwise; a dropped Prepared has its
+// socket closed and its frames inbox discarded (job_runner.dropped). The
+// candidate learns its frames inbox from the Prepared it admits. Arrivals
+// are admitted here as they arrive rather than at the next runtime.receive:
+// the candidate changes only in a reducer step, so both see the same
+// candidate. The reducer reads those buffers the way tick.update_tick and
+// interaction.update_ready_key take from the buffered inboxes
+// (buffered.take), and the discipline modelled here, read an inbox only
+// while the model holds it, is what the code keeps by carrying each buffer
+// inside the inbox value the adoption swap replaces. The per-step bounds the
+// code applies to a top-up are not modelled: a step here takes everything
+// that has arrived, which includes every ordering a bounded top-up allows.
 
 type tArrived = (sock: machine, msg: tMsg);
-type tPrep = (attempt: int, sock: machine, worker: machine);
+type tPrep = (attempt: int, sock: machine, worker: machine, framesInbox: int);
 
 // attachment.Status: Idle when `opening` is false, otherwise
-// Opening(run, prepared, frames, candidate) with the candidate present when
-// `hasChan` holds. `ackTo` is the worker's acknowledgement subject.
+// Opening(run, stage) for the job keyed `attempt`. The stage is Resolving
+// until a Prepared is admitted, Published while `hasPrep` holds, and
+// Connecting once `hasChan` holds. `framesInbox` is -1 until the Prepared
+// names it. `outcomes` are the relay outcomes admitted and not yet settled.
+// `ackTo` is the worker's acknowledgement subject.
 type tCand = (
   opening: bool,
   attempt: int,
-  preparedInbox: int,
+  hasPrep: bool,
+  prep: tPrep,
   framesInbox: int,
-  outcomesInbox: int,
-  worker: machine,
+  outcomes: seq[bool],
   hasChan: bool,
   chan: tChan,
   ackTo: machine,
@@ -42,8 +57,9 @@ type tCand = (
 );
 
 // tui/effect.Effect, restricted to the model: a channel output, the
-// attachment outputs Acknowledge, Abandon and CloseStray, and Discard.
-enum tEffKind { EFF_OUT, EFF_ACK, EFF_ABANDON, EFF_CLOSE_STRAY, EFF_DISCARD }
+// attachment outputs Acknowledge and Abandon, Discard, and the job
+// effects StartJob and CancelJob for the attachment job.
+enum tEffKind { EFF_OUT, EFF_ACK, EFF_ABANDON, EFF_DISCARD, EFF_START, EFF_CANCEL_JOB }
 type tEff = (kind: tEffKind, out: tOut, target: machine, attempt: int, status: tCand, inbox: int);
 
 fun idleCand(): tCand {
@@ -65,8 +81,11 @@ machine Terminal {
 
   // The runtime's mailbox, by terminal-created inbox.
   var framesBox: map[int, seq[tArrived]];
-  var preparedBox: map[int, seq[tPrep]];
-  var outcomesBox: map[int, seq[bool]];
+
+  // Model.running: the attachment jobs the runtime started and has not
+  // heard the end of, by key, and the frames inbox it created for each.
+  var jobs: map[int, machine];
+  var jobFrames: map[int, int];
 
   // Model.outbox, and what the last step returned to the runtime.
   var outbox: seq[tEff];
@@ -193,7 +212,8 @@ machine Terminal {
     }
   }
 
-  // The terminal process has exited.
+  // The terminal process has exited. Its mailbox is gone with it; the
+  // guardian of a socket whose worker was cancelled at quit kills it.
   state Done {
     ignore eFrame, ePrepared, eOutcome, eTick, ePerform, eOpOpen, eOpSubmit, eOpEscape, eOpQuit, eClockRefresh, eClockDeadline;
   }
@@ -219,22 +239,31 @@ machine Terminal {
     }
   }
 
+  // runtime.hold for job.Published: attachment.admit takes one Prepared,
+  // for the candidate's own key, while it is still Resolving. Anything else
+  // is dropped, and job_runner.dropped closes its socket and discards the
+  // frames inbox it names.
   fun arrivePrepared(p: tPreparedPayload) {
-    var q: seq[tPrep];
-    if (p.inbox in preparedBox) {
-      q = preparedBox[p.inbox];
-      q += (sizeof(q), (attempt = p.attempt, sock = p.sock, worker = p.worker));
-      preparedBox[p.inbox] = q;
+    if (cand.opening && cand.attempt == p.attempt && !cand.hasPrep && !cand.hasChan) {
+      cand.hasPrep = true;
+      cand.prep = (attempt = p.attempt, sock = p.sock, worker = p.worker, framesInbox = p.framesInbox);
+      cand.framesInbox = p.framesInbox;
       wake();
+    } else {
+      announce ePreparedDropped, (sock = p.sock,);
+      send p.sock, eShut, (sock = p.sock,);
+      framesBox -= (p.framesInbox);
     }
   }
 
+  // runtime.hold for job.Settled. The outcome is the job's last message, so
+  // the runner forgets the job (job_runner.observed); it is admitted only
+  // into the candidate holding its key.
   fun arriveOutcome(p: tOutcomePayload) {
-    var q: seq[bool];
-    if (p.inbox in outcomesBox) {
-      q = outcomesBox[p.inbox];
-      q += (sizeof(q), p.completed);
-      outcomesBox[p.inbox] = q;
+    jobs -= (p.attempt);
+    jobFrames -= (p.attempt);
+    if (cand.opening && cand.attempt == p.attempt) {
+      cand.outcomes += (sizeof(cand.outcomes), p.completed);
       wake();
     }
   }
@@ -299,21 +328,43 @@ machine Terminal {
       send e.target, eAck, (attempt = e.attempt,);
     } else if (e.kind == EFF_ABANDON) {
       cancelAttempt(e.status);
-    } else if (e.kind == EFF_CLOSE_STRAY) {
-      send e.target, eShut, (sock = e.target,);
+    } else if (e.kind == EFF_START) {
+      startJob(e.attempt);
+    } else if (e.kind == EFF_CANCEL_JOB) {
+      cancelJob(e.attempt);
     } else {
       framesBox -= (e.inbox);
     }
   }
 
-  // attachment.cancel: cancel the worker, close what the attempt opened,
-  // and discard its frames and prepared inboxes. A candidate's channel
-  // performs what it had queued before its close.
+  // job_runner.start_attach: the runtime creates the frames inbox and the
+  // worker, and records both under the job's key.
+  fun startJob(attempt: int) {
+    var frames: int;
+    frames = nextInbox;
+    nextInbox = nextInbox + 1;
+    framesBox[frames] = default(seq[tArrived]);
+    jobs[attempt] = new AttachmentWorker((terminal = this, attempt = attempt, framesInbox = frames));
+    jobFrames[attempt] = frames;
+  }
+
+  // job_runner.cancel: weft.cancel on the job's signal, and the frames
+  // inbox the runtime created for it is discarded. A Prepared still in the
+  // mailbox is dropped when it arrives, because the reducer cleared the
+  // candidate in the step that cancelled the job.
+  fun cancelJob(attempt: int) {
+    if (attempt in jobs) {
+      send jobs[attempt], eCancel, (attempt = attempt,);
+      framesBox -= (jobFrames[attempt]);
+    }
+  }
+
+  // attachment.cancel: close what the attempt holds and discard its frames
+  // inbox. A candidate's channel performs what it had queued before its
+  // close; an admitted Prepared that has no lane yet has its socket closed.
   fun cancelAttempt(s: tCand) {
     var c: tChan;
-    var q: seq[tPrep];
     var i: int;
-    send s.worker, eCancel, (attempt = s.attempt,);
     if (s.hasChan) {
       c = chanClose(s.chan);
       i = 0;
@@ -321,14 +372,19 @@ machine Terminal {
         performOut(c.out[i]);
         i = i + 1;
       }
-    } else if (s.preparedInbox in preparedBox) {
-      q = preparedBox[s.preparedInbox];
-      if (sizeof(q) > 0) {
-        send q[0].sock, eShut, (sock = q[0].sock,);
-      }
+    } else if (s.hasPrep) {
+      send s.prep.sock, eShut, (sock = s.prep.sock,);
     }
-    framesBox -= (s.framesInbox);
-    preparedBox -= (s.preparedInbox);
+    if (s.framesInbox >= 0) {
+      framesBox -= (s.framesInbox);
+    }
+  }
+
+  // tui_model.emit_attachment for an Abandon: the job is cancelled by its
+  // key first, then the attempt's own cleanup.
+  fun abandon(s: tCand) {
+    outbox += (sizeof(outbox), (kind = EFF_CANCEL_JOB, out = default(tOut), target = default(machine), attempt = s.attempt, status = idleCand(), inbox = 0));
+    outbox += (sizeof(outbox), (kind = EFF_ABANDON, out = default(tOut), target = default(machine), attempt = s.attempt, status = s, inbox = 0));
   }
 
   // -------------------------------------------------------------------------
@@ -427,7 +483,7 @@ machine Terminal {
   fun quit() {
     var before: tChan;
     if (cand.opening) {
-      outbox += (sizeof(outbox), (kind = EFF_ABANDON, out = default(tOut), target = default(machine), attempt = cand.attempt, status = cand, inbox = 0));
+      abandon(cand);
     }
     cand = idleCand();
     if (hasLane) {
@@ -446,7 +502,9 @@ machine Terminal {
   // -------------------------------------------------------------------------
 
   // session_control.begin_open: unsent work for the old target is cancelled
-  // first; a second attempt is refused while one is open.
+  // first; a second attempt is refused while one is open. The step only
+  // allocates the job's key and queues its start (tui_model.start_job and
+  // attachment.opening); it creates no inbox and no worker.
   fun beginOpen() {
     var attempt: int;
     cancelPending();
@@ -458,20 +516,8 @@ machine Terminal {
     cand = idleCand();
     cand.opening = true;
     cand.attempt = attempt;
-    cand.preparedInbox = nextInbox;
-    cand.framesInbox = nextInbox + 1;
-    cand.outcomesInbox = nextInbox + 2;
-    nextInbox = nextInbox + 3;
-    preparedBox[cand.preparedInbox] = default(seq[tPrep]);
-    framesBox[cand.framesInbox] = default(seq[tArrived]);
-    outcomesBox[cand.outcomesInbox] = default(seq[bool]);
-    cand.worker = new AttachmentWorker((
-      terminal = this,
-      attempt = attempt,
-      preparedInbox = cand.preparedInbox,
-      framesInbox = cand.framesInbox,
-      outcomesInbox = cand.outcomesInbox
-    ));
+    cand.framesInbox = -1;
+    outbox += (sizeof(outbox), (kind = EFF_START, out = default(tOut), target = default(machine), attempt = attempt, status = idleCand(), inbox = 0));
   }
 
   // attachment.apply_updates for the candidate's channel. Returns true when
@@ -505,22 +551,16 @@ machine Terminal {
     var before: tCand;
     var fq: seq[tArrived];
     var a: tArrived;
-    var pq: seq[tPrep];
-    var p: tPrep;
-    var oq: seq[bool];
     var completed: bool;
     var failedAdvance: bool;
     if (!cand.opening) {
       return;
     }
-    if (!cand.hasChan && sizeof(preparedBox[cand.preparedInbox]) > 0) {
-      pq = preparedBox[cand.preparedInbox];
-      p = pq[0];
-      pq -= (0);
-      preparedBox[cand.preparedInbox] = pq;
+    if (!cand.hasChan && cand.hasPrep) {
       cand.hasChan = true;
-      cand.chan = chanStart(p.sock);
-      cand.ackTo = p.worker;
+      cand.hasPrep = false;
+      cand.chan = chanStart(cand.prep.sock);
+      cand.ackTo = cand.prep.worker;
       cand.captured = false;
     }
     before = cand;
@@ -552,11 +592,9 @@ machine Terminal {
       outbox += (sizeof(outbox), (kind = EFF_ACK, out = default(tOut), target = cand.ackTo, attempt = cand.attempt, status = idleCand(), inbox = 0));
     }
 
-    if (sizeof(outcomesBox[cand.outcomesInbox]) > 0) {
-      oq = outcomesBox[cand.outcomesInbox];
-      completed = oq[0];
-      oq -= (0);
-      outcomesBox[cand.outcomesInbox] = oq;
+    if (sizeof(cand.outcomes) > 0) {
+      completed = cand.outcomes[0];
+      cand.outcomes -= (0);
       if (completed) {
         adoptCandidate();
       } else {
@@ -567,7 +605,7 @@ machine Terminal {
 
   // attachment.failed, then candidate_outcome's Failed arm.
   fun failCandidate(status: tCand) {
-    outbox += (sizeof(outbox), (kind = EFF_ABANDON, out = default(tOut), target = default(machine), attempt = status.attempt, status = status, inbox = 0));
+    abandon(status);
     cand = idleCand();
     cancelPending();
     announce eCandidateFailed, (attempt = status.attempt,);
