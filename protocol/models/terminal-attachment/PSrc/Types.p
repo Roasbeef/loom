@@ -22,7 +22,7 @@ enum tReqKind { SUBSCRIBE, CATCH_UP, SNAPSHOT_NEXT, MUTATION, READ }
 // `cmd` is the operator command a MUTATION carries, or -1.
 type tReq = (kind: tReqKind, id: int, cmd: int);
 
-// What a socket delivers to its inbox (connection.Message). BEGIN and END
+// What a socket delivers to its inbox (connection_event.Message). BEGIN and END
 // (M_BEGIN, M_END) stand for snapshot_begin and snapshot_end with the chunks elided,
 // MUT_REPLY and READ_REPLY for correlated replies, COMMITTED for a pushed
 // commit notice. NETWORK_FAULT and CLOSED are the transport's own loss
@@ -43,7 +43,7 @@ type tMsg = (kind: tMsgKind, replyTo: int, at: int);
 type tFramePayload = (inbox: int, sock: machine, msg: tMsg);
 event eFrame: tFramePayload;
 
-// session_channel.Transmit, performed by session_channel.perform.
+// session_channel.Transmit, performed by terminal_lane.perform.
 type tWritePayload = (sock: machine, req: tReq);
 event eWrite: tWritePayload;
 

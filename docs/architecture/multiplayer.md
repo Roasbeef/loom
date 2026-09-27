@@ -293,12 +293,12 @@ uses those; `prompt` on a busy strand means "the next turn".
 ## What the terminal does with a pushed frame
 
 The terminal accepts a frame without `reply_to` in every phase except
-`Closed`. `session_wire.decode` (`tui/session_wire.gleam:161`) treats the
+`Closed`. `session_wire.decode` (`session_view/session_wire.gleam:161`) treats the
 absent field as the mark of a push. A frame that does carry `reply_to` is
 still matched against the outstanding request, so a stale or forged
 correlation still fails closed. A push belongs to no request: it consumes
 no credit, allocates no identity, and cannot fail the lane
-(`apply_pushed`, `tui/session_channel.gleam:679`).
+(`apply_pushed`, `session_view/session_channel.gleam:679`).
 
 ```mermaid
 stateDiagram-v2
@@ -326,20 +326,20 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`tui/session_channel.gleam:1320`) starts the catch-up at the
+`send_queued` (`session_view/session_channel.gleam:1348`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in
-`tick` (`tui/session_channel.gleam:1060`) would have started it. The mark is a
+`tick` (`session_view/session_channel.gleam:1071`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
 of them mean the same thing: capture when free.
 
 Two cases drop a notice
-(`capture_or_defer`, `tui/session_channel.gleam:781`): a sequence below the current cut's
+(`capture_or_defer`, `session_view/session_channel.gleam:781`): a sequence below the current cut's
 `next_seq`, which the terminal already holds, and a notice that arrives
 before any cut exists, which the initial transfer will deliver anyway. A
 `Closed` lane drops everything.
 
 Because a notice may correctly do nothing, the lane reports every one it
-reads as `Noticed` (`tui/session_channel.gleam:127`) before deciding what
+reads as `Noticed` (`session_view/session_channel.gleam:127`) before deciding what
 to do with it, and the model counts those arrivals (`tui/inbound.gleam:286`).
 That count is how the shipped fixture proves that pushes reach a terminal
 without depending on which capture painted the answer.
@@ -357,7 +357,7 @@ model copies it before storing it. Keeping the slice kept the whole frame
 alive, and a long answer kept one frame per token.
 
 Second, the accumulated live region collapses to its newest 24 KiB
-(`tui/transcript_lines.live_stream_limit`, the same clip `stream_preview` takes) whenever
+(`session_view/transcript_lines.live_stream_limit`, the same clip `stream_preview` takes) whenever
 it would exceed twice that. Without this bound every paint reflowed the
 whole answer. A terminal on a long turn then drained its socket more
 slowly the longer the turn ran, until it stopped draining the socket at

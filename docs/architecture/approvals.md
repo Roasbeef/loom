@@ -505,7 +505,7 @@ is `packages/client/src/client/escalate.gleam`.
 | `tools/tool.gleam` | `authorize_policy`, `RaisedRefusal`, `Escalated`, and `Ctx`'s `grants`, `directory_access` and `raise_refusal` fields. |
 | `tools/permissions.gleam` | The `permissions` argument on `bash` and `code_mode`. |
 | `tools/directory_access.gleam` | Native filesystem authority, kept separate from the jail's read roots. |
-| `tui/approval.gleam`, `tui/approval_panel.gleam` | Decoding records from a metadata cut, the approval dialog, and the `approve`/`deny` commands it sends. |
+| `session_view/approval.gleam`, `tui/approval_panel.gleam` | Decoding records from a metadata cut, the approval dialog, and the `approve`/`deny` commands it sends. |
 
 Protocol changes [007](../../protocol-change/007-escalation-carries-the-action.md)
 (the action on the wire and the echo),

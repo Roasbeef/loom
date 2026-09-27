@@ -83,7 +83,7 @@ request. Source: (`client/protocol.gleam:475-485`).
 The reference terminal enforces the rule directly: a frame whose
 `reply_to` names anything other than the outstanding request is a
 protocol failure that closes the socket, while an absent `reply_to`
-routes to the pushed path. Source: (`tui/session_wire.gleam:188-192`).
+routes to the pushed path. Source: (`session_view/session_wire.gleam:188-192`).
 
 ### 1.4 Sequence numbers
 
@@ -1037,17 +1037,17 @@ Source: (`client/daemon/transfer.gleam:33-34`) and
 
 Source: (`client/daemon/transfer.gleam:195-202`),
 (`client/daemon/transfer.gleam:245-269`) and
-(`tui/snapshot.gleam:296-345`).
+(`session_view/snapshot.gleam:296-345`).
 
 The first record of every transfer is the metadata document, carried
 under `record_id` `metadata` with `record_seq` `null`. Entry records
 follow, in ascending `record_seq`. A client MUST reject an entry
 fragment that arrives before metadata is complete.
-Source: (`tui/snapshot.gleam:352-372`).
+Source: (`session_view/snapshot.gleam:352-372`).
 
 Records are contiguous: a client MUST NOT interleave two `record_id`
 values. A fragment naming a different record while one is incomplete is
-a protocol violation. Source: (`tui/snapshot.gleam:340-350`).
+a protocol violation. Source: (`session_view/snapshot.gleam:340-350`).
 
 #### 4.3.2 `snapshot_begin`
 
@@ -1078,12 +1078,12 @@ A client MUST check `session_id`, `epoch` and `incarnation` against the
 attachment it selected, MUST check that `complete_history`
 is `false`, and MUST refuse a transfer whose declared limits exceed the
 values it is prepared to buffer.
-Source: (`tui/snapshot.gleam:236-283`).
+Source: (`session_view/snapshot.gleam:236-283`).
 
 A client SHOULD refuse a transfer whose identity differs from an earlier
 transfer on the same socket. The attachment identity cannot change
 during a connection, so a change is evidence of a fault.
-Source: (`tui/snapshot.gleam:244-249`).
+Source: (`session_view/snapshot.gleam:244-249`).
 
 #### 4.3.3 `snapshot_chunk`
 
@@ -1112,7 +1112,7 @@ exceeds 33554432. A metadata record's `total_bytes` never exceeds
 A record whose `total_bytes` exceeds what a client is willing to decode
 MAY be drained and retained as a placeholder carrying its id, sequence
 and size, rather than materialized. The reference terminal does this
-above 4194304 bytes. Source: (`tui/snapshot.gleam:415-420`).
+above 4194304 bytes. Source: (`session_view/snapshot.gleam:415-420`).
 
 #### 4.3.4 `snapshot_end`
 
@@ -2664,7 +2664,7 @@ On the control endpoint: `hello`, once, before anything else.
 A client MUST accept these in any phase, including while a request is
 outstanding and during a snapshot transfer. They consume no credit and
 allocate no request identity.
-Source: (`tui/session_channel.gleam:8-11`).
+Source: (`session_view/session_channel.gleam:8-11`).
 
 The server writes replies and pushes from a single process, so a push
 never interleaves inside a reply frame and a notice for a sequence is
@@ -2687,7 +2687,7 @@ acknowledge, buffer or reorder notices.
 
 A client SHOULD issue a `catch_up` on an idle timer even when no notice
 arrived. The reference terminal uses 250 milliseconds.
-Source: (`tui/session_channel.gleam:645-655`).
+Source: (`session_view/session_channel.gleam:645-655`).
 
 The refresh is what makes a lost notice harmless, and it is the only
 path on a server that pushes nothing. It also picks up metadata-only
@@ -2732,7 +2732,7 @@ Source: (`client/gateway.gleam:1340-1352`).
 
 A client MUST NOT apply a partial transfer to its view. It adopts a cut
 only after `snapshot_end`.
-Source: (`tui/snapshot.gleam:448-462`).
+Source: (`session_view/snapshot.gleam:448-462`).
 
 ### 6.7 Reconnect procedure
 
@@ -2861,12 +2861,12 @@ Sources: (`client/daemon/protocol.gleam:21`),
 (`client/gateway.gleam:1529`),
 (`client/gateway.gleam:2635-2646`),
 (`storage/snapshot.gleam:42-48`) and
-(`tui/session_channel.gleam:645-655`).
+(`session_view/session_channel.gleam:645-655`).
 
 A client MUST reject a `snapshot_begin` whose `record_bytes_limit` or
 `fragment_bytes_limit` exceeds what it is prepared to buffer, rather
 than trusting the server's figure.
-Source: (`tui/snapshot.gleam:266-283`).
+Source: (`session_view/snapshot.gleam:266-283`).
 
 ---
 

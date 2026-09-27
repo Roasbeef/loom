@@ -94,7 +94,7 @@ selected key and transcript position through refresh and reorder; a reply for a
 different owner cannot replace the visible board. At narrow widths, stack the
 list and selected detail without losing identity or controls.
 
-Build on [`notes_view`](../../packages/tui/src/tui/notes_view.gleam) and the
+Build on [`notes_view`](../../packages/session_view/src/session_view/notes_view.gleam) and the
 existing read path. Acceptance evidence must distinguish current, historical,
 stale, unavailable, malformed, empty, and reordered notes in both entry points.
 
@@ -132,7 +132,7 @@ command applicable. Route the action through the current `/goal` command path.
 Do not introduce automatic mutations, new wire messages, or another authority
 for setting, completing, clearing, pausing, or resuming a goal. Preserve the
 read-only automatic `goal_get` behavior and the semantics documented in
-[`goal_view`](../../packages/tui/src/tui/goal_view.gleam) and
+[`goal_view`](../../packages/session_view/src/session_view/goal_view.gleam) and
 [`goals.md`](../architecture/goals.md).
 
 Acceptance evidence must cover an absent board and the pinned states Active,
@@ -264,7 +264,7 @@ Group measured context, usage, completion evidence, and live jobs into a
 scannable summary. Keep cumulative session accounting separate from the latest
 measured request. Completion comes only from the captured terminal result. Live
 jobs remain a separately refreshed observation, as defined by
-[`live_jobs`](../../packages/tui/src/tui/live_jobs.gleam); they are not progress
+[`live_jobs`](../../packages/session_view/src/session_view/live_jobs.gleam); they are not progress
 bars or proof that the completed run still owns work.
 
 Where the existing facts contain selectable job identity and detail, expose it.
