@@ -36,6 +36,7 @@ import machine/strand as machine_strand
 import session_view/advisor_history
 import session_view/approval
 import session_view/block_summary
+import session_view/cache_miss
 import session_view/command
 import session_view/composer
 import session_view/connection_event
@@ -62,7 +63,6 @@ import tui/agents
 import tui/approval_panel
 import tui/bootstrap
 import tui/buffered
-import tui/cache_miss
 import tui/completion_summary
 import tui/daemon/protocol as control_protocol
 import tui/job

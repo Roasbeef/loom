@@ -928,7 +928,7 @@ Paths are relative to `packages/tui/src`.
 | `session_view/block_summary` | Summarizer labels for long blocks, stored and live, and the exact-key reads still owed. |
 | `session_view/goal_view`, `tui/focused_goal_panel` | The goal board, composer row and inspector. |
 | `tui/model_selector` | The `/model` overlay. |
-| `tui/cache_miss` | Prompt-cache miss detection and TTL outlook from usage rows. |
+| `session_view/cache_miss` | Prompt-cache miss detection and TTL outlook from usage rows. |
 | `tui/selection`, `tui/frame` | Mouse selection and OSC 52 copy; a `Buffer` as plain text. |
 | `tui/workspace`, `tui/internal/workspace_file` | Repository root and branch discovery. |
 | `tui/herdr`, `tui/internal/ffi_herdr` | Herdr pane-state reporting and its one socket exchange. |

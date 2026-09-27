@@ -1,4 +1,4 @@
-//// The prompt cache as the terminal sees it: a miss it reconstructs,
+//// The prompt cache as a client sees it: a miss it reconstructs,
 //// and the published TTL boundary it can now warn about.
 ////
 //// A provider caches the prompt prefix for a bounded time. When a session
@@ -24,6 +24,11 @@
 //// be tested over generated pairs rather than driven through a terminal,
 //// and what keeps the detector out of the inliner's reach at `tui`'s call
 //// sites.
+////
+//// It lives in `session_view` rather than in the terminal because both
+//// hosts draw it: the terminal's footer and transcript notice, and the web
+//// view's cache rings and miss rows. What the outlook may claim is decided
+//// here once, so neither host can state a TTL the rows did not prove.
 ////
 //// The dollar figure is derived from the two rows' own cost buckets rather
 //// than from a price table, because the terminal has no price table: the

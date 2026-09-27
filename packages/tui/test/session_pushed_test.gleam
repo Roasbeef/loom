@@ -20,6 +20,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import machine/strand
 import session_view/attempt
+import session_view/cache_miss
 import session_view/connection_event
 import session_view/protocol
 import session_view/session_channel
@@ -27,7 +28,6 @@ import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript_line
 import tui
-import tui/cache_miss
 import tui/connection
 import tui/inbound
 import tui/model as tui_model

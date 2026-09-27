@@ -19,12 +19,12 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import host/bootstrap as host_bootstrap
+import session_view/cache_miss
 import session_view/history_view
 import session_view/session_channel
 import tui/attachment
 import tui/attempt_replay
 import tui/buffered
-import tui/cache_miss
 import tui/effect
 import tui/herdr
 import tui/inbound

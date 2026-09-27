@@ -35,6 +35,7 @@ import session_view/advisor_pending
 import session_view/approval
 import session_view/attempt
 import session_view/block_summary
+import session_view/cache_miss
 import session_view/command
 import session_view/composer
 import session_view/connection_event
@@ -64,7 +65,6 @@ import tui/attachment
 import tui/attempt_replay
 import tui/bootstrap
 import tui/buffered
-import tui/cache_miss
 import tui/completion_summary
 import tui/effect
 import tui/focused_goal_panel

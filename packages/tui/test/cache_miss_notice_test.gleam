@@ -18,6 +18,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import machine/strand
+import session_view/cache_miss
 import session_view/connection_event
 import session_view/protocol
 import session_view/session_channel
@@ -26,7 +27,6 @@ import session_view/snapshot_view
 import tui
 import tui/attachment
 import tui/buffered
-import tui/cache_miss
 import tui/connection
 import tui/frame
 import tui/inbound
