@@ -32,13 +32,16 @@
 //// worker publishes a `job.Prepared` on a second subject, and the runtime
 //// creates the frames subject the socket delivers to and passes it to the
 //// worker, which names it in the `Prepared`. Whatever drops a `Prepared`
-//// owns its socket at that moment, so `dropped` closes the socket and
-//// empties the frames subject, and `cancel` does the same for any
-//// `Prepared` it finds still waiting in the mailbox. A `Prepared` sent
-//// before the worker returns reaches the terminal's mailbox before the
-//// relay's last message does, because a local send is queued at once and
-//// the relay sends only after the worker has exited; that is what lets the
-//// runner forget an attachment job at the relay's last message.
+//// owns its socket at that moment: `runtime.hold` queues its close, and
+//// `cancel` closes any `Prepared` it finds still waiting in the mailbox
+//// through `dropped`. Neither close is what finally guarantees the socket
+//// goes down. A worker that exits without an acknowledgement has either
+//// closed the socket itself, when its wait ran out, or been killed, and
+//// then the socket's guardian closes it (`host/websocket`). The runner
+//// forgets an attachment job at the relay's last message, and nothing
+//// orders that message against the worker's `Prepared`, which comes from
+//// another process; if the `Prepared` arrives after the job is forgotten,
+//// the cost is one message left in the mailbox, not an open socket.
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Selector, type Subject}
@@ -225,9 +228,11 @@ fn insert(running: Running, key: Key, handle: Handle) -> Running {
 /// the key, so nothing the job sends afterwards reaches a reducer. An
 /// attachment job is then drained at once, without waiting: a `Prepared`
 /// already in the mailbox is dropped, closing its socket, and the frames
-/// subject is emptied. That is the attempt's bounded drain at quit, and it
-/// is why a socket published just before the cancel is closed even though
-/// no later step will read it. The job stays in the table until its relay's
+/// subject is emptied. That is the attempt's bounded drain at quit. It
+/// closes only what has already arrived; `weft.cancel` kills the worker
+/// asynchronously, and a socket the worker publishes after the drain is
+/// closed by its guardian when the killed worker exits. The job stays in
+/// the table until its relay's
 /// last message is read: the relay still sends the cancelled outcome and
 /// that last message, and `receive` reads them so they do not stay in the
 /// mailbox.
@@ -256,11 +261,13 @@ pub fn cancel(running: Running, key: Key) -> Running {
 
 /// Performs what dropping an arrival requires: a `Prepared` carries an open
 /// socket the terminal will not adopt, so the socket is closed and the
-/// frames subject it delivers to is emptied. Every other arrival is only
-/// forgotten.
+/// frames subject it delivers to is emptied, and a relaunch's `Completed`
+/// carries a control connection, which is closed. Every other arrival is
+/// only forgotten.
 ///
-/// `runtime.hold` calls this for a message no slot admits, and `cancel`
-/// for what it drains.
+/// `cancel` calls this for what it drains, at perform time. `runtime.hold`
+/// queues the same releases as effects instead, since it runs before the
+/// step.
 ///
 /// ## Examples
 ///
@@ -273,6 +280,10 @@ pub fn dropped(arrival: Arrival) -> Nil {
       connection.close(prepared.socket)
       buffered.discard(prepared.frames)
     }
+    job.ReconnectArrived(
+      reply: weft.PulledOutcome(weft.Completed(value: host, ..)),
+      ..,
+    ) -> daemon.close(daemon_selection.control(host))
     job.AttachArrived(reply: job.Settled(_), ..)
     | job.ControlArrived(..)
     | job.ReconnectArrived(..)

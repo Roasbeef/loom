@@ -43,12 +43,14 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
 import tui/attachment
 import tui/buffered
 import tui/connection
 import tui/daemon
+import tui/daemon/selection as daemon_selection
 import tui/effect.{type Effect}
 import tui/herdr
 import tui/job
@@ -60,6 +62,7 @@ import tui/model.{
 } as tui_model
 import tui/recording
 import tui/session_channel
+import weft
 
 /// Reads the clocks for one event and writes them onto the model.
 ///
@@ -123,12 +126,16 @@ pub fn receive(model: Model) -> Model {
 /// reply's key. Otherwise it belongs to a job no reducer waits for any
 /// more, one that was cancelled or whose slot moved on, and it is dropped
 /// here; that comparison of keys is the only fence a job reply passes.
-/// Dropping an attachment's `Prepared` is the one drop that acts: its socket
-/// is open and nobody else will close it, so `job_runner.dropped` closes it
-/// and empties the frames subject it delivers to. `receive` calls this for
-/// everything it read. It reads no mailbox, so a test calls it to hand a
-/// step a reply without running a job, and a test driver calls it with a
-/// reply its actor selected.
+/// Most replies are data and are simply forgotten. Two carry a resource
+/// nobody else will release: an attachment's `Prepared` holds an open
+/// socket and names its frames subject, and a relaunch's `Completed` holds
+/// a control connection. Dropping either queues the effects that release
+/// it, `CloseSocket` then `Discard`, or `CloseControl`, which the runtime
+/// performs after the next step like any other. `hold` itself performs
+/// nothing, so `receive` only reads mailboxes. `receive` calls this for
+/// everything it read; a test calls it to hand a step a reply without
+/// running a job, and a test driver calls it with a reply its actor
+/// selected.
 ///
 /// ## Examples
 ///
@@ -138,33 +145,56 @@ pub fn receive(model: Model) -> Model {
 pub fn hold(model: Model, arrival: job.Arrival) -> Model {
   let model =
     Model(..model, running: job_runner.observed(model.running, arrival))
-  case arrival {
+  let admitted = case arrival {
     job.ControlArrived(key:, reply:) -> hold_control(model, key, reply)
     job.ReconnectArrived(key:, reply:) -> hold_reconnect(model, key, reply)
     job.ActivityArrived(key:, reply:) -> hold_activity(model, key, reply)
     job.AttachArrived(key:, reply:) ->
-      case attachment.admit(model.candidate, key, reply) {
-        Ok(candidate) -> Model(..model, candidate:)
-        Error(Nil) -> {
-          job_runner.dropped(arrival)
-          model
-        }
-      }
+      attachment.admit(model.candidate, key, reply)
+      |> result.map(fn(candidate) { Model(..model, candidate:) })
+  }
+  case admitted {
+    Ok(model) -> model
+    Error(Nil) -> release(model, arrival)
   }
 }
 
-fn hold_control(model: Model, key: job.Key, reply: job.ControlReply) -> Model {
+// Queues the release of what a dropped reply holds. The effects are the
+// ones any other close uses, so the runtime performs them in the order
+// they are queued, after the next step.
+fn release(model: Model, arrival: job.Arrival) -> Model {
+  case arrival {
+    job.AttachArrived(reply: job.Published(prepared), ..) ->
+      model
+      |> tui_model.emit(effect.CloseSocket(prepared.socket))
+      |> tui_model.emit(effect.Discard(prepared.frames))
+    job.ReconnectArrived(
+      reply: weft.PulledOutcome(weft.Completed(value: host, ..)),
+      ..,
+    ) ->
+      tui_model.emit(model, effect.CloseControl(daemon_selection.control(host)))
+    job.AttachArrived(reply: job.Settled(_), ..)
+    | job.ReconnectArrived(..)
+    | job.ControlArrived(..)
+    | job.ActivityArrived(..) -> model
+  }
+}
+
+fn hold_control(
+  model: Model,
+  key: job.Key,
+  reply: job.ControlReply,
+) -> Result(Model, Nil) {
   case model.control_request {
-    None -> model
+    None -> Error(Nil)
     Some(run) ->
-      case job.admit(run.job, key, reply) {
-        Ok(awaiting) ->
-          Model(
-            ..model,
-            control_request: Some(ControlRequest(..run, job: awaiting)),
-          )
-        Error(Nil) -> model
-      }
+      job.admit(run.job, key, reply)
+      |> result.map(fn(awaiting) {
+        Model(
+          ..model,
+          control_request: Some(ControlRequest(..run, job: awaiting)),
+        )
+      })
   }
 }
 
@@ -172,14 +202,14 @@ fn hold_reconnect(
   model: Model,
   key: job.Key,
   reply: job.ReconnectReply,
-) -> Model {
+) -> Result(Model, Nil) {
   case model.reconnect {
-    ReconnectIdle | ReconnectSpent -> model
+    ReconnectIdle | ReconnectSpent -> Error(Nil)
     ReconnectAttempting(job: awaiting) ->
-      case job.admit(awaiting, key, reply) {
-        Ok(awaiting) -> Model(..model, reconnect: ReconnectAttempting(awaiting))
-        Error(Nil) -> model
-      }
+      job.admit(awaiting, key, reply)
+      |> result.map(fn(awaiting) {
+        Model(..model, reconnect: ReconnectAttempting(awaiting))
+      })
   }
 }
 
@@ -187,15 +217,14 @@ fn hold_activity(
   model: Model,
   key: job.Key,
   reply: job.ActivityReply,
-) -> Model {
+) -> Result(Model, Nil) {
   case model.activity_poll {
-    ActivityDue | ActivityResting(..) -> model
+    ActivityDue | ActivityResting(..) -> Error(Nil)
     ActivityAsking(job: awaiting, asked:) ->
-      case job.admit(awaiting, key, reply) {
-        Ok(awaiting) ->
-          Model(..model, activity_poll: ActivityAsking(awaiting, asked))
-        Error(Nil) -> model
-      }
+      job.admit(awaiting, key, reply)
+      |> result.map(fn(awaiting) {
+        Model(..model, activity_poll: ActivityAsking(awaiting, asked))
+      })
   }
 }
 

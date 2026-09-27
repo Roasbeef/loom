@@ -4,7 +4,8 @@
 //// nothing; the attempt learns its frames inbox only from the `Prepared`
 //// the job publishes; the runtime admits the job's messages by key; and
 //// whatever `Prepared` the runtime drops, because no attempt waits for its
-//// key, has its socket closed and its frames subject emptied. These tests
+//// key, has its socket closed and its frames subject emptied, by effects
+//// `runtime.hold` queues and the next flush performs. These tests
 //// check each of those where it lives. The stand-in socket wraps a subject
 //// this process owns, so a close arrives here as a message.
 
@@ -107,6 +108,9 @@ pub fn a_stale_prepared_has_its_socket_closed_test() {
     )
   assert held.candidate == waiting.candidate
     as "the stale Prepared reached no attempt"
+  assert process.receive(owner, 0) == Error(Nil)
+    as "holding the Prepared closed nothing itself"
+  let _ = runtime.flush(held)
   let assert Ok(_) = process.receive(owner, 0)
     as "the stale Prepared's socket was closed"
   assert connection.receive(frames) == Error(Nil)
@@ -114,7 +118,7 @@ pub fn a_stale_prepared_has_its_socket_closed_test() {
 
   let idle_owner: Subject(Dynamic) = process.new_subject()
   let _ =
-    runtime.hold(
+    runtime.flush(runtime.hold(
       blank(),
       job.AttachArrived(
         stale,
@@ -124,7 +128,7 @@ pub fn a_stale_prepared_has_its_socket_closed_test() {
           process.new_subject(),
         )),
       ),
-    )
+    ))
   let assert Ok(_) = process.receive(idle_owner, 0)
     as "a Prepared with no attempt at all is closed too"
 }
@@ -158,6 +162,7 @@ pub fn a_second_prepared_for_the_same_attempt_is_closed_test() {
       ),
     )
   assert again.candidate == model.candidate
+  let _ = runtime.flush(again)
   let assert Ok(_) = process.receive(owner, 0)
     as "the second Prepared's socket was closed"
 }
@@ -189,6 +194,7 @@ pub fn an_arrival_for_a_cancelled_attach_key_is_never_delivered_test() {
     ))
   assert late.candidate == quit.candidate
     as "no arrival for the cancelled key reached an attempt"
+  let _ = runtime.flush(late)
   let assert Ok(_) = process.receive(owner, 0)
     as "the late Prepared's socket was closed"
 }

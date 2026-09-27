@@ -222,6 +222,31 @@ fn spent_terminal() -> #(tui_model.Model, Int) {
   #(spent, probe(process.self()).message_queue_len)
 }
 
+// A relaunch's outcome carries the control connection it opened. When the
+// slot that waited for it has moved on, as an adoption leaves it after
+// cancelling the relaunch, the dropped outcome's connection is still
+// closed: `hold` queues the close and the flush performs it.
+pub fn a_dropped_relaunch_outcome_closes_its_control_test() {
+  let owner: Subject(Dynamic) = process.new_subject()
+  let host = host_on(owner)
+  let #(model, key) = tui_model.allocate_job(blank())
+  let model = tui_model.Model(..model, reconnect: tui_model.ReconnectIdle)
+
+  let held =
+    runtime.hold(
+      model,
+      job.ReconnectArrived(key, weft.PulledOutcome(weft.Completed(0, host))),
+    )
+  assert held.reconnect == tui_model.ReconnectIdle
+  assert held.outbox == [effect.CloseControl(daemon_selection.control(host))]
+    as "the dropped outcome's control is queued for closing"
+  assert process.receive(owner, 0) == Error(Nil)
+    as "holding the outcome closed nothing itself"
+  let _ = runtime.flush(held)
+  let assert Ok(_) = process.receive(owner, 100)
+    as "the flush closed the control"
+}
+
 // The tick takes the control reply before the relaunch's, as it always
 // has. Both fail here, so each writes one transcript line, and the lines'
 // order is the order the drains ran in.
