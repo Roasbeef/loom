@@ -1,4 +1,4 @@
-//// R6: the three packages held to the portable subset, and what that
+//// R6: the four packages held to the portable subset, and what that
 //// membership protects.
 ////
 //// `core`, `machine` and `prompt` contain no `@external` and reach for no
@@ -20,6 +20,16 @@
 ////   tree, validate a transcript with the same total decoders the server
 ////   uses, run `next_action` over fetched state to show what the harness
 ////   would do next. Every effect still proxied through the broker.
+////
+//// `session_view` joined the three for a different reason. It is the
+//// client's session lane and transcript projection, extracted from
+//// `packages/tui` so that a second host (the daemon's web view) can drive
+//// the same code the terminal does (ADR-013, phase 4). What it must not
+//// acquire is a host: a socket, a recording file, a terminal. Each of those
+//// arrives as a BEAM-only import or dependency, so the rule that keeps the
+//// first three portable is also the rule that keeps the lane free of
+//// whichever host happens to be driving it. The JavaScript build is not
+//// built or tested for it; the dependency boundary is the point.
 ////
 //// The second property is the one nothing recorded, and it is the one a
 //// contributor cannot be expected to infer. Reaching for a fast hash, a
@@ -48,11 +58,11 @@
 //// portable half. A JavaScript external keeps it and breaks the BEAM build
 //// instead, which is the target Loom actually ships on. A matched pair
 //// keeps both builds and still puts trusted-unchecked foreign code inside
-//// the three packages whose entire claim is that they are pure functions of
+//// the packages whose entire claim is that they are pure functions of
 //// their arguments. The rule therefore names no target: this is the strict
 //// form of the FFI confinement rule (gleam-style Part IV §4), which already
-//// confines `@external` to `*/internal/ffi_*.gleam` everywhere. These three
-//// have no such module and may not grow one.
+//// confines `@external` to `*/internal/ffi_*.gleam` everywhere. These
+//// packages have no such module and may not grow one.
 ////
 //// # Where each half looks
 ////
@@ -172,12 +182,13 @@ fn declarations(line: String, offset: Int, package: String) -> List(Raw) {
 fn protects(package: String) -> String {
   "`"
   <> package
-  <> "` is one of three packages ("
+  <> "` is one of the packages ("
   <> string.join(policy.portable_packages(), ", ")
   <> ") held free of foreign code and of BEAM-only dependencies by rule "
   <> "rather than by coincidence, and two properties rest on that: the "
   <> "operation state space stays property-testable without spawning "
-  <> "processes, and these three stay compilable to the JavaScript target "
+  <> "processes, and these packages stay free of any host and compilable "
+  <> "to the JavaScript target "
   <> "— enough to replay and validate a conversation, never to run the "
   <> "harness. `lint/portable` and gleam-style Part IV argue it; read one "
   <> "of them before landing an exception"
