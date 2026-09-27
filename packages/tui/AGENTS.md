@@ -290,14 +290,17 @@ list:
   threading the job table through and storing it back on the model;
   `stamp`, which reads the clocks for one event before the step; `receive`,
   which tops up the model's inboxes and reads every running job's replies
-  before the step; and `hold`, which admits one job reply into the slot
-  that holds its key or drops it. `tui.gleam` and test drivers import it;
+  before the step; `read_paste`, which reads the file a pasted path names
+  before the step and stores what it found as `Model.dropped`; and `hold`,
+  which admits one job reply into the slot that holds its key or drops it. `tui.gleam` and test drivers import it;
   no reducer module does.
 - `tui/job`: background jobs as data, and pure. `Key` is allocated from
   `Model.next_job` and never reused; `Awaiting(reply)` is a slot's key and
   the replies received for it, and `admit` accepts a reply only under that
   key; `Spec` is `Control(host, ControlJob)`, `Reconnect(options)`,
-  `Activity(host, ids)` or `Attach(route, within_ms)`; `Arrival` is one
+  `Activity(host, ids)`, `Attach(route, within_ms)` or
+  `Configure(options)`, which resolves a new session's configuration from
+  the local launch options; `Arrival` is one
   job message tagged with its key. An attachment job's messages are
   `Published(Prepared)`, the worker's socket together with the frames
   subject it delivers to, and `Settled(reply)`, the relay's account.
@@ -341,8 +344,10 @@ list:
   usage and cache accounting.
 - `tui/session_control`: daemon control requests and reconnection. It
   describes each request as a `job.Spec`, and `drain_control`,
-  `drain_reconnect` and `drain_activity` take their replies from the slots
-  the runtime admitted them into.
+  `drain_reconnect`, `drain_activity` and `drain_configuration` take their
+  replies from the slots the runtime admitted them into. `create_session`
+  starts a `job.Configure` job when the terminal has local launch options,
+  and `drain_configuration` continues the creation with its answer.
 - `tui/projection`: `refresh_render_cache`, `refresh_diff_cache` and the
   record row cache.
 - `tui/submit`: composer submission, input history, interrupts and target
@@ -902,7 +907,11 @@ boundaries and the split's measurements under Invariants.
   prefix or bounded body; a one-task `weft` run with a deadline bounds
   descriptor opens and reads to one second, and its cancellation kills and
   joins the worker before the caller sees the timeout. It performs no path
-  expansion or shell evaluation.
+  expansion or shell evaluation. The runtime reads, the step does not:
+  `read_dropped` performs the read and returns a `Dropped` value recorded
+  against the pasted text, and `dropped_image`, which the composer's paste
+  handler calls, is pure and answers `Ok(None)` for a read taken for other
+  text.
 - `tui/block_summary.{Key, Subject, Reads, Labels, floor_bytes, max_blocks,
   new, stored, live, carried, receive, receive_board, want,
   next_read, refused, retain_live, decode_board}` — summarizer labels for
@@ -1561,7 +1570,8 @@ untouched.
 - **Jobs start after the step and answer by key.** A reducer allocates a
   key and queues `StartJob(key, spec)` through `tui_model.start_job`; the
   slot that waits for the job (`ControlRequest.job`,
-  `ReconnectAttempting`, `ActivityAsking`, `Model.candidate`) holds the key
+  `ReconnectAttempting`, `ActivityAsking`, `Model.candidate`,
+  `Model.configuring`) holds the key
   and the messages received for it. The step creates no subject, no cancel
   signal and no process. `runtime.perform` starts and cancels jobs in `Model.running`,
   which no reducer reads, and `runtime.settle` stores the table back, so
@@ -1582,8 +1592,8 @@ untouched.
   until its relay's last message is read, whatever its slot holds, so no
   job's messages stay in the mailbox. Quit clears each slot as it queues
   the lane close, then `CancelJob` for the attempt ahead of its `Abandon`,
-  then `CancelJob` for the control job, the relaunch and the activity poll,
-  in that order. A failed attempt queues the same `CancelJob` and
+  then `CancelJob` for the control job, the relaunch, the activity poll and
+  a session creation's configuration job, in that order. A failed attempt queues the same `CancelJob` and
   `Abandon` pair, through `tui_model.emit_attachment`. The launch
   paths flush their first catalogue load so it starts before the loop.
   A test allocates a key with `tui_model.allocate_job`, hands a slot a
@@ -1596,6 +1606,28 @@ untouched.
   start, its frames inbox coming only from `Prepared`, the close of a
   dropped `Prepared` and the cancel of a failed attempt (ADR-013, S4 and S5
   addenda).
+- **The step reads no file.** A terminal delivers a dragged file as a paste
+  of its path. `tui.update` calls `runtime.read_paste` after
+  `runtime.receive` and before the step; it reads the file when a paste
+  names exactly one path and writes the result on `Model.dropped`, and
+  every event overwrites the field, so a read and the image bytes it holds
+  never outlive their event. The paste handler asks
+  `image_drop.dropped_image`, which uses a read only for the paste text it
+  was taken for. The read is before the step rather than a job because a
+  job answers a step later, and a key typed in between would be applied
+  first: an Enter could submit without the image. A new session's
+  configuration, which reads `HOME` and asks the file system about
+  `--config` or `<state-root>/loom.toml`, is resolved by a `job.Configure`
+  job instead. The picker stays open until the reply, and the creation's
+  checks, the pending-submission cancel and the creation key all happen in
+  the tick that takes it, in the order the step used to make them, so a
+  local failure still sends nothing and retains no key. A
+  terminal without local launch options has nothing to resolve and creates
+  in the step. A test that calls `step` directly with a paste naming an
+  image calls `runtime.read_paste` first; a test that presses `n` with
+  local options ticks until `Model.configuring` is `None` before it looks
+  for the creation key. `test/file_reads_test.gleam` pins both moves
+  (ADR-013, S6 addendum).
 - **Auxiliary panels draw borders, not interiors.** The ordinary conversation
   has no rectangle and the composer has horizontal rules. `render_panel_border` puts the same
   bytes on the wire as etui's `block.render` over a blank canvas, and the test
@@ -1773,13 +1805,15 @@ untouched.
   `take_outputs` then `perform`. The next `update` also performs anything
   left in the outbox. One consequence is that a send leaves at the end of
   its step, so a zero-timeout drain later in that step cannot see its
-  reply. File reads remain in the step until a later slice of phase 2 of
-  issue #530, and adoption still reads a socket's liveness through
-  `connection.adopt`, until phase 3. Clock reads left the step in phase 2's first slice, the
-  connection, replay and attachment drains in its second, recording
-  writes in its third, the control, reconnect and activity jobs in its
-  fourth, and the attachment job in its fifth: see the clock, traffic and job invariants above and the
-  recording invariant below.
+  reply. Adoption still reads a socket's liveness through
+  `connection.adopt`, and `inbound.daemon_build_lines` reads this client's
+  build identity from two environment variables on every coherent cut;
+  both stay in the step until phase 3. Clock reads left the step in phase
+  2's first slice, the connection, replay and attachment drains in its
+  second, recording writes in its third, the control, reconnect and
+  activity jobs in its fourth, the attachment job in its fifth, and file
+  reads in its sixth: see the clock, traffic, job and file invariants above
+  and the recording invariant below.
 - **The recording is written in the order its causes were decided.**
   `tui.step` queues the input's own line first, before the reducer runs,
   and every attempt note is queued where its cause was decided, in the

@@ -55,11 +55,12 @@ it four functions: `view`, `update`, a quit predicate, and
 process owns one immutable `Model`; each input event produces the next model,
 and `view` draws a frame from it.
 
-`update` runs four calls in order. `runtime.stamp` reads the clocks once for
+`update` runs five calls in order. `runtime.stamp` reads the clocks once for
 the event, `runtime.receive` moves waiting traffic and job replies into the
-model, `tui.step` computes the next model and the effects it decided on, and
-`runtime.settle` carries those effects out and stores the table of running
-jobs they left on the model. The step performs none of the
+model, `runtime.read_paste` reads the file a pasted path names, `tui.step`
+computes the next model and the effects it decided on, and `runtime.settle`
+carries those effects out and stores the table of running jobs they left on
+the model. The step performs none of the
 fire-and-forget effects itself; "Effects are values" below describes that
 split. `step` has three stages:
 
@@ -169,12 +170,14 @@ A consequence is that a send decided mid-step leaves at the end of the step. A
 zero-timeout drain later in the same step cannot see its reply, which it never
 reliably could.
 
-Some I/O still happens inside the step in this phase. The attachment start
-and file reads produce values the step goes on to use, so they wait for
-later slices; clock reads, the
-connection, replay and attachment drains, and the control, reconnect and
-activity jobs have already moved out of the step, as described above and
-below. Recording appends are effects: each line's offset is read
+Two reads still happen inside the step, and neither touches the file
+system. Adoption asks whether the replacement socket's actor is alive
+(`connection.adopt`), and the build-mismatch notice reads this client's
+build identity from two environment variables on every coherent cut
+(`inbound.daemon_build_lines`); phase 3 takes both. Clock reads, the
+connection, replay and attachment drains, every job start, and every file
+read have moved out of the step, as described above and below. Recording
+appends are effects: each line's offset is read
 when the runtime appends it, and the file's bytes are the ones the terminal
 wrote when the appends were synchronous
 ([ADR-009](../adr/009-record-terminal-attempt-custody.md) has the addendum).
@@ -196,14 +199,15 @@ effects as well.
 
 The daemon control request, the relaunch after a daemon death, the
 picker's activity poll and the provisional attachment each block on a
-socket, so each runs as a one-task weft run. The step does not start them.
+socket, and resolving a new session's configuration reads the file system,
+so each runs as a one-task weft run. The step does not start them.
 A reducer describes the job as a `tui/job.Spec` (`Control(host, request)`,
-`Reconnect(options)`, `Activity(host, ids)` or `Attach(route, within_ms)`),
-allocates a key from `Model.next_job`, and queues
+`Reconnect(options)`, `Activity(host, ids)`, `Attach(route, within_ms)` or
+`Configure(options)`), allocates a key from `Model.next_job`, and queues
 `effect.StartJob(key, spec)`; the slot that waits for the job
 (`ControlRequest`, `ReconnectAttempting`, `ActivityAsking`,
-`Model.candidate`) holds the key and the messages received for it. Keys are
-never reused.
+`Model.candidate`, `Model.configuring`) holds the key and the messages
+received for it. Keys are never reused.
 
 After the step, `tui/job_runner` starts the run in the terminal's process
 and records its cancel signal and reply subject under the key in
@@ -215,9 +219,9 @@ other key is dropped, and because the replies live inside the slot, a
 reducer that clears a slot drops what it held. The runner keeps a job until
 its relay's last message is read, whatever its slot holds, so no job leaves
 messages in the terminal's mailbox. The tick takes the replies at its fixed
-points through `session_control.drain_control`, `drain_reconnect` and
-`drain_activity`, and through `attachment.poll` for the attempt. Quit
-clears each slot and cancels each job by its key.
+points through `session_control.drain_control`, `drain_reconnect`,
+`drain_activity` and `drain_configuration`, and through `attachment.poll`
+for the attempt. Quit clears each slot and cancels each job by its key.
 
 An attachment job is the one that hands the terminal a socket, so its
 drops act. The runner creates the frames subject when it starts the job
@@ -233,6 +237,25 @@ queues `CancelJob` for its key ahead of its own `Abandon`
 
 The S4 addendum to [ADR-013](../adr/013-tui-effects-as-values.md) records
 the design and the alternatives it rejected.
+
+### Files are read outside the step
+
+The step reads no file. A pasted image is read before the step:
+`runtime.read_paste` reads the file when a paste names exactly one path and
+stores the result on `Model.dropped`, and the composer's paste handler
+attaches what that read found, through `image_drop.dropped_image`, which
+uses a read only for the paste text it was taken for. The read is not a job
+because a job answers a step later, and a key typed in between would be
+applied before the image arrived. A new session's configuration is resolved
+by a `job.Configure` job: pressing `n` in the picker starts it, and the
+tick that takes its reply makes the creation's checks, cancels the pending
+submission and retains the creation key, in the order the step used to,
+so a local failure still sends nothing and retains no key. The workspace
+of an opened or created session is discovered by the attachment worker
+when it resolves the route, and the launch paths read the working
+directory's workspace, the token files and the recording before the loop.
+The S6 addendum to [ADR-013](../adr/013-tui-effects-as-values.md) has the
+survey and what phase 2 left in the step.
 
 ### Frames are cached, then paced
 
@@ -505,8 +528,9 @@ estimated at 400 tokens or more, or of eight lines or more, becomes a compact
 attachment chip; its bytes are expanded into the prompt only when it is sent.
 A pasted path to a PNG, JPEG, GIF or WebP file of at most 20 MiB becomes an
 image attachment, up to four per prompt (`tui/image_drop` reads the magic bytes
-and never invokes a shell). Image prompts go out as `prompt_content`, the only
-frame that carries images.
+and never invokes a shell, and the runtime reads the file before the step).
+Image prompts go out as `prompt_content`, the only frame that carries
+images.
 
 Enter submits. `command.parse_with_skills` classifies the draft into a
 `command.Command`: ordinary text becomes `Prompt`, a slash word becomes one of
@@ -687,7 +711,8 @@ itself does no I/O.
 branch read from `HEAD`, through bounded file reads. The footer label and the
 default name of a newly created session come from that `workspace.Context`,
 and the session picker sorts rows for the same workspace first. A session
-switch derives the context again from the selected row's workspace.
+switch derives the context again from the selected row's workspace, in the
+attachment worker rather than the step.
 
 `tui/herdr` reports the terminal's state to the Herdr terminal multiplexer
 when the terminal runs inside one of its panes. It is enabled only when
