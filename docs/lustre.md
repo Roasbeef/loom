@@ -215,11 +215,13 @@ What the client runtime does, from
   into the shadow root, which is how `web_view.css` reaches the component's
   elements ([`lustre/component`][doc-component], `adopt_styles`;
   [`runtime/app.gleam`][src-app], `default_config`).
-- It builds the socket URL from `route`, resolved against the page, and
-  always sets a `csrf-token` query parameter. With no `csrf-token` attribute
-  and no `<meta name="csrf-token">`, the value is the string `null`. Loom's
-  socket therefore sees `/ui/sessions/<id>/ws?csrf-token=null` and ignores
-  the query (section 3).
+- When `route` is set, it builds the socket URL from it, resolved against
+  the page, and sets a `csrf-token` query parameter from the element's
+  `csrf-token` attribute, or else from `<meta name="csrf-token">`. With
+  neither, the value is the string `null`. The token is read when `route`
+  is set, so a page sets `csrf-token` first; changing `csrf-token` on a
+  connected element closes the socket and reconnects. The build-out uses
+  this parameter to carry the page nonce (section 3).
 - For the default `ws` method it passes the resolved `http:` URL straight to
   `new WebSocket(...)`; the `http:` to `ws:` rewrite runs only when a
   `method` attribute *changes* the method, and `method="ws"` does not change
@@ -537,17 +539,59 @@ Part IV §2):
   missing or repeated field as a refused event.
 - Never pass `decode.dynamic` through to `update`.
 
-### CSRF: Loom does not use Lustre's token
+### CSRF, and the page nonce in Lustre's `csrf-token`
 
 Lustre's CSRF mechanism is a token the client runtime appends to the socket
-URL from a `csrf-token` attribute or a `<meta name="csrf-token">`, which
-the server checks before upgrading ([`lustre/server_component`][doc-sc],
-`csrf_token`; [CSRF example][ex-csrf]). Loom's socket is protected
-differently: `Origin` must equal `http://` plus the request's `Host`, and
-the `loom_ui` cookie is `SameSite=Strict` and `HttpOnly` (051, "Checks on
-every `/ui` request"). A token in the page would add nothing, because any
-script that could read it could already drive the page. Do not add one,
-and ignore the `csrf-token=null` query parameter the client sends.
+URL as the `csrf-token` query parameter, taken from the element's
+`csrf-token` attribute or a `<meta name="csrf-token">`, which the server
+checks before upgrading ([`lustre/server_component`][doc-sc],
+`csrf_token`; [CSRF example][ex-csrf]). In Lustre's example the token is
+written into the page's HTML.
+
+Loom does not rely on a token for CSRF. A cross-site page cannot open the
+socket because `Origin` must equal `http://` followed by the request's
+`Host`, port included, and the `loom_ui` cookie is `SameSite=Strict` and
+`HttpOnly` (051, "Checks on every `/ui` request").
+
+The build-out ([#554](https://github.com/Roasbeef/loom/pull/554), the 051
+addendum "Three secrets, three scopes") uses Lustre's `csrf-token` for a
+different secret: a **per-page nonce**. It defends against a server the
+session's agent runs on another loopback port. Cookies are not scoped by
+port, so that server can receive `loom_ui`, and if the person pasted the
+page's address it also knows the page key. The nonce is the one secret it
+cannot get:
+
+- It is minted at the ticket exchange and delivered only in the exchange's
+  `200` body, as the `data-nonce` attribute of `<body>`, never in a
+  redirect and never in the keyed page's HTML. Fetching the keyed page with
+  the cookie and the key therefore does not reveal it.
+- The exchange page's script stores it in `sessionStorage`, which is scoped
+  to scheme, host and port, so no page on another port can read it. It
+  lives in one tab: a reload keeps it, a new tab has none.
+- The keyed page's script reads it back, sets it as the component's
+  `csrf-token` attribute, and only then sets `route`, because the client
+  runtime reads the token when `route` is set
+  ([`server_component.ffi.mjs`][src-client], `attributeChangedCallback`,
+  the `route` arm) **(source)**.
+- The upgrade requires the `csrf-token` parameter and compares its SHA-256
+  digest with the stored one in constant time
+  (`broker/internal/ffi_crypto.constant_time_equal`). A missing or wrong
+  nonce refuses the socket.
+
+The reason Lustre's example gives for a token, "only clients that have
+access to the token can connect", is the reason here too; what differs is
+where the token lives. A nonce written into the page's HTML or a `<meta>`
+tag would add nothing, because whoever holds the cookie and the key can
+fetch the page and read it; 051 considered that and did not take it.
+Rules for view and page code that follow:
+
+- Never render the nonce into any document, attribute of the component's
+  tree, or log line. It reaches the browser once, in the exchange body.
+- Never set `route` before `csrf-token`, and do not change `csrf-token` on a
+  connected element; either opens a socket without the nonce or drops the
+  connection.
+- `Referrer-Policy: no-referrer` stays on every `/ui` response; the ticket
+  and the key are in URLs.
 
 ## 4. Views
 
@@ -861,7 +905,7 @@ All apply to 5.7.1. Re-check each when the pin moves.
 | `memo` compares dependencies with `=:=` on Erlang, not by reference. | Equal rebuilt values count as unchanged, and cost a deep comparison. | [`lustre/element`][doc-element], `ref` |
 | The server decoder has no arm for `ContextProvided` (`kind` 4). | Context values from the browser are dropped; a `Batch` containing one fails to decode as a whole. **(source)** | [`transport.gleam`][src-transport], `server_message_decoder` |
 | The client reconnects on any close code but 1000, forever, capped at 10 s. | After a daemon restart, an open page retries and gets `401` every 10 s. **(source)** | [`server_component.ffi.mjs`][src-client-ws], `WebsocketTransport` |
-| The client always appends `csrf-token` to the socket URL, `null` when unset. | Route matching must ignore the query. **(source)** | [`server_component.ffi.mjs`][src-client], `attributeChangedCallback` |
+| The client reads `csrf-token` once, when `route` is set, and sends the string `null` when none is present; changing `csrf-token` on a connected element closes and reconnects. | Set `csrf-token` before `route`, or the socket opens without the page nonce and is refused. **(source)** | [`server_component.ffi.mjs`][src-client], `attributeChangedCallback` |
 | The default `ws` method passes an `http:` URL to `new WebSocket`. | Needs a browser that accepts `http(s)` URLs there. **(source)** | same |
 | `register_callback` with an anonymous function cannot be deregistered. | Use `register_subject` on Erlang. | [`lustre/server_component`][doc-sc] |
 | `server_component.script()` inlines the runtime. | Refused by Loom's CSP. | [`lustre/server_component`][doc-sc] |
