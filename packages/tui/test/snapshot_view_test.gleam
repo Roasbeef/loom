@@ -20,6 +20,7 @@ import session_view/snapshot_view
 import tui/approval_panel
 import tui/inbound
 import tui/model as tui_model
+import tui/transcript_line
 import tui_test/pushed
 
 fn author(name) {
@@ -319,7 +320,7 @@ pub fn tool_result_lookup_and_tail_retirement_match_strand_and_call_test() {
   // Reconciliation must retire the inactive strand and only the completed
   // call on main, leaving a live peer in the same operation untouched.
   let tail = fn(strand, call_id, source_index) {
-    tui_model.ToolTail(
+    transcript_line.ToolTail(
       strand:,
       operation: "shared-operation",
       step: "step-1",

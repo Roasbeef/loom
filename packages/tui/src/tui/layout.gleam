@@ -37,13 +37,14 @@ import tui/diff_panel
 import tui/model.{
   type Model, AgentInspector, ApprovalInspector, Attached, DaemonSelector,
   DiffHidden, DiffVisible, Disconnected, GoalInspector, ModelSelector, NoOverlay,
-  PeerLinkManager, Preview, Replaying, Stream,
+  PeerLinkManager, Preview, Replaying,
 } as tui_model
 import tui/queue_editor
 import tui/queue_panel
 import tui/reviewer_status
 import tui/todo_panel
 import tui/tool_activity
+import tui/transcript_line.{Stream}
 import tui/transcript_lines
 
 /// The area inside a one-cell rounded border.

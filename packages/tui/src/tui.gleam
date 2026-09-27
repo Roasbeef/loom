@@ -79,9 +79,9 @@ import tui/job
 import tui/job_runner
 import tui/layout
 import tui/model.{
-  type Model, Assistant, DiffAutomatic, Disconnected, HoldGoalReport, Line,
-  Model, Newer, NoClipboard, NoOverlay, Older, Preview, PromptNext, Reasoning,
-  ReconnectIdle, Replaying, System, TerminalClipboard, ToolResult,
+  type Model, DiffAutomatic, Disconnected, HoldGoalReport, Model, Newer,
+  NoClipboard, NoOverlay, Older, Preview, PromptNext, ReconnectIdle, Replaying,
+  TerminalClipboard,
 } as tui_model
 import tui/msg
 import tui/note_panel
@@ -96,6 +96,7 @@ import tui/session_table
 import tui/summary_panel
 import tui/surfaces
 import tui/tick
+import tui/transcript_line.{Assistant, Line, Reasoning, System, ToolResult}
 import tui/update
 import tui/update/download
 import tui/update/options as update_options

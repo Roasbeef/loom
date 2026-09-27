@@ -21,6 +21,7 @@ import gleam/string
 import session_view/connection_event
 import tui/inbound
 import tui/model as tui_model
+import tui/transcript_line
 import tui/transcript_lines
 import tui_test/pushed
 
@@ -75,7 +76,7 @@ pub fn a_later_frame_replaces_the_tail_of_its_stream_test() {
     ))
   assert model.tool_tails
     == [
-      tui_model.ToolTail(
+      transcript_line.ToolTail(
         strand: "main",
         operation: "op-1",
         step: "step-1",
@@ -143,8 +144,8 @@ pub fn the_tail_is_drawn_as_one_result_line_under_the_running_call_test() {
     ))
   assert transcript_lines.tool_tail_lines(expanded(model))
     == [
-      tui_model.Line(
-        tui_model.ToolResult,
+      transcript_line.Line(
+        transcript_line.ToolResult,
         "stdout · 31 B so far\ncompiling core\ncompiling tools",
       ),
     ]
@@ -165,7 +166,7 @@ pub fn only_the_last_lines_of_a_long_tail_are_drawn_test() {
       list.fold(lines, "", fn(acc, line) { acc <> line <> "\n" }),
       2048,
     ))
-  let assert [tui_model.Line(tui_model.ToolResult, drawn)] =
+  let assert [transcript_line.Line(transcript_line.ToolResult, drawn)] =
     transcript_lines.tool_tail_lines(expanded(model))
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(drawn, "\n")
@@ -184,7 +185,9 @@ pub fn a_binary_tail_draws_its_heading_alone_test() {
       300,
     ))
   assert transcript_lines.tool_tail_lines(expanded(model))
-    == [tui_model.Line(tui_model.ToolResult, "stdout · 300 B so far")]
+    == [
+      transcript_line.Line(transcript_line.ToolResult, "stdout · 300 B so far"),
+    ]
 }
 
 pub fn another_strands_tail_is_not_drawn_here_test() {

@@ -24,15 +24,16 @@ import tui/advisor_history
 import tui/composer
 import tui/layout
 import tui/markdown
-import tui/model.{
-  type Line, type Model, Assistant, Failure, Line, Model, Reasoning,
-  ReasoningDigest, Spacer, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
-} as tui_model
+import tui/model.{type Model, Model} as tui_model
 import tui/render
 import tui/surfaces
 import tui/tool_activity
 import tui/transcript_anchor
+import tui/transcript_line.{
+  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, User,
+}
 import tui/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
 }

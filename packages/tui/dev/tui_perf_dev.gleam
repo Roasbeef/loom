@@ -18,6 +18,7 @@ import tui
 import tui/agents
 import tui/connection
 import tui/model as tui_model
+import tui/transcript_line
 import tui/workspace
 
 /// A presentation model in the replay posture, and the connection subject
@@ -110,7 +111,9 @@ pub fn live(model: tui_model.Model) -> tui_model.Model {
 pub fn witness(model: tui_model.Model) -> #(Int, Int) {
   #(
     list.length(model.records),
-    list.count(model.transcript, fn(line) { line.speaker == tui_model.Failure }),
+    list.count(model.transcript, fn(line) {
+      line.speaker == transcript_line.Failure
+    }),
   )
 }
 

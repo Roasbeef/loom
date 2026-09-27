@@ -63,14 +63,12 @@ import tui/daemon/selection as daemon_selection
 import tui/job
 import tui/layout
 import tui/model.{
-  type Interrupt, type Line, type Model, type Peer, type Reconnect,
-  type StrandWorkspace, type Stream, type Submission, type ToolTail,
-  type UnconfirmedSubmission, AgentInspector, ApprovalInspector, Assistant,
-  Attached, CacheNotice, CacheObservation, DaemonSelector, Disconnected,
-  GoalInspector, HeldPrompt, HoldGoalReport, Interjection, Interrupt, Line,
-  Model, ModelSelector, NoOverlay, PeerLinkManager, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, StrandWorkspace,
-  Stream, System, ToolTail, UnconfirmedSubmission, User,
+  type Interrupt, type Model, type Peer, type Reconnect, type StrandWorkspace,
+  type UnconfirmedSubmission, AgentInspector, ApprovalInspector, Attached,
+  CacheObservation, DaemonSelector, Disconnected, GoalInspector, HoldGoalReport,
+  Interrupt, Model, ModelSelector, NoOverlay, PeerLinkManager, Preview,
+  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying,
+  StrandWorkspace, UnconfirmedSubmission,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -82,6 +80,10 @@ import tui/render
 import tui/reviewer_status
 import tui/surfaces
 import tui/todo_board
+import tui/transcript_line.{
+  type Line, type Stream, type Submission, type ToolTail, Assistant, CacheNotice,
+  HeldPrompt, Interjection, Line, Stream, System, ToolTail, User,
+}
 import tui/transcript_lines
 
 /// The authenticated build belongs to the retained control host. Projecting

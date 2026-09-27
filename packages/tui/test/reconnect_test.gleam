@@ -24,6 +24,7 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
+import tui/transcript_line
 import tui/workspace
 import weft
 
@@ -119,7 +120,7 @@ pub fn a_failed_reconnect_is_reported_once_and_stays_disconnected_test() {
   assert failed.peer == tui_model.Disconnected
   assert list.any(failed.transcript, fn(line) {
     case line {
-      tui_model.Line(speaker: tui_model.Failure, text:) ->
+      transcript_line.Line(speaker: transcript_line.Failure, text:) ->
         string.contains(text, "reconnect failed")
       _other -> False
     }

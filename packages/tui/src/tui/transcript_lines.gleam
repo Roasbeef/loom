@@ -42,14 +42,15 @@ import session_view/worktree_view
 import tui/advisor_history
 import tui/composer
 import tui/file_read_view
-import tui/model.{
-  type CacheNotice, type Line, type Model, type Speaker, type Stream,
-  type Submission, Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning,
-  ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
-}
+import tui/model.{type Model}
 import tui/todo_board
 import tui/tool_activity
+import tui/transcript_line.{
+  type CacheNotice, type Line, type Speaker, type Stream, type Submission,
+  Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning, ReasoningDigest,
+  Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System, ToolCall,
+  ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+}
 
 // A stream stays separate from durable entries because the server may replay
 // the settled entry after its fragments. Keeping both in one list would render

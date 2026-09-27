@@ -31,6 +31,7 @@ import tui/connection
 import tui/inbound
 import tui/model as tui_model
 import tui/recording
+import tui/transcript_line
 import tui/workspace
 
 fn metadata() {
@@ -523,7 +524,7 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
       inbound.accept_connection_message,
     )
   assert model.streams
-    == [tui_model.Stream("main", "op-1", "", "text", ["lo", "Hel"], 5)]
+    == [transcript_line.Stream("main", "op-1", "", "text", ["lo", "Hel"], 5)]
     as "fragments of one operation accumulate rather than replacing each other"
 
   // The next operation is a different answer, so it starts the region over
@@ -531,7 +532,7 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
   let next =
     inbound.accept_connection_message(model, delta("main", "op-2", "New"))
   assert next.streams
-    == [tui_model.Stream("main", "op-2", "", "text", ["New"], 3)]
+    == [transcript_line.Stream("main", "op-2", "", "text", ["New"], 3)]
 }
 
 pub fn a_notice_the_lane_drops_still_counts_at_the_terminal_test() {

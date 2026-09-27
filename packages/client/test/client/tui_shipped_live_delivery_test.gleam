@@ -93,7 +93,7 @@ import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol
 import tui/daemon/selection
-import tui/model as tui_model
+import tui/transcript_line
 import tui/workspace
 import weft
 import weft/actor
@@ -500,7 +500,8 @@ fn sample_waiting(
 fn stream_note(sample: tui_driver.Sample) -> String {
   let streams =
     list.map(sample.model.streams, fn(stream) {
-      let tui_model.Stream(strand:, kind:, fragments:, operation:, ..) = stream
+      let transcript_line.Stream(strand:, kind:, fragments:, operation:, ..) =
+        stream
       strand
       <> "/"
       <> kind
@@ -531,7 +532,7 @@ fn stream_note(sample: tui_driver.Sample) -> String {
 // whatever it holds; they are the pushed `stream_delta` frames themselves.
 fn live_prefix(sample: tui_driver.Sample) -> Bool {
   list.any(sample.model.streams, fn(stream) {
-    let tui_model.Stream(strand:, kind:, fragments:, ..) = stream
+    let transcript_line.Stream(strand:, kind:, fragments:, ..) = stream
     let text = string.concat(list.reverse(fragments))
     strand == sample.model.active_strand
     && kind == "text"

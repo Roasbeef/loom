@@ -42,6 +42,7 @@ import tui/model as tui_model
 import tui/render
 import tui/reviewer_status
 import tui/surfaces
+import tui/transcript_line
 import tui/transcript_lines
 import tui/workspace
 import tui_test/pushed
@@ -1265,13 +1266,13 @@ pub fn a_goal_continuation_draws_in_the_system_voice_test() {
 
   let assert [line] =
     transcript_lines.advisor_lines(payload, notes_view.Excerpt)
-  assert line.speaker == tui_model.System
+  assert line.speaker == transcript_line.System
   assert string.contains(line.text, "goal continuation")
 
   assert transcript_lines.advisor_lines(payload, notes_view.Complete)
     == [
-      tui_model.Line(tui_model.System, "goal continuation"),
-      tui_model.Line(tui_model.ToolDetail, "keep going"),
+      transcript_line.Line(transcript_line.System, "goal continuation"),
+      transcript_line.Line(transcript_line.ToolDetail, "keep going"),
     ]
 }
 

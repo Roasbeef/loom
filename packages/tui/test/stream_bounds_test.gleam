@@ -47,6 +47,7 @@ import session_view/connection_event
 import tui
 import tui/inbound
 import tui/model as tui_model
+import tui/transcript_line
 import tui/transcript_lines
 import tui_test/pushed
 import weft/actor
@@ -339,7 +340,7 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
       pushed.attached(),
       inbound.accept_connection_message,
     )
-  let assert [tui_model.Stream(bytes:, fragments:, ..)] = model.streams
+  let assert [transcript_line.Stream(bytes:, fragments:, ..)] = model.streams
     as "the live answer is on screen as one stream"
 
   // The exact invariant, on the model rather than on the process: the region
@@ -362,7 +363,7 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
       pushed.delta("main", "op-2", "New"),
     )
   assert next.streams
-    == [tui_model.Stream("main", "op-2", "", "text", ["New"], 3)]
+    == [transcript_line.Stream("main", "op-2", "", "text", ["New"], 3)]
     as "the previous operation's fragments are dropped, not carried forward"
   let assert Some(_) = next.channel as "the lane survives the whole answer"
   assert next.notices == 0 as "no notice was pushed in this fixture"

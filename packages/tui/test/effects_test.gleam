@@ -29,6 +29,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/terminal_lane
+import tui/transcript_line
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -146,8 +147,8 @@ fn drag_and_release(
 ) -> #(tui_model.Model, List(Effect)) {
   let model =
     tui_model.Model(..quiet_model(), clipboard:, transcript: [
-      tui_model.Line(tui_model.System, "alpha beta"),
-      tui_model.Line(tui_model.System, "gamma delta"),
+      transcript_line.Line(transcript_line.System, "alpha beta"),
+      transcript_line.Line(transcript_line.System, "gamma delta"),
     ])
 
   // The transcript's text starts at row 2, column 1 on a 60x12 screen: one

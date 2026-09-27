@@ -47,6 +47,7 @@ import tui/render
 import tui/selection
 import tui/submit
 import tui/theme
+import tui/transcript_line
 import tui/transcript_lines
 import tui/virtual_backend
 import tui/workspace
@@ -777,7 +778,7 @@ pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
   let queued = tui.update(backend.KeyPress("enter"), live)
   assert string.contains(queued.notice, "prompt sent")
     as "enter sends a prompt, which the daemon holds until the run settles"
-  assert queued.queued == [tui_model.HeldPrompt("look at this too")]
+  assert queued.queued == [transcript_line.HeldPrompt("look at this too")]
     as "the operator's line is echoed the moment it is submitted"
 
   let steered =
@@ -787,7 +788,7 @@ pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
     )
   assert string.contains(steered.notice, "steered")
     as "tab mode folds the draft into the run that is already going"
-  assert steered.queued == [tui_model.Interjection]
+  assert steered.queued == [transcript_line.Interjection]
     as "a steer draws nothing but is still owed an entry of its own"
 }
 
@@ -809,7 +810,8 @@ pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
         4,
       )),
     )
-  assert after_assistant.queued == [tui_model.HeldPrompt("look at this too")]
+  assert after_assistant.queued
+    == [transcript_line.HeldPrompt("look at this too")]
     as "the run's own output does not retire a prompt the daemon still holds"
 
   let after_user =
@@ -847,7 +849,10 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
       ),
     )
   assert steered.queued
-    == [tui_model.Interjection, tui_model.HeldPrompt("look at this too")]
+    == [
+      transcript_line.Interjection,
+      transcript_line.HeldPrompt("look at this too"),
+    ]
     as "premise: the steer commits before the prompt the daemon still holds"
 
   let after_steer_entry =
@@ -859,7 +864,8 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
         5,
       )),
     )
-  assert after_steer_entry.queued == [tui_model.HeldPrompt("look at this too")]
+  assert after_steer_entry.queued
+    == [transcript_line.HeldPrompt("look at this too")]
     as "the steer's own entry retires the steer, not the prompt behind it"
 
   let after_prompt_entry =
@@ -897,7 +903,10 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
       ),
     )
   assert steered.queued
-    == [tui_model.Interjection, tui_model.HeldPrompt("look at this too")]
+    == [
+      transcript_line.Interjection,
+      transcript_line.HeldPrompt("look at this too"),
+    ]
     as "premise: the steer is recorded ahead of the prompt still being held"
 
   let aborted =
@@ -905,7 +914,7 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
       steered,
       session_channel.Acknowledged("abort", "accepted"),
     )
-  assert aborted.queued == [tui_model.HeldPrompt("look at this too")]
+  assert aborted.queued == [transcript_line.HeldPrompt("look at this too")]
     as "the aborted steer commits no entry, so its record goes with the run"
 
   let drained =
@@ -932,8 +941,8 @@ pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
   let stale =
     tui_model.Model(
       ..live_model(""),
-      queued: [tui_model.HeldPrompt("look at this too")],
-      awaiting_outcome: Some(tui_model.HeldPrompt("and one more thing")),
+      queued: [transcript_line.HeldPrompt("look at this too")],
+      awaiting_outcome: Some(transcript_line.HeldPrompt("and one more thing")),
     )
   let synchronized =
     inbound.accept_connection_message(
@@ -958,7 +967,7 @@ pub fn a_refused_prompt_retires_its_own_echo_test() {
   let submitted =
     tui_model.Model(
       ..live_model(""),
-      awaiting_outcome: Some(tui_model.HeldPrompt("a fifth one")),
+      awaiting_outcome: Some(transcript_line.HeldPrompt("a fifth one")),
     )
   let refused =
     inbound.accept_connection_message(
@@ -1025,7 +1034,7 @@ pub fn a_queued_echo_renders_below_the_live_transcript_test() {
   let assert Ok(last) = list.last(run.frames)
     as "every run draws at least its initial frame"
 
-  assert run.final.queued == [tui_model.HeldPrompt("and one more thing")]
+  assert run.final.queued == [transcript_line.HeldPrompt("and one more thing")]
     as "premise: the submission produced an echo to look for"
   let rows = string.split(frame.buffer_to_text(last), "\n")
   let assert Ok(answer_row) = row_containing(rows, "earlier answer")
@@ -1401,7 +1410,7 @@ pub fn an_image_prompt_is_submitted_while_the_strand_is_live_test() {
   assert submitted.attachments == []
     as "a submitted image prompt clears the composer"
   assert !list.any(submitted.transcript, fn(line) {
-    line.speaker == tui_model.Failure
+    line.speaker == transcript_line.Failure
   })
     as "no local refusal was written"
 }
@@ -1730,8 +1739,8 @@ pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
   let inbox = connection.new_inbox()
   let model =
     tui_model.Model(..quiet_model(inbox), transcript: [
-      tui_model.Line(tui_model.System, "alpha beta"),
-      tui_model.Line(tui_model.System, "gamma delta"),
+      transcript_line.Line(transcript_line.System, "alpha beta"),
+      transcript_line.Line(transcript_line.System, "gamma delta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -1902,8 +1911,8 @@ fn assistant_copy_model(
   inbox: process.Subject(connection_event.Message),
 ) -> tui_model.Model {
   tui_model.Model(..quiet_model(inbox), transcript: [
-    tui_model.Line(
-      tui_model.Assistant,
+    transcript_line.Line(
+      transcript_line.Assistant,
       "opening paragraph\n\nsecond paragraph\n\n```gleam\n  let answer = 1\n```",
     ),
   ])
@@ -1913,7 +1922,7 @@ pub fn a_resize_drops_a_settled_selection_test() {
   let inbox = connection.new_inbox()
   let model =
     tui_model.Model(..quiet_model(inbox), transcript: [
-      tui_model.Line(tui_model.System, "alpha beta"),
+      transcript_line.Line(transcript_line.System, "alpha beta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -1934,7 +1943,7 @@ pub fn escape_clears_a_selection_without_interrupting_test() {
   let inbox = connection.new_inbox()
   let model =
     tui_model.Model(..quiet_model(inbox), transcript: [
-      tui_model.Line(tui_model.System, "alpha beta"),
+      transcript_line.Line(transcript_line.System, "alpha beta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -1961,7 +1970,7 @@ pub fn a_click_dismisses_a_settled_selection_test() {
   let inbox = connection.new_inbox()
   let model =
     tui_model.Model(..quiet_model(inbox), transcript: [
-      tui_model.Line(tui_model.System, "alpha beta"),
+      transcript_line.Line(transcript_line.System, "alpha beta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -2278,8 +2287,8 @@ pub fn a_selection_keeps_its_original_cells_during_incoming_output_test() {
   let inbox = connection.new_inbox()
   let model =
     tui_model.Model(..quiet_model(inbox), transcript: [
-      tui_model.Line(tui_model.System, "alpha beta"),
-      tui_model.Line(tui_model.System, "gamma delta"),
+      transcript_line.Line(transcript_line.System, "alpha beta"),
+      transcript_line.Line(transcript_line.System, "gamma delta"),
     ])
   let Position(x, y) = transcript_origin
   let script =

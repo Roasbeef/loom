@@ -39,6 +39,7 @@ import tui/interaction
 import tui/model as tui_model
 import tui/recording
 import tui/surfaces
+import tui/transcript_line
 import tui/virtual_backend
 import tui/workspace
 
@@ -1138,7 +1139,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   let notices =
     list.filter(adopted.transcript, fn(line) {
       string.contains(line.text, "target change")
-      && line.speaker == tui_model.System
+      && line.speaker == transcript_line.System
     })
   let assert [notice] = notices as "the unsent draft is reported once"
   assert notice.text == "Not sent: target changed from A; draft retained"

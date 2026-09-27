@@ -42,6 +42,7 @@ import tui/pasted_image
 import tui/runtime
 import tui/session_selector
 import tui/submit
+import tui/transcript_line
 import tui/workspace
 import tui_test/stepping
 import weft
@@ -114,7 +115,7 @@ pub fn an_oversized_image_reports_the_error_the_step_reported_before_test() {
 
   assert expected == Error("dropped image exceeds the 20 MiB limit")
   assert pasted.notice == "dropped image exceeds the 20 MiB limit"
-  let assert Ok(tui_model.Line(tui_model.Failure, reason)) =
+  let assert Ok(transcript_line.Line(transcript_line.Failure, reason)) =
     list.last(pasted.transcript)
     as "the refusal is the transcript's newest line"
   assert reason == "dropped image exceeds the 20 MiB limit"
@@ -153,8 +154,8 @@ fn is_job(requested: effect.Effect) -> Bool {
 fn failures(model: tui_model.Model) -> List(String) {
   list.filter_map(model.transcript, fn(line) {
     case line {
-      tui_model.Line(tui_model.Failure, text) -> Ok(text)
-      tui_model.Line(..) -> Error(Nil)
+      transcript_line.Line(transcript_line.Failure, text) -> Ok(text)
+      transcript_line.Line(..) -> Error(Nil)
     }
   })
 }

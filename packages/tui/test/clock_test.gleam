@@ -26,6 +26,7 @@ import tui/model as tui_model
 import tui/msg
 import tui/pacing
 import tui/runtime
+import tui/transcript_line
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -79,10 +80,14 @@ pub fn wheel_then_press_captures_one_painted_copy_layout_test() {
     list.repeat(Nil, 12)
     |> list.index_map(fn(_, index) {
       case index % 2 {
-        0 -> tui_model.Line(tui_model.User, "  user " <> int.to_string(index))
+        0 ->
+          transcript_line.Line(
+            transcript_line.User,
+            "  user " <> int.to_string(index),
+          )
         _ ->
-          tui_model.Line(
-            tui_model.Assistant,
+          transcript_line.Line(
+            transcript_line.Assistant,
             "assistant " <> int.to_string(index),
           )
       }

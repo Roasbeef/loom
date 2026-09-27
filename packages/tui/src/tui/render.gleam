@@ -56,12 +56,9 @@ import tui/focused_goal_panel
 import tui/layout
 import tui/markdown
 import tui/model.{
-  type Line, type Model, AgentInspector, ApprovalInspector, Assistant,
-  DaemonSelector, Disconnected, Failure, FrameCache, GoalInspector, Line, Model,
-  ModelSelector, NoOverlay, PeerLinkManager, PromptNext, Reasoning,
-  ReasoningDigest, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Spacer,
-  SteerNow, SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolPatch, ToolResult, User,
+  type Model, AgentInspector, ApprovalInspector, DaemonSelector, Disconnected,
+  FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
+  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -73,6 +70,11 @@ import tui/session_selector
 import tui/summary_panel
 import tui/theme
 import tui/todo_panel
+import tui/transcript_line.{
+  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, User,
+}
 import tui/transcript_lines
 import tui/workspace
 

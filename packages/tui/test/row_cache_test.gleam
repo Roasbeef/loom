@@ -21,6 +21,7 @@ import tui/connection
 import tui/inbound
 import tui/model as tui_model
 import tui/tool_activity
+import tui/transcript_line
 import tui/workspace
 import tui_test/ffi_term
 import tui_test/gateway
@@ -77,7 +78,7 @@ pub fn cached_history_matches_fresh_rows_after_each_event_test() {
   assert list.length(populated.records) == 8
     as "the fixture must admit every durable event before comparing layout"
   assert !list.any(populated.transcript, fn(line) {
-    line.speaker == tui_model.Failure
+    line.speaker == transcript_line.Failure
   })
     as "protocol errors are not a history-rendering workload"
   let narrow = checked_layout(populated, 32)

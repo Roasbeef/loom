@@ -24,6 +24,7 @@ import tui/inbound
 import tui/layout
 import tui/model as tui_model
 import tui/transcript_anchor
+import tui/transcript_line
 import tui/workspace
 import tui_test/ffi_term
 
@@ -883,7 +884,10 @@ pub fn switching_strands_and_back_preserves_loaded_history_test() {
   assert list.length(returned.records) == full
   assert history_view.branch(returned.scrollback, current).unloaded == None
   assert list.first(returned.transcript)
-    == Ok(tui_model.Line(tui_model.System, "Beginning of this conversation."))
+    == Ok(transcript_line.Line(
+      transcript_line.System,
+      "Beginning of this conversation.",
+    ))
   assert returned.scrollback.request == history_view.Quiet
 }
 

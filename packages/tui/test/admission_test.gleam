@@ -25,6 +25,7 @@ import tui/connection
 import tui/model as tui_model
 import tui/msg
 import tui/runtime
+import tui/transcript_line
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -234,8 +235,8 @@ fn fresh() -> tui_model.Model {
 fn failures(model: tui_model.Model) -> List(String) {
   list.filter_map(model.transcript, fn(line) {
     case line {
-      tui_model.Line(tui_model.Failure, text) -> Ok(text)
-      tui_model.Line(..) -> Error(Nil)
+      transcript_line.Line(transcript_line.Failure, text) -> Ok(text)
+      transcript_line.Line(..) -> Error(Nil)
     }
   })
 }

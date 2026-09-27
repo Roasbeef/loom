@@ -16,6 +16,7 @@ import tui/buffered
 import tui/connection
 import tui/model as tui_model
 import tui/recording
+import tui/transcript_line
 import tui/virtual_backend
 import tui/workspace
 
@@ -72,7 +73,7 @@ pub fn run(path: String, expected_records: Int) -> Nil {
   assert list.length(final.records) == expected_records
     as "the reducer must retain the expected durable history"
   assert !list.any(final.transcript, fn(line) {
-    line.speaker == tui_model.Failure
+    line.speaker == transcript_line.Failure
   })
     as "the replay must not render protocol failures"
   io.println(

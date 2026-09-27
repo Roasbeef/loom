@@ -31,11 +31,10 @@ import tui/inbound
 import tui/job
 import tui/layout
 import tui/model.{
-  type Model, type Submission, ActivityAsking, ActivityDue, ActivityResting,
-  AgentInspector, Assistant, Attached, ComposerSubmission, DiffHidden,
-  DiffVisible, Disconnected, HeldPrompt, Interjection, Interrupt, Line, Model,
-  ModelSelector, NoOverlay, OverlaySubmission, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SteerNow, User,
+  type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
+  Attached, ComposerSubmission, DiffHidden, DiffVisible, Disconnected, Interrupt,
+  Model, ModelSelector, NoOverlay, OverlaySubmission, Preview, PromptNext,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SteerNow,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -44,6 +43,9 @@ import tui/pasted_image
 import tui/queue_editor
 import tui/session_control
 import tui/surfaces
+import tui/transcript_line.{
+  type Submission, Assistant, HeldPrompt, Interjection, Line, User,
+}
 
 /// Opens the agent workspace on the active strand.
 @internal

@@ -35,6 +35,7 @@ import tui/connection
 import tui/frame
 import tui/layout
 import tui/model as tui_model
+import tui/transcript_line
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -408,7 +409,7 @@ fn expanded_calls() -> Pane {
 fn said(text: String) -> Pane {
   let model =
     tui_model.Model(..quiet_model(connection.new_inbox(), Compact), transcript: [
-      tui_model.Line(tui_model.Assistant, text),
+      transcript_line.Line(transcript_line.Assistant, text),
     ])
   run(model, [])
 }
