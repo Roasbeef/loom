@@ -91,7 +91,20 @@ fn fixture(server: String) -> Nil {
 fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   let workspace = directory <> "/workspace"
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
-  let options = bootstrap.Options(workspace, "", server, paths.root, "")
+
+  // The same catalogue every shipped fixture uses: a provider this drive
+  // never calls, and memory maintenance off. Without a catalogue the daemon
+  // falls back to whatever the environment names, and the default
+  // distillation runs a pass when the stopped session's domain closes, right
+  // beside the reopen this drive makes next; neither is what it tests.
+  let configuration = directory <> "/fixture.toml"
+  let assert Ok(Nil) =
+    simplifile.write(
+      configuration,
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \"http://127.0.0.1:9\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+    )
+  let options =
+    bootstrap.Options(workspace, "", server, paths.root, configuration)
   let assert Ok(connected) =
     bootstrap.resolve_daemon(options, process.self(), 40_000)
     as "the shipped daemon starts through native bootstrap"
@@ -107,7 +120,7 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
       "shipped-claim",
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
-      "",
+      configuration,
     )
   let session = created.expected.session
   await_resident(connected.control, session, paths)
