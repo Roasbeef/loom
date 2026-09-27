@@ -172,6 +172,15 @@ fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
 // button names the tool it answers; and Allow is offered only when the
 // record's whole authority was captured, which `approval.presentation`
 // decides.
+//
+// The action row carries `arming`, which the stylesheet uses to refuse
+// clicks on the row for 600 ms after the card is inserted, with the buttons
+// drawn dimmed meanwhile. A card appears above the composer when the agent
+// decides, so a click already on its way to the bottom of the transcript
+// could otherwise land on Allow. The delay is a CSS animation, so it needs
+// no script and no timer here, and it runs once per inserted card: cards
+// are keyed by sequence, so a later patch updates the same node rather
+// than inserting a new one, and the animation does not start again.
 fn card(record: approval.Review) -> Element(Msg(socket)) {
   let tool = case record.tool {
     "" -> "this request"
@@ -197,14 +206,17 @@ fn card(record: approval.Review) -> Element(Msg(socket)) {
           [attribute.class("approval-authority")],
           list.map(shown.authority, fn(line) { html.li([], [html.text(line)]) }),
         ),
-        html.div([attribute.class("approval-actions")], [
-          deny,
-          button(
-            "approval-allow",
-            "Allow " <> tool <> " once",
-            Decided(record.id, record.seq, component.AllowOnce),
-          ),
-        ]),
+        html.div(
+          [attribute.class("approval-actions"), attribute.class("arming")],
+          [
+            deny,
+            button(
+              "approval-allow",
+              "Allow " <> tool <> " once",
+              Decided(record.id, record.seq, component.AllowOnce),
+            ),
+          ],
+        ),
       ])
     Error(reason) ->
       html.article([attribute.class("approval-card")], [
@@ -214,7 +226,10 @@ fn card(record: approval.Review) -> Element(Msg(socket)) {
         html.p([attribute.class("approval-question")], [
           html.text("This request cannot be approved from the page: " <> reason),
         ]),
-        html.div([attribute.class("approval-actions")], [deny]),
+        html.div(
+          [attribute.class("approval-actions"), attribute.class("arming")],
+          [deny],
+        ),
       ])
   }
 }

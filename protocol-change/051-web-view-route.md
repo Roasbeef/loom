@@ -856,10 +856,29 @@ anything in the dock.
   appears and leaves, and would sit in the region transcript content
   occupies. Not taken.
 
-**Cost.** The dock now covers the bottom of the transcript by the height
-of any pending cards. A card that appears while the pointer is travelling
-toward a transcript row just above the dock can land under that click.
-The only controls in the transcript are the fold toggles, the card's
-buttons are at its bottom edge next to the composer rather than at its
-top, and Deny is the first of them. The page tests pin the placement
-(`operator_page_test`, the approvals above the composer in the dock).
+**The card's buttons are armed after a delay.** For 600 ms after a card is
+inserted, its action row refuses clicks and its buttons are drawn dimmed.
+The dock covers the bottom of the transcript by the height of any pending
+cards, so a card that appears while the pointer is travelling toward a
+transcript row just above the dock could otherwise take that click on
+Allow. Browsers delay their own permission prompts in the same way, for
+the same reason. The delay is a CSS animation on the action row, keyed
+off its `arming` class: the keyframes hold `pointer-events: none`, and
+when the animation ends the row goes back to its own style. It needs no
+script, no client component near the card, and no server timer. It runs
+once per card, because cards are keyed by the record's sequence and a
+later patch updates the same node rather than inserting a new one. A page
+that reconnects draws every card again and arms each one again, which is
+the right reading for a card the person has not seen since. With
+`prefers-reduced-motion` the dimming is not drawn, and the delay still
+applies. The delay does not affect the keyboard: nothing on the page takes
+focus when a card appears, so a key cannot reach a new card's buttons
+without the person first moving focus to them.
+
+**Ruling (owner, 2026-09-27).** The cards stay above the composer in the
+dock, with the arming delay above.
+
+**Cost.** The dock covers the bottom of the transcript by the height of
+any pending cards, and a card's buttons do nothing for their first 600 ms,
+so a person who reads fast and clicks at once has to click again. The
+page tests pin the placement and the arming class (`operator_page_test`).

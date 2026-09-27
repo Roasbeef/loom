@@ -292,6 +292,18 @@ pub fn the_approvals_sit_above_the_composer_in_the_dock_test() {
   assert !string.contains(dock, "class=\"transcript lane\"")
 }
 
+// A card's action row carries the arming class, which the stylesheet uses
+// to refuse clicks on Deny and Allow for 600 ms after the card is inserted,
+// so a click already on its way to the transcript cannot land on Allow.
+pub fn an_approval_cards_buttons_are_armed_test() {
+  let #(model, _) = page("operator", pending())
+  let html = element.to_string(operator_page.view(model))
+  let assert Ok(#(_, actions)) =
+    string.split_once(html, "<div class=\"approval-actions arming\">")
+    as "the card's action row carries the arming class"
+  assert string.contains(actions, "Allow fs_write once")
+}
+
 // The card is drawn from the record alone, outside the transcript: Deny is
 // its first control, every button names the tool, nothing takes focus, and
 // the session's text is escaped.

@@ -215,7 +215,10 @@ in a style no transcript line uses. The composer and the region share the
 dock, a footer pinned to the bottom of the viewport, so a pending card is
 on screen wherever the operator has scrolled. The dock is pinned by its
 bottom edge, so a card appearing grows it upward and never moves the
-composer's controls; a card drawn inline in the transcript could still
+composer's controls. The card's buttons refuse clicks for 600 ms after it
+appears, as a browser's permission prompt does, so a click aimed at the
+bottom of the transcript cannot land on Allow. A card drawn inline in the
+transcript could still
 move a button under a click already on its way somewhere else, which is
 why it is not drawn there (051, the addendum on the pinned composer). In the transcript column, the row of the call that holds
 the claim (a `bash` call, a native file tool, or a program launch) shows

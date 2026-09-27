@@ -395,8 +395,11 @@ would try to trick the person into approving:
   footer pinned to the bottom of the viewport, so a pending card is on
   screen wherever the operator has scrolled. The dock is pinned by its
   bottom edge, so a card appearing grows it upward and leaves the
-  composer's controls where they were (051, the addendum on the pinned
-  composer).
+  composer's controls where they were. For 600 ms after a card is
+  inserted its buttons refuse clicks and are drawn dimmed (a CSS
+  animation on the action row's `arming` class), so a click already
+  heading for the bottom of the transcript cannot land on Allow (051, the
+  addendum on the pinned composer).
 - Deny comes first, each button names the tool ("Deny bash", "Allow bash
   once"), nothing has `autofocus`, and a new card never takes focus.
 - Enter in the composer is a newline. A draft is sent only by the form's

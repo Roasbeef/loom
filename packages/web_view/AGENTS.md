@@ -130,7 +130,10 @@ page keys and nonces, and the relay into the session's gateway.
   appearing grows the dock upward and never moves the composer, and the
   region's height is capped so it scrolls on its own. With nothing pending
   the region is `element.none()`, so the composer's path does not change
-  when a card appears. Deny comes first; each button
+  when a card appears. The action row carries `arming`: for 600 ms after
+  a card is inserted the stylesheet refuses clicks on it and dims the
+  buttons, and cards keyed by sequence keep their node so a patch never
+  restarts it; reduced motion drops only the dimming. Deny comes first; each button
   names the tool; nothing has `autofocus`; the composer's submit never
   decides an approval; a decision is sent only for the record still pending
   at the drawn sequence (`operator.drawn`).
