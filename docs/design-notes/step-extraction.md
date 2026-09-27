@@ -1,6 +1,7 @@
 # Extracting the client step into `session_view`
 
-Status: **proposed**, for the owner's ruling. Design note for
+Status: **accepted**; the owner ruled on questions 1 and 2 of section 6
+on 2026-09-27 and approved starting S1. Design note for
 [issue #569](https://github.com/Roasbeef/loom/issues/569) Part 1. Written
 against `main` at `868dfedd8` on 2026-09-27; every line number below was
 checked against that tree.
@@ -15,7 +16,8 @@ the terminal's reducers instead of its own. It settles six things: which
 fields of the terminal's model are session state and which are the
 terminal's own, the signature of the shared step, how the reducers that
 touch both kinds of state are cut, what the web view deletes, the order of
-slices, and the questions only the owner can settle.
+slices, and the questions that were left open, two of which the owner
+has since ruled on.
 
 The design points the issue records from the outside review are taken as
 given and not re-argued: two records per host (`{shared, view}`), no new
@@ -774,24 +776,28 @@ S1 can start now. S5 must wait for S4, and S3's landings for S2; nothing
 else is ordered. The first pull request is S1 alone, so that its size is
 reviewed as the mechanical change it is.
 
-## 6. Risks and open questions
+## 6. Rulings, risks and open questions
 
-1. **The shared step never sees a key.** ADR-014's second blocker
-   proposed engine-owned key and pointer types so that the key handlers
-   could move. This note does not take that path: the handlers read four
-   terminal surfaces before they decide, and moving them would move the
-   surfaces. The consequence is that `tui/interaction` stays in the
-   terminal at its current size and the web maps DOM events to `Command`
-   values, which is what it does today for its two handlers.
-   *Recommendation:* accept, and amend ADR-014's blocker 2 in S6 to say
-   the path taken was a command vocabulary rather than a key vocabulary.
+The first two were decided by the owner on 2026-09-27, as recommended.
+The rest are open, for the implementer to settle in the slice that meets
+them.
 
-2. **Daemon control and the attachment stay in the terminal.** Part 2's
-   session sidebar wants to switch sessions from the page. With the
-   catalogue and the attempt in the terminal shell, the page cannot reuse
-   them. *Recommendation:* the page mounts one component per session, as
-   ADR-014's direction section already says; the daemon side lists
-   sessions from its own registry rather than through the control
+1. **Decided (owner, 2026-09-27): commands, not a shared key
+   vocabulary.** ADR-014's second blocker proposed engine-owned key and
+   pointer types so that the key handlers could move. That path is not
+   taken: the handlers read four terminal surfaces before they decide,
+   and moving them would move the surfaces. Keys stay in the terminal
+   shell, and both shells emit the same closed `Command` set; the web
+   maps DOM events to it, which is what it does today for its two
+   handlers. `tui/interaction` stays in the terminal at its current
+   size. S6 records the ruling in an ADR-014 addendum amending blocker 2.
+
+2. **Decided (owner, 2026-09-27): daemon control, reconnect and the
+   attachment jobs stay terminal-only.** The catalogue, the relaunch and
+   the provisional attempt live in the terminal shell and the page does
+   not reuse them. Part 2's session sidebar mounts one component per
+   session, as ADR-014's direction section already says; the daemon side
+   lists sessions from its own registry rather than through the control
    protocol the terminal speaks.
 
 3. **Presentation revisions in the shared record.** `render_revision`,
