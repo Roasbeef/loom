@@ -149,6 +149,7 @@ fn reconnect_probe(paths, record, owner, deadline) {
         | Ok(protocol.PeersInspectionReply(_))
         | Ok(protocol.PeersMutationReply(_))
         | Ok(protocol.ActivityReply(_))
+        | Ok(protocol.UiLinkReply(..))
         | Error(_) -> {
           daemon.close(connected.control)
           poll.Retry

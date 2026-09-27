@@ -381,6 +381,7 @@ fn same_epoch(data: Data, reply: protocol.Reply) {
     | protocol.PeersInspectionReply(_), _
     | protocol.PeersMutationReply(_), _
     | protocol.ActivityReply(_), _
+    | protocol.UiLinkReply(..), _
     | protocol.ShutdownReply, _
     -> True
   }

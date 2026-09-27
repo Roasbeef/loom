@@ -41,7 +41,27 @@ pub fn resolve_daemon(
   owner: process.Pid,
   within_ms: Int,
 ) -> Result(daemon_bootstrap.Connected, String) {
-  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.resolve)
+  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.resolve, [])
+}
+
+/// Resolves the daemon as `resolve_daemon` does, starting it with `--ui`
+/// when none is running, so a daemon this launch starts serves the web view
+/// (protocol-change/051). A daemon that is already running is reused as it
+/// is; whether it serves the view is its `hello`'s to say.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.resolve_viewing_daemon(options, terminal_pid, 30_000)
+/// ```
+pub fn resolve_viewing_daemon(
+  options: Options,
+  owner: process.Pid,
+  within_ms: Int,
+) -> Result(daemon_bootstrap.Connected, String) {
+  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.resolve, [
+    "--ui",
+  ])
 }
 
 /// Reuses an accepting daemon or waits for native retirement before relaunch.
@@ -60,10 +80,16 @@ pub fn reconnect_daemon(
   owner: process.Pid,
   within_ms: Int,
 ) -> Result(daemon_bootstrap.Connected, String) {
-  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.reconnect)
+  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.reconnect, [])
 }
 
-fn resolve_daemon_with(options: Options, owner, within_ms, resolve) {
+fn resolve_daemon_with(
+  options: Options,
+  owner,
+  within_ms,
+  resolve,
+  extra: List(String),
+) {
   use state <- result.try(state_directory(options.state_directory))
   use paths <- result.try(daemon_endpoint.paths(state))
   resolve(
@@ -75,7 +101,8 @@ fn resolve_daemon_with(options: Options, owner, within_ms, resolve) {
       Ok(daemon_bootstrap.Launch(
         server,
         daemon_launch_arguments(paths.root, server, config)
-          |> daemon_profile_arguments,
+          |> daemon_profile_arguments
+          |> list.append(extra),
       ))
     },
     within_ms,

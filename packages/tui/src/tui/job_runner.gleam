@@ -518,6 +518,7 @@ fn load_page(host, command, collection, session, workspace) {
     | control_protocol.PeersInspectionReply(_)
     | control_protocol.PeersMutationReply(_)
     | control_protocol.ActivityReply(_)
+    | control_protocol.UiLinkReply(..)
     | control_protocol.ShutdownReply ->
       Error("catalogue returned an unexpected control reply")
   })
@@ -638,6 +639,7 @@ fn activity(
     | control_protocol.DeletedReply(_)
     | control_protocol.PeersInspectionReply(_)
     | control_protocol.PeersMutationReply(_)
+    | control_protocol.UiLinkReply(..)
     | control_protocol.ShutdownReply ->
       Error("activity returned an unexpected control reply")
   }

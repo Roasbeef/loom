@@ -12,7 +12,8 @@
 -export([host_with_build/3]).
 
 %% `Host(Connection(commands, pid, Hello(epoch, principal, control_bytes,
-%% Some(Build(version, commit)))), address, token)`.
+%% Some(Build(version, commit)), NoWebView)), address, token)`.
 host_with_build(Subject, Version, Commit) ->
-    Hello = {hello, nil, <<"operator">>, 65536, {some, {build, Version, Commit}}},
+    Hello = {hello, nil, <<"operator">>, 65536, {some, {build, Version, Commit}},
+        no_web_view},
     {host, {connection, Subject, self(), Hello}, nil, <<>>}.

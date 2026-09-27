@@ -111,6 +111,10 @@ type Launch {
 
   Demo
   Local(bootstrap.Options, selected: String)
+
+  // `loom --ui --session <id>` prints a link that opens the session's web
+  // view (protocol-change/051). It installs no terminal state.
+  View(options: bootstrap.Options, session: String)
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
@@ -222,6 +226,7 @@ pub fn main() {
         ["ext", ..]
         | ["replay", ..]
         | ["sessions", ..]
+        | ["--ui", ..]
         | ["update", ..]
         | ["version", ..]
         | ["--version", ..] -> #("", raw)
@@ -237,6 +242,7 @@ pub fn main() {
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
         Sessions(options:, command:) -> run_sessions(options, command)
+        View(options:, session:) -> run_view(options, session)
         Invalid(reason) -> rejected_launch(reason)
         Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
       }
@@ -627,8 +633,13 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // recorded.
   let launched = case launch {
     // Unreachable: `main` answers these before it builds a model.
-    Version | Forward(..) | Update(..) | Replay(..) | Sessions(..) | Demo ->
-      base
+    Version
+    | Forward(..)
+    | Update(..)
+    | Replay(..)
+    | Sessions(..)
+    | View(..)
+    | Demo -> base
     Local(options, selected) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a
@@ -781,6 +792,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
+    ["--ui", ..rest] -> parse_view(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
     _ ->
       case
@@ -854,6 +866,117 @@ fn sessions_usage() -> String {
 // length of the command. Nothing is retained: the connection closes before
 // the exit status is chosen, so a refusal and a success leave the daemon in
 // the same state as far as this launcher is concerned.
+// `--ui` is followed by `--session <id>` and the shared local options.
+fn parse_view(arguments: List(String)) -> Launch {
+  case session_control.flag_value(arguments, "--session") {
+    Error(_) -> Invalid("loom --ui needs --session <id>\n" <> launch_usage())
+    Ok(session) ->
+      case
+        parse_local_options(
+          without_flag(arguments, "--session"),
+          default_bootstrap_options(),
+        )
+      {
+        Ok(options) -> View(options:, session:)
+        Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
+      }
+  }
+}
+
+fn without_flag(arguments: List(String), flag: String) -> List(String) {
+  case arguments {
+    [] -> []
+    [name, _value, ..rest] if name == flag -> without_flag(rest, flag)
+    [name, ..rest] -> [name, ..without_flag(rest, flag)]
+  }
+}
+
+// Resolves the daemon (starting it with `--ui` when none runs), refuses a
+// running daemon that does not serve the view, opens the session if it is
+// not resident, and prints the link its `ui.link` returns. It never stops
+// or relaunches a running daemon: other people's terminals may be on it.
+fn run_view(options: bootstrap.Options, session: String) -> Nil {
+  let outcome = {
+    use connected <- result.try(bootstrap.resolve_viewing_daemon(
+      options,
+      process.self(),
+      90_000,
+    ))
+    let control = connected.control
+    let linked = {
+      use Nil <- result.try(view_served(daemon.hello(control).view))
+      use origin <- result.try(web_origin(connected.record))
+      use host <- result.try(view_host(
+        connected.record,
+        connected.paths.token,
+        control,
+      ))
+      use _target <- result.try(daemon_selection.open(host, session))
+      use reply <- result.try(
+        daemon.request(control, control_protocol.UiLink(session), 5000)
+        |> result.map_error(daemon_selection.failure),
+      )
+      case reply {
+        control_protocol.UiLinkReply(path:, ..) -> Ok(origin <> path)
+        _other -> Error("ui.link returned an unexpected control reply")
+      }
+    }
+    daemon.close(control)
+    linked
+  }
+  case outcome {
+    Ok(link) -> io.println(link)
+    Error(reason) -> {
+      io.println_error("loom --ui: " <> reason)
+      ffi_terminal.halt(1)
+      Nil
+    }
+  }
+}
+
+/// Whether a running daemon serves the web view, and what to tell the
+/// operator when it does not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert view_served(control_protocol.WebViewAt("/ui")) == Ok(Nil)
+/// ```
+@internal
+pub fn view_served(view: control_protocol.WebView) -> Result(Nil, String) {
+  case view {
+    control_protocol.WebViewAt(_) -> Ok(Nil)
+    control_protocol.NoWebView ->
+      Error(
+        "the running daemon was started without --ui. Stop it (loom update "
+        <> "restarts it, or end the loomd process) and run loom --ui again to "
+        <> "start one that serves the web view; it was left running because "
+        <> "other terminals may be attached to it.",
+      )
+  }
+}
+
+// The page's origin: the listener's loopback address over http.
+fn web_origin(record: endpoint.Endpoint) -> Result(String, String) {
+  case record {
+    endpoint.Ready(host: "::1", port:, ..) ->
+      Ok("http://[::1]:" <> int.to_string(port))
+    endpoint.Ready(host:, port:, ..) ->
+      Ok("http://" <> host <> ":" <> int.to_string(port))
+    endpoint.Starting(..) -> Error("the daemon has not published its address")
+  }
+}
+
+fn view_host(record: endpoint.Endpoint, token_file: String, control) {
+  use address <- result.try(endpoint.address(record))
+  use bytes <- result.try(host_bootstrap.read_private_bounded(token_file, 65))
+  use token <- result.try(
+    bit_array.to_string(bytes)
+    |> result.replace_error("invalid owner credential encoding"),
+  )
+  daemon_selection.host(control, address, string.trim(token))
+}
+
 fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
   case sessions_host(options) {
     Error(reason) -> sessions_failed(reason)
@@ -1026,6 +1149,7 @@ fn launch_usage() -> String {
   <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"
+  <> "  --ui --session <id> Print a link to the session's read-only web view.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
