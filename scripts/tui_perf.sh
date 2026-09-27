@@ -15,6 +15,12 @@
 #   session <frames>       process and model memory after a long reply
 #   replay <frames>        a synthesized recording through the virtual terminal
 #   profile <tick|key>     words by function for one 64-frame event
+#   growth <frames>        per-frame cost as one reply grows, at powers of two
+#   profile_at <frames>    calls by function for the tick after <frames> of a
+#                          reply (TUI_PERF_TYPE=call_count|call_time|call_memory)
+#
+# The streamed reply is one long paragraph, a line break every twelve words;
+# TUI_PERF_SHAPE=paragraphs makes every break a blank line instead.
 #
 # Each run is one fresh VM on one scheduler. To compare revisions, add a git
 # worktree per revision (not under /tmp), build each, and alternate the runs:
@@ -23,7 +29,7 @@
 set -euo pipefail
 
 if [ "$#" -lt 3 ]; then
-  sed -n '5,18p' "$0"
+  sed -n '5,23p' "$0"
   exit 2
 fi
 
