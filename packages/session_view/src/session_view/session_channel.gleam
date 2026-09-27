@@ -454,6 +454,40 @@ pub fn take_outputs(
   #(Channel(..channel, outbox: []), list.reverse(channel.outbox))
 }
 
+/// The lane's state with its host handles forgotten: no socket, no recorder
+/// and nothing queued for either.
+///
+/// Two hosts that drove one lane through the same messages at the same
+/// readings hold equal values here, whatever their sockets are, which is
+/// what ADR-014's one-engine-two-views claim means for the engine; the
+/// parity test between the terminal and the web view compares exactly this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_channel.state(web_lane) == session_channel.state(terminal_lane)
+/// ```
+@internal
+pub fn state(channel: Channel(socket, recorder)) -> Channel(Nil, Nil) {
+  Channel(
+    socket: None,
+    outbox: [],
+    trace: None,
+    issued: channel.issued,
+    expected: channel.expected,
+    phase: channel.phase,
+    request_id: channel.request_id,
+    next_id: channel.next_id,
+    deadline: channel.deadline,
+    attachment: channel.attachment,
+    cut: channel.cut,
+    queued: channel.queued,
+    refresh_at: channel.refresh_at,
+    refresh: channel.refresh,
+    trigger: channel.trigger,
+  )
+}
+
 /// Returns the selected raw socket for liveness/adoption and shutdown only.
 ///
 /// ## Examples
