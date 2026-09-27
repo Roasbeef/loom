@@ -35,6 +35,15 @@ callers own launch timing, authentication policy, and application messages.
   reservation with the actual listener port and daemon epoch.
 - Private-file operations validate ownership and permissions, bound reads,
   and atomically replace a file after flushing its complete contents.
+- `host/claim` is the shape of a claim token (protocol-change/053) shared by
+  the daemon that mints claims, `loomd access` that prints them and `loom
+  claim` that redeems them: `prefix` (`loomclaim_`), `validate_token` (the
+  prefix and 64 lowercase hex, nothing else), `is_claim_shaped`,
+  `mint_token(entropy)`, `random_credential` (32 bytes of
+  `crypto:strong_rand_bytes`), and `digest` (lowercase SHA-256 hex). It also
+  owns `remote_address`, the rule that a bearer or a claim crosses cleartext
+  `ws` only to a literal loopback address, and `endpoint`, which turns a
+  `/v2/control` address into its `/v2/claim` twin.
 - `host/websocket.Connection` retains the original socket subject.
   `connect_mapped` maps every lifecycle event in the existing socket owner, so
   terminal adapters need no forwarding process. `Connected` is minted in the
@@ -54,9 +63,10 @@ callers own launch timing, authentication policy, and application messages.
   `envoy`, `simplifile` and `filepath` for the facts that used to be
   hand-written Erlang. These transport dependencies moved from the TUI; no
   second WebSocket implementation was added.
-- **Depended on by**: `client` for daemon state-root ownership; `tui` for
-  local server bootstrap and its own bounded file reads. Terminal logger
-  suppression, stdout forwarding, and VM exit remain in `tui`.
+- **Depended on by**: `client` for daemon state-root ownership and the claim
+  token shape; `tui` for local server bootstrap, its own bounded file reads,
+  the remote-address rule and `loom claim`. Terminal logger suppression,
+  stdout forwarding, and VM exit remain in `tui`.
 - **FFI**: `host/internal/ffi_zlib` exposes the shared bounded gzip inflater
   in `host_zlib_ffi.erl`. Extension installation retains its original client
   adapter, while release installation calls the shared primitive directly.
@@ -130,6 +140,11 @@ callers own launch timing, authentication policy, and application messages.
 - The transport does not implement application credits or bound an arbitrary
   reader's inbox. Callers enforce their protocol's frame and outstanding-work
   limits; moving the transport does not establish a new memory bound.
+- A claim token and a bearer are told apart by shape alone: a claim always
+  carries the prefix and a bearer never does. Every place that accepts one
+  refuses the other, and no function here logs, formats or echoes either;
+  `validate_token`'s refusal is a fixed sentence that does not repeat its
+  input.
 
 ## Deep Docs
 
