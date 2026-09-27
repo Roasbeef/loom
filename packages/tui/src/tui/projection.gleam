@@ -19,19 +19,21 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import session_view/advisor_history
 import session_view/composer
 import session_view/notes_view
 import session_view/tool_activity
 import session_view/transcript_line.{
-  type Line, Assistant, Failure, Line, Reasoning, ReasoningDigest, Spacer,
-  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolPatch, ToolResult, User,
+  type Line, type Speaker, type Stream, Assistant, Failure, Line, Reasoning,
+  ReasoningDigest, Spacer, SummarizedAdvice, SummarizedReasoning, System,
+  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
 }
 import tui/layout
+import tui/live_tail
 import tui/markdown
 import tui/model.{type Model, Model, View} as tui_model
 import tui/render
@@ -81,7 +83,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
       let cached =
         refresh_diff_cache(before, Model(..after, reading_lines:))
         |> refresh_record_cache(width)
-      let #(rendered_rows, rendered_gutters) =
+      let #(rendered_rows, rendered_gutters, live_tail) =
         rendered_layout_for(cached, width)
       let rendered_row_count = list.length(rendered_rows)
 
@@ -166,7 +168,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
         restored_workspace: None,
         rendered_revision: cached.render_revision,
         rendered_row_count:,
-        view: View(..cached.view, rendered_rows:),
+        view: View(..cached.view, rendered_rows:, live_tail:),
         revealed_rows:,
         rendered_anchors:,
         rendered_gutters:,
@@ -622,36 +624,54 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
   }
 }
 
-// The live tail is parsed afresh on every call rather than memoized: a memo
-// would pin one more generation of the live region than the retained-bytes
-// gate on streaming has headroom for, and it would save a few parses a
-// second rather than one per frame.
+// The live answer is the one line here whose text grows on every frame, so
+// it is laid out by `live_tail`, which keeps what the last frame decided and
+// reprocesses only what the new text can change. Every other transient line
+// is rendered afresh; they are small. Frozen reading lines are not live, so
+// they are rendered afresh too and leave the live cache as it was.
 //
 // The viewport consumes rows newest-first. Keeping that order in the cache
 // makes each live frame prepend only the small transient stream projection.
 fn rendered_layout_for(
   model: Model,
   width: Int,
-) -> #(List(span.Line), List(Int)) {
+) -> #(List(span.Line), List(Int), live_tail.Cache) {
   case model.help_open, model.notes_open {
     True, _ -> {
       let rows =
         render.help_content().lines
         |> markdown.wrap_lines(width)
         |> list.reverse
-      #(rows, list.repeat(0, list.length(rows)))
+      #(rows, list.repeat(0, list.length(rows)), model.view.live_tail)
     }
     False, True -> {
       // Notes render against their actual rectangle in `render_transcript`.
-      #([], [])
+      #([], [], model.view.live_tail)
     }
     False, False -> {
-      let lines =
-        option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
-      let #(transient_rows, transient_gutters) = rendered_lines(lines, width)
+      let #(transient_rows, transient_gutters, cache) = case
+        model.reading_lines
+      {
+        Some(lines) -> {
+          let #(rows, gutters, _) =
+            rendered_lines(lines, width, [], live_tail.begin(live_tail.new()))
+          #(rows, gutters, model.view.live_tail)
+        }
+        None -> {
+          let #(rows, gutters, pass) =
+            rendered_lines(
+              transient_lines(model),
+              width,
+              live_sources(model),
+              live_tail.begin(model.view.live_tail),
+            )
+          #(rows, gutters, live_tail.finish(pass))
+        }
+      }
       #(
         transient_rows |> list.reverse |> list.append(model.view.record_rows),
         transient_gutters |> list.reverse |> list.append(model.record_gutters),
+        cache,
       )
     }
   }
@@ -662,16 +682,65 @@ fn rendered_layout_for(
 fn rendered_lines(
   lines: List(Line),
   width: Int,
-) -> #(List(span.Line), List(Int)) {
-  list.fold(lines, #([], []), fn(acc, line) {
-    let #(rows, gutters) = acc
-    let rendered = render.render_line(line, width)
+  sources: List(#(Speaker, Stream)),
+  pass: live_tail.Pass,
+) -> #(List(span.Line), List(Int), live_tail.Pass) {
+  list.fold(lines, #([], [], pass), fn(acc, line) {
+    let #(rows, gutters, pass) = acc
+    let #(rendered, pass) = line_rows(line, width, sources, pass)
     let rendered_count = list.length(rendered)
     let line_gutters =
       list.index_map(rendered, fn(_, index) {
         copy_gutter(line, index, rendered_count)
       })
-    #(list.append(rows, rendered), list.append(gutters, line_gutters))
+    #(list.append(rows, rendered), list.append(gutters, line_gutters), pass)
+  })
+}
+
+// A line drawn from a live stream goes through the live tail, which gives
+// the rows `render_line` would. The stream is found by the speaker its line
+// has, and only when exactly one stream draws with that speaker, so the line
+// and its fragments cannot be mismatched. Its byte count must also be the
+// line's, which a stream's text always is.
+fn line_rows(
+  line: Line,
+  width: Int,
+  sources: List(#(Speaker, Stream)),
+  pass: live_tail.Pass,
+) -> #(List(span.Line), live_tail.Pass) {
+  let bytes = string.byte_size(line.text)
+  case list.filter(sources, fn(source) { source.0 == line.speaker }) {
+    [#(speaker, stream)] if stream.bytes == bytes -> {
+      let layout =
+        live_tail.Layout(
+          room: render.markdown_room(speaker, width),
+          finish: fn(rows, run) {
+            render.finish_markdown_rows(speaker, rows, run)
+          },
+        )
+      live_tail.rows(pass, speaker, line.text, stream.fragments, layout)
+    }
+    _ -> #(render.render_line(line, width), pass)
+  }
+}
+
+// The active strand's live streams whose lines are Markdown, each with the
+// speaker `transcript_lines.stream_lines` draws it as: an answer as
+// `Assistant`, and a reasoning stream as `Reasoning` when details are
+// expanded. A collapsed reasoning stream is a one-row digest and a tool call
+// is its name, neither of which grows into many rows.
+fn live_sources(model: Model) -> List(#(Speaker, Stream)) {
+  let extent = transcript_lines.details_extent(model.details_expanded)
+  tui_model.presentation(model)
+  |> transcript_lines.display_streams
+  |> list.filter_map(fn(stream) {
+    case stream.strand == model.active_strand, stream.kind, extent {
+      False, _, _ -> Error(Nil)
+      True, "end", _ | True, "tool_call", _ -> Error(Nil)
+      True, "thinking", notes_view.Complete -> Ok(#(Reasoning, stream))
+      True, "thinking", notes_view.Excerpt -> Error(Nil)
+      True, _, _ -> Ok(#(Assistant, stream))
+    }
   })
 }
 

@@ -1283,23 +1283,21 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       // finds it unset is the fallback, for a phase sequence that never
       // said so. Later fragments, and other strands, leave it alone.
       let generation_started_ms = generation_clock(model, strand)
-      let updated =
-        Model(
-          ..model,
-          streams: receive_stream(
-            streams_before_end(model, strand, operation, generation, kind),
-            strand,
-            operation,
-            generation,
-            kind,
-            text,
-          ),
-          generation_started_ms:,
-          notice: case kind {
-            "end" -> "request finished"
-            _ -> "streaming " <> kind
-          },
+      let streams =
+        receive_stream(
+          streams_before_end(model, strand, operation, generation, kind),
+          strand,
+          operation,
+          generation,
+          kind,
+          text,
         )
+
+      let updated =
+        Model(..model, streams:, generation_started_ms:, notice: case kind {
+          "end" -> "request finished"
+          _ -> "streaming " <> kind
+        })
       case strand == model.active_strand {
         True -> tui_model.invalidate_transcript(updated)
         False -> updated
@@ -1775,6 +1773,10 @@ fn owned(text: String) -> String {
 // it again, and the amortised cost would be the copy paid per token rather
 // than once per budget. So the region is bounded by twice `live_stream_limit`
 // rather than by it, and that is the number the invariant states.
+//
+// The newest bytes are a slice of the joined answer, so keeping the slice
+// would keep all of it: twice the limit held to show the limit. They are
+// copied out, as `owned` does for a delta, once per collapse.
 fn bounded(fragments: List(String), bytes: Int) -> #(List(String), Int) {
   case bytes <= transcript_lines.live_stream_limit * 2 {
     True -> #(fragments, bytes)
@@ -1784,6 +1786,7 @@ fn bounded(fragments: List(String), bytes: Int) -> #(List(String), Int) {
         |> list.reverse
         |> string.concat
         |> newest_bytes(transcript_lines.live_stream_limit)
+        |> owned
       #([newest], string.byte_size(newest))
     }
   }

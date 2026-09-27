@@ -430,6 +430,16 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   and `drain_configuration` continues the creation with its answer.
 - `tui/projection`: `refresh_render_cache`, `refresh_diff_cache` and the
   record row cache.
+- `tui/live_tail`: the rows of a streaming answer, rebuilt each frame from
+  what changed. `Cache` lives on the render caches as `View.live_tail`,
+  written only by the projection; a projection brackets
+  its live lines with `begin` and `finish` and draws each through `rows`,
+  which gives exactly `render.render_line`'s rows. Closed Markdown blocks
+  settle once, the hygiene pass runs only over text
+  `text_hygiene.unchanged_prefix` has not vouched for, the open tail's
+  growing paragraph re-wraps from its last row (`markdown.rewrap`), and a
+  long paragraph is parsed only after a checkpoint past its plain leading
+  lines (`markdown.join_soft_break`).
 - `tui/submit`: composer submission, input history, interrupts and target
   switches.
 - `tui/interaction`: key, paste, mouse and candidate-event handling.
@@ -1503,6 +1513,23 @@ untouched.
   never re-renders on its own: it returns whatever frame the event handler
   last cached for this screen, so a stale frame on screen is always a
   deliberate one.
+- **The live tail draws what a full render draws.** `live_tail.rows` must
+  return exactly `render.render_line` for the whole answer on every frame,
+  since replay goldens compare frames byte for byte;
+  `test/live_tail_test.gleam` checks it over generated streams, resizes and
+  resets. It settles a block only at a blank line followed by a line
+  starting with a letter, and only after rendering the halves and the whole
+  to confirm the cut; a paragraph checkpoint sits only after lines free of
+  Markdown punctuation, `&`, hard breaks and blank lines, before a line
+  starting with a letter, and is dropped when a later line could be a
+  setext underline or table row; it renders whole any text holding a reference
+  definition or footnote; and it keeps no copy of the answer: the stream is
+  recognised by its fragment list, and `inbound` drops the cache when a
+  text or reasoning delta resets or collapses that list, so a stale list
+  is never kept alive beside the new one (`stream_bounds_test` bounds what
+  it may keep); a tool call delta, whose list is replaced every time,
+  leaves it alone. `live_tail.shortcuts` is how tests show a shortcut was
+  actually taken rather than every frame falling back to a full render.
 - **Bursts are paced as well as batched.** Etui applies up to sixty-four queued
   events before drawing, but every event still advances the immutable model
   through `update`, where Loom maintains its completed-frame cache, and a long

@@ -81,6 +81,12 @@ read, takes the lane's outputs and performs them.
   identity and the sequence it was drawn at; `drain(state, budget, take,
   handle)` is the bounded, oldest-first loop both hosts feed the lane
   with.
+- `text_hygiene.multiline` and `single_line`: the terminal-safety pass
+  every untrusted string goes through. `unchanged_prefix` is how many
+  leading bytes the pass leaves as they are, with the guarantee that the
+  pass over the whole is that prefix followed by the pass over the rest;
+  the terminal's live tail uses it to sanitize a growing answer once
+  rather than on every frame.
 
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and

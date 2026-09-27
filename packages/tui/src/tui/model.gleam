@@ -71,6 +71,7 @@ import tui/focused_goal_panel
 import tui/herdr
 import tui/job
 import tui/job_runner
+import tui/live_tail
 import tui/model_selector
 import tui/msg
 import tui/note_panel
@@ -355,6 +356,12 @@ pub type View {
     rendered_rows: List(span.Line),
     /// The wrapped rows of the durable records alone.
     record_rows: List(span.Line),
+    /// What the last projection decided about the live answer's rows, so
+    /// the next one reprocesses only the text that arrived since. It holds
+    /// the fragment list it last drew and checks it against the stream on
+    /// every projection, so a stream that restarts or collapses finds the
+    /// cache stale here and no reducer has to drop it.
+    live_tail: live_tail.Cache,
     /// Wrapped rows keyed by the complete presentation line. A rebuild keeps
     /// only the current projection, so old branches and outcomes are released.
     record_line_cache: Dict(Line, List(span.Line)),
@@ -388,6 +395,7 @@ pub fn empty_view() -> View {
   View(
     rendered_rows: [],
     record_rows: [],
+    live_tail: live_tail.new(),
     record_line_cache: dict.new(),
     diff_rows: [],
     diff_line_cache: dict.new(),

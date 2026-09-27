@@ -5,6 +5,7 @@
 //// may still emit their bytes. Replacing controls before they reach a span
 //// keeps model output from becoming terminal control traffic.
 
+import gleam/bit_array
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -140,6 +141,69 @@ fn osc_escape_tail(
         True -> Some(rest)
         False -> osc_tail(remaining)
       }
+  }
+}
+
+/// How many leading bytes of `text` `multiline` leaves exactly as they are,
+/// whatever follows them.
+///
+/// The prefix ends before the first codepoint the pass would replace, drop
+/// or rewrite: a carriage return, a tab, an escape that opens a sequence, or
+/// any other control, format or direction codepoint. None of those is in the
+/// prefix, so no rewrite can start in it and none that starts later reaches
+/// back into it, and for `n = unchanged_prefix(text)` the pass satisfies
+///
+/// `multiline(text) == first n bytes of text <> multiline(the rest)`.
+///
+/// A host that sanitizes a growing text can therefore keep the prefix it has
+/// already checked and pass only what follows it, and when the whole text is
+/// unchanged it need not rebuild the text at all. The scan reads a byte or a
+/// codepoint per step without decoding the text into a list.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert text_hygiene.unchanged_prefix("plain text") == 10
+/// assert text_hygiene.unchanged_prefix("one\r\ntwo") == 3
+/// ```
+pub fn unchanged_prefix(text: String) -> Int {
+  unchanged_bytes(bit_array.from_string(text), 0)
+}
+
+// One step of `unchanged_prefix`. Printable ASCII and the line feed are the
+// common case and are checked by value; a longer UTF-8 sequence is decoded
+// by arithmetic, which every target supports, and kept unless `invisible`
+// says the pass would replace it. The text is a `String`, so every sequence
+// is well formed and the arms below are the only shapes it can take.
+fn unchanged_bytes(bits: BitArray, count: Int) -> Int {
+  case bits {
+    <<byte, rest:bytes>> if byte >= 0x20 && byte < 0x7F ->
+      unchanged_bytes(rest, count + 1)
+    <<0x0A, rest:bytes>> -> unchanged_bytes(rest, count + 1)
+    <<lead, second, rest:bytes>> if lead >= 0xC2 && lead < 0xE0 ->
+      kept_codepoint(rest, count, 2, { lead - 0xC0 } * 64 + second - 0x80)
+    <<lead, second, third, rest:bytes>> if lead >= 0xE0 && lead < 0xF0 ->
+      kept_codepoint(
+        rest,
+        count,
+        3,
+        { lead - 0xE0 } * 4096 + { second - 0x80 } * 64 + third - 0x80,
+      )
+    <<lead, second, third, fourth, rest:bytes>> if lead >= 0xF0 -> {
+      let high = { lead - 0xF0 } * 262_144 + { second - 0x80 } * 4096
+      let code = high + { third - 0x80 } * 64 + fourth - 0x80
+      kept_codepoint(rest, count, 4, code)
+    }
+    _ -> count
+  }
+}
+
+// A decoded codepoint of `width` bytes extends the prefix past it if the
+// pass keeps it, and ends the prefix where it begins if the pass replaces it.
+fn kept_codepoint(rest: BitArray, count: Int, width: Int, code: Int) -> Int {
+  case invisible(code) {
+    True -> count
+    False -> unchanged_bytes(rest, count + width)
   }
 }
 

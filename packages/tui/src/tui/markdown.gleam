@@ -14,6 +14,7 @@
 import etui/span
 import etui/style
 import etui/text
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some, unwrap}
@@ -142,8 +143,26 @@ const min_column = 3
 /// let lines = markdown.render("**bounded** output", 80)
 /// ```
 pub fn render(markdown: String, width: Int) -> List(span.Line) {
-  let safe = text_hygiene.multiline(markdown)
+  render_sanitized(text_hygiene.multiline(markdown), width)
+}
 
+/// `render` for text that has already been through
+/// `text_hygiene.multiline`.
+///
+/// The live tail sanitizes a growing answer piece by piece and keeps what it
+/// has already cleaned, so running the whole of it through the hygiene pass
+/// again on every frame would put back the cost that saving it removed. The
+/// pass is idempotent, so for text it has already cleaned this is `render`
+/// exactly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let safe = text_hygiene.multiline("**bounded** output")
+/// assert markdown.render_sanitized(safe, 80) == markdown.render(safe, 80)
+/// ```
+@internal
+pub fn render_sanitized(safe: String, width: Int) -> List(span.Line) {
   // Chat output is content, not a document envelope. Enable the extensions
   // that affect presentation without treating a leading thematic break as
   // frontmatter and silently discarding model text.
@@ -174,16 +193,369 @@ pub fn render(markdown: String, width: Int) -> List(span.Line) {
 /// ```
 @internal
 pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
+  list.flat_map(lines, wrap_line(_, width))
+}
+
+/// The rows one line of `render`'s output occupies at `width`: the step
+/// `wrap_lines` applies to each line, which never looks at a neighbour.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = markdown.wrap_line(span.line_plain("one two"), 4)
+/// ```
+@internal
+pub fn wrap_line(line: span.Line, width: Int) -> List(span.Line) {
   case width <= 0 {
     True -> []
     False ->
-      list.flat_map(lines, fn(line) {
-        case row_kind(line) {
-          CodeRow -> wrap_code_row(line, width)
-          FixedRow -> [line]
-          FlowingRow -> wrap_indented(line, width)
+      case row_kind(line) {
+        CodeRow -> wrap_code_row(line, width)
+        FixedRow -> [line]
+        FlowingRow -> wrap_indented(line, width)
+      }
+  }
+}
+
+/// `wrap_line(line, width)`, reusing the rows an earlier line was wrapped
+/// into when `line` only extends it.
+///
+/// `previous` is a line and the rows `wrap_line` gave it at `width`. A live
+/// answer grows at its end, and its last paragraph is one flowing line that
+/// grows with it, so wrapping that line from its start on every frame costs
+/// the paragraph's length per frame. The word wrapper is greedy: it closes a
+/// row when the next word does not fit, and it looks at nothing after that
+/// word. So a row followed by a complete word is final, and the wrap can
+/// resume at the start of the row after it. The rows from there on are
+/// rebuilt from that row's own spans followed by the text `line` added, which
+/// is the same sequence of words and separators the full wrap reads. Anything
+/// else, an edit before the end, a different style, a change of width or an
+/// indented line, is wrapped from the start.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let before = span.line_plain("one two three")
+/// let after = span.line_plain("one two three four")
+/// let rows = markdown.rewrap(#(before, markdown.wrap_line(before, 8)), after, 8)
+/// assert rows == markdown.wrap_line(after, 8)
+/// ```
+@internal
+pub fn rewrap(
+  previous: #(span.Line, List(span.Line)),
+  line: span.Line,
+  width: Int,
+) -> List(span.Line) {
+  let #(before, rows) = previous
+  let resumed = case width > 0 && before.alignment == line.alignment {
+    True -> {
+      use Nil <- result.try(flowing_at_margin(before))
+      use Nil <- result.try(flowing_at_margin(line))
+      use growth <- result.try(extension(before.spans, line.spans))
+      resume(rows, growth, width, line.alignment)
+    }
+    False -> Error(Nil)
+  }
+  result.lazy_unwrap(resumed, fn() { wrap_line(line, width) })
+}
+
+// Only a flowing line with no leading indentation goes straight to the word
+// wrapper, so only that line's rows are the wrapper's rows and nothing else.
+fn flowing_at_margin(line: span.Line) -> Result(Nil, Nil) {
+  case row_kind(line), leading_cells(line) {
+    FlowingRow, 0 -> Ok(Nil)
+    FlowingRow, _ | CodeRow, _ | FixedRow, _ -> Error(Nil)
+  }
+}
+
+// Whether the old line's last word was followed by a space in it. The
+// wrapper drops a line's trailing spaces, so its rows cannot say this, and
+// it decides whether the text that follows lengthens that word or starts a
+// new one.
+type WordEnd {
+  // The old line ended inside its last word, which new text may lengthen.
+  InsideWord
+
+  // Spaces followed the last word, so it is complete.
+  AfterWord
+}
+
+// How a line grew from the one its rows were wrapped for.
+type Growth {
+  Growth(
+    // The old last span. It holds the last word's final piece, so the last
+    // row's final span has its style.
+    last: span.Span,
+    // Everything the new line has after `last`'s content: the rest of the
+    // span that continues it, starting with any spaces it dropped, then
+    // every later span.
+    added: List(span.Span),
+    ended: WordEnd,
+  )
+}
+
+// How `line` extends `before`: every span of `before` but its last is
+// repeated unchanged, the last is repeated with the same style and link and
+// with its content possibly lengthened, and more spans may follow.
+//
+// The old last span must hold a word, not only spaces. The rows keep a
+// word's pieces but drop the separators after it, so the added text is
+// joined to the last row's final span, and that span has the old last
+// span's style only if the last word ends in it.
+fn extension(
+  before: List(span.Span),
+  after: List(span.Span),
+) -> Result(Growth, Nil) {
+  case before, after {
+    [last], [grown, ..more] -> {
+      let old = last.content
+      let size = string.byte_size(old)
+      let kept = size - trailing_spaces(bit_array.from_string(old), size - 1, 0)
+      let same_style =
+        span.Span(..last, content: "") == span.Span(..grown, content: "")
+      case same_style && kept > 0 && string.starts_with(grown.content, old) {
+        True -> {
+          use added <- result.try(bytes_after(grown.content, kept))
+          let ended = case kept == size {
+            True -> InsideWord
+            False -> AfterWord
+          }
+          Ok(Growth(
+            last:,
+            added: [span.Span(..grown, content: added), ..more],
+            ended:,
+          ))
         }
-      })
+        False -> Error(Nil)
+      }
+    }
+    [first, ..rest], [same, ..more] if first == same ->
+      case joins_a_cluster(first, rest) {
+        True -> Error(Nil)
+        False -> extension(rest, more)
+      }
+    _, _ -> Error(Nil)
+  }
+}
+
+// Whether `first` and the span after it split one grapheme cluster between
+// them, which a re-wrap cannot reproduce. A row does not keep the joins
+// inside a word: the wrapper merges adjacent pieces of one style into one
+// span, and draws a word too wide for any row in its first piece's style as
+// one span. A resume that re-reads the row then sees the word as fewer
+// pieces than the full wrap sees. The wrapper measures a word piece by piece
+// and splits a span on spaces only between clusters, so where a cluster
+// crosses the join — a letter and its combining mark, an emoji and its
+// skin tone, a space and a mark, two halves of a flag — the two readings
+// differ, and such a line is wrapped from the start.
+fn joins_a_cluster(first: span.Span, rest: List(span.Span)) -> Bool {
+  case rest {
+    [next, ..] -> clusters_across(first.content, next.content)
+    [] -> False
+  }
+}
+
+// Whether the last character of `left` and the first of `right` fall in one
+// grapheme cluster. Two ASCII characters never do, since the pass the text
+// went through turned carriage returns into line feeds, so the common join
+// is decided by two bytes. Otherwise the last codepoint of `left` and the
+// first cluster of `right` are measured together. A regional indicator
+// pairs with its neighbour according to how many precede it, which one
+// codepoint of context cannot say, so a join to one always counts.
+fn clusters_across(left: String, right: String) -> Bool {
+  let left_bits = bit_array.from_string(left)
+  let size = bit_array.byte_size(left_bits)
+  case bit_array.slice(left_bits, size - 1, 1), bit_array.from_string(right) {
+    Ok(<<last>>), <<first, _:bytes>> if last < 0x80 && first < 0x80 -> False
+    Ok(_), <<0xF0, 0x9F, 0x87, fourth, _:bytes>>
+      if fourth >= 0xA6 && fourth <= 0xBF
+    -> True
+    Ok(_), <<_, _:bytes>> ->
+      case last_codepoint(left_bits, size - 1), string.pop_grapheme(right) {
+        Ok(character), Ok(#(opening, _)) ->
+          string.drop_start(character <> opening, 1) == ""
+        Error(Nil), _ | _, Error(Nil) -> False
+      }
+    Ok(_), _ | Error(Nil), _ -> False
+  }
+}
+
+// The last character of the text in `bits`, found by stepping back from
+// `index` over continuation bytes to the byte that starts it.
+fn last_codepoint(bits: BitArray, index: Int) -> Result(String, Nil) {
+  case bit_array.slice(bits, index, 1) {
+    Ok(<<byte>>) if byte >= 0x80 && byte < 0xC0 ->
+      last_codepoint(bits, index - 1)
+    Ok(_) ->
+      bit_array.slice(bits, index, bit_array.byte_size(bits) - index)
+      |> result.try(bit_array.to_string)
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+// The wrap of the extended line: the final rows of `rows`, then the
+// remainder rebuilt from the spans of the rows that are not final and the
+// text that was added.
+//
+// The last row holds the end of the old line. If its first word is complete
+// — the row holds more than one word, or the old line ended after its last
+// word — every earlier row is final and the wrap resumes at its start. If it
+// holds a single word the new text may lengthen, and a longer word can
+// change where the row above it broke, so the wrap resumes one row earlier.
+// That is only sound when the row above ends before the word: the word must
+// stand whole on the last row rather than be the tail of a word too wide for
+// any row, and the space before it must come from the old last span, which
+// then supplies the separator's style.
+fn resume(
+  rows: List(span.Line),
+  growth: Growth,
+  width: Int,
+  alignment: text.Alignment,
+) -> Result(List(span.Line), Nil) {
+  case list.reverse(rows) {
+    [final_row, ..earlier] -> {
+      let final_text = row_text(final_row)
+      use Nil <- result.try(opens_on_word(final_text))
+      case string.contains(final_text, " "), growth.ended, earlier {
+        True, _, _ | False, AfterWord, _ -> {
+          use source <- result.try(extended(final_row.spans, growth))
+          Ok(rewrapped(earlier, source, width, alignment))
+        }
+        False, InsideWord, [above, ..settled] ->
+          resume_above(above, settled, final_row, growth, width, alignment)
+        False, InsideWord, [] -> Error(Nil)
+      }
+    }
+    [] -> Error(Nil)
+  }
+}
+
+// The single-word case of `resume`: the wrap restarts at the row above the
+// last, joined to the last word by the space the old last span held before
+// it.
+fn resume_above(
+  above: span.Line,
+  settled: List(span.Line),
+  final_row: span.Line,
+  growth: Growth,
+  width: Int,
+  alignment: text.Alignment,
+) -> Result(List(span.Line), Nil) {
+  // The final row holds one word and no space, so the old last span ending
+  // with a space and then exactly that row's text says both that the word
+  // stands whole on the row and that the space before it is the span's.
+  use Nil <- result.try(opens_on_word(row_text(above)))
+  case string.ends_with(growth.last.content, " " <> row_text(final_row)) {
+    True -> {
+      use source <- result.try(extended(final_row.spans, growth))
+      let separator = span.Span(..growth.last, content: " ")
+      Ok(rewrapped(
+        settled,
+        list.append(above.spans, [separator, ..source]),
+        width,
+        alignment,
+      ))
+    }
+    False -> Error(Nil)
+  }
+}
+
+// A row the wrapper built starts with a word. An empty row or one opening
+// with a space only arises when a single grapheme is wider than the whole
+// row, where the wrapper's state at the row's start is not a fresh row's.
+fn opens_on_word(text: String) -> Result(Nil, Nil) {
+  case text == "" || string.starts_with(text, " ") {
+    True -> Error(Nil)
+    False -> Ok(Nil)
+  }
+}
+
+// How many space bytes end `bits` at or before `index`. Only the space
+// character separates words for the wrapper, so other whitespace is a word.
+fn trailing_spaces(bits: BitArray, index: Int, count: Int) -> Int {
+  case bit_array.slice(bits, index, 1) {
+    Ok(<<32>>) -> trailing_spaces(bits, index - 1, count + 1)
+    Ok(_) | Error(Nil) -> count
+  }
+}
+
+// The text after the first `bytes` bytes of `text`, which end on a
+// character boundary.
+fn bytes_after(text: String, bytes: Int) -> Result(String, Nil) {
+  bit_array.from_string(text)
+  |> bit_array.slice(bytes, string.byte_size(text) - bytes)
+  |> result.try(bit_array.to_string)
+}
+
+// The kept rows, newest first, followed by the wrap of what comes after them.
+fn rewrapped(
+  settled: List(span.Line),
+  source: List(span.Span),
+  width: Int,
+  alignment: text.Alignment,
+) -> List(span.Line) {
+  list.reverse(settled)
+  |> list.append(span.wrap_line(span.Line(spans: source, alignment:), width))
+}
+
+// A row's spans followed by the added text.
+//
+// After a complete word the added text begins with the separator the old
+// line ended with, and is placed after the row as it is. Inside a word the
+// first added span carries on the old last span's content, so it is joined
+// to the row's last span rather than placed beside it: the wrapper measures
+// a word piece by piece, and a grapheme cut across two pieces, a flag or a
+// letter and its combining mark, would be measured as two. That join is
+// only the old span continuing if the row's last span still has its style:
+// the tail of a word too wide for any row is drawn in the style of the
+// word's first piece, and the wrap of the grown word would repaint the added
+// text in it too, which is not a resume.
+fn extended(
+  row: List(span.Span),
+  growth: Growth,
+) -> Result(List(span.Span), Nil) {
+  case growth.ended, list.reverse(row), growth.added {
+    AfterWord, _, _ -> Ok(list.append(row, growth.added))
+    InsideWord, [tail, ..before], [first, ..more] ->
+      case
+        span.Span(..tail, content: "") == span.Span(..growth.last, content: "")
+      {
+        True ->
+          Ok(
+            list.reverse(before)
+            |> list.append([
+              span.Span(..tail, content: tail.content <> first.content),
+              ..more
+            ]),
+          )
+        False -> Error(Nil)
+      }
+    InsideWord, [], _ | InsideWord, _, [] -> Error(Nil)
+  }
+}
+
+fn row_text(row: span.Line) -> String {
+  row.spans |> list.map(fn(value) { value.content }) |> string.concat
+}
+
+// The leading whitespace of a line, counted in graphemes. The trim is a
+// grapheme-wise scan that stops at the first non-space, and the part it
+// removed is sliced by bytes, so the cost is the indentation's length rather
+// than the line's. Counting the whole line and then the trimmed remainder
+// gave the same number at the cost of reading every grapheme twice, which on
+// a long paragraph was most of what wrapping it cost.
+fn leading_cells(line: span.Line) -> Int {
+  let text = row_text(line)
+  let trimmed = string.trim_start(text)
+  let bytes = string.byte_size(text) - string.byte_size(trimmed)
+  case bytes {
+    0 -> 0
+    _ ->
+      bit_array.from_string(text)
+      |> bit_array.slice(0, bytes)
+      |> result.try(bit_array.to_string)
+      |> result.map(string.length)
+      |> result.unwrap(0)
   }
 }
 
@@ -193,9 +565,7 @@ pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
 // nested note's hierarchy aligned instead of letting continuations fall back
 // to the left margin.
 fn wrap_indented(line: span.Line, width: Int) -> List(span.Line) {
-  let text =
-    line.spans |> list.map(fn(value) { value.content }) |> string.concat
-  let leading = string.length(text) - string.length(string.trim_start(text))
+  let leading = leading_cells(line)
   let indent = int.min(leading, int.max(0, width - 1))
   case indent, line.spans {
     0, _ | _, [] -> span.wrap_line(line, width)
@@ -1226,6 +1596,45 @@ fn trim_span_start(
       }
     }
   }
+}
+
+/// The line a paragraph draws when a soft line break joins text whose line
+/// is `head` to text whose first line is `next`.
+///
+/// A paragraph's lines are its inline parts in order, one span each, and a
+/// soft break is a single space in the paragraph's plain style; nothing
+/// merges the spans on either side of it. Mork trims the trailing
+/// whitespace of the plain text a line ends with when a soft break follows,
+/// and keeps it when the paragraph ends there, so `head`'s last span, which
+/// was parsed as the end of a paragraph, is trimmed the same way and dropped
+/// if nothing is left. So when neither side's parse can reach into the
+/// other, the paragraph's line is `head`'s spans so trimmed, the space, then
+/// `next`'s. The live tail uses this to add the lines that just arrived to a
+/// long paragraph without parsing its start again, and it is the only place
+/// that knows what a soft break draws as.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let joined =
+///   markdown.join_soft_break(span.line_plain("one "), span.line_plain("two"))
+/// // "one", " ", "two"
+/// ```
+@internal
+pub fn join_soft_break(head: span.Line, next: span.Line) -> span.Line {
+  let plain = style.default_style()
+  let kept = case list.reverse(head.spans) {
+    [last, ..before] if last.style == plain && last.link == "" ->
+      case string.trim_end(last.content) {
+        "" -> list.reverse(before)
+        trimmed -> list.reverse([span.Span(..last, content: trimmed), ..before])
+      }
+    _ -> head.spans
+  }
+  span.Line(
+    ..head,
+    spans: list.append(kept, [span.span_styled(" ", plain), ..next.spans]),
+  )
 }
 
 fn inline_lines(

@@ -152,14 +152,19 @@ fn holder() -> actor.StartResult(Subject(Command)) {
 // line breaks are part of the shape rather than decoration: a stream of one
 // unbroken run of characters would be a single enormous logical line, and
 // what that measures is the wrapper's behaviour on input no provider sends.
+//
+// Every fiftieth token ends a paragraph, so the live tail settles blocks as
+// it would for a real answer and the retained-bytes gate measures what its
+// settled rows and wrap memo keep, not only the open paragraph.
 fn token(index: Int) -> String {
   let seed = int.to_string(index)
   let word =
     string.repeat("x", int.max(1, delta_bytes - 1 - string.length(seed)))
     <> seed
-  case index % 12 {
-    11 -> word <> "\n"
-    _ -> word <> " "
+  case index % 50, index % 12 {
+    49, _ -> word <> "\n\n"
+    _, 11 -> word <> "\n"
+    _, _ -> word <> " "
   }
 }
 

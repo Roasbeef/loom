@@ -33,14 +33,23 @@
 
 -define(OP, <<"01a06bac-b337-71de-b737-9b0a7f9ffbe9">>).
 
+%% TUI_PERF_MIN_HEAP sets the scenario process's minimum heap, in words. A
+%% replay keeps every frame it draws until it returns, so a long one spends
+%% most of its time collecting that list; a heap large enough to hold it
+%% separates what the terminal costs from what the harness retains.
 main([Label, Scenario | Args]) ->
     Parent = self(),
+    Heap = case os:getenv("TUI_PERF_MIN_HEAP") of
+               false -> [];
+               Words -> [{min_heap_size, list_to_integer(Words)},
+                         {min_bin_vheap_size, list_to_integer(Words)}]
+           end,
     {Pid, Ref} = spawn_opt(
         fun() ->
             put(tui_perf_now, 1000000),
             Parent ! {self(), done, run(Scenario, Args, Label)}
         end,
-        [monitor]
+        [monitor | Heap]
     ),
     receive
         {Pid, done, _} -> erlang:halt(0, [{flush, true}]);
@@ -84,6 +93,54 @@ run("burst", [SizeS], Label) ->
     io:format("RESULT ~s burst~p ticks=~p reductions_per_frame=~.1f "
               "ns_per_frame=~.1f words_per_frame=~.1f~n",
               [Label, Size, Ticks, R / Size, T / Size, W / Size]);
+
+%% How a frame's cost moves as one reply grows: the reply streams 64 frames
+%% per tick up to N, and the tick that takes frames K-63..K is reported per
+%% frame for each power of two K from 64 up. A second, traced pass repeats
+%% the same ticks on the same pinned clock and reports their words, since
+%% the trace would slow the timed pass. TUI_PERF_BATCH=1 streams one frame
+%% per tick, as a replay does, so every frame pays for a projection.
+run("growth", [SizeS], Label) ->
+    Size = list_to_integer(SizeS),
+    Batch = batch(),
+    {Inbox, M0} = ready(),
+    Start = get(tui_perf_now),
+    Timed = growth(Inbox, M0, 1, Size, Batch, fun(F) -> sample(F) end, []),
+    put(tui_perf_now, Start),
+    trace_words(),
+    Traced = growth(Inbox, M0, 1, Size, Batch, fun(F) -> words(F) end, []),
+    [io:format("RESULT ~s growth frame=~p reductions_per_frame=~.1f "
+               "ns_per_frame=~.1f words_per_frame=~.1f~n",
+               [Label, K, R / Batch, T / Batch, W / Batch])
+     || {{K, R, T}, {K, W, _}} <- lists:zip(Timed, Traced)],
+    ok;
+
+%% Where one tick's calls go, by function, after N frames of one reply have
+%% already been drawn: the 64 frames that follow are the measured tick.
+%% TUI_PERF_TYPE picks the tprof counter: call_count (the default),
+%% call_time or call_memory.
+run("profile_at", [SizeS], Label) ->
+    Size = list_to_integer(SizeS),
+    {Inbox, M0} = ready(),
+    M1 = stream_drawn(Inbox, M0, 1, Size),
+    Type = list_to_atom(os:getenv("TUI_PERF_TYPE", "call_count")),
+    {ok, _} = tprof:start(#{type => Type}),
+    _ = tprof:set_pattern('_', '_', '_'),
+    advance(),
+    [send(Inbox, delta(I)) || I <- lists:seq(Size + 1, Size + batch())],
+    tprof:restart(),
+    tprof:enable_trace(self()),
+    _ = tui:update(tick, M1),
+    tprof:disable_trace(self()),
+    {Type, Rows} = tprof:collect(),
+    Flat = lists:reverse(lists:keysort(3,
+        [{io_lib:format("~s:~s/~p", [Mo, Fu, Ar]), C, V}
+         || {Mo, Fu, Ar, PerPid} <- Rows, {_, C, V} <- PerPid])),
+    io:format("PROFILE ~s ~s at=~p~n", [Label, Type, Size]),
+    Top = list_to_integer(os:getenv("TUI_PERF_TOP", "30")),
+    [io:format("  ~10w ~8w calls  ~s~n", [V, C, N])
+     || {N, C, V} <- lists:sublist(Flat, Top)],
+    ok;
 
 %% A socket backlog left in the mailbox while zero or three jobs run: the
 %% cost of every selective receive that scans the backlog and matches
@@ -137,18 +194,55 @@ run("replay", [SizeS], Label) ->
     {ok, Moments} = 'tui@recording':decode_file(list_to_binary(Path)),
     Steps = 'tui@recording':to_steps(Moments),
     Script = 'tui@virtual_backend':script({terminal_size, 160, 48}, Steps, Inbox),
+    {GcCount0, GcWords0, _} = erlang:statistics(garbage_collection),
     R0 = reds(),
     {T, {ok, {run, Final, Frames}}} =
         timer:tc(fun() -> tui:run_script(M0, Script) end),
     R1 = reds(),
+    {GcCount1, GcWords1, _} = erlang:statistics(garbage_collection),
+    case os:getenv("TUI_PERF_SIZES") of
+        false -> ok;
+        _ -> io:format("SIZES frames_words=~p final_words=~p memory=~p~n",
+                       [erts_debug:size(Frames), erts_debug:size(Final),
+                        element(2, process_info(self(), memory))])
+    end,
     Rect = 'etui@geometry':rect_new(0, 0, 160, 48),
     Views = [element(1, timer:tc(fun() -> 'tui@render':view(Final, Rect) end))
              || _ <- lists:seq(1, 40)],
     {Records, Failures} = tui_perf_dev:witness(Final),
     io:format("RESULT ~s replay~p us=~p reductions=~p frames=~p "
-              "view_us_median=~p records=~p failures=~p~n",
+              "view_us_median=~p records=~p failures=~p gcs=~p "
+              "gc_words_reclaimed=~p~n",
               [Label, Size, T, R1 - R0, length(Frames),
-               pct(lists:sort(Views), 0.5), Records, Failures]);
+               pct(lists:sort(Views), 0.5), Records, Failures,
+               GcCount1 - GcCount0, GcWords1 - GcWords0]);
+
+%% Where a replay's calls go, by function (TUI_PERF_TYPE as for profile_at).
+%% The trace slows the replay, and the replay paces frames on the host
+%% clock, so the counts describe a slower run than the timed one.
+run("replay_profile", [SizeS], Label) ->
+    Size = list_to_integer(SizeS),
+    Path = synthesize(Size),
+    {Inbox, M0} = tui_perf_dev:replay_model(),
+    {ok, Moments} = 'tui@recording':decode_file(list_to_binary(Path)),
+    Steps = 'tui@recording':to_steps(Moments),
+    Script = 'tui@virtual_backend':script({terminal_size, 160, 48}, Steps, Inbox),
+    Type = list_to_atom(os:getenv("TUI_PERF_TYPE", "call_count")),
+    {ok, _} = tprof:start(#{type => Type}),
+    _ = tprof:set_pattern('_', '_', '_'),
+    tprof:restart(),
+    tprof:enable_trace(self()),
+    {ok, _} = tui:run_script(M0, Script),
+    tprof:disable_trace(self()),
+    {Type, Rows} = tprof:collect(),
+    Flat = lists:reverse(lists:keysort(3,
+        [{io_lib:format("~s:~s/~p", [Mo, Fu, Ar]), C, V}
+         || {Mo, Fu, Ar, PerPid} <- Rows, {_, C, V} <- PerPid])),
+    io:format("PROFILE ~s ~s replay=~p~n", [Label, Type, Size]),
+    Top = list_to_integer(os:getenv("TUI_PERF_TOP", "30")),
+    [io:format("  ~10w ~8w calls  ~s~n", [V, C, N])
+     || {N, C, V} <- lists:sublist(Flat, Top)],
+    ok;
 
 %% Where one event's words go, by function: tick or key, with 64 frames
 %% waiting. Diff two revisions' outputs to attribute a change.
@@ -224,6 +318,35 @@ stream(Inbox, M, From, Size) ->
     [send(Inbox, delta(I)) || I <- lists:seq(From, To)],
     stream(Inbox, tui:update(tick, M), To + 1, Size).
 
+%% Streams frames From..Size, 64 per tick, without settling, so the reply
+%% stays open and every tick draws.
+stream_drawn(_Inbox, M, From, Size) when From > Size -> M;
+stream_drawn(Inbox, M, From, Size) ->
+    advance(),
+    To = min(Size, From + 63),
+    [send(Inbox, delta(I)) || I <- lists:seq(From, To)],
+    stream_drawn(Inbox, tui:update(tick, M), To + 1, Size).
+
+%% The growth scenario's ticks of Batch frames, each measured by Measure,
+%% which returns {Result, Counter, Other}. A tick whose last frame is a power
+%% of two is recorded as {Frame, Counter, Other}.
+growth(_Inbox, _M, From, Size, _Batch, _Measure, Acc) when From > Size ->
+    lists:reverse(Acc);
+growth(Inbox, M, From, Size, Batch, Measure, Acc) ->
+    advance(),
+    To = From + Batch - 1,
+    [send(Inbox, delta(I)) || I <- lists:seq(From, To)],
+    {M2, A, B} = Measure(fun() -> tui:update(tick, M) end),
+    Acc2 = case To band (To - 1) of
+               0 -> [{To, A, B} | Acc];
+               _ -> Acc
+           end,
+    growth(Inbox, M2, To + 1, Size, Batch, Measure, Acc2).
+
+%% Frames per tick for growth and profile_at: 64, what update_tick drains,
+%% unless TUI_PERF_BATCH says otherwise.
+batch() -> list_to_integer(os:getenv("TUI_PERF_BATCH", "64")).
+
 %% Moves the pinned presentation clock on by one 50 ms tick.
 advance() -> put(tui_perf_now, get(tui_perf_now) + 50).
 
@@ -261,9 +384,17 @@ is_frame(_) -> false.
 message(#{<<"t">> := <<"connected">>}) -> connected;
 message(#{<<"t">> := <<"incoming">>, <<"text">> := T}) -> {incoming, T}.
 
-%% One streamed word of the reply, a line break every twelfth.
+%% One streamed word of the reply, a line break every twelfth. The reply is
+%% one long paragraph, which is the worst case for the live tail: a block
+%% that never closes is parsed on every frame. TUI_PERF_SHAPE=paragraphs
+%% makes every break a blank line instead, so the reply is many short
+%% paragraphs, which is how most answers are written.
 delta_text(N) ->
-    Break = case N rem 12 of 11 -> "\n"; _ -> "" end,
+    Break = case {N rem 12, os:getenv("TUI_PERF_SHAPE")} of
+                {11, "paragraphs"} -> "\n\n";
+                {11, _} -> "\n";
+                _ -> ""
+            end,
     iolist_to_binary(json:encode(#{
         <<"v">> => 1, <<"event">> => <<"stream_delta">>,
         <<"body">> => #{<<"strand">> => <<"main">>, <<"op">> => ?OP,
@@ -366,8 +497,12 @@ census(Label, Stage, Model) ->
     {Mem0, THS0, HS0, Q0} = Info(),
     erlang:garbage_collect(),
     {Mem1, THS1, HS1, Q1} = Info(),
+    %% Refc binary bytes the process references after the collection, each
+    %% binary counted once: what stream_bounds_test holds to its ceiling.
+    {binary, Bins} = process_info(self(), binary),
     io:format("RESULT ~s ~s memory=~p total_heap=~p heap=~p mq=~p "
               "gc_memory=~p gc_total_heap=~p gc_heap=~p gc_mq=~p "
-              "model_size=~p model_flat=~p~n",
+              "model_size=~p model_flat=~p gc_binary_bytes=~p~n",
               [Label, Stage, Mem0, THS0, HS0, Q0, Mem1, THS1, HS1, Q1,
-               erts_debug:size(Model), erts_debug:flat_size(Model)]).
+               erts_debug:size(Model), erts_debug:flat_size(Model),
+               lists:sum([S || {_, S, _} <- lists:ukeysort(1, Bins)])]).
