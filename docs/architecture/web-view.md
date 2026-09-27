@@ -310,11 +310,13 @@ There is no periodic tick. After each transition `component.rearm`
 cancels the timer it armed before and arms one `process.send_after` for
 the lane's `session_channel.next_due`: the in-flight deadline, or the idle
 refresh, which is 250 ms until the daemon has pushed a frame and
-`pushing_refresh_ms` after: 1 s for now, and 5 s once
-[protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md) pushes a join (see
-[delivery.md](delivery.md)). When it fires, `Ticked(at)` runs the same
-reduction. An idle page on a daemon that pushes wakes once a second, where
-the 250 ms tick woke it four times a second.
+`pushing_refresh_ms` (5 s) after (see [delivery.md](delivery.md)). The
+daemon pushes the roster to a page when it subscribes
+([protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)),
+so a page moves to the 5 s refresh at attach even on a quiet session. When
+the timer fires, `Ticked(at)` runs the same reduction. An idle page wakes
+once every five seconds, where the 250 ms tick woke it four times a
+second.
 
 **Time.** The clock is read in the selector's mapping, when the timer
 message or the relay's batch is received, so `update` reads no clock. The

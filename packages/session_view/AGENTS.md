@@ -34,8 +34,8 @@ read, takes the lane's outputs and performs them.
   in-flight deadline, or the idle refresh of a ready lane with a cut), and
   both hosts arm one wake-up for it instead of ticking on a cadence. The
   idle refresh is `polling_refresh_ms` (250) until the lane receives its
-  first pushed frame and `pushing_refresh_ms` (1000, an interim value until
-  protocol-change/054 pushes a join; then 5000) after; the private
+  first pushed frame and `pushing_refresh_ms` (5000) after, and the daemon
+  pushes the roster at subscribe (protocol-change/054); the private
   `Delivery` field (`Polling`, `Pushing`) records which.
 - `session_channel.Out(socket, recorder)`: `Transmit(socket, frame)`,
   `Shut(socket)`, `Note(recorder, attempt.Event)`. The terminal performs

@@ -506,7 +506,40 @@ fn network_socket(
   let assert Ok(_snapshot) =
     gateway.connection_request(handle, subscribe_frame(runtime, 700))
     as "the network attachment subscribes"
+
+  // A subscribe is announced to every subscribed peer, the newcomer
+  // included (`protocol-change/054`), so the first frame pushed to a new
+  // socket is its own join: a roster with no `reply_to` and no `seq` that
+  // names this connection. Reading it here states that order once for
+  // every push test, and each of them then sees only the frame it is about.
+  let joined = next_on(inbox)
+  assert joined.reply_to == None
+  assert joined.seq == None
+  let assert Ok(peers) = roster_of(joined)
+    as "the first frame pushed to a subscriber is its own join"
+  assert list.contains(peers, "connection-" <> principal.id)
   #(handle, auth, closed)
+}
+
+// The connection ids a pushed roster names, in the order the hub sent them.
+// Any other frame is an error, so a test that expects a roster and reads
+// something else fails at the read rather than on a later count.
+fn roster_of(envelope: protocol.EventEnvelope) -> Result(List(String), Nil) {
+  case envelope.event {
+    protocol.PresenceEvent(peers) -> Ok(list.filter_map(peers, peer_connection))
+    _ -> Error(Nil)
+  }
+}
+
+fn peer_connection(peer: json.JsonValue) -> Result(String, Nil) {
+  case peer {
+    json.Object(fields) ->
+      case list.key_find(fields, "connection_id") {
+        Ok(json.String(id)) -> Ok(id)
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
 }
 
 fn subscribe_frame(runtime: api.Runtime, id: Int) -> String {
@@ -3729,6 +3762,233 @@ pub fn a_revoked_socket_is_retired_rather_than_pushed_to_test() {
   let assert Ok(Nil) = process.receive(closed, within: 2000)
     as "the attachment is closed at the authority check"
   assert process.receive(inbox, within: 100) == Error(Nil)
+}
+
+// --- the join push (protocol-change/054) ------------------------------------
+
+// A session of its own for a test that needs two hubs side by side, so the
+// second hub's store is not the first one's.
+fn join_fixture_id(seed: Int) -> ids.SessionId {
+  let #(id, _) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1_700_000_000_000), seed))
+  id
+}
+
+/// A join reaches the peers already attached as a pushed frame, not at
+/// their next refresh. With two network peers subscribed, a third
+/// subscribes, and all three are pushed one roster that names all three.
+/// An authenticated attachment that has not subscribed is told nothing,
+/// because it has not yet said it is here.
+pub fn a_join_is_pushed_to_every_subscribed_peer_test() {
+  let harness = network_harness()
+  let alice = process.new_subject()
+  let bob = process.new_subject()
+  let #(_, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      alice,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let #(_, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      bob,
+      operator("bob", "Bob"),
+      access.Participant(access.Operator),
+    )
+
+  // Bob's join reached Alice as well as Bob, and names both of them.
+  let assert Ok(seen) = roster_of(next_on(alice))
+    as "the second join is pushed to the first peer"
+  assert list.sort(seen, string.compare)
+    == ["connection-alice", "connection-bob"]
+
+  let quiet = process.new_subject()
+  let #(_, _, _) =
+    attach_socket(
+      harness.hub,
+      harness.runtime,
+      quiet,
+      operator("quinn", "Quinn"),
+      access.Participant(access.Operator),
+      process.self(),
+    )
+
+  // Carol subscribes by hand rather than through `network_socket`, so that
+  // her own copy of the roster is read here with the other two.
+  let carol = process.new_subject()
+  let #(carol_handle, _, _) =
+    attach_socket(
+      harness.hub,
+      harness.runtime,
+      carol,
+      operator("carol", "Carol"),
+      access.Participant(access.Observer),
+      process.self(),
+    )
+  let assert Ok(_snapshot) =
+    gateway.connection_request(
+      carol_handle,
+      subscribe_frame(harness.runtime, 701),
+    )
+    as "an observer subscribes"
+  let everyone = ["connection-alice", "connection-bob", "connection-carol"]
+  list.each([alice, bob, carol], fn(inbox) {
+    let pushed = next_on(inbox)
+    assert pushed.reply_to == None as "a roster answers no command"
+    let assert Ok(peers) = roster_of(pushed)
+      as "every subscribed peer is pushed the join"
+    assert list.sort(peers, string.compare) == everyone
+    assert process.receive(inbox, within: 100) == Error(Nil)
+      as "one join is one roster per peer"
+  })
+  assert process.receive(quiet, within: 100) == Error(Nil)
+    as "an authenticated attachment that has not subscribed hears no join"
+}
+
+/// Only a join is announced. A second `subscribe` on a connection that is
+/// already subscribed changes nothing about who is here, so it pushes no
+/// roster; otherwise any attachment, an observer included, could make the
+/// hub push to every peer once per request.
+pub fn a_second_subscribe_announces_nothing_test() {
+  let harness = network_harness()
+  let alice = process.new_subject()
+  let #(_, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      alice,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let watcher = process.new_subject()
+  let #(watcher_handle, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      watcher,
+      operator("olive", "Olive"),
+      access.Participant(access.Observer),
+    )
+  let assert Ok(_) = roster_of(next_on(alice))
+    as "the observer's first subscribe is a join"
+
+  let _answer =
+    gateway.connection_request(
+      watcher_handle,
+      subscribe_frame(harness.runtime, 702),
+    )
+  assert process.receive(alice, within: 100) == Error(Nil)
+    as "a repeated subscribe is not a join"
+  assert process.receive(watcher, within: 100) == Error(Nil)
+}
+
+/// A hub serves one session, and a join on one session is never pushed to a
+/// peer of another. An observer attached to session A is pushed nothing
+/// when a peer subscribes to session B, whose roster names a principal and
+/// a connection the observer has no authority to learn about. The second
+/// half shows the silence is the session boundary and not a missing push:
+/// a join on the observer's own session does reach it.
+pub fn a_join_is_not_pushed_to_a_peer_of_another_session_test() {
+  let session_a = reserved_fixture(join_fixture_id(4213))
+  let session_b = reserved_fixture(join_fixture_id(4214))
+  let watcher = process.new_subject()
+  let #(_, _, _) =
+    network_socket(
+      session_a.hub,
+      session_a.runtime,
+      watcher,
+      operator("olive", "Olive"),
+      access.Participant(access.Observer),
+    )
+
+  let outsider = process.new_subject()
+  let #(_, _, _) =
+    network_socket(
+      session_b.hub,
+      session_b.runtime,
+      outsider,
+      operator("mallory", "Mallory"),
+      access.Participant(access.Operator),
+    )
+  assert process.receive(watcher, within: 200) == Error(Nil)
+    as "a join on session B is not pushed to an observer of session A"
+
+  // What keeps the two apart is the attach check: a binding that names
+  // session B is refused by session A's hub, so a peer of B never becomes a
+  // connection A's roster could name or push to.
+  let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
+    as "the fixture digest is valid"
+  let mallory = operator("mallory", "Mallory")
+  let assert Error(_) =
+    gateway.attach_authenticated(
+      session_a.hub,
+      gateway.Binding(
+        ids.session_id_to_string(api.session_id(session_b.runtime)),
+        "epoch",
+        "incarnation",
+        "connection-mallory-a",
+        mallory,
+        access.Participant(access.Operator),
+        digest,
+      ),
+      fn() { Ok(#(mallory, access.Participant(access.Operator))) },
+      fn(frame) { process.send(watcher, frame) },
+      fn() { Nil },
+      fn() { Nil },
+      process.self(),
+    )
+    as "a binding for session B is refused by session A's hub"
+
+  let neighbour = process.new_subject()
+  let #(_, _, _) =
+    network_socket(
+      session_a.hub,
+      session_a.runtime,
+      neighbour,
+      operator("pat", "Pat"),
+      access.Participant(access.Operator),
+    )
+  let assert Ok(seen) = roster_of(next_on(watcher))
+    as "a join on session A is pushed to its observer"
+  assert list.sort(seen, string.compare)
+    == ["connection-olive", "connection-pat"]
+}
+
+/// A member whose authority was revoked after it subscribed is pushed
+/// nothing when another peer joins. The join's roster leaves through
+/// `deliver`, whose per-peer check fails for the revoked member and closes
+/// its attachment instead of writing the frame. The joiner's request
+/// revalidates only the joiner, so this is the check that stops it.
+pub fn a_revoked_member_is_pushed_no_join_test() {
+  let harness = network_harness()
+  let revoked = process.new_subject()
+  let #(_, auth, closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      revoked,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  process.call(auth, waiting: 1000, sending: ChangeAuth(Error("revoked"), _))
+
+  let joiner = process.new_subject()
+  let #(_, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      joiner,
+      operator("bob", "Bob"),
+      access.Participant(access.Operator),
+    )
+  let assert Ok(Nil) = process.receive(closed, within: 2000)
+    as "the join's per-peer check closes the revoked attachment"
+  assert process.receive(revoked, within: 100) == Error(Nil)
+    as "the revoked member is written no roster"
 }
 
 // --- the per-strand queue (protocol-change/018, ruling 3) ------------------

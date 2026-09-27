@@ -500,8 +500,9 @@ at a time. A snapshot arrives as `snapshot_begin`, a chunk per credit, then
 `snapshot_end`, and the cut becomes visible only at the end, so partial
 metadata never repaints the view. While idle the channel issues a credited
 `catch_up` every 250 ms until a frame has been pushed to it, and every
-second after (`polling_refresh_ms`, `pushing_refresh_ms`; the second is an
-interim value that returns to 5 s once protocol-change/054 lands). A `committed`
+five seconds after (`polling_refresh_ms`, `pushing_refresh_ms`). The first
+push arrives at attach, because the daemon pushes the roster to a peer
+when it subscribes (protocol-change/054). A `committed`
 or `presence` push moves that catch-up earlier. `stream_delta`, `tool_output`, `usage_observation` and
 `block_summary` pushes are applied directly. Pushes are accepted in every phase except `Closed` and
 consume no credit.

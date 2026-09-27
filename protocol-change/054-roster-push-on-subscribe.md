@@ -1,6 +1,7 @@
 # protocol-change/054: push the roster when a network peer subscribes
 
-**Status**: PROPOSED 2026-09-27, design only · **Affects**: Part 1.3
+**Status**: ACCEPTED 2026-09-27 (owner), being implemented on
+`gateway/roster-push-on-subscribe` · **Affects**: Part 1.3
 session protocol v2 (when the hub pushes `presence`); amends
 [protocol-change/018](018-pushed-delivery.md) · **Raised by**: PR #567
 (event-driven delivery for the terminal and the web view)
@@ -156,7 +157,10 @@ phase.
 
 ## Decision
 
-**Proposed; the owner decides.** The recommendation is the first option:
+**Accepted by the owner on 2026-09-27.** The recommendation below is what
+was accepted and what is being implemented. It was written as:
+
+The recommendation is the first option:
 push the existing `presence` roster to every subscriber when a network
 peer subscribes. It reuses an event every client already handles, it
 removes both the join delay and the quiet-session poll, and its cost is

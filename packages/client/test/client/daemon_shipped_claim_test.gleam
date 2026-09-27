@@ -192,14 +192,7 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   let #(socket, response) =
     wire.connect(port, credential, "/v2/sessions/" <> session <> "/ws")
   assert string.contains(response, "101 Switching Protocols")
-  let begin =
-    wire.send(
-      socket,
-      1,
-      "subscribe",
-      json.Object([#("session", json.String(session))]),
-      within_ms: wire_read_ms,
-    )
+  let begin = wire.subscribe(socket, 1, session, within_ms: wire_read_ms)
   assert field(field(begin, "body"), "role") == json.String("operator")
 
   // The spent claim buys nothing: another credential is refused, and the

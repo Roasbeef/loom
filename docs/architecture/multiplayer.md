@@ -138,10 +138,14 @@ gateway also pushes four things:
 - A `stream_delta` for each provider token, clipped to the same 24 KiB
   bound the snapshot preview uses (`broadcast_delta`,
   `client/gateway.gleam:3446`).
-- The presence roster when a peer departs (`publish_presence`,
-  `client/gateway.gleam:2580`). A join is not pushed; the joiner's own
-  capture carries the roster, and every pushed frame costs one authority
-  check per peer.
+- The presence roster when a peer subscribes and when one departs
+  (`publish_presence`, `client/gateway.gleam:2622`). Every subscribed
+  peer is pushed a copy, the newcomer included, and each copy costs one
+  authority check for that peer.
+  [Protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)
+  added the push on subscribe; 018 pushed only departures, which left the
+  peers already attached to learn of a newcomer at their next idle
+  refresh.
 
 Two pieces of wiring in `client/serve` make the pushes reach the shipped
 binary. It starts one `commit_forwarder` (`client/gateway.gleam:1279`) per
@@ -198,19 +202,19 @@ in flight defers it. A terminal that missed it entirely receives the
 record at its next catch-up. The idle refresh stays as that recovery
 path, and it is the only path against a daemon built before pushed
 delivery. A lane refreshes every 250 ms until a frame has been pushed to
-it and every second after, since a missed notice is repaired by the
-next one and only the last notice before the session goes quiet, or a
-join, waits for the refresh (ADR-013, the addendum on event-driven
-delivery). The second is interim: it returns to five once a join is
-pushed ([protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)).
+it and every five seconds after, since a missed notice is repaired by
+the next one and only the last notice before the session goes quiet
+waits for the refresh (ADR-013, the addendum on event-driven delivery).
+A join does not wait for it: the hub pushes the roster when a peer
+subscribes ([protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)).
 
 ### One authority check for both kinds of frame
 
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:3354`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:3427`). Both paths call
-`check_binding` (`client/gateway.gleam:2447`) immediately before the
+through `deliver` (`client/gateway.gleam:3433`). Both paths call
+`check_binding` (`client/gateway.gleam:2453`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -289,8 +293,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:5351`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2730`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:5377`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:2736`) after `state.live` has
 been refreshed from the registers and before any frame leaves.
 
 Ordinarily the drain submits only the head of the queue. Natural
@@ -452,11 +456,13 @@ discussion are elided as `...`. The
 The last three frames carry no `reply_to`. A client written before
 `protocol-change/018` closed the connection on such a frame, because it
 treated every frame as the answer to its outstanding request. The
-`presence` frame here reports a departure; a join is not pushed, so the
-peers already attached see a newcomer at their next idle refresh, which is
-up to a second on a lane that has been pushed to.
-[protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md) proposes pushing the
-roster on subscribe.
+`presence` frame here reports a departure or a join. The hub pushes the
+roster to every subscribed peer, the newcomer included, when a peer
+subscribes and when one departs
+([protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)
+amends 018, which pushed it only on a departure). A newcomer's own copy
+and the reply to its `subscribe` leave the hub by different paths, so
+either may arrive first.
 
 ## Configuration, presence, and approvals
 

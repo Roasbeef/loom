@@ -923,7 +923,7 @@ boundaries and the split's measurements under Invariants.
   It admits one request at a time, grants one snapshot fragment per reply, and
   reconciles while idle every 250 ms until a frame has been pushed to it and
   every `pushing_refresh_ms` after (`Delivery`: `Polling` then `Pushing`;
-  1 s until protocol-change/054 pushes a join, then 5 s); `next_due` names
+  5 s, and the first push is the roster at subscribe, protocol-change/054); `next_due` names
   the reading the next `tick` can act at, which is what the poll timeout
   sleeps until. It holds no clock: `tick`, `receive`,
   `submit`, `lookup`, `history`, `replay_issued` and the `start`
@@ -2071,8 +2071,8 @@ untouched.
   capture. The idle refresh is the recovery path for a lost notice and
   the only path on a daemon that pushes nothing; it runs every 250 ms until
   the lane has been pushed to and every `pushing_refresh_ms` after, because
-  a lost notice is repaired by any later one and only a lost final notice,
-  or a join (not pushed; protocol-change/054), waits for it.
+  a lost notice is repaired by any later one and only a lost final notice
+  waits for it (a join is pushed; protocol-change/054).
 - **Provider requests own live fragments.** Modern streams carry operation
   and generation identity. A new generation replaces every prior kind on its
   strand; `end` replaces only its own generation with an empty marker. A late

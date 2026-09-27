@@ -92,8 +92,9 @@ a notice at or above the cut already catches up from `cut.next_seq`, so
 only a lost final notice waits for the refresh. And the terminal's idle
 wait is capped at one second rather than at the lane's refresh, because
 etui notices a resized window only when its loop runs. The `Pushing`
-refresh itself is 1 s for now rather than the planned 5 s, until a join
-is pushed (follow-up 2).
+refresh is 5 s, as planned, now that a join is pushed
+([protocol-change/054](../protocol-change/054-roster-push-on-subscribe.md),
+accepted 2026-09-27 and implemented on `gateway/roster-push-on-subscribe`).
 
 Follow-ups, in order:
 
@@ -101,25 +102,20 @@ Follow-ups, in order:
    and the 40 ms bound on a lone escape byte), then move the pin in
    `packages/tui` and `packages/client` to the fork's `main`. Exit: the
    pin names a commit on `main` and the manifests agree.
-2. **Decide [protocol-change/054](../protocol-change/054-roster-push-on-subscribe.md)**
-   (PROPOSED, design only; the owner decides). A peer joining is the one
-   change a peer's screen depends on that the hub does not push:
-   protocol-change/018 rules that "a join is not announced by a push".
-   With the `Pushing` refresh at 5 s, the peers already attached saw a
-   newcomer up to five seconds late, and that wait was the whole of
-   `tui_shipped_multiplayer_test`'s slowdown (Alice's wait for Bob's
-   rejoin went from 231 ms to 4,979 ms; the other 79 waits did not move).
-   So `session_channel.pushing_refresh_ms` is 1 s for now, which brings
-   the fixture back to 8.2 s against 8.0 s before and costs an idle
-   terminal about one capture a second. 054 proposes publishing the roster
-   to every subscriber, the newcomer included, in
-   `gateway.network_command`'s `Subscribe` arm. That also gives a client
-   attached to a quiet session its first push, so it leaves `Polling`
-   (such a page now renders 15 times a second idle, against 10 before).
-   It changes the push order nine client tests pin, several of which count
-   authorization checks. Exit: 054 is decided; if accepted, the push lands,
-   `pushing_refresh_ms` returns to 5000, the fixture stays near 8 s, and
-   those tests state the new order.
+2. **Protocol-change/054 is implemented** (accepted by the owner 2026-09-27;
+   branch `gateway/roster-push-on-subscribe`). The hub pushes the
+   `presence` roster to every subscribed peer, the newcomer included,
+   when a network peer subscribes, and `pushing_refresh_ms` is back to
+   5000. In `tui_shipped_multiplayer_test` Alice sees Bob's rejoin within
+   34 to 118 ms of his terminal starting (it was 4,979 ms at 5 s without
+   the push), and an idle terminal on a quiet session issues 0.20
+   catch-ups a second. The client tests that read the frames after a
+   subscribe now consume the join explicitly: `gateway_test`'s
+   `network_socket`, `daemon_server_test.subscribe` for real sockets, and
+   `ui_relay_test`'s `subscribed`; `session_authorization_test` counts
+   three checks per subscribe. Still open from 054's verification list:
+   a live drive of a web page on a quiet session, to confirm it reaches
+   `Pushing` at attach and renders at the pushed rate.
 3. **Wake etui's loop on SIGWINCH.** With a resize announced, the
    terminal's one-second idle ceiling can rise to the lane's refresh.
    Exit: an idle terminal wakes only for its lane, and a resize repaints
