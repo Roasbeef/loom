@@ -1,12 +1,18 @@
 //// What a session attachment's authority costs per command, and when it is
 //// re-asked.
 ////
-//// A network attachment is authorized three times over its first command: once
-//// when it attaches, once when the gateway admits the command, and once
-//// immediately before the reply is handed back. The last of those is the live
-//// revocation boundary — the transport used to repeat it a fourth time after
-//// the gateway had already answered — so these checks script the authority
-//// answer and count how often it is asked rather than trusting a comment.
+//// A network attachment is authorized once when it attaches, once when the
+//// gateway admits each command, and once immediately before each frame is
+//// handed to it. The last of those is the live revocation boundary — the
+//// transport used to repeat it after the gateway had already answered — so
+//// these checks script the authority answer and count how often it is asked
+//// rather than trusting a comment.
+////
+//// The fixtures' command is `subscribe`, and since `protocol-change/054` a
+//// subscribe hands the attachment two frames rather than one: the reply, and
+//// the roster the hub pushes to every subscribed peer when one joins. With
+//// the attachment as the only peer, a subscribe is therefore authorized three
+//// times: at admission, for its own copy of the roster, and for the reply.
 
 import client/gateway
 import client/gateway_test
@@ -113,11 +119,12 @@ fn subscribe(harness: gateway_test.Harness, id: Int) -> String {
   ))
 }
 
-/// One command is authorized exactly twice: at admission and at delivery.
+/// One command is authorized once at admission and once per frame delivered.
 ///
-/// The count is what makes a third check on the transport's own side
-/// redundant, and it is asserted rather than described because the transport
-/// used to perform that third check on every frame.
+/// A subscribe delivers two frames, its own roster push and its reply, so it
+/// is authorized three times. The count is what makes a further check on the
+/// transport's own side redundant, and it is asserted rather than described
+/// because the transport used to perform that check on every frame.
 pub fn one_command_is_authorized_at_admission_and_at_delivery_test() {
   let harness = gateway_test.reserved_fixture(fixture_id())
   let allowed =
@@ -125,7 +132,7 @@ pub fn one_command_is_authorized_at_admission_and_at_delivery_test() {
       access.Principal("alice", "Alice", access.MemberPrincipal),
       access.Participant(access.Operator),
     ))
-  let script = scripted([allowed, allowed, allowed])
+  let script = scripted([allowed, allowed, allowed, allowed])
   let closed = process.new_subject()
   let handle = attach(harness, script, closed)
   let attached = consumed(script)
@@ -133,16 +140,24 @@ pub fn one_command_is_authorized_at_admission_and_at_delivery_test() {
   let assert Ok(_snapshot) =
     gateway.connection_request(handle, subscribe(harness, 900))
     as "the command is admitted and its reply delivered"
-  assert consumed(script) - attached == 2
+  assert consumed(script) - attached == 3
+  let assert Ok(frame) = process.receive(harness.inbox, 1000)
+    as "the roster push passed its check and was delivered"
+  let assert Ok(protocol.EventEnvelope(event: protocol.PresenceEvent(_), ..)) =
+    protocol.decode_event(frame)
+    as "the frame pushed on subscribe is the roster"
   assert process.receive(closed, 0) == Error(Nil)
 }
 
-/// A credential revoked after admission still closes the attachment, and the
-/// reply the command had already produced is never handed to the socket.
+/// A credential revoked after admission still closes the attachment, and
+/// neither frame the command had already produced is handed to the socket.
 ///
 /// This is the boundary the transport's removed check was standing in front
-/// of: the gateway asks again immediately before delivery, on the same
-/// evidence, and drops the encoded reply when the answer has changed.
+/// of: the gateway asks again immediately before each delivery, on the same
+/// evidence, and drops the encoded frame when the answer has changed. The
+/// revocation lands after admission, so the first frame out, the roster the
+/// subscribe pushes, is the first to be refused, and the reply after it is
+/// refused on its own check.
 pub fn a_revocation_between_admission_and_delivery_drops_the_reply_test() {
   let harness = gateway_test.reserved_fixture(fixture_id())
   let allowed =
@@ -150,7 +165,7 @@ pub fn a_revocation_between_admission_and_delivery_drops_the_reply_test() {
       access.Principal("alice", "Alice", access.MemberPrincipal),
       access.Participant(access.Operator),
     ))
-  let script = scripted([allowed, allowed, Error("revoked")])
+  let script = scripted([allowed, allowed, Error("revoked"), Error("revoked")])
   let closed = process.new_subject()
   let handle = attach(harness, script, closed)
 
@@ -158,6 +173,8 @@ pub fn a_revocation_between_admission_and_delivery_drops_the_reply_test() {
     == Error("revoked")
   let assert Ok(Nil) = process.receive(closed, 1000)
     as "the delivery check closes the attachment"
+  assert process.receive(harness.inbox, 100) == Error(Nil)
+    as "the revoked attachment is pushed no roster"
 }
 
 /// Idle retention ticks do not ask authority or retire a healthy attachment.
@@ -168,7 +185,7 @@ pub fn idle_maintenance_does_not_query_authority_test() {
       access.Principal("alice", "Alice", access.MemberPrincipal),
       access.Participant(access.Operator),
     ))
-  let script = scripted([allowed, allowed, allowed])
+  let script = scripted([allowed, allowed, allowed, allowed])
   let closed = process.new_subject()
   let handle = attach(harness, script, closed)
   let attached = consumed(script)
@@ -183,7 +200,7 @@ pub fn idle_maintenance_does_not_query_authority_test() {
 
   let assert Ok(_) = gateway.connection_request(handle, subscribe(harness, 902))
     as "the idle attachment still admits a command"
-  assert consumed(script) - attached == 2
+  assert consumed(script) - attached == 3
   assert process.receive(closed, 0) == Error(Nil)
 }
 
@@ -195,7 +212,7 @@ pub fn idle_revocation_refuses_the_next_mutation_before_write_test() {
       access.Principal("alice", "Alice", access.MemberPrincipal),
       access.Participant(access.Operator),
     ))
-  let script = scripted([allowed, allowed, allowed, Error("revoked")])
+  let script = scripted([allowed, allowed, allowed, allowed, Error("revoked")])
   let closed = process.new_subject()
   let handle = attach(harness, script, closed)
   let assert Ok(_) = gateway.connection_request(handle, subscribe(harness, 903))

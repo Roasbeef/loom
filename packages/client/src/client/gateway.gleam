@@ -1910,13 +1910,18 @@ fn network_command(
     protocol.Subscribe(session_id, _) -> {
       let canonical = ids.session_id_to_string(api.session_id(state.runtime))
       case session_id == canonical {
-        True ->
-          begin_transfer(
-            mark_subscribed(state, connection),
-            connection,
-            id,
-            transfer.Recent,
-          )
+        // A join is announced to every subscribed peer, the newcomer
+        // included, and each copy leaves through `deliver`'s per-peer
+        // authority check (`protocol-change/054`). The newcomer's own copy
+        // is also what moves its lane from polling to pushed at once on a
+        // quiet session. The roster and the reply to this `subscribe` take
+        // different paths out, so either may reach the socket first; a
+        // pushed frame is order-free (`protocol-change/018`).
+        True -> {
+          let state = mark_subscribed(state, connection)
+          publish_presence(state)
+          begin_transfer(state, connection, id, transfer.Recent)
+        }
         False -> {
           reply_error(
             state,

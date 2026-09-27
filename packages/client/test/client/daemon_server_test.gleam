@@ -244,6 +244,62 @@ fn answered(socket, value, remaining: Int, within_ms: Int) {
   }
 }
 
+/// Subscribes to a session and answers the reply, having also read the
+/// roster the hub pushes to the newcomer.
+///
+/// Since `protocol-change/054` a successful subscribe hands the socket two
+/// frames: the reply, and the subscriber's own copy of the `presence`
+/// roster that every subscribed peer is pushed when one joins. They leave
+/// the hub by different paths, so either may be written first. This reads
+/// until it holds both, skipping any other push as `reply` does, so a test
+/// that goes on reading the socket starts after the join. A subscribe that
+/// is refused pushes no roster; read its answer with `reply`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // daemon_server_test.subscribe(socket, 1, session, within_ms: 1000)
+/// ```
+@internal
+pub fn subscribe(socket, id, session: String, within_ms within_ms: Int) {
+  let first =
+    send(
+      socket,
+      id,
+      "subscribe",
+      json.Object([#("session", json.String(session))]),
+      within_ms:,
+    )
+  joined(socket, first, None, None, 16, within_ms)
+}
+
+// The reply and the roster, collected in whichever order they arrive. The
+// roster is recognised by its event name on a frame with no `reply_to`.
+fn joined(socket, value, reply, roster, remaining: Int, within_ms: Int) {
+  assert remaining > 0 as "the reply and the join arrive within a bounded run"
+  let assert json.Object(fields) = value as "the wire value is an object"
+  let #(reply, roster) = case
+    list.key_find(fields, "reply_to"),
+    list.key_find(fields, "event")
+  {
+    Ok(_), _ -> #(Some(value), roster)
+    Error(Nil), Ok(json.String("presence")) -> #(reply, Some(value))
+    Error(Nil), _ -> #(reply, roster)
+  }
+  case reply, roster {
+    Some(reply), Some(_) -> reply
+    _, _ ->
+      joined(
+        socket,
+        frame(socket, within_ms:),
+        reply,
+        roster,
+        remaining - 1,
+        within_ms,
+      )
+  }
+}
+
 fn field(value, key) {
   let assert json.Object(fields) = value as "envelope is an object"
   let assert Ok(value) = list.key_find(fields, key)

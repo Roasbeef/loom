@@ -557,14 +557,7 @@ pub fn claimed_member_attaches_with_its_role_and_revocation_closes_it_test() {
     let #(socket, response) =
       wire.connect(port, credential, "/v2/sessions/" <> session <> "/ws")
     assert string.contains(response, "101 Switching Protocols")
-    let begin =
-      wire.send(
-        socket,
-        1,
-        "subscribe",
-        json.Object([#("session", json.String(session))]),
-        within_ms: 2000,
-      )
+    let begin = wire.subscribe(socket, 1, session, within_ms: 2000)
     assert field(field(begin, "body"), "role") == json.String("observer")
 
     let assert Ok(revoke) = admin.parse(["revoke-credentials", "reader"])
