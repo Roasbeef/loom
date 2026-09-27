@@ -474,6 +474,16 @@ fn prose(
     |> list.flat_map(fn(part) {
       case part {
         message.AssistantToolCall(..) -> []
+
+        // The digest keeps the transcript's rule for which line opens a
+        // block, without the terminal's key hint: the lane's reader opens
+        // reasoning with the fold, not a key.
+        message.AssistantThinking(thinking:, redacted: False, ..) -> [
+          transcript_line.Line(
+            transcript_line.ReasoningDigest,
+            transcript_lines.reasoning_opening(thinking),
+          ),
+        ]
         message.AssistantText(..) | message.AssistantThinking(..) ->
           transcript_lines.assistant_block_lines(part, False, None)
       }

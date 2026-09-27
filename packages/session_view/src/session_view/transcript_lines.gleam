@@ -547,13 +547,27 @@ pub fn live_reasoning_digest(text: String) -> String {
 /// ```
 @internal
 pub fn settled_reasoning_digest(text: String) -> String {
+  reasoning_opening(text) <> expand_hint
+}
+
+/// A settled reasoning block's opening line, cut to the digest's bound: the
+/// digest without the terminal's key hint, for a host whose reader opens
+/// the block some other way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.reasoning_opening("# Plan\nstep one")
+///   == "Plan"
+/// ```
+pub fn reasoning_opening(text: String) -> String {
   let opening =
     text
     |> string.split("\n")
     |> list.filter_map(digest_opening_line)
     |> list.first
     |> result.unwrap(text)
-  compact(opening, reasoning_digest_limit) <> expand_hint
+  compact(opening, reasoning_digest_limit)
 }
 
 // Whether one source line can open a digest, and what it reads as if it can.

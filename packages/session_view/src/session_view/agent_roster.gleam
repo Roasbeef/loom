@@ -204,7 +204,17 @@ fn current_glance(
   |> keep_if(fn(seen) { seen.operation == operation })
 }
 
-fn started_at(
+/// When an operation started, in the daemon's Unix milliseconds, from its
+/// metadata cell in a capture, or `None` when the capture holds no
+/// decodable one. The roster re-anchors its clocks on it; a host that
+/// counts elapsed time on its own clock reads it as the start instant.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent_roster.started_at([], "op") == None
+/// ```
+pub fn started_at(
   cells: List(snapshot_view.Cell),
   operation: String,
 ) -> Option(Int) {
