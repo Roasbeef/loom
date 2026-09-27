@@ -1526,3 +1526,36 @@ way at 1 s, median of five runs:
 The latency and burst rows do not depend on the idle refresh and were not
 remeasured. The fixture's configuration test is back within 0.25 s of the
 build before event-driven delivery.
+
+**The refresh returns to five seconds (2026-09-27).** The owner accepted
+[protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md),
+and the hub now pushes the `presence` roster to every subscribed peer,
+the newcomer included, when a network peer subscribes. A join is
+therefore a pushed frame, so `session_channel.pushing_refresh_ms` is 5 s
+again, as the table above assumed. The newcomer's own copy of the roster
+is also the first frame pushed to it, so a lane on a quiet session moves
+to `Pushing` at attach rather than refreshing every 250 ms until
+something happens there.
+
+Measured as for the interim refresh, against `bin/loomd` with
+`LOOM_BOOTSTRAP_E2E_SERVER` set and twelve cores held busy:
+
+- Alice's wait for Bob's new attachment after he rejoins, in
+  `tui_shipped_multiplayer_test`, is 1 to 6 ms over five runs (it was
+  4,979 ms at a 5 s refresh without the push, and 958 to 1,077 ms at the
+  interim 1 s). Alice already holds the new roster when Bob's own
+  terminal finishes opening: measured from the moment Bob's terminal
+  starts, she sees his attachment within 34 to 118 ms, median 51 ms. No
+  wait in the fixture's two tests, 345 waits over the five runs, took
+  longer than 2.8 s, so none is bound to the refresh.
+- An idle terminal attached to a quiet session issued 24 catch-ups in
+  120 s, one every 5.0 s (0.20 a second), and 0.60 requests a second in
+  all, the "After, 5 s" figures above. Its recording shows the roster as
+  the first pushed frame after the subscribe reply.
+
+The fixture's wall time was not comparable this time. The host carried a
+load average of 27 to 48 from other work beside the twelve busy cores,
+and the configuration test ranged from 8.8 s to 40.9 s across ten runs,
+with its waits summing to about 3.3 s in a run that took 9.1 s. The rest
+is setup (daemon launch and cold attachment), which the refresh does not
+touch.
