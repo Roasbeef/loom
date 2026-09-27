@@ -264,9 +264,11 @@ model's request.
 
 ### The authenticated v2 boundary
 
-The loopback listener serves two routes: `/v2/control` handles catalogue and
-lifecycle requests, and `/v2/sessions/<session-id>/ws` carries conversation
-commands and credited transfers. Both use text WebSocket frames carrying `v: 2`
+The loopback listener serves three routes: `/v2/control` handles catalogue and
+lifecycle requests, `/v2/sessions/<session-id>/ws` carries conversation
+commands and credited transfers, and `/v2/claim` redeems an invitation's
+claim token once for the invitee's own credential digest
+([protocol 053](../../protocol-change/053-owner-admin-and-claims.md)). Both use text WebSocket frames carrying `v: 2`
 JSON envelopes. A daemon started with `--ui` also serves the web view's
 `/ui/...` routes, which authenticate a browser with a ticket and a cookie
 rather than a bearer ([the web view](web-view.md),

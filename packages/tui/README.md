@@ -240,7 +240,10 @@ gleam run                  # the normal local launch
 `--workspace`, `--state-dir`, `--server` and `--config` override the local
 defaults. A remote or manually managed daemon takes its v2 address, a
 session id and a bearer token; a token file keeps the credential out of
-shell history and process arguments:
+shell history and process arguments, and must be readable only by you.
+Neither `--token-file` nor `--token` accepts a `loomclaim_` claim token;
+an invitee redeems one with `loom claim --addr ADDRESS`, which stores the
+credential it draws and prints the launch line to use:
 
 ```sh
 gleam run -- \
