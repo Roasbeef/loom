@@ -223,7 +223,7 @@ pub fn with_trace(status: Status, trace: Option(recording.Trace)) -> Status {
 ///
 /// ```gleam
 /// let assert Ok(status) =
-///   attachment.admit(status, key, job.Settled(weft.AllDelivered))
+///   attachment.admit(status, key, job.Finished(job.SocketAlive))
 /// ```
 pub fn admit(
   status: Status,
@@ -300,6 +300,13 @@ pub fn poll(
 /// at most; frames that arrive after the capture stay in the mailbox for
 /// the adopted lane, as they always have. The `Prepared` and the worker's
 /// outcomes are job messages, which admission files through `admit`.
+///
+/// After the capture this gives no room, so a host that delivers
+/// `msg.Arrived` from a selector of its own has no number to enforce for
+/// the attempt's frames and must bound them itself. In the terminal that
+/// window lasts at most the two ticks between the acknowledgement and the
+/// adoption, and the terminal's host reads nothing from the frames subject
+/// during it.
 ///
 /// ## Examples
 ///
@@ -433,6 +440,11 @@ pub fn accept(
       None,
       [],
     )
+
+    // Held for the adopted lane after the capture, with no bound here:
+    // `frame_room` gives none after the capture, so a host that selects
+    // frames itself must bound them. In the terminal this lasts at most the
+    // two ticks between the acknowledgement and the adoption.
     Opening(
       run,
       Connecting(Candidate(captured: Some(_), ..) as candidate, frames),

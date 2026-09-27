@@ -88,9 +88,12 @@ pub fn held(inbox: Inbox(a)) -> Int {
 /// Moves waiting messages out of the mailbox until the inbox holds
 /// `up_to`, without blocking.
 ///
-/// This is `waiting` followed by `push` for each message, for a caller that
-/// files an inbox itself. An inbox that already holds `up_to` or more reads
-/// nothing, so an inbox the step did not drain does not grow.
+/// This is `waiting` followed by `push` for each message. No source module
+/// calls it since phase 3, when the host began reading with `waiting` and
+/// admission filing with `push`. It is kept because it is phase 2's receive
+/// for one inbox: `admission_test` uses it as the reference its generated
+/// runs are compared against, and tests use it to fill an inbox directly.
+/// An inbox that already holds `up_to` or more reads nothing.
 ///
 /// ## Examples
 ///
