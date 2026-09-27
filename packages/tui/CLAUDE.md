@@ -1495,8 +1495,11 @@ untouched.
   setext underline or table row; it renders whole any text holding a reference
   definition or footnote; and it keeps no copy of the answer: the stream is
   recognised by its fragment list, and `inbound` drops the cache when a
-  delta resets or collapses that list, so a stale list is never kept alive
-  beside the new one (`stream_bounds_test` bounds what it may keep).
+  text or reasoning delta resets or collapses that list, so a stale list
+  is never kept alive beside the new one (`stream_bounds_test` bounds what
+  it may keep); a tool call delta, whose list is replaced every time,
+  leaves it alone. `live_tail.shortcuts` is how tests show a shortcut was
+  actually taken rather than every frame falling back to a full render.
 - **Bursts are paced as well as batched.** Etui applies up to sixty-four queued
   events before drawing, but every event still advances the immutable model
   through `update`, where Loom maintains its completed-frame cache, and a long
