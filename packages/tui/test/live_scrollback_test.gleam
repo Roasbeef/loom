@@ -10,6 +10,7 @@ import gleam/string
 import tui
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/model as tui_model
 import tui/protocol
@@ -20,7 +21,7 @@ import tui_test/gateway
 fn deliver(model: tui_model.Model, text: String) -> tui_model.Model {
   process.send(
     buffered.sender(model.inbox),
-    connection.Incoming(gateway.stream_delta("main", "text", text)),
+    connection_event.Incoming(gateway.stream_delta("main", "text", text)),
   )
   tui.update(backend.Tick, model)
 }
@@ -64,7 +65,11 @@ pub fn a_wheel_notch_drains_the_socket_without_waiting_for_a_tick_test() {
   let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
   process.send(
     buffered.sender(reading.inbox),
-    connection.Incoming(gateway.stream_delta("main", "text", "\n\nQueued.")),
+    connection_event.Incoming(gateway.stream_delta(
+      "main",
+      "text",
+      "\n\nQueued.",
+    )),
   )
 
   let scrolled = tui.update(backend.MouseScroll(5, 5, True), reading)
@@ -79,7 +84,11 @@ pub fn a_held_drag_drains_the_socket_too_test() {
     tui.update(backend.MousePress(5, 5, backend.MouseLeft), streaming())
   process.send(
     buffered.sender(pressed.inbox),
-    connection.Incoming(gateway.stream_delta("main", "text", "\n\nQueued.")),
+    connection_event.Incoming(gateway.stream_delta(
+      "main",
+      "text",
+      "\n\nQueued.",
+    )),
   )
 
   let dragged = tui.update(backend.MouseDrag(9, 6, backend.MouseLeft), pressed)

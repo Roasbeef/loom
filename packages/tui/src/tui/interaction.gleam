@@ -32,7 +32,7 @@ import tui/attachment
 import tui/buffered
 import tui/command
 import tui/composer
-import tui/connection
+import tui/connection_event
 import tui/context_panel
 import tui/context_view
 import tui/daemon/protocol as control_protocol
@@ -189,7 +189,7 @@ fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
 @internal
 pub fn accept_candidate_frame(
   model: Model,
-  message: connection.Message,
+  message: connection_event.Message,
 ) -> Model {
   advance_candidate(
     model,

@@ -30,6 +30,7 @@ import tui/advisor_pending
 import tui/buffered
 import tui/command
 import tui/connection
+import tui/connection_event
 import tui/focused_goal_panel
 import tui/frame
 import tui/goal_view
@@ -1094,7 +1095,7 @@ fn outstanding(frame: String, name: String) -> #(tui_model.Model, Int) {
 
 fn deliver(
   model: tui_model.Model,
-  message: connection.Message,
+  message: connection_event.Message,
 ) -> tui_model.Model {
   process.send(buffered.sender(model.inbox), message)
   tui.update(backend.Tick, model)

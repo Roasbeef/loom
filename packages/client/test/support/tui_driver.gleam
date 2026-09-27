@@ -37,6 +37,7 @@ import tui
 import tui/attachment
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/inbound
 import tui/interaction
@@ -52,8 +53,8 @@ import weft/actor
 /// Commands belong to one driver process, never to its socket's inbox.
 pub opaque type Message {
   Play(events: List(backend.InputEvent), reply: Subject(Sample))
-  Inbound(message: connection.Message)
-  Candidate(message: connection.Message)
+  Inbound(message: connection_event.Message)
+  Candidate(message: connection_event.Message)
   Job(arrival: job.Arrival)
   Stop
 }

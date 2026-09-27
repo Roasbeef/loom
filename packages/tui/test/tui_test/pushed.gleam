@@ -5,7 +5,7 @@
 //// of the frame the decoder was handed, and a fixture that constructed
 //// `protocol.StreamDelta` directly would measure a different program. So the
 //// helpers here build real wire text and hand it over as
-//// `connection.Incoming`, which is the only shape the shipped reducer accepts.
+//// `connection_event.Incoming`, which is the only shape the shipped reducer accepts.
 
 import core/codec
 import core/json
@@ -14,10 +14,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import tui
 import tui/connection
+import tui/connection_event
 import tui/session_channel
 import tui/snapshot
 import tui/workspace
-
 import gleam/bit_array
 import gleam/string
 import tui/model as tui_model
@@ -71,8 +71,8 @@ pub fn reply(
   id: Int,
   event: String,
   body: json.JsonValue,
-) -> connection.Message {
-  connection.Incoming(
+) -> connection_event.Message {
+  connection_event.Incoming(
     json.to_string(
       json.Object([
         #("v", json.Int(2)),
@@ -91,8 +91,10 @@ pub fn reply(
 /// ```gleam
 /// let frame = pushed.push([#("event", json.String("committed"))])
 /// ```
-pub fn push(fields: List(#(String, json.JsonValue))) -> connection.Message {
-  connection.Incoming(
+pub fn push(
+  fields: List(#(String, json.JsonValue)),
+) -> connection_event.Message {
+  connection_event.Incoming(
     json.to_string(json.Object([#("v", json.Int(2)), ..fields])),
   )
 }
@@ -104,7 +106,7 @@ pub fn push(fields: List(#(String, json.JsonValue))) -> connection.Message {
 /// ```gleam
 /// let frame = pushed.notice("main", 10)
 /// ```
-pub fn notice(strand: String, seq: Int) -> connection.Message {
+pub fn notice(strand: String, seq: Int) -> connection_event.Message {
   push([
     #("event", json.String("committed")),
     #("seq", json.Int(seq)),
@@ -123,7 +125,7 @@ pub fn delta(
   strand: String,
   operation: String,
   text: String,
-) -> connection.Message {
+) -> connection_event.Message {
   push([
     #("event", json.String("stream_delta")),
     #(
@@ -214,7 +216,7 @@ pub fn transfer(
   transfer_id: String,
   window: String,
   next_seq: Int,
-) -> List(connection.Message) {
+) -> List(connection_event.Message) {
   transfer_with_metadata(first, transfer_id, window, next_seq, metadata())
 }
 
@@ -231,7 +233,7 @@ pub fn transfer_with_metadata(
   window: String,
   next_seq: Int,
   data: String,
-) -> List(connection.Message) {
+) -> List(connection_event.Message) {
   [
     begin(first, transfer_id, window, next_seq),
     piece(first + 1, transfer_id, data),

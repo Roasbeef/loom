@@ -22,6 +22,7 @@ import gleam/option.{None}
 import gleam/string
 import tui
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/keymap
 import tui/model as tui_model
@@ -149,7 +150,7 @@ fn streamed_shifts() -> List(Int) {
       steps: list.flat_map(counting_to(20), fn(index) {
         [
           virtual_backend.Deliver(
-            connection.Incoming(gateway.stream_delta(
+            connection_event.Incoming(gateway.stream_delta(
               "main",
               "text",
               "paragraph " <> string.inspect(index) <> " of the answer.\n\n",
@@ -226,7 +227,7 @@ pub fn a_tick_carrying_a_delta_waits_for_the_frame_interval_test() {
   // drains it to count as carrying traffic.
   process.send(
     inbox,
-    connection.Incoming(gateway.stream_delta("main", "text", "an answer")),
+    connection_event.Incoming(gateway.stream_delta("main", "text", "an answer")),
   )
   let carried = tui.update(backend.Tick, at(drawn, drawn.last_frame_ms + 1))
   assert carried.render_revision != drawn.render_revision
@@ -297,7 +298,7 @@ fn build_backlog() -> tui_model.Model {
     |> fn(model) { tui.update(backend.Resize(84, 24), model) }
   process.send(
     inbox,
-    connection.Incoming(gateway.stream_delta(
+    connection_event.Incoming(gateway.stream_delta(
       "main",
       "text",
       numbered_lines("anchor", 40),
@@ -308,7 +309,7 @@ fn build_backlog() -> tui_model.Model {
     |> fn(model) { tui.update(backend.Tick, model) }
   process.send(
     inbox,
-    connection.Incoming(gateway.stream_delta(
+    connection_event.Incoming(gateway.stream_delta(
       "main",
       "text",
       numbered_lines("filler", 4),
@@ -419,7 +420,7 @@ pub fn a_backlog_past_the_catch_up_threshold_accelerates_test() {
 
   process.send(
     inbox,
-    connection.Incoming(gateway.stream_delta(
+    connection_event.Incoming(gateway.stream_delta(
       "main",
       "text",
       string.join(list.repeat("anchor line.\n\n", 5), ""),
@@ -431,7 +432,7 @@ pub fn a_backlog_past_the_catch_up_threshold_accelerates_test() {
   // twenty-four row catch-up threshold in a single step.
   process.send(
     inbox,
-    connection.Incoming(gateway.stream_delta(
+    connection_event.Incoming(gateway.stream_delta(
       "main",
       "text",
       string.join(list.repeat("filler line.\n\n", 15), ""),

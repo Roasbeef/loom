@@ -2,38 +2,19 @@
 ////
 //// The shared transport owns startup, socket custody, and reader monitoring.
 //// Mapping events happens in that existing owner; this adapter adds no process.
+//// The events themselves are data in `tui/connection_event`, so the code
+//// that reduces them never imports the transport.
 
 import gleam/erlang/process.{type Subject}
 import gleam/result
 import host/websocket
+import tui/connection_event.{
+  type Message, Closed, Connected, Incoming, NetworkFault,
+}
 
 /// A shared socket handle with the original reader's lifetime.
 pub type Connection =
   websocket.Connection
-
-/// One connection lifecycle message for the terminal process.
-pub type Message {
-  /// The socket actor completed its handshake and can accept commands.
-  Connected
-
-  /// A text frame arrived from the gateway.
-  Incoming(
-    /// The undecoded wire payload.
-    text: String,
-  )
-
-  /// The peer or local actor closed the websocket.
-  Closed(
-    /// The backend's diagnostic close reason.
-    reason: String,
-  )
-
-  /// The transport reported an I/O violation.
-  NetworkFault(
-    /// The backend's diagnostic failure reason.
-    reason: String,
-  )
-}
 
 /// Creates the inbox owned by the calling terminal.
 ///

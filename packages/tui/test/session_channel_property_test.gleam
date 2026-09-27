@@ -82,6 +82,7 @@ import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import tui/connection
+import tui/connection_event
 import tui/protocol
 import tui/session_channel.{type Channel}
 import tui/session_wire
@@ -1248,7 +1249,7 @@ fn answered(
   before: Oracle,
   fed: Oracle,
   event: Event,
-  frame: connection.Message,
+  frame: connection_event.Message,
   expect: Expect,
 ) -> Result(#(Channel, Oracle), String) {
   use #(channel, after) <- result.try(feed(
@@ -1274,7 +1275,7 @@ fn feed(
   before: Oracle,
   fed: Oracle,
   event: Event,
-  frame: connection.Message,
+  frame: connection_event.Message,
   expect: Expect,
 ) -> Result(#(Channel, Oracle), String) {
   let #(channel, updates) =
@@ -1383,7 +1384,7 @@ fn fault(
   channel: Channel,
   oracle: Oracle,
   event: Event,
-  frame: connection.Message,
+  frame: connection_event.Message,
 ) -> Result(#(Channel, Oracle), String) {
   use #(channel, after) <- result.try(feed(
     channel,
@@ -1454,7 +1455,7 @@ fn volunteered(
   channel: Channel,
   oracle: Oracle,
   event: Event,
-  frame: connection.Message,
+  frame: connection_event.Message,
   expect: Expect,
 ) -> Result(#(Channel, Oracle), String) {
   let expect = case oracle.lane {
@@ -1627,7 +1628,11 @@ fn role_name(role: Role) -> String {
   }
 }
 
-fn begin_frame(id: Int, transfer: Transfer, role: Role) -> connection.Message {
+fn begin_frame(
+  id: Int,
+  transfer: Transfer,
+  role: Role,
+) -> connection_event.Message {
   pushed.reply(
     id,
     "snapshot_begin",
@@ -1657,7 +1662,7 @@ fn begin_frame(id: Int, transfer: Transfer, role: Role) -> connection.Message {
 
 // A lookup's metadata answers every requested identity as missing, which is
 // the smallest reply `snapshot_view.lookup` accepts.
-fn chunk_frame(id: Int, transfer: Transfer) -> connection.Message {
+fn chunk_frame(id: Int, transfer: Transfer) -> connection_event.Message {
   let data = case transfer.window {
     Escalations(ids) ->
       json.to_string(
@@ -1687,7 +1692,7 @@ fn chunk_frame(id: Int, transfer: Transfer) -> connection.Message {
   )
 }
 
-fn end_frame(id: Int, transfer: Transfer) -> connection.Message {
+fn end_frame(id: Int, transfer: Transfer) -> connection_event.Message {
   pushed.reply(
     id,
     "snapshot_end",
@@ -1700,7 +1705,7 @@ fn end_frame(id: Int, transfer: Transfer) -> connection.Message {
   )
 }
 
-fn outcome_frame(id: Int, status: String) -> connection.Message {
+fn outcome_frame(id: Int, status: String) -> connection_event.Message {
   pushed.reply(
     id,
     "mutation_outcome",
@@ -1708,7 +1713,7 @@ fn outcome_frame(id: Int, status: String) -> connection.Message {
   )
 }
 
-fn read_frame(id: Int, name: String) -> connection.Message {
+fn read_frame(id: Int, name: String) -> connection_event.Message {
   pushed.reply(
     id,
     "snapshot",
@@ -1716,7 +1721,7 @@ fn read_frame(id: Int, name: String) -> connection.Message {
   )
 }
 
-fn error_frame(id: Int) -> connection.Message {
+fn error_frame(id: Int) -> connection_event.Message {
   pushed.reply(
     id,
     "error",
@@ -1727,7 +1732,11 @@ fn error_frame(id: Int) -> connection.Message {
   )
 }
 
-fn stale_frame(id: Int, body: StaleBody, head: Int) -> connection.Message {
+fn stale_frame(
+  id: Int,
+  body: StaleBody,
+  head: Int,
+) -> connection_event.Message {
   case body {
     StaleOutcome -> outcome_frame(id, "admitted")
     StaleModels -> read_frame(id, "models")
@@ -1735,19 +1744,19 @@ fn stale_frame(id: Int, body: StaleBody, head: Int) -> connection.Message {
   }
 }
 
-fn garbage() -> connection.Message {
-  connection.Incoming("{\"v\":2,\"reply_to\":")
+fn garbage() -> connection_event.Message {
+  connection_event.Incoming("{\"v\":2,\"reply_to\":")
 }
 
-fn disconnect() -> connection.Message {
-  connection.Closed("the daemon went away")
+fn disconnect() -> connection_event.Message {
+  connection_event.Closed("the daemon went away")
 }
 
-fn delta() -> connection.Message {
+fn delta() -> connection_event.Message {
   pushed.delta("main", "op-1", "tok")
 }
 
-fn usage(seq: Int) -> connection.Message {
+fn usage(seq: Int) -> connection_event.Message {
   let zero =
     message.Usage(
       0,

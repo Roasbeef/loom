@@ -26,6 +26,7 @@ import tui/attachment
 import tui/attempt
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/effect
 import tui/inbound
 import tui/job
@@ -147,7 +148,7 @@ fn playing_the_worker(
   #(model, key)
 }
 
-fn prepared_on(frames: Subject(connection.Message)) -> job.Prepared {
+fn prepared_on(frames: Subject(connection_event.Message)) -> job.Prepared {
   job.Prepared(
     socket: socket_on(process.new_subject()),
     expected: snapshot.Expected("A", "epoch", "incarnation"),
@@ -176,7 +177,7 @@ pub fn a_failing_replacement_keeps_its_notes_and_drops_its_writes_test() {
   let assert [begin, ..] = pushed.transfer(1, "1:1", "recent", 10)
     as "the transfer opens with its begin frame"
   process.send(frames, begin)
-  process.send(frames, connection.Incoming("not a frame"))
+  process.send(frames, connection_event.Incoming("not a frame"))
   let model =
     tui_model.Model(
       ..model,
@@ -497,7 +498,7 @@ fn cell(namespace, value) {
   ])
 }
 
-fn notes_reply(request: Int) -> connection.Message {
+fn notes_reply(request: Int) -> connection_event.Message {
   pushed.reply(
     request,
     "snapshot",

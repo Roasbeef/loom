@@ -39,6 +39,7 @@ import gleam/string
 import tui/approval
 import tui/attempt
 import tui/connection
+import tui/connection_event
 import tui/protocol
 import tui/recording
 import tui/session_wire
@@ -623,7 +624,7 @@ pub fn cancel_unsent(
 /// ```
 pub fn receive(
   channel: Channel,
-  message: connection.Message,
+  message: connection_event.Message,
   now now: Int,
 ) -> #(Channel, List(Update)) {
   // Every message is noted before it is reduced, so its note precedes
@@ -631,19 +632,19 @@ pub fn receive(
   let channel = note(channel, attempt.Received(_, message))
 
   case message {
-    connection.Connected -> #(channel, [])
+    connection_event.Connected -> #(channel, [])
 
     // A socket reports its end more than once: a network fault is usually
     // followed by the transport's own close. The first report fails the
     // lane; a later one finds it `Closed` and has nothing left to end, so it
     // neither queues a second close nor tells the operator twice.
-    connection.Closed(reason) | connection.NetworkFault(reason) ->
+    connection_event.Closed(reason) | connection_event.NetworkFault(reason) ->
       case channel.phase {
         Closed -> #(channel, [])
         AwaitingBegin | Receiving(..) | AwaitingReply(..) | Ready ->
           fail(channel, reason)
       }
-    connection.Incoming(text) ->
+    connection_event.Incoming(text) ->
       case channel.phase {
         Closed -> #(channel, [])
 

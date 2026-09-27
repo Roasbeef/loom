@@ -21,6 +21,7 @@ import gleam/option.{None}
 import tui
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/model as tui_model
 import tui/msg
 import tui/runtime
@@ -35,7 +36,7 @@ pub fn an_arrival_is_filed_and_not_reduced_test() {
   let source = buffered.sender(model.inbox)
   let #(admitted, effects) =
     tui.step(
-      msg.Arrived([msg.Frame(source, connection.NetworkFault("held"))]),
+      msg.Arrived([msg.Frame(source, connection_event.NetworkFault("held"))]),
       model,
     )
 
@@ -59,7 +60,7 @@ pub fn a_frame_from_a_replaced_inbox_is_not_filed_test() {
   let replaced = connection.new_inbox()
   let #(admitted, effects) =
     tui.step(
-      msg.Arrived([msg.Frame(replaced, connection.NetworkFault("stale"))]),
+      msg.Arrived([msg.Frame(replaced, connection_event.NetworkFault("stale"))]),
       model,
     )
 
@@ -75,7 +76,10 @@ pub fn admission_never_drops_a_frame_for_capacity_test() {
   let beyond = tui_model.connection_batch + 6
   let frames =
     int.range(from: 0, to: beyond, with: [], run: fn(acc, n) {
-      [msg.Frame(source, connection.NetworkFault(int.to_string(n))), ..acc]
+      [
+        msg.Frame(source, connection_event.NetworkFault(int.to_string(n))),
+        ..acc
+      ]
     })
     |> list.reverse
   let #(admitted, _) = tui.step(msg.Arrived(frames), model)
@@ -90,7 +94,7 @@ pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
   let model = fresh()
   let inbox = buffered.sender(model.inbox)
   int.range(from: 0, to: 100, with: Nil, run: fn(_, n) {
-    process.send(inbox, connection.NetworkFault(int.to_string(n)))
+    process.send(inbox, connection_event.NetworkFault(int.to_string(n)))
   })
   let already = 10
   let model =
@@ -103,7 +107,7 @@ pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
         run: fn(held, n) {
           buffered.push(
             held,
-            connection.NetworkFault("held " <> int.to_string(n)),
+            connection_event.NetworkFault("held " <> int.to_string(n)),
           )
         },
       ),
@@ -119,12 +123,12 @@ pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
     })
   assert list.length(from_connection) == tui_model.connection_batch - already
   assert list.first(from_connection)
-    == Ok(msg.Frame(inbox, connection.NetworkFault("0")))
+    == Ok(msg.Frame(inbox, connection_event.NetworkFault("0")))
     as "the oldest waiting message is read first"
   let assert Ok(next) = process.receive(inbox, 0)
     as "what the host did not read waits in the mailbox"
   assert next
-    == connection.NetworkFault(int.to_string(
+    == connection_event.NetworkFault(int.to_string(
       tui_model.connection_batch - already,
     ))
 
@@ -184,7 +188,7 @@ fn phase_two_receive(model: tui_model.Model) -> tui_model.Model {
 }
 
 type Operation {
-  Operation(frames: List(connection.Message), event: backend.InputEvent)
+  Operation(frames: List(connection_event.Message), event: backend.InputEvent)
 }
 
 // A small linear congruential generator, so a failing seed replays exactly.
@@ -205,10 +209,10 @@ fn operation(state: Int) -> Operation {
       let frame = case n % 3 {
         0 -> pushed.notice("main", 11 + n)
         1 ->
-          connection.NetworkFault(
+          connection_event.NetworkFault(
             int.to_string(state) <> "/" <> int.to_string(n),
           )
-        _ -> connection.Connected
+        _ -> connection_event.Connected
       }
       [frame, ..acc]
     })

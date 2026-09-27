@@ -10,7 +10,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import tui/attempt
-import tui/connection
+import tui/connection_event
 import tui/session_channel
 import tui/session_wire
 import tui/snapshot
@@ -212,7 +212,7 @@ fn advance_lane(lane: Lane, event) {
     // request was pushed by the daemon, so no request bought it and there
     // is nothing for this rule to check; the channel below still validates
     // it and still refuses one in a phase that may not take it.
-    attempt.Received(_, connection.Incoming(text) as message) ->
+    attempt.Received(_, connection_event.Incoming(text) as message) ->
       case session_wire.correlation(text), lane.credit {
         // A push spends nothing, so the lane keeps whatever credit it had:
         // a notice arriving mid-transfer must leave the outstanding
@@ -222,10 +222,10 @@ fn advance_lane(lane: Lane, event) {
         session_wire.NamesARequest, NotIssued ->
           Error("recorded response has no issued request credit")
       }
-    attempt.Received(_, connection.Connected as message) ->
+    attempt.Received(_, connection_event.Connected as message) ->
       received(lane, message, lane.credit)
-    attempt.Received(_, connection.Closed(_) as message)
-    | attempt.Received(_, connection.NetworkFault(_) as message) ->
+    attempt.Received(_, connection_event.Closed(_) as message)
+    | attempt.Received(_, connection_event.NetworkFault(_) as message) ->
       received(lane, message, NotIssued)
     attempt.Started(..)
     | attempt.Adopted(_)

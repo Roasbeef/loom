@@ -18,6 +18,7 @@ import tui
 import tui/attempt
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/daemon
 import tui/daemon/selection
 import tui/inbound
@@ -105,7 +106,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     assert admitted.next_id == refused.next_id + 1
     let assert [_] = prompts(issued)
       as "exactly one prompt was issued after the completed cut"
-    let assert #(_, Ok(connection.Incoming(reply))) =
+    let assert #(_, Ok(connection_event.Incoming(reply))) =
       buffered.receive(admitted.inbox, 2000)
       as "the real server acknowledges the transmitted mutation"
     let assert Ok(json.Object(fields)) = json.parse(reply) as "response is JSON"
@@ -138,13 +139,13 @@ fn hold_snapshot_end(model: tui_model.Model, remaining: Int) {
     as "each credited response arrives within its deadline"
   let model = tui_model.Model(..model, inbox:)
   let ended = case incoming {
-    connection.Incoming(text) -> {
+    connection_event.Incoming(text) -> {
       let assert Ok(json.Object(fields)) = json.parse(text)
         as "server sends JSON"
       list.key_find(fields, "event") == Ok(json.String("snapshot_end"))
     }
-    connection.Connected -> False
-    connection.Closed(_) | connection.NetworkFault(_) ->
+    connection_event.Connected -> False
+    connection_event.Closed(_) | connection_event.NetworkFault(_) ->
       panic as "fixture transport failed"
   }
   case ended {

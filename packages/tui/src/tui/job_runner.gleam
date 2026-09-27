@@ -51,6 +51,7 @@ import gleam/result
 import tui/bootstrap
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
@@ -71,7 +72,7 @@ type Handle {
   Handle(
     cancel: weft.Cancel,
     arrivals: Selector(Arrival),
-    frames: Option(Subject(connection.Message)),
+    frames: Option(Subject(connection_event.Message)),
   )
 }
 
@@ -415,7 +416,7 @@ pub fn size(running: Running) -> Int {
 fn attach(
   resolve: fn() -> Result(daemon_selection.Target, String),
   within_ms: Int,
-  frames: Subject(connection.Message),
+  frames: Subject(connection_event.Message),
   prepared: Subject(job.Prepared),
 ) -> Result(Nil, String) {
   use target <- result.try(resolve())

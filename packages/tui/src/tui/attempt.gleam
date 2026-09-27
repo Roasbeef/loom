@@ -10,7 +10,8 @@ import gleam/bool
 import gleam/list
 import gleam/result
 import gleam/string
-import tui/connection
+
+import tui/connection_event
 import tui/snapshot
 
 /// An increasing terminal-local identity, never a server-issued identifier.
@@ -90,7 +91,7 @@ pub type Event {
     /// The originating attempt, retained even after another is adopted.
     attempt: Id,
     /// The unmodified frame or typed transport notification.
-    message: connection.Message,
+    message: connection_event.Message,
   )
 
   /// The terminal committed a complete, validated initial cut.
@@ -137,16 +138,24 @@ pub fn encode(event: Event) -> List(#(String, json.JsonValue)) {
       #("kind", json.String(kind)),
       ..encode_selection(selection)
     ])
-    Received(id, connection.Incoming(text)) -> #(id, "attempt_frame", [
+    Received(id, connection_event.Incoming(text)) -> #(id, "attempt_frame", [
       #("text", json.String(text)),
     ])
-    Received(id, connection.Connected) -> #(id, "attempt_connected", [])
-    Received(id, connection.Closed(reason)) -> #(id, "attempt_disconnected", [
-      #("reason", json.String(reason)),
-    ])
-    Received(id, connection.NetworkFault(reason)) -> #(id, "attempt_fault", [
-      #("reason", json.String(reason)),
-    ])
+    Received(id, connection_event.Connected) -> #(id, "attempt_connected", [])
+    Received(id, connection_event.Closed(reason)) -> #(
+      id,
+      "attempt_disconnected",
+      [
+        #("reason", json.String(reason)),
+      ],
+    )
+    Received(id, connection_event.NetworkFault(reason)) -> #(
+      id,
+      "attempt_fault",
+      [
+        #("reason", json.String(reason)),
+      ],
+    )
     Adopted(id) -> #(id, "attempt_adopted", [])
     Closed(id) -> #(id, "attempt_closed", [])
     Failed(id, reason) -> #(id, "attempt_failed", [
@@ -214,16 +223,16 @@ fn decode_tag(tag, id, fields) {
         string.byte_size(bytes) > 65_536,
         Error("recorded frame exceeds the live ingress bound"),
       )
-      Ok(Received(id, connection.Incoming(bytes)))
+      Ok(Received(id, connection_event.Incoming(bytes)))
     }
-    "attempt_connected" -> Ok(Received(id, connection.Connected))
+    "attempt_connected" -> Ok(Received(id, connection_event.Connected))
     "attempt_disconnected" ->
       result.map(text(fields, "reason"), fn(reason) {
-        Received(id, connection.Closed(reason))
+        Received(id, connection_event.Closed(reason))
       })
     "attempt_fault" ->
       result.map(text(fields, "reason"), fn(reason) {
-        Received(id, connection.NetworkFault(reason))
+        Received(id, connection_event.NetworkFault(reason))
       })
     "attempt_adopted" -> Ok(Adopted(id))
     "attempt_closed" -> Ok(Closed(id))

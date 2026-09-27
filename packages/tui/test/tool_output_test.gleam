@@ -18,7 +18,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import tui/connection
+import tui/connection_event
 import tui/inbound
 import tui/model as tui_model
 import tui/transcript_lines
@@ -36,7 +36,7 @@ fn output(
   stream: String,
   text: String,
   total_bytes: Int,
-) -> connection.Message {
+) -> connection_event.Message {
   pushed.push([
     #("event", json.String("tool_output")),
     #(

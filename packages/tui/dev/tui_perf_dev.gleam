@@ -16,6 +16,7 @@ import gleam/option.{None}
 import tui
 import tui/agents
 import tui/connection
+import tui/connection_event
 import tui/model as tui_model
 import tui/workspace
 
@@ -37,7 +38,7 @@ import tui/workspace
 /// ```gleam
 /// let #(inbox, model) = tui_perf_dev.bench_model()
 /// ```
-pub fn bench_model() -> #(Subject(connection.Message), tui_model.Model) {
+pub fn bench_model() -> #(Subject(connection_event.Message), tui_model.Model) {
   let inbox = connection.new_inbox()
   let model =
     tui.new_model_with_clock(inbox, workspace.Context("bench", None), fn() {
@@ -54,7 +55,7 @@ pub fn bench_model() -> #(Subject(connection.Message), tui_model.Model) {
 /// ```gleam
 /// let #(inbox, model) = tui_perf_dev.replay_model()
 /// ```
-pub fn replay_model() -> #(Subject(connection.Message), tui_model.Model) {
+pub fn replay_model() -> #(Subject(connection_event.Message), tui_model.Model) {
   let inbox = connection.new_inbox()
   #(
     inbox,

@@ -39,6 +39,7 @@
 import gleam/erlang/process.{type Subject}
 import tui/attachment
 import tui/connection
+import tui/connection_event
 import tui/daemon
 import tui/herdr
 import tui/job
@@ -71,7 +72,7 @@ pub type Effect {
 
   /// Empties an inbox the model has stopped reading, so its queued frames
   /// do not sit in the terminal's mailbox forever.
-  Discard(inbox: Subject(connection.Message))
+  Discard(inbox: Subject(connection_event.Message))
 
   /// Appends one line to a recording: an input the terminal was given, or
   /// a message that arrived with no channel to note it.

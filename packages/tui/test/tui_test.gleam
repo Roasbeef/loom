@@ -25,6 +25,7 @@ import tui/buffered
 import tui/command
 import tui/composer
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/image_drop
 import tui/inbound
@@ -63,9 +64,10 @@ pub fn keyboard_socket_drain_retains_message_beyond_its_budget_test() {
   let model =
     tui.new_model(connection.new_inbox(), workspace.Context("test", None))
   int.range(from: 0, to: 64, with: Nil, run: fn(_, _) {
-    process.send(buffered.sender(model.inbox), connection.Connected)
+    process.send(buffered.sender(model.inbox), connection_event.Connected)
   })
-  let retained = connection.Incoming("message sixty-five must remain queued")
+  let retained =
+    connection_event.Incoming("message sixty-five must remain queued")
   process.send(buffered.sender(model.inbox), retained)
   let updated = tui.update(backend.KeyPress("a"), model)
   assert text_area.value(updated.input) == "a"
@@ -800,7 +802,11 @@ pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
   let after_assistant =
     inbound.accept_connection_message(
       submitted,
-      connection.Incoming(gateway.assistant_entry("main", "still working", 4)),
+      connection_event.Incoming(gateway.assistant_entry(
+        "main",
+        "still working",
+        4,
+      )),
     )
   assert after_assistant.queued == [tui_model.HeldPrompt("look at this too")]
     as "the run's own output does not retire a prompt the daemon still holds"
@@ -808,7 +814,11 @@ pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
   let after_user =
     inbound.accept_connection_message(
       after_assistant,
-      connection.Incoming(gateway.user_entry("main", "look at this too", 5)),
+      connection_event.Incoming(gateway.user_entry(
+        "main",
+        "look at this too",
+        5,
+      )),
     )
   assert after_user.queued == []
     as "the committed user turn replaces the echo that stood in for it"
@@ -842,7 +852,7 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
   let after_steer_entry =
     inbound.accept_connection_message(
       steered,
-      connection.Incoming(gateway.user_entry(
+      connection_event.Incoming(gateway.user_entry(
         "main",
         "actually try the other file",
         5,
@@ -854,7 +864,11 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
   let after_prompt_entry =
     inbound.accept_connection_message(
       after_steer_entry,
-      connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
+      connection_event.Incoming(gateway.user_entry(
+        "main",
+        "look at this too",
+        6,
+      )),
     )
   assert after_prompt_entry.queued == []
     as "the drained prompt's entry then retires the echo standing for it"
@@ -896,7 +910,11 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
   let drained =
     inbound.accept_connection_message(
       aborted,
-      connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
+      connection_event.Incoming(gateway.user_entry(
+        "main",
+        "look at this too",
+        6,
+      )),
     )
   assert drained.queued == []
     as "the drained prompt's own entry then retires the echo standing for it"
@@ -919,7 +937,7 @@ pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
   let synchronized =
     inbound.accept_connection_message(
       stale,
-      connection.Incoming(gateway.full_snapshot("demo")),
+      connection_event.Incoming(gateway.full_snapshot("demo")),
     )
   assert synchronized.queued == []
     as "the server's own account of the strand replaces the local one"
@@ -944,7 +962,7 @@ pub fn a_refused_prompt_retires_its_own_echo_test() {
   let refused =
     inbound.accept_connection_message(
       submitted,
-      connection.Incoming(gateway.server_error(
+      connection_event.Incoming(gateway.server_error(
         "conflict",
         "the strand is busy and its queue is full",
       )),
@@ -967,17 +985,17 @@ pub fn a_queued_echo_renders_below_the_live_transcript_test() {
     list.flatten([
       [
         virtual_backend.Deliver(
-          connection.Incoming(gateway.full_snapshot("demo")),
+          connection_event.Incoming(gateway.full_snapshot("demo")),
         ),
         virtual_backend.Deliver(
-          connection.Incoming(
+          connection_event.Incoming(
             gateway.strands_snapshot([
               #("main", "main", "assistant"),
             ]),
           ),
         ),
         virtual_backend.Deliver(
-          connection.Incoming(gateway.assistant_entry(
+          connection_event.Incoming(gateway.assistant_entry(
             "main",
             "earlier answer",
             3,
@@ -1603,7 +1621,7 @@ pub fn a_delivered_message_reaches_the_model_test() {
       backend.TerminalSize(width: 72, height: 14),
       [
         virtual_backend.Deliver(
-          connection.Incoming(gateway.full_snapshot("demo")),
+          connection_event.Incoming(gateway.full_snapshot("demo")),
         ),
       ],
       inbox,
@@ -1616,7 +1634,9 @@ pub fn a_delivered_message_reaches_the_model_test() {
 // A model with the demo scaffolding removed, so a frame shows only what the
 // script put there. The workspace is fixed rather than discovered: the footer
 // prints it, and the checkout path is not a property of the client.
-fn quiet_model(inbox: process.Subject(connection.Message)) -> tui_model.Model {
+fn quiet_model(
+  inbox: process.Subject(connection_event.Message),
+) -> tui_model.Model {
   tui_model.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],
@@ -1656,15 +1676,20 @@ pub fn a_recording_line_round_trips_test() {
       40,
       recording.Released(x: 9, y: 4, button: backend.MouseRight),
     ),
-    recording.Moment(41, recording.Arrived(connection.Connected)),
+    recording.Moment(41, recording.Arrived(connection_event.Connected)),
     recording.Moment(
       43,
-      recording.Arrived(connection.Incoming(text: gateway.full_snapshot("s"))),
+      recording.Arrived(
+        connection_event.Incoming(text: gateway.full_snapshot("s")),
+      ),
     ),
-    recording.Moment(47, recording.Arrived(connection.Closed(reason: awkward))),
+    recording.Moment(
+      47,
+      recording.Arrived(connection_event.Closed(reason: awkward)),
+    ),
     recording.Moment(
       53,
-      recording.Arrived(connection.NetworkFault(reason: awkward)),
+      recording.Arrived(connection_event.NetworkFault(reason: awkward)),
     ),
   ]
 
@@ -1873,7 +1898,7 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
 }
 
 fn assistant_copy_model(
-  inbox: process.Subject(connection.Message),
+  inbox: process.Subject(connection_event.Message),
 ) -> tui_model.Model {
   tui_model.Model(..quiet_model(inbox), transcript: [
     tui_model.Line(
@@ -1971,7 +1996,7 @@ pub fn a_recording_file_decodes_in_order_test() {
   let path = "build/tui-recording-test.jsonl"
   let moments = [
     recording.Moment(0, recording.Resized(width: 72, height: 14)),
-    recording.Moment(4, recording.Arrived(connection.Connected)),
+    recording.Moment(4, recording.Arrived(connection_event.Connected)),
     recording.Moment(9, recording.Key(text: "h")),
   ]
   let text =
@@ -2027,7 +2052,7 @@ pub fn usage_footer_snapshot_without_a_rate_test() {
     "usage-footer-plain",
     last_frame(quiet_model(inbox), 96, 12, [
       virtual_backend.Deliver(
-        connection.Incoming(gateway.usage("main", 1200, 340, 0.0125)),
+        connection_event.Incoming(gateway.usage("main", 1200, 340, 0.0125)),
       ),
     ]),
   )
@@ -2042,7 +2067,7 @@ pub fn usage_footer_snapshot_with_a_rate_test() {
     "usage-footer-with-rate",
     last_frame(timed, 96, 12, [
       virtual_backend.Deliver(
-        connection.Incoming(gateway.usage("main", 1200, 340, 0.0125)),
+        connection_event.Incoming(gateway.usage("main", 1200, 340, 0.0125)),
       ),
     ]),
   )
@@ -2184,23 +2209,23 @@ fn count_occurrences(text: String, needle: String) -> Int {
 // Typed as inbound messages rather than as script steps, so the script and
 // the recording below are both derived from it and neither can lose a
 // field converting to the other.
-fn conversation() -> List(connection.Message) {
+fn conversation() -> List(connection_event.Message) {
   [
-    connection.Connected,
-    connection.Incoming(gateway.full_snapshot("demo")),
-    connection.Incoming(gateway.user_entry("main", "run the tests", 1)),
-    connection.Incoming(gateway.tool_call_entry(
+    connection_event.Connected,
+    connection_event.Incoming(gateway.full_snapshot("demo")),
+    connection_event.Incoming(gateway.user_entry("main", "run the tests", 1)),
+    connection_event.Incoming(gateway.tool_call_entry(
       "main",
       "bash",
       "make check-tui",
       2,
     )),
-    connection.Incoming(gateway.tool_result_entry(
+    connection_event.Incoming(gateway.tool_result_entry(
       "main",
       "error: compilation failed\n  test/tui_test.gleam:12",
       3,
     )),
-    connection.Incoming(gateway.stream_delta(
+    connection_event.Incoming(gateway.stream_delta(
       "main",
       "text",
       "Looking at the failure now.",
@@ -2262,7 +2287,7 @@ pub fn a_selection_keeps_its_original_cells_during_incoming_output_test() {
       [
         virtual_backend.Input(backend.MousePress(x + 2, y, backend.MouseLeft)),
         virtual_backend.Deliver(
-          connection.Incoming(gateway.assistant_entry(
+          connection_event.Incoming(gateway.assistant_entry(
             "main",
             "NEW_TEXT_MUST_NOT_REPLACE_SELECTION",
             4,

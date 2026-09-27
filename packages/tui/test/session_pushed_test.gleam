@@ -22,13 +22,13 @@ import tui
 import tui/attempt
 import tui/cache_miss
 import tui/connection
+import tui/connection_event
 import tui/protocol
 import tui/recording
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
 import tui/workspace
-
 import gleam/bit_array
 import tui/inbound
 import tui/model as tui_model
@@ -65,7 +65,7 @@ fn metadata() {
 }
 
 fn reply(id, event, body) {
-  connection.Incoming(
+  connection_event.Incoming(
     json.to_string(
       json.Object([
         #("v", json.Int(2)),
@@ -78,7 +78,7 @@ fn reply(id, event, body) {
 }
 
 fn push(fields) {
-  connection.Incoming(
+  connection_event.Incoming(
     json.to_string(json.Object([#("v", json.Int(2)), ..fields])),
   )
 }

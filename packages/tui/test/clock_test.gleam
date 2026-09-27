@@ -18,6 +18,7 @@ import gleam/option.{None, Some}
 import tui
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/model as tui_model
 import tui/msg
@@ -44,7 +45,7 @@ fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
 }
 
 fn deliver(model: tui_model.Model, wire: String) -> tui_model.Model {
-  process.send(buffered.sender(model.inbox), connection.Incoming(wire))
+  process.send(buffered.sender(model.inbox), connection_event.Incoming(wire))
   tui.update(backend.Tick, model)
 }
 
@@ -245,7 +246,7 @@ pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
   // into the inbox, as `update` would before it, and that reads no clock.
   process.send(
     buffered.sender(model.inbox),
-    connection.Incoming(assistant_phase),
+    connection_event.Incoming(assistant_phase),
   )
   let #(started, _) = stepping.step(backend.Tick, runtime.receive(model))
   assert started.generation_started_ms == Some(-10_000)
@@ -261,11 +262,11 @@ pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
   // that drain traffic ahead of their own work all run at the stamp too.
   process.send(
     buffered.sender(later.inbox),
-    connection.Incoming(gateway.stream_delta("main", "text", "answer")),
+    connection_event.Incoming(gateway.stream_delta("main", "text", "answer")),
   )
   process.send(
     buffered.sender(later.inbox),
-    connection.Incoming(gateway.usage("main", 10, 300, 0.0)),
+    connection_event.Incoming(gateway.usage("main", 10, 300, 0.0)),
   )
   let #(settled, _) =
     stepping.step(backend.Tick, runtime.receive(stamped_at(later, -8000)))
@@ -293,11 +294,11 @@ pub fn update_reads_the_presentation_clock_once_per_event_test() {
   // the path of these events.
   process.send(
     buffered.sender(model.inbox),
-    connection.Incoming(assistant_phase),
+    connection_event.Incoming(assistant_phase),
   )
   process.send(
     buffered.sender(model.inbox),
-    connection.Incoming(gateway.stream_delta("main", "text", "answer")),
+    connection_event.Incoming(gateway.stream_delta("main", "text", "answer")),
   )
   let events = [
     backend.Resize(80, 24),
@@ -315,7 +316,7 @@ pub fn update_reads_the_presentation_clock_once_per_event_test() {
 
   process.send(
     buffered.sender(model.inbox),
-    connection.Incoming(gateway.usage("main", 10, 300, 0.0)),
+    connection_event.Incoming(gateway.usage("main", 10, 300, 0.0)),
   )
   let _ = tui.update(backend.Tick, model)
   assert count(calls, 0) == 1

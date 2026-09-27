@@ -18,6 +18,7 @@ import gleam/string
 import host/bootstrap as host
 import host/endpoint as daemon_endpoint
 import tui/connection
+import tui/connection_event
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/protocol
 import weft/poll
@@ -1187,7 +1188,7 @@ fn probe(endpoint: Endpoint) -> Result(Target, String) {
 }
 
 fn await_snapshot(
-  inbox: process.Subject(connection.Message),
+  inbox: process.Subject(connection_event.Message),
   expected_session: String,
   deadline: Int,
 ) -> Result(Nil, String) {
@@ -1198,11 +1199,12 @@ fn await_snapshot(
   let remaining = int.max(0, deadline - host.monotonic_time_ms())
   case process.receive(inbox, remaining) {
     Error(Nil) -> Error("gateway snapshot timed out")
-    Ok(connection.Connected) ->
+    Ok(connection_event.Connected) ->
       await_snapshot(inbox, expected_session, deadline)
-    Ok(connection.Closed(reason)) -> Error("gateway closed: " <> reason)
-    Ok(connection.NetworkFault(reason)) -> Error("gateway fault: " <> reason)
-    Ok(connection.Incoming(text)) ->
+    Ok(connection_event.Closed(reason)) -> Error("gateway closed: " <> reason)
+    Ok(connection_event.NetworkFault(reason)) ->
+      Error("gateway fault: " <> reason)
+    Ok(connection_event.Incoming(text)) ->
       case protocol.decode_event(text) {
         Ok(protocol.FullSnapshot(session:, ..)) ->
           case session == expected_session {

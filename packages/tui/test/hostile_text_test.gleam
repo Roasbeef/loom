@@ -42,6 +42,7 @@ import tui/approval
 import tui/approval_panel
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/model as tui_model
 import tui/virtual_backend
@@ -302,7 +303,7 @@ fn is_control(code: Int) -> Bool {
 }
 
 fn deliver(payload: String) -> virtual_backend.Step {
-  virtual_backend.Deliver(message: connection.Incoming(payload))
+  virtual_backend.Deliver(message: connection_event.Incoming(payload))
 }
 
 // One scripted run at a fixed screen, read back as the rows of the last
@@ -330,7 +331,7 @@ fn last_rows(
 
 // The demo scaffolding removed, so a frame shows only what this module put
 // there and a stray control character can only have come from the payload.
-fn quiet_model(inbox: Subject(connection.Message)) -> tui_model.Model {
+fn quiet_model(inbox: Subject(connection_event.Message)) -> tui_model.Model {
   tui_model.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],

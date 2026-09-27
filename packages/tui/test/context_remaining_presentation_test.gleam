@@ -13,6 +13,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import tui
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/inbound
 import tui/protocol
@@ -85,7 +86,7 @@ fn outcome() {
 fn received(model, value) {
   inbound.accept_connection_message(
     model,
-    connection.Incoming(
+    connection_event.Incoming(
       json.to_string(
         json.Object([
           #("v", json.Int(1)),

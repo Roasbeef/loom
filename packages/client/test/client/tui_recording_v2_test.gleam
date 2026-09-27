@@ -14,7 +14,7 @@ import simplifile
 import support/tui_driver
 import tui
 import tui/attempt
-import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/recording
 import tui/session_channel
@@ -77,7 +77,7 @@ pub fn tui_recording_v2_fast_initial_attachment_and_settled_turn_replay_test() {
       as "terminal teardown records retirement of its current attempt"
     assert list.any(attempts, fn(event) {
       case event {
-        attempt.Received(_, connection.Incoming(text)) ->
+        attempt.Received(_, connection_event.Incoming(text)) ->
           string.contains(text, "snapshot_end")
         _ -> False
       }

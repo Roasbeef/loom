@@ -17,6 +17,7 @@ import gleam/option.{None, Some}
 import tui
 import tui/attachment
 import tui/connection
+import tui/connection_event
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/job
@@ -98,7 +99,7 @@ pub fn a_stale_prepared_has_its_socket_closed_test() {
 
   let owner: Subject(Dynamic) = process.new_subject()
   let frames = connection.new_inbox()
-  process.send(frames, connection.Connected)
+  process.send(frames, connection_event.Connected)
   let held =
     runtime.hold(
       waiting,
@@ -248,7 +249,7 @@ fn is_job(requested: effect.Effect) -> Bool {
 // whose close arrives at `owner`.
 fn prepared_on(
   owner: Subject(Dynamic),
-  frames: Subject(connection.Message),
+  frames: Subject(connection_event.Message),
   acknowledgement: Subject(Nil),
 ) -> job.Prepared {
   job.Prepared(

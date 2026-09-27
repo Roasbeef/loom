@@ -38,7 +38,7 @@ import etui/keys
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
 import tui/attempt
-import tui/connection
+import tui/connection_event
 import tui/image_drop
 import tui/job
 import tui/recording
@@ -71,7 +71,10 @@ pub type Arrival {
   /// adopted inbox's nor the waiting attempt's belongs to a socket the model
   /// no longer reads, and admission drops it rather than let it reach the
   /// adopted lane.
-  Frame(source: Subject(connection.Message), message: connection.Message)
+  Frame(
+    source: Subject(connection_event.Message),
+    message: connection_event.Message,
+  )
 
   /// One recorded attempt event, during a replay.
   Replayed(event: attempt.Event)

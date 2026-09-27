@@ -14,6 +14,7 @@ import gleam/option.{None}
 import gleam/string
 import tui
 import tui/connection
+import tui/connection_event
 import tui/inbound
 import tui/model as tui_model
 import tui/protocol
@@ -32,7 +33,7 @@ fn model() {
 }
 
 fn received(model, wire) {
-  inbound.accept_connection_message(model, connection.Incoming(wire))
+  inbound.accept_connection_message(model, connection_event.Incoming(wire))
 }
 
 fn checked_layout(model, width) {

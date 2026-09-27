@@ -14,6 +14,7 @@ import gleam/string
 import tui
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/inbound
 import tui/model as tui_model
@@ -240,7 +241,7 @@ pub fn changing_inspected_note_preserves_underlying_transcript_position_test() {
   let initial = tui.update(backend.Resize(90, 24), model())
   process.send(
     buffered.sender(initial.inbox),
-    connection.Incoming(gateway.stream_delta(
+    connection_event.Incoming(gateway.stream_delta(
       "main",
       "text",
       string.repeat("A retained paragraph.\n\n", 40),

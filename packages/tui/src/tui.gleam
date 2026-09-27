@@ -61,6 +61,7 @@ import tui/bootstrap
 import tui/buffered
 import tui/completion_summary
 import tui/connection
+import tui/connection_event
 import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
@@ -406,7 +407,7 @@ fn flag_or_empty(arguments: List(String), flag: String) -> String {
 /// ```
 @internal
 pub fn new_model(
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
   project: workspace.Context,
 ) -> Model {
   new_model_with_clock(inbox, project, host_bootstrap.monotonic_time_ms)
@@ -430,7 +431,7 @@ pub fn new_model(
 /// ```
 @internal
 pub fn new_model_with_clock(
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
   project: workspace.Context,
   monotonic_time_ms: fn() -> Int,
 ) -> Model {
@@ -1287,7 +1288,7 @@ fn frame_separator(index: Int) -> String {
 @internal
 pub fn connect_remote(
   base: Model,
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
   address: String,
   session: String,
   token: String,

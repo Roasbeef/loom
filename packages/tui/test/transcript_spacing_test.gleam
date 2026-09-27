@@ -31,6 +31,7 @@ import tui
 import tui/agents
 import tui/buffered
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/layout
 import tui/model as tui_model
@@ -522,13 +523,13 @@ fn counting_down(start: Int, offset: Int, collected: List(Int)) -> List(Int) {
 }
 
 fn deliver(payload: String) -> virtual_backend.Step {
-  virtual_backend.Deliver(message: connection.Incoming(payload))
+  virtual_backend.Deliver(message: connection_event.Incoming(payload))
 }
 
 // The demo scaffolding removed, so every row in the pane was put there by
 // this module.
 fn quiet_model(
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
   view: TranscriptView,
 ) -> tui_model.Model {
   tui_model.Model(

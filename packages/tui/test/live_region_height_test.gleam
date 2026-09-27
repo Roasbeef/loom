@@ -31,6 +31,7 @@ import gleam/option.{None}
 import gleam/string
 import tui
 import tui/connection
+import tui/connection_event
 import tui/inbound
 import tui/model as tui_model
 import tui/transcript_lines
@@ -53,7 +54,7 @@ fn model() -> tui_model.Model {
 }
 
 fn received(model: tui_model.Model, wire: String) -> tui_model.Model {
-  inbound.accept_connection_message(model, connection.Incoming(wire))
+  inbound.accept_connection_message(model, connection_event.Incoming(wire))
 }
 
 // Laying the rows out is what fills `rendered_rows`; a model that has only

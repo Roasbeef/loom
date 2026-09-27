@@ -70,7 +70,7 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import simplifile
 import tui/attempt
-import tui/connection
+import tui/connection_event
 import tui/virtual_backend
 
 /// Which way a wheel event moved, so no reader has to carry the polarity
@@ -117,7 +117,7 @@ pub type Recorded {
   Released(x: Int, y: Int, button: backend.MouseButton)
 
   /// One message from the websocket actor's inbox.
-  Arrived(message: connection.Message)
+  Arrived(message: connection_event.Message)
 }
 
 /// One recorded event and when it happened.
@@ -439,19 +439,19 @@ fn button_name(button: backend.MouseButton) -> String {
 // first. The three lifecycle messages are not wire frames at all, so each
 // is given a tag of its own rather than being flattened into a fake one.
 fn encode_message(
-  message: connection.Message,
+  message: connection_event.Message,
 ) -> List(#(String, json.JsonValue)) {
   case message {
-    connection.Connected -> [#("t", json.String("connected"))]
-    connection.Incoming(text:) -> [
+    connection_event.Connected -> [#("t", json.String("connected"))]
+    connection_event.Incoming(text:) -> [
       #("t", json.String("incoming")),
       #("text", json.String(text)),
     ]
-    connection.Closed(reason:) -> [
+    connection_event.Closed(reason:) -> [
       #("t", json.String("closed")),
       #("reason", json.String(reason)),
     ]
-    connection.NetworkFault(reason:) -> [
+    connection_event.NetworkFault(reason:) -> [
       #("t", json.String("fault")),
       #("reason", json.String(reason)),
     ]
@@ -485,18 +485,18 @@ fn decode_event(
     "press" -> decode_button(fields, Pressed)
     "drag" -> decode_button(fields, Dragged)
     "release" -> decode_button(fields, Released)
-    "connected" -> Ok(Arrived(message: connection.Connected))
+    "connected" -> Ok(Arrived(message: connection_event.Connected))
     "incoming" ->
       result.map(required_string(fields, "text"), fn(text) {
-        Arrived(message: connection.Incoming(text:))
+        Arrived(message: connection_event.Incoming(text:))
       })
     "closed" ->
       result.map(required_string(fields, "reason"), fn(reason) {
-        Arrived(message: connection.Closed(reason:))
+        Arrived(message: connection_event.Closed(reason:))
       })
     "fault" ->
       result.map(required_string(fields, "reason"), fn(reason) {
-        Arrived(message: connection.NetworkFault(reason:))
+        Arrived(message: connection_event.NetworkFault(reason:))
       })
     other -> Error("unknown recording event \"" <> other <> "\"")
   }

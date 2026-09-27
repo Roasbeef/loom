@@ -50,7 +50,7 @@ import tui/cache_miss
 import tui/command
 import tui/completion_summary
 import tui/composer
-import tui/connection
+import tui/connection_event
 import tui/context_view
 import tui/daemon/selection as daemon_selection
 import tui/effect
@@ -679,7 +679,7 @@ pub type Model {
     /// The adopted connection's socket traffic, with what the runtime already
     /// received from it for the next step. An adoption replaces the whole
     /// value, so the old socket's held messages leave the model with it.
-    inbox: buffered.Inbox(connection.Message),
+    inbox: buffered.Inbox(connection_event.Message),
     peer: Peer,
     /// One provisional replacement, whose original deadline includes capture.
     candidate: attachment.Status,
@@ -1045,7 +1045,7 @@ pub fn emit_attachment(model: Model, output: attachment.Out) -> Model {
 /// ## Examples
 ///
 /// ```gleam
-/// tui_model.record(model, recording.Arrived(connection.Connected))
+/// tui_model.record(model, recording.Arrived(connection_event.Connected))
 /// ```
 @internal
 pub fn record(model: Model, event: recording.Recorded) -> Model {

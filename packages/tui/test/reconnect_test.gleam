@@ -14,6 +14,7 @@ import gleam/string
 import tui
 import tui/bootstrap
 import tui/connection
+import tui/connection_event
 import tui/effect
 import tui/inbound
 import tui/job
@@ -184,7 +185,7 @@ pub fn a_resumed_lane_requires_a_cursor_it_asked_for_test() {
   let expected = snapshot.Expected("s", "epoch", "incarnation")
   let lane = session_channel.replay(expected)
   let marker =
-    connection.Incoming(
+    connection_event.Incoming(
       "{\"v\":2,\"reply_to\":1,\"event\":\"snapshot\",\"body\":{\"mode\":\"resume\",\"next_seq\":40}}",
     )
   let #(closed, updates) = session_channel.receive(lane, marker, now: 0)

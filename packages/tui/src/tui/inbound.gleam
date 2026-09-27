@@ -48,7 +48,7 @@ import tui/cache_miss
 import tui/command
 import tui/completion_summary
 import tui/composer
-import tui/connection
+import tui/connection_event
 import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
@@ -995,14 +995,14 @@ pub fn drain_connection(model: Model, remaining: Int) -> Model {
 @internal
 pub fn accept_connection_message(
   model: Model,
-  incoming: connection.Message,
+  incoming: connection_event.Message,
 ) -> Model {
   handle_connection_message(model, incoming)
 }
 
 fn handle_connection_message(
   model: Model,
-  incoming: connection.Message,
+  incoming: connection_event.Message,
 ) -> Model {
   case model.channel {
     Some(channel) -> {
@@ -1029,14 +1029,14 @@ fn handle_connection_message(
 
 fn handle_presentation_message(
   model: Model,
-  incoming: connection.Message,
+  incoming: connection_event.Message,
 ) -> Model {
   case incoming {
-    connection.Connected ->
+    connection_event.Connected ->
       Model(..model, notice: "connected")
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
-    connection.Closed(reason) ->
+    connection_event.Closed(reason) ->
       tui_model.append_error(
         Model(
           ..model,
@@ -1048,10 +1048,10 @@ fn handle_presentation_message(
       )
       |> begin_reconnect
       |> tui_model.mark_activity
-    connection.NetworkFault(reason) ->
+    connection_event.NetworkFault(reason) ->
       tui_model.append_error(model, "network: " <> reason)
       |> tui_model.mark_activity
-    connection.Incoming(text) ->
+    connection_event.Incoming(text) ->
       case protocol.decode_event(text) {
         Ok(event) -> apply_event(model, event)
         Error(reason) ->

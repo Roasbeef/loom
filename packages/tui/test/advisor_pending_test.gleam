@@ -18,6 +18,7 @@ import gleam/string
 import tui
 import tui/advisor_pending
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/inbound
 import tui/model as tui_model
@@ -358,7 +359,10 @@ pub fn a_pushed_delivery_retires_the_board_test() {
       9,
     )
   let delivered =
-    inbound.accept_connection_message(observed, connection.Incoming(frame))
+    inbound.accept_connection_message(
+      observed,
+      connection_event.Incoming(frame),
+    )
   assert delivered.nudges == None
   assert delivered.nudges_refresh == worktree_view.Requested
 }

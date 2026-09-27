@@ -23,6 +23,7 @@ import tui/attachment
 import tui/buffered
 import tui/cache_miss
 import tui/connection
+import tui/connection_event
 import tui/frame
 import tui/inbound
 import tui/interaction
@@ -100,7 +101,7 @@ fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
 }
 
 fn deliver(model: tui_model.Model, wire: String) -> tui_model.Model {
-  process.send(buffered.sender(model.inbox), connection.Incoming(wire))
+  process.send(buffered.sender(model.inbox), connection_event.Incoming(wire))
   tui.update(backend.Tick, model)
 }
 
@@ -448,7 +449,7 @@ fn begin_for(
   id: Int,
   transfer_id: String,
   next_seq: Int,
-) -> connection.Message {
+) -> connection_event.Message {
   pushed.reply(
     id,
     "snapshot_begin",
@@ -476,7 +477,11 @@ fn begin_for(
   )
 }
 
-fn piece_for(id: Int, transfer_id: String, data: String) -> connection.Message {
+fn piece_for(
+  id: Int,
+  transfer_id: String,
+  data: String,
+) -> connection_event.Message {
   pushed.reply(
     id,
     "snapshot_chunk",
@@ -500,7 +505,7 @@ fn finish_for(
   id: Int,
   transfer_id: String,
   next_seq: Int,
-) -> connection.Message {
+) -> connection_event.Message {
   pushed.reply(
     id,
     "snapshot_end",
@@ -520,7 +525,7 @@ fn transfer_for(
   first: Int,
   transfer_id: String,
   next_seq: Int,
-) -> List(connection.Message) {
+) -> List(connection_event.Message) {
   [
     begin_for(session, first, transfer_id, next_seq),
     piece_for(first + 1, transfer_id, pushed.metadata()),

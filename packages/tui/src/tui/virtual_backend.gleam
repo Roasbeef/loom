@@ -49,7 +49,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import tui/attempt
-import tui/connection
+import tui/connection_event
 
 /// One scripted moment in a run.
 pub type Step {
@@ -65,7 +65,7 @@ pub type Step {
   /// A connection message placed in the terminal's inbox. The poll that
   /// delivers it returns `Tick`, which is what makes the application drain
   /// the inbox: nothing else in the loop reads it.
-  Deliver(message: connection.Message)
+  Deliver(message: connection_event.Message)
 }
 
 /// Everything a run needs that is not the application itself.
@@ -78,7 +78,7 @@ pub type Script {
     /// The terminal-owned inbox a `Deliver` step sends to. It must be the
     /// same `Subject` the application drains, and it must have been created
     /// by the process calling `run_script`.
-    inbox: Subject(connection.Message),
+    inbox: Subject(connection_event.Message),
     /// Ticks emitted after the last step, before the run ends. Two is
     /// enough to flush a deferred frame and drain the inbox; a run whose
     /// last step is a `Deliver` that triggers more work may want more.
@@ -123,7 +123,7 @@ pub opaque type VirtualState {
   VirtualState(
     size: backend.TerminalSize,
     remaining: List(Step),
-    inbox: Subject(connection.Message),
+    inbox: Subject(connection_event.Message),
     settling: Int,
     attempts: Option(Subject(attempt.Event)),
   )
@@ -144,7 +144,7 @@ pub opaque type VirtualState {
 pub fn script(
   size: backend.TerminalSize,
   steps: List(Step),
-  inbox: Subject(connection.Message),
+  inbox: Subject(connection_event.Message),
 ) -> Script {
   Script(size:, steps:, inbox:, settle_ticks: 2, attempts: None)
 }
