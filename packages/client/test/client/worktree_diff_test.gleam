@@ -329,6 +329,32 @@ pub fn jailed_git_marks_patch_and_file_limits_test() {
     |> is_ok
 }
 
+// A patch the shared deadline does not reach is omitted from an exact census
+// rather than failing the whole observation. The stepping clock advances the
+// capture's deadline accounting by 1,334 ms for every Git call it starts, so
+// the four probes and the first patch fit inside eight seconds and the second
+// patch meets the deadline. Real time barely moves, so each executed call
+// still has at least two seconds of wall clock under a loaded host.
+pub fn patches_past_the_deadline_are_omitted_from_the_census_test() {
+  use wiring <- with_fixture("deadline")
+  setup(wiring, ["init", "--quiet"])
+  write(wiring, "a.txt", "first\n")
+  write(wiring, "b.txt", "second\n")
+  write(wiring, "c.txt", "third\n")
+  let stepped =
+    worktree_diff.Wiring(
+      ..wiring,
+      clock: clock.stepping(from: bootstrap.system_time_ms(), by: 1334),
+    )
+  let assert Ok(board) = worktree_diff.capture(stepped)
+    as "an exhausted deadline during patches still yields a bounded board"
+  assert board.total == 3
+  assert list.map(board.entries, fn(file) { file.path }) == ["a.txt"]
+  assert board.omitted == 2
+  assert board.extent == worktree_diff.Limited
+  assert string.contains(file(board, "a.txt").patch, "+first")
+}
+
 pub fn jailed_git_subtree_and_read_only_capture_test() {
   use wiring <- with_fixture("subtree")
   setup(wiring, ["init", "--quiet"])

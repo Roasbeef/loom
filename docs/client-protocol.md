@@ -1808,7 +1808,8 @@ has status `ready` or `failed`. A final failure supplies `code` and `message`.
 A ready board contains `source: "git"`, `observed_at_ms`, `repository`,
 `entries`, `total`, `omitted`, and `extent`. Each entry contains literal `path`,
 `index_status`, `worktree_status`, `patch`, `kind`, and `extent`. At most 24 files
-and 40,960 encoded bytes are returned. Patches compare staged and unstaged
+and 40,960 encoded bytes are returned; files whose patch the capture deadline
+does not reach are counted in `omitted` and the board is `limited`. Patches compare staged and unstaged
 changes together against a pinned HEAD; untracked and unborn files are
 additions. Concurrent filesystem reads are an observation, not an atomic
 snapshot. See [protocol 025](../protocol-change/025-worktree-observation.md)

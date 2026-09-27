@@ -10,7 +10,10 @@
 //// Status supplies NUL-delimited identities. Each displayed file is compared
 //// separately so a quoted patch header can never select a different filename.
 //// Twenty-four files, one execution deadline, and an encoded response ceiling
-//// bound the observation. The captured HEAD is pinned, but status and file reads
+//// bound the observation. Status and the metadata probes must finish inside
+//// the deadline, because they establish the census; per-file patches the
+//// deadline does not reach are omitted from it, as the byte ceiling omits
+//// files it cannot fit. The captured HEAD is pinned, but status and file reads
 //// are not atomic with concurrent edits; this is an observation, not a commit.
 
 import broker/broker
@@ -166,7 +169,8 @@ pub type Board {
     entries: List(File),
     /// The exact count from the complete bounded status response.
     total: Int,
-    /// Status entries absent from `entries`, including byte-bound omissions.
+    /// Status entries absent from `entries`: beyond the file limit, past the
+    /// encoded-byte ceiling, or not reached before the execution deadline.
     omitted: Int,
     /// Whether any file or patch content was omitted.
     extent: Extent,
@@ -176,6 +180,8 @@ pub type Board {
 /// Failures never masquerade as a clean repository or an exact file census.
 pub type Error {
   /// The one deadline was consumed before another execution could begin.
+  /// Only status and the metadata probes surface it; a patch call that meets
+  /// the deadline omits its file instead.
   Deadline
 
   /// Status or the aggregate process output exceeded its hard bound.
@@ -520,6 +526,15 @@ fn valid_revision(revision: String) -> Bool {
   })
 }
 
+// Every displayed file costs one jailed Git call, and the jail, not Git, is
+// most of that cost: measured on a 32-core Linux host, a call took about a
+// tenth of a second idle and three times that beside other jailed work. Two
+// dozen patch calls can therefore spend the whole shared deadline by
+// themselves. The census is already exact when they start, because status
+// fixed `total`, so a patch the deadline did not let finish is an omission
+// from that census, counted in `omitted` and marked `Limited` like a
+// byte-bound one. Discarding the files already read would turn the large
+// workspace this bound exists for into a failed observation.
 fn capture_files(
   capture: Capture,
   identities: List(Identity),
@@ -529,15 +544,32 @@ fn capture_files(
 ) -> Result(List(File), Error) {
   case identities {
     [] -> Ok(list.reverse(reversed))
-    [identity, ..rest] -> {
-      use #(capture, file) <- result.try(capture_file(
-        capture,
-        identity,
-        repository,
-        revision,
-      ))
-      capture_files(capture, rest, repository, revision, [file, ..reversed])
-    }
+    [identity, ..rest] ->
+      case capture_file(capture, identity, repository, revision) {
+        Ok(#(capture, file)) ->
+          capture_files(capture, rest, repository, revision, [file, ..reversed])
+
+        // The deadline ends the patch phase for this file and every file
+        // after it. Any other failure still fails the observation.
+        Error(error) -> {
+          use <- bool.guard(!unreached(capture, error), Error(error))
+          Ok(list.reverse(reversed))
+        }
+      }
+  }
+}
+
+// A call refused at the guard never started. A call already running when the
+// deadline passed is cancelled by the broker's budget and settles as an
+// execution failure, often a degraded one because the jail had not finished
+// reporting; the clock, not the settlement's wording, attributes it to the
+// deadline. An execution failure before the deadline is a real failure.
+fn unreached(capture: Capture, error: Error) -> Bool {
+  case error {
+    Deadline -> True
+    ExecutionFailed(_) -> clock.read(capture.clock).0 >= capture.deadline
+    OutputLimit | InvalidOutput | Refused(_) | NoSettlement | GitFailed(_, _) ->
+      False
   }
 }
 
