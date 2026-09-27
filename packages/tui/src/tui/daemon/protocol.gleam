@@ -1028,15 +1028,6 @@ fn field(value: json.JsonValue, key: String) {
   }
 }
 
-// The hello's build identity, or `None` when the daemon did not send one.
-//
-// Absence is not an error: an older daemon's hello predates these two
-// fields, and a new client must still attach to it and report that it is
-// old rather than refusing the frame for a missing field. Both fields
-// must be present and non-empty together, or the answer is `None` — a
-// half identity is no more an identity than an absent one, and reading
-// it as `Some(Build("0.1.0", ""))` would put a blank commit in a
-// diagnostic the operator is meant to compare.
 // The web view's route prefix, when the daemon serves the view. An absent
 // field is a daemon started without `--ui`; a present one must be well
 // formed, because a client acts on it.
@@ -1047,6 +1038,15 @@ fn view_at(body: json.JsonValue) {
   }
 }
 
+// The hello's build identity, or `None` when the daemon did not send one.
+//
+// Absence is not an error: an older daemon's hello predates these two
+// fields, and a new client must still attach to it and report that it is
+// old rather than refusing the frame for a missing field. Both fields
+// must be present and non-empty together, or the answer is `None` — a
+// half identity is no more an identity than an absent one, and reading
+// it as `Some(Build("0.1.0", ""))` would put a blank commit in a
+// diagnostic the operator is meant to compare.
 fn build_at(body: json.JsonValue) {
   case text_at(body, "build_version", 128), text_at(body, "build_commit", 128) {
     Ok(version), Ok(commit) -> Ok(Some(Build(version, commit)))
