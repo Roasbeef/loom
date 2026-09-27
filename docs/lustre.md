@@ -434,8 +434,8 @@ render when the model did not change. So:
   cheap: compute derived data in `update`, where it runs once per change,
   not in `view`, where it runs once per message (section 4).
 - An idle page receives a `Reconcile` per message. With event-driven
-  delivery that is one per idle refresh, every five seconds once the
-  daemon has pushed, plus one per reply to that refresh; with the old
+  delivery that is one per idle refresh, every `pushing_refresh_ms` once
+  the daemon has pushed (1 s for now, 5 s once protocol-change/054 lands), plus one per reply to that refresh; with the old
   250 ms tick it was four a second before any reply.
 - A `Mount` serializes the whole tree, and the runtime holds the whole last
   tree and its handler map. Per-page memory grows with what the page

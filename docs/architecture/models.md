@@ -443,7 +443,8 @@ needed to carry it. A register-only write produces no pushed `committed`
 notice, because the hub's pull emits only entries, usage rows, operation
 transitions and escalations. The client's idle catch-up is what
 picks the cell up: within 250 ms on a lane that has heard no push, and
-within five seconds on one that has (`session_channel.pushing_refresh_ms`).
+within `session_channel.pushing_refresh_ms` on one that has (1 s for now;
+5 s once protocol-change/054 lands).
 The same figure reaches the agent strip sooner, from the usage row's own
 push. The cell's `tokens` is the operation's current
 context size from its newest usage row, a replacement value and not a

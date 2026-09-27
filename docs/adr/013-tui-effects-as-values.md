@@ -1346,12 +1346,12 @@ earliest reading at which `tick` would act: the in-flight deadline, the
 refresh instant of a ready lane with a cut, or `None`. It is exact in both
 directions, and the property test checks that after every generated step
 (N1). The idle refresh has two intervals. A lane starts `Polling`, at
-250 ms, and moves to `Pushing`, at five seconds, on the first pushed frame
-it receives. The first push is the evidence because the hello names no
+250 ms, and moves to `Pushing`, at five seconds (one second for now; see
+the interim refresh below), on the first pushed frame it receives. The first push is the evidence because the hello names no
 push capability and a lane that reconnects may face an older daemon. No
 gap detection was added: a notice at or above the cut catches up from
 `cut.next_seq`, so a lost notice followed by any later one loses nothing,
-and only a lost final notice waits for the five-second refresh. A pushed
+and only a lost final notice waits for the `Pushing` refresh. A pushed
 configuration board, which the gateway sends every other subscriber when
 one changes a strand's configuration, now catches up as a presence change
 does; the lane used to drop it and let the 250 ms refresh pick the change
@@ -1415,7 +1415,7 @@ mutation table is unchanged.
 - *A feedback flag or a mailbox flush for wakes.* The sender's pacing bounds
   the wakes a burst costs without either.
 - *A wake on SIGWINCH.* Etui notices a resized window only when its loop
-  runs, which is why the idle ceiling is one second and not the five-second
+  runs, which is why the idle ceiling is one second and not the lane's
   refresh. A wake from the signal would remove that ceiling; it is left for
   a later change to the fork.
 
@@ -1430,7 +1430,10 @@ mutation table is unchanged.
   80 waits puts all of the difference in that one: Alice's wait for Bob's
   new attachment went from 231 ms to 4,979 ms, and no other wait moved by
   more than 30 ms. Pushing the join is the fix, and it amends
-  protocol-change/018, which rules that a join is not announced.
+  protocol-change/018, which rules that a join is not announced;
+  [protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)
+  proposes it. Until it lands the `Pushing` refresh is one second, which
+  bounds a join's delay to a second (the interim refresh, below).
   The `client/` context cell ([models.md](../architecture/models.md)) is
   another; its figure reaches the agent strip sooner through the usage
   row's own push. A lost final notice has the same bound.
@@ -1502,3 +1505,24 @@ adopted. The model after a long reply is one word larger, and what the
 process retains after a collection is unchanged or smaller. The replay
 goldens pass unchanged, and `loom replay --all --plain` of both committed
 recordings is byte-identical between the two builds.
+
+**The interim one-second refresh.** The table above was measured with
+`session_channel.pushing_refresh_ms` at 5 s. Because a join is not pushed,
+that value leaves a newcomer invisible to the peers already attached for
+up to five seconds, so the constant is 1 s until
+[protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)
+pushes the roster on subscribe, and then returns to 5 s. Measured the same
+way at 1 s, median of five runs:
+
+| Measurement | Before | After, 5 s | After, 1 s |
+|---|---|---|---|
+| Idle terminal: loop wakes per second | 14.6 | 1.6 | 3.9 |
+| Idle terminal: catch-ups per second | 3.6 | 0.2 | 0.97 |
+| Idle terminal: requests the daemon decodes per second | 10.7 | 0.6 | 2.9 |
+| Idle page that has been pushed to: renders per second | 9.9 | 0.8 | 4.0 |
+| Idle page that has been pushed to: catch-ups per second | 2.0 | 0.2 | 1.0 |
+| Shipped multiplayer fixture, five runs under load | 8.0 s | 12.2 s | 8.2 s |
+
+The latency and burst rows do not depend on the idle refresh and were not
+remeasured. The fixture's configuration test is back within 0.25 s of the
+build before event-driven delivery.

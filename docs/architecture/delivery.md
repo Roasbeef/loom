@@ -206,22 +206,35 @@ daemon:
 stateDiagram-v2
     direction LR
     Polling: Polling<br/>refresh 250 ms
-    Pushing: Pushing<br/>refresh 5 s
+    Pushing: Pushing<br/>refresh 1 s (interim)
     [*] --> Polling: lane starts
     Polling --> Pushing: first pushed frame (apply_pushed)
 ```
 
 A lane that has seen no push cannot tell a quiet session from a daemon that
 never pushes, so it refreshes every 250 ms. A pushed frame is evidence that
-commits are announced; from the next capture on, the refresh only repairs a
-lost final notice. The hello is not used as that evidence: it names no push
-capability, and a lane that reconnects may face an older daemon.
+commits are announced; from the next capture on, the refresh repairs a
+lost final notice and catches what the daemon does not announce. The hello
+is not used as that evidence: it names no push capability, and a lane that
+reconnects may face an older daemon.
+
+The `Pushing` interval, `session_channel.pushing_refresh_ms`, is 1 s for
+now. The intended value is 5 s, but one change a peer's screen depends on
+is not pushed: a peer joining the session. protocol-change/018 has the hub
+push `presence` when a peer departs and not when one subscribes, so the
+peers already attached see a newcomer only at their next capture. With a
+5 s refresh that took up to five seconds, and the shipped multiplayer
+fixture spent 4.7 s of its 12.2 s waiting for it. The 1 s value bounds the
+wait to a second. [protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)
+proposes pushing the roster on subscribe, and the constant returns to 5 s
+when that lands.
 
 One consequence is worth knowing when reading counters. The gateway pushes
 nothing to a network subscriber when it subscribes, so a client attached
 to a session where nothing happens stays `Polling` until the first commit,
 stream or presence change reaches it, and keeps the 250 ms refresh until
-then.
+then. Protocol-change/054 would fix this as well: the newcomer's own copy
+of the roster is its first push.
 
 ## Four timelines
 
@@ -251,20 +264,21 @@ view a row per frame. On the web the 500 frames become eight
 
 **An idle session.** Nothing is running and the daemon has pushed to the
 lane before.
-The terminal sleeps one second at a time (the idle ceiling), and every
-five seconds its lane is due: the tick issues `catch_up`, the loop polls at
+The terminal sleeps up to one second at a time (the idle ceiling), and
+every `pushing_refresh_ms` (1 s for now, 5 s once protocol-change/054
+lands) its lane is due: the tick issues `catch_up`, the loop polls at
 8 ms while it is in flight, and the reply's frames wake it. A capture that
 brings back the cut already drawn repaints nothing. The page sleeps until
-its timer fires at the lane's refresh, five seconds after the last capture,
-and renders once for the timer and once per reply batch. Before, both
+its timer fires at the lane's refresh, `pushing_refresh_ms` after the last
+capture, and renders once for the timer and once per reply batch. Before, both
 hosts woke four times a second and each wake issued or waited on a
 capture.
 
 **A lost final notice.** The last commit before a session goes quiet is
 announced by a notice that never reaches the client. No later notice will
 cause a catch-up from the lane's `cut.next_seq`, so the commit is fetched by
-the idle refresh: within five seconds of the lane's last capture on a
-pushing lane, within 250 ms on a polling one. A lost notice followed by
+the idle refresh: within `pushing_refresh_ms` of the lane's last capture
+on a pushing lane, within 250 ms on a polling one. A lost notice followed by
 any later notice costs nothing, because a notice at or above the cut
 catches up from `cut.next_seq` and fetches both commits.
 

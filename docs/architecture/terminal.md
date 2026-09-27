@@ -499,8 +499,9 @@ socket's work:
 at a time. A snapshot arrives as `snapshot_begin`, a chunk per credit, then
 `snapshot_end`, and the cut becomes visible only at the end, so partial
 metadata never repaints the view. While idle the channel issues a credited
-`catch_up` every 250 ms until a frame has been pushed to it, and every five
-seconds after (`polling_refresh_ms`, `pushing_refresh_ms`). A `committed`
+`catch_up` every 250 ms until a frame has been pushed to it, and every
+second after (`polling_refresh_ms`, `pushing_refresh_ms`; the second is an
+interim value that returns to 5 s once protocol-change/054 lands). A `committed`
 or `presence` push moves that catch-up earlier. `stream_delta`, `tool_output`, `usage_observation` and
 `block_summary` pushes are applied directly. Pushes are accepted in every phase except `Closed` and
 consume no credit.
@@ -968,7 +969,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/pacing` | Frame and viewport pacing and the poll cadence, as pure arithmetic. |
 | `tui/connection` | The terminal's event names over the shared `host/websocket` transport. |
 | `session_view/session_wire` | v2 command encoding and single-frame decoding: correlated replies versus pushes. |
-| `session_view/session_channel` | The credited conversation lane: phases, one outstanding request, one unsent mutation, the idle catch-up (250 ms, or 5 s once pushed to), `next_due`, pushed frames. |
+| `session_view/session_channel` | The credited conversation lane: phases, one outstanding request, one unsent mutation, the idle catch-up (250 ms, or `pushing_refresh_ms` once pushed to), `next_due`, pushed frames. |
 | `session_view/snapshot`, `session_view/snapshot_view` | Assembling a credited transfer into a validated cut, and projecting it into strands, operations, configuration and presence. |
 | `session_view/protocol` | The client's view of the ClientGateway event union and its command constructors. |
 | `tui/attachment` | One provisional session replacement, the reducer's view of its `job.Attach` job, and its adoption. |
