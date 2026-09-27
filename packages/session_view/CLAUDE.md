@@ -30,6 +30,13 @@ read, takes the lane's outputs and performs them.
   `tick(channel, now:)`, `submit`, `close` and `retire` transition it and
   return `Update`s; `take_outputs` hands over the queued `Out`s oldest
   first. `socket` returns the host's handle for liveness checks.
+  `next_due` names the earliest reading at which `tick` would act (the
+  in-flight deadline, or the idle refresh of a ready lane with a cut), and
+  both hosts arm one wake-up for it instead of ticking on a cadence. The
+  idle refresh is `polling_refresh_ms` (250) until the lane receives its
+  first pushed frame and `pushing_refresh_ms` (1000, an interim value until
+  protocol-change/054 pushes a join; then 5000) after; the private
+  `Delivery` field (`Polling`, `Pushing`) records which.
 - `session_channel.Out(socket, recorder)`: `Transmit(socket, frame)`,
   `Shut(socket)`, `Note(recorder, attempt.Event)`. The terminal performs
   these in `tui/terminal_lane.perform`.
@@ -156,6 +163,11 @@ through `submit`, the session's mutations. A read-only host never calls
 - **One request owns the wire.** A mutation is issued at most once and a
   lost reply becomes `UnknownOutcome`, never a retry (the protocol model in
   `protocol/models/terminal-attachment/` checks this).
+- **`next_due` is exact.** A `tick` before the reading it names changes
+  nothing and a `tick` at it acts; a host that sleeps until it can never
+  miss a refresh or a deadline. The property test in
+  `packages/tui/test/session_channel_property_test.gleam` checks it after
+  every generated step (N1).
 - **`Captured` is the only update that replaces the projection.** A host
   that draws anything else from a partial transfer is drawing a cut that
   was never validated.
@@ -174,6 +186,8 @@ through `submit`, the session's mutations. A read-only host never calls
   layering this package sits in, and where each host performs effects.
 - `docs/architecture/terminal.md`: the terminal host that drives it.
 - `docs/architecture/web-view.md`: the web host that drives it.
+- `docs/architecture/delivery.md`: how both hosts deliver traffic to the
+  lane and wake for `next_due`, traced from the socket to the screen.
 - `docs/client-protocol.md`: the protocol the lane speaks.
 - `protocol/models/terminal-attachment/`: the P model of the lane, the
   attachment worker and the gateway.

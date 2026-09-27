@@ -11,18 +11,27 @@
 //// is web-specific here is the delivery (a Lustre selector instead of an
 //// etui tick) and the view (HTML elements instead of terminal cells).
 ////
-//// Delivery keeps ADR-013's option C. A frame from the transport arrives as
-//// `Arrived` and is filed, into the engine's `session_view/inbox`. A 250 ms
-//// timer delivers `Ticked` with the clock reading taken when the timer
-//// message was received, and then every filed frame is handed to the lane,
-//// oldest first, through `operator.drain`, the loop the terminal runs too,
-//// followed by the lane's own `tick`. The one arrival that does not wait for
-//// the timer is one the lane is waiting on: while a request is in flight
-//// (`session_channel.in_flight`, the same predicate the terminal shortens
-//// its poll on), an arrival wakes the same reduction at once. That is the
-//// "wake on traffic" host ADR-013's phase 3 addendum leaves open, and it is
-//// what keeps a credited transfer from paying one tick per chunk. A push
-//// that arrives while the lane is idle still waits for the timer.
+//// Delivery is event-driven (ADR-013, the addendum on event-driven
+//// delivery). The selector that reads the transport's inbox drains it in
+//// the same breath: the frame it matched and up to `arrival_batch - 1` more
+//// that are already waiting become one `Arrived`, with the clock reading
+//// taken after the drain. `Arrived` files the batch into the engine's
+//// `session_view/inbox` and reduces it at once: every filed frame goes to
+//// the lane, oldest first, through `operator.drain`, the loop the terminal
+//// runs too, followed by the lane's own `tick` at the batch's reading.
+////
+//// Batching is what keeps a burst cheap. Lustre 5.7.1 runs the view, diffs
+//// it and broadcasts the patch for every message the runtime takes, with no
+//// check for an empty patch, so one message per frame would be one render
+//// per frame. One message per burst is one render per burst.
+////
+//// There is no periodic tick. After every transition the component asks
+//// the lane when it next has something to do (`session_channel.next_due`:
+//// the in-flight deadline, or the idle refresh) and arms one timer for that
+//// reading, cancelling the one it armed before. When it fires, `Ticked`
+//// runs the same reduction at the reading taken when the timer message was
+//// received. An idle page therefore wakes once per refresh interval, five
+//// seconds once the daemon has pushed, and not four times a second.
 ////
 //// The transport is supplied by the host that starts the component, because
 //// what a socket is belongs to that host. In the daemon it is a relay into
@@ -75,12 +84,14 @@ import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/turns
 
-/// How often the component reduces what arrived, in milliseconds.
+/// The most frames one `Arrived` carries: the frame the selector matched
+/// and up to this many less one already waiting behind it.
 ///
-/// The lane's own idle refresh and deadlines are measured against the
-/// readings these ticks carry, so this is also the cadence at which the lane
-/// can notice that a catch-up is due. It matches the terminal's poll.
-pub const tick_ms = 250
+/// It is the terminal's `connection_batch`, the most frames one of its
+/// steps reduces, so a burst costs the two hosts the same number of
+/// reductions. A burst longer than this is several batches, each taken as
+/// soon as the one before it is reduced.
+pub const arrival_batch = 64
 
 /// The strand the page shows and addresses.
 pub const strand = "main"
@@ -244,11 +255,14 @@ pub opaque type Model(socket) {
     /// The escalations of `shown`, and the settled ones kept beside them.
     approvals: List(approval.Review),
     status: Status,
-    /// The latest clock reading a message carried, which a command takes
-    /// its deadline from.
+    /// The latest clock reading: the one a message carried, or the one a
+    /// command read for itself, which its deadline is measured from.
     clock: Int,
     /// The timer's subject, once the tick selector is armed.
     timer: Option(Subject(Nil)),
+    /// The one timer armed for the lane's next due reading, kept so the
+    /// next arming can cancel it.
+    armed: Option(process.Timer),
     /// What the page last told the operator.
     notice: Notice,
     /// The command counter an operator's commands are encoded with.
@@ -268,14 +282,16 @@ pub type Msg(socket) {
   /// The transport refused to open.
   Refused(reason: String)
 
-  /// The tick selector is armed on this subject.
+  /// The deadline timer's selector is armed on this subject.
   TimerArmed(timer: Subject(Nil))
 
-  /// One frame from the transport, at this monotonic reading. It is filed,
-  /// and reduced at once only when the lane is waiting on a reply.
-  Arrived(message: connection_event.Message, at: Int)
+  /// The frames the transport delivered, oldest first, and the monotonic
+  /// reading taken after they were read. One message carries a whole burst,
+  /// up to `arrival_batch` frames, and it is reduced at once.
+  Arrived(messages: List(connection_event.Message), at: Int)
 
-  /// The timer fired, at this monotonic reading. Reduction happens here.
+  /// The timer armed for the lane's next due reading fired, at this
+  /// monotonic reading.
   Ticked(at: Int)
 }
 
@@ -318,6 +334,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
     status: Connecting,
     clock: 0,
     timer: None,
+    armed: None,
     notice: Quiet,
     next_id: 1,
     drafts: 0,
@@ -325,7 +342,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
 }
 
 /// The component's first state and the two subscriptions it runs for its
-/// life: the connection, and the tick.
+/// life: the connection, and the deadline timer.
 ///
 /// ## Examples
 ///
@@ -344,6 +361,10 @@ pub fn init(start: Start(socket)) -> #(Model(socket), Effect(Msg(socket))) {
 // message, so a slow gateway attach cannot hold the component's start.
 // The clock is read when the answer is received, in the mapping, which is
 // host code.
+//
+// A frame's mapping drains the inbox behind it, so a burst that is already
+// waiting becomes one message and one render. The clock is read after the
+// drain, so the batch's reading is no earlier than any frame in it.
 fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
   use _dispatch, opened <- server_component.select
   let inbox = process.new_subject()
@@ -355,15 +376,36 @@ fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
       Error(reason) -> Refused(reason)
     }
   })
-  |> process.select_map(inbox, fn(message) { Arrived(message, transport.now()) })
+  |> process.select_map(inbox, fn(first) {
+    let messages = [first, ..waiting(inbox, arrival_batch - 1, [])]
+    Arrived(messages, transport.now())
+  })
 }
 
-// Arms the tick. The clock is read when the timer message is received, which
-// is host code, so the reading `Ticked` carries is the instant of the tick.
+// Up to `room` messages already in the inbox, oldest first, without waiting
+// for any.
+fn waiting(
+  inbox: Subject(connection_event.Message),
+  room: Int,
+  taken: List(connection_event.Message),
+) -> List(connection_event.Message) {
+  case room > 0 {
+    False -> list.reverse(taken)
+    True ->
+      case process.receive(inbox, 0) {
+        Ok(message) -> waiting(inbox, room - 1, [message, ..taken])
+        Error(Nil) -> list.reverse(taken)
+      }
+  }
+}
+
+// Creates the deadline timer's subject. Nothing is armed here: the lane
+// says when it is next due once it exists. The clock is read when the timer
+// message is received, which is host code, so the reading `Ticked` carries
+// is the instant the timer fired.
 fn arm(transport: Transport(socket)) -> Effect(Msg(socket)) {
   use dispatch, timer <- server_component.select
   dispatch(TimerArmed(timer))
-  process.send_after(timer, tick_ms, Nil)
   process.new_selector()
   |> process.select_map(timer, fn(_) { Ticked(transport.now()) })
 }
@@ -380,35 +422,42 @@ pub fn update(
   message: Msg(socket),
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case message {
+    // The lane starts with its subscribe in flight, and anything filed
+    // before it existed is handed to it at once, in arrival order.
     Opened(socket:, at:) -> {
       let lane = session_channel.start(socket, model.expected, now: at)
       let #(lane, outputs) = session_channel.take_outputs(lane)
+      let #(model, effects) =
+        reduce(Model(..model, lane: Some(lane), clock: at), at)
       #(
-        Model(..model, lane: Some(lane), clock: at),
-        perform(model.transport, outputs),
+        rearm(model, at),
+        effect.batch([perform(model.transport, outputs), effects]),
       )
     }
 
     Refused(reason:) -> #(Model(..model, status: Ended(reason)), effect.none())
 
-    TimerArmed(timer:) -> #(Model(..model, timer: Some(timer)), effect.none())
+    // The timer's subject can be ready after the lane opened, since the
+    // open's answer comes from another process, so the first arming may
+    // happen here.
+    TimerArmed(timer:) -> #(
+      rearm(Model(..model, timer: Some(timer)), model.clock),
+      effect.none(),
+    )
 
-    // An arrival is filed. It is reduced now only when the lane has a
-    // request out and is waiting on exactly this kind of frame; a push to
-    // an idle lane waits for the timer, as option C has it.
-    Arrived(message:, at:) -> {
-      let model = Model(..model, filed: inbox.push(model.filed, message))
-      case option.map(model.lane, session_channel.in_flight) {
-        Some(True) -> reduce(Model(..model, clock: at), at)
-        Some(False) | None -> #(model, effect.none())
-      }
+    // A batch is filed behind anything still held and reduced now. One
+    // message is one render, so the whole batch costs one.
+    Arrived(messages:, at:) -> {
+      let filed = list.fold(messages, model.filed, inbox.push)
+      let #(model, effects) = reduce(Model(..model, filed:, clock: at), at)
+      #(rearm(model, at), effects)
     }
 
-    // The timer's reduction, which also re-arms the timer. An arrival's
-    // does not, so the timer keeps exactly one pending fire.
+    // The lane's due reading passed: its tick acts, and the strip's labels
+    // are brought up to the same reading.
     Ticked(at:) -> {
       let #(model, effects) = reduce(Model(..model, clock: at), at)
-      #(ticked(model, at), effect.batch([effects, rearm(model.timer)]))
+      #(rearm(ticked(model, at), at), effects)
     }
   }
 }
@@ -528,8 +577,8 @@ fn captured(
   }
 }
 
-// The lane refreshes an idle page every 250 ms, and a refresh of a session
-// where nothing moved brings back the capture already drawn. Comparing it
+// The lane refreshes an idle page every few seconds, and a refresh of a
+// session where nothing moved brings back the capture already drawn. Comparing it
 // with the one shown costs a walk of the two terms; projecting it again
 // would cost the agent rows, the lane and the strip for nothing. Only the
 // cache ledger can still move, since a held usage row may be covered now.
@@ -750,7 +799,10 @@ fn outlook(
 // time, so a second passing redraws nothing; the strip is rebuilt only when
 // a drawn cache label changed, which is once a minute at most until a
 // countdown's last minute. An idle page's tick therefore leaves the strip
-// as the same value and its memoized subtree is not diffed. The labels are
+// as the same value and its memoized subtree is not diffed. The timer fires
+// only when the lane is due, so a label can lag by up to one refresh
+// interval. A countdown label is an upper bound on what remains, so a late
+// one still states something true. The labels are
 // compared chip by chip rather than by rebuilding the strip, which would
 // redo every line's text on every tick.
 fn ticked(model: Model(socket), at: Int) -> Model(socket) {
@@ -889,7 +941,10 @@ fn commanded(
       String,
     ),
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  let model = drained(model)
+  // A command reads the host's clock itself. The last message's reading can
+  // be a whole idle refresh old, `pushing_refresh_ms` on a pushing lane, and the
+  // request's deadline and the timer armed for it are measured from here.
+  let model = drained(Model(..model, clock: model.transport.now()))
   case model.lane {
     None -> #(
       Model(..model, notice: Warned("The page is not connected yet.")),
@@ -907,13 +962,17 @@ fn commanded(
 }
 
 // Takes everything the lane queued and performs it, keeping the emptied
-// lane, so no output is performed twice.
+// lane, so no output is performed twice. A command moves the lane's next
+// due reading, so the timer is armed again here too.
 fn flushed(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
   case model.lane {
     None -> #(model, effect.none())
     Some(lane) -> {
       let #(lane, outputs) = session_channel.take_outputs(lane)
-      #(Model(..model, lane: Some(lane)), perform(model.transport, outputs))
+      #(
+        rearm(Model(..model, lane: Some(lane)), model.clock),
+        perform(model.transport, outputs),
+      )
     }
   }
 }
@@ -943,14 +1002,30 @@ fn perform(
   }
 }
 
-fn rearm(timer: Option(Subject(Nil))) -> Effect(Msg(socket)) {
-  case timer {
-    None -> effect.none()
-    Some(timer) -> {
-      use _dispatch <- effect.from
-      process.send_after(timer, tick_ms, Nil)
-      Nil
-    }
+// Arms the one timer for the lane's next due reading, measured from `now`,
+// the reading the transition that moved it ran at, after cancelling the
+// timer armed before. A lane with nothing due, or no lane, arms nothing.
+//
+// This is the one action `update` performs itself rather than returning as
+// an effect. The `Timer` handle has to be in the model for the next arming
+// to cancel it, and an effect could only hand it back as a second message,
+// which Lustre would render a second time. `send_after` and `cancel_timer`
+// do not block, and a test driving `update` through the simulator has no
+// timer subject, so it arms nothing.
+//
+// A timer that fired before the cancel reached it leaves one `Ticked`
+// behind. The tick it runs is harmless: `next_due` is exact, so a lane that
+// is not yet due does nothing.
+fn rearm(model: Model(socket), now: Int) -> Model(socket) {
+  let _ = option.map(model.armed, process.cancel_timer)
+  let due = option.then(model.lane, session_channel.next_due)
+  case model.timer, due {
+    Some(timer), Some(due) ->
+      Model(
+        ..model,
+        armed: Some(process.send_after(timer, int.max(0, due - now), Nil)),
+      )
+    Some(_), None | None, _ -> Model(..model, armed: None)
   }
 }
 

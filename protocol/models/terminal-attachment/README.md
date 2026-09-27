@@ -80,8 +80,8 @@ modelled (see below).
 | `ePrepared`, `eOutcome`, `eAck`, `eCancel` | `job.AttachArrived` with `job.Published(prepared)` and with `job.Settled` (the weft relay's `AllDelivered` or a failure), both tagged with the job's key; `attachment.Acknowledge`; `weft.cancel`, which `job_runner.cancel` sends when the runtime performs `effect.CancelJob` |
 | `eWorkerClose`, `eGuardianKill` | the worker's own `connection.close` when its acknowledgement wait times out; the guardian killing a socket after its startup worker exits abnormally |
 | `eOpOpen`, `eOpSubmit`, `eOpEscape`, `eOpQuit` | `session_control.begin_open`, Enter through `outbound.send_frame`, Escape through `inbound.cancel_pending`, Ctrl-C through `submit.quit` |
-| `eClockRefresh`, `eClockDeadline` | a tick after the 250 ms idle refresh fell due; a tick after a request deadline passed (`session_channel.tick`) |
-| `eTick`, `ePerform` | the runtime's wakeup after traffic arrived; `runtime.perform` |
+| `eClockRefresh`, `eClockDeadline` | a tick at the reading `session_channel.next_due` names, the host's one wake-up for it: the idle refresh fell due (250 ms after a capture until the lane has been pushed to, 5 s after), or a request deadline passed (`session_channel.tick`) |
+| `eTick`, `ePerform` | the runtime's wakeup after traffic arrived: the socket's paced `{etui_wake}` in the terminal, a drained selector batch in the web view; one pending `eTick` stands for any number of wakes, as the hosts coalesce them; `runtime.perform` |
 
 Announcements the specs observe: `eCmdAdmitted`/`eCmdResolved` (a
 `Disposition` and its later `Submission`, `Acknowledged` or `UnknownOutcome`
@@ -105,7 +105,11 @@ visible lane), `eQuit`, worker and socket lifetimes, and `eDaemonApplied`.
   most two commit notices; nothing is shared between two connections.
 - Time is not modelled. A request deadline or the idle refresh can fall due
   at any tick the operator chooses, which includes every ordering the real
-  clock allows.
+  clock allows. That covers both refresh intervals and the wake pacing:
+  event-driven delivery (ADR-013, its addendum on event-driven delivery)
+  changes when a host ticks, not what a tick does, and `eTick` with
+  `tickPending` already modelled a reduction woken by an arrival and
+  coalesced with any others pending.
 - The attempt deadline and a daemon-side break are environment choices made
   when the worker or socket starts. Runs in which neither happens are the
   ones that test progress: the protocol must not rely on a deadline for it.

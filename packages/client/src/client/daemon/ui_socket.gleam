@@ -54,6 +54,12 @@ import web_view/operator_page
 /// terminal's 32 MiB (protocol-change/051, the operator addendum).
 pub const operator_frame_limit = 1_048_576
 
+// How long a page's socket stays open after the relay reports the page
+// ended, in milliseconds. The component reduces the close as it arrives,
+// so its last patch is one message behind; a quarter second covers a
+// component busy with a batch when the close lands.
+const ended_grace_ms = 250
+
 type Signal {
   // The self-addressed message that runs admission, queued by `on_init`.
   Admit
@@ -226,11 +232,13 @@ pub fn upgrade(
             }
 
           // The gateway ended the page. The relay has already told the
-          // component, whose next tick draws the ended state; closing now
-          // would drop that last patch. Two ticks is enough for the tick
-          // that reduces the close and the patch it sends.
+          // component, which reduces the close as it arrives and sends the
+          // patch that draws the ended state; closing now could drop that
+          // patch, which reaches this socket through the component rather
+          // than from the relay. `ended_grace_ms` covers the component's
+          // one message and its broadcast.
           Serving(signals:, ..) as serving, mist.Custom(Ended(_)) -> {
-            process.send_after(signals, 2 * component.tick_ms, Stop)
+            process.send_after(signals, ended_grace_ms, Stop)
             mist.continue(serving)
           }
 

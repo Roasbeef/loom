@@ -12,3 +12,4 @@ houdini = "== 1.2.1"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"

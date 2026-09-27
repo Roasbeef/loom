@@ -195,9 +195,14 @@ that rendered the reply as an entry would show the turn twice.
 A notice is safe to receive more than once and in any order. A terminal
 that already holds sequence 41 drops the notice. A terminal with a request
 in flight defers it. A terminal that missed it entirely receives the
-record at its next catch-up. The 250 ms idle refresh stays as that
-recovery path, and it is the only path against a daemon built before
-pushed delivery.
+record at its next catch-up. The idle refresh stays as that recovery
+path, and it is the only path against a daemon built before pushed
+delivery. A lane refreshes every 250 ms until a frame has been pushed to
+it and every second after, since a missed notice is repaired by the
+next one and only the last notice before the session goes quiet, or a
+join, waits for the refresh (ADR-013, the addendum on event-driven
+delivery). The second is interim: it returns to five once a join is
+pushed ([protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)).
 
 ### One authority check for both kinds of frame
 
@@ -337,7 +342,7 @@ absent field as the mark of a push. A frame that does carry `reply_to` is
 still matched against the outstanding request, so a stale or forged
 correlation still fails closed. A push belongs to no request: it consumes
 no credit, allocates no identity, and cannot fail the lane
-(`apply_pushed`, `session_view/session_channel.gleam:693`).
+(`apply_pushed`, `session_view/session_channel.gleam:793`).
 
 ```mermaid
 stateDiagram-v2
@@ -355,7 +360,7 @@ stateDiagram-v2
     Closed --> [*]
     note right of Ready
       committed for a new seq captures now, trigger Notified
-      the 250 ms tick captures with trigger Refreshed
+      the idle refresh captures with trigger Refreshed
     end note
     note left of Receiving
       committed mid request only marks refresh Due
@@ -365,26 +370,28 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`session_view/session_channel.gleam:1383`) starts the catch-up at the
+`send_queued` (`session_view/session_channel.gleam:1514`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in
-`tick` (`session_view/session_channel.gleam:1106`) would have started it. The mark is a
+`tick` (`session_view/session_channel.gleam:1199`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
 of them mean the same thing: capture when free.
 
 Two cases drop a notice
-(`capture_or_defer`, `session_view/session_channel.gleam:813`): a sequence below the current cut's
+(`capture_or_defer`, `session_view/session_channel.gleam:905`): a sequence below the current cut's
 `next_seq`, which the terminal already holds, and a notice that arrives
 before any cut exists, which the initial transfer will deliver anyway. A
 `Closed` lane drops everything.
 
 Because a notice may correctly do nothing, the lane reports every one it
-reads as `Noticed` (`session_view/session_channel.gleam:127`) before deciding what
+reads as `Noticed` (`session_view/session_channel.gleam:155`) before deciding what
 to do with it, and the model counts those arrivals (`tui/inbound.gleam:286`).
 That count is how the shipped fixture proves that pushes reach a terminal
 without depending on which capture painted the answer.
 
 The other pushed events are simpler. A `stream_delta` becomes a
-`Streamed` update in any phase. `presence` and `attachment` trigger a capture, like a notice. A
+`Streamed` update in any phase. `presence` and `attachment` trigger a capture, like a notice,
+and so does the configuration board the gateway pushes to every other
+subscriber when one changes a strand's configuration. A
 pushed `error` reports a failure the daemon had on this terminal's behalf,
 so it is rendered as an ordinary refusal and the socket stays open.
 
@@ -445,7 +452,11 @@ discussion are elided as `...`. The
 The last three frames carry no `reply_to`. A client written before
 `protocol-change/018` closed the connection on such a frame, because it
 treated every frame as the answer to its outstanding request. The
-`presence` frame here reports a departure; a join is not pushed.
+`presence` frame here reports a departure; a join is not pushed, so the
+peers already attached see a newcomer at their next idle refresh, which is
+up to a second on a lane that has been pushed to.
+[protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md) proposes pushing the
+roster on subscribe.
 
 ## Configuration, presence, and approvals
 

@@ -48,12 +48,16 @@
 ////   own presentation update, with the capture reason the module documents.
 //// - L2: a notice at or above the cut, received while a request was in
 ////   flight, is captured by the lane's next ready transition.
-//// - L3: an idle lane with a cut issues its catch-up once 250 ms have
-////   passed since it went idle.
+//// - L3: an idle lane with a cut issues its catch-up once its refresh
+////   interval has passed since it went idle: 250 ms until a pushed frame
+////   has reached it, 5 s after.
 //// - L4: an in-flight request fails the lane on the first tick at or past
 ////   its deadline (10 s for a command, 30 s for a capture, not extended by
 ////   credits), and not before.
 //// - L5: admission follows ADR-010.
+//// - N1: `next_due` is exact. A tick one millisecond before the reading it
+////   names changes nothing, a tick at it acts, and a lane that names none
+////   is left unchanged by a tick however late.
 ////
 //// Two obligations are narrower than a reader might expect, because the
 //// module documents them that way. `close` is the quit path and is
@@ -356,6 +360,9 @@ type Oracle {
     /// `next_seq` of the last conversation cut the lane completed.
     cut: Option(Int),
     idle_since: Int,
+    /// Whether a well-formed pushed frame has reached the open lane, which
+    /// is what moves its idle refresh from 250 ms to 5 s.
+    heard: Heard,
     queued: Queued,
     /// Labels of every mutation that crossed the wire.
     crossed: List(String),
@@ -367,6 +374,15 @@ type Oracle {
     /// Which interesting states the run reached, for the coverage check.
     reached: Set(String),
   )
+}
+
+/// Whether the lane has been pushed to, as the daemon would know it.
+type Heard {
+  /// Nothing has been pushed to the open lane yet.
+  HeardNothing
+
+  /// At least one pushed frame reached the open lane.
+  HeardPush
 }
 
 /// Which presentation update a step must produce, if any.
@@ -928,16 +944,21 @@ fn apply(
     Notice(advance) -> {
       let head = oracle.head + advance
       notice(channel, Oracle(..oracle, head:), event, head)
+      |> result.map(heard(_, oracle))
     }
     OldNotice -> {
       let seq = case oracle.cut {
         Some(cut) -> cut - 1
         None -> 0
       }
-      notice(channel, oracle, event, seq)
+      notice(channel, oracle, event, seq) |> result.map(heard(_, oracle))
     }
-    Delta -> volunteered(channel, oracle, event, delta(), Streams)
-    Usage -> volunteered(channel, oracle, event, usage(oracle.head), Observes)
+    Delta ->
+      volunteered(channel, oracle, event, delta(), Streams)
+      |> result.map(heard(_, oracle))
+    Usage ->
+      volunteered(channel, oracle, event, usage(oracle.head), Observes)
+      |> result.map(heard(_, oracle))
     Tick(ms) -> tick(channel, oracle, ms)
     Retire -> {
       let #(channel, updates) =
@@ -947,6 +968,66 @@ fn apply(
     Close -> ends(channel, oracle, event, [])
     CancelUnsent -> cancel(channel, oracle)
   }
+}
+
+// A pushed frame that reached an open lane is the evidence the lane's
+// `Delivery` waits for; one that reached a closed lane was never read.
+fn heard(
+  state: #(TerminalLane, Oracle),
+  before: Oracle,
+) -> #(TerminalLane, Oracle) {
+  let #(channel, after) = state
+  case before.lane {
+    Open -> #(channel, Oracle(..after, heard: HeardPush))
+    Shut -> state
+  }
+}
+
+// N1, after every step: the reading `next_due` names is exactly the first
+// at which `tick` acts. "Acts" is judged on the lane alone: a tick acts when
+// it changes the lane's state, queues an output or reports an update. The
+// probes run on copies, so the schedule continues from the lane the step
+// left.
+fn exact_due(
+  state: #(TerminalLane, Oracle),
+) -> Result(#(TerminalLane, Oracle), String) {
+  let #(channel, oracle) = state
+  case session_channel.next_due(channel) {
+    None ->
+      case acts(channel, oracle.now + 100_000_000) {
+        False -> Ok(state)
+        True ->
+          Error(
+            "N1 a lane with nothing due acted on a tick at "
+            <> int.to_string(oracle.now + 100_000_000),
+          )
+      }
+    Some(due) ->
+      case acts(channel, due - 1), acts(channel, due) {
+        False, True -> Ok(state)
+        True, _ ->
+          Error(
+            "N1 a tick at "
+            <> int.to_string(due - 1)
+            <> " acted before the due reading "
+            <> int.to_string(due),
+          )
+        False, False ->
+          Error(
+            "N1 a tick at the due reading "
+            <> int.to_string(due)
+            <> " did nothing",
+          )
+      }
+  }
+}
+
+fn acts(channel: TerminalLane, now: Int) -> Bool {
+  let #(ticked, updates) = session_channel.tick(channel, now:)
+  let #(ticked, outputs) = session_channel.take_outputs(ticked)
+  updates != []
+  || outputs != []
+  || session_channel.state(ticked) != session_channel.state(channel)
 }
 
 fn submit_prompt(
@@ -1510,10 +1591,16 @@ fn tick(
 }
 
 // The refresh may come early, because a mutation's outcome makes the next
-// catch-up due at once, but it may not come later than 250 ms after the
-// lane went idle.
+// catch-up due at once, and because a lane that was first pushed to after
+// its last capture keeps the shorter interval that capture set. It may not
+// come later than the interval for what the lane has heard, measured from
+// when the lane went idle.
 fn refreshed(before: Oracle, after: Oracle) -> Result(Oracle, String) {
-  let due = before.cut != None && before.now >= before.idle_since + 250
+  let interval = case before.heard {
+    HeardNothing -> session_channel.polling_refresh_ms
+    HeardPush -> session_channel.pushing_refresh_ms
+  }
+  let due = before.cut != None && before.now >= before.idle_since + interval
   let commands = list.map(after.written, fn(written) { written.command })
   case after.lane, due, commands {
     Open, True, ["catch_up"] -> Ok(reach(after, "refresh"))
@@ -1874,6 +1961,7 @@ fn run(role: Role, events: List(Event)) -> Result(Set(String), Failure) {
       grant: NoGrant,
       cut: None,
       idle_since: 0,
+      heard: HeardNothing,
       queued: NothingQueued,
       crossed: [],
       owed: NothingOwed,
@@ -1893,7 +1981,9 @@ fn run(role: Role, events: List(Event)) -> Result(Set(String), Failure) {
   use #(_, oracle) <- result.try(
     list.index_fold(steps, Ok(#(channel, oracle)), fn(state, event, index) {
       use state <- result.try(state)
-      apply(state, event) |> result.map_error(Failure(index + 1, _))
+      apply(state, event)
+      |> result.try(exact_due)
+      |> result.map_error(Failure(index + 1, _))
     }),
   )
 

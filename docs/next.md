@@ -43,7 +43,11 @@ performs the effects and stores the job table. Jobs are keyed data
 (`tui/job`, `tui/job_runner`), and replies are admitted only by the key
 their slot holds. The live answer is drawn by `tui/live_tail`, whose cache
 lives in the terminal's view state (`View.live_tail`), so a frame costs what
-the new text changes rather than the length of the answer.
+the new text changes rather than the length of the answer. The session
+socket wakes etui's loop after each frame it files, paced to one wake per
+16 ms, and the poll timeout sleeps until the lane's
+`session_channel.next_due` when nothing else is owed
+([delivery.md](architecture/delivery.md)).
 
 **The web view.** `loom --ui --session <id> [--operate] [--open]` asks the
 daemon for a single-use ticket with `ui.link` and prints the link. The
@@ -52,9 +56,11 @@ scoped to a page key, keeps a per-tab nonce in `sessionStorage`, and opens
 the page's socket with it. `ui_socket` starts `web_view/component` for an
 observer or `web_view/operator_page` for an operator, chosen by the smallest
 of the membership role, the link's ceiling and Operator, and `ui_relay`
-attaches it to the session's gateway. The component files arrivals and
-reduces on a 250 ms tick, except that a reply the lane is waiting for is
-reduced on arrival, which took a first capture from 2.77 s to about 4 ms.
+attaches it to the session's gateway. The component's selector drains a
+burst of up to 64 frames into one `Arrived`, which is reduced at once, and
+one timer armed for the lane's `next_due` replaces the old 250 ms tick, so
+a burst costs one render per batch and an idle page wakes at the lane's
+refresh.
 The page shows `main` only, and only durable records: no streams, tool
 tails or live tail yet.
 
@@ -74,39 +80,59 @@ tails or live tail yet.
   terminal overlay, the admin page) wait for the owner's go-ahead.
 - **The package README audit**, [#560](https://github.com/Roasbeef/loom/pull/560).
 
-## What to work on next: event-driven delivery
+## Event-driven delivery: landed on `client/event-driven-delivery`
 
-Both hosts still poll. The component reduces on a 250 ms tick, and the
-lane's idle refresh issues a `catch_up` every 250 ms whether or not the
-daemon has anything new. The decided next step replaces both:
+Both hosts now reduce traffic when it arrives and wake for time only at
+the lane's next deadline. [ADR-013](adr/013-tui-effects-as-values.md)'s
+addendum on event-driven delivery records the decision, what it costs and
+the measurements, and [delivery.md](architecture/delivery.md) traces a
+frame from the socket to the screen in both hosts. The decided plan above
+was built as written except in two places. No gap detection was added:
+a notice at or above the cut already catches up from `cut.next_seq`, so
+only a lost final notice waits for the refresh. And the terminal's idle
+wait is capped at one second rather than at the lane's refresh, because
+etui notices a resized window only when its loop runs. The `Pushing`
+refresh itself is 1 s for now rather than the planned 5 s, until a join
+is pushed (follow-up 2).
 
-- **Reduce on arrival, coalesced.** An arrival schedules one reduction
-  rather than waiting for the tick, and every arrival that lands before
-  that reduction runs is taken in the same batch. Batches stay intact:
-  reduction still drains what is held in arrival order, never one message
-  per reduce.
-- **A deadline timer instead of the refresh poll.** A new
-  `session_channel.next_due` answers when the lane next needs to act (a
-  request deadline, a due catch-up), and the host arms one timer for that
-  instant instead of ticking.
-- **Refresh backs off while the daemon pushes.** While pushes arrive, the
-  idle refresh drops to a slower recovery rate, since the pushes already
-  carry the news; a gap in the pushed notice sequence triggers a
-  `catch_up` at once.
+Follow-ups, in order:
 
-This revises ADR-013's option C, which says arrivals are filed and reduced
-only at fixed points, so it lands with an ADR-013 addendum that says what
-replaces the rule and why ADR-010's ordering (Escape acts before traffic is
-reduced) still holds. A new `docs/architecture/delivery.md` follows it.
-
-Exit criteria: no performance regression, measured with
-`scripts/tui_perf.sh` against the backlog cases in ADR-013's mailbox-scan
-addendum and with the web view's first-capture timing; batches still
-intact, pinned by a test that sends a burst and sees it reduced together;
-the replay goldens byte-identical; and `make check` green by its own exit
-code.
+1. **Merge the etui `wake-clause` branch** (two commits: the wake clause
+   and the 40 ms bound on a lone escape byte), then move the pin in
+   `packages/tui` and `packages/client` to the fork's `main`. Exit: the
+   pin names a commit on `main` and the manifests agree.
+2. **Decide [protocol-change/054](../protocol-change/054-roster-push-on-subscribe.md)**
+   (PROPOSED, design only; the owner decides). A peer joining is the one
+   change a peer's screen depends on that the hub does not push:
+   protocol-change/018 rules that "a join is not announced by a push".
+   With the `Pushing` refresh at 5 s, the peers already attached saw a
+   newcomer up to five seconds late, and that wait was the whole of
+   `tui_shipped_multiplayer_test`'s slowdown (Alice's wait for Bob's
+   rejoin went from 231 ms to 4,979 ms; the other 79 waits did not move).
+   So `session_channel.pushing_refresh_ms` is 1 s for now, which brings
+   the fixture back to 8.2 s against 8.0 s before and costs an idle
+   terminal about one capture a second. 054 proposes publishing the roster
+   to every subscriber, the newcomer included, in
+   `gateway.network_command`'s `Subscribe` arm. That also gives a client
+   attached to a quiet session its first push, so it leaves `Polling`
+   (such a page now renders 15 times a second idle, against 10 before).
+   It changes the push order nine client tests pin, several of which count
+   authorization checks. Exit: 054 is decided; if accepted, the push lands,
+   `pushing_refresh_ms` returns to 5000, the fixture stays near 8 s, and
+   those tests state the new order.
+3. **Wake etui's loop on SIGWINCH.** With a resize announced, the
+   terminal's one-second idle ceiling can rise to the lane's refresh.
+   Exit: an idle terminal wakes only for its lane, and a resize repaints
+   without waiting for a poll.
 
 ## Rulings to preserve
+
+**Hosts do not poll for traffic.** A frame is reduced when it arrives: the
+terminal's socket wakes its loop, and the web view's selector is the wake.
+A host sleeps until `session_channel.next_due` and wakes on its own only
+for what no wake announces. A fixed-cadence tick added to find traffic is
+a review finding; a new source of messages that wakes nothing belongs in
+`tick.wakes_itself` or gets a wake of its own.
 
 **Session logic has one home.** What a frame means, when to catch up,
 which lines a capture becomes and what an operator's input becomes on the

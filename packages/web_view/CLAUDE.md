@@ -28,8 +28,9 @@ page keys and nonces, and the relay into the session's gateway.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
   and `now()`. All run in the component's process.
-- `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived` (a
-  frame, filed only) and `Ticked` (reduction). It holds no command.
+- `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
+  (a batch of up to `arrival_batch` frames, reduced at once) and `Ticked`
+  (the deadline timer fired). It holds no command.
 - `component.Model(socket)` (opaque): the lane, the filed frames
   (`session_view/inbox`), the last capture, its transcript blocks and the
   turns laid out from them (`turns.Piece`), the agent rows, the roster, the
@@ -65,10 +66,12 @@ page keys and nonces, and the relay into the session's gateway.
 ## Traffic
 
 - The component's mailbox receives the open's outcome (mapped to `Opened`
-  or `Refused`), `connection_event.Message`s from the transport (mapped to
-  `Arrived`), and a `Nil` from its own timer every 250 ms (mapped to
-  `Ticked`). Each source is one `server_component.select` from `init`, so
-  its subjects belong to the component's process. Of the lane's updates,
+  or `Refused`), `connection_event.Message`s from the transport (the
+  mapping drains up to `arrival_batch` waiting frames into one `Arrived`),
+  and a `Nil` from its one deadline timer, armed for the lane's
+  `session_channel.next_due` (mapped to `Ticked`). Each source is one
+  `server_component.select` from `init`, so its subjects belong to the
+  component's process. Of the lane's updates,
   `Captured` projects the page and `Auxiliary(UsageChanged)` feeds the cache
   ledger and the roster.
 - The page renders `web_client`'s custom elements by tag:
@@ -91,12 +94,16 @@ page keys and nonces, and the relay into the session's gateway.
   rebuilds the strip only when a cache label changed; the browser counts
   elapsed time. Logic that decides something about the session
   belongs there, where the terminal uses it too.
-- **Option C, waking on awaited replies.** `Arrived` files its frame;
-  `Ticked` reduces every filed frame in arrival order and then runs the
-  lane's tick. While the lane has a request out, an arrival runs that same
-  reduction at once, without re-arming the timer (ADR-014, the addendum on
-  waking). A push to an idle lane waits for the tick. `component_test` pins
-  both.
+- **Event-driven delivery, one render per burst.** `Arrived` files its
+  batch and reduces every filed frame in arrival order, then runs the
+  lane's tick; there is no periodic tick. Lustre renders once per message
+  whatever it changed, so the batching has to happen in the selector's
+  mapping, before `update`. After every transition `rearm` cancels the one
+  timer and arms it for the lane's `next_due`; `update` performs that
+  itself, because the `Timer` handle must stay in the model (ADR-013, the
+  addendum on event-driven delivery). `component_test` pins the
+  reduction; `delivery_test` counts the renders a burst costs on the real
+  runtime and watches the timer fire.
 - **One ordered effect.** The lane's outputs are performed in one
   `effect.from`, never split across `effect.batch`, which does not order.
 - **Which application runs is which commands exist.** An observer's page is

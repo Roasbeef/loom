@@ -1,10 +1,10 @@
-//// The observer's component keeps option C: an arriving frame is filed,
-//// and a push to an idle lane changes nothing until a tick hands it to the
-//// lane. A reply the lane is waiting on is the exception and is reduced on
-//// arrival, so a credited transfer does not pay a tick per chunk. Driven
-//// with Lustre's simulator, which runs `update` and `view` and performs no
-//// effect, so the frames are the ones a gateway would send for one credited
-//// transfer and nothing reaches a socket.
+//// The observer's component reduces what arrives as it arrives: a batch of
+//// frames is filed and handed to the lane in the same message, whether the
+//// lane was waiting on it or not. Driven with Lustre's simulator, which
+//// runs `update` and `view` and performs no effect, so the frames are the
+//// ones a gateway would send for one credited transfer and nothing reaches
+//// a socket. `delivery_test` drives the real runtime for what the simulator
+//// cannot show: how many renders a burst costs, and when the timer fires.
 
 import gleam/erlang/process
 import gleam/list
@@ -32,7 +32,7 @@ fn arrive(simulation, frames: List(connection_event.Message)) {
   case frames {
     [] -> simulation
     [frame, ..rest] ->
-      arrive(simulate.message(simulation, component.Arrived(frame, 0)), rest)
+      arrive(simulate.message(simulation, component.Arrived([frame], 0)), rest)
   }
 }
 
@@ -55,10 +55,10 @@ pub fn a_reply_the_lane_awaits_is_reduced_on_arrival_test() {
   )
 }
 
-// A push to a lane with nothing out is filed and waits for the timer, as
-// option C has it: the capture it calls for is asked at the tick, not on
-// arrival.
-pub fn a_push_to_an_idle_lane_waits_for_the_tick_test() {
+// A push to a lane with nothing out is reduced as it arrives: the capture a
+// commit notice calls for is asked in the same message, not at a later
+// tick.
+pub fn a_push_to_an_idle_lane_is_reduced_on_arrival_test() {
   let following =
     simulate.message(simulation(), component.Opened(wire(), 0))
     |> arrive(page_fixture.transfer("observer", []))
@@ -68,16 +68,27 @@ pub fn a_push_to_an_idle_lane_waits_for_the_tick_test() {
     simulate.message(
       following,
       component.Arrived(
-        connection_event.Incoming(
-          "{\"v\":2,\"event\":\"committed\",\"seq\":11,\"body\":{\"strand\":\"main\"}}",
-        ),
+        [
+          connection_event.Incoming(
+            "{\"v\":2,\"event\":\"committed\",\"seq\":11,\"body\":{\"strand\":\"main\"}}",
+          ),
+        ],
         0,
       ),
     )
-  assert !in_flight(pushed)
+  assert in_flight(pushed)
+}
 
-  let ticked = simulate.message(pushed, component.Ticked(0))
-  assert in_flight(ticked)
+// A batch is handed to the lane in order in one message: the whole first
+// transfer, delivered as one burst, leaves the page following.
+pub fn a_batch_is_reduced_in_arrival_order_in_one_message_test() {
+  let page =
+    simulate.message(simulation(), component.Opened(wire(), 0))
+    |> simulate.message(component.Arrived(
+      page_fixture.transfer("observer", []),
+      0,
+    ))
+  assert component.status(simulate.model(page)) == component.Following
 }
 
 fn in_flight(simulation) -> Bool {
@@ -87,36 +98,32 @@ fn in_flight(simulation) -> Bool {
   }
 }
 
-pub fn a_tick_before_the_transport_opens_keeps_what_was_filed_test() {
+pub fn frames_filed_before_the_transport_opens_are_kept_test() {
   // Frames filed before the transport reported open, and a tick that finds
-  // no lane, must not lose them: the first tick with a lane reduces them.
+  // no lane, must not lose them: the lane takes them, in order, as soon as
+  // it exists.
   let early = arrive(simulation(), page_fixture.transfer("observer", []))
   let idle = simulate.message(early, component.Ticked(0))
   assert component.status(simulate.model(idle)) == component.Connecting
 
   let opened = simulate.message(idle, component.Opened(wire(), 0))
-  let ticked = simulate.message(opened, component.Ticked(0))
-  assert component.status(simulate.model(ticked)) == component.Following
+  assert component.status(simulate.model(opened)) == component.Following
 }
 
-pub fn a_closed_connection_is_drawn_at_the_next_tick_test() {
+pub fn a_closed_connection_is_drawn_as_it_arrives_test() {
   // The relay tells the component its connection ended before it tells the
-  // page's socket, which closes two ticks later. The ended state is drawn
-  // by the first of them.
-  let ticked =
+  // page's socket, which closes shortly after. The ended state is drawn by
+  // the message that carried the close.
+  let following =
     simulate.message(simulation(), component.Opened(wire(), 0))
     |> arrive(page_fixture.transfer("observer", []))
-    |> simulate.message(component.Ticked(0))
   let closed =
     simulate.message(
-      ticked,
-      component.Arrived(connection_event.Closed("access was revoked"), 0),
+      following,
+      component.Arrived([connection_event.Closed("access was revoked")], 0),
     )
-  assert component.status(simulate.model(closed)) == component.Following
-
-  let drawn = simulate.message(closed, component.Ticked(250))
   assert string.contains(
-    element.to_string(simulate.view(drawn)),
+    element.to_string(simulate.view(closed)),
     "disconnected",
   )
 }

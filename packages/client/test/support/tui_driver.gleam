@@ -29,6 +29,7 @@
 //// it needs, under a real deadline, before asserting convergence.
 
 import etui/backend
+import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -58,6 +59,7 @@ pub opaque type Message {
   Inbound(message: connection_event.Message)
   Candidate(message: connection_event.Message)
   Job(arrival: job.Arrival(selection.Host))
+  Woken
   Stop
 }
 
@@ -164,6 +166,12 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
   case message {
     Stop -> actor.stop()
 
+    // The session socket wakes the process that owns its inbox, which is
+    // this actor. The driver selects the frames themselves, so a wake says
+    // nothing it has not already been handed; it is read so the actor's
+    // unexpected-message handler does not log one line per frame.
+    Woken -> continue(driver)
+
     // The actor must select the socket inbox between scripts, or its
     // unexpected-message handler discards real frames before a TUI tick.
     // Re-deliver the selected message through the virtual loop so decoding
@@ -213,6 +221,7 @@ fn selector(driver: Driver) {
     job_runner.selector(driver.model.running),
     Job,
   ))
+  |> process.select_record(atom.create("etui_wake"), 0, fn(_) { Woken })
 }
 
 // Reduces what the last script's runtime received and its steps left in the

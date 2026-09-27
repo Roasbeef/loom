@@ -113,13 +113,23 @@ event eOpEscape;
 // Ctrl-C: submit.quit.
 event eOpQuit;
 
-// A tick after the 250 ms idle refresh fell due (session_channel.tick, Ready).
+// A tick at or after the ready lane's refresh instant, which is the reading
+// session_channel.next_due names: 250 ms after a capture until the lane has
+// been pushed to, 5 s after (session_channel.tick, Ready). The host arms one
+// wake-up for that reading rather than ticking on a cadence; the model has
+// no clock, so the operator may choose the tick at any point.
 event eClockRefresh;
 
 // A tick after a request deadline passed (session_channel.tick, in flight).
+// It is also a next_due reading, and the host's wake-up for it.
 event eClockDeadline;
 
-// The runtime's wakeup after traffic arrived (tick.update_tick).
+// The runtime's wakeup after traffic arrived (tick.update_tick). In the
+// terminal it is the socket's {etui_wake}, sent after the frames it
+// announces and paced to one per 16 ms, which etui delivers as a Tick; in
+// the web view it is the selector draining a burst into one Arrived. One
+// pending eTick stands for any number of wakes (Terminal.wake), which is the
+// coalescing both hosts do: a burst of frames is reduced by one step.
 event eTick;
 
 // The runtime performs what the step returned (runtime.perform).
