@@ -1542,7 +1542,7 @@ Measured as for the interim refresh, against `bin/loomd` with
 
 - Alice's wait for Bob's new attachment after he rejoins, in
   `tui_shipped_multiplayer_test`, is 1 to 6 ms over five runs (it was
-  4,979 ms at a 5 s refresh without the push, and 958 to 1,077 ms at the
+  4,979 ms at a 5 s refresh without the push, and 225 to 1,077 ms at the
   interim 1 s). Alice already holds the new roster when Bob's own
   terminal finishes opening: measured from the moment Bob's terminal
   starts, she sees his attachment within 34 to 118 ms, median 51 ms. No
