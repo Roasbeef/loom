@@ -15,8 +15,8 @@
 import etui/backend
 import etui/keys
 import gleam/option.{type Option}
-import tui/image_drop
 import tui/msg.{type Event}
+import tui/pasted_image
 import tui/recording
 
 /// The client event an etui input event is.
@@ -34,7 +34,7 @@ import tui/recording
 @internal
 pub fn translate(
   event: backend.InputEvent,
-  pasted: Result(Option(image_drop.Image), String),
+  pasted: Result(Option(pasted_image.Image), String),
 ) -> Event {
   case event {
     backend.KeyPress(text) -> msg.KeyPressed(text:, key: keys.match(text))

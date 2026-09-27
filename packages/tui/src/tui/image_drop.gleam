@@ -23,25 +23,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import tui/internal/ffi_file
-
-/// The largest image file admitted before a prompt frame is constructed.
-pub const max_image_bytes = 20_971_520
-
-/// One locally admitted image attachment.
-pub type Image {
-  Image(
-    /// The local path used only for later presentation and removal.
-    local_path: String,
-    /// The path's final component shown in the composer.
-    filename: String,
-    /// The media type established from magic bytes, not the extension.
-    mime_type: String,
-    /// The exact file size read into the attachment.
-    byte_size: Int,
-    /// Base64-encoded image bytes sent through the typed user-block codec.
-    data: String,
-  )
-}
+import tui/pasted_image.{type Image, Image, max_image_bytes}
 
 /// Loads a pasted path when it names a supported image.
 ///

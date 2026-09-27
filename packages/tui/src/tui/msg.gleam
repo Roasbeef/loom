@@ -39,8 +39,8 @@ import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
 import session_view/attempt
 import session_view/connection_event
-import tui/image_drop
 import tui/job
+import tui/pasted_image
 import tui/recording
 
 /// What the step is given.
@@ -115,7 +115,7 @@ pub type Event {
   /// One bracketed paste, delivered whole, with what reading the path it
   /// names found. The host reads the file before the step; `Ok(None)` is
   /// the answer for text that names no image, which is inserted as text.
-  Pasted(text: String, image: Result(Option(image_drop.Image), String))
+  Pasted(text: String, image: Result(Option(pasted_image.Image), String))
 
   /// The terminal's new size.
   Resized(width: Int, height: Int)

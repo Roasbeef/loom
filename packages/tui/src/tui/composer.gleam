@@ -10,7 +10,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/text_hygiene
-import tui/image_drop
+import tui/pasted_image
 
 const compact_token_threshold = 400
 
@@ -20,7 +20,7 @@ const compact_line_threshold = 8
 pub const max_image_attachments = 4
 
 /// The aggregate raw image bytes retained in one unsent prompt.
-pub const max_image_attachment_bytes = image_drop.max_image_bytes
+pub const max_image_attachment_bytes = pasted_image.max_image_bytes
 
 /// One attachment retained outside the editable prompt text.
 pub type Attachment {
@@ -33,7 +33,7 @@ pub type Attachment {
   )
 
   /// A validated local image ready for a typed prompt-content block.
-  ImageAttachment(image: image_drop.Image)
+  ImageAttachment(image: pasted_image.Image)
 }
 
 /// Whether pasted text belongs inline in the editor or behind an attachment.
@@ -99,7 +99,7 @@ pub fn summary(attachments: List(Attachment)) -> Option(String) {
     [Attachment(estimated_tokens:, ..)] ->
       Some("pasted ~" <> token_count(estimated_tokens) <> " tokens")
     [
-      ImageAttachment(image: image_drop.Image(
+      ImageAttachment(image: pasted_image.Image(
         filename:,
         mime_type:,
         byte_size:,
@@ -185,7 +185,7 @@ fn attachment_summary(attachment: Attachment) -> String {
   case attachment {
     Attachment(estimated_tokens:, ..) ->
       "paste ~" <> token_count(estimated_tokens) <> " tokens"
-    ImageAttachment(image_drop.Image(filename:, mime_type:, byte_size:, ..)) ->
+    ImageAttachment(pasted_image.Image(filename:, mime_type:, byte_size:, ..)) ->
       text_hygiene.single_line(filename)
       <> " "
       <> mime_type
@@ -244,7 +244,7 @@ pub fn drop_last(attachments: List(Attachment)) -> List(Attachment) {
 /// assert composer.images([]) == []
 /// ```
 ///
-pub fn images(attachments: List(Attachment)) -> List(image_drop.Image) {
+pub fn images(attachments: List(Attachment)) -> List(pasted_image.Image) {
   list.filter_map(attachments, fn(attachment) {
     case attachment {
       Attachment(..) -> Error(Nil)
@@ -281,11 +281,11 @@ pub fn admit_attachment(
 ) -> Result(List(Attachment), String) {
   case attachment {
     Attachment(..) -> Ok(list.append(attachments, [attachment]))
-    ImageAttachment(image_drop.Image(byte_size:, filename:, ..)) -> {
+    ImageAttachment(pasted_image.Image(byte_size:, filename:, ..)) -> {
       let current_images = images(attachments)
       let current_bytes =
         list.fold(current_images, 0, fn(total, image) {
-          let image_drop.Image(byte_size:, ..) = image
+          let pasted_image.Image(byte_size:, ..) = image
           total + byte_size
         })
       case

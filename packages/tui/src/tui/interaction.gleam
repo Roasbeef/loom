@@ -44,7 +44,6 @@ import tui/daemon/protocol as control_protocol
 import tui/effect
 import tui/focused_goal_panel
 import tui/frame
-import tui/image_drop
 import tui/inbound
 import tui/job
 import tui/layout
@@ -58,6 +57,7 @@ import tui/model.{
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
+import tui/pasted_image
 import tui/peer_links
 import tui/projection
 import tui/queue_editor
@@ -78,7 +78,7 @@ import tui/surfaces
 pub fn handle_paste(
   model: Model,
   text: String,
-  image: Result(Option(image_drop.Image), String),
+  image: Result(Option(pasted_image.Image), String),
 ) -> Model {
   case model.overlay {
     DaemonSelector(
@@ -106,7 +106,7 @@ pub fn handle_paste(
 fn handle_underlay_paste(
   model: Model,
   text: String,
-  image: Result(Option(image_drop.Image), String),
+  image: Result(Option(pasted_image.Image), String),
 ) -> Model {
   use <- bool.guard(model.context.surface != context_view.Hidden, model)
   case model.queue_editor.surface {
@@ -124,7 +124,7 @@ fn handle_underlay_paste(
 fn handle_composer_paste(
   model: Model,
   text: String,
-  image: Result(Option(image_drop.Image), String),
+  image: Result(Option(pasted_image.Image), String),
 ) -> Model {
   case model.pending_submission {
     Some(_) -> outbound.waiting_notice(model)
@@ -137,7 +137,7 @@ fn handle_composer_paste(
 fn paste_unlocked(
   model: Model,
   text: String,
-  image: Result(Option(image_drop.Image), String),
+  image: Result(Option(pasted_image.Image), String),
 ) -> Model {
   case image {
     Error(reason) -> tui_model.append_error(model, reason)

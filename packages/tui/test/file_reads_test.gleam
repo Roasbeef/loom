@@ -38,6 +38,7 @@ import tui/effect
 import tui/image_drop
 import tui/job
 import tui/model as tui_model
+import tui/pasted_image
 import tui/runtime
 import tui/session_selector
 import tui/submit
@@ -61,7 +62,8 @@ fn write(path: String, bytes: BitArray) -> Nil {
 fn image_names(model: tui_model.Model) -> List(String) {
   list.filter_map(model.attachments, fn(attachment) {
     case attachment {
-      composer.ImageAttachment(image_drop.Image(filename:, ..)) -> Ok(filename)
+      composer.ImageAttachment(pasted_image.Image(filename:, ..)) ->
+        Ok(filename)
       composer.Attachment(..) -> Error(Nil)
     }
   })
@@ -104,7 +106,7 @@ pub fn the_step_attaches_what_the_read_before_it_found_test() {
 
 pub fn an_oversized_image_reports_the_error_the_step_reported_before_test() {
   let path = "build/s6-oversized.png"
-  let padding = image_drop.max_image_bytes + 1 - bit_array.byte_size(png)
+  let padding = pasted_image.max_image_bytes + 1 - bit_array.byte_size(png)
   write(path, <<png:bits, 0:size(padding * 8)>>)
   let expected = image_drop.load_paste(path)
   let pasted = tui.update(backend.Paste(path), model())

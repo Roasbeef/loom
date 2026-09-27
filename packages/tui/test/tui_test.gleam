@@ -40,6 +40,7 @@ import tui/markdown
 import tui/model as tui_model
 import tui/model_selector
 import tui/pacing
+import tui/pasted_image
 import tui/projection
 import tui/recording
 import tui/render
@@ -1198,8 +1199,8 @@ pub fn image_magic_and_size_admission_test() {
   assert image_drop.media_type(<<"RIFF":utf8, 0:32, "WEBP":utf8>>)
     == Some("image/webp")
   assert image_drop.media_type(<<"not an image":utf8>>) == None
-  assert image_drop.size_allowed(image_drop.max_image_bytes)
-  assert !image_drop.size_allowed(image_drop.max_image_bytes + 1)
+  assert image_drop.size_allowed(pasted_image.max_image_bytes)
+  assert !image_drop.size_allowed(pasted_image.max_image_bytes + 1)
 }
 
 pub fn supported_image_paste_keeps_path_out_of_the_wire_block_test() {
@@ -1218,7 +1219,7 @@ pub fn supported_image_paste_keeps_path_out_of_the_wire_block_test() {
   let assert Ok(Nil) = simplifile.write_bits(to: path, bits: bytes)
   let assert Ok(Some(image)) = image_drop.load_paste(path)
   let _ = simplifile.delete(path)
-  let image_drop.Image(filename:, mime_type:, byte_size:, data:, ..) = image
+  let pasted_image.Image(filename:, mime_type:, byte_size:, data:, ..) = image
   assert filename == "tui-golden-drop.png"
   assert mime_type == "image/png"
   assert byte_size == bit_array.byte_size(bytes)
@@ -1334,7 +1335,7 @@ pub fn image_attachments_have_count_and_aggregate_byte_limits_test() {
 
 pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
   let first =
-    image_drop.Image(
+    pasted_image.Image(
       local_path: "/tmp/a.png",
       filename: "a.png",
       mime_type: "image/png",
@@ -1342,7 +1343,7 @@ pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
       data: "YQ==",
     )
   let second =
-    image_drop.Image(
+    pasted_image.Image(
       local_path: "/tmp/b.jpg",
       filename: "b.jpg",
       mime_type: "image/jpeg",
@@ -1365,8 +1366,8 @@ pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
     ]
 }
 
-fn test_image(filename: String, byte_size: Int) -> image_drop.Image {
-  image_drop.Image(
+fn test_image(filename: String, byte_size: Int) -> pasted_image.Image {
+  pasted_image.Image(
     local_path: "/tmp/" <> filename,
     filename:,
     mime_type: "image/png",

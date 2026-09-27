@@ -27,7 +27,6 @@ import tui/attachment
 import tui/composer
 import tui/daemon/selection as daemon_selection
 import tui/effect
-import tui/image_drop
 import tui/inbound
 import tui/job
 import tui/layout
@@ -41,6 +40,7 @@ import tui/model.{
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
+import tui/pasted_image
 import tui/queue_editor
 import tui/session_control
 import tui/surfaces
@@ -457,7 +457,7 @@ fn send_image_prompt(model: Model, input: String) -> Model {
 @internal
 pub fn image_prompt_content(
   text: String,
-  images: List(image_drop.Image),
+  images: List(pasted_image.Image),
 ) -> List(message.UserBlock) {
   let text_blocks = case text {
     "" -> []
@@ -465,7 +465,7 @@ pub fn image_prompt_content(
   }
   let image_blocks =
     list.map(images, fn(image) {
-      let image_drop.Image(data:, mime_type:, ..) = image
+      let pasted_image.Image(data:, mime_type:, ..) = image
       message.UserImage(data, mime_type)
     })
   list.append(text_blocks, image_blocks)
@@ -475,7 +475,7 @@ fn send_prompt_content(
   model: Model,
   content: List(message.UserBlock),
   text: String,
-  images: List(image_drop.Image),
+  images: List(pasted_image.Image),
 ) -> Model {
   let sent =
     Model(
@@ -510,7 +510,7 @@ fn send_prompt_content(
 
 fn image_prompt_preview(
   text: String,
-  images: List(image_drop.Image),
+  images: List(pasted_image.Image),
   details_expanded: Bool,
 ) -> String {
   let text = case text {
@@ -519,7 +519,7 @@ fn image_prompt_preview(
   }
   let image_labels =
     list.map(images, fn(image) {
-      let image_drop.Image(filename:, mime_type:, byte_size:, ..) = image
+      let pasted_image.Image(filename:, mime_type:, byte_size:, ..) = image
       "[image: "
       <> text_hygiene.single_line(filename)
       <> " · "

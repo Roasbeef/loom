@@ -185,7 +185,7 @@ pub fn arrivals(model: Model) -> List(msg.Arrival) {
 /// image, and pasted text that names no image would be inserted after the
 /// keys that followed it. The read happens whatever the step then does with
 /// the paste, so a path pasted into an overlay that ignores pastes is read
-/// and dropped; the bounds on the read (`image_drop.max_image_bytes`) apply
+/// and dropped; the bounds on the read (`pasted_image.max_image_bytes`) apply
 /// either way.
 ///
 /// `tui.update` calls this once per event. The model is read only for its
