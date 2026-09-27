@@ -1,7 +1,7 @@
 # protocol-change/053: claim tokens, `loom access`, and an owner's admin view
 
-**Status**: ACCEPTED 2026-09-27 (owner); step 1, the claim flow, is being
-implemented · **Affects**: Part 1.6 client
+**Status**: ACCEPTED 2026-09-27 (owner); step 1, the claim flow, is
+implemented ("Step 1 as built" below) · **Affects**: Part 1.6 client
 protocol (a `/v2/claim` route; the `sessions.invite`, `credentials.rotate`
 and `credentials.revoke` replies or semantics; new control commands; in
 later phases, `/ui/admin` routes) and the `access` command lines of `loomd`
@@ -903,6 +903,34 @@ CLI's full powers was rejected because a stolen one would give the
 session's agent a durable membership, not an 8-hour page. A page whose
 proposals the terminal confirms was rejected because an agent holding the
 page could lodge a proposal and then ask the owner to confirm it.
+
+## Step 1 as built
+
+Step 1 follows the proposal above. Where the code had to choose, or could
+not check an item yet, it did this:
+
+- **The one-upgrade bound lives in the root's allocation map.** A claim
+  socket reserves a `Claim(digest)` connection class, and the root refuses a
+  second allocation of the same class. That allocation already lasts from
+  the HTTP request to the socket process's exit, so no second table or
+  monitor was needed.
+- **Digest comparisons are injected into `storage/access.claim`.** The daemon
+  passes `broker/internal/ffi_crypto.constant_time_equal`; storage has no
+  crypto dependency of its own.
+- **An upgrade refused with 401 or 409 is an unknown outcome to `loom
+  claim`.** The client cannot tell those statuses from an unreachable daemon
+  through the shared transport, so it keeps `credential` and `claim` and
+  says to rerun. Only the command's `not_found`, `expired` and `conflict`
+  delete them, as the proposal says; `bad_request` and `unavailable` keep
+  them.
+- **`loom claim` forces `<state-dir>` to `0700` as well as `remotes/` and
+  `remotes/<label>/`,** because `<state-dir>` defaults to the local daemon's
+  own state directory, which is held to the same rule.
+- **Two verification items wait for later steps.** `principals.list`
+  reporting `claimed_at_ms` and `claim_expired` needs the listing, which is
+  step 2; step 1 records `claimed_at_ms` and a test reads it from the row. The
+  drive through a real TLS proxy was not run; the end-to-end drive used the
+  daemon's loopback listener with `ws://`.
 
 ## Open
 

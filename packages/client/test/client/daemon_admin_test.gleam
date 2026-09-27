@@ -4,6 +4,7 @@
 
 import client/daemon/admin
 import client/daemon/manager
+import client/daemon_claim_test
 import client/daemon_server_test
 import client/session_socket_test
 import core/clock
@@ -15,6 +16,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import host/claim
 import mist
 import storage/access
 import storage/catalogue
@@ -52,6 +54,88 @@ pub fn admin_cli_has_no_implicit_identity_or_owner_role_test() {
       "Member",
     ])
     as "the CLI cannot request owner authority for a member"
+}
+
+pub fn admin_cli_claim_options_are_checked_before_sending_test() {
+  let #(session, _) = ids.mint_session(ids.generator(clock.fixed(1), 2))
+  let session = ids.session_id_to_string(session)
+  let invite = ["invite", session, "member", "observer", "Member"]
+  let digest = string.repeat("a", 64)
+  let assert Ok(_) = admin.parse(list.append(invite, ["--ttl", "5m"]))
+    as "the shortest lifetime is accepted"
+  let assert Ok(_) = admin.parse(list.append(invite, ["--ttl", "7d"]))
+    as "the longest lifetime is accepted"
+  let assert Error(_) = admin.parse(list.append(invite, ["--ttl", "4m"]))
+    as "a lifetime under five minutes is refused"
+  let assert Error(_) = admin.parse(list.append(invite, ["--ttl", "8d"]))
+    as "a lifetime over seven days is refused"
+  let assert Error(_) = admin.parse(list.append(invite, ["--ttl", "day"]))
+    as "an unreadable lifetime is refused"
+
+  // A claim address must keep the token off cleartext networks, like the
+  // address a bearer is sent to.
+  let assert Ok(_) =
+    admin.parse(
+      list.append(invite, ["--claim-addr", "wss://loom.example.com/v2/control"]),
+    )
+    as "a TLS claim address is accepted"
+  let assert Error(_) =
+    admin.parse(
+      list.append(invite, ["--claim-addr", "ws://loom.example.com/v2/control"]),
+    )
+    as "a cleartext claim address to another host is refused"
+
+  // Enrollment by digest creates no claim, so it takes neither claim option.
+  let assert Ok(_) =
+    admin.parse(list.append(invite, ["--credential-digest", digest]))
+    as "a digest enrollment is accepted"
+  let assert Ok(_) =
+    admin.parse(["rotate", "member", "--credential-digest", digest])
+    as "a digest rotation is accepted"
+  let assert Error(_) =
+    admin.parse(
+      list.append(invite, ["--credential-digest", digest, "--ttl", "1h"]),
+    )
+    as "a digest and a lifetime are exclusive"
+  let assert Error(_) =
+    admin.parse(["rotate", "member", "--credential-digest", "not-a-digest"])
+    as "a malformed digest is refused before sending"
+}
+
+pub fn claim_command_names_the_given_address_and_never_the_token_test() {
+  daemon_server_test.fixture(fn(_, ready, port, owner_token) {
+    let assert Ok(view) =
+      manager.create_scoped(
+        ready.registry,
+        manager.Creation("claim-address", "/workspace", "Session", ""),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(1), 907),
+        scope: domain.SessionOnly,
+        configuration: "",
+      )
+      as "a shared session exists"
+    let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
+    let invite =
+      parsed([
+        "invite",
+        view.registration.id,
+        "alice",
+        "observer",
+        "Alice",
+        "--claim-addr",
+        "wss://loom.example.com/v2/control",
+      ])
+    let assert Ok(reply) =
+      admin.exchange(address, owner_token, ready.epoch, invite)
+      as "the invitation succeeds"
+    let assert json.String(token) = field(reply, "claim")
+      as "the reply carries the claim"
+    let assert json.String(command) = field(reply, "claim_command")
+      as "the reply carries the claim command"
+    assert command == "loom claim --addr wss://loom.example.com/v2/control"
+    assert !string.contains(command, token)
+    Nil
+  })
 }
 
 pub fn withheld_hello_reports_not_sent_and_sends_no_mutation_test() {
@@ -181,14 +265,31 @@ pub fn owner_admin_real_transport_rotates_and_revokes_members_test() {
       as "explicit creation registers one session"
     let session = view.registration.id
     let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
-    let invite = parsed(["invite", session, "alice", "observer", "Alice"])
+
+    // The member draws its own credential and the owner enrolls its digest,
+    // so no reply below carries a secret (protocol-change/053).
+    let first = claim.random_credential()
+    let invite =
+      parsed([
+        "invite",
+        session,
+        "alice",
+        "observer",
+        "Alice",
+        "--credential-digest",
+        claim.digest(first),
+      ])
     let assert Ok(invited) =
       admin.exchange(address, owner_token, ready.epoch, invite)
-      as "owner invitation returns the only explicit bearer result"
-    let assert json.String(first) = field(invited, "bearer")
-      as "invitation returns a bearer"
-    assert string.byte_size(first) == 64
-    let rotate = parsed(["rotate", "alice"])
+      as "owner invitation enrolls the member's own credential"
+    assert invited
+      == json.Object([
+        #("principal_id", json.String("alice")),
+        #("name", json.String("Alice")),
+      ])
+    let second = claim.random_credential()
+    let rotate =
+      parsed(["rotate", "alice", "--credential-digest", claim.digest(second)])
     assert admin.exchange(address, first, ready.epoch, rotate)
       == Error("forbidden")
     assert admin.exchange(address, owner_token, "previous-epoch", rotate)
@@ -197,12 +298,8 @@ pub fn owner_admin_real_transport_rotates_and_revokes_members_test() {
       == Error("conflict")
 
     // Rotation uses only the retained principal ID, not the previous secret.
-    let assert Ok(rotated) =
-      admin.exchange(address, owner_token, ready.epoch, rotate)
+    let assert Ok(_) = admin.exchange(address, owner_token, ready.epoch, rotate)
       as "owner recovers the same principal through explicit rotation"
-    let assert json.String(second) = field(rotated, "bearer")
-      as "rotation returns a fresh bearer"
-    assert second != first
     let #(old, rejected) =
       daemon_server_test.connect(port, first, "/v2/control")
     assert string.contains(rejected, "401")
@@ -214,6 +311,7 @@ pub fn owner_admin_real_transport_rotates_and_revokes_members_test() {
     let assert json.Object(changed_fields) = changed
       as "mutation response is an object"
     assert list.key_find(changed_fields, "bearer") == Error(Nil)
+    assert list.key_find(changed_fields, "claim") == Error(Nil)
     let revoke = parsed(["revoke-credentials", "alice"])
     let assert Ok(_) = admin.exchange(address, owner_token, ready.epoch, revoke)
       as "owner revokes every active member credential"
@@ -252,11 +350,19 @@ fn send_unread(socket, command, body) {
 pub fn owner_role_change_closes_original_member_attachment_test() {
   session_socket_test.fixture(fn(port, owner_token, session, epoch, _) {
     let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
-    let invite = parsed(["invite", session, "observer", "observer", "Observer"])
-    let assert Ok(invited) = admin.exchange(address, owner_token, epoch, invite)
+    let member_token = claim.random_credential()
+    let invite =
+      parsed([
+        "invite",
+        session,
+        "observer",
+        "observer",
+        "Observer",
+        "--credential-digest",
+        claim.digest(member_token),
+      ])
+    let assert Ok(_) = admin.exchange(address, owner_token, epoch, invite)
       as "owner grants one observer membership"
-    let assert json.String(member_token) = field(invited, "bearer")
-      as "member receives its own credential"
     let #(socket, response) =
       daemon_server_test.connect(
         port,
@@ -329,7 +435,7 @@ pub fn lost_invitation_reply_recovers_by_explicit_principal_rotation_test() {
       ]),
     )
 
-    // The invitation commits, but this caller never consumes its bearer reply.
+    // The invitation commits, but this caller never consumes its claim reply.
     let assert Ok(observer) =
       catalogue.open(ready.state_root <> "/catalogue.db")
       as "a separate read connection can observe committed identity"
@@ -355,8 +461,16 @@ pub fn lost_invitation_reply_recovers_by_explicit_principal_rotation_test() {
       )
       as "explicit rotation recovers the existing principal without retrying invite"
     assert field(recovered, "principal_id") == json.String(original.id)
-    let assert json.String(bearer) = field(recovered, "bearer")
-      as "only the replacement bearer is returned to this caller"
+    let assert json.String(replacement) = field(recovered, "claim")
+      as "only the replacement claim is returned to this caller"
+
+    // The member redeems the replacement claim for a credential it drew.
+    let bearer = claim.random_credential()
+    assert field(
+        daemon_claim_test.redeem(port, replacement, claim.digest(bearer)),
+        "event",
+      )
+      == json.String("credentials.claim")
     let #(socket, response) =
       daemon_server_test.connect(port, bearer, "/v2/control")
     assert string.contains(response, "101 Switching Protocols")

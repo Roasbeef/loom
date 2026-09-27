@@ -91,7 +91,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:1590`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:1639`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid

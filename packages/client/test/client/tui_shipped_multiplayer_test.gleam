@@ -41,6 +41,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap as native
+import host/claim
 import host/endpoint
 import machine/strand
 import session_view/protocol as conversation
@@ -1902,15 +1903,25 @@ fn has_principals(sample: tui_driver.Sample, principals: List(String)) -> Bool {
   }
 }
 
+// The member draws its own credential and the owner enrolls its digest
+// (protocol-change/053), so no control reply carries a secret.
 fn invite(address, owner, epoch, session, principal, role, name) {
+  let bearer = claim.random_credential()
   let assert Ok(request) =
-    admin.parse(["invite", session, principal, role, name])
+    admin.parse([
+      "invite",
+      session,
+      principal,
+      role,
+      name,
+      "--credential-digest",
+      claim.digest(bearer),
+    ])
     as "member setup uses the shipped owner CLI parser"
   let assert Ok(json.Object(fields)) =
     admin.exchange(address, owner, epoch, request)
-    as "the native daemon issues the authorized member credential"
-  let assert Ok(json.String(bearer)) = list.key_find(fields, "bearer")
-    as "the one-shot credential remains fixture-local and is never printed"
+    as "the native daemon enrolls the member's own credential"
+  assert list.key_find(fields, "claim") == Error(Nil)
   bearer
 }
 

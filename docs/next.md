@@ -68,8 +68,10 @@ tails or live tail yet.
   and screen (d).
 - **protocol-change/053**, claim tokens and owner admin
   ([#558](https://github.com/Roasbeef/loom/pull/558)), accepted by the owner
-  on 2026-09-27. Step 1, the claim flow (`loom claim` and the `/v2/claim`
-  route, so no invitation carries a bearer), is being built.
+  on 2026-09-27. Step 1, the claim flow (`loom claim`, `loom enroll` and
+  the `/v2/claim` route, so no invitation carries a bearer), is on
+  `access/claim-flow`. Steps 2 to 4 (`loom access` and the listings, the
+  terminal overlay, the admin page) wait for the owner's go-ahead.
 - **The package README audit**, [#560](https://github.com/Roasbeef/loom/pull/560).
 
 ## What to work on next: event-driven delivery

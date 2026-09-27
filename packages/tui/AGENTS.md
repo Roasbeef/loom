@@ -667,7 +667,28 @@ boundaries and the split's measurements under Invariants.
   one line per row otherwise, or one line of outcome, and exits with a
   status. `rm` asks at the terminal before it
   sends and refuses outright when standard input is not a terminal, unless
-  `--yes` was given.
+  `--yes` was given. `ClaimAccess` and `Enroll` are `loom claim` and `loom
+  enroll` (protocol-change/053), which hand their arguments to `tui/claim`
+  and install no terminal state. `Remote`'s bearer comes from
+  `launch_token`: `--token-file` is read through
+  `host/bootstrap.read_private_bounded`, which refuses a link, another user's
+  file and a group- or world-readable file, and both `--token-file` and
+  `--token` refuse a claim-shaped value without repeating it.
+- `tui/claim.{Remote, Options, Claimed, Failure}` is the invitee's half of an
+  invitation. `remote` checks the address with `host/claim.remote_address` and
+  forces `<state-dir>`, `remotes/` and `remotes/<label>/` to private `0700`
+  directories (label: the host, with a non-443 port). `redeem` refuses a
+  token that is not exactly `loomclaim_` and 64 lowercase hex and a label that
+  already holds `remote.json`; `prepare` then writes `credential` and `claim`
+  (the token's digest) at `0600` before any connection, reusing a stored
+  credential only when `claim` names this same token. The exchange sends only
+  the credential's digest on `/v2/claim`, checks the reply's fingerprint
+  against that digest, and writes `remote.json`. A `not_found`, `expired` or
+  `conflict` deletes `credential` and `claim`; anything else is `Unknown` and
+  keeps them for a rerun. `enroll` stores a credential, removes a stale
+  `claim`, and prints only its digest and fingerprint. The token arrives on
+  standard input through `ffi_terminal.read_standard_line`, which prompts
+  only on a terminal.
 - `tui/model.Peer` says where this client's commands go, and replaces the
   optional socket the model used to carry. An absent socket meant two
   opposite things — a `--demo` `Preview`, which answers a submitted prompt

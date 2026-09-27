@@ -35,6 +35,7 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import host/bootstrap
+import host/claim
 import provider/http
 import provider/secret
 import runtime/api
@@ -258,14 +259,24 @@ fn create(serving: daemon_main.Serving(serve.Instance), directory) {
   #(created.registration, instance)
 }
 
+// The member draws its own credential and the owner enrolls its digest
+// (protocol-change/053), so no control reply carries a secret.
 fn invited(address, owner, epoch, session, principal, role) {
+  let bearer = claim.random_credential()
   let assert Ok(request) =
-    admin.parse(["invite", session, principal, role, principal])
+    admin.parse([
+      "invite",
+      session,
+      principal,
+      role,
+      principal,
+      "--credential-digest",
+      claim.digest(bearer),
+    ])
     as "the shipped admin parser accepts a member invitation"
   let assert Ok(response) = admin.exchange(address, owner, epoch, request)
-    as "owner administration issues a credential exactly once"
-  let assert json.String(bearer) = field(response, "bearer")
-    as "only the explicit success returns the credential"
+    as "owner administration enrolls the member's own credential"
+  assert field(response, "principal_id") == json.String(principal)
   bearer
 }
 

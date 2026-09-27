@@ -15,8 +15,8 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/uri
 import host/bootstrap
+import host/claim
 import session_view/connection_event
 import tui/connection
 import tui/daemon/protocol
@@ -419,31 +419,7 @@ fn remaining(deadline: Int) {
 /// ```
 @internal
 pub fn valid_address(address: String) {
-  use endpoint <- result.try(
-    uri.parse(address)
-    |> result.replace_error(Invalid("invalid control address")),
-  )
-  use Nil <- result.try(case endpoint {
-    uri.Uri(
-      path: "/v2/control",
-      userinfo: None,
-      query: None,
-      fragment: None,
-      ..,
-    ) -> Ok(Nil)
-    _ -> Error(Invalid("expected an unqualified /v2/control endpoint"))
-  })
-
-  // `uri.parse` keeps an IPv6 literal's brackets in `host`, so the bracketed
-  // form is the one a parsed `ws://[::1]:PORT/v2/control` actually presents.
-  // The bare form is matched as well because a caller may hand this function
-  // a host it assembled itself rather than one it parsed back out of a URI.
-  case endpoint.scheme, endpoint.host {
-    Some("wss"), Some(host) if host != "" -> Ok(Nil)
-    Some("ws"), Some("127.0.0.1")
-    | Some("ws"), Some("[::1]")
-    | Some("ws"), Some("::1")
-    -> Ok(Nil)
-    _, _ -> Error(Invalid("remote control requires TLS"))
-  }
+  // The rule lives in `host/claim` because `loomd access --claim-addr` and
+  // `loom claim` apply it too; a claim and a bearer cross the same hops.
+  claim.remote_address(address) |> result.map_error(Invalid)
 }

@@ -47,6 +47,17 @@ pub fn run_forwarding(
 @external(erlang, "tui_ffi", "read_console_reply")
 pub fn read_console_reply(prompt: String) -> Result(String, String)
 
+/// Reads one line from standard input, showing `prompt` only when standard
+/// input is a terminal.
+///
+/// Uses OTP `io:getopts/1` and `io:get_line/1`, for the reason
+/// `read_console_reply` gives: no Gleam package reads a line from standard
+/// input. Unlike that function it also reads from a pipe, because `loom claim`
+/// takes its token from standard input by default so the token stays out of
+/// the argument vector, and a script supplies it through a pipe.
+@external(erlang, "tui_ffi", "read_standard_line")
+pub fn read_standard_line(prompt: String) -> Result(String, String)
+
 /// Exits the VM with a status.
 ///
 /// Uses OTP `erlang:halt/1`. Only the passthrough path calls it: the

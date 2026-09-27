@@ -78,6 +78,66 @@ The direct route attaches only to an already-open session. For a remote
 host, carry the connection through a secure tunnel or TLS proxy and use a
 credential authorized for that session. The daemon itself binds only to
 loopback; do not expose bearer credentials over plaintext remote traffic.
+`--token-file` must be a file only you can read, and neither
+`--token-file` nor `--token` accepts a claim token.
+
+## Inviting someone, and joining as the invitee
+
+The owner invites a person to one session. The session must be
+`session_only` first (`loomd access isolate SESSION
+--share-existing-transcript` for an existing one); the
+[multiplayer guide](architecture/multiplayer.md) explains why.
+
+```sh
+# The owner, on the daemon's host:
+loomd access invite SESSION_ID alice operator Alice \
+  --claim-addr wss://loom.example.com/v2/control
+```
+
+Standard output is one JSON line with a single-use `claim` token
+(`loomclaim_…`), its `expires_in_ms` (24 hours unless `--ttl 30m`,
+`--ttl 7d` or similar chose otherwise), and a `claim_command` that names
+the address but not the token. Send the invitee the token and the command
+over a channel outside Loom, never through a Loom session. Without
+`--claim-addr` the command names the daemon's loopback address, which
+works only on that host. A lost or leaked claim is replaced with `loomd
+access rotate alice`, which voids it and prints a new one.
+
+The invitee runs the command and pastes the token at its prompt, or pipes
+it in; the token is not accepted as a flag value by default so it stays
+out of shell history:
+
+```sh
+loom claim --addr wss://loom.example.com/v2/control
+claim token: loomclaim_…
+```
+
+`loom claim` draws a new credential, stores it in
+`~/.loom/remotes/loom.example.com/credential` (mode `0600`, in a `0700`
+directory) before connecting, and sends the daemon only its digest. It
+prints the credential's fingerprint on standard error and, on standard
+output, the sessions the claim granted and a `launch` line:
+
+```sh
+loom --addr wss://loom.example.com/v2/control \
+  --token-file ~/.loom/remotes/loom.example.com/credential --session SESSION_ID
+```
+
+Tell the owner the fingerprint over a second channel; the owner confirms
+it before relying on the new member. If `loom claim` loses its connection
+after sending, run the same command again with the same token: it reuses
+the stored credential and the daemon answers the same way. A `conflict`
+means the claim was redeemed with another credential; ask the owner to
+compare fingerprints and rotate. `expired` and `not_found` mean the claim
+is no longer redeemable; ask for a new one.
+
+For an operator invitation the owner may prefer enrollment by digest,
+where nothing secret is sent at all. The invitee runs `loom enroll --addr
+wss://loom.example.com/v2/control`, sends the printed `credential_digest`
+to the owner, and the two compare its fingerprint over a second channel.
+The owner then runs `loomd access invite SESSION_ID alice operator Alice
+--credential-digest HEX`, and the invitee launches with the stored
+credential as above.
 
 ## The server
 

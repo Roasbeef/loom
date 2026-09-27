@@ -40,6 +40,7 @@ flowchart TD
     Listener --> Server["daemon/server"]
     Server -->|"/v2/control"| Control["control protocol<br/>daemon/protocol"]
     Server -->|"/v2/sessions/id/ws"| Socket["daemon/session_socket"]
+    Server -->|"/v2/claim"| Claim["claim socket<br/>one credentials.claim"]
     Server -->|"/ui/... with --ui"| UiSocket["daemon/ui_socket"]
     Socket --> Gateway
     UiSocket --> Relay["daemon/ui_relay"]
@@ -175,8 +176,10 @@ Paths are relative to `src/`; `client/escalate` is
   registry and its capacity and authorization checks; `daemon/listener`
   owns the mist server.
 - `client/daemon/server` routes upgrades and serves `/v2/control`, whose
-  bounded codec is `client/daemon/protocol`. `client/daemon/session_socket`
-  connects an authenticated session socket to its gateway.
+  bounded codec is `client/daemon/protocol`, and `/v2/claim`, where an
+  invitee redeems a claim token for its own credential digest
+  (protocol-change/053). `client/daemon/session_socket` connects an
+  authenticated session socket to its gateway.
 - `client/serve` assembles one session: `resolve_managed` turns a catalogue
   registration into settings and `assemble_in_domain` builds the session's
   stack. `boot` is the embedded, one-session host API that tests use.

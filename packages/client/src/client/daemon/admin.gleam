@@ -9,13 +9,16 @@ import client/daemon/protocol
 import client/internal/ffi_os
 import core/json.{type JsonValue}
 import gleam/bit_array
+import gleam/bool
 import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import host/claim
 import host/endpoint
 import host/websocket
 
@@ -27,18 +30,33 @@ pub opaque type Request {
     command: String,
     principal: String,
     body: List(#(String, JsonValue)),
+    claim_address: ClaimAddress,
   )
 }
 
-/// The complete access-command usage, shared with the top-level dispatcher.
-pub const usage = "usage: loomd access [--state-dir PATH] invite SESSION PRINCIPAL ROLE NAME | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL | revoke-credentials PRINCIPAL | isolate SESSION --share-existing-transcript"
+// Where the printed `claim_command` points the invitee. An invitation or
+// rotation that enrolls a digest, and every other command, prints none.
+type ClaimAddress {
+  NoClaim
 
-/// Runs one administration request and prints a bearer only on explicit success.
+  // The control address this command discovered, which is the daemon's
+  // loopback listener and so works only on the daemon's host.
+  DiscoveredAddress
+
+  // An address from `--claim-addr`, already checked by `claim.remote_address`.
+  GivenAddress(address: String)
+}
+
+/// The complete access-command usage, shared with the top-level dispatcher.
+pub const usage = "usage: loomd access [--state-dir PATH] invite SESSION PRINCIPAL ROLE NAME [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | revoke-credentials PRINCIPAL | isolate SESSION --share-existing-transcript"
+
+/// Runs one administration request. A claim token is printed only on
+/// standard output, only on explicit success, and never with a bearer.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // loomd access invite SESSION alice observer Alice
+/// // loomd access invite SESSION alice observer Alice --claim-addr wss://host/v2/control
 /// // loomd access rotate alice
 /// ```
 pub fn main(arguments: List(String)) -> Nil {
@@ -55,6 +73,16 @@ pub fn main(arguments: List(String)) -> Nil {
       io.println_error(label <> request.principal)
       case execute(request) {
         Ok(value) -> {
+          case request.claim_address {
+            DiscoveredAddress ->
+              io.println_error(
+                "claim_command names this daemon's loopback address, which "
+                <> "works only on this host; pass --claim-addr wss://HOST/v2/control "
+                <> "for an invitee elsewhere. Send the claim and the command "
+                <> "outside Loom, never through a Loom session.",
+              )
+            NoClaim | GivenAddress(_) -> Nil
+          }
           io.println(json.to_string(value))
           ffi_os.halt(0)
         }
@@ -96,38 +124,129 @@ pub fn parse(arguments: List(String)) -> Result(Request, String) {
 fn parse_command(directory, arguments) {
   case arguments {
     ["isolate", session, "--share-existing-transcript"] ->
-      Ok(
-        Request(directory, "sessions.isolate", session, [
+      Ok(Request(
+        directory,
+        "sessions.isolate",
+        session,
+        [
           #("session_id", json.String(session)),
           #("transcript", json.String("share_existing")),
-        ]),
-      )
-    ["invite", session, principal, role, name] ->
-      Ok(
-        Request(directory, "sessions.invite", principal, [
+        ],
+        NoClaim,
+      ))
+    ["invite", session, principal, role, name, ..options] -> {
+      use #(fields, address) <- result.try(enrollment_options(options))
+      Ok(Request(
+        directory,
+        "sessions.invite",
+        principal,
+        [
           #("session_id", json.String(session)),
           #("role", json.String(role)),
           #("name", json.String(name)),
-        ]),
-      )
+          ..fields
+        ],
+        address,
+      ))
+    }
     ["set-role", session, principal, role] ->
-      Ok(
-        Request(directory, "sessions.set_role", principal, [
+      Ok(Request(
+        directory,
+        "sessions.set_role",
+        principal,
+        [
           #("session_id", json.String(session)),
           #("role", json.String(role)),
-        ]),
-      )
+        ],
+        NoClaim,
+      ))
     ["revoke", session, principal] ->
-      Ok(
-        Request(directory, "sessions.revoke", principal, [
-          #("session_id", json.String(session)),
-        ]),
-      )
-    ["rotate", principal] ->
-      Ok(Request(directory, "credentials.rotate", principal, []))
+      Ok(Request(
+        directory,
+        "sessions.revoke",
+        principal,
+        [#("session_id", json.String(session))],
+        NoClaim,
+      ))
+    ["rotate", principal, ..options] -> {
+      use #(fields, address) <- result.try(enrollment_options(options))
+      Ok(Request(directory, "credentials.rotate", principal, fields, address))
+    }
     ["revoke-credentials", principal] ->
-      Ok(Request(directory, "credentials.revoke", principal, []))
+      Ok(Request(directory, "credentials.revoke", principal, [], NoClaim))
     _other -> Error(usage)
+  }
+}
+
+// The options an invitation or rotation takes, gathered whole before any
+// field is built. `--credential-digest` enrolls the invitee's own credential
+// and creates no claim, so it excludes both claim options: a lifetime or an
+// address for a claim that will not exist names nothing.
+type EnrollmentOptions {
+  EnrollmentOptions(ttl: String, address: String, digest: String)
+}
+
+fn enrollment_options(
+  options: List(String),
+) -> Result(#(List(#(String, JsonValue)), ClaimAddress), String) {
+  use found <- result.try(gather_options(options, EnrollmentOptions("", "", "")))
+  case found {
+    EnrollmentOptions(ttl: "", address: "", digest: "") ->
+      Ok(#([], DiscoveredAddress))
+    EnrollmentOptions(ttl:, address:, digest: "") -> {
+      use ttl <- result.try(ttl_field(ttl))
+      use address <- result.try(case address {
+        "" -> Ok(DiscoveredAddress)
+        given ->
+          claim.remote_address(given)
+          |> result.map(fn(_) { GivenAddress(given) })
+          |> result.map_error(fn(reason) { "--claim-addr: " <> reason })
+      })
+      Ok(#(ttl, address))
+    }
+    EnrollmentOptions(ttl: "", address: "", digest:) ->
+      Ok(#([#("credential_digest", json.String(digest))], NoClaim))
+    EnrollmentOptions(..) ->
+      Error("--credential-digest cannot be combined with --ttl or --claim-addr")
+  }
+}
+
+fn gather_options(
+  options: List(String),
+  found: EnrollmentOptions,
+) -> Result(EnrollmentOptions, String) {
+  case options {
+    [] -> Ok(found)
+    ["--ttl", value, ..rest] if found.ttl == "" ->
+      gather_options(rest, EnrollmentOptions(..found, ttl: value))
+    ["--claim-addr", value, ..rest] if found.address == "" ->
+      gather_options(rest, EnrollmentOptions(..found, address: value))
+    ["--credential-digest", value, ..rest] if found.digest == "" ->
+      gather_options(rest, EnrollmentOptions(..found, digest: value))
+    _other -> Error(usage)
+  }
+}
+
+// `--ttl` takes a count of minutes, hours or days. The daemon holds the
+// range, 5 minutes to 7 days, and refuses anything outside it; the bound is
+// repeated here only so the mistake is named before a connection is made.
+fn ttl_field(text: String) -> Result(List(#(String, JsonValue)), String) {
+  use <- bool.guard(when: text == "", return: Ok([]))
+  let unit = string.slice(text, string.length(text) - 1, 1)
+  use count <- result.try(
+    int.parse(string.drop_end(text, 1))
+    |> result.replace_error("--ttl takes a form such as 30m, 24h or 7d"),
+  )
+  use multiplier <- result.try(case unit {
+    "m" -> Ok(60_000)
+    "h" -> Ok(3_600_000)
+    "d" -> Ok(86_400_000)
+    _other -> Error("--ttl takes a form such as 30m, 24h or 7d")
+  })
+  let ttl = count * multiplier
+  case ttl >= 300_000 && ttl <= 604_800_000 {
+    True -> Ok([#("claim_ttl_ms", json.Int(ttl))])
+    False -> Error("--ttl must be between 5 minutes and 7 days")
   }
 }
 
@@ -169,7 +288,7 @@ pub fn peer_request(
     json.String(source) -> Ok(source)
     _ -> Error("invalid source session")
   })
-  let request = Request(directory, command, source, fields)
+  let request = Request(directory, command, source, fields, NoClaim)
   use _ <- result.try(
     protocol.decode(envelope(request, "validation-only"))
     |> result.replace_error("invalid or oversized peer request"),
@@ -285,12 +404,12 @@ pub fn exchange(
     websocket.connect(address, token, inbox)
     |> result.replace_error("control connection failed; request not sent"),
   )
-  let outcome = transact(socket, inbox, epoch, request)
+  let outcome = transact(socket, inbox, address, epoch, request)
   websocket.close(socket)
   outcome
 }
 
-fn transact(socket, inbox, epoch, request: Request) {
+fn transact(socket, inbox, address, epoch, request: Request) {
   use Nil <- result.try(
     verify_hello(inbox, epoch)
     |> result.replace_error("control handshake failed; request not sent"),
@@ -321,7 +440,7 @@ fn transact(socket, inbox, epoch, request: Request) {
             object_fields(body)
             |> result.replace_error("invalid successful reply; outcome unknown"),
           )
-          success(body, request)
+          success(body, address, request)
           |> result.replace_error("invalid successful reply; outcome unknown")
         }
       }
@@ -410,7 +529,7 @@ fn equal_field(fields, key, expected) {
   }
 }
 
-fn success(fields, request: Request) {
+fn success(fields, address, request: Request) {
   case request.command {
     "sessions.isolate" -> {
       use Nil <- result.try(equal_field(
@@ -430,34 +549,65 @@ fn success(fields, request: Request) {
         ]),
       )
     }
-    _member_command -> member_success(fields, request)
+    _member_command -> member_success(fields, address, request)
   }
 }
 
-fn member_success(fields, request: Request) {
+// A member reply is re-encoded from checked fields rather than echoed, so a
+// daemon that answered with a `bearer` or any other extra field could not get
+// it printed. A claim is printed only when this request asked for one.
+fn member_success(fields, address, request: Request) {
   use Nil <- result.try(equal_field(
     fields,
     "principal_id",
     json.String(request.principal),
   ))
-  let identity = [#("principal_id", json.String(request.principal))]
-  case request.command {
-    "sessions.invite" | "credentials.rotate" -> {
-      use value <- result.try(
-        list.key_find(fields, "bearer")
-        |> result.replace_error("missing successful credential"),
-      )
-      use token <- result.try(case value {
-        json.String(token) -> Ok(token)
-        _other -> Error("invalid successful credential")
-      })
-      use Nil <- result.try(hex_credential(token))
-      Ok(json.Object([#("bearer", json.String(token)), ..identity]))
-    }
-    "sessions.set_role" | "sessions.revoke" | "credentials.revoke" ->
-      Ok(json.Object(identity))
-    _other -> Error("unsupported administration reply")
+  use name <- result.try(case list.key_find(fields, "name") {
+    Ok(json.String(name)) -> Ok(name)
+    Ok(_) | Error(Nil) -> Error("missing successful member name")
+  })
+  let identity = [
+    #("principal_id", json.String(request.principal)),
+    #("name", json.String(name)),
+  ]
+  case request.command, request.claim_address {
+    "sessions.invite", GivenAddress(given)
+    | "credentials.rotate", GivenAddress(given)
+    -> claimed(fields, identity, given)
+    "sessions.invite", DiscoveredAddress
+    | "credentials.rotate", DiscoveredAddress
+    -> claimed(fields, identity, address)
+    "sessions.invite", NoClaim
+    | "credentials.rotate", NoClaim
+    | "sessions.set_role", _
+    | "sessions.revoke", _
+    | "credentials.revoke", _
+    -> Ok(json.Object(identity))
+    _other, _ -> Error("unsupported administration reply")
   }
+}
+
+// `claim_command` names the address and never the token, so the invitee's
+// shell history and argument vector hold no secret by default.
+fn claimed(fields, identity, address: String) {
+  use token <- result.try(case list.key_find(fields, "claim") {
+    Ok(json.String(token)) -> Ok(token)
+    Ok(_) | Error(Nil) -> Error("missing successful claim")
+  })
+  use Nil <- result.try(claim.validate_token(token))
+  use expires_in_ms <- result.try(case list.key_find(fields, "expires_in_ms") {
+    Ok(json.Int(value)) if value > 0 -> Ok(value)
+    Ok(_) | Error(Nil) -> Error("missing claim lifetime")
+  })
+  Ok(
+    json.Object(
+      list.append(identity, [
+        #("claim", json.String(token)),
+        #("expires_in_ms", json.Int(expires_in_ms)),
+        #("claim_command", json.String("loom claim --addr " <> address)),
+      ]),
+    ),
+  )
 }
 
 fn hex_credential(token) {
