@@ -1,6 +1,7 @@
 //// The rendered page for a capture that holds every piece the lane draws
-//// (`lane_fixture`): folded work, the spawn row and the child's result
-//// card, the delivered nudge and the peer card. Each test renders the component and reads
+//// (`lane_fixture`): the agent strip and its cache rings, folded work, the
+//// spawn row and the child's result card, the delivered nudge, the peer
+//// card and the cache-miss row. Each test renders the component and reads
 //// the HTML the browser would receive, so a class, a text or an escape that
 //// goes missing fails here rather than only on a screenshot.
 ////
@@ -12,6 +13,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import lane_fixture
+import lustre/dev/query
 import lustre/element
 import page_fixture
 import session_view/transcript_lines
@@ -21,6 +23,10 @@ import web_view/operator_page
 
 fn page(updates) {
   component.new(page_fixture.start()) |> component.apply(updates)
+}
+
+fn at(model, now: Int) {
+  component.update(model, component.Ticked(now)).0
 }
 
 fn html(model) -> String {
@@ -41,6 +47,115 @@ fn in_order(haystack: String, needles: List(String)) -> Bool {
         Error(Nil) -> False
       }
   }
+}
+
+pub fn the_strip_lists_main_then_working_agents_then_the_advisor_test() {
+  let drawn = html(settled())
+  assert in_order(drawn, [
+    "<nav aria-label=\"Agents\" class=\"agent-strip\">",
+    "<li aria-current=\"true\" class=\"chip following hue-main\">",
+    ">main<",
+    "<li class=\"chip hue-2\">",
+    "&lt;b&gt;review",
+    "<li class=\"chip hue-3\">",
+    ">tests<",
+    "<li class=\"chip hue-advisor\">",
+    ">advisor<",
+  ])
+
+  // A working agent's elapsed time is counted in the browser from the
+  // daemon's own start instant, a number; the strand the lane follows is
+  // marked as the current one.
+  assert string.contains(
+    drawn,
+    "<loom-elapsed class=\"elapsed\" since=\"1700000000000\"></loom-elapsed>",
+  )
+  assert string.contains(
+    drawn,
+    "<li aria-current=\"true\" class=\"chip following hue-main\">",
+  )
+
+  // Every state has a glyph and a word, never a colour alone.
+  assert string.contains(drawn, "<span class=\"state running\">")
+  assert string.contains(drawn, "Working")
+  let chips =
+    query.find_all(
+      in: component.view(settled()),
+      matching: query.element(query.class("chip")),
+    )
+  assert list.length(chips) == 4
+}
+
+pub fn a_settled_strand_folds_into_a_count_test() {
+  // The tester is running in the first capture and idle in the next, so it
+  // leaves the strip and is counted.
+  let drawn =
+    page([
+      lane_fixture.captured(10, None),
+      lane_fixture.captured_with(10, None, [
+        #(lane_fixture.child, lane_fixture.review_op()),
+      ]),
+    ])
+    |> html
+  assert string.contains(drawn, "<li class=\"chip settled\">")
+  assert string.contains(drawn, "+1 settled")
+  assert !string.contains(drawn, ">tests<")
+}
+
+pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
+  // One request that read a 40k prefix and wrote to the one-hour head.
+  let warm =
+    settled()
+    |> at(0)
+    |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 1)])
+    |> at(60_000)
+  let drawn = html(warm)
+  assert string.contains(
+    drawn,
+    "<span aria-label=\"cache tail ≤4m\" class=\"ring ring-tail\" role=\"img\" title=\"cache tail ≤4m\">",
+  )
+
+  // The operator's composer names the same outlook for the strand it
+  // addresses.
+  let composer = element.to_string(operator_page.view(warm))
+  assert string.contains(
+    composer,
+    "<span class=\"outlook ring-tail\" role=\"status\">cache tail ≤4m</span>",
+  )
+
+  // A running strand shows no outlook at all: the request in flight is
+  // about to rewrite the prefix.
+  let running =
+    warm
+    |> component.apply([lane_fixture.captured(10, Some(lane_fixture.main_op()))])
+  assert !string.contains(html(running), "ring-tail")
+}
+
+pub fn an_unproven_provider_shows_an_idle_age_not_a_countdown_test() {
+  let idle =
+    settled()
+    |> at(0)
+    |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 0)])
+    |> at(600_000)
+  let drawn = html(idle)
+  assert string.contains(drawn, "ring ring-idle")
+  assert string.contains(drawn, "cache idle 10m")
+  assert !string.contains(drawn, "cache tail")
+  assert !string.contains(drawn, "cache head")
+}
+
+pub fn a_cache_miss_is_a_row_after_the_turn_that_paid_for_it_test() {
+  let missed =
+    settled()
+    |> at(0)
+    |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 0)])
+    |> at(600_000)
+    |> component.apply([lane_fixture.usage_push("main", 0, 40_000, 0)])
+  let drawn = html(missed)
+  assert in_order(drawn, [
+    "advisor · nudge · delivered",
+    "class=\"cache-miss\">Cache miss after 10m idle: 40k tokens re-billed (~$0.14)</p>",
+  ])
 }
 
 pub fn settled_work_folds_under_one_closed_divider_test() {
@@ -112,7 +227,12 @@ pub fn a_peer_message_is_stored_never_read_and_has_no_reply_test() {
 // Nothing the session wrote reaches the page as markup: each string arrives
 // escaped, and no element it names exists.
 pub fn session_markup_arrives_only_as_text_test() {
-  let missed = settled()
+  let missed =
+    settled()
+    |> at(0)
+    |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 0)])
+    |> at(600_000)
+    |> component.apply([lane_fixture.usage_push("main", 0, 40_000, 0)])
   let pages = [
     html(missed),
     element.to_string(operator_page.view(missed)),

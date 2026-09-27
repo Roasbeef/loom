@@ -43,10 +43,12 @@
 //// reaches the lane through `submit` and `decide` here, which call the
 //// engine's command arms.
 
+import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre
 import lustre/attribute
@@ -58,15 +60,18 @@ import lustre/server_component
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
+import session_view/cache_miss
+import session_view/cache_watch
 import session_view/connection_event
 import session_view/inbox.{type Inbox}
 import session_view/operator
+import session_view/protocol
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript
-import session_view/transcript_line.{type Line}
+import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/turns
 
@@ -170,6 +175,36 @@ pub type Answer {
   Deny
 }
 
+/// One agent chip: the roster's line for a strand, the hue its position
+/// gives it, and what may be said about its prompt cache.
+pub type Chip {
+  Chip(
+    /// The roster's line: name, status, activity, elapsed time, context.
+    line: agent_roster.Line,
+    /// The strand's hue, from its position among the captured strands.
+    hue: turns.Hue,
+    /// The cache outlook `cache_watch.shown` allows for the strand, with
+    /// its label, or `None` when nothing honest can be said.
+    cache: Option(#(cache_miss.Outlook, String)),
+    /// When the strand's current operation started, in the daemon's Unix
+    /// milliseconds, when the capture says (`agent_roster.started_at`).
+    since: Option(Int),
+  )
+}
+
+/// The agent strip: the listed agents in the terminal's order, the advisor
+/// in its own place, and how many strands settled out of it.
+pub type Strip {
+  Strip(
+    /// `main`, then every other strand whose state needs watching.
+    chips: List(Chip),
+    /// The advisor, when the capture holds its strand.
+    advisor: Option(Chip),
+    /// How many strands settled and left the strip.
+    settled: Int,
+  )
+}
+
 /// The component's state: the lane, the frames filed since the last tick,
 /// the last completed capture and what was derived from it.
 pub opaque type Model(socket) {
@@ -195,6 +230,16 @@ pub opaque type Model(socket) {
     /// the reviewer rows it is observed with.
     agents: List(agent_view.Row),
     reviewers: List(reviewer_status.Row),
+    /// The roster's memory of glances, clocks and pushed context sizes.
+    roster: agent_roster.Roster,
+    /// The prompt-cache ledger the usage pushes are folded into.
+    cache: cache_watch.Ledger,
+    /// Cache-miss notices raised on this page for its strand, oldest first.
+    /// Like the terminal's, they are transient and are not stored.
+    notices: List(CacheNotice),
+    /// The agent strip, derived when a capture, a usage push or a tick
+    /// changed something it draws.
+    strip: Strip,
     /// The escalations of `shown`, and the settled ones kept beside them.
     approvals: List(approval.Review),
     status: Status,
@@ -264,6 +309,10 @@ pub fn new(start: Start(socket)) -> Model(socket) {
     pieces: [],
     agents: [],
     reviewers: [],
+    roster: agent_roster.new(),
+    cache: cache_watch.new(),
+    notices: [],
+    strip: Strip(chips: [], advisor: None, settled: 0),
     approvals: [],
     status: Connecting,
     clock: 0,
@@ -358,7 +407,7 @@ pub fn update(
     // does not, so the timer keeps exactly one pending fire.
     Ticked(at:) -> {
       let #(model, effects) = reduce(Model(..model, clock: at), at)
-      #(model, effect.batch([effects, rearm(model.timer)]))
+      #(ticked(model, at), effect.batch([effects, rearm(model.timer)]))
     }
   }
 }
@@ -418,7 +467,8 @@ fn received(
 
 /// Folds the lane's updates into the component: a capture is projected
 /// once, here, into the blocks and pieces the view draws, the agent rows
-/// and the escalations it offers; a submission's outcome becomes the
+/// and strip, and the escalations it offers; a usage push is folded into
+/// the cache ledger and the roster; a submission's outcome becomes the
 /// notice; a failure ends the page.
 ///
 /// ## Examples
@@ -443,6 +493,12 @@ pub fn apply(
             "The daemon's reply to your last command was lost. It was not resent.",
           ),
         )
+      session_channel.Auxiliary(protocol.UsageChanged(
+        strand:,
+        seq:,
+        operation:,
+        usage:,
+      )) -> used(model, strand, seq, operation, usage)
       session_channel.HistoryPage(..)
       | session_channel.LookedUp(..)
       | session_channel.Auxiliary(..)
@@ -455,42 +511,235 @@ pub fn apply(
   })
 }
 
-// One capture: the agent rows are observed, which decide whether the
-// strand's last turn may fold, and the lane is projected.
+// One capture, in the order the terminal takes it: the cache ledger is
+// carried across the new configuration before anything is compared, the
+// agent rows and the roster are observed, and only then are the pushed
+// usage rows the capture covers settled, so a miss they reveal is anchored
+// to the records this capture holds.
 fn captured(
   model: Model(socket),
   cut: snapshot.Captured,
   view: snapshot_view.View,
 ) -> Model(socket) {
+  let previous = option.map(model.shown, fn(shown) { shown.1 })
   let reviewers = reviewer_status.observe(model.reviewers, cut.window, view)
   Model(
     ..model,
     shown: Some(#(cut, view)),
+    cache: cache_watch.capture(model.cache, previous, view),
     reviewers:,
     agents: agent_view.observe(model.agents, cut.window, view, reviewers),
+    roster: agent_roster.observe(model.roster, view, model.clock),
     approvals: case approval.records(view.cells) {
       Ok(current) -> approval.project(model.approvals, current)
       Error(_) -> []
     },
     status: Following,
   )
+  |> settle_cache(cut.next_seq)
   |> relaned
 }
 
-// Projects the page strand's blocks and pieces from the shown capture.
-// This is the one place a projection runs.
+// A usage row the daemon pushed. One with a durable sequence is admitted
+// once, becomes the strand's context size, and waits for a capture that
+// covers it; one without is compared at once. Either way the strip is
+// redrawn, since a context size or an outlook may have moved.
+fn used(
+  model: Model(socket),
+  strand: String,
+  seq: Option(Int),
+  operation: Option(String),
+  usage: message.Usage,
+) -> Model(socket) {
+  case seq {
+    Some(seq) -> {
+      let covered = option.map(model.shown, fn(shown) { { shown.0 }.next_seq })
+      case
+        cache_watch.admit(
+          model.cache,
+          strand,
+          seq,
+          operation,
+          usage,
+          model.clock,
+          covered,
+        )
+      {
+        Error(Nil) -> model
+        Ok(cache) -> {
+          let model =
+            Model(
+              ..model,
+              cache:,
+              roster: agent_roster.observe_usage(
+                model.roster,
+                strand,
+                operation,
+                agent_roster.context(usage),
+              ),
+            )
+          case covered {
+            Some(next_seq) -> settle_cache(model, next_seq) |> relaned
+            None -> restripped(model)
+          }
+        }
+      }
+    }
+    None -> {
+      let #(cache, missed) =
+        cache_watch.observe(
+          model.cache,
+          strand,
+          usage,
+          model.clock,
+          cache_watch.Live,
+        )
+      case missed {
+        None -> restripped(Model(..model, cache:))
+        Some(found) -> noted(Model(..model, cache:), found) |> relaned
+      }
+    }
+  }
+}
+
+// Settles the held usage rows a capture covers and files each miss they
+// reveal.
+fn settle_cache(model: Model(socket), next_seq: Int) -> Model(socket) {
+  let #(cache, missed) =
+    cache_watch.settle(model.cache, next_seq, cache_watch.Live)
+  list.fold(missed, Model(..model, cache:), noted)
+}
+
+// Files one miss as a notice after the newest entry its strand holds, as
+// the terminal files one. The page draws one strand, so a miss on another
+// strand has no row here; that strand's chip still shows its outlook.
+fn noted(model: Model(socket), found: cache_watch.Missed) -> Model(socket) {
+  case model.shown, found.strand == strand {
+    Some(#(cut, view)), True ->
+      case transcript.newest_entry(cut, view, strand) {
+        None -> model
+        Some(after_entry) ->
+          Model(
+            ..model,
+            notices: list.append(model.notices, [
+              transcript_line.CacheNotice(
+                strand:,
+                after_entry:,
+                text: cache_watch.notice_text(found.miss),
+              ),
+            ]),
+          )
+      }
+    _, _ -> model
+  }
+}
+
+// Projects the page strand's blocks and pieces from the shown capture and
+// the notices, then the strip. This is the one place a projection runs.
 fn relaned(model: Model(socket)) -> Model(socket) {
   case model.shown {
-    None -> model
+    None -> restripped(model)
     Some(#(cut, view)) -> {
-      let blocks = transcript.blocks(cut, view, strand, [])
+      let blocks = transcript.blocks(cut, view, strand, model.notices)
       let latest = turns.latest(view, model.agents, strand)
       Model(
         ..model,
         blocks:,
         pieces: turns.pieces(blocks, view.strands, latest),
       )
+      |> restripped
     }
+  }
+}
+
+// The agent strip from the roster, the agent rows and the cache ledger, as
+// of the page's clock. Which strands are listed and what each line says is
+// `agent_roster.chips`; which outlook may be shown is `cache_watch.shown`.
+fn restripped(model: Model(socket)) -> Model(socket) {
+  Model(..model, strip: strip_of(model))
+}
+
+fn strip_of(model: Model(socket)) -> Strip {
+  let strands = strands(model)
+  let chips = agent_roster.chips(model.roster, model.agents, strand)
+  let chip = fn(line: agent_roster.Line) {
+    Chip(
+      line:,
+      hue: turns.hue(strands, line.id),
+      cache: outlook(model, strands, line.id),
+      since: since(model, line.id),
+    )
+  }
+  Strip(
+    chips: list.map(chips.listed, chip),
+    advisor: option.map(chips.advisor, chip),
+    settled: chips.settled,
+  )
+}
+
+// The daemon's start instant for a strand's current operation.
+fn since(model: Model(socket), id: String) -> Option(Int) {
+  case model.shown {
+    None -> None
+    Some(#(_, view)) ->
+      model.agents
+      |> list.find(fn(row) { row.id == id })
+      |> option.from_result
+      |> option.then(fn(row) { row.operation })
+      |> option.then(agent_roster.started_at(view.cells, _))
+  }
+}
+
+fn strands(model: Model(socket)) -> List(protocol.Strand) {
+  case model.shown {
+    Some(#(_, view)) -> view.strands
+    None -> []
+  }
+}
+
+// A strand the capture lists with a live phase is running, which is the
+// terminal's test too, and `cache_watch.shown` says nothing for it.
+fn outlook(
+  model: Model(socket),
+  strands: List(protocol.Strand),
+  id: String,
+) -> Option(#(cache_miss.Outlook, String)) {
+  let activity = case list.find(strands, fn(listed) { listed.id == id }) {
+    Ok(protocol.Strand(live_phase: Some(_), ..)) -> cache_watch.Running
+    Ok(protocol.Strand(live_phase: None, ..)) | Error(Nil) ->
+      cache_watch.Resting
+  }
+  cache_watch.shown(model.cache, id, activity, model.clock)
+  |> option.map(fn(held) { #(held, cache_miss.outlook_label(held)) })
+}
+
+// The tick's part in the strip. The browser counts each chip's elapsed
+// time, so a second passing redraws nothing; the strip is rebuilt only when
+// a drawn cache label changed, which is once a minute at most until a
+// countdown's last minute. An idle page's tick therefore leaves the strip
+// as the same value and its memoized subtree is not diffed. The labels are
+// compared chip by chip rather than by rebuilding the strip, which would
+// redo every line's text on every tick.
+fn ticked(model: Model(socket), at: Int) -> Model(socket) {
+  let #(roster, _) = agent_roster.tick(model.roster, at)
+  let model = Model(..model, roster:)
+  let strands = strands(model)
+  let moved =
+    list.any(chips(model.strip), fn(chip) {
+      option.map(chip.cache, fn(held) { held.1 })
+      != option.map(outlook(model, strands, chip.line.id), fn(held) { held.1 })
+    })
+  case moved {
+    False -> model
+    True -> restripped(model)
+  }
+}
+
+// Every chip of a strip, the advisor's included.
+fn chips(strip: Strip) -> List(Chip) {
+  case strip.advisor {
+    Some(advisor) -> list.append(strip.chips, [advisor])
+    None -> strip.chips
   }
 }
 
@@ -698,6 +947,30 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
   model.pieces
 }
 
+/// The agent strip as the page draws it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.strip_view(component.strip(model))
+/// ```
+pub fn strip(model: Model(socket)) -> Strip {
+  model.strip
+}
+
+/// The chip of the strand the page addresses, whose cache outlook the
+/// operator's composer shows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.addressed(model)
+/// ```
+pub fn addressed(model: Model(socket)) -> Option(Chip) {
+  list.find(model.strip.chips, fn(chip) { chip.line.id == strand })
+  |> option.from_result
+}
+
 /// The connection's status.
 ///
 /// ## Examples
@@ -816,8 +1089,8 @@ pub fn session_id(model: Model(socket)) -> String {
   model.session_id
 }
 
-/// The observer's page: the heading, the lane, and a fixed line saying the
-/// page is read-only. It attaches no event handler.
+/// The observer's page: the heading, the agent strip, the lane, and a fixed
+/// line saying the page is read-only. It attaches no event handler.
 ///
 /// ## Examples
 ///
@@ -827,6 +1100,7 @@ pub fn session_id(model: Model(socket)) -> String {
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session")], [
     heading(model),
+    strip_view(model.strip),
     lane_view(model.pieces),
     html.p([attribute.class("observer-bar")], [
       html.text(
@@ -852,6 +1126,161 @@ pub fn heading(model: Model(socket)) -> Element(message) {
   ])
 }
 
+/// The agent strip: one chip per listed strand, the advisor's chip last,
+/// and one chip counting the strands that settled.
+///
+/// The chips are drawn and not operated: switching the strand the lane
+/// follows needs the extracted step, so no chip is a control, none takes
+/// focus, and none carries a handler. The list is memoized on the strip,
+/// which the component rebuilds only when something it draws changed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.strip_view(component.strip(model))
+/// ```
+pub fn strip_view(strip: Strip) -> Element(message) {
+  use <- element.memo([element.ref(strip)])
+  case strip.chips, strip.advisor {
+    [], None -> element.none()
+    _, _ -> {
+      let settled = case strip.settled {
+        0 -> []
+        count -> [
+          html.li([attribute.class("chip settled")], [
+            html.span([attribute.class("chip-name")], [
+              html.text("+" <> int.to_string(count) <> " settled"),
+            ]),
+          ]),
+        ]
+      }
+      let advisor = case strip.advisor {
+        Some(chip) -> [chip_element(chip)]
+        None -> []
+      }
+
+      // Chips are listed by position, never keyed by strand name: a child's
+      // name carries words its parent chose.
+      html.nav(
+        [attribute.class("agent-strip"), attribute.aria_label("Agents")],
+        [
+          html.ul(
+            [attribute.class("chips")],
+            list.flatten([list.map(strip.chips, chip_element), settled, advisor]),
+          ),
+        ],
+      )
+    }
+  }
+}
+
+fn chip_element(chip: Chip) -> Element(message) {
+  let line = chip.line
+  let figures =
+    option.map(line.tokens, fn(count) {
+      agent_roster.count_label(count) <> " ctx"
+    })
+    |> option.to_result(Nil)
+    |> result.map(list.wrap)
+    |> result.unwrap([])
+  html.li(chip_attributes(chip), [
+    html.span([attribute.class("swatch"), attribute.aria_hidden(True)], []),
+    html.span([attribute.class("chip-head")], [
+      html.span([attribute.class("chip-name")], [html.text(line.name)]),
+      html.span([attribute.class("state"), status_class(line.status)], [
+        html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
+          html.text(status_glyph(line.status)),
+        ]),
+        html.text(agent_view.label(line.status)),
+      ]),
+    ]),
+    html.span([attribute.class("chip-activity")], [html.text(line.text)]),
+    html.span([attribute.class("chip-figures")], [
+      elapsed(chip),
+      html.text(string.join(figures, " · ")),
+      ring(chip.cache),
+    ]),
+  ])
+}
+
+// The chip of the strand the lane follows is marked as the current one, for
+// a screen reader in words as well as by its ring.
+fn chip_attributes(chip: Chip) -> List(attribute.Attribute(message)) {
+  case chip.line.id == strand {
+    True -> [
+      attribute.class("chip"),
+      attribute.class("following"),
+      attribute.attribute("aria-current", "true"),
+      hue_class(chip.hue),
+    ]
+    False -> [attribute.class("chip"), hue_class(chip.hue)]
+  }
+}
+
+// How long the strand's operation has run. When the capture says when the
+// operation started, the browser counts it (`<loom-elapsed>`, from
+// `packages/web_client`), so the server never renders again only to move a
+// clock; the attribute is the daemon's own start instant, a number,
+// and stays the same for the operation's life. Without one, the roster's
+// reading is drawn as it stood.
+fn elapsed(chip: Chip) -> Element(message) {
+  case chip.since, chip.line.elapsed_s {
+    Some(since), _ ->
+      element.element(
+        "loom-elapsed",
+        [
+          attribute.class("elapsed"),
+          attribute.attribute("since", int.to_string(since)),
+        ],
+        [],
+      )
+    None, Some(seconds) ->
+      html.span([attribute.class("elapsed")], [
+        html.text(agent_roster.duration(seconds)),
+      ])
+    None, None -> element.none()
+  }
+}
+
+// The cache ring: its shape from the outlook, its words from
+// `cache_miss.outlook_label`, which is all the outlook may claim. The label
+// is the ring's accessible name and tooltip, and is never session text.
+fn ring(cache: Option(#(cache_miss.Outlook, String))) -> Element(message) {
+  case cache {
+    None -> element.none()
+    Some(#(held, label)) ->
+      html.span(
+        [
+          attribute.class("ring"),
+          ring_class(held),
+          attribute.role("img"),
+          attribute.aria_label(label),
+          attribute.title(label),
+        ],
+        [],
+      )
+  }
+}
+
+/// The class naming how an outlook is drawn: a held head, a held tail, an
+/// idle age, or a boundary that has passed. Each is a whole literal, which
+/// is what lets Tailwind see it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.ring_class(cache_miss.Expired) == attribute.class("ring-elapsed")
+/// ```
+pub fn ring_class(outlook: cache_miss.Outlook) -> attribute.Attribute(message) {
+  case outlook {
+    cache_miss.Head(..) -> attribute.class("ring-head")
+    cache_miss.Held(..) -> attribute.class("ring-tail")
+    cache_miss.Idle(..) -> attribute.class("ring-idle")
+    cache_miss.Expired -> attribute.class("ring-elapsed")
+    cache_miss.Unheld -> attribute.class("ring-none")
+  }
+}
+
 /// The class for a strand's hue, from its position: never from its name.
 ///
 /// ## Examples
@@ -869,6 +1298,31 @@ pub fn hue_class(hue: turns.Hue) -> attribute.Attribute(message) {
     turns.Sub(index: 3) -> attribute.class("hue-5")
     turns.Sub(..) -> attribute.class("hue-6")
     turns.Unplaced -> attribute.class("hue-none")
+  }
+}
+
+fn status_class(status: agent_view.Status) -> attribute.Attribute(message) {
+  case status {
+    agent_view.Working -> attribute.class("running")
+    agent_view.Waiting -> attribute.class("waiting")
+    agent_view.NeedsInput -> attribute.class("needs-input")
+    agent_view.Finished -> attribute.class("done")
+    agent_view.Failed -> attribute.class("failed")
+    agent_view.Halted -> attribute.class("halted")
+    agent_view.Idle | agent_view.Unavailable -> attribute.class("idle")
+  }
+}
+
+// The glyph beside every state label; colour never carries state alone.
+fn status_glyph(status: agent_view.Status) -> String {
+  case status {
+    agent_view.Working -> "●"
+    agent_view.Waiting -> "◌"
+    agent_view.NeedsInput -> "◇"
+    agent_view.Finished -> "✓"
+    agent_view.Failed -> "✕"
+    agent_view.Halted -> "⊘"
+    agent_view.Idle | agent_view.Unavailable -> "○"
   }
 }
 

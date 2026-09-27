@@ -86,6 +86,30 @@
   .hue-5{--hue:var(--color-strand-5);}
   .hue-6{--hue:var(--color-strand-6);}
   .hue-none{--hue:var(--color-fg-quiet);}
+  nav.agent-strip{margin:0 0 16px 0;overflow-x:auto;scrollbar-width:thin;}
+  ul.chips{list-style:none;margin:0;padding:0 0 4px 0;display:flex;gap:8px;}
+  li.chip{position:relative;flex:0 0 auto;width:232px;min-width:0;padding:8px 10px 8px 14px; background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:8px; display:grid;grid-template-columns:minmax(0,1fr);row-gap:2px;font-size:12px;}
+  li.chip .swatch{position:absolute;left:0;top:0;bottom:0;width:4px;border-radius:8px 0 0 8px; background:var(--hue,var(--color-fg-quiet));}
+  .chip-head{display:flex;align-items:baseline;gap:8px;min-width:0;}
+  .chip-name{font:600 12px/1.4 var(--font-mono);color:var(--hue,var(--color-fg));min-width:0; overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .state{margin-left:auto;flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-mono);}
+  .state .glyph{margin-right:4px;}
+  .state.running .glyph{color:var(--color-current);}
+  .state.waiting .glyph{color:var(--color-fg-quiet);}
+  .state.needs-input,.state.needs-input .glyph{color:var(--color-signal);}
+  .state.done .glyph{color:var(--color-added);}
+  .state.failed,.state.failed .glyph{color:var(--color-danger);}
+  .chip-activity{color:var(--color-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+  .chip-figures{display:flex;align-items:center;gap:8px;color:var(--color-fg-quiet);font:11px/1.4 var(--font-mono); min-height:14px;}
+  li.chip.following{box-shadow:inset 0 0 0 1px var(--hue,var(--color-divider));border-color:var(--hue,var(--color-divider));}
+  li.chip.settled{width:auto;align-content:center;padding:8px 12px;border-style:dashed;}
+  li.chip.settled .chip-name{color:var(--color-fg-quiet);font-weight:400;}
+  .elapsed{font-variant-numeric:tabular-nums;}
+  .ring{display:inline-block;width:12px;height:12px;border-radius:50%;flex:0 0 auto;margin-left:auto; border:2px solid var(--color-divider);}
+  .ring.ring-head{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 25%,transparent);}
+  .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
+  .ring.ring-idle{border-color:var(--color-fg-quiet);}
+  .ring.ring-elapsed{border:2px dashed var(--color-fg-quiet);}
   .transcript.lane{display:flex;flex-direction:column;gap:10px;min-width:0;}
   .block{min-width:0;}
   pre.line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
@@ -127,6 +151,7 @@
   .peer-from{min-width:0;overflow-wrap:anywhere;}
   .receipt{margin-left:auto;border:1px solid var(--color-divider);border-radius:999px;padding:0 8px;font-size:11px;}
   pre.card-body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);}
+  p.cache-miss{margin:0;padding:6px 10px;border:1px dashed var(--color-signal);border-radius:6px; color:var(--color-signal);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .observer-bar{margin:16px 0 0 0;padding:12px 16px;border-top:1px solid var(--color-divider); color:var(--color-fg-quiet);font-size:13px;}
   .page-note{margin:16px;color:var(--color-fg-quiet);}
   section.approvals{margin:16px 0;}
@@ -141,6 +166,13 @@
   .identity-name{color:var(--color-fg);}
   .role-badge{border:1px solid var(--color-signal);color:var(--color-signal);border-radius:999px;padding:0 8px;}
   .addressed{color:var(--color-current);font-family:var(--font-mono);}
+  .outlook{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--color-divider);border-radius:999px; padding:0 8px;color:var(--color-fg-quiet);font:11px/1.6 var(--font-mono);}
+  .outlook::before{content:"";width:9px;height:9px;border-radius:50%;border:2px solid var(--color-divider);}
+  .outlook.ring-head::before{border-color:var(--color-current);}
+  .outlook.ring-tail{border-color:var(--color-signal);color:var(--color-signal);}
+  .outlook.ring-tail::before{border-color:var(--color-divider);border-top-color:var(--color-signal);}
+  .outlook.ring-idle::before{border-color:var(--color-fg-quiet);}
+  .outlook.ring-elapsed::before{border-style:dashed;border-color:var(--color-fg-quiet);}
   .editor textarea{field-sizing:content;min-height:4.5em;max-height:50vh;width:100%;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider); border-radius:4px;padding:8px;font:14px/1.5 var(--font-sans);resize:vertical;}
   .composer-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;}
   .notice{margin:0 auto 0 0;color:var(--color-fg-quiet);font-size:13px;min-width:0;}
