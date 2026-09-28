@@ -358,8 +358,8 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/session_model`: the session state, `Shared(socket, recorder,
   source, replay_source)`, the types it names (`Peer`, `Interrupt`,
   `SubmissionSource`, `UnconfirmedSubmission`, `ConnectionBacklog`,
-  `GoalReport`, `ReturnedDraft`, `GoalObservation`), and the functions
-  over `Shared` alone. `Shared` is what a
+  `GoalReport`, `ReturnedDraft`, `GoalObservation`, `SurfaceFact`), and
+  the functions over `Shared` alone. `Shared` is what a
   second host would need (what the daemon said, what was sent and not yet
   committed, the reads in flight, the presentation revisions) and the four
   host handles, typed by its parameters: `channel` is
@@ -370,13 +370,18 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   parameters because the terminal reads them from differently typed
   subjects. `Shared.outbox` holds the `step_effect.Effect` values a
   function over `Shared` decided, newest first, and is empty between calls.
-  Three fields record what a shared call means for a host's editors, so
-  that the call need not write them: `drafts_sent` counts the composer
-  drafts the lane has sent, `queue_notices` holds the
-  `queue_request.Notice` values (`Refused(reason)`, `Dropped(message)`) the
-  queue editor has not shown, and `goal_observations` holds the
-  `GoalObserved(board)` and `GoalUnavailable(reason)` entries the goal
-  inspector has not shown. Both lists are empty between calls.
+  Four fields record what a shared call means for a host's editors and
+  surfaces, so that the call need not write them: `drafts_sent` counts the
+  composer drafts the lane has sent, `queue_notices` holds the
+  `queue_request.Notice` values (`Refused(reason)`, `Dropped(message)`,
+  `Received(owner, namespace, document)`) the queue editor has not shown,
+  `goal_observations` holds the `GoalObserved(board)` and
+  `GoalUnavailable(reason)` entries the goal inspector has not shown, and
+  `surface_facts` holds the `SurfaceFact` values the event fold recorded
+  (`WorkspaceSwitched(departing, arriving, previous_session)`,
+  `SessionSynchronized`, `ModelsListed(models, current)`, `OutlookCleared`,
+  `NotesArrived(board)`, `JobsReplaced(previous, board)`). The three lists
+  are empty between calls. `record_surface` appends a fact.
   The functions are the writers `append_system`, `append_error`,
   `append_notice`, `invalidate_transcript`, `invalidate_frame`,
   `mark_activity` (bumps `activity_revision` only), `hold_channel` (stores
@@ -547,12 +552,30 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `GoalObservation`. The functions that open a surface or read its target
   (`refresh_notes`, `select_note`, `open_summary`, `open_context`,
   `request_goal_status`, `notes_target`, `notes_surface`) and the `sync_*`
-  edge detectors still take the whole model. The summary's job cursor
-  follows its job in `inbound.receive_jobs`, after the shared receiver,
-  through `summary_panel.follow_selected_job`.
+  edge detectors still take the whole model.
+- `tui/event_fold`: the event fold over `Shared` alone. `apply_event`
+  handles each pushed event: streams, tool tails, entries, phases, usage and
+  the cache watch, the side-surface replies, schedules, skills, models and a
+  returned draft. It also holds the functions the event fold reaches:
+  `select_workspace` (the session half of a switch, with `leave_session`),
+  `select_model`, `settle_pending_cache`, `send_prompt_to`,
+  `expect_own_turn`, `settle_own_turn` and `abandon_interjections`. Where
+  an event used to write terminal state it records a `SurfaceFact`, and a
+  queued-input reply appends `queue_request.Received`. It reads no terminal
+  state; it calls `outbound`'s and `surfaces`' functions over `Shared` and
+  no other function of either.
 - `tui/inbound`: `drain_connection`, `accept_connection_message`,
-  `apply_channel_update`, `apply_event` and `render_cut`, with stream, tail,
-  usage and cache accounting.
+  `apply_channel_update` and `render_cut`, the lane fold, still over the
+  whole model. `run_event` applies one pushed event through
+  `event_fold.apply_event` and then `settle_surfaces`, which applies the
+  surface facts the call recorded (the editor park and restore of a
+  workspace switch, a snapshot's gutters and scroll, the model selector,
+  the cache outlook, the notes panel through `surfaces.notes_target` and
+  `notes_surface`, and the summary's job cursor through
+  `summary_panel.follow_selected_job`) and moves returned drafts into the
+  editors (`restore_returned_drafts`). `select_workspace` and
+  `select_model` are the terminal forms of the event fold's, which settle
+  the facts their call recorded.
 - `tui/session_control`: daemon control requests and reconnection. It
   describes each request as a `job.Spec`, and `drain_control`,
   `drain_reconnect`, `drain_activity` and `drain_configuration` take their
@@ -2164,6 +2187,18 @@ untouched.
   the cut. A result stored without `hold_shared` leaves them behind;
   `tui_test/stepping.step` asserts both lists are empty after every step,
   as it does for `Shared.outbox`.
+- **An event's surface facts are settled after that event.** The event
+  fold records a `SurfaceFact` where an event used to write the terminal's
+  editor, overlays or footer, and `inbound.settle_surfaces` applies them
+  after each call into the fold (`run_event`, and the terminal forms of
+  `select_workspace` and `select_model`), not at the end of the step. One
+  step applies many events, and a later event reads or overwrites what an
+  earlier one wrote: a stream fragment replaces the notice a notes board
+  set, and a returned draft must reach the composer before a later switch
+  parks it. A workspace switch parks the viewport height measured on the
+  model before the call, because layout reads shared state the rest of the
+  event changes. `tui_test/stepping.step` asserts `surface_facts` is empty
+  after every step.
 - **A replay reproduces inbound traffic and rendering, never an outbound
   effect.** No websocket write, no daemon start, no local catalogue read,
   and no line the live client would have been *sent*. Submitting under
