@@ -125,7 +125,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
     component.strip_view(component.strip(model)),
-    component.lane_view(component.pieces(model), component.parsed(model)),
+    component.lane_view(component.pieces(model)),
     html.footer([attribute.class("dock")], [
       approvals(component.pending(model)),
       composer(model),

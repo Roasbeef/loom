@@ -37,14 +37,13 @@ page keys and nonces, and the relay into the session's gateway.
   (the deadline timer fired). It holds no command.
 - `component.Model(socket)` (opaque): the lane, the filed frames
   (`session_view/inbox`), the last capture, its transcript blocks and the
-  turns laid out from them (`turns.Piece`) with the Markdown trees of their
-  answers (`parsed`), the agent rows, the roster, the
+  turns laid out from them (`turns.Piece`), the agent rows, the roster, the
   cache ledger and its miss notices, the agent `Strip`, the approvals, the
   connection `Status`, the operator `Notice` and the sent-draft count.
 - `component.Strip` and `component.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip
-  was built), the advisor's chip and the settled count. `strip_view` and `lane_view` draw them, memoized;
+  was built), the advisor's chip and the settled count. `strip_view` and `lane_view` draw them, memoized (the strip whole, the lane per line);
   `hue_class` and `ring_class` map a hue and an outlook to literal classes.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
@@ -52,15 +51,14 @@ page keys and nonces, and the relay into the session's gateway.
   terminal renders as Markdown (assistant, reasoning, tool detail) and for
   the bodies of the result, nudge and peer cards, which are agent prose
   the terminal draws as tool-detail rows; every other row stays a `pre`.
-  The trees of the newest `cached_rows` (100) Markdown lines are parsed
-  in `update`, with the pieces, into `Model.parsed` (keyed by `Line`, which
-  shares the row's text, a card's body as a `ToolDetail` line, reusing the
-  previous capture's tree for an unchanged line), and `lane_view` takes
-  them beside the pieces. An older row is parsed by the view when the lane
-  is drawn. A tree is about eight times its text, so caching every row
-  added 64% to the component's retained model; the bound keeps the cache
-  to about a tenth of it, at about 16 ms of parsing per capture for 500
-  older rows.
+  The model holds no trees. `lane_view` draws every transcript line and
+  card body inside its own `element.memo` keyed on that line or body, with
+  no memo around them (`lane_rows`), so a line is parsed and drawn when it
+  first appears and Lustre reuses its element after that. Lustre forgets
+  memos nested inside a memo that hit and redraws a keyed subtree whose
+  key changed, which is why the memos are leaves and why `turns` keys a
+  turn's work by its input (`docs/lustre.md`, "A memo inside a memo that
+  hit is forgotten"). `lane_memo_test` counts the lines a render draws.
 - `component.{submit, decide}`: the two commands, through the engine's
   arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
   never offers remembering a grant for the session.
@@ -113,7 +111,7 @@ page keys and nonces, and the relay into the session's gateway.
   lists, what the cache may claim and what an operator's input becomes on
   the wire are `session_view`'s.
 - **Derive per capture, never per render or per tick.** A capture is
-  projected once into blocks, pieces, Markdown trees and the strip, and an idle refresh
+  projected once into blocks, pieces and the strip, and an idle refresh
   that brings back the capture already drawn projects nothing. A tick
   rebuilds the strip only when a cache label changed; the browser counts
   elapsed time. Logic that decides something about the session
