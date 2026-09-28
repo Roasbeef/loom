@@ -416,10 +416,10 @@ fn next_block(
 
 fn classify(line: String, context: Context) -> Line {
   let #(indent, rest) = indentation(line, 0)
-  case string.trim_end(rest) {
-    "" -> BlankLine
-    _ if indent >= 4 -> TextLine(indent:, text: rest)
-    _ -> block_line(indent, rest, context)
+  case is_blank(rest), indent >= 4 {
+    True, _ -> BlankLine
+    False, True -> TextLine(indent:, text: rest)
+    False, False -> block_line(indent, rest, context)
   }
 }
 
@@ -523,7 +523,7 @@ fn fence_body(
 fn closes_fence(line: String, mark: String, length: Int) -> Bool {
   let #(indent, rest) = indentation(line, 0)
   let #(count, after) = run(rest, mark, 0)
-  indent < 4 && count >= length && string.trim(after) == ""
+  indent < 4 && count >= length && is_blank(after)
 }
 
 // Up to `count` leading spaces removed, and no more: a code line indented
@@ -706,10 +706,10 @@ fn take_digits(text: String, digits: String, count: Int) -> #(String, String) {
 }
 
 // The character classes below are ranges of ASCII, tested on the byte of a
-// one-byte grapheme. A grapheme of more than one byte belongs to none of
-// them. Reading the byte costs nothing, where testing containment in a
+// one-byte grapheme or token. Anything longer than one byte belongs to none
+// of them. Reading the byte costs nothing, where testing containment in a
 // string of the class's characters built a search pattern for every
-// grapheme the parser looked at, which was a measurable part of a frame.
+// character the parser looked at, which was a measurable part of a frame.
 fn ascii(grapheme: String) -> Int {
   case bit_array.from_string(grapheme) {
     <<byte>> -> byte
@@ -839,8 +839,8 @@ fn sibling(kind: Line, marker: Marker) -> Result(Item, Nil) {
 // four of them would make the rest an indented code block.
 fn task(content: String) -> #(Option(TaskState), String) {
   case content {
-    "[ ] " <> rest -> #(Some(Open), string.trim_start(rest))
-    "[x] " <> rest | "[X] " <> rest -> #(Some(Done), string.trim_start(rest))
+    "[ ] " <> rest -> #(Some(Open), trim_start(rest))
+    "[x] " <> rest | "[X] " <> rest -> #(Some(Done), trim_start(rest))
     _ -> #(None, content)
   }
 }
@@ -879,11 +879,11 @@ fn item_body(
     [] -> #(list.reverse(body), [])
     [line, ..rest] -> {
       let #(indent, text) = indentation(line, 0)
-      case string.trim_end(text), indent >= width {
-        "", _ -> after_blank(lines, width, context, body)
-        _, True ->
+      case is_blank(text), indent >= width {
+        True, _ -> after_blank(lines, width, context, body)
+        False, True ->
           item_body(rest, width, context, [drop_spaces(line, width), ..body])
-        _, False -> lazy_line(line, rest, width, context, body)
+        False, False -> lazy_line(line, rest, width, context, body)
       }
     }
   }
@@ -927,13 +927,59 @@ fn lazy_line(
     _, _ -> False
   }
   case continues {
-    True -> item_body(rest, width, context, [string.trim_start(line), ..body])
+    True -> item_body(rest, width, context, [trim_start(line), ..body])
     False -> #(list.reverse(body), [line, ..rest])
   }
 }
 
+// Blank as CommonMark has it: nothing but spaces and tabs. These checks
+// and the trims below read ASCII bytes rather than running a Unicode trim,
+// which searched every line for every kind of whitespace and allocated as
+// it went, on every line of every frame the terminal parses.
 fn is_blank(line: String) -> Bool {
-  string.trim(line) == ""
+  blank_bytes(bit_array.from_string(line))
+}
+
+fn blank_bytes(bits: BitArray) -> Bool {
+  case bits {
+    <<>> -> True
+    <<0x20, rest:bytes>> | <<0x09, rest:bytes>> -> blank_bytes(rest)
+    _ -> False
+  }
+}
+
+// The text without its leading spaces and tabs.
+fn trim_start(text: String) -> String {
+  case text {
+    " " <> rest | "\t" <> rest -> trim_start(rest)
+    _ -> text
+  }
+}
+
+// The text without its trailing spaces, tabs and line feeds, read from the
+// end, so the cost is what is trimmed rather than the text's length.
+fn trim_end(text: String) -> String {
+  let bits = bit_array.from_string(text)
+  let size = bit_array.byte_size(bits)
+  let kept = kept_bytes(bits, size)
+  case kept == size {
+    True -> text
+    False ->
+      bit_array.slice(bits, 0, kept)
+      |> result.try(bit_array.to_string)
+      |> result.unwrap(text)
+  }
+}
+
+fn kept_bytes(bits: BitArray, size: Int) -> Int {
+  case bit_array.slice(bits, size - 1, 1) {
+    Ok(<<0x20>>) | Ok(<<0x09>>) | Ok(<<0x0A>>) -> kept_bytes(bits, size - 1)
+    Ok(_) | Error(Nil) -> size
+  }
+}
+
+fn trim(text: String) -> String {
+  text |> trim_start |> trim_end
 }
 
 fn indented_code(
@@ -971,7 +1017,7 @@ fn paragraph(
 ) -> #(Option(Block), List(String)) {
   case table(line, rest, context.refs) {
     Ok(#(block, rest)) -> #(Some(block), rest)
-    Error(Nil) -> prose(rest, context, [string.trim_start(line)])
+    Error(Nil) -> prose(rest, context, [trim_start(line)])
   }
 }
 
@@ -1012,7 +1058,7 @@ fn prose_line(
     )
     _, _ ->
       case continuation(classify(line, context)) {
-        Continues -> prose(rest, context, [string.trim_start(line), ..text])
+        Continues -> prose(rest, context, [trim_start(line), ..text])
         Interrupts -> #(Some(Paragraph(inlines(joined(text), context.refs))), [
           line,
           ..rest
@@ -1061,12 +1107,12 @@ fn joined(text: List(String)) -> String {
   text
   |> list.reverse
   |> string.join("\n")
-  |> string.trim_end
+  |> trim_end
 }
 
 fn setext(line: String) -> Result(Level, Nil) {
   let #(indent, rest) = indentation(line, 0)
-  let rest = string.trim_end(rest)
+  let rest = trim_end(rest)
   case indent < 4, rest {
     True, "=" <> _ -> underline(rest, "=", H1)
     True, "-" <> _ -> underline(rest, "-", H2)
@@ -1167,7 +1213,7 @@ fn align_of(cell: String) -> Result(Align, Nil) {
 // A row's cells: the outer pipes dropped, split on every pipe a backslash
 // does not escape, each cell trimmed. An escaped pipe becomes a plain one.
 fn cells(line: String) -> List(String) {
-  let trimmed = string.trim(line)
+  let trimmed = trim(line)
   let trimmed = case trimmed {
     "|" <> rest -> rest
     _ -> trimmed
@@ -1178,7 +1224,7 @@ fn cells(line: String) -> List(String) {
     True -> string.drop_end(trimmed, 1)
     False -> trimmed
   }
-  split_cells(string.to_graphemes(trimmed), [], [])
+  split_cells(tokens(trimmed), [], [])
 }
 
 fn split_cells(
@@ -1195,13 +1241,13 @@ fn split_cells(
 }
 
 fn finish_cell(cell: List(String)) -> String {
-  cell |> list.reverse |> string.concat |> string.trim
+  cell |> list.reverse |> string.concat |> trim
 }
 
 // ----------------------------------------------------------- definitions
 
-// The longest label a reference or a definition may have, in graphemes, as
-// CommonMark bounds it. A label scan stops here whatever follows.
+// The longest label a reference or a definition may have, counted in tokens
+// (in graphemes on a definition line), near the bound CommonMark sets. A label scan stops here whatever follows.
 const max_label = 999
 
 // Whether a label may hold whitespace: a link label may, a footnote label
@@ -1389,10 +1435,10 @@ fn is_space(grapheme: String) -> Bool {
   neighbour(grapheme) == Space
 }
 
-// A label's text: the graphemes before the first unescaped `]`, which must
-// come after at least one grapheme and within `max_label`. A `[` refuses the
+// A label's text: the tokens before the first unescaped `]`, which must
+// come after at least one token and within `max_label`. A `[` refuses the
 // label, as does whitespace in a footnote label. The result is the label,
-// the input after its `]`, and how many graphemes the label took. The scan
+// the input after its `]`, and how many tokens the label took. The scan
 // stops at the first bracket, so two label scans never read the same text.
 fn label_text(
   input: List(String),
@@ -1517,13 +1563,117 @@ type Scan {
   )
 }
 
-// Inline parsing is one pass over the graphemes with a stack of open frames.
+// Inline parsing reads the text as tokens rather than graphemes. Every ASCII
+// punctuation byte, space, tab and line feed is a token of its own, and every
+// run of other bytes, letters, digits and all non-ASCII text, is one token.
+// The scanner only ever tests a token against ASCII punctuation and
+// whitespace, and UTF-8 never places an ASCII byte inside a multi-byte
+// character, so cutting at those bytes never splits a character, and each
+// test reads the same for a token as it did for a grapheme. A run is a
+// slice of the source rather than a copy, and the text needs no grapheme
+// segmentation, which was most of what parsing a frame allocated.
+// CommonMark is defined over characters rather than grapheme clusters, so a
+// combining mark after a delimiter no longer hides the delimiter, which is
+// the specification's reading. Positions count tokens, which every scan that
+// reads a position does alike.
+fn tokens(text: String) -> List(String) {
+  let bits = bit_array.from_string(text)
+  tokenize(bits, bits, 0, 0, [])
+}
+
+fn tokenize(
+  source: BitArray,
+  rest: BitArray,
+  index: Int,
+  start: Int,
+  out: List(String),
+) -> List(String) {
+  case rest {
+    <<byte, rest:bytes>> ->
+      case ascii_token(byte) {
+        Ok(token) ->
+          tokenize(source, rest, index + 1, index + 1, [
+            token,
+            ..run_token(source, start, index, out)
+          ])
+        Error(Nil) -> tokenize(source, rest, index + 1, start, out)
+      }
+    _ -> list.reverse(run_token(source, start, index, out))
+  }
+}
+
+// The run of ordinary bytes from `start` up to `index`, if there is one,
+// ahead of `out`. A run ends at an ASCII byte, so it holds whole characters
+// and the conversion back to a string cannot fail.
+fn run_token(
+  source: BitArray,
+  start: Int,
+  index: Int,
+  out: List(String),
+) -> List(String) {
+  case index > start {
+    False -> out
+    True ->
+      case
+        bit_array.slice(source, start, index - start)
+        |> result.try(bit_array.to_string)
+      {
+        Ok(text) -> [text, ..out]
+        Error(Nil) -> out
+      }
+  }
+}
+
+// The token a byte stands for on its own, as a literal so that it costs no
+// allocation, or an error for a byte that belongs to a run.
+fn ascii_token(byte: Int) -> Result(String, Nil) {
+  case byte {
+    0x09 -> Ok("\t")
+    0x0A -> Ok("\n")
+    0x20 -> Ok(" ")
+    0x21 -> Ok("!")
+    0x22 -> Ok("\"")
+    0x23 -> Ok("#")
+    0x24 -> Ok("$")
+    0x25 -> Ok("%")
+    0x26 -> Ok("&")
+    0x27 -> Ok("'")
+    0x28 -> Ok("(")
+    0x29 -> Ok(")")
+    0x2A -> Ok("*")
+    0x2B -> Ok("+")
+    0x2C -> Ok(",")
+    0x2D -> Ok("-")
+    0x2E -> Ok(".")
+    0x2F -> Ok("/")
+    0x3A -> Ok(":")
+    0x3B -> Ok(";")
+    0x3C -> Ok("<")
+    0x3D -> Ok("=")
+    0x3E -> Ok(">")
+    0x3F -> Ok("?")
+    0x40 -> Ok("@")
+    0x5B -> Ok("[")
+    0x5C -> Ok("\\")
+    0x5D -> Ok("]")
+    0x5E -> Ok("^")
+    0x5F -> Ok("_")
+    0x60 -> Ok("`")
+    0x7B -> Ok("{")
+    0x7C -> Ok("|")
+    0x7D -> Ok("}")
+    0x7E -> Ok("~")
+    _ -> Error(Nil)
+  }
+}
+
+// Inline parsing is one pass over the tokens with a stack of open frames.
 // Code spans are matched through `ticks`, the positions of every backtick
 // run by length, found in a first pass: an opener takes the next run of its
 // length after it, and positions already passed are dropped, so each is
 // looked at once.
 fn inlines(text: String, refs: Refs) -> List(Inline) {
-  let graphemes = string.to_graphemes(text)
+  let graphemes = tokens(text)
   let start =
     Scan(
       frame: Frame(opener: Root, pieces: [], holds: Flat),
@@ -1570,8 +1720,8 @@ fn count_run(
   }
 }
 
-// `position` counts graphemes from the start of the text and `previous` is
-// the grapheme before `input`, which the flanking rules read.
+// `position` counts tokens from the start of the text and `previous` is the
+// token before `input`, which the flanking rules read.
 fn scan(
   input: List(String),
   position: Int,
@@ -1597,12 +1747,13 @@ fn scan(
     ["]", ..rest] -> close_bracket(rest, position, state)
     ["<", ..rest] -> autolink(rest, position, state)
     ["\n", ..rest] -> scan(rest, position + 1, "\n", line_break(state))
-    ["h", ..] | ["w", ..] -> bare_link(input, position, previous, state)
+    ["https", ..] | ["http", ..] | ["www", ..] ->
+      bare_link(input, position, previous, state)
     [grapheme, ..rest] -> read_text(grapheme, rest, position, state)
   }
 }
 
-// One grapheme with no meaning of its own, added to the text being read.
+// One token with no meaning of its own, added to the text being read.
 fn read_text(
   grapheme: String,
   rest: List(String),
@@ -2043,7 +2194,7 @@ fn bracket_closes(
 
 // The destination a reference link names, when the bracket that just closed
 // is one: `[text][label]`, `[label][]` or `[label]`. The result is the
-// destination, the input after the reference, and how many graphemes after
+// destination, the input after the reference, and how many tokens after
 // the `]` the reference took.
 //
 // A full reference reads its label from the input, and that scan stops at
@@ -2278,11 +2429,25 @@ fn is_domain_label(label: String) -> Bool {
   })
 }
 
-fn is_alphanumeric(grapheme: String) -> Bool {
-  let byte = ascii(grapheme)
-  { byte >= 0x30 && byte <= 0x39 }
-  || { byte >= 0x41 && byte <= 0x5A }
-  || { byte >= 0x61 && byte <= 0x7A }
+// Whether every byte of a non-empty token is an ASCII letter or digit.
+fn is_alphanumeric(text: String) -> Bool {
+  text != "" && alphanumeric_bytes(bit_array.from_string(text))
+}
+
+fn alphanumeric_bytes(bits: BitArray) -> Bool {
+  case bits {
+    <<>> -> True
+    <<byte, rest:bytes>> ->
+      case
+        { byte >= 0x30 && byte <= 0x39 }
+        || { byte >= 0x41 && byte <= 0x5A }
+        || { byte >= 0x61 && byte <= 0x7A }
+      {
+        True -> alphanumeric_bytes(rest)
+        False -> False
+      }
+    _ -> False
+  }
 }
 
 // A bare link, as GitHub's autolink extension has it: `http://`, `https://`
@@ -2308,17 +2473,17 @@ fn bare_link(
       "" | " " | "\n" | "\t" | "*" | "_" | "~" | "(" -> Ok(Nil)
       _ -> Error(Nil)
     })
-    use #(prefix, rest) <- result.try(link_prefix(input))
+    use #(prefix, used, rest) <- result.try(link_prefix(input))
     use Nil <- result.try(domain(rest))
     let #(body, after) =
       list.split_while(rest, fn(grapheme) {
         grapheme != "<" && !is_space(grapheme)
       })
     let #(kept, dropped) = trimmed_link(list.reverse(body), parens(body), [])
-    Ok(#(prefix, list.reverse(kept), list.append(dropped, after)))
+    Ok(#(prefix, used, list.reverse(kept), list.append(dropped, after)))
   }
   case found, input {
-    Ok(#(prefix, body, after)), _ -> {
+    Ok(#(prefix, used, body, after)), _ -> {
       let label = prefix <> string.concat(body)
       let target = case prefix {
         "www." -> "http://" <> label
@@ -2330,7 +2495,7 @@ fn bare_link(
       }
       scan(
         after,
-        position + string.length(prefix) + list.length(body),
+        position + used + list.length(body),
         last,
         push_node(state, Link([Text(label)], target)),
       )
@@ -2340,11 +2505,14 @@ fn bare_link(
   }
 }
 
-fn link_prefix(input: List(String)) -> Result(#(String, List(String)), Nil) {
+// The prefix, how many tokens it took, and the tokens after it.
+fn link_prefix(
+  input: List(String),
+) -> Result(#(String, Int, List(String)), Nil) {
   case input {
-    ["h", "t", "t", "p", "s", ":", "/", "/", ..rest] -> Ok(#("https://", rest))
-    ["h", "t", "t", "p", ":", "/", "/", ..rest] -> Ok(#("http://", rest))
-    ["w", "w", "w", ".", ..rest] -> Ok(#("www.", rest))
+    ["https", ":", "/", "/", ..rest] -> Ok(#("https://", 4, rest))
+    ["http", ":", "/", "/", ..rest] -> Ok(#("http://", 4, rest))
+    ["www", ".", ..rest] -> Ok(#("www.", 2, rest))
     _ -> Error(Nil)
   }
 }

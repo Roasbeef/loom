@@ -304,6 +304,24 @@ pub fn crlf_is_a_line_ending_test() {
     == [Heading(H1, [Text("a")]), Paragraph([Text("b")])]
 }
 
+// Inline text is read as tokens cut at ASCII bytes. Non-ASCII text, wide
+// characters and combining marks come back byte for byte, and delimiters
+// beside them still pair.
+pub fn non_ascii_text_keeps_its_bytes_test() {
+  assert markdown.parse("*héllo* 漢字_x_ `ç` [naïve](ü) e\u{301}**b**")
+    == [
+      Paragraph([
+        Emphasis([Text("héllo")]),
+        Text(" 漢字_x_ "),
+        Code("ç"),
+        Text(" "),
+        Link([Text("naïve")], "ü"),
+        Text(" e\u{301}"),
+        Strong([Text("b")]),
+      ]),
+    ]
+}
+
 pub fn a_heading_anchor_is_dropped_test() {
   assert markdown.parse("# Title {#title}\n\n## Keep {#not an anchor}")
     == [
