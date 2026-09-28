@@ -1,7 +1,7 @@
 //// Test-only externals for the codemode suite: a client end of the cap
-//// socket, and the shell lookups the feature-detected end-to-end test uses
-//// to find the toolchain and build the Go helper. Backed by
-//// `codemode_test_ffi.erl`; production code never uses these.
+//// socket, and the PATH lookup the feature-detected end-to-end test uses
+//// to find the toolchain. Backed by `codemode_test_ffi.erl`; production
+//// code never uses these.
 
 /// A connected client end of a cap socket.
 pub type PeerSocket
@@ -29,11 +29,6 @@ pub fn close(socket: PeerSocket) -> Nil
 /// lookup has no pure alternative.
 @external(erlang, "codemode_test_ffi", "find_executable")
 pub fn find_executable(name: String) -> Result(String, Nil)
-
-/// Runs a shell command and returns its stdout. Uses `os:cmd/1`;
-/// test-only, for driving `go build`.
-@external(erlang, "codemode_test_ffi", "os_cmd")
-pub fn os_cmd(command: String) -> String
 
 /// Reads the real wall clock in Unix milliseconds. Uses
 /// `erlang:system_time/1`; the end-to-end suite runs against real

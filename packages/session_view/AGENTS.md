@@ -104,6 +104,20 @@ read, takes the lane's outputs and performs them.
   pass over the whole is that prefix followed by the pass over the rest;
   the terminal's live tail uses it to sanitize a growing answer once
   rather than on every frame.
+- `markdown.parse(text) -> List(Block)`: an answer's Markdown as a closed
+  tree (`Block`, `Inline`, `Cell`, `Level`, `Align`, `AlertKind`,
+  `TaskState`) whose every string is text to show. Both hosts draw it: the
+  terminal's `tui/markdown` as etui spans and the web view's
+  `markdown_view` as elements. HTML in the source is text and a link keeps
+  its destination as a string. Besides CommonMark's core it recognises
+  GitHub alerts, task boxes, pipe tables, footnotes, reference links and
+  bare `http`/`https`/`www.` links; emoji shortcodes, entities and inline
+  footnotes stay text. It is Loom's own parser because mork, which the
+  terminal used before, backtracks exponentially on a run of `[`. This one
+  is linear in the input and caps nesting at `max_depth` containers and
+  `max_emphasis` open delimiters. Reference and footnote definitions are
+  collected in a first pass over the lines, into a map, before any block
+  is parsed.
 
 - `turns.pieces(blocks, strands, latest)`: one strand's lane as turns for a
   host that draws more than rows (the web view): `Plain` blocks, one `Work`
@@ -184,6 +198,27 @@ through `submit`, the session's mutations. A read-only host never calls
 - **The line builders read a `Presentation`, never a host's model.** A
   new input to a line builder is a new field on `Presentation`, filled by
   every host.
+- **`markdown.parse` is total, linear and shallow.** Every input yields a
+  tree, no character is scanned more than a fixed number of times, and
+  the tree's depth is bounded, because both hosts parse every answer the
+  agent writes and the terminal parses a live answer again on every delta.
+  A new lookahead scan must say why the text it reads is text no other
+  scan reads, as the label, reference and bare-link scans do in their
+  comments. `markdown_test` holds hostile inputs sized so that a quadratic
+  parser would miss EUnit's time limit.
+- **Agent prose renders as Markdown in both hosts.** An answer, reasoning,
+  a `ToolDetail` row, a sub-agent's report, an advisor's body and a peer's
+  message are Markdown wherever their body is shown; prompts, tool calls,
+  results and patches are not. The line builders put agent prose in
+  `ToolDetail` rows (a peer message, an expanded `agent_wait` report) so
+  the terminal's rule is one speaker set; the web view's result, nudge
+  and peer cards draw their bodies as Markdown too.
+- **`turns` keys a turn's work by its input.** `Work.key` is
+  `work:<input key>`, or `work:window-start` for the turn the window opens
+  inside, never the key of the work's first item. The window drops its
+  oldest records as new ones arrive, and a key naming the first item would
+  change on each such capture, which makes a keyed host replace and redraw
+  the whole turn (`web_view`'s `lane_memo_test`).
 
 ## Deep Docs
 

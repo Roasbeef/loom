@@ -255,9 +255,9 @@ cancellation, aborts, congestion and relay death without an OS process.
 retirement proofs. `egress_test` runs against a real loopback TLS origin
 whose root it pins. `protocol_version_test` reads the Go source so the
 two ends' `exec_protocol_version` literals cannot drift.
-`integration_test` builds the real `loom-exec` with `go` and drives it
-through the pool; it skips, printing the reason, when `go` is missing or
-the host has no jail. The jailed end-to-end lives in `conformance`
+`integration_test` drives the real `loom-exec`, the one `make sandbox`
+builds, through the pool; it skips, printing the reason, when that helper
+has not been built or the host has no jail. The jailed end-to-end lives in `conformance`
 (`make e2e`).
 
 ## Reading further

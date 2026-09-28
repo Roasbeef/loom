@@ -120,6 +120,12 @@ the interface remains legible on reduced-color terminals.
 
 ## Markdown and terminal safety
 
+> **Superseded (2026-09-27).** The terminal no longer uses Mork. Its link
+> parsing took time exponential in a run of unclosed `[`, which hung the
+> terminal on such an answer, so `tui/markdown` now renders the tree
+> `session_view/markdown` parses, the parser the web view also uses. The
+> section below records the evaluation as it stood.
+
 Mork 1.12.1 owns CommonMark parsing. The adapter walks its public `Document`
 tree and emits styled etui lines for headings, paragraphs, emphasis, strong
 text, code, lists, links, images, quotes, tables, thematic breaks, and hard

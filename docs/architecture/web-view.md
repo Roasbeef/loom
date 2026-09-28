@@ -382,7 +382,7 @@ keeps a page from acting.
 | Role ceiling | An operator's power by default. A page is an observer's unless minted with `--operate`, and never above Operator. | `ui_relay.capped` |
 | Component type | An observer's page sending a command. Its `Msg` has no command and its view no handler; the socket drops every frame. | `web_view/component`, `ui_socket.observer_accepts` |
 | Approval card rules | Tricking the person into approving (below). | `web_view/operator_page` |
-| Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. | `web_view/component`, `web_view/operator_page` |
+| Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is text. | `web_view/component`, `web_view/markdown_view`, `web_view/operator_page` |
 | Response headers | Inline script and style, framing, `Referer` leaks of the ticket and key, caching. | `ui_http.secured`, `page.content_security_policy` |
 
 The approval card follows its own rules, because it is where an agent
@@ -447,9 +447,12 @@ covered in full in [lustre.md](../lustre.md).
   tree.** Nothing skips the render when the model did not change, and an
   idle page receives a patch per message, which is why arrivals are
   batched before `update`. So the rows are projected once, in
-  `apply`, when a capture arrives, and `component.transcript_view` is
-  memoized on them with `element.memo`, which skips both the view call and
-  its diff while the rows are unchanged
+  `apply`, when a capture arrives, and the lane draws every transcript
+  line and card body inside its own `element.memo`, so a capture draws,
+  parses and diffs only the lines that are new. The memos are the lane's
+  leaves with no memo around them, and a turn's work is keyed by its
+  input, because Lustre forgets memos nested in a memo that hit and
+  redraws a keyed subtree whose key changed
   ([lustre.md](../lustre.md#cost-of-a-message-and-sizing)).
 
 Two further rules come from the runtime's process model: every
@@ -477,6 +480,7 @@ browser goes away, because a runtime outlives its last client.
 | Path | What it owns |
 |---|---|
 | `packages/web_view/src/web_view/component.gleam` | The observer's application: the lane's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the command arms `submit` and `decide`, projection on `Captured`, the keyed and memoized transcript. |
+| `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |
 | `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted` and `Decided`, the uncontrolled composer and its total form decoder, the approval cards. |
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |

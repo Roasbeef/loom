@@ -73,6 +73,7 @@ import session_view/cache_miss
 import session_view/cache_watch
 import session_view/connection_event
 import session_view/inbox.{type Inbox}
+import session_view/markdown
 import session_view/operator
 import session_view/protocol
 import session_view/reviewer_status
@@ -83,6 +84,7 @@ import session_view/transcript
 import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/turns
+import web_view/markdown_view
 
 /// The most frames one `Arrived` carries: the frame the selector matched
 /// and up to this many less one already waiting behind it.
@@ -760,14 +762,21 @@ fn relaned(model: Model(socket)) -> Model(socket) {
     Some(#(cut, view)) -> {
       let blocks = transcript.blocks(cut, view, strand, model.notices)
       let latest = turns.latest(view, model.agents, strand)
-      Model(
-        ..model,
-        blocks:,
-        pieces: turns.pieces(blocks, view.strands, latest),
-      )
+      let pieces = turns.pieces(blocks, view.strands, latest)
+      Model(..model, blocks:, pieces:)
       |> restripped
     }
   }
+}
+
+// A card's body, parsed when it is first drawn and kept by its memo while
+// it is unchanged, as a transcript line is (`lane_rows`).
+fn card_body(body: String) -> Element(message) {
+  use <- element.memo([element.ref(body)])
+  html.div(
+    [attribute.class("card-body"), attribute.class("markdown")],
+    markdown_view.blocks(markdown.parse(body)),
+  )
 }
 
 // The agent strip from the roster, the agent rows and the cache ledger, as
@@ -1512,9 +1521,26 @@ fn status_glyph(status: agent_view.Status) -> String {
 }
 
 /// The lane: the page strand's turns, keyed by the engine's identity for
-/// each piece and memoized on the pieces, so a message that brought no
-/// capture costs no diff here and a window that drops its oldest rows
-/// removes them rather than rewriting every piece after them.
+/// each piece, with every transcript line and every card body drawn inside
+/// a memo whose one dependency is that line or body. A capture draws only
+/// what is new: a line equal to the one its memo drew from reuses the
+/// element it drew, so its Markdown is not parsed again. The pieces, the
+/// turns' folds and the blocks around the lines are rebuilt on each render,
+/// which costs little. A window that drops its oldest rows removes them
+/// rather than rewriting the rows after them.
+///
+/// The memos are the leaves, with no memo around them, and that is what
+/// makes them hold. Lustre 5.7.1 keeps a render's memo elements in a table
+/// it starts afresh on each render (`lustre/vdom/cache.tick`). A memo whose
+/// dependencies are unchanged carries only its own element into the new
+/// table (`cache.keep_memo`), not the memos nested inside that element. So
+/// a render in which an enclosing memo hit would drop the entries of every
+/// memo inside it, and the next render that changed the enclosing one would
+/// draw and parse every line again. A turn's work is one piece that changes
+/// whenever an answer moves into it, which is why the memos are per line and
+/// not per piece. Every render visits each line's memo and carries each hit
+/// forward, at the cost of comparing each line with the one it was drawn
+/// from; Lustre compares dependencies with `==` on the BEAM.
 ///
 /// The lane is drawn inside a `<loom-follow>` (`packages/web_client`),
 /// which scrolls the page to a row that lands below the viewport while the
@@ -1528,13 +1554,39 @@ fn status_glyph(status: agent_view.Status) -> String {
 /// // component.lane_view(component.pieces(model))
 /// ```
 pub fn lane_view(pieces: List(turns.Piece)) -> Element(message) {
-  use <- element.memo([element.ref(pieces)])
+  lane_rows(pieces, line_element)
+}
+
+/// `lane_view` with the drawing of a transcript line supplied, so a test
+/// can count the lines a render draws. `draw` must depend on nothing but
+/// the line it is given, because the line's memo depends on the line alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.lane_rows(pieces, fn(line) { html.text(line.text) })
+/// ```
+@internal
+pub fn lane_rows(
+  pieces: List(turns.Piece),
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
   element.element("loom-follow", [attribute.class("follow")], [
     keyed.div(
       [attribute.class("transcript lane"), attribute.role("log")],
-      list.map(pieces, fn(piece) { #(piece_key(piece), piece_element(piece)) }),
+      list.map(pieces, fn(piece) {
+        #(piece_key(piece), piece_element(piece, draw))
+      }),
     ),
   ])
+}
+
+// One transcript line, drawn once and kept while the line is unchanged.
+fn line_row(
+  line: Line,
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
+  element.memo([element.ref(line)], fn() { draw(line) })
 }
 
 fn piece_key(piece: turns.Piece) -> String {
@@ -1549,9 +1601,12 @@ fn piece_key(piece: turns.Piece) -> String {
   }
 }
 
-fn piece_element(piece: turns.Piece) -> Element(message) {
+fn piece_element(
+  piece: turns.Piece,
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
   case piece {
-    turns.Plain(block:) -> block_element(block)
+    turns.Plain(block:) -> block_element(block, draw)
 
     // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
     // collapsed until the reader opens it. The fold opens and closes in the
@@ -1569,12 +1624,12 @@ fn piece_element(piece: turns.Piece) -> Element(message) {
           ],
           [html.text(turns.divider(worked))],
         ),
-        html.div([attribute.class("work-items")], list.map(items, item_element)),
+        keyed.div([attribute.class("work-items")], work_items(items, draw)),
       ])
 
     // The turn still running is drawn open, with no divider to fold it.
     turns.Work(items:, folding: turns.Open, ..) ->
-      html.div([attribute.class("work open")], list.map(items, item_element))
+      keyed.div([attribute.class("work open")], work_items(items, draw))
 
     turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
       html.div([attribute.class("spawn"), hue_class(hue)], [
@@ -1600,7 +1655,7 @@ fn piece_element(piece: turns.Piece) -> Element(message) {
             <> outcome,
           ),
         ]),
-        html.pre([attribute.class("card-body")], [html.text(report)]),
+        card_body(report),
       ])
 
     turns.Nudged(frame:, body:, ..) ->
@@ -1611,7 +1666,7 @@ fn piece_element(piece: turns.Piece) -> Element(message) {
             turns.Advice -> "advisor · advice · delivered"
           }),
         ]),
-        html.pre([attribute.class("card-body")], [html.text(body)]),
+        card_body(body),
       ])
 
     // Another session's message. The daemon records that it was stored and
@@ -1624,7 +1679,7 @@ fn piece_element(piece: turns.Piece) -> Element(message) {
           ]),
           html.span([attribute.class("receipt")], [html.text("stored")]),
         ]),
-        html.pre([attribute.class("card-body")], [html.text(text)]),
+        card_body(text),
       ])
 
     turns.Missed(text:, ..) ->
@@ -1636,14 +1691,35 @@ fn piece_element(piece: turns.Piece) -> Element(message) {
     turns.Commentary(block:) ->
       html.div(
         [attribute.class("block"), attribute.class("commentary")],
-        list.map(block.rows, fn(row) { line_element(row.1) }),
+        list.map(block.rows, fn(row) { line_row(row.1, draw) }),
       )
   }
 }
 
-fn item_element(item: turns.Item) -> Element(message) {
+// A turn's items, keyed by their blocks and calls. The window drops its
+// oldest rows as new ones arrive, so a turn's first items leave while the
+// rest stay; keyed, the items that stay are matched to themselves and their
+// line memos hold, where unkeyed every item would be compared with its
+// neighbour and every line drawn again.
+fn work_items(
+  items: List(turns.Item),
+  draw: fn(Line) -> Element(message),
+) -> List(#(String, Element(message))) {
+  list.map(items, fn(item) {
+    let key = case item {
+      turns.Narrated(block:) -> block.key
+      turns.Step(key:, ..) -> key
+    }
+    #(key, item_element(item, draw))
+  })
+}
+
+fn item_element(
+  item: turns.Item,
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
   case item {
-    turns.Narrated(block:) -> block_element(block)
+    turns.Narrated(block:) -> block_element(block, draw)
     turns.Step(standing:, summary:, detail:, ..) ->
       html.div([attribute.class("step"), standing_class(standing)], [
         html.p([attribute.class("step-head")], [
@@ -1655,7 +1731,7 @@ fn item_element(item: turns.Item) -> Element(message) {
             html.text(standing_text(standing)),
           ]),
         ]),
-        ..list.map(detail, line_element)
+        ..list.map(detail, line_row(_, draw))
       ])
   }
 }
@@ -1687,10 +1763,13 @@ fn standing_text(standing: turns.Standing) -> String {
 // A block drawn as the transcript draws it, one line per row. The blank a
 // terminal places between tool groups is spacing here, so a spacer block
 // never reaches the lane.
-fn block_element(block: transcript_lines.Block) -> Element(message) {
+fn block_element(
+  block: transcript_lines.Block,
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
   html.div(
     [attribute.class("block")],
-    list.map(block.rows, fn(row) { line_element(row.1) }),
+    list.map(block.rows, fn(row) { line_row(row.1, draw) }),
   )
 }
 
@@ -1703,9 +1782,56 @@ fn status_text(status: Status) -> String {
 }
 
 fn line_element(line: Line) -> Element(message) {
-  html.pre([attribute.class("line"), speaker_class(line.speaker)], [
-    html.text(line.text),
-  ])
+  case body_of(line.speaker) {
+    Literal ->
+      html.pre([attribute.class("line"), speaker_class(line.speaker)], [
+        html.text(line.text),
+      ])
+
+    // The line is parsed here, when it is drawn. A line is drawn when it
+    // first appears, and its memo keeps what it drew while it is unchanged
+    // (`lane_rows`), so an answer is parsed about once. Each line is its
+    // own tree, so an unclosed fence ends with its line.
+    Markdown -> {
+      let tree = markdown.parse(line.text)
+      html.div(
+        [
+          attribute.class("line"),
+          speaker_class(line.speaker),
+          attribute.class("markdown"),
+        ],
+        markdown_view.blocks(tree),
+      )
+    }
+  }
+}
+
+// How a line's text is drawn: as Markdown or as it is.
+type Body {
+  Markdown
+  Literal
+}
+
+// The speakers whose text the terminal renders as Markdown
+// (`tui/render.speaker_rows`), so both hosts agree on which rows are
+// formatted. Everything else, tool output above all, stays preformatted.
+fn body_of(speaker: transcript_line.Speaker) -> Body {
+  case speaker {
+    transcript_line.Assistant
+    | transcript_line.Reasoning
+    | transcript_line.ToolDetail -> Markdown
+    transcript_line.System
+    | transcript_line.User
+    | transcript_line.ReasoningDigest
+    | transcript_line.SummarizedReasoning
+    | transcript_line.SummarizedAdvice
+    | transcript_line.ToolCall
+    | transcript_line.ToolResult
+    | transcript_line.ToolPatch
+    | transcript_line.ToolFailure
+    | transcript_line.Failure
+    | transcript_line.Spacer -> Literal
+  }
 }
 
 // A class per speaker, which is the whole of a line's styling here as in the

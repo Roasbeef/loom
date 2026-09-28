@@ -1,10 +1,8 @@
-%% Test-only Erlang shims for the broker suite (never shipped in src).
-%% Used by the feature-detected integration test to find and drive the
-%% Go toolchain; see test/broker/support/shell.gleam.
+%% Test-only Erlang shims for the broker suite (never shipped in src):
+%% the real TLS origin servers the egress tests connect to.
 -module(broker_test_ffi).
 
--export([find_executable/1, os_cmd/1,
-         egress_start/0, egress_start_tls12/0, egress_stop/1,
+-export([egress_start/0, egress_start_tls12/0, egress_stop/1,
          egress_foreign_root/0]).
 
 %% Both certificate chains are generated when this module loads rather
@@ -19,18 +17,6 @@
 -on_load(generate_chains/0).
 
 -include_lib("public_key/include/public_key.hrl").
-
-%% os:find_executable/1 — PATH lookup for feature detection.
-find_executable(Name) ->
-    case os:find_executable(unicode:characters_to_list(Name)) of
-        false -> {error, nil};
-        Path -> {ok, unicode:characters_to_binary(Path)}
-    end.
-
-%% os:cmd/1 — run a shell command, capturing stdout. Test-only; the
-%% production spawn path goes through erlang ports in broker_ffi.
-os_cmd(Command) ->
-    unicode:characters_to_binary(os:cmd(unicode:characters_to_list(Command))).
 
 %% ---------------------------------------------------------------------
 %% A real TLS origin server for the broker/egress suite.
