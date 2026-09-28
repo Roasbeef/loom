@@ -194,9 +194,8 @@ pub fn for_tests_like(base: Policy) -> Policy {
 ///
 /// The exemption is about *presence* and nothing else. Part IV rule 3 also
 /// requires every admitted `let assert` to carry an `as "message"` naming
-/// the invariant, none of these ninety do, and no rule checks it — so this
-/// list excuses the construct here, never the missing message (issue #73,
-/// item F).
+/// the invariant. R7 checks that half and warns in these sources too;
+/// this list excuses the construct here, never the missing message.
 ///
 /// Keyed by package rather than by path prefix for the reason
 /// `portable_packages` is: membership is a decision someone made, so it
