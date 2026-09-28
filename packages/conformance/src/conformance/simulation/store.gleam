@@ -118,6 +118,13 @@ pub fn instrument(
 }
 
 // A read that may fault transiently, once, at its scheduled commit.
+//
+// ## Examples
+//
+// ```gleam
+// // use <- guarded(ctl, schedule, read_faults)
+// // inner.stats(handle)
+// ```
 fn guarded(
   ctl: Control,
   schedule: Schedule,
@@ -148,6 +155,13 @@ fn guarded(
 
 // Reads are on the hot path of every drive pass, so the control actor is
 // consulted only when the schedule actually has a fault that could fire.
+//
+// ## Examples
+//
+// ```gleam
+// // use <- unless(armed, read)
+// // claim_scheduled_fault()
+// ```
 fn unless(
   armed: Bool,
   plain: fn() -> value,

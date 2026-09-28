@@ -390,6 +390,18 @@ allowed to wake an idle strand, `send_to_strand_marking`.
 [Rules and scheduled heartbeats](automation.md) covers the scanner, the
 firing path and the at-most-once argument.
 
+For unattended check-ins, set `[schedules] model_created = "wake"` in
+`loom.toml` and have the model request a waking schedule. `off` disables
+model-created schedules, `steer` (the default) injects only into an open
+run, and `wake` also allows a fresh run on an idle strand. Schedules onto
+subagents always steer. Every recurring schedule carries
+`expires_after_s`, defaulting to and capped at 604800 seconds (seven days)
+from its first durable observation by the scanner. One-shots fire at most
+once and may fire after their due time. The default protects the
+operator's provider budget: expiry
+bounds one schedule, and a model can create another. The
+[Baseten example](../examples/loom-baseten.toml) writes out the policy.
+
 ## Where the code lives
 
 | Path | What it holds |

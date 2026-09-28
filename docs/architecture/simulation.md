@@ -295,9 +295,10 @@ decline every structural decision and never cross a threshold, which is
 why the enumerated harness never reached compaction. The simulation's
 hooks trip the threshold from the durable projection (so the decision is
 the same after a crash as before it), supply or generate summaries, and
-prepare overflow compactions. Compaction and navigation have no api entry
-point yet, so the runner builds their acceptance the way `runtime/api`
-builds a run's and commits it through the same writer.
+prepare overflow compactions. The runner builds compaction and navigation
+acceptance directly with its logical clock and prepared structural inputs,
+using the same `machine/acceptance` planner and writer as `api.compact` and
+`api.navigate`.
 
 ## Reproducing a failure
 

@@ -731,7 +731,9 @@ fn created_outcome(
   let note = case wanted, created.wake {
     WakesIdle, SteersOnly ->
       " Waking was not granted for this schedule, so it will steer a run "
-      <> "that is already open and hold when the strand is idle."
+      <> "that is already open and hold when the strand is idle. The operator "
+      <> "can permit waking with [schedules] model_created = \"wake\"; "
+      <> "schedules onto subagents always steer, even with that setting."
 
     WakesIdle, WakesIdle | SteersOnly, WakesIdle | SteersOnly, SteersOnly -> ""
   }

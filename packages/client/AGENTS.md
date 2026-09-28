@@ -1491,7 +1491,16 @@ catalogue without opening runtimes. Explicit admission invokes
   operator's say over that second door — `off`/`steer`/`wake` from a
   `[schedules]` table — and `default_policy` is **`ModelSchedulesSteer`**: the
   tools are registered and a model may create schedules, but none of
-  them can wake an idle strand until the operator writes `"wake"`. The
+  them can wake an idle strand until the operator writes
+  `[schedules] model_created = "wake"`. `off` disables model creation;
+  `steer` injects only into an open run; `wake` also permits fresh runs on
+  idle strands when the schedule requests waking. Schedules onto subagents
+  always steer. Every recurring schedule carries `expires_after_s`,
+  defaulting to and capped at 604800 seconds (seven days), measured from
+  the scanner's first durable observation. One-shots fire at most once and
+  may fire after their due time. Expiry bounds one schedule, not provider
+  spending: a model can
+  create another, so unattended check-ins require an operator opt-in. The
   design note's addendum has the whole history — the feature shipped
   operator-only, reopened with an open default on the strength of the
   per-schedule expiry, and settled on `steer` once #161 showed that
@@ -2905,11 +2914,10 @@ these forks because they define the same modules.
   `core` (json, codec, entries, messages), `session`,
   `runtime` (`api`, `effects`, `escalation`, `supervisor`, `writer`),
   `events` (the bus as a hint source), `storage` (catch-up scans),
-  `machine` (`acceptance`, `queue`, `codec` — the commands with no api
-  entry point build their own plans), `broker` (`policy.Grant`,
+  `machine` (`acceptance`, `queue`, `codec` — structural preparation and
+  typed durable state), `broker` (`policy.Grant`,
   `escalation` vocabulary), `provider` (`stream.Delta` for the tap),
-  `prompt` (both packs, the decoder, the renderer, and the
-  summarization assembly in `prompt/summary`),
+  `prompt` (the system pack, its decoder and renderer),
   `codemode` (the vetting policy, the hermetic compile service, the
   production builder and launcher, and the satellite host — the pipeline
   `client/codemode` fills the `tools/codemode` seam with),
@@ -3040,10 +3048,9 @@ these forks because they define the same modules.
 - **Commits**: the hub commits nothing of its own except through the
   session's one writer. Commands map onto `runtime/api`
   (text or ordered-content prompt/steer/follow-up/abort, escalation approve/deny, strand
-  creation); `compact` and `navigate`, which have no api entry point yet,
-  build a `machine/acceptance` plan and commit it through
-  `runtime/writer` — the same pattern the conformance simulation runner
-  uses. Nothing bypasses the writer. An absent runtime writer is a typed
+  creation, compaction and navigation). `api.compact` and `api.navigate`
+  build the `machine/acceptance` plans and commit through `runtime/writer`,
+  sharing admission with every other runtime caller. Nothing bypasses the writer. An absent runtime writer is a typed
   `api.RuntimeUnavailable`, rendered as a retryable `conflict` by the gateway;
   the rule and schedule scanners hold the attempted admission for a later
   scan. This is distinct from a lost reply, whose commit may already exist.
@@ -3061,10 +3068,9 @@ these forks because they define the same modules.
   straight to the session store, never through the writer's mailbox, so
   a scan can never sit in front of a settlement; the fire itself is an
   ordinary queue admission through the writer, on the scanner's own
-  process. Strand
-  seeding for protocol `fork` and `create_strand` writes `strand.config`
-  / `strand.leaf` / `strand.state` (the api's creation path always takes
-  a task brief, so the gateway seeds idle strands itself).
+  process. Protocol `fork` and `create_strand` seed idle strands through
+  `api.create_idle_strand`, whose CAS-guarded commit writes `strand.config`,
+  `strand.leaf` and `strand.state` without admitting a task brief.
 - **Search index**: `client/history` writes only to the repository's own
   `loom-search.db`, beside the session file and never inside it, through
   `events/search.sync`. Index rows and the advanced cursor commit in one
@@ -4324,9 +4330,8 @@ carries the tables and the rerun command.
 - [docs/architecture/durability.md](../../docs/architecture/durability.md)
   — seqs, write-once rows, and why the event stream needs no side index.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-L (`client`)":
-  the missing compaction/navigation api entry points, brief-less strand
-  creation, protocol fork forking in place, fixture-versus-codec drift,
-  queued-versus-placed acks, and the provider delta tap.
+  the historical client gaps and their dispositions, including the now
+  shared compaction/navigation admission and brief-less strand creation.
 - [protocol-change/007-escalation-carries-the-action.md](../../protocol-change/007-escalation-carries-the-action.md)
   — why `escalation` carries the tool, the action digest and a bounded
   argument preview, why `approve` echoes them, and the rendering rules

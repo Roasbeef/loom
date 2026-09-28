@@ -56,10 +56,10 @@
 //// ## Command dispatch
 ////
 //// Commands map onto `runtime/api` (prompt/steer/follow-up/abort,
-//// escalation approve/deny, strand creation) and — for compaction and
-//// navigation, which have no api entry point yet — onto
-//// `machine/acceptance` plans committed through the session's one
-//// writer, the same pattern the conformance simulation runner uses.
+//// escalation approve/deny, idle strand creation, compaction and
+//// navigation). The API builds `machine/acceptance` plans and commits
+//// them through the session's one writer, sharing admission with other
+//// runtime callers.
 //// Nothing bypasses the writer.
 ////
 //// ## Conversation command semantics
@@ -5523,6 +5523,16 @@ fn broadcast_except(
   })
 }
 
+// Continues for a known strand, or replies with an `unknown_strand` error
+// frame and leaves the gateway state unchanged. The failed lookup sends
+// a response, just as `or_reply` does; it is not a pure predicate.
+//
+// ## Examples
+//
+// ```gleam
+// // use <- known_strand(state, connection, id, strand)
+// ```
+//
 fn known_strand(
   state: State,
   connection: Int,

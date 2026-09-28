@@ -10,6 +10,11 @@ Parts II–III are the style and idiom rules; Part IV is Loom-specific policy
 layered on top (see `docs/loom-implementation-spec.md` §0.2 for the normative
 version).*
 
+`make lint` runs the house rules in `packages/lint` and is part of
+`make check`. Run it after a style change; errors gate the build and
+warnings remain review evidence. The package's `CLAUDE.md` records each
+rule's scope and promotion history.
+
 ---
 
 ## Part I — A brief tour of the language
@@ -581,6 +586,14 @@ is inside a literal the formatter wrapped. Both were left entirely alone by
 the sweep, deliberately. Do not "fix" the formatter, and do not let a depth
 metric send you into an encoder.
 
+The converse also matters: extracting a helper just to shorten a wrapped
+argument list can make the indentation census better and the file longer.
+Count the parameters before extracting. If a helper needs more than three
+or four threaded values, consider passing the record they came from;
+otherwise the two call blocks may cost more than the body they replace.
+Lint R8 measures wide one-caller helpers, but its census is a prompt to
+read the code, not a reason to extract or bundle by itself.
+
 **Never flatten at the cost of exhaustiveness.** This is the catch-all rule
 above, arriving from the other direction: collapsing two nested matches into
 one often means writing a final arm that is a bare variable, and a bare
@@ -696,14 +709,22 @@ tree:
 | Combinator | Source | Target |
 |---|---|---|
 | `machine/planner.or_fault` | `Result(a, CorruptionReport)` | `Action` |
-| `machine/planner.or_fault_unless` | `Bool` + a report | `Action` |
+| `machine/planner.or_fault_unless` | `Bool` + a report thunk | `Action` |
 | `or_fail`, in each provider adapter | `Result(a, e)` + `to_error` | `#(Accumulator, List(StreamEvent))` |
-| `provider/gateway.or_failure` | `Result(a, Nil)` | `StreamEvent` |
+| `provider/gateway.or_failure` | `Result(a, Nil)` + an escape thunk | `AttemptOutcome` |
 | `tools/tool.or_outcome` | `Result(a, e)` + `to_outcome` | `ToolOutcome` |
 | `client/gateway.or_reply` | `Result(a, #(String, String))` | `State` |
 | `runtime/strand_runtime.or_continue` | `Option(a)` | `Outcome` |
 | `runtime/strand_runtime.or_halt` | `Result(a, String)` | `Outcome` |
 | `runtime/strand_runtime.or_key_halt` | `Result(a, String)` | `KeyResolution` |
+
+Check the signature, not just the table: these helpers have different
+arities. Every argument between the subject and the continuation is eager,
+including state, accumulators and error mappers. Existing values are fine;
+constructing a fallback at the call site pays for it even on success. If
+the escape must build data or perform work, pass a thunk and call it only
+in that arm, as `provider/gateway.or_failure` does with `on_error`.
+R1's structural check follows those argument positions in local helpers.
 
 **Say plainly what this list is: structural, not duplication.** Gleam has no
 type classes, so a short-circuit combinator binds one source type and one
@@ -715,9 +736,15 @@ return. Write the fourth without apology. Name it `or_<what happens
 instead>`, and document it with the commented `// use x <- or_fault(..)`
 form, since a doctest cannot call a private function.
 
-**Where the lineage stops: error paths that owe cleanup.** A combinator, and
-`result.map_error` in particular, reads like a rename. It must not be a
-place where side effects hide. `broker/broker.gleam`'s clearance path fails
+**Name an effectful escape for its effect.** `client/gateway.or_reply`
+sends an error frame before returning the unchanged state. That belongs
+in an escape helper because the name and its `use` example expose the
+response. A legacy name such as `known_strand` must document that failed
+lookup sends a reply; a new helper with that responsibility should name
+the reply in its name. Keep `result.map_error` a pure error conversion.
+
+**Where the lineage stops: error paths that owe cleanup.**
+`broker/broker.gleam`'s clearance path fails
 into *different* rollbacks depending on how far it got: a mint failure hands
 back the reserved budget slot, while a helper-checkout failure hands back
 the slot *and* revokes the minted token. Threading that through an error
@@ -1027,7 +1054,12 @@ tighten the ecosystem defaults:
    a bug class, not a style choice — parse fully or report corruption.
 3. **No `panic`/`let assert` outside tests**, except documented invariant
    violations that must fault the process (mirroring "failed admitted commit
-   faults the harness"). Always with an `as "message"`.
+   faults the harness"). `conformance/src` is test infrastructure and is
+   explicitly admitted by `lint/policy.harness_packages`, so R4 permits
+   the constructs there. That exemption does not waive the message:
+   admitted `let assert` in `src`, including `conformance/src`, must carry
+   `as "message"`. R7 checks that requirement and currently warns;
+   `test/` disables both R4 and R7 because the test name supplies context.
 4. **FFI confinement, and as little of it as possible**: `@external` only
    in `*/internal/ffi_*.gleam` modules; every external carries a comment
    naming the OTP function used and why no pure alternative exists. CI

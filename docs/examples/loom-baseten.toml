@@ -76,6 +76,20 @@ tools = ["fs_read", "grep"]
 feed_every_steps = 20
 block_cooldown_reviews = 2
 
+# What a model-created schedule may do. The table is optional, and the
+# operator chooses the posture: "off" disables creation, "steer" only injects into a
+# run already open, and "wake" also permits a fresh run on an idle strand.
+# The default is "steer" because a waking heartbeat can keep buying
+# provider turns while nobody is watching. For unattended check-ins,
+# opt into "wake" and have the model request a waking schedule.
+# Every recurring schedule has an expires_after_s window, defaulting to
+# 604800 seconds (7 days) and capped there. One-shots fire at most once
+# and may fire after their due time. Expiry bounds one schedule, not the
+# bill: the model can create
+# another. Schedules onto subagents always steer, even under "wake".
+# [schedules]
+# model_created = "steer"
+
 # How a run answers a retryable provider failure. All three keys are
 # optional and these are the defaults, written out so the shape is
 # visible. Under the default a rate limit is waited out rather than
