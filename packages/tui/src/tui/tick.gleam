@@ -229,7 +229,20 @@ fn drain_replay(model: Model) -> Model {
   list.fold(changes, tui_model.hold_shared(model, shared), apply_replay_change)
 }
 
-fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
+/// Applies one change of a replayed attempt event: the shared
+/// `lane_fold.apply_replay_change`, given what the terminal shows, and then
+/// the surface facts it recorded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tick.apply_replay_change(model, change)
+/// ```
+@internal
+pub fn apply_replay_change(
+  model: Model,
+  change: attempt_replay.Change,
+) -> Model {
   let around = inbound.surroundings(model)
   tui_model.run_shared(model, lane_fold.apply_replay_change(_, change, around))
   |> inbound.settle_surfaces(model, _)

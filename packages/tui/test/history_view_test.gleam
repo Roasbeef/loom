@@ -974,12 +974,22 @@ pub fn a_retired_strand_releases_its_parked_scrollback_test() {
       ),
     )
     |> tui.update(backend.Tick, _)
-  let assert Ok(_) =
+  let assert Ok(parked) =
+    dict.get(visited.view.strand_workspaces, #(
+      visited.shared.session,
+      "sub:reviewer",
+    ))
+    as "the reviewer's editor is parked"
+  let assert Ok(released) =
     dict.get(retired.view.strand_workspaces, #(
       retired.shared.session,
       "sub:reviewer",
     ))
     as "draft ownership survives retirement"
+  assert parked.anchors != [] || parked.prefix != 0
+    as "the reviewer's editor parked a reading position"
+  assert released.anchors == [] && released.prefix == 0 && released.offset == 0
+    as "the retired editor's reading position is released with its history"
   assert dict.get(retired.shared.parked_scrollback, #(
       retired.shared.session,
       "sub:reviewer",

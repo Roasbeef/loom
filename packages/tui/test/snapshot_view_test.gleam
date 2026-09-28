@@ -545,6 +545,32 @@ pub fn lookup_reporting_the_question_resolved_closes_its_dialog_test() {
     == "Approval permission (fs_write) was settled elsewhere by Bob; its dialog is closed."
 }
 
+// The line that closes the dialog is written where the lookup's reply is
+// applied, before the reply's own line about the records it could not load,
+// so that line is the notice the update leaves.
+pub fn a_settled_dialog_line_precedes_the_lookups_missing_line_test() {
+  let opened = capture_permission(pushed.attached(), pending_permission_cut(91))
+  let assert tui_model.ApprovalInspector(_) = opened.view.overlay
+    as "the pending question must be on screen first"
+  let resolved =
+    capture_permission(
+      pushed.attached(),
+      permission_cut(92, "approved", author("Bob")),
+    )
+  let settled =
+    inbound.apply_channel_update(
+      opened,
+      session_channel.LookedUp(resolved.shared.approvals, ["elsewhere"]),
+    )
+  assert settled.view.overlay == tui_model.NoOverlay
+  let assert [missing, closed, ..] = list.reverse(settled.shared.transcript)
+    as "the update writes both lines"
+  assert closed.text
+    == "Approval permission (fs_write) was settled elsewhere by Bob; its dialog is closed."
+  assert missing.text == "Decisions not available: elsewhere"
+  assert settled.shared.notice == "Decisions not available: elsewhere"
+}
+
 pub fn deliberate_inspection_of_a_resolved_decision_stays_open_test() {
   let resolved = permission_cut(71, "approved", author("Alice"))
   let captured = capture_permission(pushed.attached(), resolved)
