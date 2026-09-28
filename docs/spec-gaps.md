@@ -45,7 +45,7 @@ the other side.
 | WP-J 16 | one threaded `ExecIdentity`, so one-ledger-per-execution is a property of the types rather than a convention the caller must honor | M4.5 / WP-N |
 | WP-E 8 | the chaos tier of WP-E's own exit criteria — random kills under load, ten-minute soak. `make soak` is the deterministic-simulation seed soak, not a chaos runner | WP-T, and M1 recorded partial until it runs |
 | WP-G 9 | the MCP adapter — in WP-G's scope, deferred post-M2, integrated by no row since | a Part 5 track |
-| WP-F 7 | the per-OS keychain backends WP-F's scope names; only the environment backend ships | a Part 5 track |
+| WP-F 7 | the per-OS keychain backends WP-F's scope names; the environment backend and `[secrets]` command source ship (#293) | issue #181, consolidating the remainder of #19 |
 | ~~WP-F 6~~ | ~~pricing tables somewhere ledger-side~~ — **closed.** The rate card is operator configuration (`[models.<name>.pricing]`), and `provider/pricing.price` is applied in the gateway where a settlement leaves the adapter, so the ledger stores an already-costed record. `docs/architecture/models.md`, "Pricing". |
 | WP-L 8 | per-identity model facts in the wiring seam, so a strand switched off its role's resolution stops doing overflow arithmetic against fallback numbers | M5 |
 | M3 runtime wave 13 | decide a catalogue entry's `thinking`: the default a strand overrides, or refused like `headers` — today it is validated and discarded | M5 |
@@ -215,10 +215,14 @@ the other side.
    strict total decoding of third-party wire breaks real proxies. The
    total-decoder doctrine applies to *our* durability boundaries, not to
    foreign wire vocabularies.
-6. **Costing.** Usage cost fields are zeroed; token extraction only.
-   Pricing tables belong to a ledger-side concern, not the adapters.
-7. **Keychain backends** are deferred behind the secret-store seam; the
-   environment backend ships now, per-OS keychain FFI later.
+6. **Costing.** Adapters extract tokens and zero usage cost fields. The
+   gateway applies operator-configured `[models.<name>.pricing]` rates
+   through `provider/pricing.price` before ledger settlement (#291).
+7. **Keychain backends** are deferred behind the secret-store seam
+   (#181, consolidating the remainder of #19). The environment backend
+   and `[secrets]` command source ship (#293); commands resolve at session
+   create/open and layer their values over the environment store. Direct
+   per-OS keychain backends remain follow-up work.
 8. **Overflow counts cache writes too.** §1.5 words the adapter's overflow
    comparison as `input + cache_read > context_window`, written before
    either adapter declared a prompt-cache breakpoint and so before either
