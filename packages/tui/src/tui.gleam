@@ -573,6 +573,7 @@ pub fn new_model_with_clock(
       frame_revision: 0,
       stamp:,
       client_build: build_identity.current(),
+      daemon_build: None,
       activity_revision: 0,
       connection_backlog: session_model.MailboxDrained,
       recorder: None,
@@ -1710,7 +1711,7 @@ fn attach_daemon(
           shared: Shared(
             ..model.shared,
             transcript: inbound.daemon_build_lines(
-              model.view.daemon_host,
+              model.shared.daemon_build,
               base.shared.client_build,
             ),
           ),

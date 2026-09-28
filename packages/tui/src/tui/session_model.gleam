@@ -342,6 +342,13 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// not change while the process runs, so it is read once, when the model
     /// is created, rather than on every coherent cut that draws the notice.
     client_build: build_identity.Identity,
+    /// The build the daemon named in its `hello` on the control connection,
+    /// if it named one. The build-mismatch notice compares it with
+    /// `client_build` on every coherent cut. The terminal writes it when it
+    /// adopts a control connection, beside `View.daemon_host`, which holds
+    /// the connection itself and stays the terminal's; the value here is the
+    /// data a cut needs, so the notice reads no terminal state.
+    daemon_build: Option(build_identity.Identity),
     /// Bumped by operator or traffic activity (`mark_activity`); idle pacing
     /// reads it.
     activity_revision: Int,

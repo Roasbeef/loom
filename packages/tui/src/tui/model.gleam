@@ -22,10 +22,12 @@
 //// etui type, a terminal surface or a job slot. Three records held both
 //// kinds of state and are cut in two: a parked strand's history window is
 //// `Shared.parked_scrollback` beside the editor in `View.strand_workspaces`,
-//// and the agent strip's roster is `Shared.roster` beside its keyboard focus
-//// in `View.strip_focus`. The queue editor stays whole in `View` for now,
-//// because its lane correlation and its editor are updated together in too
-//// many places to cut mechanically.
+//// the agent strip's roster is `Shared.roster` beside its keyboard focus
+//// in `View.strip_focus`, and the queue editor's requests on the lane are
+//// `Shared.queue_request` beside the editor in `View.queue_editor`. The
+//// daemon's build is `Shared.daemon_build` beside the control connection in
+//// `View.daemon_host`, and a held prompt the daemon returns waits in
+//// `Shared.returned_drafts` until the terminal moves it into an editor.
 ////
 //// The record is shaped by the first two slices of moving the client
 //// step into `session_view` (`docs/design-notes/step-extraction.md`).
@@ -69,6 +71,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import host/build_identity
 import session_view/attempt
 import session_view/composer
 import session_view/connection_event
@@ -721,6 +724,33 @@ pub fn hold_shared(model: Model, shared: TerminalShared) -> Model {
 @internal
 pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
   hold_shared(model, session_model.hold_channel(model.shared, channel))
+}
+
+/// Records the daemon whose control connection the terminal now holds.
+///
+/// The connection and its key are the terminal's and go in
+/// `View.daemon_host`; the build the daemon's `hello` named is data every
+/// coherent cut compares with this client's build, so it also goes in
+/// `Shared.daemon_build`, where the build-mismatch notice reads it. Both
+/// places that adopt a control connection, the launch and the reconnect,
+/// write through this function, so the two fields always describe the same
+/// daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.adopt_daemon(model, daemon)
+/// ```
+@internal
+pub fn adopt_daemon(model: Model, daemon: job.Daemon) -> Model {
+  let daemon_build =
+    option.map(daemon.build, fn(build) {
+      build_identity.Identity(build.version, build.commit)
+    })
+  Model(
+    shared: Shared(..model.shared, daemon_build:),
+    view: View(..model.view, daemon_host: Some(daemon)),
+  )
 }
 
 /// Queues the release of what a job reply holds, when nobody will take it.

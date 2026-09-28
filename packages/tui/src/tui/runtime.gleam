@@ -271,7 +271,8 @@ pub fn hold(
 /// ```
 pub fn adopt_control(model: Model, host: daemon_selection.Host) -> Model {
   let #(running, daemon) = job_runner.adopt_control(model.view.running, host)
-  Model(..model, view: View(..model.view, running:, daemon_host: Some(daemon)))
+  Model(..model, view: View(..model.view, running:))
+  |> tui_model.adopt_daemon(daemon)
 }
 
 // An attachment job's end permits adoption only on a socket that is still

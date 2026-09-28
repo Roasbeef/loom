@@ -66,7 +66,6 @@ import tui/approval_panel
 import tui/bootstrap
 import tui/buffered
 import tui/completion_summary
-import tui/daemon/protocol as control_protocol
 import tui/job
 import tui/layout
 import tui/model.{
@@ -92,33 +91,28 @@ import tui/surfaces
 /// The authenticated build belongs to the retained control host. Projecting
 /// its mismatch on every coherent cut keeps attachment and later captures from
 /// erasing the update notice when they replace the transcript presentation.
-/// `ours` is `Model.client_build`, read when the model was created, so a cut
-/// reads no environment variable.
+/// `theirs` is `Shared.daemon_build`, `None` until a control connection is
+/// adopted and when the daemon's `hello` named no build. `ours` is
+/// `Shared.client_build`, read when the model was created, so a cut reads no
+/// environment variable.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let lines = inbound.daemon_build_lines(model.daemon_host, model.client_build)
+/// let lines =
+///   inbound.daemon_build_lines(
+///     model.shared.daemon_build,
+///     model.shared.client_build,
+///   )
 /// ```
 @internal
 pub fn daemon_build_lines(
-  host: Option(job.Daemon),
+  theirs: Option(build_identity.Identity),
   ours: build_identity.Identity,
 ) -> List(Line) {
-  case host {
+  case theirs {
     None -> []
-    Some(host) -> build_mismatch_lines(host.build, ours)
-  }
-}
-
-fn build_mismatch_lines(
-  build: Option(control_protocol.Build),
-  ours: build_identity.Identity,
-) -> List(Line) {
-  case build {
-    None -> []
-    Some(theirs) -> {
-      let theirs = build_identity.Identity(theirs.version, theirs.commit)
+    Some(theirs) ->
       case build_identity.matches(ours, theirs) {
         True -> []
         False -> [
@@ -133,7 +127,6 @@ fn build_mismatch_lines(
           ),
         ]
       }
-    }
   }
 }
 
@@ -749,7 +742,7 @@ fn render_cut(
     Line(System, boundary),
     Line(System, attachment_banner),
     ..list.append(
-      daemon_build_lines(model.view.daemon_host, model.shared.client_build),
+      daemon_build_lines(model.shared.daemon_build, model.shared.client_build),
       list.append(
         configuration_lines(view, active),
         list.append(
