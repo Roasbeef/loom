@@ -31,6 +31,7 @@ import storage/domain
 import storage/sqlite
 import support/daemon_observation
 import support/internal/ffi_proc
+import support/shipped_server
 import support/tui_driver
 import tui/attachment
 import tui/bootstrap as terminal_bootstrap
@@ -50,7 +51,7 @@ pub fn daemon_shipped_identity_survives_vm_crash_test_() -> EunitTest {
   // EUnit's runner scales this timeout by ten. Native cleanup retains thirty
   // seconds outside the bounded body, including when a body assertion fails.
   Timeout(23, fn() {
-    case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+    case shipped_server.from_environment() {
       Error(Nil) ->
         io.println_error(
           "SKIP shipped identity recovery: LOOM_BOOTSTRAP_E2E_SERVER is unset",

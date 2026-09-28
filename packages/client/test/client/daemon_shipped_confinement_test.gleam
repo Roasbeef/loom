@@ -57,6 +57,7 @@ import session_view/session_channel
 import simplifile
 import support/enforcement
 import support/provider_http as provider
+import support/shipped_server
 import support/tui_driver
 import tui/bootstrap
 import tui/daemon
@@ -108,7 +109,7 @@ pub fn daemon_shipped_confinement_test_() -> EunitTest {
 // was asked to test something nobody built, and an absent enforcement layer
 // means this host cannot confine a jailed command at all.
 fn prerequisites() -> Option(String) {
-  case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+  case shipped_server.from_environment() {
     Error(Nil) -> {
       io.println_error(
         "SKIP shipped confinement: LOOM_BOOTSTRAP_E2E_SERVER is unset",
