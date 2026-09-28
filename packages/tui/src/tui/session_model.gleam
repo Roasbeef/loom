@@ -53,6 +53,7 @@ import tui/agent_messages
 import tui/attempt_replay
 import tui/completion_summary
 import tui/msg
+import tui/queue_request
 import tui/step_effect
 import tui/workspace
 
@@ -102,6 +103,12 @@ pub type Shared(socket, recorder, source, replay_source) {
     parked_scrollback: Dict(#(String, String), history_view.State),
     /// Images the next submission carries, taken from the composer.
     attachments: List(composer.Attachment),
+    /// Held prompts the daemon handed back unsent (protocol-change/038),
+    /// oldest first, which no host's editor has taken yet. Shared because
+    /// the returned text is the prompt's last copy and every host must keep
+    /// it; each host moves it into its own editor, the terminal in
+    /// `inbound.restore_returned_drafts`, and empties the list.
+    returned_drafts: List(ReturnedDraft),
     /// Ownership marker only; the unsent encoded intent belongs to Channel.
     pending_submission: Option(SubmissionSource),
     /// The interrupt held until the operation it stopped settles.
@@ -190,6 +197,11 @@ pub type Shared(socket, recorder, source, replay_source) {
     note_board: Option(notes_view.Board),
     /// Latest explicit notes target waiting for the existing command lane.
     notes_requested: Option(String),
+    /// The queue editor's reads and saves on the lane: the read waiting for
+    /// a free lane, the read issued, and the request ID a refusal is
+    /// matched against. Shared because the lane's replies, refusals and
+    /// failures settle it; the editor it fills is `View.queue_editor`.
+    queue_request: queue_request.State,
     /// The models the daemon listed.
     models: List(protocol.ModelInfo),
     /// Slash commands loaded by the currently attached daemon.
@@ -330,6 +342,13 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// not change while the process runs, so it is read once, when the model
     /// is created, rather than on every coherent cut that draws the notice.
     client_build: build_identity.Identity,
+    /// The build the daemon named in its `hello` on the control connection,
+    /// if it named one. The build-mismatch notice compares it with
+    /// `client_build` on every coherent cut. The terminal writes it when it
+    /// adopts a control connection, beside `View.daemon_host`, which holds
+    /// the connection itself and stays the terminal's; the value here is the
+    /// data a cut needs, so the notice reads no terminal state.
+    daemon_build: Option(build_identity.Identity),
     /// Bumped by operator or traffic activity (`mark_activity`); idle pacing
     /// reads it.
     activity_revision: Int,
@@ -402,6 +421,21 @@ pub type Interrupt {
     operation: Option(String),
     /// Legacy recordings retain replacement text until their terminal event.
     pending: Option(String),
+  )
+}
+
+/// A held prompt the daemon returned, addressed to the editor of the strand
+/// that submitted it.
+@internal
+pub type ReturnedDraft {
+  ReturnedDraft(
+    /// The session the prompt was submitted in, when it came back.
+    session: String,
+    /// The strand the prompt was submitted to; the return follows it even
+    /// when the operator has opened another strand since.
+    strand: String,
+    /// The prompt's text; attachments do not come back with it.
+    text: String,
   )
 }
 

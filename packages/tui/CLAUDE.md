@@ -85,7 +85,8 @@ that owner before rendering. Retired strands and old sessions release history
 buffers while retaining unsent drafts. A missing captured recipient cannot submit
 and cannot silently fall back to another strand. Reading anchors are relocated
 from the restored endpoint, never from the strand being left. A daemon-returned
-held prompt appends only to its original strand's draft. Session replacement
+held prompt appends only to its original strand's draft; it passes through
+`Shared.returned_drafts` on the way. Session replacement
 clears advice and goal observations and their pending request identities, then
 refreshes the new session, even when both primaries are already running.
 
@@ -255,9 +256,11 @@ a live daemon or the current directory, open a terminal, or create state.
 Unstamped direct runs retain the honest `dev`/`unknown` defaults. Shipment and
 bundled-release smoke checks exercise the command without a host daemon.
 
-The authenticated control host owns the daemon build identity. `render_cut`
-projects a mismatch into each transcript capture, so successful adoption and
-later refreshes cannot erase it. Missing identity stays silent. Shipment and
+The authenticated control host owns the daemon build identity, and
+`tui_model.adopt_daemon` copies it into `Shared.daemon_build` when a control
+connection is adopted. `render_cut` projects a mismatch into each transcript
+capture from that shared copy, so successful adoption and later refreshes cannot
+erase it. Missing identity stays silent. Shipment and
 release launchers export their own build metadata, replacing inherited values.
 
 A local terminal makes one bounded reconnect attempt after conversation loss.
@@ -355,7 +358,7 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/session_model`: the session state, `Shared(socket, recorder,
   source, replay_source)`, the types it names (`Peer`, `Interrupt`,
   `SubmissionSource`, `UnconfirmedSubmission`, `ConnectionBacklog`,
-  `GoalReport`), and the functions over `Shared` alone. `Shared` is what a
+  `GoalReport`, `ReturnedDraft`), and the functions over `Shared` alone. `Shared` is what a
   second host would need (what the daemon said, what was sent and not yet
   committed, the reads in flight, the presentation revisions) and the four
   host handles, typed by its parameters: `channel` is
@@ -405,7 +408,15 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   (`tui_model.strip` and `store_strip` rebuild and store an
   `agent_strip.State`), a parked strand's history window is
   `Shared.parked_scrollback` beside its editor in `View.strand_workspaces`,
-  and the queue editor stays whole in `View`. The module also holds the
+  and the queue editor's requests on the lane are `Shared.queue_request`
+  (`tui/queue_request`) beside the editor in `View.queue_editor`. Three
+  more fields are shared data beside terminal state: `Shared.daemon_build`
+  is the build of the daemon in `View.daemon_host`, written with it by
+  `adopt_daemon`, the one writer of either; and `Shared.returned_drafts`
+  holds a held prompt the daemon handed back until
+  `inbound.restore_returned_drafts` moves it into the composer or a parked
+  editor. The footer's agent count is not stored: `render` derives it from
+  `layout.displayed_agents`. The module also holds the
   terminal's types the record names. Importers alias it as `tui_model`,
   because `model` is the local variable in nearly every function and would
   shadow the module name. Constructors stay unqualified. It also owns the
@@ -463,7 +474,8 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   the local launch options; `Arrival(control)` is one
   job message tagged with its key. A daemon control connection is named by
   a `ControlKey` the runtime allocates, and the step holds it as `Daemon`,
-  the key with the build the daemon's `hello` named (`Model.view.daemon_host`);
+  the key with the build the daemon's `hello` named (`Model.view.daemon_host`,
+  and the build again as `Model.shared.daemon_build`, which a cut reads);
   a relaunch's reply arrives as `Arrival(daemon_selection.Host)` and is
   filed as `Arrival(Daemon)`. An attachment job's messages are
   `Published(Prepared)`, the worker's socket together with the frames

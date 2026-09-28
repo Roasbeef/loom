@@ -20,7 +20,6 @@ import session_view/session_channel
 import session_view/snapshot
 import session_view/transcript_line
 import tui
-import tui/agents
 import tui/attachment
 import tui/connection
 import tui/daemon/selection as daemon_selection
@@ -185,13 +184,13 @@ fn quiet_model() -> tui_model.Model {
         workspace.Context(path: "/w/demo", branch: None),
       )
     tui_model.Model(
+      ..base,
       shared: session_model.Shared(
         ..base.shared,
         transcript: [],
         strands: [],
         notice: "ready",
       ),
-      view: tui_model.View(..base.view, agent_summary: agents.summary([])),
     )
   }
 }

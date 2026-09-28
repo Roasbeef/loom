@@ -12,7 +12,6 @@ import gleam/list
 import gleam/option.{None}
 import session_view/transcript_line
 import tui
-import tui/agents
 import tui/buffered
 import tui/connection
 import tui/model as tui_model
@@ -47,6 +46,7 @@ pub fn run(path: String, expected_records: Int) -> Nil {
   let model = {
     let base = tui.new_model(inbox, workspace.Context("replay", None))
     tui_model.Model(
+      ..base,
       shared: session_model.Shared(
         ..base.shared,
         peer: session_model.Replaying,
@@ -56,7 +56,6 @@ pub fn run(path: String, expected_records: Int) -> Nil {
         strands: [],
         notice: "replaying",
       ),
-      view: tui_model.View(..base.view, agent_summary: agents.summary([])),
     )
   }
   let script =

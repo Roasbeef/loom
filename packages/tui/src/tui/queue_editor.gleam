@@ -2,6 +2,9 @@
 //// the queue's display excerpt. Identity and revision stay attached to the
 //// draft so a stale or already admitted item cannot become a new submission.
 //// The terminal owns this state; the existing session channel owns delivery.
+//// The requests the editor has on that channel, the wanted read, the issued
+//// read and the last request ID, are session state and live in
+//// `tui/queue_request`, held by `Shared`; this module holds only the editor.
 
 import etui/widgets/textarea
 import gleam/option.{type Option, None, Some}
@@ -47,20 +50,6 @@ pub type Draft {
   )
 }
 
-/// A read is deferred until the existing channel finishes its mutation.
-pub type Fetch {
-  Fetch(
-    /// Original attachment whose queue was selected.
-    owner: String,
-    /// Stable queue namespace; a reconnect changes only the connection identity.
-    namespace: String,
-    /// Selected queue strand.
-    strand: String,
-    /// Selected opaque queue identity.
-    id: String,
-  )
-}
-
 /// Persistent draft custody is independent of whether the modal is open.
 pub type State {
   State(
@@ -72,12 +61,6 @@ pub type State {
     preview_scroll: Int,
     /// A draft survives refusal, disconnect, and closing the modal.
     draft: Option(Draft),
-    /// Read waiting for a free conversation command lane.
-    fetch: Option(Fetch),
-    /// The issued read whose reply alone can replace the draft.
-    awaiting: Option(Fetch),
-    /// Actual lane request ID for a correlated refusal.
-    request_id: Option(Int),
     /// A concise explanation of the current editing boundary.
     message: String,
   )
@@ -95,9 +78,6 @@ pub fn new() -> State {
     Closed,
     0,
     0,
-    None,
-    None,
-    None,
     None,
     "Captured queue · complete text requires an editable item",
   )
@@ -118,7 +98,8 @@ pub fn open(state: State) -> State {
   })
 }
 
-/// Admits only a full response for the exact outstanding queue read.
+/// Fills the editor from a queued-input document that
+/// `queue_request.receive` admitted as the answer to the outstanding read.
 /// An uncertain draft stays intact when the authoritative value differs.
 ///
 /// ## Examples
@@ -127,23 +108,6 @@ pub fn open(state: State) -> State {
 /// // queue_editor.receive(state, owner, namespace, document)
 /// ```
 pub fn receive(
-  state: State,
-  owner: String,
-  namespace: String,
-  document: Document,
-) -> State {
-  case state.awaiting {
-    Some(Fetch(owner: expected, namespace: expected_namespace, strand:, id:))
-      if expected == owner
-      && expected_namespace == namespace
-      && strand == document.strand
-      && id == document.id
-    -> reconcile(state, owner, namespace, document)
-    Some(_) | None -> state
-  }
-}
-
-fn reconcile(
   state: State,
   owner: String,
   namespace: String,
@@ -158,8 +122,6 @@ fn reconcile(
       let current = textarea.value(draft.input) == document.text
       State(
         ..state,
-        awaiting: None,
-        request_id: None,
         surface: Editor,
         message: case current {
           True ->
@@ -176,8 +138,6 @@ fn reconcile(
       State(
         ..state,
         surface: Editor,
-        awaiting: None,
-        request_id: None,
         draft: Some(Draft(
           document,
           owner,
@@ -208,6 +168,8 @@ pub fn unknown(state: State) -> State {
 }
 
 /// Keeps text editable after a definite server refusal, never re-enqueueing it.
+/// The caller also returns `Shared.queue_request` to `queue_request.new()`,
+/// since a refusal ends every queue request in flight.
 ///
 /// ## Examples
 ///
@@ -217,9 +179,6 @@ pub fn unknown(state: State) -> State {
 pub fn refused(state: State, reason: String) -> State {
   State(
     ..state,
-    fetch: None,
-    awaiting: None,
-    request_id: None,
     message: case state.draft {
       Some(Draft(delivery: Unknown, ..)) ->
         "Save outcome unknown; "

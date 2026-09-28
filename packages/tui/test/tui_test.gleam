@@ -1701,13 +1701,13 @@ fn quiet_model(
     let base =
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
+      ..base,
       shared: session_model.Shared(
         ..base.shared,
         transcript: [],
         strands: [],
         notice: "ready",
       ),
-      view: tui_model.View(..base.view, agent_summary: agents.summary([])),
     )
   }
 }

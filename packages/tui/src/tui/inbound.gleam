@@ -66,7 +66,6 @@ import tui/approval_panel
 import tui/bootstrap
 import tui/buffered
 import tui/completion_summary
-import tui/daemon/protocol as control_protocol
 import tui/job
 import tui/layout
 import tui/model.{
@@ -80,43 +79,40 @@ import tui/note_panel
 import tui/outbound
 import tui/queue_editor
 import tui/queue_panel
+import tui/queue_request
 import tui/render
 import tui/session_model.{
   type Interrupt, type Peer, type UnconfirmedSubmission, Attached, Disconnected,
-  HoldGoalReport, Interrupt, Preview, Replaying, Shared, UnconfirmedSubmission,
+  HoldGoalReport, Interrupt, Preview, Replaying, ReturnedDraft, Shared,
+  UnconfirmedSubmission,
 }
 import tui/surfaces
 
 /// The authenticated build belongs to the retained control host. Projecting
 /// its mismatch on every coherent cut keeps attachment and later captures from
 /// erasing the update notice when they replace the transcript presentation.
-/// `ours` is `Model.client_build`, read when the model was created, so a cut
-/// reads no environment variable.
+/// `theirs` is `Shared.daemon_build`, `None` until a control connection is
+/// adopted and when the daemon's `hello` named no build. `ours` is
+/// `Shared.client_build`, read when the model was created, so a cut reads no
+/// environment variable.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let lines = inbound.daemon_build_lines(model.daemon_host, model.client_build)
+/// let lines =
+///   inbound.daemon_build_lines(
+///     model.shared.daemon_build,
+///     model.shared.client_build,
+///   )
 /// ```
 @internal
 pub fn daemon_build_lines(
-  host: Option(job.Daemon),
+  theirs: Option(build_identity.Identity),
   ours: build_identity.Identity,
 ) -> List(Line) {
-  case host {
+  case theirs {
     None -> []
-    Some(host) -> build_mismatch_lines(host.build, ours)
-  }
-}
-
-fn build_mismatch_lines(
-  build: Option(control_protocol.Build),
-  ours: build_identity.Identity,
-) -> List(Line) {
-  case build {
-    None -> []
-    Some(theirs) -> {
-      let theirs = build_identity.Identity(theirs.version, theirs.commit)
+    Some(theirs) ->
       case build_identity.matches(ours, theirs) {
         True -> []
         False -> [
@@ -131,7 +127,6 @@ fn build_mismatch_lines(
           ),
         ]
       }
-    }
   }
 }
 
@@ -352,7 +347,11 @@ pub fn apply_channel_update(
     // than writing a second copy of the same news.
     session_channel.Acknowledged("edit_queued_input", "queued") ->
       Model(
-        shared: Shared(..model.shared, notice: "queued input updated"),
+        shared: Shared(
+          ..model.shared,
+          notice: "queued input updated",
+          queue_request: queue_request.new(),
+        ),
         view: View(..model.view, queue_editor: queue_editor.new()),
       )
       |> tui_model.invalidate_frame
@@ -449,6 +448,7 @@ pub fn apply_channel_update(
                   )
                 None -> model.shared.worktree
               },
+              queue_request: queue_request.new(),
             ),
             view: View(
               ..discarded.view,
@@ -742,7 +742,7 @@ fn render_cut(
     Line(System, boundary),
     Line(System, attachment_banner),
     ..list.append(
-      daemon_build_lines(model.view.daemon_host, model.shared.client_build),
+      daemon_build_lines(model.shared.daemon_build, model.shared.client_build),
       list.append(
         configuration_lines(view, active),
         list.append(
@@ -900,12 +900,7 @@ fn render_cut(
       },
       transcript:,
     ),
-    view: View(
-      ..model.view,
-      agent_summary: agents.summary_rows(rows),
-      strand_workspaces: workspaces,
-      cache_outlook:,
-    ),
+    view: View(..model.view, strand_workspaces: workspaces, cache_outlook:),
   )
   |> settle_pending_cache(cut.next_seq)
   |> reconcile_agent_message_selection
@@ -1287,22 +1282,12 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           notice: "session synchronized",
           transcript: [Line(System, "attached to session " <> session)],
         ),
-        view: View(
-          ..model.view,
-          agent_summary: agents.summary(strands),
-          record_gutters: [],
-          scroll_offset: 0,
-        ),
+        view: View(..model.view, record_gutters: [], scroll_offset: 0),
       )
       |> tui_model.invalidate_transcript
     }
-    protocol.StrandsSnapshot(strands:) -> {
-      let summary = agents.summary(strands)
-      Model(
-        shared: Shared(..model.shared, strands:),
-        view: View(..model.view, agent_summary: summary),
-      )
-    }
+    protocol.StrandsSnapshot(strands:) ->
+      Model(..model, shared: Shared(..model.shared, strands:))
     protocol.SkillsSnapshot(page:) -> {
       let previous = case page.offset {
         0 -> []
@@ -1428,19 +1413,36 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ),
       )
       |> tui_model.invalidate_transcript
-    protocol.QueuedInputSnapshot(document) ->
-      Model(
-        ..model,
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.receive(
-            model.view.queue_editor,
-            session_model.queue_owner(model.shared),
-            session_model.queue_namespace(model.shared),
-            document,
-          ),
-        ),
-      )
+    protocol.QueuedInputSnapshot(document) -> {
+      let owner = session_model.queue_owner(model.shared)
+      let namespace = session_model.queue_namespace(model.shared)
+
+      // Only the answer to the read this client issued may fill the
+      // editor; any other document leaves both halves as they were.
+      case
+        queue_request.receive(
+          model.shared.queue_request,
+          owner,
+          namespace,
+          document,
+        )
+      {
+        Ok(queue_request) ->
+          Model(
+            shared: Shared(..model.shared, queue_request:),
+            view: View(
+              ..model.view,
+              queue_editor: queue_editor.receive(
+                model.view.queue_editor,
+                owner,
+                namespace,
+                document,
+              ),
+            ),
+          )
+        Error(Nil) -> model
+      }
+    }
     protocol.NotesSnapshot(board) -> {
       // Every notes read may carry a strand's todo board, whichever surface
       // asked for it, so the panel is seeded before the notes view decides
@@ -1586,6 +1588,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
 
       let updated =
         Model(
+          ..model,
           shared: Shared(
             ..model.shared,
             submitting:,
@@ -1602,7 +1605,6 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
             },
             notice: strand <> ": " <> phase,
           ),
-          view: View(..model.view, agent_summary: agents.summary(strands)),
         )
       let settled = settle_interrupt(updated, strand, phase)
       case phase == "done" && strand == model.shared.active_strand {
@@ -1760,12 +1762,12 @@ fn receive_block_summary(
 // Restores a custody-returned prompt as a local draft (protocol-change/038).
 //
 // The daemon held the prompt only in memory, so the returned text must be
-// retained before the socket closes. An untouched composer simply becomes the draft.
-// A composer the operator is typing in keeps its text and grows the return
-// below it, separated by a blank line: discarding either half would lose
-// work the operator can see, and silently replacing the draft would move
-// text out from under the cursor. The notice names the strand and the
-// images the text cannot carry, so nothing about the return is invisible.
+// retained before the socket closes. The return is session state first: it
+// joins `Shared.returned_drafts`, addressed to the session and strand that
+// submitted it, and the notice names the strand and the images the text
+// cannot carry, so nothing about the return is invisible. The terminal then
+// moves it into the editor it owns, in `restore_returned_drafts`, in the
+// same call, so the composer holds the text before the next frame arrives.
 fn restore_returned_draft(
   model: Model,
   strand: String,
@@ -1773,38 +1775,15 @@ fn restore_returned_draft(
   text: String,
   attachment_count: Int,
 ) -> Model {
-  // A return follows the prompt's original recipient even if the operator
-  // has opened another strand since submitting it. Only that owner's draft
-  // can accept the returned text.
-  let model = case strand == model.shared.active_strand {
-    True ->
-      Model(
-        ..model,
-        view: View(
-          ..model.view,
-          input: append_returned_text(model.view.input, text),
-        ),
-      )
-    False -> {
-      let owner = #(model.shared.session, strand)
-      let saved =
-        dict.get(model.view.strand_workspaces, owner)
-        |> result.unwrap(empty_workspace())
-      let saved =
-        StrandWorkspace(..saved, input: append_returned_text(saved.input, text))
-      Model(
-        ..model,
-        view: View(
-          ..model.view,
-          strand_workspaces: dict.insert(
-            model.view.strand_workspaces,
-            owner,
-            saved,
-          ),
-        ),
-      )
-    }
-  }
+  let returned = ReturnedDraft(session: model.shared.session, strand:, text:)
+  let model =
+    Model(
+      ..model,
+      shared: Shared(
+        ..model.shared,
+        returned_drafts: list.append(model.shared.returned_drafts, [returned]),
+      ),
+    )
   let images = case attachment_count {
     0 -> ""
     n ->
@@ -1821,6 +1800,46 @@ fn restore_returned_draft(
       <> " — restored as a draft"
       <> images,
   )
+  |> restore_returned_drafts
+}
+
+// Moves every returned draft the session state holds into the terminal's
+// editors, oldest first, and empties `Shared.returned_drafts`.
+//
+// A return follows the prompt's original recipient even if the operator has
+// opened another strand since submitting it, so only that strand's editor
+// can accept the text: the composer when the strand is the one on screen,
+// and its parked workspace otherwise. An untouched editor simply becomes the
+// draft. One the operator is typing in keeps its text and grows the return
+// below it, separated by a blank line: discarding either half would lose
+// work the operator can see, and silently replacing the draft would move
+// text out from under the cursor.
+fn restore_returned_drafts(model: Model) -> Model {
+  let view =
+    list.fold(model.shared.returned_drafts, model.view, fn(view, returned) {
+      let ReturnedDraft(session:, strand:, text:) = returned
+      case
+        session == model.shared.session && strand == model.shared.active_strand
+      {
+        True -> View(..view, input: append_returned_text(view.input, text))
+        False -> {
+          let owner = #(session, strand)
+          let saved =
+            dict.get(view.strand_workspaces, owner)
+            |> result.unwrap(empty_workspace())
+          let saved =
+            StrandWorkspace(
+              ..saved,
+              input: append_returned_text(saved.input, text),
+            )
+          View(
+            ..view,
+            strand_workspaces: dict.insert(view.strand_workspaces, owner, saved),
+          )
+        }
+      }
+    })
+  Model(shared: Shared(..model.shared, returned_drafts: []), view:)
 }
 
 // Keep both copies when the owner has continued typing before custody returns.
@@ -3365,10 +3384,10 @@ fn apply_request_refused(
   let reason = code <> ": " <> message
   let updated = case command {
     "queued_input" | "edit_queued_input" ->
-      case model.view.queue_editor.request_id == Some(request_id) {
+      case model.shared.queue_request.request_id == Some(request_id) {
         True ->
           Model(
-            ..model,
+            shared: Shared(..model.shared, queue_request: queue_request.new()),
             view: View(
               ..model.view,
               queue_editor: queue_editor.refused(
