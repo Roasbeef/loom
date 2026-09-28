@@ -95,6 +95,7 @@ import tui/attempt_replay
 import tui/bootstrap
 import tui/buffered
 import tui/completion_summary
+import tui/connection
 import tui/effect
 import tui/focused_goal_panel
 import tui/herdr
@@ -620,7 +621,10 @@ pub type Shared {
     /// Last sent mutation whose outcome was not observed; survives adoption.
     unconfirmed: Option(UnconfirmedSubmission),
     /// Two-slot effect-free replay state and its terminal-owned delivery lane.
-    replay_state: attempt_replay.State,
+    replay_state: attempt_replay.State(
+      connection.Connection,
+      recording.Recorder,
+    ),
     /// Filled one event at a time, since a tick applies at most one.
     replay_inbox: buffered.Inbox(attempt.Event),
     /// A malformed local recording stops replay rather than skipping a frame.
