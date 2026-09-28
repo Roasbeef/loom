@@ -42,7 +42,13 @@ alone. They cannot write the composer, the queue editor or the goal
 inspector, so they record what those must show (`Shared.drafts_sent`,
 `queue_notices` and `goal_observations`), and `hold_shared` applies it at
 the point of the call, where the old functions wrote the editors
-themselves. The split, the parameters and the cut are the
+themselves. The event fold, which applies each pushed event, takes `Shared`
+alone too (`tui/event_fold`). Where an event used to write the terminal's
+editor, overlays or footer, it records a `SurfaceFact` in
+`Shared.surface_facts`, and `inbound.settle_surfaces` applies the facts
+after each event, before the next one reads the terminal state they change.
+The lane fold that calls it, `tui/inbound`, still takes the whole model.
+The split, the parameters and the cut are the
 slices of moving the step into `session_view` so that the web view runs
 the same reducers ([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
 daemon bootstrap, two connections (a daemon control connection and a
@@ -548,7 +554,10 @@ the phase diagram and the push rules; this document does not repeat them.
 The channel reports to the model as `session_channel.Update` values, and
 `apply_channel_update` folds each one in. `Captured` carries a new cut to
 `reconcile_cut` and then `tui/inbound.render_cut`. `Streamed` and
-`ToolStreamed` feed the transient region. `HistoryPage` feeds scrollback.
+`ToolStreamed` feed the transient region, and `Auxiliary` carries a pushed
+event; each of the three goes to `event_fold.apply_event` through
+`inbound.run_event`, which then settles the surface facts the event
+recorded. `HistoryPage` feeds scrollback.
 `LookedUp` answers exact approval lookups. `RequestRefused` carries the command
 name and request ID, so a refusal settles only the request it answers.
 
@@ -1006,7 +1015,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `session_view/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
-| `tui/outbound`, `tui/inbound` | Sending frames and folding the lane's disposition, over `Shared` alone (`outbound`); applying channel traffic, captured cuts (`render_cut`) and events (`inbound`). |
+| `tui/outbound`, `tui/inbound`, `tui/event_fold` | Sending frames and folding the lane's disposition, over `Shared` alone (`outbound`); applying channel traffic and captured cuts (`render_cut`), and settling the surface facts an event recorded (`inbound`); applying each pushed event, over `Shared` alone (`event_fold`). |
 | `tui/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed) and their replies, over `Shared` alone, and the edge detectors and surface openers, over the whole model. |
 | `tui/session_control` | Daemon control requests and reconnection, as job specs, and the drains that take their replies. |
 | `tui/projection` | The record row cache and render cache. |

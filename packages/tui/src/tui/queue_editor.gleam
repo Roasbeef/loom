@@ -202,7 +202,7 @@ pub fn refused(state: State, reason: String) -> State {
 /// read record a `queue_request.Notice` rather than write the editor, and
 /// the terminal applies each here, in the order they were recorded, at the
 /// point of the call that recorded it. A refusal is `refused`; a dropped
-/// read replaces only the message.
+/// read replaces only the message. A received document fills the draft.
 ///
 /// ## Examples
 ///
@@ -213,5 +213,7 @@ pub fn show(state: State, notice: queue_request.Notice) -> State {
   case notice {
     queue_request.Refused(reason:) -> refused(state, reason)
     queue_request.Dropped(message:) -> State(..state, message:)
+    queue_request.Received(owner:, namespace:, document:) ->
+      receive(state, owner, namespace, document)
   }
 }

@@ -531,6 +531,7 @@ pub fn new_model_with_clock(
       notes_requested: None,
       queue_request: queue_request.new(),
       queue_notices: [],
+      surface_facts: [],
       models: interaction.demo_models(),
       skills: [],
       current_model: "baseten-kimi-k3",

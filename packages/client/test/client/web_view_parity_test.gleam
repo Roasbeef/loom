@@ -32,6 +32,7 @@ import session_view/snapshot_view
 import session_view/transcript_line.{type Line}
 import tui
 import tui/connection
+import tui/event_fold
 import tui/inbound
 import tui/model as tui_model
 import tui/msg
@@ -416,7 +417,8 @@ fn on_terminal(model: tui_model.Model, step: Step) -> tui_model.Model {
   case step {
     Frame(message) -> inbound.accept_connection_message(model, message)
     Tick -> inbound.tick_channel(model)
-    Prompt(text) -> inbound.send_prompt_to(model, "main", text)
+    Prompt(text) ->
+      tui_model.run_shared(model, event_fold.send_prompt_to(_, "main", text))
     Deny(id) -> inbound.decide(model, id, operator.Deny)
   }
 }

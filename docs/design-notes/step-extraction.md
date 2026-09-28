@@ -40,8 +40,8 @@ The terminal's whole update is `runtime.settle(step(runtime.message(event,
 model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1745`
 (`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:48` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
-(`packages/tui/src/tui.gleam:1836` (`apply_input`),
-`packages/tui/src/tui.gleam:1916` (`settle_update`)), or an `Arrived`
+(`packages/tui/src/tui.gleam:1842` (`apply_input`),
+`packages/tui/src/tui.gleam:1922` (`settle_update`)), or an `Arrived`
 that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
 (`tui/model.gleam:346` (`Model`)), whose `view` field already holds the
@@ -172,7 +172,7 @@ terminal, 4 handles, 3 split.
 | `session`, `session_label` | a | Identity and catalogue name. |
 | `local_options` | b | The launch's options, read by session creation. |
 | `inbox` | c | `Inbox(source, Message)`; the source is the terminal's subject and the web's `Nil`. |
-| `peer` | a | `Attached`, `Disconnected`, `Preview`, `Replaying`; reducers branch on it, and the type is `Peer` (`tui/session_model.gleam:406`). The web is always `Attached`. |
+| `peer` | a | `Attached`, `Disconnected`, `Preview`, `Replaying`; reducers branch on it, and the type is `Peer` (`tui/session_model.gleam:412`). The web is always `Attached`. |
 | `candidate` | b | The provisional attachment: a lane, a `Subject(Nil)` and an inbox inside a job slot, `attachment.Status` (`tui/attachment.gleam:92`). |
 | `channel` | c | `Option(Channel(socket, recorder))`. |
 | `captured` | a | The last cut and its view. |
@@ -190,26 +190,26 @@ terminal, 4 handles, 3 split.
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
 | `agent_rail_visible` | b | A pane toggle. |
-| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/session_model.gleam:870`), and `advance_generation_clock` checks it (`tui/tick.gleam:402`); a page will toggle it too. |
+| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/session_model.gleam:932`), and `advance_generation_clock` checks it (`tui/tick.gleam:402`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
 | `streams`, `tool_tails` | a | The live answer and tool tails. |
 | `reading_lines` | b | Frozen transient rows while reading above the tail. |
 | `scroll_offset` | b | The viewport. |
-| `render_revision` | a | A presentation revision shared reducers bump (`tui/session_model.gleam:628` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
+| `render_revision` | a | A presentation revision shared reducers bump (`tui/session_model.gleam:690` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
 | `rendered_revision`, `rendered_row_count`, `revealed_rows`, `rendered_anchors`, `rendered_gutters`, `record_gutters` | b | The row projection's outputs. |
 | `compact_call_cache`, `compact_entry_cache` | a | Line caches keyed by `transcript_line.Line`, read by the shared line builders through `Presentation`. |
 | `pending_records` | a | Legacy entries awaiting append. |
 | `record_cache_valid` | a | Today a flag cleared at twelve write sites; it becomes a counter the terminal compares, in the shape of `record_cache_epoch`. |
 | `record_cache_width`, `record_cache_strand`, `record_cache_details` | b | What the record rows were built for. |
-| `frame_revision` | a | A presentation revision (`tui/session_model.gleam:647` (`invalidate_frame`)); every `append_system` bumps it. |
+| `frame_revision` | a | A presentation revision (`tui/session_model.gleam:709` (`invalidate_frame`)); every `append_system` bumps it. |
 | `frame_debt` | b | Frame pacing. |
 | `monotonic_time_ms`, `transport_time_ms` | b | The host's clocks; the shell reads them into the stamp. |
 | `stamp` | a | The readings the step applies at. |
 | `terminal` | b | This terminal's identity in a creation key. |
 | `client_build` | a | The build the mismatch line compares; data, read once. |
 | `last_frame_ms` | b | Frame pacing. |
-| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/session_model.gleam:665` (`mark_activity`)); the terminal's quiet timer reads it. |
+| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/session_model.gleam:727` (`mark_activity`)); the terminal's quiet timer reads it. |
 | `quiet_for_ms` | b | Idle pacing. |
 | `connection_backlog` | a | Set by the shared drain from the inbox it holds (`tui/inbound.gleam:1140` (`drain_connection`)); the terminal's poll reads it. |
 | `recorder` | c | `Option(recorder)`. |
@@ -217,7 +217,7 @@ terminal, 4 handles, 3 split.
 | `herdr_reporter`, `herdr_published` | b | The pane reporter, a host handle the terminal alone performs against; it stays in the terminal's record rather than becoming a type parameter because no shared reducer names it. |
 | `outbox` | a | `List(Effect(socket, recorder))`; the terminal moves it into its own outbox at each call boundary, as `hold_channel` does for the lane. |
 | `next_job`, `running` | b | Job keys and the runtime's table. |
-| `record_cache_epoch` | a | Already the counter shape (`tui/session_model.gleam:380` (`record_cache_epoch`)). |
+| `record_cache_epoch` | a | Already the counter shape (`tui/session_model.gleam:386` (`record_cache_epoch`)). |
 | `view` | b | The etui caches themselves. |
 
 The shared record therefore holds no etui type, no `Subject`, no weft
@@ -397,7 +397,7 @@ entry points above gain the parameter with it.
 
 `Effect` is two variants because those are the two effects the shared
 reducers decide. Every `Channel` effect comes through `hold_channel`
-(`tui/session_model.gleam:687` (`hold_channel`)), and the one `Record` a shared
+(`tui/session_model.gleam:749` (`hold_channel`)), and the one `Record` a shared
 reducer queues is the channelless arrival
 (`tui/inbound.gleam:1187` (`handle_connection_message`), its `None`
 arm). The input's own recording line is queued by `start_step` before
@@ -508,7 +508,7 @@ they reach that it misses.
 
 - The lane fold: `tick_channel`, `apply_channel_update`, `reconcile_cut`,
   `request_decisions`, `apply_cut` and `render_cut`
-  (`tui/inbound.gleam:221` (`tick_channel`) through
+  (`tui/inbound.gleam:211` (`tick_channel`) through
   `tui/inbound.gleam:571` (`render_cut`)), less the four writes named
   below.
 - The connection drain and the event fold: `drain_connection`,
@@ -521,8 +521,8 @@ they reach that it misses.
   `send_via`, `apply_submission`, `discard_own_turn` and
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
-- The command arms: `interrupt_active` (`tui/submit.gleam:840`),
-  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:1046`),
+- The command arms: `interrupt_active` (`tui/submit.gleam:859`),
+  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:1060`),
   `select_model`, `decide` (`tui/inbound.gleam:1112`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from
@@ -570,7 +570,7 @@ The worst cases in the code, and the cut for each:
    `agent_summary` is dropped and derived at paint. The other 27 writes
    are shared and the function moves as it is.
 
-2. **`select_workspace`** (`tui/inbound.gleam:3077`
+2. **`select_workspace`** (`tui/event_fold.gleam:1482`
    (`select_workspace`)) parks the editor, the history window, the
    viewport and the anchors under one key and restores another's. It
    splits into `step.select_workspace`, which parks and restores
@@ -581,7 +581,7 @@ The worst cases in the code, and the cut for each:
    and `active_strand` against `after`'s, so a switch from a strand key,
    the strip, a capture that renames the session or a replay's `Adopt`
    parks both halves. `restore_returned_draft`
-   (`tui/inbound.gleam:1802` (`restore_returned_draft`)) is the one
+   (`tui/event_fold.gleam:514` (`restore_returned_draft`)) is the one
    shared reducer that writes a parked editor: the returned text becomes a
    shared field, `returned_drafts: List(#(strand, text))`, and the shell
    appends it to the editor it owns.
@@ -630,13 +630,13 @@ The worst cases in the code, and the cut for each:
    `Acted(Decide(id, seq, choice))`, with `AllowForSession` mapped through
    `operator.Choice`, which already has it.
 
-7. **`settle_update`** (`packages/tui/src/tui.gleam:1916`
+7. **`settle_update`** (`packages/tui/src/tui.gleam:1922`
    (`settle_update`)) runs nine calls after every event. Three are
    shared and move into `step.update`'s own settle: `sync_context`,
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
    `request_visible_worktree` on a diff pane appearing, which becomes
    `Acted(RefreshWorktree)` because only the shell knows the pane appeared
-   (`tui/inbound.gleam:3216` (`request_visible_worktree`) reads
+   (`tui/inbound.gleam:1854` (`request_visible_worktree`) reads
    `layout.diff_shown`); `request_history_for_view`, which becomes
    `Acted(OlderHistory)` for the same reason
    (`tui/interaction.gleam:1798` (`request_history_for_view`) reads the
@@ -645,7 +645,7 @@ The worst cases in the code, and the cut for each:
    `apply_input` describes keeps its shape: the shared `update` applies
    its settle to a parameter, and the terminal's `settle_update` applies
    its remaining steps to `updated` as it does now
-   (`packages/tui/src/tui.gleam:1836` (`apply_input`)).
+   (`packages/tui/src/tui.gleam:1842` (`apply_input`)).
 
 8. **The tick** (`tui/tick.gleam:126` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
@@ -653,7 +653,7 @@ The worst cases in the code, and the cut for each:
    chain. The order is kept by having the terminal's tick call the shared
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
-   (`tui/inbound.gleam:3502` (`tick_strip`)) reads the strip's focus and
+   (`tui/inbound.gleam:2140` (`tick_strip`)) reads the strip's focus and
    stays; `advance_cache_outlook` (`tui/tick.gleam:436`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
@@ -684,7 +684,7 @@ it.
 | `reduce` (`web_view/component.gleam:542`), `drained`, `take_filed`, `received` | the shared `Ticked`: `drain_connection` then `tick_channel` | `session_view/inbound` |
 | `apply` (`web_view/component.gleam:639`) | `apply_channel_update` | `session_view/inbound` |
 | `captured` (`web_view/component.gleam:736`), `fresh`, `recaptured` | `reconcile_cut`, `apply_cut`, `render_cut` | `session_view/inbound` |
-| `used` (`web_view/component.gleam:790`), `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`tui/inbound.gleam:2249`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
+| `used` (`web_view/component.gleam:790`), `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`tui/event_fold.gleam:879`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
 | `relaned` (`web_view/component.gleam:957`), `restripped`, `strip_of`, `outlook`, `running_ms`, `strands` | `derive(before, after)`: rebuild blocks, pieces and the strip when `shared.render_revision` moved | shell, view state |
 | `ticked` (`web_view/component.gleam:1192` (`ticked`)) | the same per-chip label comparison over `shared.cache` and `shared.stamp` | shell |
 | `settled` (`web_view/component.gleam:1219` (`settled`)) | `apply_submission`; `drafts` bumps on the `pending_submission` edge | `session_view/outbound`, shell |
@@ -1125,6 +1125,148 @@ chain keeps its parameter boundary. Lint finds no error-tier finding on
 either; the `tui` package's census falls from 100 to 98 warnings (R3,
 catch-all patterns, from 52 to 50) and R8, R11 and R12 are unchanged.
 
+*S3d′ as landed, first half: the event fold.* S3d′ was to cut the lane
+fold, the event fold and `drain_replay` to `Shared` in one landing. It
+landed in two, and this is the first. The event fold went first, alone,
+because it sits below the lane fold in the call graph and every terminal
+write in it can be recorded and applied without changing behaviour. The
+lane fold cannot, as the end of this entry explains, and it waits for a
+ruling.
+
+`apply_event` and everything it reaches moved into a new module,
+`tui/event_fold`, over `Shared` alone: streams, tool tails, entries,
+phases, usage and the cache watch, the side-surface replies, schedules,
+skills and models, the returned draft, the interrupt's held prompt, the
+own-turn bookkeeping (`send_prompt_to`, `expect_own_turn`,
+`settle_own_turn`, `abandon_interjections`), `select_model`,
+`settle_pending_cache`, and the session half of `select_workspace`. The
+module reads no terminal state. It calls `outbound`'s and `surfaces`'
+functions over `Shared` and no other function of either. The lane fold
+(`apply_channel_update`, `reconcile_cut`, `render_cut`, the approval
+presentation, `drain_connection`, `tick_channel`, `cancel_pending`,
+`receive_history`) and the tick's `drain_replay` and
+`advance_activity_indicator` stay in the terminal over the whole model. The
+lane fold calls the event fold once per event through `inbound.run_event`.
+
+Where an event wrote terminal state, the fold now records a
+`session_model.SurfaceFact` in `Shared.surface_facts`, oldest first:
+
+- `WorkspaceSwitched(departing, arriving, previous_session)`, recorded by
+  `event_fold.select_workspace`, which parks and restores the history
+  window and releases the session's boards (`leave_session`). The terminal
+  parks the editor, the attachments and the viewport under `departing`,
+  restores `arriving`'s, closes a goal inspector and resets the strip's
+  focus on a change of session. This is section 3's `park_editor`.
+- `SessionSynchronized`, recorded by a full snapshot. The terminal drops
+  `record_gutters` and returns `scroll_offset` to the tail.
+- `ModelsListed(models, current)`. An open model selector takes the list.
+- `OutlookCleared`, recorded when a model change forgets the active
+  strand's cache watch. The terminal empties `cache_outlook`.
+- `NotesArrived(board)`, recorded after the board seeds the todo panel.
+  The terminal decides whether a notes surface shows the board's strand,
+  through `surfaces.notes_target`, and if so writes `note_board`, the
+  notice, the selection and the scroll, as the arm did.
+- `JobsReplaced(previous, board)`, recorded when a jobs board answers
+  this attachment's read. The summary's cursor follows its job from
+  `previous` to `board`.
+
+A queued-input reply appends `queue_request.Received(owner, namespace,
+document)` to `queue_notices`, which `queue_editor.show` turns into
+`queue_editor.receive`, and a returned draft stays in `returned_drafts`.
+`inbound.settle_surfaces(before, held)` applies the facts in order and
+then moves the returned drafts into the editors. It runs after every call
+into the fold: in `run_event`, and in the terminal forms
+`inbound.select_workspace` and `inbound.select_model`, which the
+command arms and `drain_replay` call. `tui_test/stepping.step` asserts
+that `surface_facts` is empty after every step.
+
+This departs from the note in three ways.
+
+1. The edges run in `settle_surfaces`, after each event, not in
+   `settle_update`. One step applies many events, and a later event reads
+   or overwrites what an earlier one wrote. A stream fragment after a
+   notes board replaces the notice the board set; applied at the end of
+   the step, the board's notice would win. A returned draft has to be in
+   the composer before a later switch in the same drain parks it. As in
+   S3c′, applying each fact at the call that recorded it keeps every
+   terminal write in the same order relative to the shared writes around
+   it, so nothing the fold writes afterwards can see a difference.
+2. The edges are recorded facts rather than comparisons of the model
+   before and after, for the same reason S3c′ gave, and because no single
+   comparison reproduces the rules. `render_cut` empties the outlook when
+   the active strand has no watch after a capture; `forget_cache` empties
+   it when the forgotten strand is the active one. An edge on
+   `before.shared.cache != after.shared.cache` would also fire after a
+   strand switch that leaves a stale label for the next tick to replace,
+   and would repaint a frame earlier than today.
+3. The switch's viewport height is measured on the model from before the
+   call, with the session's boards and a goal inspector released. Layout
+   reads both, the old `select_workspace` measured after releasing them
+   and before anything else moved, and the full snapshot changes the
+   strands, records and active strand after the switch within the same
+   event.
+
+The census above missed two terminal accesses. In the event fold,
+`forget_cache`, reached from the `ConfigSnapshot` arm through
+`select_model`, writes `cache_outlook`. In the lane fold,
+`apply_request_refused` reads `surfaces.notes_surface` to decide whether a
+refused notes read writes an error line. The census also lists
+`close_settled_approval` as a write only; it reads the overlay first, and
+what it reads decides whether it appends a transcript line.
+
+Breaking each fact's application in turn failed tests for six of the
+eight (the six facts, the queue editor's `Received` and the returned
+drafts): 8, 11, 15, 3, 1 and 1 tests for the workspace switch, the queue
+reply, the notes board, the returned drafts, the jobs cursor and the
+outlook. The snapshot's viewport reset and the selector refresh had no
+test on either tree, so `surface_facts_test` adds one for each; both pass
+on `main` and each fails when its fact is not applied.
+
+Measured against `main` at `431d3e4c6`, whose tree is the one #600 merged.
+The `tui` suite passes 961 tests on `main` and 963 here, the two new
+ones; `session_view` passes 112, `web_view` 81 and `client` 2,292 on
+both. Both committed recordings replay
+byte-identical with `--all --plain`, and the synthesized `tui_perf`
+replays of 64, 512 and 4,096 frames end on identical frames. The P
+model's ten cases find no bug at 30,000 schedules each. The shipped
+fixtures (the fifteen tests matching `_shipped_`, the `tui_shipped_*` and
+`daemon_shipped_*` suites among them) pass against each build's
+`bin/loomd` with `HOME` pointed at an empty directory.
+`scripts/tui_perf.sh`, median of three alternating runs: an idle tick
+costs 7,525 reductions on both and 9,455 words against 9,449 (+0.06%,
+the new field on the shared record), a 64-frame tick 226,652 reductions
+against 226,897 (−0.11%), a key 100,972 on both, and a 500-frame burst
+5,529 reductions per frame against 5,536 (−0.13%) and 11,848 words per
+frame against 11,850. With `TUI_PERF_MIN_HEAP=4000000` the idle tick is
+7,525 on both, the 64-frame tick 216,942 against 217,453 (−0.23%) and the
+burst 5,385 per frame against 5,393. The event fold now copies one record
+per write where it copied two. `erlc` through the compile review's
+`profile_module.py`, median of three alternating runs, wall time and
+`core_inline_module`: `tui@inbound` 1.35 s against 2.09 s (inlining 0.061 s
+against 0.099 s), the new `tui@event_fold` 0.91 s (0.041 s), `tui` 0.63 s
+against 0.62 s, `tui@interaction` 2.34 s against 2.32 s, `tui@submit`
+1.41 s against 1.24 s, `tui@tick` 0.90 s against 1.11 s and `tui@model`
+0.72 s against 1.06 s. The machine's load average was between five and
+seven, so the wall times move by a few tenths between runs; the inlining
+times do not. Lint finds no error-tier finding on either; the `tui`
+census falls from 98 to 97 warnings (R3 from 50 to 49).
+
+*Why the lane fold waits.* The lane fold makes three decisions over
+terminal state that a later update in the same drain depends on.
+`close_settled_approval` reads the open inspector and appends "Approval …
+was settled elsewhere" to the transcript; `present_pending_approval` opens
+the inspector, which the next cut's `close_settled_approval` reads; and
+`apply_request_refused` reads whether a notes surface is open. A drain
+takes up to a batch of messages, each of which can produce several
+updates. If the lane fold became one call over `Shared` per drain and
+these ran after it, a drain holding two cuts would differ from today's:
+a question presented by the first cut and settled by another client in
+the second is today presented, closed and reported with a line that
+survives until the next cut, and after the change would be neither
+presented nor reported. The visible-worktree refresh does not have this
+problem: `layout.diff_shown` reads only `diff_view` and the width, which
+no update changes. Section 6, question 11, has the options.
+
 **S4: the move.** `tui/model`'s shared record and helpers,
 `tui/msg`, the frame and replay admission, `tui/inbound`, `tui/outbound`,
 `tui/surfaces`, the shared half of `tui/submit`, `tui/completion_summary`,
@@ -1201,7 +1343,7 @@ them.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
-   `packages/tui/src/tui.gleam:1836` (`apply_input`)). S3 creates a third
+   `packages/tui/src/tui.gleam:1842` (`apply_input`)). S3 creates a third
    chain, the shell's edges. *Recommendation:* every S3 landing measures
    `erlc +time` on the generated modules and keeps the parameter boundary
    in each of the three chains; the `beam-compile-review` skill has the
@@ -1210,6 +1352,13 @@ them.
    measure. *Measured in S3c′:* no module that holds a settle chain moved
    by more than 0.04 s; `tui@model` rose by 0.1 s with the terminal forms
    and the edges it gained. Section 5's S3c′ entry has the figures.
+   *Measured in the first half of S3d′:* the edges run in
+   `inbound.settle_surfaces`, a fold over the recorded facts called once
+   per event, not in a chain of local steps, so no third settle chain was
+   formed yet. `core_inline_module` on `tui@inbound` fell from 0.099 s to 0.061 s,
+and on the new `tui@event_fold` it is 0.041 s; `tui` and `tui@tick` are
+unchanged. The lane fold's half is where the chain would
+   form, if its edges move to `settle_update`.
 
 5. **Allocation per event.** Today one event copies one 152-field record
    per field write. After S1 a shared write copies an 80-field record and
@@ -1260,3 +1409,18 @@ them.
     field it never writes. *Recommendation:* accept; the page will toggle
     it when Part 2 adds a details control, and a shared `extent` is what
     keeps `presentation` a function of the shared record alone.
+
+11. **The lane fold's reads of terminal state.** Found in S3d′ (section
+    5, the first half's entry). The approval inspector's close and
+    presentation and a refused notes read decide shared writes from
+    terminal state, and a later update in the same drain reads the
+    result. Three ways to keep behaviour: *(a)* keep the loop over a
+    drain's updates in the host, make one update the shared unit, and
+    apply the recorded facts between updates, which is the shape the event
+    fold took; *(b)* move the approval under review into `Shared`, which
+    section 3 ruled terminal because the page has no inspector; *(c)*
+    accept the difference for two cuts in one drain and record it.
+    *Recommendation:* (a). It keeps every frame and line as it is, and the
+    web view, which has no inspector, runs the same loop with no facts to
+    apply. It needs the owner's ruling, because it changes the shape of
+    `step.update`'s `Ticked` from one call into a host-driven loop.
