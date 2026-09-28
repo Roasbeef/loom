@@ -229,7 +229,9 @@ fn block_texts(block: markdown.Block) -> List(String) {
     markdown.Paragraph(inlines:) | markdown.Heading(inlines:, ..) ->
       list.flat_map(inlines, inline_texts)
     markdown.CodeBlock(text:, ..) -> [text]
-    markdown.Quote(blocks:) -> list.flat_map(blocks, block_texts)
+    markdown.Quote(blocks:)
+    | markdown.Alert(blocks:, ..)
+    | markdown.Footnote(blocks:, ..) -> list.flat_map(blocks, block_texts)
     markdown.BulletList(items:) | markdown.OrderedList(items:, ..) ->
       list.flat_map(items, list.flat_map(_, block_texts))
     markdown.Table(header:, rows:) ->
@@ -249,7 +251,10 @@ fn inline_texts(inline: markdown.Inline) -> List(String) {
     | markdown.Strong(children:)
     | markdown.Strikethrough(children:) -> list.flat_map(children, inline_texts)
     markdown.Link(label:, ..) -> list.flat_map(label, inline_texts)
-    markdown.Image(..) | markdown.Break -> []
+    markdown.Image(..)
+    | markdown.Task(..)
+    | markdown.FootnoteRef(..)
+    | markdown.Break -> []
   }
 }
 
