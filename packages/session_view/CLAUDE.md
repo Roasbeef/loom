@@ -94,6 +94,13 @@ read, takes the lane's outputs and performs them.
   pass over the whole is that prefix followed by the pass over the rest;
   the terminal's live tail uses it to sanitize a growing answer once
   rather than on every frame.
+- `markdown.parse(text) -> List(Block)`: an answer's Markdown as a closed
+  tree (`Block`, `Inline`, `Cell`, `Level`, `Align`) whose every string is
+  text to show, for the web view's `markdown_view`. HTML in the source is
+  text and a link keeps its destination as a string. It is Loom's own
+  parser rather than mork, which the terminal uses: mork backtracks
+  exponentially on a run of `[`. This one is linear in the input and caps
+  nesting at `max_depth` containers and `max_emphasis` open delimiters.
 
 - `turns.pieces(blocks, strands, latest)`: one strand's lane as turns for a
   host that draws more than rows (the web view): `Plain` blocks, one `Work`
@@ -174,6 +181,11 @@ through `submit`, the session's mutations. A read-only host never calls
 - **The line builders read a `Presentation`, never a host's model.** A
   new input to a line builder is a new field on `Presentation`, filled by
   every host.
+- **`markdown.parse` is total, linear and shallow.** Every input yields a
+  tree, no character is scanned more than a fixed number of times, and
+  the tree's depth is bounded, because the web view parses every answer the agent
+  writes. `markdown_test` holds hostile inputs sized so that a quadratic
+  parser would miss EUnit's time limit.
 
 ## Deep Docs
 
