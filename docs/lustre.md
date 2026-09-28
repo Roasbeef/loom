@@ -535,9 +535,12 @@ applications to XSS attacks! ... never use this to display un-sanitised
 user HTML!" ([`lustre/element`][doc-element]). `html.script` and
 `html.style` take raw strings as content
 ([`lustre/element/html`][doc-html]) and are not used either; the policy
-would refuse them anyway. If the view ever needs rendered markdown, the
-engine produces a tree of typed spans and the view maps each span to an
-element.
+would refuse them anyway. Rendered Markdown follows the same rule: the
+engine parses an answer into a closed tree (`session_view/markdown`) and
+the view maps each variant to a fixed element (`web_view/markdown_view`).
+HTML in the source is text, a link is drawn as its label followed by its
+destination as text with no `href`, an image is text and is never loaded,
+and every class comes from a closed type.
 
 ### Client components inside the server component
 
