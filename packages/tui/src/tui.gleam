@@ -633,6 +633,7 @@ pub fn new_model_with_clock(
       monotonic_time_ms:,
       transport_time_ms: host_bootstrap.monotonic_time_ms,
       terminal: runtime.terminal_identity(),
+      wall_ms: host_bootstrap.system_time_ms(),
       last_frame_ms: stamp.now_ms,
       quiet_for_ms: pacing.quiet_after_ms,
       herdr_reporter: None,
@@ -1779,12 +1780,19 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 ///
 /// ```gleam
 /// let #(next, effects) =
-///   tui.step(msg.Input(model.stamp, msg.KeyPressed("enter", keys.Enter)), model)
+///   tui.step(
+///     msg.Input(
+///       model.shared.stamp,
+///       model.view.wall_ms,
+///       msg.KeyPressed("enter", keys.Enter),
+///     ),
+///     model,
+///   )
 /// ```
 @internal
 pub fn step(message: msg.Msg, model: Model) -> #(Model, List(effect.Effect)) {
   case message {
-    msg.Input(at:, event:) -> reduce(at, event, model)
+    msg.Input(at:, wall_ms:, event:) -> reduce(at, wall_ms, event, model)
     msg.Arrived(arrivals:) -> #(admission.admit(model, arrivals), [])
   }
 }
@@ -1794,10 +1802,11 @@ pub fn step(message: msg.Msg, model: Model) -> #(Model, List(effect.Effect)) {
 // and the input's line is ahead of every line the reducer queues for it.
 fn reduce(
   at: msg.Stamp,
+  wall_ms: Int,
   event: msg.Event,
   model: Model,
 ) -> #(Model, List(effect.Effect)) {
-  let model = tui_model.start_step(model, at, event)
+  let model = tui_model.start_step(model, at, wall_ms, event)
   let updated = apply_input(event, model)
   runtime.take(settle_update(event, model, updated))
 }

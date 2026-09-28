@@ -389,7 +389,7 @@ fn terminal() -> tui_model.Model {
       shared: tui_model.Shared(
         ..base.shared,
         peer: tui_model.Attached,
-        stamp: msg.Stamp(now_ms: 0, transport_ms: 0, wall_ms: 0),
+        stamp: msg.Stamp(now_ms: 0, transport_ms: 0),
         channel: Some(
           session_channel.replay(snapshot.Expected(
             "session",

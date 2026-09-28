@@ -631,7 +631,7 @@ fn create_session_configured(model: Model, config: String) -> Model {
         "tui-"
         <> model.view.terminal
         <> "-"
-        <> int.to_string(model.shared.stamp.wall_ms)
+        <> int.to_string(model.view.wall_ms)
         <> "-"
         <> int.to_string(model.shared.next_id)
 

@@ -5,7 +5,8 @@
 //// clocks and any pasted file into it. A test that wants to inspect one
 //// transition without acting on it usually wants none of those reads, so
 //// this builds the message at the time the model already carries, with no
-//// pasted file read. A test that needs another time sets `Model.stamp`
+//// pasted file read. A test that needs another time sets
+//// `Model.shared.stamp`, or `Model.view.wall_ms` for the wall clock,
 //// first; a test that needs a paste's read builds the `msg.Pasted` itself.
 
 import etui/backend
@@ -16,8 +17,8 @@ import tui/keymap
 import tui/model as tui_model
 import tui/msg
 
-/// The step the shipped loop takes for `event`, at `model.stamp`, with the
-/// effects it decided returned rather than performed.
+/// The step the shipped loop takes for `event`, at `model.shared.stamp`,
+/// with the effects it decided returned rather than performed.
 ///
 /// ## Examples
 ///
@@ -31,8 +32,8 @@ pub fn step(
   tui.step(message(event, model), model)
 }
 
-/// The message the shipped loop builds for `event`, at `model.stamp`, with
-/// no pasted file read.
+/// The message the shipped loop builds for `event`, at `model.shared.stamp`
+/// and `model.view.wall_ms`, with no pasted file read.
 ///
 /// ## Examples
 ///
@@ -40,5 +41,9 @@ pub fn step(
 /// let message = stepping.message(backend.Tick, model)
 /// ```
 pub fn message(event: backend.InputEvent, model: tui_model.Model) -> msg.Msg {
-  msg.Input(model.shared.stamp, keymap.translate(event, Ok(None)))
+  msg.Input(
+    model.shared.stamp,
+    model.view.wall_ms,
+    keymap.translate(event, Ok(None)),
+  )
 }

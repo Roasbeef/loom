@@ -52,7 +52,7 @@ fn attached(channel, now: Int) -> tui_model.Model {
       shared: tui_model.Shared(
         ..base.shared,
         channel: Some(channel),
-        stamp: msg.Stamp(now_ms: 0, transport_ms: now, wall_ms: 0),
+        stamp: msg.Stamp(now_ms: 0, transport_ms: now),
       ),
     )
   }

@@ -80,7 +80,6 @@ import weft
 /// ```
 pub fn stamp(model: Model) -> Model {
   Model(
-    ..model,
     shared: Shared(
       ..model.shared,
       stamp: read_stamp(
@@ -88,6 +87,7 @@ pub fn stamp(model: Model) -> Model {
         model.view.transport_time_ms,
       ),
     ),
+    view: View(..model.view, wall_ms: host_bootstrap.system_time_ms()),
   )
 }
 
@@ -217,6 +217,7 @@ pub fn message(event: backend.InputEvent, model: Model) -> Msg {
   }
   msg.Input(
     at: read_stamp(model.view.monotonic_time_ms, model.view.transport_time_ms),
+    wall_ms: host_bootstrap.system_time_ms(),
     event: keymap.translate(event, pasted),
   )
 }
@@ -307,8 +308,10 @@ fn liveness(candidate: attachment.Status) -> job.SocketLiveness {
   }
 }
 
-/// Reads the presentation and transport clocks it is given and the host's
-/// wall clock, once each.
+/// Reads the presentation and transport clocks it is given, once each.
+///
+/// The host's wall clock is read beside it, by `message` and `stamp`,
+/// because it is stored in the terminal's view rather than in the stamp.
 ///
 /// ## Examples
 ///
@@ -320,11 +323,7 @@ fn liveness(candidate: attachment.Status) -> job.SocketLiveness {
 ///   )
 /// ```
 pub fn read_stamp(presentation: fn() -> Int, transport: fn() -> Int) -> Stamp {
-  Stamp(
-    now_ms: presentation(),
-    transport_ms: transport(),
-    wall_ms: host_bootstrap.system_time_ms(),
-  )
+  Stamp(now_ms: presentation(), transport_ms: transport())
 }
 
 /// Names this terminal for a session creation key: the OS process and the

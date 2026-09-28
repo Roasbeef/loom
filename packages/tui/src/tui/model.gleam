@@ -919,6 +919,11 @@ pub type View {
     /// This terminal's identity in a session creation key: the OS process
     /// and the BEAM process that created the model, read once at creation.
     terminal: String,
+    /// The host's wall clock when the current event was read, stored by
+    /// `start_step` beside `Shared.stamp`. Only a session creation key reads
+    /// it, and that key is built by the terminal's daemon control, so the
+    /// reading is terminal state and the shared stamp does not carry it.
+    wall_ms: Int,
     /// When the last frame was painted, on the presentation clock.
     last_frame_ms: Int,
     /// How long the terminal has gone without activity, which sets the
@@ -1236,17 +1241,28 @@ pub fn record_arrival(
 /// is recording.
 ///
 /// `tui.step` calls this before the reducer runs, so every reducer reads
-/// the input's time from `Model.stamp`, and the input's line is the first
-/// effect of its step and precedes every line the input causes.
+/// the input's time from `Model.shared.stamp`, or the wall clock from
+/// `Model.view.wall_ms`, and the input's line is the first effect of its
+/// step and precedes every line the input causes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let model = tui_model.start_step(model, model.stamp, msg.Ticked)
+/// let model =
+///   tui_model.start_step(model, model.shared.stamp, model.view.wall_ms, msg.Ticked)
 /// ```
 @internal
-pub fn start_step(model: Model, at: msg.Stamp, event: msg.Event) -> Model {
-  let model = Model(..model, shared: Shared(..model.shared, stamp: at))
+pub fn start_step(
+  model: Model,
+  at: msg.Stamp,
+  wall_ms: Int,
+  event: msg.Event,
+) -> Model {
+  let model =
+    Model(
+      shared: Shared(..model.shared, stamp: at),
+      view: View(..model.view, wall_ms:),
+    )
   case msg.recorded(event) {
     Some(recorded) -> record(model, recorded)
     None -> model
