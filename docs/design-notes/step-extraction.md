@@ -47,7 +47,7 @@ Every reducer reads and writes one record, `State(view)`
 (`tui/model.gleam:347` (`Model`)), whose `view` field already holds the
 terminal's etui render caches (`tui/model.gleam:320` (`Caches`)). The lane's
 outputs join the step's one outbox through `hold_channel`
-(`tui/model.gleam:719` (`hold_channel`)), and `runtime.take` returns
+(`tui/model.gleam:725` (`hold_channel`)), and `runtime.take` returns
 them with the model (`tui/runtime.gleam:355` (`take`)).
 
 The web view holds the lane, an inbox and what it derived from the last
@@ -402,7 +402,7 @@ reducer queues is the channelless arrival
 (`tui/inbound.gleam:1187` (`handle_connection_message`), its `None`
 arm). The input's own recording line is queued by `start_step` before
 the reducer runs
-(`tui/model.gleam:859` (`start_step`)); the terminal's shell keeps
+(`tui/model.gleam:868` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
 terminal maps `Recorded(recorder, message)` to
 `recording.append(recorder, recording.Arrived(message))`, which writes the
@@ -914,7 +914,18 @@ twice. The revision's only reader in the running client is
 event and compares the revision for equality with the one it last
 painted. The two tests that read it compare with `>` across a reducer
 call, or with `==` across admission, which touches no clock. No reader
-runs between the two bumps, so none can tell them from one.
+runs between the two bumps, so none can tell them from one. `main` already
+bumped it twice in a tick that moved the generation clock under a shown
+reasoning row and the indicator, so the count per tick was never fixed.
+
+Nothing in the types stops a terminal reducer from storing a shared result
+without `hold_shared`. The test driver `tui_test/stepping.step` therefore
+asserts that `Shared.outbox` is empty after every step it drives, which
+catches an effect left there at the end of a step. It cannot catch one
+stored without `hold_shared` and flushed by a later `hold_shared` in the
+same step, which would perform the effect late rather than lose it; the
+effect-order tests in `effects_test` and `recording_effects_test` are what
+cover that.
 
 Measured against `main` at `7e0e8be7c`. The `tui` suite passes 960 tests
 on both. Both committed recordings replay byte-identical with `--all
