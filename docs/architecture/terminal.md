@@ -25,7 +25,14 @@ replay state take the socket and recorder types, and the connection and
 replay inboxes are keyed by their sources. `TerminalShared` binds them to
 the terminal's connection, its recording and the two subjects it reads.
 `Shared` and the functions over it alone live in `tui/session_model`,
-which imports nothing of the terminal. Most reducers still take the whole
+which imports nothing of the terminal. Three records that held both kinds of
+state are split, each with its session half in `Shared` and its terminal
+half in `View`: a strand's parked history window and its editor, the agent
+roster and the strip's focus, and the queue editor's requests on the lane
+(`tui/queue_request`) and the editor. The daemon's build is shared data
+beside the control connection the terminal holds, and a held prompt the
+daemon returns waits in `Shared.returned_drafts` until the terminal moves it
+into an editor. Most reducers still take the whole
 model and read a field through the half that holds it; the reducer cut
 moves them to `Shared` from the helpers upward, and a terminal reducer
 stores the result of any function over `Shared` through
@@ -108,7 +115,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:1738`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:1744`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid
@@ -676,7 +683,10 @@ Held inputs are shown in a card above the composer, up to three at a time,
 from the cut's `pending_inputs`. `/queue` with no text, or `Alt+q`, opens
 `tui/queue_panel`'s inspector. Enter on an editable item fetches the complete
 document with `queued_input`, and `tui/queue_editor` edits it in its own editor
-without borrowing the ordinary composer. `Ctrl+s` saves with
+without borrowing the ordinary composer. The read waiting for the lane, the
+read in flight and the request ID a refusal is matched against are session
+state, `Shared.queue_request`; only the answer to the read in flight fills the
+editor. `Ctrl+s` saves with
 `edit_queued_input` against the fetched revision. The editor's `Delivery`
 state (`Editable`, `Saving`, `Unknown`) prevents a fetch from replacing a dirty
 or uncertain draft, and a changed session, epoch or incarnation cannot save an
@@ -1019,7 +1029,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/theme`, `tui/appearance` | Semantic colours and the launch-time palette. |
 | `session_view/command`, `session_view/skills` | Slash-command grammar, palette suggestions, and daemon skill names. |
 | `session_view/composer`, `tui/image_drop` | Paste attachments, token estimate, and image admission. |
-| `tui/queue_panel`, `tui/queue_editor` | Held-input inspector and the revision-fenced queue editor. |
+| `tui/queue_panel`, `tui/queue_editor`, `tui/queue_request` | Held-input inspector, the revision-fenced queue editor, and the editor's requests on the lane, which `Shared` holds. |
 | `session_view/approval`, `tui/approval_panel` | Exact approval capture and the approval dialog. |
 | `session_view/worktree_view`, `tui/diff_panel` | Git worktree observation and the changes navigator. |
 | `tui/agents`, `session_view/agent_view`, `session_view/agent_activity`, `session_view/agent_roster`, `tui/agent_messages`, `tui/agent_message_panel`, `session_view/reviewer_status` | The agent rail and inspector projections. |
