@@ -13,12 +13,16 @@
 //// editor. So do two of the three things the lane fold reads from its
 //// `Surroundings`: whether a notes surface is open when a notes read is
 //// refused, and whether a diff is shown when a new cut arrives. The
-//// commands (`tui/commands`) record facts too; the one no other test
-//// reached is an interrupt returning a steering composer to prompting.
+//// commands (`tui/commands`) record facts too; those no other test reached
+//// are an interrupt returning a steering composer to prompting, a
+//// dispatched prompt returning it too while a dispatched command leaves it
+//// alone, `/clear` dropping the gutters, and `/approvals <id>` naming the
+//// record the dialog waits for.
 
 import core/json
 import core/message
 import etui/backend
+import etui/widgets/textarea as text_area
 import gleam/dict
 import gleam/option.{None, Some}
 import session_view/protocol
@@ -80,6 +84,57 @@ pub fn an_interrupt_returns_the_composer_to_prompting_test() {
   assert untouched.shared.notice == "nothing is running"
   assert untouched.view.submission_mode == tui_model.SteerNow
     as "an interrupt with nothing running leaves the composer alone"
+}
+
+// A draft typed into the composer of the preview, whose lane never locks a
+// submission, so the dispatch consumes the draft at once.
+fn drafted(text: String) -> tui_model.Model {
+  let base = model()
+  tui_model.Model(
+    ..base,
+    view: tui_model.View(
+      ..base.view,
+      input: text_area.state_from_string(text),
+      submission_mode: tui_model.SteerNow,
+    ),
+  )
+}
+
+// A prompt the dispatch consumes returns a steering composer to prompting;
+// a command it consumes empties the editor and leaves the mode alone. Both
+// keep the text in the input history.
+pub fn a_dispatched_prompt_returns_the_composer_to_prompting_test() {
+  let prompted = submit.submit(drafted("look at the failing test"))
+  assert text_area.value(prompted.view.input) == ""
+  assert prompted.view.history == ["look at the failing test"]
+  assert prompted.view.submission_mode == tui_model.PromptNext
+    as "the draft went as a prompt, so the next line is a prompt too"
+
+  let compacted = submit.submit(drafted("/compact"))
+  assert text_area.value(compacted.view.input) == ""
+  assert compacted.view.history == ["/compact"]
+  assert compacted.view.submission_mode == tui_model.SteerNow
+    as "a command leaves the composer's mode as the operator set it"
+}
+
+pub fn clearing_the_transcript_drops_its_gutters_test() {
+  let base = drafted("/clear")
+  let cleared =
+    submit.submit(
+      tui_model.Model(
+        ..base,
+        view: tui_model.View(..base.view, record_gutters: [7]),
+      ),
+    )
+  assert cleared.shared.transcript == []
+  assert cleared.view.record_gutters == []
+    as "gutters of rows that are gone are dropped"
+}
+
+pub fn an_approval_lookup_names_the_record_the_dialog_waits_for_test() {
+  let asked = submit.submit(drafted("/approvals esc-1"))
+  assert asked.view.inspecting_approval == Some("esc-1")
+    as "the dialog opens on this record when the lookup answers"
 }
 
 pub fn a_full_snapshot_returns_the_viewport_to_the_tail_test() {
