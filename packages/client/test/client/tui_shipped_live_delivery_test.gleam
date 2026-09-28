@@ -87,6 +87,7 @@ import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript_line
 import simplifile
+import support/daemon_observation
 import support/internal/ffi_ws.{type Socket}
 import support/provider_http
 import support/tui_driver
@@ -339,14 +340,13 @@ fn share_session(
   let assert Ok(_) = daemon.request(control, protocol.StopSession(id), 5000)
     as "the owner requests retirement before changing isolation scope"
   let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon.request(control, protocol.GetSession(id), 2000) {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-          poll.Done(Nil)
-        Ok(_) -> poll.Retry
-        Error(reason) -> poll.Fail(reason)
-      }
-    })
+    daemon_observation.session_until(
+      control,
+      id,
+      within: 15_000,
+      every: 25,
+      inspect: daemon_observation.saved,
+    )
     as "isolation waits for the runtime's retirement witness"
   let assert Ok(isolate) =
     admin.parse(["isolate", id, "--share-existing-transcript"])

@@ -27,6 +27,7 @@ import gleam/string
 import host/bootstrap as native
 import host/endpoint
 import simplifile
+import support/daemon_observation
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_proc
 import support/internal/ffi_ws
@@ -130,16 +131,13 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   let assert Ok(_) =
     daemon.request(connected.control, protocol.StopSession(session), 5000)
   let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case
-        daemon.request(connected.control, protocol.GetSession(session), 2000)
-      {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-          poll.Done(Nil)
-        Ok(_) -> poll.Retry
-        Error(reason) -> poll.Fail(reason)
-      }
-    })
+    daemon_observation.session_until(
+      connected.control,
+      session,
+      within: 15_000,
+      every: 25,
+      inspect: daemon_observation.saved,
+    )
   let #(isolated, _) =
     access(server, directory, paths, [
       "isolate",
@@ -256,20 +254,26 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
 fn await_resident(control, session: String, paths: endpoint.Paths) -> Nil {
   let before = list.length(start_failures(paths))
   let outcome =
-    poll.until(within: 20_000, every: 50, attempt: fn() {
-      case daemon.request(control, protocol.GetSession(session), 2000) {
-        Ok(protocol.SessionReply(protocol.Session(
-          status: protocol.Resident(..),
-          ..,
-        ))) -> poll.Done(Nil)
-        Ok(_) ->
-          case list.drop(start_failures(paths), before) {
-            [] -> poll.Retry
-            causes -> poll.Fail(string.join(causes, "\n"))
-          }
-        Error(reason) -> poll.Fail(string.inspect(reason))
-      }
-    })
+    daemon_observation.session_until(
+      control,
+      session,
+      within: 20_000,
+      every: 50,
+      inspect: fn(row) {
+        case row.status {
+          protocol.Resident(..) -> poll.Done(Nil)
+          protocol.Reserved
+          | protocol.Saved
+          | protocol.Opening(_)
+          | protocol.Stopping(_)
+          | protocol.RecoveryBlocked ->
+            case list.drop(start_failures(paths), before) {
+              [] -> poll.Retry
+              causes -> poll.Fail(string.join(causes, "\n"))
+            }
+        }
+      },
+    )
   case outcome {
     poll.Answered(Nil) -> Nil
     other ->

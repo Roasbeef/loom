@@ -49,6 +49,7 @@ import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import simplifile
+import support/daemon_observation
 import support/enforcement
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
@@ -338,16 +339,13 @@ fn exercise_peer_fixture(
     daemon.request(connected.control, protocol.StopSession(source_id), 5000)
     as "the source retires before its explicit sharing decision"
   let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case
-        daemon.request(connected.control, protocol.GetSession(source_id), 2000)
-      {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-          poll.Done(Nil)
-        Ok(_) -> poll.Retry
-        Error(reason) -> poll.Fail(reason)
-      }
-    })
+    daemon_observation.session_until(
+      connected.control,
+      source_id,
+      within: 15_000,
+      every: 25,
+      inspect: daemon_observation.saved,
+    )
   let assert Ok(isolate) =
     admin.parse(["isolate", source_id, "--share-existing-transcript"])
   let assert Ok(_) = admin.exchange(address, owner, epoch, isolate)
@@ -450,14 +448,13 @@ fn exercise(
     daemon.request(connected.control, protocol.StopSession(id), 5000)
     as "the owner requests retirement before changing isolation scope"
   let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon.request(connected.control, protocol.GetSession(id), 2000) {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-          poll.Done(Nil)
-        Ok(_) -> poll.Retry
-        Error(reason) -> poll.Fail(reason)
-      }
-    })
+    daemon_observation.session_until(
+      connected.control,
+      id,
+      within: 15_000,
+      every: 25,
+      inspect: daemon_observation.saved,
+    )
     as "isolation waits for the runtime's retirement witness"
   let assert Ok(isolate) =
     admin.parse(["isolate", id, "--share-existing-transcript"])
@@ -721,14 +718,13 @@ fn live_tool_switches(
   let assert Ok(_) = daemon.request(control, protocol.StopSession(a2), 5000)
     as "A2 retires before the owner changes its sharing scope"
   let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon.request(control, protocol.GetSession(a2), 2000) {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-          poll.Done(Nil)
-        Ok(_) -> poll.Retry
-        Error(reason) -> poll.Fail(reason)
-      }
-    })
+    daemon_observation.session_until(
+      control,
+      a2,
+      within: 15_000,
+      every: 25,
+      inspect: daemon_observation.saved,
+    )
     as "A2's original runtime is saved before isolation"
   owner_command(address, owner, epoch, [
     "isolate",
@@ -1069,14 +1065,13 @@ fn failed_switch_preserves_channel(
   let assert Ok(_) = daemon.request(control, protocol.StopSession(target), 5000)
     as "the owner stops the target before changing its isolation scope"
   let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon.request(control, protocol.GetSession(target), 2000) {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-          poll.Done(Nil)
-        Ok(_) -> poll.Retry
-        Error(reason) -> poll.Fail(reason)
-      }
-    })
+    daemon_observation.session_until(
+      control,
+      target,
+      within: 15_000,
+      every: 25,
+      inspect: daemon_observation.saved,
+    )
     as "the target's original runtime retires before transcript sharing"
   list.each(
     [
