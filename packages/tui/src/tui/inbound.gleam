@@ -26,7 +26,6 @@ import gleam/result
 import gleam/string
 import session_view/agent_roster
 import session_view/approval
-import session_view/command
 import session_view/connection_event
 import session_view/notes_view
 import session_view/operator
@@ -41,6 +40,7 @@ import tui/agents
 import tui/approval_panel
 import tui/bootstrap
 import tui/buffered
+import tui/commands
 import tui/event_fold
 import tui/job
 import tui/lane_fold
@@ -53,7 +53,6 @@ import tui/model.{
 } as tui_model
 import tui/model_selector
 import tui/note_panel
-import tui/outbound
 import tui/queue_editor
 import tui/queue_panel
 import tui/render
@@ -333,49 +332,30 @@ fn inspect_looked_up(model: Model, records, missing) {
 
 /// The panel returns its captured review. Looking the ID up again here would
 /// replace the displayed question with a newer record the operator never saw.
+///
+/// The terminal's form of `commands.decide_review`, which takes the panel's
+/// choice in the session's terms. The dialog closes when the decision is
+/// handed to the lane (`ReviewAnswered`) and stays open when it is refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model =
+///   inbound.decide_captured_approval(model, record, approval_panel.Deny)
+/// ```
 @internal
 pub fn decide_captured_approval(
   model: Model,
   record: approval.Review,
   choice: approval_panel.Choice,
 ) -> Model {
-  case outbound.mutation_refusal(model.shared, command.Approve(record.id)) {
-    Some(reason) -> tui_model.append_error(model, reason)
-    None -> {
-      let choice = case choice {
-        approval_panel.AllowOnce -> operator.AllowOnce
-        approval_panel.AllowSession -> operator.AllowForSession
-        approval_panel.Deny -> operator.Deny
-      }
-      case operator.decision(model.shared.next_id, record, choice) {
-        Error(reason) -> tui_model.append_error(model, reason)
-        Ok(frame) ->
-          tui_model.send_frame(
-            Model(..model, view: View(..model.view, overlay: NoOverlay)),
-            frame,
-          )
-      }
-    }
+  let choice = case choice {
+    approval_panel.AllowOnce -> operator.AllowOnce
+    approval_panel.AllowSession -> operator.AllowForSession
+    approval_panel.Deny -> operator.Deny
   }
-}
-
-/// Encodes and sends a decision for the displayed approval `id`. A decision
-/// that is not on screen is refused, so the operator only answers what they
-/// have seen.
-@internal
-pub fn decide(model: Model, id: String, choice: operator.Choice) -> Model {
-  case list.find(model.shared.approvals, fn(record) { record.id == id }) {
-    Error(Nil) ->
-      tui_model.append_error(
-        model,
-        "decision is not displayed; load /approvals " <> id <> " first",
-      )
-    Ok(record) ->
-      case operator.decision(model.shared.next_id, record, choice) {
-        Error(reason) -> tui_model.append_error(model, reason)
-        Ok(frame) -> tui_model.send_frame(model, frame)
-      }
-  }
+  tui_model.run_shared(model, commands.decide_review(_, record, choice))
+  |> settle_surfaces(model, _)
 }
 
 /// Applies at most `remaining` of the messages the runtime received into
@@ -482,8 +462,12 @@ fn handle_connection_message(
 /// settles, which would apply them against that call's `before`. The
 /// terminal forms that hold without settling (`request_decisions`,
 /// `service_history`, `request_visible_worktree`, `refresh_worktree`, the
-/// lane's `tick`, `receive` and `cancel_unsent`) reach no function that
-/// records a fact; one that starts to must settle too.
+/// lane's `tick`, `receive` and `cancel_unsent`, `commands.decide`,
+/// `surfaces.submit_goal_action` and the step's settle) reach no function
+/// that records a fact; one that starts to must settle too. The commands
+/// that record one (`commands.interrupt_active`, `stop_strand`,
+/// `decide_review`, `select_model`, `focus` and `load_strand`) are settled by
+/// their terminal forms.
 ///
 /// ## Examples
 ///
@@ -595,6 +579,15 @@ fn show_surface(
         }),
       )
     session_model.ConnectionLost -> begin_reconnect(model)
+
+    // Input typed after an interrupt is released with the held input, never
+    // steered into the stopping turn.
+    session_model.InterruptRequested ->
+      Model(..model, view: View(..model.view, submission_mode: PromptNext))
+
+    // The decision is on its way, so the question leaves the screen.
+    session_model.ReviewAnswered ->
+      Model(..model, view: View(..model.view, overlay: NoOverlay))
 
     // A replay's adoption leaves nothing of the previous capture's prompts or
     // note selection, and a new session starts its transcript at the tail.
@@ -737,23 +730,6 @@ pub fn zero_usage() -> message.Usage {
       total: 0.0,
     ),
   )
-}
-
-/// Records the strand's current model, forgetting the cache watch when the
-/// model changed, since a cache written by one model does not serve another.
-///
-/// The terminal's form of `event_fold.select_model`, which also clears the
-/// footer's outlook when the active strand's watch was forgotten.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let model = inbound.select_model(model, "claude-sonnet")
-/// ```
-@internal
-pub fn select_model(model: Model, name: String) -> Model {
-  tui_model.run_shared(model, event_fold.select_model(_, name))
-  |> settle_surfaces(model, _)
 }
 
 /// Keeps the agent inspector's selected message valid against the current

@@ -419,11 +419,8 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
   // always worth a read.
   let idle = observing(first, "first", None)
   assert surfaces.context_refresh_due(
-    tui_model.Model(
-      ..idle,
-      shared: session_model.Shared(..idle.shared, captured: None),
-    ),
-    idle,
+    session_model.Shared(..idle.shared, captured: None),
+    idle.shared,
   )
 
   // An entry committed while the operation runs moves the leaf. That is the
@@ -432,26 +429,23 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
   // nobody reads until the turn ends.
   let running = observing(first, "first", Some("running tools"))
   let running_later = observing(second, "first", Some("running tools"))
-  assert !surfaces.context_refresh_due(running, running_later)
+  assert !surfaces.context_refresh_due(running.shared, running_later.shared)
 
   // The operation reaching `done` is the boundary the footer is read at.
   let settled = observing(second, "first", None)
-  assert surfaces.context_refresh_due(running_later, settled)
+  assert surfaces.context_refresh_due(running_later.shared, settled.shared)
 
   // A strand switch and a configuration change each stand on their own, and
   // a transition that changes none of the four starts nothing.
   assert surfaces.context_refresh_due(
-    settled,
-    tui_model.Model(
-      ..settled,
-      shared: session_model.Shared(..settled.shared, active_strand: "fork"),
-    ),
+    settled.shared,
+    session_model.Shared(..settled.shared, active_strand: "fork"),
   )
   assert surfaces.context_refresh_due(
-    settled,
-    observing(second, "second", None),
+    settled.shared,
+    observing(second, "second", None).shared,
   )
-  assert !surfaces.context_refresh_due(settled, settled)
+  assert !surfaces.context_refresh_due(settled.shared, settled.shared)
 }
 
 pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {

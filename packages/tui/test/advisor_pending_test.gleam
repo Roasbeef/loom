@@ -196,8 +196,10 @@ pub fn a_running_primary_keeps_newly_observed_advice_visible_test() {
 pub fn the_primary_settling_asks_for_one_read_test() {
   let running = with_roster(roster(Some("assistant"), None))
   let idle = with_roster(roster(None, None))
-  assert surfaces.advisor_nudges_action(running, idle) == surfaces.ReadNudges
-  assert surfaces.advisor_nudges_action(idle, running) == surfaces.DropNudges
+  assert surfaces.advisor_nudges_action(running.shared, idle.shared)
+    == surfaces.ReadNudges
+  assert surfaces.advisor_nudges_action(idle.shared, running.shared)
+    == surfaces.DropNudges
 }
 
 /// A review ending can queue a nudge even while the primary is still running.
@@ -205,20 +207,21 @@ pub fn the_primary_settling_asks_for_one_read_test() {
 pub fn a_review_settling_asks_for_a_read_regardless_of_primary_phase_test() {
   let reviewing = with_roster(roster(None, Some("assistant")))
   let reviewed = with_roster(roster(None, None))
-  assert surfaces.advisor_nudges_action(reviewing, reviewed)
+  assert surfaces.advisor_nudges_action(reviewing.shared, reviewed.shared)
     == surfaces.ReadNudges
 
   // The running operation only drained advice that existed at its start.
   let busy = with_roster(roster(Some("assistant"), Some("assistant")))
   let busy_reviewed = with_roster(roster(Some("assistant"), None))
-  assert surfaces.advisor_nudges_action(busy, busy_reviewed)
+  assert surfaces.advisor_nudges_action(busy.shared, busy_reviewed.shared)
     == surfaces.ReadNudges
 
   // A start and review end in one captured transition still needs the
   // authoritative read: the review may have queued advice after the start
   // drained older advice.
   let both = with_roster(roster(Some("assistant"), None))
-  assert surfaces.advisor_nudges_action(reviewing, both) == surfaces.ReadNudges
+  assert surfaces.advisor_nudges_action(reviewing.shared, both.shared)
+    == surfaces.ReadNudges
 }
 
 /// The primary appearing in the roster is the attachment edge: a terminal that
@@ -227,7 +230,7 @@ pub fn a_review_settling_asks_for_a_read_regardless_of_primary_phase_test() {
 pub fn the_primary_appearing_in_the_roster_asks_for_one_read_test() {
   let attaching = with_roster([])
   let listed = with_roster(roster(None, None))
-  assert surfaces.advisor_nudges_action(attaching, listed)
+  assert surfaces.advisor_nudges_action(attaching.shared, listed.shared)
     == surfaces.ReadNudges
 }
 
@@ -236,16 +239,17 @@ pub fn the_primary_appearing_in_the_roster_asks_for_one_read_test() {
 /// behind every tool call of a sub-agent's turn.
 pub fn unrelated_movement_asks_for_nothing_test() {
   let idle = with_roster(roster(None, None))
-  assert surfaces.advisor_nudges_action(idle, idle) == surfaces.HoldNudges
+  assert surfaces.advisor_nudges_action(idle.shared, idle.shared)
+    == surfaces.HoldNudges
 
   let with_worker =
     with_roster([
       Strand(id: "sub:main/audit", name: None, live_phase: Some("assistant")),
       ..roster(None, None)
     ])
-  assert surfaces.advisor_nudges_action(idle, with_worker)
+  assert surfaces.advisor_nudges_action(idle.shared, with_worker.shared)
     == surfaces.HoldNudges
-  assert surfaces.advisor_nudges_action(with_worker, idle)
+  assert surfaces.advisor_nudges_action(with_worker.shared, idle.shared)
     == surfaces.HoldNudges
 }
 
@@ -258,7 +262,8 @@ pub fn a_local_submission_counts_as_the_primary_running_test() {
       ..idle,
       shared: session_model.Shared(..idle.shared, submitting: Some("main")),
     )
-  assert surfaces.advisor_nudges_action(idle, submitting) == surfaces.DropNudges
+  assert surfaces.advisor_nudges_action(idle.shared, submitting.shared)
+    == surfaces.DropNudges
 }
 
 // --- the command lane -------------------------------------------------------

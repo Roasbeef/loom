@@ -541,15 +541,16 @@ pub type GoalObservation {
   GoalUnavailable(reason: String)
 }
 
-/// Something the event fold or the lane fold did that a host's own surfaces
-/// have to follow.
+/// Something the event fold, the lane fold or a command did that a host's
+/// own surfaces have to follow.
 ///
-/// The folds (`tui/event_fold`, `tui/lane_fold`) take the shared record
-/// alone, so they cannot write the terminal's editor, overlays or footer.
-/// Where an event or an update used to write them at the point it was
-/// applied, the fold records one of these in `Shared.surface_facts`, and the
-/// terminal applies it after the call that recorded it, in the order
-/// recorded, before the next update.
+/// The folds (`tui/event_fold`, `tui/lane_fold`) and the commands
+/// (`tui/commands`) take the shared record alone, so they cannot write the
+/// terminal's editor, overlays or footer. Where an event, an update or a
+/// command used to write them at the point it was applied, the shared
+/// function records one of these in `Shared.surface_facts`, and the terminal
+/// applies it after the call that recorded it, in the order recorded, before
+/// the next update.
 @internal
 pub type SurfaceFact {
   /// The session state moved from `departing` to `arriving`, each a session
@@ -622,6 +623,17 @@ pub type SurfaceFact {
   /// selection and approval prompts, and returns its viewport to the tail
   /// when the session changed.
   ReplayAdopted(session: SessionChange)
+
+  /// The operator's interrupt of the active strand was decided and its
+  /// `abort` handed to the lane. Input typed next is released with the held
+  /// input rather than steered into the stopping turn, so a host that offers
+  /// a steer returns its composer to prompting.
+  InterruptRequested
+
+  /// A decision for the approval a host's dialog showed was handed to the
+  /// lane. The host closes the dialog; a refused decision leaves it open,
+  /// with the reason in the transcript.
+  ReviewAnswered
 }
 
 /// Whether a change of attachment kept the session.
@@ -973,6 +985,27 @@ pub fn active_interrupt(
       }
     None -> None
   }
+}
+
+/// Whether one named strand has work in flight. Unlike `active_strand_phase`
+/// this asks about a strand the operator may not be looking at, and it counts
+/// a local submission the server has not yet reported a phase for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let busy = session_model.strand_running(model.shared, "main")
+/// ```
+@internal
+pub fn strand_running(
+  shared: Shared(socket, recorder, source, replay_source),
+  target: String,
+) -> Bool {
+  shared.submitting == Some(target)
+  || list.any(shared.strands, fn(strand) {
+    let protocol.Strand(id:, live_phase:, ..) = strand
+    id == target && live_phase != None
+  })
 }
 
 /// Reports whether `name` is one of the listed strands.

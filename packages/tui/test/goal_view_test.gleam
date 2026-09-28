@@ -1007,15 +1007,18 @@ pub fn the_goal_reads_on_the_nudge_edges_and_on_a_run_start_test() {
   let running = with_roster(roster(Some("assistant"), None))
   let reviewing = with_roster(roster(None, Some("assistant")))
 
-  assert surfaces.goal_action(running, idle) == surfaces.ReadGoal
-  assert surfaces.goal_action(reviewing, idle) == surfaces.ReadGoal
-  assert surfaces.goal_action(with_roster([]), idle) == surfaces.ReadGoal
-  assert surfaces.goal_action(idle, running) == surfaces.ReadGoal
+  assert surfaces.goal_action(running.shared, idle.shared) == surfaces.ReadGoal
+  assert surfaces.goal_action(reviewing.shared, idle.shared)
+    == surfaces.ReadGoal
+  assert surfaces.goal_action(with_roster([]).shared, idle.shared)
+    == surfaces.ReadGoal
+  assert surfaces.goal_action(idle.shared, running.shared) == surfaces.ReadGoal
 
   // A goal is pinned until the operator unpins it, so an unrelated
   // transition asks for nothing and nothing clears the board.
-  assert surfaces.goal_action(idle, idle) == surfaces.HoldGoal
-  assert surfaces.goal_action(running, running) == surfaces.HoldGoal
+  assert surfaces.goal_action(idle.shared, idle.shared) == surfaces.HoldGoal
+  assert surfaces.goal_action(running.shared, running.shared)
+    == surfaces.HoldGoal
 
   // A different session owns a different goal even when both primaries run.
   let other =
@@ -1023,7 +1026,7 @@ pub fn the_goal_reads_on_the_nudge_edges_and_on_a_run_start_test() {
       ..running,
       shared: session_model.Shared(..running.shared, session: "other session"),
     )
-  assert surfaces.goal_action(running, other) == surfaces.ReadGoal
+  assert surfaces.goal_action(running.shared, other.shared) == surfaces.ReadGoal
 }
 
 /// A lifecycle-driven goal read is background observation. Sending it must

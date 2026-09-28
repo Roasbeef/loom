@@ -29,6 +29,7 @@ import session_view/transcript_line.{
 import session_view/worktree_view
 import tui/agents
 import tui/attachment
+import tui/commands
 import tui/effect
 import tui/event_fold
 import tui/inbound
@@ -222,16 +223,9 @@ fn submit_text(model: Model) -> Model {
         )
       tui_model.send_frame(opened, protocol.models(opened.shared.next_id))
     }
-    command.Model(name) -> {
-      let switched =
-        inbound.select_model(cleared, name)
-        |> tui_model.send_frame(protocol.set_model(
-          cleared.shared.next_id,
-          cleared.shared.active_strand,
-          name,
-        ))
-      tui_model.append_system(switched, "active model changed to " <> name)
-    }
+    command.Model(name) ->
+      tui_model.run_shared(cleared, commands.select_model(_, name))
+      |> inbound.settle_surfaces(cleared, _)
     command.Strands | command.Agents -> open_agents(cleared)
     command.PeerLinks -> session_control.begin_peer_workspace(cleared)
     command.Schedules ->
@@ -274,8 +268,10 @@ fn submit_text(model: Model) -> Model {
         cleared,
         protocol.add_directory(cleared.shared.next_id, path, access),
       )
-    command.Approve(id) -> inbound.decide(cleared, id, operator.AllowOnce)
-    command.Deny(id) -> inbound.decide(cleared, id, operator.Deny)
+    command.Approve(id) ->
+      tui_model.run_shared(cleared, commands.decide(_, id, operator.AllowOnce))
+    command.Deny(id) ->
+      tui_model.run_shared(cleared, commands.decide(_, id, operator.Deny))
     command.Notes ->
       surfaces.refresh_notes(Model(
         shared: Shared(
@@ -344,13 +340,11 @@ fn submit_text(model: Model) -> Model {
     // it claimed a goal was pinned and was then followed by the sentence
     // saying no advisor is routed.
     command.GoalSet(objective:, token_budget:) ->
-      tui_model.send_frame(
-        surfaces.confirming(
-          cleared,
-          "goal pinned · budget "
-            <> int.to_string(token_budget)
-            <> " tokens · /goal --budget N sets it",
-        ),
+      confirm_goal(
+        cleared,
+        "goal pinned · budget "
+          <> int.to_string(token_budget)
+          <> " tokens · /goal --budget N sets it",
         protocol.goal_set(cleared.shared.next_id, objective, token_budget),
       )
 
@@ -358,23 +352,33 @@ fn submit_text(model: Model) -> Model {
     // mistyped it should see what the harness will run before the reviewer
     // is shown its result.
     command.GoalCheck(command: Some(check)) ->
-      tui_model.send_frame(
-        surfaces.confirming(cleared, "the goal check is " <> check),
+      confirm_goal(
+        cleared,
+        "the goal check is " <> check,
         protocol.goal_check(cleared.shared.next_id, Some(check)),
       )
     command.GoalCheck(command: None) ->
-      tui_model.send_frame(
-        surfaces.confirming(cleared, "the goal check is cleared"),
+      confirm_goal(
+        cleared,
+        "the goal check is cleared",
         protocol.goal_check(cleared.shared.next_id, None),
       )
     command.GoalClear ->
-      tui_model.send_frame(
-        surfaces.confirming(cleared, "the session goal is cleared"),
+      confirm_goal(
+        cleared,
+        "the session goal is cleared",
         protocol.goal_clear(cleared.shared.next_id),
       )
-    command.GoalPause -> surfaces.submit_goal_action(cleared, command.GoalPause)
+    command.GoalPause ->
+      tui_model.run_shared(cleared, surfaces.submit_goal_action(
+        _,
+        command.GoalPause,
+      ))
     command.GoalResume ->
-      surfaces.submit_goal_action(cleared, command.GoalResume)
+      tui_model.run_shared(cleared, surfaces.submit_goal_action(
+        _,
+        command.GoalResume,
+      ))
 
     // The word is shown back because the operator has to see which of
     // their words was read as the budget, and a goal must never be pinned
@@ -441,6 +445,15 @@ fn submit_text(model: Model) -> Model {
       tui_model.append_error(cleared, "/" <> name <> " needs an argument")
     command.Prompt(_) -> send_user_text(prompt_cleared, expanded, model)
   }
+}
+
+// A goal mutation arms the one line its reply prints and then sends the
+// mutation; the board that answers it prints the line.
+fn confirm_goal(model: Model, line: String, frame: String) -> Model {
+  tui_model.run_shared(model, fn(shared) {
+    surfaces.confirming(shared, line)
+    |> outbound.send_frame(frame)
+  })
 }
 
 // Images are new prompt content, never live-turn steering, and `prompt_content`
@@ -856,49 +869,26 @@ pub fn toggle_submission_mode(model: Model) -> Model {
 }
 
 /// Sends an interrupt for the active strand's running operation, once.
+///
+/// The terminal's form of `commands.interrupt_active`. The composer returns
+/// to prompting when the interrupt is sent (`InterruptRequested`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.interrupt_active(model)
+/// ```
 @internal
 pub fn interrupt_active(model: Model) -> Model {
-  case
-    session_model.active_strand_phase(model.shared),
-    session_model.active_interrupt(model.shared)
-  {
-    None, _ ->
-      Model(
-        ..model,
-        shared: Shared(..model.shared, notice: "nothing is running"),
-      )
-    Some(_), Some(_) ->
-      Model(
-        ..model,
-        shared: Shared(..model.shared, notice: "interrupt already requested"),
-      )
-    Some(_), None -> {
-      let strand = model.shared.active_strand
-      tui_model.send_frame(
-        Model(
-          shared: Shared(
-            ..model.shared,
-            interrupt: Some(Interrupt(
-              strand:,
-              operation: captured_operation(model, strand),
-              pending: None,
-            )),
-            notice: "stopping; held input waits · enter sends it with your message",
-          ),
-          view: View(..model.view, submission_mode: PromptNext),
-        ),
-        protocol.abort(model.shared.next_id, strand),
-      )
-    }
-  }
+  tui_model.run_shared(model, commands.interrupt_active)
+  |> inbound.settle_surfaces(model, _)
 }
 
 /// Stops one strand's running operation from the agent strip.
 ///
-/// The active strand goes through `interrupt_active`, which also holds its
-/// queued input and arms the composer to send it. Any other strand gets the
-/// same `abort` command without that bookkeeping: its queue is its own, and
-/// the operator's composer is still addressed to the strand on screen.
+/// The terminal's form of `commands.stop_strand`: the active strand is
+/// interrupted, as Escape interrupts it, and any other strand is sent a bare
+/// `abort`.
 ///
 /// ## Examples
 ///
@@ -907,25 +897,8 @@ pub fn interrupt_active(model: Model) -> Model {
 /// ```
 @internal
 pub fn stop_strand(model: Model, strand: String) -> Model {
-  case
-    strand == model.shared.active_strand,
-    layout.strand_running(model, strand)
-  {
-    True, _ -> interrupt_active(model)
-    False, False ->
-      Model(
-        ..model,
-        shared: Shared(..model.shared, notice: strand <> " is not running"),
-      )
-    False, True ->
-      tui_model.send_frame(
-        Model(
-          ..model,
-          shared: Shared(..model.shared, notice: "stopping " <> strand),
-        ),
-        protocol.abort(model.shared.next_id, strand),
-      )
-  }
+  tui_model.run_shared(model, commands.stop_strand(_, strand))
+  |> inbound.settle_surfaces(model, _)
 }
 
 /// Terminals encode Alt+character as Escape followed by that character. If a
@@ -944,13 +917,6 @@ pub fn interrupt_and_insert(model: Model, character: String) -> Model {
       input: text_area.insert_char(editor, interrupted.view.input, character),
     ),
   )
-}
-
-fn captured_operation(model: Model, strand: String) -> Option(String) {
-  case model.shared.captured {
-    Some(#(_, view)) -> dict.get(view.operations, strand) |> option.from_result
-    None -> None
-  }
 }
 
 /// Shows or hides the agent rail.
@@ -997,14 +963,11 @@ pub fn toggle_details(model: Model) -> Model {
 /// sees `quit` and exits.
 @internal
 pub fn quit(model: Model) -> Model {
-  // The adopted lane closes ahead of the provisional attempt. A recording
-  // has always noted the adopted lane's close before the attempt's, whose
-  // close the `Abandon` below decides only when the runtime performs it.
-  let model = case model.shared.channel {
-    Some(channel) ->
-      tui_model.hold_channel(model, session_channel.close(channel))
-    None -> model
-  }
+  // The adopted lane closes ahead of the provisional attempt, in the
+  // session's half of the quit. A recording has always noted the adopted
+  // lane's close before the attempt's, whose close the `Abandon` below
+  // decides only when the runtime performs it.
+  let model = tui_model.run_shared(model, commands.quit)
 
   // The attempt moves into its cancel effect, which closes what it opened.
   let model =
@@ -1047,48 +1010,47 @@ pub fn quit(model: Model) -> Model {
       Model(..model, view: View(..model.view, configuring: None))
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
-  let model = case model.view.daemon_host {
+  case model.view.daemon_host {
     None -> model
     Some(host) -> tui_model.emit(model, effect.CloseControl(host.control))
   }
-  Model(..model, shared: Shared(..model.shared, quit: True))
 }
 
 /// Makes `strand` the active strand, cancelling unsent frames for the old
 /// one and re-projecting the captured cut, or asking for the strand's
 /// configuration when nothing is captured.
+///
+/// The session's half is three units, each applied with its facts before
+/// the next: the lane's cancellation (`cancel_pending`), `commands.focus`,
+/// and `commands.load_strand`. Between the last two the terminal closes its
+/// overlay and forgets the footer's outlook, so the cut's approval decisions
+/// read a terminal with no dialog open, as they always have.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.switch_active_strand(model, "worker")
+/// ```
 @internal
 pub fn switch_active_strand(model: Model, strand: String) -> Model {
   let model =
     inbound.cancel_pending(model, "target change from " <> model.shared.session)
-  let model = inbound.select_workspace(model, model.shared.session, strand)
+  let focused =
+    tui_model.run_shared(model, commands.focus(_, strand))
+    |> inbound.settle_surfaces(model, _)
   let selected =
     Model(
-      shared: Shared(
-        ..model.shared,
-        active_strand: strand,
-        queued: [],
-        awaiting_outcome: None,
-        current_model: "loading…",
-        record_cache_valid: False,
-        notice: "active strand: " <> strand,
-      ),
+      ..focused,
       view: View(
-        ..model.view,
+        ..focused.view,
         overlay: NoOverlay,
         cache_outlook: "",
-        repaint_phase: !model.view.repaint_phase,
+        repaint_phase: !focused.view.repaint_phase,
       ),
     )
-    |> tui_model.invalidate_transcript
-  case model.shared.captured {
-    Some(#(cut, view)) -> inbound.apply_cut(selected, cut, view)
-    None ->
-      tui_model.send_frame(
-        selected,
-        protocol.config(model.shared.next_id, strand),
-      )
-  }
+  let around = inbound.surroundings(selected)
+  tui_model.run_shared(selected, commands.load_strand(_, strand, around))
+  |> inbound.settle_surfaces(selected, _)
 }
 
 /// Opens held-input inspection without touching composer text or attachments.

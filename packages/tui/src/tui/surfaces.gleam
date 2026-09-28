@@ -13,12 +13,15 @@
 //// Replies are checked against the attachment that asked (`queue_owner`)
 //// before they are applied, so a board that arrives after a session or
 //// strand switch is dropped rather than shown against the wrong target.
-//// The `sync_*` functions compare the model before and after an event and
-//// decide whether that event makes a surface's data stale.
+//// The `sync_*` functions compare the session state before and after an
+//// event and decide whether that event makes a surface's data stale; the
+//// three together are the shared step's settle (`tui/session_step`).
 ////
-//// The reads (`service_*`) and the receivers (`receive_jobs`,
+//// The reads (`service_*`), the receivers (`receive_jobs`,
 //// `receive_goal`, `receive_advisor_nudges`, `retire_delivered_nudges` and
-//// `refuse_goal`) take and return the shared record alone
+//// `refuse_goal`), the `sync_*` edges and the goal commands
+//// (`submit_goal_action`, `confirming`) take and return the shared record
+//// alone
 //// (`tui/session_model`), so a second host of the session can run them with
 //// its own handle bindings. The surfaces they feed are the terminal's, and
 //// what a read or a reply means for them is recorded rather than written: a
@@ -51,7 +54,6 @@ import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agents
 import tui/focused_goal_panel
-import tui/layout
 import tui/model.{
   type Model, AgentInspector, ApprovalInspector, DaemonSelector, GoalInspector,
   Model, ModelSelector, NoOverlay, PeerLinkManager, View,
@@ -435,16 +437,19 @@ pub type NudgeAction {
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.advisor_nudges_action(before, after)
+/// surfaces.advisor_nudges_action(before.shared, after.shared)
 /// ```
 @internal
-pub fn advisor_nudges_action(before: Model, after: Model) -> NudgeAction {
+pub fn advisor_nudges_action(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+) -> NudgeAction {
   let primary_started =
-    !layout.strand_running(before, advisor_pending.primary_strand)
-    && layout.strand_running(after, advisor_pending.primary_strand)
+    !session_model.strand_running(before, advisor_pending.primary_strand)
+    && session_model.strand_running(after, advisor_pending.primary_strand)
   let review_settled =
-    layout.strand_running(before, advisor_pending.advisor_strand)
-    && !layout.strand_running(after, advisor_pending.advisor_strand)
+    session_model.strand_running(before, advisor_pending.advisor_strand)
+    && !session_model.strand_running(after, advisor_pending.advisor_strand)
   case review_settled, primary_started {
     // When both edges share one snapshot, the new review may have queued
     // advice after the primary drained its older queue. Read the current
@@ -461,37 +466,43 @@ pub fn advisor_nudges_action(before: Model, after: Model) -> NudgeAction {
 }
 
 /// Applies `advisor_nudges_action` for the step from `before` to `after`.
+///
+/// Over the shared record alone; it is one of the three edges
+/// `session_step.settle` runs after every event.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.sync_advisor_nudges(before.shared, after.shared)
+/// ```
 @internal
-pub fn sync_advisor_nudges(before: Model, after: Model) -> Model {
+pub fn sync_advisor_nudges(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
   case advisor_nudges_action(before, after) {
     HoldNudges -> after
 
     DropNudges ->
-      Model(
+      Shared(
         ..after,
-        shared: Shared(
-          ..after.shared,
-          nudges: None,
-          nudges_refresh: worktree_view.Settled,
-          nudges_awaiting: None,
-          nudges_request: None,
-        ),
+        nudges: None,
+        nudges_refresh: worktree_view.Settled,
+        nudges_awaiting: None,
+        nudges_request: None,
       )
 
     ReadNudges -> {
       let started =
-        !layout.strand_running(before, advisor_pending.primary_strand)
-        && layout.strand_running(after, advisor_pending.primary_strand)
-      Model(
+        !session_model.strand_running(before, advisor_pending.primary_strand)
+        && session_model.strand_running(after, advisor_pending.primary_strand)
+      Shared(
         ..after,
-        shared: Shared(
-          ..after.shared,
-          nudges: case started {
-            True -> None
-            False -> after.shared.nudges
-          },
-          nudges_refresh: worktree_view.Requested,
-        ),
+        nudges: case started {
+          True -> None
+          False -> after.nudges
+        },
+        nudges_refresh: worktree_view.Requested,
       )
     }
   }
@@ -689,15 +700,18 @@ pub type GoalAction {
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.goal_action(before, after)
+/// surfaces.goal_action(before.shared, after.shared)
 /// ```
 @internal
-pub fn goal_action(before: Model, after: Model) -> GoalAction {
+pub fn goal_action(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+) -> GoalAction {
   let started =
-    before.shared.session != after.shared.session
+    before.session != after.session
     || {
-      !layout.strand_running(before, advisor_pending.primary_strand)
-      && layout.strand_running(after, advisor_pending.primary_strand)
+      !session_model.strand_running(before, advisor_pending.primary_strand)
+      && session_model.strand_running(after, advisor_pending.primary_strand)
     }
 
   case started, advisor_nudges_action(before, after) {
@@ -708,15 +722,23 @@ pub fn goal_action(before: Model, after: Model) -> GoalAction {
 }
 
 /// Applies `goal_action` for the step from `before` to `after`.
+///
+/// Over the shared record alone; it is one of the three edges
+/// `session_step.settle` runs after every event.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.sync_goal(before.shared, after.shared)
+/// ```
 @internal
-pub fn sync_goal(before: Model, after: Model) -> Model {
+pub fn sync_goal(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
   case goal_action(before, after) {
     HoldGoal -> after
-    ReadGoal ->
-      Model(
-        ..after,
-        shared: Shared(..after.shared, goal_refresh: worktree_view.Requested),
-      )
+    ReadGoal -> Shared(..after, goal_refresh: worktree_view.Requested)
   }
 }
 
@@ -726,44 +748,57 @@ pub fn sync_goal(before: Model, after: Model) -> Model {
 /// Arms the one line a committed goal mutation prints. The board that
 /// commits it is the mutation's own reply, so nothing else has to be
 /// scheduled: `report_goal` finds the line where `receive_goal` leaves it.
+///
+/// Over the shared record alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.confirming(shared, "the session goal is cleared")
+/// ```
 @internal
-pub fn confirming(model: Model, line: String) -> Model {
-  Model(
-    ..model,
-    shared: Shared(..model.shared, goal_report: ConfirmGoal(line:)),
-  )
+pub fn confirming(
+  shared: Shared(socket, recorder, source, replay_source),
+  line: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(..shared, goal_report: ConfirmGoal(line:))
 }
 
 /// Slash commands and inspector keys enter one gate. The pending-submission
 /// marker tells the shared send path whether a composer draft belongs to this
 /// command; an inspector action supplies `OverlaySubmission`, so the draft is
 /// never cleared as though the operator had submitted it.
+///
+/// Over the shared record alone; a terminal caller stores the result through
+/// `tui_model.run_shared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.submit_goal_action(shared, command.GoalPause)
+/// ```
 @internal
-pub fn submit_goal_action(model: Model, action: command.Command) -> Model {
-  case outbound.mutation_refusal(model.shared, action) {
-    Some(reason) -> tui_model.append_error(model, reason)
+pub fn submit_goal_action(
+  shared: Shared(socket, recorder, source, replay_source),
+  action: command.Command,
+) -> Shared(socket, recorder, source, replay_source) {
+  case outbound.mutation_refusal(shared, action) {
+    Some(reason) -> session_model.append_error(shared, reason)
     None -> {
-      let prepared = case model.shared.pending_submission {
-        Some(_) -> model
-        None ->
-          Model(
-            ..model,
-            shared: Shared(
-              ..model.shared,
-              pending_submission: Some(OverlaySubmission),
-            ),
-          )
+      let prepared = case shared.pending_submission {
+        Some(_) -> shared
+        None -> Shared(..shared, pending_submission: Some(OverlaySubmission))
       }
       case action {
         command.GoalPause ->
-          tui_model.send_frame(
+          outbound.send_frame(
             confirming(prepared, "the session goal is held"),
-            protocol.goal_pause(prepared.shared.next_id),
+            protocol.goal_pause(prepared.next_id),
           )
         command.GoalResume ->
-          tui_model.send_frame(
+          outbound.send_frame(
             confirming(prepared, "the session goal continues"),
-            protocol.goal_resume(prepared.shared.next_id),
+            protocol.goal_resume(prepared.next_id),
           )
         _ -> prepared
       }
@@ -1030,16 +1065,28 @@ pub fn receive_jobs(
 /// cost the server a full branch scan per tool call: a thirty-tool turn ran
 /// about sixty of them for a percentage nobody reads until the turn ends.
 /// Streaming tokens and unrelated captures start no read.
+///
+/// Over the shared record alone; it is one of the three edges
+/// `session_step.settle` runs after every event.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.sync_context(before.shared, after.shared)
+/// ```
 @internal
-pub fn sync_context(before: Model, after: Model) -> Model {
+pub fn sync_context(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
   let selected =
     context_view.select(
-      after.shared.context,
-      session_model.queue_owner(after.shared),
-      after.shared.active_strand,
+      after.context,
+      session_model.queue_owner(after),
+      after.active_strand,
     )
   let changed = context_refresh_due(before, after)
-  let context = case after.shared.peer {
+  let context = case after.peer {
     Attached ->
       case changed {
         True -> context_view.invalidate(selected)
@@ -1054,7 +1101,7 @@ pub fn sync_context(before: Model, after: Model) -> Model {
         notice: "Context observation requires a live connection",
       )
   }
-  Model(..after, shared: Shared(..after.shared, context:))
+  Shared(..after, context:)
 }
 
 /// Whether this model transition is worth another automatic context read.
@@ -1067,15 +1114,18 @@ pub fn sync_context(before: Model, after: Model) -> Model {
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.context_refresh_due(before, after)
+/// surfaces.context_refresh_due(before.shared, after.shared)
 /// ```
 @internal
-pub fn context_refresh_due(before: Model, after: Model) -> Bool {
-  case before.shared.captured, after.shared.captured {
+pub fn context_refresh_due(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+) -> Bool {
+  case before.captured, after.captured {
     Some(#(_, old)), Some(#(_, current)) ->
-      before.shared.active_strand != after.shared.active_strand
-      || dict.get(old.configurations, before.shared.active_strand)
-      != dict.get(current.configurations, after.shared.active_strand)
+      before.active_strand != after.active_strand
+      || dict.get(old.configurations, before.active_strand)
+      != dict.get(current.configurations, after.active_strand)
       || operation_settled(before, after)
     None, Some(_) -> True
     _, None -> False
@@ -1086,9 +1136,12 @@ pub fn context_refresh_due(before: Model, after: Model) -> Bool {
 // already tracks for the agent roster leaves `Some(_)` exactly once per
 // operation, when the server reports `done`. Reading on that edge gives one
 // observation per turn instead of one per committed entry.
-fn operation_settled(before: Model, after: Model) -> Bool {
-  session_model.active_strand_live(before.shared)
-  && !session_model.active_strand_live(after.shared)
+fn operation_settled(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+) -> Bool {
+  session_model.active_strand_live(before)
+  && !session_model.active_strand_live(after)
 }
 
 /// Sends a requested context read once the channel is ready and no
@@ -1156,15 +1209,24 @@ fn context_in_flight(state: context_view.State) -> Bool {
 
 // A review can add advice while the primary is still running. Its end is the
 // read edge; the primary's end and a fresh attachment are recovery edges.
-fn nudge_boundary(before: Model, after: Model) -> NudgeAction {
+fn nudge_boundary(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+) -> NudgeAction {
   let primary_settled =
-    layout.strand_running(before, advisor_pending.primary_strand)
-    && !layout.strand_running(after, advisor_pending.primary_strand)
+    session_model.strand_running(before, advisor_pending.primary_strand)
+    && !session_model.strand_running(after, advisor_pending.primary_strand)
   let newly_listed =
-    !layout.strand_listed(before, advisor_pending.primary_strand)
-    && layout.strand_listed(after, advisor_pending.primary_strand)
+    !session_model.is_known_strand(
+      before.strands,
+      advisor_pending.primary_strand,
+    )
+    && session_model.is_known_strand(
+      after.strands,
+      advisor_pending.primary_strand,
+    )
 
-  let session_changed = before.shared.session != after.shared.session
+  let session_changed = before.session != after.session
   case primary_settled || newly_listed || session_changed {
     True -> ReadNudges
     False -> HoldNudges

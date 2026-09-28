@@ -101,9 +101,9 @@ import tui/session_control
 import tui/session_model.{
   Disconnected, HoldGoalReport, Preview, Replaying, Shared,
 }
+import tui/session_step
 import tui/session_table
 import tui/summary_panel
-import tui/surfaces
 import tui/tick
 import tui/update
 import tui/update/download
@@ -1917,17 +1917,20 @@ fn apply_input(event: msg.Event, model: Model) -> Model {
 }
 
 // Everything an event does after its own handler: the worktree request a
-// newly shown diff needs, the context sync, the Herdr report, the transcript
-// projection, the viewport snap and the frame decision. `model` is the
-// state before the event and `updated` the state its handler produced.
+// newly shown diff needs, the shared step's settle (`session_step.settle`),
+// the Herdr report, the transcript projection, the viewport snap and the
+// frame decision. `model` is the state before the event and `updated` the
+// state its handler produced.
 fn settle_update(event: msg.Event, model: Model, updated: Model) -> Model {
   let updated = case !layout.diff_shown(model) && layout.diff_shown(updated) {
     True -> inbound.request_visible_worktree(updated)
     False -> updated
   }
-  let updated = surfaces.sync_context(model, updated)
-  let updated = surfaces.sync_advisor_nudges(model, updated)
-  let updated = surfaces.sync_goal(model, updated)
+
+  // The shared step's own settle: the context, pending-nudge and goal
+  // edges, which compare the session state alone.
+  let updated =
+    tui_model.run_shared(updated, session_step.settle(model.shared, _))
   let published = tick.publish_herdr(updated)
 
   // The snap runs after the projection, because a gesture closes the
