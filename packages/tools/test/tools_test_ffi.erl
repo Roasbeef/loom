@@ -1,6 +1,6 @@
 %% Test-only Erlang shims for the tools suite (never shipped in src).
-%% Used by the feature-detected integration test to find and drive the
-%% Go toolchain; see test/support/shell.gleam.
+%% Used by the feature-detected integration test to find and drive
+%% `git`; see test/support/shell.gleam.
 -module(tools_test_ffi).
 
 -export([find_executable/1, os_cmd/1]).

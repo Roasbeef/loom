@@ -1,8 +1,8 @@
 %% Test-only Erlang shims for the codemode package: a client end of the cap
 %% socket (so the launcher's real listener can be driven from a test without
-%% a jailed node), plus the shell lookups the feature-detected end-to-end
-%% suite uses to find and build the Go helper. Production code never reaches
-%% any of this.
+%% a jailed node), plus the PATH lookup the feature-detected end-to-end
+%% suite uses to find the toolchain. Production code never reaches any of
+%% this.
 -module(codemode_test_ffi).
 
 -export([
@@ -11,7 +11,6 @@
     peer_recv/2,
     peer_close/1,
     find_executable/1,
-    os_cmd/1,
     now_ms/0,
     get_env/1
 ]).
@@ -48,16 +47,12 @@ peer_close(Socket) ->
         _:_ -> nil
     end.
 
-%% os:find_executable/1 — feature detection for the Go toolchain.
+%% os:find_executable/1 — feature detection for gleam and erl.
 find_executable(Name) ->
     case os:find_executable(unicode:characters_to_list(Name)) of
         false -> {error, nil};
         Path -> {ok, unicode:characters_to_binary(Path)}
     end.
-
-%% os:cmd/1 — test-only, for driving `go build` and locating tools.
-os_cmd(Command) ->
-    unicode:characters_to_binary(os:cmd(unicode:characters_to_list(Command))).
 
 %% erlang:system_time/1 — the end-to-end suite runs against real wall
 %% deadlines (a jailed node dies at one), so it needs the real clock.

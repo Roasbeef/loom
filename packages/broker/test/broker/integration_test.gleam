@@ -1,8 +1,8 @@
-//// Feature-detected integration suite: builds the real `loom-exec`
-//// helper with the Go toolchain and drives it through the exec pool —
+//// Feature-detected integration suite: drives the real `loom-exec`
+//// helper, as `make sandbox` built it, through the exec pool —
 //// handshake over the fd-3 shell trick, an echo run, a stdin
 //// roundtrip, a cancel mid-sleep, and output truncation. Skipped (with
-//// the reason printed) when `go` is missing or the build fails.
+//// the reason printed) when the helper has not been built.
 ////
 //// The development container usually lacks bwrap, so the helper runs
 //// degraded; executions use `BestEffort` and assert on the honest
@@ -13,19 +13,16 @@ import broker/exec
 import broker/framing
 import broker/internal/ffi_os
 import broker/policy
-import broker/support/shell
 import gleam/bit_array
 import gleam/erlang/process
-import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import gleam/string
 import simplifile
 
-// Builds the helper (cached by Go, so cheap per test) and returns a
-// ready SpawnConfig, or the reason to skip.
+// Locates the prebuilt helper and returns a ready SpawnConfig, or the
+// reason to skip.
 fn helper_config() -> Result(exec.SpawnConfig, String) {
   case exec.unjailed_skip_reason(exec.host_platform()) {
     Some(reason) -> Error(reason)
@@ -33,45 +30,24 @@ fn helper_config() -> Result(exec.SpawnConfig, String) {
   }
 }
 
+// Every test in this suite runs the helper `make sandbox` built, at the
+// path the Makefile names, and none compiles one itself. Each test used to
+// run its own `go build`, so a parallel run started several at once, beside
+// the other packages' real-helper suites doing the same. On the
+// containerised signoff some of those builds read a Go build-cache object
+// that was zero from some offset on and failed to link, and each failure
+// became an undeclared skip. With the one build before any test starts, no
+// test process writes the Go cache and no test replaces a binary a sibling
+// is executing. `make check`, `make test` and `make e2e` build the helper
+// first; a run without it skips with the remedy named, and the skip census
+// counts that skip as a failure.
 fn helper_config_here() -> Result(exec.SpawnConfig, String) {
-  case shell.find_executable("go") {
-    Error(Nil) -> Error("go toolchain not on PATH")
-    Ok(_go) -> {
-      let assert Ok(here) = simplifile.current_directory()
-      let work_dir = here <> "/build/integration"
-      let helper_path = work_dir <> "/loom-exec"
-      let assert Ok(Nil) = simplifile.create_directory_all(work_dir <> "/work")
-
-      // Every test in this suite calls this function, so under a parallel
-      // run several `go build` invocations are live at once. They cannot
-      // share an output path: the linker writes the file in place, and a
-      // sibling test that is spawning the helper at that moment executes
-      // either a half-written binary or one whose text segment is being
-      // rewritten under it. That is what four of the suite's tests reported
-      // as `HandshakeFailed` on the first run of a freshly built checkout.
-      //
-      // Each build therefore writes its own file and renames it into place.
-      // A rename replaces the directory entry in one step and leaves the
-      // old inode intact for whoever is still running it, so no spawn ever
-      // sees a partial helper and no link ever truncates a live one. The
-      // builds themselves stay cheap: Go caches the compile and only the
-      // link is repeated.
-      let staged =
-        helper_path <> "-staged-" <> int.to_string(int.random(1_000_000_000))
-      let output =
-        shell.os_cmd(
-          "cd ../sandbox && go build -o '"
-          <> staged
-          <> "' ./cmd/loom-exec && echo LOOM_BUILD_OK",
-        )
-      use Nil <- try(case string.contains(output, "LOOM_BUILD_OK") {
-        True -> Ok(Nil)
-        False -> Error("go build failed: " <> output)
-      })
-      use Nil <- try(
-        simplifile.rename(at: staged, to: helper_path)
-        |> result.replace_error("the built helper could not be sworn in"),
-      )
+  let assert Ok(here) = simplifile.current_directory()
+  let work_dir = here <> "/build/integration"
+  let helper_path = here <> "/../sandbox/loom-exec"
+  let assert Ok(Nil) = simplifile.create_directory_all(work_dir <> "/work")
+  case simplifile.is_file(helper_path) {
+    Ok(True) ->
       Ok(exec.SpawnConfig(
         helper_path:,
         shell_path: "/bin/sh",
@@ -82,19 +58,9 @@ fn helper_config_here() -> Result(exec.SpawnConfig, String) {
         cancel_grace_ms: 3000,
         heartbeat_interval_ms: 0,
       ))
-    }
-  }
-}
 
-// Chains the two ways preparing a helper can fail into one reason string,
-// since neither side of the pair is a `Result` of the same error type.
-fn try(
-  outcome: Result(a, String),
-  next: fn(a) -> Result(b, String),
-) -> Result(b, String) {
-  case outcome {
-    Ok(value) -> next(value)
-    Error(reason) -> Error(reason)
+    _absent_or_unreadable ->
+      Error("no loom-exec at " <> helper_path <> "; run `make sandbox`")
   }
 }
 

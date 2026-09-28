@@ -32,14 +32,21 @@ check-gleam: binaries ## Full gate for the Gleam packages only
 check-%: binaries ## Full gate for one package, e.g. make check-machine
 	@scripts/check.sh $*
 
+# The real-helper suites in broker, tools, codemode and conformance run the
+# helper `make sandbox` builds and never compile one themselves, so every
+# target that runs them builds it first. Tests that each ran their own
+# `go build` put several builds in flight at once, and on the containerised
+# signoff some of them read a zero-filled Go build-cache object and failed
+# to link. One build before the tests start leaves no test writing the
+# cache.
 .PHONY: test
-test: ## Run tests only (skips format check), all Gleam packages
+test: sandbox ## Run tests only (skips format check), all Gleam packages
 	@set -e; for p in $(PACKAGES); do \
 		echo "==> $$p"; bash scripts/test.sh $$p; \
 	done
 
 .PHONY: test-%
-test-%: ## Run tests for one package, e.g. make test-core
+test-%: sandbox ## Run tests for one package, e.g. make test-core
 	@bash scripts/test.sh $*
 
 .PHONY: build
@@ -362,7 +369,7 @@ e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the r
 	@bash scripts/e2e_client_bootstrap.sh
 
 .PHONY: conformance
-conformance: ## Run the shared suites (storage conformance + wiring + e2e)
+conformance: sandbox ## Run the shared suites (storage conformance + wiring + e2e)
 	@bash scripts/test.sh conformance
 
 .PHONY: codemode-seed
