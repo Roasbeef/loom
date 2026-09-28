@@ -36,7 +36,13 @@ into an editor. Most reducers still take the whole
 model and read a field through the half that holds it; the reducer cut
 moves them to `Shared` from the helpers upward, and a terminal reducer
 stores the result of any function over `Shared` through
-`tui_model.hold_shared`. The split, the parameters and the cut are the
+`tui_model.hold_shared`. The sending path (`tui/outbound`) and the side
+surfaces' reads and receivers (`tui/surfaces`) already take `Shared`
+alone. They cannot write the composer, the queue editor or the goal
+inspector, so they record what those must show (`Shared.drafts_sent`,
+`queue_notices` and `goal_observations`), and `hold_shared` applies it at
+the point of the call, where the old functions wrote the editors
+themselves. The split, the parameters and the cut are the
 slices of moving the step into `session_view` so that the web view runs
 the same reducers ([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
 daemon bootstrap, two connections (a daemon control connection and a
@@ -988,7 +994,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/effect` | The closed vocabulary of effects a step decides on, with the session reducers' effects wrapped as `Step`. |
 | `tui/terminal_lane` | The session lane with the terminal's socket and recorder filled in, and `perform`, the one place a lane's outputs touch the websocket or the recording. |
 | `tui/view_link` | Printing the `loom ui` link and handing it to the platform's opener. |
-| `tui/model` | `Model` and its two halves, `TerminalShared` (the terminal's binding of `Shared`) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox in `View` (`emit`, `record`, `hold_shared`, and the terminal forms of `record_arrival` and `hold_channel`) and the other terminal types every reducer shares. |
+| `tui/model` | `Model` and its two halves, `TerminalShared` (the terminal's binding of `Shared`) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox in `View` (`emit`, `record`, `hold_shared`, `run_shared`, and the terminal forms of `record_arrival`, `hold_channel`, `send_frame`, `send_via` and `apply_submission`), the composer's `clear_composer` and the other terminal types every reducer shares. |
 | `tui/session_model` | `Shared`, the session state, generic over the host handles, with the types it names, its step-effect outbox, and the functions over it alone: appending lines, the revisions, the activity mark, storing the lane, recording a channelless arrival, and the readers such as `queue_owner` and `presentation`. |
 | `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
 | `tui/msg` | What the step is given: `Input(at, wall_ms, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`. |
@@ -1000,8 +1006,8 @@ Paths are relative to the package's source root: `tui/...` is under
 | `session_view/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
-| `tui/outbound`, `tui/inbound` | Sending frames, and applying channel traffic, captured cuts (`render_cut`) and events. |
-| `tui/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed) and their edge detectors. |
+| `tui/outbound`, `tui/inbound` | Sending frames and folding the lane's disposition, over `Shared` alone (`outbound`); applying channel traffic, captured cuts (`render_cut`) and events (`inbound`). |
+| `tui/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed) and their replies, over `Shared` alone, and the edge detectors and surface openers, over the whole model. |
 | `tui/session_control` | Daemon control requests and reconnection, as job specs, and the drains that take their replies. |
 | `tui/projection` | The record row cache and render cache. |
 | `tui/live_tail` | The live answer's rows, rebuilt each frame from what changed: settled blocks, checked text, and the open tail. |
