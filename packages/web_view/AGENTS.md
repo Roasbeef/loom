@@ -725,6 +725,13 @@ page keys and nonces, and the relay into the session's gateway.
   class built by concatenation is missing from the output. `priv/static` is
   generated: run `make gen-client` after changing a class.
 
+A `goal_changed` arrival drives the shared session lane's owed `goal_get`
+without waiting for a tick (protocol-change/056). The resulting correlated
+`Auxiliary(GoalSnapshot)` is accepted by the lane; this host currently has no
+goal panel and renders nothing for that auxiliary update. `component_test`
+proves the observer stays Following after that read, so adding a terminal
+surface does not leave the second host with an incompatible reducer path.
+
 ## Deep Docs
 
 - `docs/architecture/web-view.md`: the architecture map: the request path

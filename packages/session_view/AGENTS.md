@@ -500,6 +500,18 @@ observer's page holds no command.
   change on each such capture, which makes a keyed host replace and redraw
   the whole turn (`web_view`'s `lane_memo_test`).
 
+`protocol.GoalChanged` invalidates the goal's auxiliary observation
+(protocol-change/056). `session_channel` retains one owed goal read separately
+from transcript capture debt and queued operator intent. It clears the debt
+when it issues `goal_get`, so a change received during an older read survives
+that reply and causes a subsequent read. Both hosts use this lane, and the
+result is a correlated `Auxiliary(GoalSnapshot)`; it requires no host timer.
+
+`snapshot_view.queue_halted(view, strand)` derives a known idle strand with
+pending rows from one authoritative cut. Ordinary input drains before the
+idle cut is exposed (protocol 033), so retained rows wait for an explicit
+submission. The helper says nothing about whether a composer may submit.
+
 ## Deep Docs
 
 - `docs/adr/013-tui-effects-as-values.md`: why the lane's effects are
