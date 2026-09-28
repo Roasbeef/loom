@@ -25,7 +25,8 @@ import tui/msg
 /// a function over `Shared` through `tui_model.hold_shared`, which moves
 /// what that call queued into the step's own outbox; a result stored any
 /// other way leaves its effects on `Shared.outbox`, where the runtime never
-/// looks, so they would never be performed.
+/// looks, so they would never be performed. The queue editor's notices and
+/// the goal inspector's observations are checked the same way.
 ///
 /// ## Examples
 ///
@@ -39,6 +40,14 @@ pub fn step(
   let #(next, effects) = tui.step(message(event, model), model)
   assert next.shared.outbox == []
     as "a shared call's effects were stored without hold_shared"
+
+  // The notices a shared call records for the terminal's queue editor and
+  // goal inspector are shown and emptied by `hold_shared` too, so any left
+  // after a step were stored without it and never reached the surface.
+  assert next.shared.queue_notices == []
+    as "a shared call's queue notices were stored without hold_shared"
+  assert next.shared.goal_observations == []
+    as "a shared call's goal observations were stored without hold_shared"
   #(next, effects)
 }
 
