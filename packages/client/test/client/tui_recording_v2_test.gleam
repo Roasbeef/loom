@@ -29,7 +29,7 @@ pub fn tui_recording_v2_fast_initial_attachment_and_settled_turn_replay_test() {
       as "the shipped recorder binds after launch and before terminal polling"
     let _ =
       tui_v2_test.await(driver.data, fn(sample) {
-        case sample.model.channel {
+        case sample.model.shared.channel {
           Some(channel) -> session_channel.mutation_available(channel)
           None -> False
         }
@@ -42,8 +42,8 @@ pub fn tui_recording_v2_fast_initial_attachment_and_settled_turn_replay_test() {
     let _ =
       tui_v2_test.await(driver.data, fn(sample) {
         string.contains(sample.frame, "recorded v2 turn")
-        && list.length(sample.model.records) >= 2
-        && sample.model.streams == []
+        && list.length(sample.model.shared.records) >= 2
+        && sample.model.shared.streams == []
       })
     let monitor = process.monitor(driver.pid)
     tui_driver.stop(driver.data)
