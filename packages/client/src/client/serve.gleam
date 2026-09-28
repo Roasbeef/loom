@@ -92,6 +92,7 @@ import client/system_prompt
 import client/wiring
 import client/worktree_diff
 import core/clock.{type Clock}
+import core/glance as diagnostic
 import core/ids.{type OpId}
 import core/json
 import events/bus
@@ -2067,27 +2068,45 @@ fn extension_registrations(
   hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
   memory: extension_memory.Door,
-) -> List(Registration) {
+) -> #(List(Registration), List(String)) {
   case settings.home {
     // No home is no extensions root, which is the same fact to a booting
     // server as an empty one: there is nothing installed and nothing to
     // warn about.
-    None -> []
+    None -> #([], [])
 
     Some(home) -> {
       let root = extension_record.root_for(home)
-      list.filter_map(installed.discover(root), fn(found) {
-        extension_contribution(
-          root,
-          found,
-          settings.secrets,
-          logger,
-          hosts,
-          hooking,
-          host,
-          memory,
-        )
-      })
+      let checked =
+        list.map(installed.discover(root), fn(found) {
+          extension_contribution(
+            root,
+            found,
+            settings.secrets,
+            logger,
+            hosts,
+            hooking,
+            host,
+            memory,
+          )
+        })
+      let registered =
+        list.filter_map(checked, fn(item) { item |> result.replace_error(Nil) })
+      let refused =
+        list.filter_map(checked, fn(item) {
+          case item {
+            Ok(_) -> Error(Nil)
+            Error(reason) -> Ok(reason)
+          }
+        })
+      let notices = case list.drop(refused, 32) {
+        [] -> refused
+        _ ->
+          list.append(list.take(refused, 31), [
+            "More extensions were refused; run `loom ext list` for the complete list.",
+          ])
+      }
+      #(registered, notices)
     }
   }
 }
@@ -2101,14 +2120,14 @@ fn extension_contribution(
   hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
   memory: extension_memory.Door,
-) -> Result(Registration, Nil) {
+) -> Result(Registration, String) {
   case found {
     installed.Refused(name:, reason:) -> {
       log.warn(logger, "extension.refused", [
         field.text(key: "name", value: name),
         field.text(key: "reason", value: reason),
       ])
-      Error(Nil)
+      Error(extension_refusal(name, reason))
     }
 
     installed.Ready(record: written, manifest: decoded, artifact:) ->
@@ -2138,7 +2157,7 @@ fn extension_registered(
   hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
   memory: extension_memory.Door,
-) -> Result(Registration, Nil) {
+) -> Result(Registration, String) {
   case host {
     None -> {
       log.warn(logger, "extension.unavailable", [
@@ -2149,7 +2168,10 @@ fn extension_registered(
             <> "toolchain to boot an extension satellite with",
         ),
       ])
-      Error(Nil)
+      Error(extension_refusal(
+        written.name,
+        "this host registers no code_mode tool, so it has no toolchain to boot an extension satellite with",
+      ))
     }
 
     Some(config) -> {
@@ -2190,7 +2212,7 @@ fn extension_registered(
             field.text(key: "name", value: written.name),
             field.text(key: "reason", value: reason),
           ])
-          Error(Nil)
+          Error(extension_refusal(written.name, reason))
         }
 
         Ok(tools) -> {
@@ -2221,6 +2243,18 @@ fn extension_registered(
       }
     }
   }
+}
+
+// The command keeps the existing remove-then-install policy. A refused record
+// may not contain a readable source, so guidance never invents one from it.
+fn extension_refusal(name: String, reason: String) -> String {
+  "Extension "
+  <> name
+  <> " refused: "
+  <> diagnostic.clip(reason, 1024)
+  <> ". To reinstall, run `loom ext remove "
+  <> name
+  <> "` then `loom ext install <source>`."
 }
 
 // The bus subscription an extension's `[[hook]]` declarations become,
@@ -3048,7 +3082,7 @@ fn assemble_in(
       clock:,
       margin_ms: extension_host_margin_ms,
     )
-  let extensions =
+  let #(extensions, extension_refusals) =
     extension_registrations(
       settings,
       logger,
@@ -3651,6 +3685,7 @@ fn assemble_in(
             })
             |> hub.with_catalog(settings.catalog)
             |> hub.with_registry(tool_registry)
+            |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
             |> hub.with_code_mode_issue(case toolchain {
               Error(reason) -> Some(reason)

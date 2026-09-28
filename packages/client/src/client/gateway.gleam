@@ -159,6 +159,7 @@ import client/wiring
 import core/clock
 import core/codec as core_codec
 import core/entry.{type Entry, type UsageRow}
+import core/glance
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage, type UserBlock}
@@ -299,6 +300,8 @@ pub type Options {
     skills: skill.Catalogue,
     /// Boot diagnostic when code mode could not be registered.
     code_mode_issue: Option(String),
+    /// Bounded startup refusals for installed extensions, shared by all peers.
+    extension_refusals: List(String),
     schedules: Option(scheduleadmin.Admin),
     /// Operator-owned additions to this session's filesystem authority.
     directories: Option(directories.Admin),
@@ -352,6 +355,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     registry: None,
     skills: skill.empty(),
     code_mode_issue: None,
+    extension_refusals: [],
     schedules: None,
     directories: None,
     effect_abort: None,
@@ -361,6 +365,24 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     live_jobs: None,
     context: None,
     summary_demand: None,
+  )
+}
+
+/// Captures at most 32 extension notices of 2048 UTF-8 bytes each for every
+/// authenticated snapshot, so reconnecting operators receive the diagnosis.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_extension_refusals(options, ["Extension weather refused: stale record"])
+/// ```
+pub fn with_extension_refusals(
+  options: Options,
+  reasons: List(String),
+) -> Options {
+  Options(
+    ..options,
+    extension_refusals: list.map(list.take(reasons, 32), glance.clip(_, 2048)),
   )
 }
 
@@ -751,6 +773,8 @@ type State {
     skills: skill.Catalogue,
     // The original boot diagnostic, not a guessed missing executable.
     code_mode_issue: Option(String),
+    /// Bounded startup refusals for installed extensions, shared by all peers.
+    extension_refusals: List(String),
     // The operator's scheduling door, when this host has one.
     schedules: Option(scheduleadmin.Admin),
     /// Operator-owned additions to this session's filesystem authority.
@@ -979,6 +1003,7 @@ fn start_with_delivery(
         registry: options.registry,
         skills: options.skills,
         code_mode_issue: options.code_mode_issue,
+        extension_refusals: options.extension_refusals,
         schedules: options.schedules,
         directories: options.directories,
       )
@@ -2134,6 +2159,10 @@ fn captured_transfer(
             #(
               "registered",
               json.Array(list.map(tool.names(registry), json.String)),
+            ),
+            #(
+              "extension_refusals",
+              json.Array(list.map(state.extension_refusals, json.String)),
             ),
             #("code_mode_issue", case state.code_mode_issue {
               None -> json.Null
