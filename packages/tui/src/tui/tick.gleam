@@ -31,7 +31,9 @@ import tui/inbound
 import tui/interaction
 import tui/job_runner
 import tui/layout
-import tui/model.{type Model, Caches, FrameCache, Model, View} as tui_model
+import tui/model.{
+  type Model, type TerminalShared, Caches, FrameCache, Model, View,
+} as tui_model
 import tui/pacing
 import tui/render
 import tui/session_control
@@ -144,17 +146,17 @@ pub fn update_tick(model: Model) -> Model {
 // is what keeps a new local step from revisiting the drain expression.
 // Preserve the original model for the quiet-time comparison after all
 // reads settle.
+//
+// The first eight reads take the shared record alone and read nothing of the
+// terminal, so they run as one chain over `Shared` and are held once, before
+// the terminal's activity poll. One hold moves their effects into the outbox
+// in the order the chain decided them and applies their editor notices after
+// the last, and since none of the eight reads what a notice changes, the
+// model is the same as if each had been held on its own.
 fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
     drained
-    |> tui_model.run_shared(surfaces.service_queue_read)
-    |> tui_model.run_shared(surfaces.service_worktree_read)
-    |> tui_model.run_shared(surfaces.service_notes_read)
-    |> tui_model.run_shared(surfaces.service_todo_seed)
-    |> tui_model.run_shared(surfaces.service_jobs_read)
-    |> tui_model.run_shared(surfaces.service_context_read)
-    |> tui_model.run_shared(surfaces.service_advisor_nudges_read)
-    |> tui_model.run_shared(surfaces.service_goal_read)
+    |> tui_model.run_shared(service_reads)
     |> session_control.service_activity
     |> tui_model.run_shared(surfaces.service_block_summaries)
     |> inbound.tick_channel
@@ -172,6 +174,21 @@ fn settle_tick(model: Model, drained: Model) -> Model {
     ),
     view: View(..drained.view, quiet_for_ms:),
   )
+}
+
+// The side surfaces' reads over the shared record, in the order the tick
+// has always serviced them. They share the lane's one command slot, so the
+// order decides which waiting read is sent first.
+fn service_reads(shared: TerminalShared) -> TerminalShared {
+  shared
+  |> surfaces.service_queue_read
+  |> surfaces.service_worktree_read
+  |> surfaces.service_notes_read
+  |> surfaces.service_todo_seed
+  |> surfaces.service_jobs_read
+  |> surfaces.service_context_read
+  |> surfaces.service_advisor_nudges_read
+  |> surfaces.service_goal_read
 }
 
 /// What a tick leaves `Model.connection_backlog` as, given the model before
