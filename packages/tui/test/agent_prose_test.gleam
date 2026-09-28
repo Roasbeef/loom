@@ -110,3 +110,69 @@ pub fn a_peer_message_is_prose_under_its_source_test() {
       Line(ToolDetail, "**R8** census is up"),
     ]
 }
+
+// An aborted child's reason joins its heading, and a result it was asked for
+// and gave is shown as its value, as the tool's own text shows it.
+pub fn an_aborted_child_names_its_reason_and_its_result_test() {
+  let aborted =
+    entry_with(message.ToolResultMessage(
+      tool_call_id: "wait",
+      tool_name: "agent_wait",
+      content: [message.ToolResultText("[sub:main/x-1a2b3c aborted]", None)],
+      details: Some(
+        json.Object([
+          #(
+            "results",
+            json.Array([
+              json.Object([
+                #("strand", json.String("sub:main/x-1a2b3c")),
+                #("state", json.String("ready")),
+                #("outcome", json.String("aborted")),
+                #("abort_reason", json.String("budget_expired")),
+                #("report", json.String("")),
+                #("notes", json.Object([])),
+                #(
+                  "result",
+                  json.Object([
+                    #("state", json.String("given")),
+                    #("value", json.Int(7)),
+                  ]),
+                ),
+              ]),
+            ]),
+          ),
+        ]),
+      ),
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    ))
+  assert transcript_lines.entry_lines(aborted, True, None, block_summary.new())
+    == [
+      Line(ToolResult, "agent_wait"),
+      Line(System, "from sub:x · result · aborted · budget_expired"),
+      Line(ToolDetail, "(no report: the run ended without a final answer)"),
+      Line(System, "result · 7"),
+    ]
+}
+
+// A long message collapsed to a preview is not drawn as Markdown: the
+// preview can stop inside a fence and swallow the expand hint.
+pub fn a_collapsed_long_peer_message_stays_literal_test() {
+  let long = "```\n" <> string.repeat("line of code\n", 2000) <> "```"
+  let sent =
+    entry_with(message.UserMessage(
+      content: [message.UserText(long, None)],
+      timestamp: 0,
+      origin: Some(message.PeerOrigin("lint-census", "main")),
+    ))
+  let assert [_, Line(System, preview)] =
+    transcript_lines.entry_lines(sent, False, None, block_summary.new())
+    as "a collapsed long peer message is a literal preview"
+  assert preview != long
+  let assert [_, Line(ToolDetail, whole)] =
+    transcript_lines.entry_lines(sent, True, None, block_summary.new())
+    as "an expanded peer message is Markdown"
+  assert whole == long
+}

@@ -1544,9 +1544,19 @@ fn peer_message_lines(
       origin: Some(message.PeerOrigin(session:, strand:)),
       ..,
     ) -> {
-      let expanded = case extent {
-        notes_view.Complete -> True
-        notes_view.Excerpt -> False
+      let body = user_body(content)
+      let whole = composer.transcript_text(body, True)
+
+      // A long message collapses to a preview and an expand hint. The
+      // preview can stop inside a fence, which would swallow the hint into
+      // a code block, so only the whole body is drawn as Markdown.
+      let shown = case extent {
+        notes_view.Complete -> Line(ToolDetail, whole)
+        notes_view.Excerpt ->
+          case composer.transcript_text(body, False) {
+            preview if preview == whole -> Line(ToolDetail, whole)
+            preview -> Line(System, preview)
+          }
       }
       Some([
         Line(
@@ -1556,10 +1566,7 @@ fn peer_message_lines(
             <> " · "
             <> text_hygiene.single_line(strand),
         ),
-        Line(
-          ToolDetail,
-          content |> user_body |> composer.transcript_text(expanded),
-        ),
+        shown,
       ])
     }
     _ -> None
@@ -2504,39 +2511,54 @@ fn waited_lines(value: json.JsonValue) -> List(Line) {
         |> option.map(agent_roster.short_name)
         |> option.unwrap("sub-agent")
       case string_field(fields, "state") {
-        Some("ready") ->
-          list.flatten([
-            [
-              Line(
-                System,
-                "from sub:"
-                  <> child
-                  <> " · result · "
-                  <> option.unwrap(string_field(fields, "outcome"), "settled"),
-              ),
-              Line(ToolDetail, case string_field(fields, "report") {
-                Some("") | None ->
-                  "(no report: the run ended without a final answer)"
-                Some(report) -> report
-              }),
-            ],
-            case list.key_find(fields, "result") {
-              Ok(result) -> [
-                Line(System, "result · " <> json.to_string(result)),
-              ]
-              Error(Nil) -> []
-            },
-            case list.key_find(fields, "notes") {
-              Ok(json.Object([_, ..]) as notes) -> [
-                Line(System, "notes · " <> json.to_string(notes)),
-              ]
-              _ -> []
-            },
-          ])
+        Some("ready") -> ready_lines(fields, child)
         _ -> [Line(System, "sub:" <> child <> " · still working")]
       }
     }
     _ -> []
+  }
+}
+
+fn ready_lines(
+  fields: List(#(String, json.JsonValue)),
+  child: String,
+) -> List(Line) {
+  let heading =
+    "from sub:"
+    <> child
+    <> " · result · "
+    <> option.unwrap(string_field(fields, "outcome"), "settled")
+    <> option_text(string_field(fields, "abort_reason"), " · ")
+  let report = case string_field(fields, "report") {
+    Some("") | None -> "(no report: the run ended without a final answer)"
+    Some(report) -> report
+  }
+  let notes = case list.key_find(fields, "notes") {
+    Ok(json.Object([_, ..]) as notes) -> [
+      Line(System, "notes · " <> json.to_string(notes)),
+    ]
+    _ -> []
+  }
+  list.flatten([
+    [Line(System, heading), Line(ToolDetail, report)],
+    result_lines(list.key_find(fields, "result")),
+    notes,
+  ])
+}
+
+// A given result is shown as its value, as the tool's own text shows it; an
+// absent or unusable one keeps its whole verdict.
+fn result_lines(result: Result(json.JsonValue, Nil)) -> List(Line) {
+  case result {
+    Ok(json.Object(verdict) as whole) ->
+      case list.key_find(verdict, "state"), list.key_find(verdict, "value") {
+        Ok(json.String("given")), Ok(value) -> [
+          Line(System, "result · " <> json.to_string(value)),
+        ]
+        _, _ -> [Line(System, "result · " <> json.to_string(whole))]
+      }
+    Ok(other) -> [Line(System, "result · " <> json.to_string(other))]
+    Error(Nil) -> []
   }
 }
 
