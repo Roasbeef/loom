@@ -1201,6 +1201,20 @@ pub fn the_six_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
     // listener uses.
     let inbox = process.new_subject()
     let handle = authenticated(instance, inbox)
+    let peer_inbox = process.new_subject()
+    let peer = authenticated_as(instance, peer_inbox, "second-terminal")
+    let assert Ok(_) =
+      gateway.connection_request(
+        peer,
+        protocol.encode_command(protocol.CommandEnvelope(
+          699,
+          protocol.Subscribe(
+            ids.session_id_to_string(api.session_id(instance.runtime)),
+            None,
+          ),
+        )),
+      )
+      as "a second terminal subscribes to the production gateway"
 
     // One frame in, one answer out. A network hub answers a command through
     // the request's own reply capability and reserves the pushed-frame sink
@@ -1243,6 +1257,8 @@ pub fn the_six_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
       as "goal_set must answer with the fresh board, not a refusal"
     assert string.contains(pinned, "\"status\":\"active\"")
     assert string.contains(pinned, objective)
+    goal_notification(inbox, 32)
+    goal_notification(peer_inbox, 32)
 
     // The read is the same board, observed without touching the goal.
     let read = command(702, protocol.GoalGet)
@@ -1254,6 +1270,16 @@ pub fn the_six_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
     let held = command(703, protocol.GoalPause)
     assert string.contains(held, "\"status\":\"paused\"")
     assert string.contains(held, "\"reason\":\"operator\"")
+    goal_notification(inbox, 32)
+    goal_notification(peer_inbox, 32)
+    let assert Ok(peer_read) =
+      gateway.connection_request(
+        peer,
+        protocol.encode_command(protocol.CommandEnvelope(900, protocol.GoalGet)),
+      )
+      as "the second terminal re-reads after its write notification"
+    assert string.contains(peer_read, "\"status\":\"paused\"")
+      as "the committed goal is readable without another primary phase edge"
 
     let resumed = command(704, protocol.GoalResume)
     assert string.contains(resumed, "\"status\":\"active\"")
@@ -1305,6 +1331,14 @@ fn authenticated(
   instance: serve.Instance,
   inbox: Subject(String),
 ) -> gateway.ConnectionHandle {
+  authenticated_as(instance, inbox, "connection-operator")
+}
+
+fn authenticated_as(
+  instance: serve.Instance,
+  inbox: Subject(String),
+  connection_id: String,
+) -> gateway.ConnectionHandle {
   let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
     as "the fixture credential digest must be well formed"
   let principal =
@@ -1321,7 +1355,7 @@ fn authenticated(
         ids.session_id_to_string(api.session_id(instance.runtime)),
         "epoch",
         "incarnation",
-        "connection-operator",
+        connection_id,
         principal,
         role,
         digest,
@@ -1334,4 +1368,144 @@ fn authenticated(
     )
     as "the fixture client must attach to the instance's own hub"
   handle
+}
+
+// The production hub can interleave roster and commit hints. The bounded
+// receive follows those frames to the notification, without a timer or poll.
+fn goal_notification(inbox: Subject(String), remaining: Int) -> Nil {
+  assert remaining > 0
+    as "the goal notification must arrive within a bounded frame count"
+  let assert Ok(frame) = process.receive(inbox, 5000)
+    as "a successful advisor goal write must notify subscribed terminals"
+  let assert Ok(envelope) = protocol.decode_event(frame)
+    as "the pushed frame uses the production event codec"
+  case envelope.event {
+    protocol.GoalChanged -> {
+      assert envelope.reply_to == None
+      assert envelope.seq == None
+    }
+    _ -> goal_notification(inbox, remaining - 1)
+  }
+}
+
+// Hold the review's provider response until the primary has settled and the
+// operator has read Active. Completion then writes the goal without waking
+// the primary. Only a post-write notification can make this client re-read.
+pub fn a_review_completing_after_the_idle_read_notifies_without_a_wake_test_() -> EunitTest {
+  Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
+    let held = process.new_subject()
+    let transport =
+      provider_test.transport(fn(request: http.HttpRequest, events) {
+        let response = case string.contains(request.url, advisor_host) {
+          False -> text_turn("primary-idle", primary_model, "finished my turn")
+          True -> {
+            case
+              string.contains(request.body, advisorslice.goal_feed_header)
+              && !answered_goal_feed(request.body)
+            {
+              False -> advisor_answer(request.body, True)
+              True -> {
+                let release = process.new_subject()
+                process.send(held, release)
+                let assert Ok(Nil) = process.receive(release, 60_000)
+                  as "the test releases the review only after its idle-edge read"
+                advisor_answer(request.body, True)
+              }
+            }
+          }
+        }
+        process.send(
+          events,
+          http.ResponseStatus(200, [#("content-type", "text/event-stream")]),
+        )
+        process.send(
+          events,
+          http.ResponseChunk(bit_array.from_string(response)),
+        )
+        process.send(events, http.ResponseEnd)
+      })
+    let root = fixture_root("late-goal-write")
+    let configured = settings(root, script(SaysNothing))
+    let configured =
+      serve.Settings(
+        ..configured,
+        gateway: catalog.gateway(
+          scripted_catalog(),
+          transport:,
+          secrets: secret.from_list([
+            #("ACME_KEY", "primary"),
+            #("SAGE_KEY", "advisor"),
+          ]),
+          clock: clock.fixed(at: 0),
+        ),
+      )
+    let assert Ok(instance) = serve.open_instance(configured, log.discard())
+      as "the delayed-review fixture opens the production session"
+    let inbox = process.new_subject()
+    let handle = authenticated(instance, inbox)
+    let assert Ok(_) =
+      gateway.connection_request(
+        handle,
+        protocol.encode_command(protocol.CommandEnvelope(
+          950,
+          protocol.Subscribe(
+            ids.session_id_to_string(api.session_id(instance.runtime)),
+            None,
+          ),
+        )),
+      )
+      as "the client subscribes before the goal writes"
+    let assert Some(commands) = instance.goal
+      as "the routed advisor owns goal commands"
+    let assert Ok(Nil) = commands.set(objective, 400_000, None)
+      as "the goal is durably pinned"
+    complete(instance, "finish this turn")
+    let assert Ok(release) = process.receive(held, 60_000)
+      as "the review reached its controlled provider barrier"
+    let assert Ok(before) =
+      gateway.connection_request(
+        handle,
+        protocol.encode_command(protocol.CommandEnvelope(951, protocol.GoalGet)),
+      )
+      as "the idle-edge read completes before the delayed evaluation"
+    assert string.contains(before, "\"status\":\"active\"")
+    discard_pushes(inbox)
+
+    process.send(release, Nil)
+    let after = goal_from_notification(handle, inbox, 32)
+    assert string.contains(after, "\"status\":\"complete\"")
+      as "the client observes satisfaction solely from the post-write notification"
+    let assert Ok(Some(session.Cell(value: current, ..))) =
+      session.strand_state(instance.runtime.session, advisor.primary)
+      as "the primary's authoritative strand state remains readable"
+    assert current.current_operation == None
+      as "a satisfied goal needs no primary wake or later phase edge"
+    serve.close_instance(instance)
+  })
+}
+
+fn discard_pushes(inbox: Subject(String)) -> Nil {
+  case process.receive(inbox, 0) {
+    Ok(_) -> discard_pushes(inbox)
+    Error(Nil) -> Nil
+  }
+}
+
+fn goal_from_notification(
+  handle: gateway.ConnectionHandle,
+  inbox: Subject(String),
+  remaining: Int,
+) -> String {
+  assert remaining > 0 as "the delayed evaluation must publish its final write"
+  goal_notification(inbox, 32)
+  let assert Ok(board) =
+    gateway.connection_request(
+      handle,
+      protocol.encode_command(protocol.CommandEnvelope(952, protocol.GoalGet)),
+    )
+    as "the notified client re-reads through the authorized production door"
+  case string.contains(board, "\"status\":\"complete\"") {
+    True -> board
+    False -> goal_from_notification(handle, inbox, remaining - 1)
+  }
 }

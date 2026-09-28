@@ -155,6 +155,9 @@ pub type Event {
   /// one round trip rather than two.
   GoalSnapshot(board: goal_view.Board)
 
+  /// A durable goal write invalidates the last auxiliary observation.
+  GoalChanged
+
   /// An authoritative replacement for the schedule listing — the reply
   /// to `/schedules` and to a successful cancel alike.
   SchedulesSnapshot(
@@ -626,6 +629,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | EscalationPending(..)
     | HeldInputReturned(..)
     | BlockSummarized(..)
+    | GoalChanged
     | Ignored(_) -> Error("unexpected live presentation response")
   }
 }
@@ -711,6 +715,10 @@ fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
     "escalation" -> decode_escalation(body)
     "error" -> decode_error(body)
     "held_input_returned" -> decode_held_input_returned(body)
+    "goal_changed" -> {
+      use _ <- result.try(object_fields(body, "goal_changed body"))
+      Ok(GoalChanged)
+    }
     "block_summary" -> decode_block_summary(body)
     other -> Ok(Ignored(other))
   }

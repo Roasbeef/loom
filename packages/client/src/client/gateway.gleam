@@ -1800,6 +1800,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       )
       continue(state)
     }
+
+    // Goal reads are auxiliary: a capture cannot refresh this reserved cell.
+    BusHint(published: bus.Published(event: bus.GoalChanged, ..)) -> {
+      push_to_subscribed(state, protocol.GoalChanged)
+      continue(state)
+    }
     BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
 
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
@@ -2851,6 +2857,7 @@ fn notice_strand(state: State, event: WireEvent) -> String {
     | protocol.StreamDeltaEvent(..)
     | protocol.ToolOutputEvent(..)
     | protocol.BlockSummaryEvent(..)
+    | protocol.GoalChanged
     | protocol.CommittedEvent(..)
     | protocol.ErrorEvent(..)
     | protocol.UnknownEvent(..) -> single_live_strand(state)

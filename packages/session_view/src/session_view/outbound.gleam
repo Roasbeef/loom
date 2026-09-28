@@ -165,6 +165,18 @@ fn record_sent(
   command: String,
   request_id: Int,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Admission can queue a mutation behind an older goal read. Its report
+  // gains an owner only when the lane actually issues that mutation.
+  let goal_report = case command, shared.goal_report {
+    "goal_set", ConfirmGoal(line:, ..)
+    | "goal_check", ConfirmGoal(line:, ..)
+    | "goal_clear", ConfirmGoal(line:, ..)
+    | "goal_pause", ConfirmGoal(line:, ..)
+    | "goal_resume", ConfirmGoal(line:, ..)
+    -> ConfirmGoal(line:, request: Some(request_id))
+    _, _ -> shared.goal_report
+  }
+
   let shared = case command {
     "queued_input" | "edit_queued_input" ->
       Shared(
@@ -191,6 +203,7 @@ fn record_sent(
       Shared(
         ..shared,
         goal_request: Some(request_id),
+        goal_report:,
         goal_awaiting: Some(session_model.queue_owner(shared)),
       )
     "worktree_diff" ->

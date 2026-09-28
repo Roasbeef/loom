@@ -621,6 +621,9 @@ pub type Event {
   /// never as the agent's.
   BlockSummaryEvent(subject: SummarySubject, text: String)
 
+  /// The authoritative goal cell changed; subscribed peers re-read it.
+  GoalChanged
+
   /// One usage-ledger append.
   UsageEvent(strand: String, op: Option(String), usage: Usage)
 
@@ -1431,6 +1434,7 @@ fn event_body(event: Event) -> #(String, JsonValue) {
         #("total_bytes", json.Int(total_bytes)),
       ]),
     )
+    GoalChanged -> #("goal_changed", json.Object([]))
     BlockSummaryEvent(subject:, text:) -> #(
       "block_summary",
       json.Object(
@@ -1875,6 +1879,10 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       })
       use text <- result.try(required_string(fields, "text"))
       Ok(BlockSummaryEvent(subject:, text:))
+    }
+    "goal_changed" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(GoalChanged)
     }
     "usage" -> {
       use #(strand, op, usage) <- result.try(decode_usage_body(body))

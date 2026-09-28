@@ -78,6 +78,7 @@ const event_fixtures = [
   "event_snapshot_context_pending.json", "event_snapshot_advisor_pending.json",
   "event_snapshot_goal.json", "event_snapshot_block_summaries.json",
   "event_block_summary_block.json", "event_block_summary_stream.json",
+  "event_goal_changed.json",
 ]
 
 pub fn command_fixtures_roundtrip_test() {
@@ -106,7 +107,7 @@ pub fn corpus_is_complete_test() {
     list.append(command_fixtures, event_fixtures)
     |> list.sort(string.compare)
   assert covered == json_files
-  assert list.length(json_files) == 66
+  assert list.length(json_files) == 67
 }
 
 // --- strictness and tolerance ----------------------------------------------
