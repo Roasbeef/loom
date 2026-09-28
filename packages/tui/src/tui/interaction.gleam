@@ -50,11 +50,10 @@ import tui/inbound
 import tui/job
 import tui/layout
 import tui/model.{
-  type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Attached,
-  Caches, DaemonSelector, DiffHidden, DiffVisible, FrameCache, GoalInspector,
-  Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older, OverlaySubmission,
-  PeerLinkManager, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Shared,
-  TerminalClipboard, View,
+  type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Caches,
+  DaemonSelector, DiffHidden, DiffVisible, FrameCache, GoalInspector, Model,
+  ModelSelector, Newer, NoClipboard, NoOverlay, Older, PeerLinkManager,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -66,6 +65,7 @@ import tui/queue_panel
 import tui/render
 import tui/selection
 import tui/session_control
+import tui/session_model.{Attached, OverlaySubmission, Shared}
 import tui/session_selector
 import tui/submit
 import tui/summary_panel

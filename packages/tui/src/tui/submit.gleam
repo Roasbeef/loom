@@ -35,16 +35,18 @@ import tui/job
 import tui/layout
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
-  Attached, ComposerSubmission, DiffHidden, DiffVisible, Disconnected, Interrupt,
-  Model, ModelSelector, NoOverlay, OverlaySubmission, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, Shared,
-  SteerNow, View,
+  DiffHidden, DiffVisible, Model, ModelSelector, NoOverlay, PromptNext,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
 import tui/queue_editor
 import tui/session_control
+import tui/session_model.{
+  Attached, ComposerSubmission, Disconnected, Interrupt, OverlaySubmission,
+  Preview, Replaying, Shared,
+}
 import tui/surfaces
 
 /// Opens the agent workspace on the active strand.

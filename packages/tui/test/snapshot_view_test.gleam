@@ -21,6 +21,7 @@ import session_view/transcript_line
 import tui/approval_panel
 import tui/inbound
 import tui/model as tui_model
+import tui/session_model
 import tui_test/pushed
 
 fn author(name) {
@@ -336,7 +337,7 @@ pub fn tool_result_lookup_and_tail_retirement_match_strand_and_call_test() {
       let base = pushed.attached()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, tool_tails: [
+        shared: session_model.Shared(..base.shared, tool_tails: [
           tail("main", "call-main", 0),
           tail("main", "call-running", 1),
           tail("sub:1", "call-peer", 0),
@@ -589,7 +590,10 @@ pub fn metadata_refresh_preserves_the_footer_notice_test() {
   let prior =
     tui_model.Model(
       ..initial,
-      shared: tui_model.Shared(..initial.shared, notice: "streaming thinking"),
+      shared: session_model.Shared(
+        ..initial.shared,
+        notice: "streaming thinking",
+      ),
     )
   let refreshed =
     inbound.apply_channel_update(

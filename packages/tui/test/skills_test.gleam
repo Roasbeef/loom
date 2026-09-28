@@ -10,6 +10,7 @@ import session_view/skills
 import tui
 import tui/connection
 import tui/model as tui_model
+import tui/session_model
 import tui/workspace
 
 pub fn skill_completion_preserves_builtin_precedence_and_arguments_test() {
@@ -34,9 +35,9 @@ pub fn disconnected_skill_submission_retains_its_draft_test() {
   let model =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
-        peer: tui_model.Disconnected,
+        peer: session_model.Disconnected,
         skills: [
           command.Suggestion("/review-code", "Inspect code", True),
         ],

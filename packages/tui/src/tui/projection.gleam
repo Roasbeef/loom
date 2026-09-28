@@ -35,8 +35,9 @@ import session_view/transcript_lines.{
 import tui/layout
 import tui/live_tail
 import tui/markdown
-import tui/model.{type Model, Caches, Model, Shared, View} as tui_model
+import tui/model.{type Model, Caches, Model, View} as tui_model
 import tui/render
+import tui/session_model.{Shared}
 import tui/surfaces
 import tui/transcript_anchor
 

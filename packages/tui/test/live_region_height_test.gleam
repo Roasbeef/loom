@@ -36,6 +36,7 @@ import tui
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
+import tui/session_model
 import tui/workspace
 import tui_test/gateway
 
@@ -53,7 +54,7 @@ fn model() -> tui_model.Model {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..base.shared,
       transcript: [],
       records: [],
@@ -82,7 +83,7 @@ fn rows_at(model: tui_model.Model, columns: Int) -> Int {
 
 fn expanded(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
-    shared: tui_model.Shared(..model.shared, details_expanded: True),
+    shared: session_model.Shared(..model.shared, details_expanded: True),
     view: tui_model.View(..model.view, rendered_revision: -1),
   )
 }

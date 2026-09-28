@@ -19,6 +19,7 @@ import tui
 import tui/agents
 import tui/connection
 import tui/model as tui_model
+import tui/session_model
 import tui/workspace
 
 /// A presentation model in the replay posture, and the connection subject
@@ -70,9 +71,9 @@ pub fn replay_model() -> #(Subject(connection_event.Message), tui_model.Model) {
 // same state.
 fn replay_posture(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..model.shared,
-      peer: tui_model.Replaying,
+      peer: session_model.Replaying,
       transcript: [],
       models: [],
       session: "bench",
@@ -97,7 +98,7 @@ fn replay_posture(model: tui_model.Model) -> tui_model.Model {
 pub fn live(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: tui_model.Shared(..model.shared, peer: tui_model.Preview),
+    shared: session_model.Shared(..model.shared, peer: session_model.Preview),
   )
 }
 

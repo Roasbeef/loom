@@ -20,6 +20,7 @@ import session_view/snapshot
 import tui
 import tui/connection
 import tui/model as tui_model
+import tui/session_model
 import tui/workspace
 
 /// The one metadata fragment a minimal transfer carries.
@@ -266,9 +267,9 @@ pub fn attached() -> tui_model.Model {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("test", None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
-        peer: tui_model.Replaying,
+        peer: session_model.Replaying,
         channel: Some(ready),
       ),
       view: tui_model.View(

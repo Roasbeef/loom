@@ -29,6 +29,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/surfaces
 import tui/workspace
 import tui_test/pushed
@@ -269,7 +270,7 @@ pub fn refused_refresh_invalidates_the_cached_percentage_test() {
   let refreshing =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         context: context.sent(observed, 9),
       ),
@@ -293,7 +294,7 @@ pub fn automatic_context_read_preserves_the_session_refusal_notice_test() {
   let refused =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         notice: "open session: not_found: request refused",
       ),
@@ -394,7 +395,7 @@ fn observing(
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         active_strand: "main",
         strands: [protocol.Strand("main", Some("main"), phase)],
@@ -420,7 +421,7 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
   assert surfaces.context_refresh_due(
     tui_model.Model(
       ..idle,
-      shared: tui_model.Shared(..idle.shared, captured: None),
+      shared: session_model.Shared(..idle.shared, captured: None),
     ),
     idle,
   )
@@ -443,7 +444,7 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
     settled,
     tui_model.Model(
       ..settled,
-      shared: tui_model.Shared(..settled.shared, active_strand: "fork"),
+      shared: session_model.Shared(..settled.shared, active_strand: "fork"),
     ),
   )
   assert surfaces.context_refresh_due(
@@ -458,7 +459,7 @@ pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {
   let pending =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         worktree: worktree_view.request(worktree_view.new(), "owner"),
         context: waiting(8),
@@ -477,7 +478,7 @@ pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {
       backend.Tick,
       tui_model.Model(
         ..pending,
-        shared: tui_model.Shared(..pending.shared, context: context.new()),
+        shared: session_model.Shared(..pending.shared, context: context.new()),
       ),
     )
   assert released.shared.worktree.awaiting != None

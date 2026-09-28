@@ -85,9 +85,8 @@ import tui/job
 import tui/job_runner
 import tui/layout
 import tui/model.{
-  type Model, DiffAutomatic, Disconnected, HoldGoalReport, Model, Newer,
-  NoClipboard, NoOverlay, Older, Preview, PromptNext, ReconnectIdle, Replaying,
-  Shared, TerminalClipboard,
+  type Model, DiffAutomatic, Model, Newer, NoClipboard, NoOverlay, Older,
+  PromptNext, ReconnectIdle, TerminalClipboard,
 } as tui_model
 import tui/msg
 import tui/note_panel
@@ -98,6 +97,9 @@ import tui/recording
 import tui/render
 import tui/runtime
 import tui/session_control
+import tui/session_model.{
+  Disconnected, HoldGoalReport, Preview, Replaying, Shared,
+}
 import tui/session_table
 import tui/summary_panel
 import tui/surfaces
@@ -570,7 +572,7 @@ pub fn new_model_with_clock(
       stamp:,
       client_build: build_identity.current(),
       activity_revision: 0,
-      connection_backlog: tui_model.MailboxDrained,
+      connection_backlog: session_model.MailboxDrained,
       recorder: None,
       record_cache_epoch: 0,
     ),

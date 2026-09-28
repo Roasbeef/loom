@@ -25,6 +25,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 
 fn model() {
@@ -130,7 +131,7 @@ pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         strands: [],
         reviewer_rows: reviewer_status.observe([], window, view),
@@ -159,7 +160,7 @@ pub fn the_agent_strip_supersedes_the_reviewer_band_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         strands: [protocol.Strand("main", Some("main"), None), ..view.strands],
         reviewer_rows: reviewer_status.observe([], window, view),
@@ -191,7 +192,7 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..base.shared,
           strands: [
             protocol.Strand("advisor", Some("advisor"), Some("assistant")),
@@ -207,7 +208,7 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
     |> tui.update(backend.Resize(80, 24), _)
   let idle =
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..live.shared,
         strands: [protocol.Strand("advisor", Some("advisor"), None)],
         reviewer_rows: [],

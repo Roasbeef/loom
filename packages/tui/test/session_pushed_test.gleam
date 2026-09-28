@@ -33,6 +33,7 @@ import tui/connection
 import tui/inbound
 import tui/model as tui_model
 import tui/recording
+import tui/session_model
 import tui/workspace
 import tui_test/pushed
 
@@ -537,9 +538,9 @@ fn attached() {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("test", None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
-        peer: tui_model.Replaying,
+        peer: session_model.Replaying,
         channel: Some(ready),
       ),
       view: tui_model.View(
@@ -760,7 +761,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
     let base = attached()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+      shared: session_model.Shared(..base.shared, peer: session_model.Preview),
     )
   }
   let reported =
@@ -804,7 +805,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
   let captured =
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(..model.shared, usage: reported),
+      shared: session_model.Shared(..model.shared, usage: reported),
     )
   let after_cut =
     inbound.accept_connection_message(captured, usage_push("main", reported))
@@ -833,9 +834,9 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
     tui.update(backend.KeyPress("enter"), {
       let base = attached()
       tui_model.Model(
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..base.shared,
-          peer: tui_model.Preview,
+          peer: session_model.Preview,
           cache: cache_watch.Ledger(
             ..attached().shared.cache,
             watches: dict.from_list([#("main", watch)]),
@@ -895,7 +896,10 @@ pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test(
         let base = attached()
         tui_model.Model(
           ..base,
-          shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+          shared: session_model.Shared(
+            ..base.shared,
+            peer: session_model.Preview,
+          ),
         )
       },
       11,
@@ -955,7 +959,10 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
         let base = attached()
         tui_model.Model(
           ..base,
-          shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+          shared: session_model.Shared(
+            ..base.shared,
+            peer: session_model.Preview,
+          ),
         )
       },
       11,
@@ -963,7 +970,7 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
     )
   let old =
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..captured.shared,
         cache: cache_watch.Ledger(
           ..captured.shared.cache,
@@ -1004,7 +1011,7 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
     let base = attached()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+      shared: session_model.Shared(..base.shared, peer: session_model.Preview),
     )
   }
   let first =
@@ -1050,7 +1057,7 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
     let base = attached()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+      shared: session_model.Shared(..base.shared, peer: session_model.Preview),
     )
   }
   let first = cache_cut(model, 11, "new-provider")
@@ -1092,7 +1099,7 @@ pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
     inbound.accept_connection_message(
       tui_model.Model(
         ..model,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..model.shared,
           channel: Some(sent),
           submitting: Some("main"),

@@ -41,6 +41,7 @@ import tui/internal/ffi_terminal
 import tui/model as tui_model
 import tui/queue_editor
 import tui/render
+import tui/session_model
 import tui/tick
 import tui/workspace
 
@@ -85,9 +86,9 @@ pub fn run_context(palette: String) -> Nil {
   ffi_terminal.silence_logger()
   let initial = fixture_model(palette)
   run_model(tui_model.Model(
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..initial.shared,
-      peer: tui_model.Replaying,
+      peer: session_model.Replaying,
       context: context_view.State(
         ..initial.shared.context,
         surface: context_view.Overview,
@@ -186,7 +187,7 @@ fn fixture_model(palette: String) -> tui_model.Model {
     as "the native fixture must pass the shipped capture decoder"
   let initial =
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         session: "native-fixture",
         strands: [],
@@ -203,7 +204,7 @@ fn fixture_model(palette: String) -> tui_model.Model {
     ))
   let initial =
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..initial.shared,
         notice: "illustrative fixture · no provider calls",
         worktree: fixture_worktree(),

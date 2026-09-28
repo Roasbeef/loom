@@ -8,6 +8,7 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
+import tui/session_model
 import tui/session_selector
 import tui/workspace
 import weft
@@ -17,7 +18,7 @@ pub fn rename_without_attachment_reports_no_session_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work/loom", None))
   let model =
     tui_model.Model(
-      shared: tui_model.Shared(..model.shared, session: ""),
+      shared: session_model.Shared(..model.shared, session: ""),
       view: tui_model.View(
         ..model.view,
         input: textarea.state_from_string("/rename review auth"),
@@ -37,7 +38,7 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
   let #(model, key) = tui_model.allocate_job(model)
   let pending =
     tui_model.Model(
-      shared: tui_model.Shared(..model.shared, session: row.session_id),
+      shared: session_model.Shared(..model.shared, session: row.session_id),
       view: tui_model.View(
         ..model.view,
         control_request: Some(tui_model.ControlRequest(job.awaiting(key), None)),

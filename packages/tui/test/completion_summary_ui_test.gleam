@@ -21,6 +21,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/queue_editor
 import tui/render
+import tui/session_model
 import tui/summary_panel
 import tui/surfaces
 import tui/workspace
@@ -30,7 +31,7 @@ fn model() {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, attachments: [
+      shared: session_model.Shared(..base.shared, attachments: [
         composer.Attachment("retained context", 4),
       ]),
       view: tui_model.View(
@@ -97,7 +98,7 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
     let base = model()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, jobs: Some(board)),
+      shared: session_model.Shared(..base.shared, jobs: Some(board)),
     )
   }
   let opened = surfaces.open_summary(initial) |> key("3")
@@ -118,14 +119,14 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
   let other =
     tui_model.Model(
       ..opened,
-      shared: tui_model.Shared(..opened.shared, active_strand: "other"),
+      shared: session_model.Shared(..opened.shared, active_strand: "other"),
     )
   assert !string.contains(painted(other), "job-7")
   assert string.contains(
     painted(
       tui_model.Model(
         ..other,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..other.shared,
           jobs_notice: "Live jobs observed separately from completion",
         ),
@@ -186,7 +187,7 @@ pub fn summary_separates_current_context_from_cumulative_usage_test() {
   let updated =
     tui_model.Model(
       ..initial,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..initial.shared,
         records: [protocol.EntryRecord("main", measured)],
         usage: cumulative,
@@ -209,14 +210,14 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, jobs: Some(board)),
+        shared: session_model.Shared(..base.shared, jobs: Some(board)),
       )
     }
     |> surfaces.open_summary
     |> fn(model) {
       tui_model.Model(
         ..model,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..model.shared,
           jobs_notice: "Refreshing live jobs; previous observation may be stale",
         ),
@@ -235,7 +236,7 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
     inbound.apply_channel_update(
       tui_model.Model(
         ..opened,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..opened.shared,
           jobs_awaiting: Some(#("", "main")),
         ),

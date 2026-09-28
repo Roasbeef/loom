@@ -34,6 +34,7 @@ import tui/inbound
 import tui/interaction
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 import tui_test/gateway
 import tui_test/pushed
@@ -203,7 +204,7 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
   let expanded =
     tui_model.Model(
       ..idle,
-      shared: tui_model.Shared(..idle.shared, details_expanded: True),
+      shared: session_model.Shared(..idle.shared, details_expanded: True),
     )
   assert string.contains(text(expanded), ", idle 10m ·")
     as "the detailed footer also displays the warning, on the cache figure"
@@ -223,7 +224,7 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
       let base = at(quiet, 600_000)
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: [
+        shared: session_model.Shared(..base.shared, strands: [
           protocol.Strand(
             id: "main",
             name: Some("main"),
@@ -243,7 +244,7 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
     |> fn(base) {
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..base.shared,
           cache: cache_watch.Ledger(
             ..base.shared.cache,
@@ -264,7 +265,7 @@ pub fn changing_the_model_discards_the_old_watch_before_the_next_row_test() {
   let watched =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         cache: cache_watch.Ledger(
           ..base.shared.cache,
@@ -334,7 +335,7 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
   let initial =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         cache: cache_watch.Ledger(
           ..base.shared.cache,
@@ -401,7 +402,7 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
 fn clear_strands(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: tui_model.Shared(..model.shared, strands: []),
+    shared: session_model.Shared(..model.shared, strands: []),
   )
 }
 

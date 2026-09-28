@@ -36,6 +36,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 
 fn model() {
@@ -310,9 +311,13 @@ pub fn inspection_keeps_the_recipient_and_opening_restores_each_draft_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, strands: roster(), attachments: [
-        composer.Attachment("attached main context", 5),
-      ]),
+      shared: session_model.Shared(
+        ..base.shared,
+        strands: roster(),
+        attachments: [
+          composer.Attachment("attached main context", 5),
+        ],
+      ),
       view: tui_model.View(
         ..base.view,
         input: textarea.state_from_string("main draft"),
@@ -343,7 +348,7 @@ pub fn selection_survives_insertion_and_removal_cannot_retarget_a_draft_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, strands: roster()),
+      shared: session_model.Shared(..base.shared, strands: roster()),
       view: tui_model.View(
         ..base.view,
         input: textarea.state_from_string("keep me"),
@@ -354,7 +359,7 @@ pub fn selection_survives_insertion_and_removal_cannot_retarget_a_draft_test() {
   let inserted =
     tui_model.Model(
       ..inspected,
-      shared: tui_model.Shared(..inspected.shared, strands: [
+      shared: session_model.Shared(..inspected.shared, strands: [
         protocol.Strand("earlier", None, None),
         ..roster()
       ]),
@@ -365,7 +370,7 @@ pub fn selection_survives_insertion_and_removal_cannot_retarget_a_draft_test() {
   let removed =
     tui_model.Model(
       ..inserted,
-      shared: tui_model.Shared(..inserted.shared, strands: [
+      shared: session_model.Shared(..inserted.shared, strands: [
         protocol.Strand("main", None, None),
       ]),
     )
@@ -384,7 +389,7 @@ pub fn expanded_pending_nudges_keep_all_lines_in_the_scrollable_tail_test() {
     let base = model()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         strands: [],
         nudges: Some(advisor_pending.Board("main", 1, [body], 1)),
@@ -584,7 +589,7 @@ pub fn returned_input_keeps_its_owner_while_another_draft_is_open_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, strands: roster()),
+      shared: session_model.Shared(..base.shared, strands: roster()),
       view: tui_model.View(
         ..base.view,
         input: textarea.state_from_string("main draft"),
@@ -621,7 +626,7 @@ pub fn editing_inside_the_workspace_keeps_the_original_recipient_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, strands: roster()),
+      shared: session_model.Shared(..base.shared, strands: roster()),
       view: tui_model.View(
         ..base.view,
         input: textarea.state_from_string("main draft"),
@@ -652,7 +657,7 @@ pub fn paste_edits_only_while_the_workspace_composer_has_focus_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, strands: roster()),
+      shared: session_model.Shared(..base.shared, strands: roster()),
       view: tui_model.View(
         ..base.view,
         input: textarea.state_from_string("main draft"),
@@ -691,7 +696,7 @@ pub fn diff_navigation_does_not_paste_into_the_hidden_composer_test() {
   let browsing =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         worktree: worktree_view.State(
           ..base.shared.worktree,
@@ -705,7 +710,7 @@ pub fn diff_navigation_does_not_paste_into_the_hidden_composer_test() {
   let composing =
     tui_model.Model(
       ..browsing,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..browsing.shared,
         worktree: worktree_view.State(
           ..browsing.shared.worktree,
@@ -732,7 +737,7 @@ pub fn opening_selected_message_sender_preserves_drafts_until_the_action_test() 
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         strands: roster(),
         agent_messages: [send],
@@ -769,7 +774,7 @@ pub fn unknown_message_sender_is_refused_without_retargeting_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         strands: roster(),
         agent_messages: [send],
@@ -803,7 +808,7 @@ pub fn short_detail_with_multiline_draft_keeps_selected_body_visible_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..base.shared,
           strands: roster(),
           agent_messages: [send],
@@ -856,7 +861,7 @@ pub fn capture_reconciliation_preserves_scrolled_durable_selection_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, agent_messages: [
+        shared: session_model.Shared(..base.shared, agent_messages: [
           fresh,
           retained,
         ]),
@@ -881,7 +886,7 @@ pub fn capture_reconciliation_preserves_scrolled_durable_selection_test() {
   let evicted =
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(..model.shared, agent_messages: [fresh]),
+      shared: session_model.Shared(..model.shared, agent_messages: [fresh]),
     )
     |> inbound.reconcile_agent_message_selection
   let assert tui_model.AgentInspector(fallback) = evicted.view.overlay
@@ -897,7 +902,7 @@ pub fn workspace_preserves_recipient_controls_and_attention_at_small_sizes_test(
         {
           let base = model()
           tui_model.Model(
-            shared: tui_model.Shared(..base.shared, strands: roster()),
+            shared: session_model.Shared(..base.shared, strands: roster()),
             view: tui_model.View(
               ..base.view,
               input: textarea.state_from_string("retained draft"),
@@ -928,7 +933,7 @@ pub fn collaboration_tab_preserves_inspection_and_composer_target_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     }
     |> press("f2")
@@ -975,7 +980,7 @@ pub fn workspace_typing_leaves_the_hidden_diff_navigator_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
         view: tui_model.View(..base.view, diff_view: tui_model.DiffVisible),
       )
     }
@@ -1022,7 +1027,7 @@ pub fn long_checkout_paths_do_not_hide_the_session_identity_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..base.shared,
           workspace: workspace.Context(
             "/work/" <> string.repeat("nested/", 30),
@@ -1049,7 +1054,7 @@ pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
         view: tui_model.View(
           ..base.view,
           input: textarea.state_from_string("retained draft"),

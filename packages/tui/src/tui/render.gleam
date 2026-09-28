@@ -63,9 +63,9 @@ import tui/layout
 import tui/live_tail
 import tui/markdown
 import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, DaemonSelector, Disconnected,
-  FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
-  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
+  type Model, AgentInspector, ApprovalInspector, DaemonSelector, FrameCache,
+  GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager, PromptNext,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -73,6 +73,7 @@ import tui/peer_links
 import tui/queue_editor
 import tui/queue_panel
 import tui/selection
+import tui/session_model.{Disconnected}
 import tui/session_selector
 import tui/summary_panel
 import tui/theme

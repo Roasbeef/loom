@@ -17,6 +17,7 @@ import tui/buffered
 import tui/connection
 import tui/model as tui_model
 import tui/recording
+import tui/session_model
 import tui/virtual_backend
 import tui/workspace
 
@@ -46,9 +47,9 @@ pub fn run(path: String, expected_records: Int) -> Nil {
   let model = {
     let base = tui.new_model(inbox, workspace.Context("replay", None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
-        peer: tui_model.Replaying,
+        peer: session_model.Replaying,
         transcript: [],
         models: [],
         session: "replay",

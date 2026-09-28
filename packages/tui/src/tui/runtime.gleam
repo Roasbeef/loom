@@ -59,9 +59,10 @@ import tui/image_drop
 import tui/job
 import tui/job_runner
 import tui/keymap
-import tui/model.{type Model, Model, Shared, View} as tui_model
+import tui/model.{type Model, Model, View} as tui_model
 import tui/msg.{type Msg, type Stamp, Stamp}
 import tui/recording
+import tui/session_model.{Shared}
 import tui/step_effect
 import tui/terminal_lane
 import weft
@@ -160,13 +161,15 @@ pub fn arrivals(model: Model) -> List(msg.Arrival) {
     )
     |> list.map(msg.Frame(connection, _))
   let replayed = case model.shared.peer {
-    tui_model.Replaying ->
+    session_model.Replaying ->
       buffered.waiting(
         buffered.sender(model.shared.replay_inbox),
         1 - buffered.held(model.shared.replay_inbox),
       )
       |> list.map(msg.Replayed)
-    tui_model.Attached | tui_model.Disconnected | tui_model.Preview -> []
+    session_model.Attached
+    | session_model.Disconnected
+    | session_model.Preview -> []
   }
   let from_attempt = case attachment.frame_room(model.view.candidate) {
     Error(Nil) -> []

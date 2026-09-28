@@ -24,6 +24,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/note_panel
 import tui/render
+import tui/session_model
 import tui/workspace
 import tui_test/gateway
 
@@ -312,7 +313,10 @@ pub fn notes_distinguish_read_freshness_from_turn_age_test() {
   let older =
     delivered(
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, captured: Some(#(cut, view))),
+        shared: session_model.Shared(
+          ..base.shared,
+          captured: Some(#(cut, view)),
+        ),
         view: tui_model.View(..base.view, notes_open: True),
       ),
       board(20, "Pending: inspect queue", "complete"),
@@ -372,7 +376,7 @@ pub fn historical_notes_are_readable_compact_and_raw_after_detail_expansion_test
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let compact =
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, records: [record]),
+      shared: session_model.Shared(..base.shared, records: [record]),
       view: tui_model.View(..base.view, notes_open: True),
     )
   assert string.contains(text(compact), "Built modules")

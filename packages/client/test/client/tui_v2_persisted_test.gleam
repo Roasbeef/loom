@@ -37,6 +37,7 @@ import support/tui_driver
 import telemetry/log
 import tui/attachment
 import tui/model as tui_model
+import tui/session_model
 import weft/poll
 
 type Arrival =
@@ -218,7 +219,8 @@ fn await(driver, predicate) {
 
 fn attached(sample: tui_driver.Sample, id) {
   case sample.model.shared.peer, sample.model.shared.captured {
-    tui_model.Attached, Some(#(cut, _)) -> cut.attachment.expected.session == id
+    session_model.Attached, Some(#(cut, _)) ->
+      cut.attachment.expected.session == id
     _, _ -> False
   }
 }

@@ -36,6 +36,7 @@ import tui/connection
 import tui/frame
 import tui/layout
 import tui/model as tui_model
+import tui/session_model
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -411,7 +412,7 @@ fn said(text: String) -> Pane {
     let base = quiet_model(connection.new_inbox(), Compact)
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, transcript: [
+      shared: session_model.Shared(..base.shared, transcript: [
         transcript_line.Line(transcript_line.Assistant, text),
       ]),
     )
@@ -542,7 +543,7 @@ fn quiet_model(
     let base =
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         transcript: [],
         strands: [],

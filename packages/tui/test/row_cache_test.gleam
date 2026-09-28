@@ -22,6 +22,7 @@ import tui
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
+import tui/session_model
 import tui/workspace
 import tui_test/ffi_term
 import tui_test/gateway
@@ -32,7 +33,7 @@ fn model() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..base.shared,
       transcript: [],
       records: [],
@@ -48,7 +49,7 @@ fn received(model, wire) {
 fn checked_layout(model: tui_model.Model, width) {
   let cold =
     tui_model.Model(
-      shared: tui_model.Shared(..model.shared, record_cache_valid: False),
+      shared: session_model.Shared(..model.shared, record_cache_valid: False),
       view: tui_model.View(
         ..model.view,
         caches: tui_model.Caches(
@@ -99,14 +100,14 @@ pub fn cached_history_matches_fresh_rows_after_each_event_test() {
     checked_layout(
       tui_model.Model(
         ..narrow,
-        shared: tui_model.Shared(..narrow.shared, details_expanded: True),
+        shared: session_model.Shared(..narrow.shared, details_expanded: True),
       ),
       120,
     )
   let other =
     checked_layout(
       tui_model.Model(
-        shared: tui_model.Shared(..expanded.shared, active_strand: "other"),
+        shared: session_model.Shared(..expanded.shared, active_strand: "other"),
         view: tui_model.View(..expanded.view, rendered_revision: -1),
       ),
       120,
@@ -119,7 +120,7 @@ pub fn cached_history_matches_fresh_rows_after_each_event_test() {
   let _ =
     checked_layout(
       tui_model.Model(
-        shared: tui_model.Shared(..other.shared, active_strand: "main"),
+        shared: session_model.Shared(..other.shared, active_strand: "main"),
         view: tui_model.View(..other.view, rendered_revision: -1),
       ),
       120,
@@ -202,7 +203,7 @@ pub fn compaction_notice_keeps_checkpoint_out_of_transcript_test() {
     checked_layout(
       tui_model.Model(
         ..loaded,
-        shared: tui_model.Shared(..loaded.shared, details_expanded: True),
+        shared: session_model.Shared(..loaded.shared, details_expanded: True),
       ),
       120,
     )

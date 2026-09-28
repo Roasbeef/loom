@@ -44,9 +44,10 @@ import tui/buffered
 import tui/job
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, ControlRequest,
-  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Shared, View,
+  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent, View,
 } as tui_model
 import tui/msg.{type Arrival}
+import tui/session_model.{Shared}
 
 /// Files each arrival, oldest first, into the buffer or slot that waits for
 /// it.

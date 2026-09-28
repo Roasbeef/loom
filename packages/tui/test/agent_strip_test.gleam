@@ -35,6 +35,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 
 // --- fixtures --------------------------------------------------------------
@@ -470,7 +471,7 @@ pub fn the_strip_draws_one_row_per_live_agent_under_the_footer_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     }
     |> painted(120, 30)
@@ -488,7 +489,7 @@ pub fn a_short_terminal_keeps_its_rows_for_the_conversation_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     }
     |> painted(120, 15)
@@ -500,7 +501,7 @@ pub fn down_enters_the_strip_and_enter_opens_the_agent_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
         view: tui_model.View(
           ..base.view,
           input: textarea.state_from_string("main draft"),
@@ -539,7 +540,7 @@ pub fn typing_while_browsing_returns_the_key_to_the_composer_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     }
     |> sized(120, 30)
@@ -556,7 +557,7 @@ pub fn escape_and_up_from_the_top_hand_the_keyboard_back_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     }
     |> sized(120, 30)
@@ -573,7 +574,7 @@ pub fn down_walks_history_before_it_enters_the_strip_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
         view: tui_model.View(..base.view, history: ["older"]),
       )
     }
@@ -592,7 +593,7 @@ pub fn opening_a_sub_agent_badges_the_composer_with_its_task_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     }
     |> sized(120, 30)
@@ -608,7 +609,7 @@ pub fn x_stops_the_selected_agent_without_retargeting_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     }
     |> sized(120, 30)
@@ -644,7 +645,7 @@ pub fn an_overlay_takes_the_keyboard_out_of_the_strip_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
         view: tui_model.View(
           ..base.view,
           input: textarea.state_from_string("send me"),
@@ -677,7 +678,7 @@ pub fn a_strip_that_disappears_returns_the_keyboard_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
         view: tui_model.View(
           ..base.view,
           input: textarea.state_from_string("send me"),
@@ -689,7 +690,7 @@ pub fn a_strip_that_disappears_returns_the_keyboard_test() {
   let settled =
     tui_model.Model(
       ..browsing,
-      shared: tui_model.Shared(..browsing.shared, strands: [
+      shared: session_model.Shared(..browsing.shared, strands: [
         protocol.Strand("main", Some("main"), None),
       ]),
     )
@@ -705,7 +706,7 @@ pub fn x_on_an_idle_primary_stops_nothing_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     }
     |> sized(120, 30)
@@ -806,7 +807,7 @@ pub fn ctrl_o_opens_and_closes_the_agent_inspector_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
         view: tui_model.View(
           ..base.view,
           input: textarea.state_from_string("draft"),

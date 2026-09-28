@@ -16,6 +16,7 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
+import tui/session_model
 import tui/session_selector
 import tui/virtual_backend
 import tui/workspace
@@ -96,7 +97,7 @@ pub fn acknowledged_rename_updates_header_and_picker_without_switching_test() {
   let model = {
     let base = blank()
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         session: "a",
         session_label: Some(#("a", "Original")),
@@ -132,7 +133,7 @@ pub fn renaming_another_session_keeps_the_attached_title_test() {
     let base = blank()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         session: "a",
         session_label: Some(#("a", "Current")),
@@ -151,7 +152,7 @@ pub fn a_title_cannot_follow_a_legacy_identity_switch_test() {
     let base = blank()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         session: "new-identity",
         session_label: Some(#("old-identity", "Old title")),
@@ -173,7 +174,10 @@ fn header(model: tui_model.Model) -> String {
     tui.run_script(
       tui_model.Model(
         ..model,
-        shared: tui_model.Shared(..model.shared, peer: tui_model.Replaying),
+        shared: session_model.Shared(
+          ..model.shared,
+          peer: session_model.Replaying,
+        ),
       ),
       script,
     )

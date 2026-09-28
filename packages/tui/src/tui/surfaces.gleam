@@ -37,14 +37,16 @@ import tui/agents
 import tui/focused_goal_panel
 import tui/layout
 import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, Attached, ConfirmGoal,
-  DaemonSelector, Disconnected, GoalInspector, HoldGoalReport, Model,
-  ModelSelector, NoOverlay, OverlaySubmission, PeerLinkManager, Preview,
-  Replaying, ReportGoal, Shared, View,
+  type Model, AgentInspector, ApprovalInspector, DaemonSelector, GoalInspector,
+  Model, ModelSelector, NoOverlay, PeerLinkManager, View,
 } as tui_model
 import tui/outbound
 import tui/queue_editor
 import tui/render
+import tui/session_model.{
+  Attached, ConfirmGoal, Disconnected, HoldGoalReport, OverlaySubmission,
+  Preview, Replaying, ReportGoal, Shared,
+}
 import tui/summary_panel
 
 /// Inspection has its own target. Reading a worker's notes never changes the

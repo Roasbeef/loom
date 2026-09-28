@@ -35,10 +35,11 @@ import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
   ApprovalInspector, ControlRequest, DaemonSelector, GoalInspector, Model,
   ModelSelector, NoOverlay, PeerLinkManager, ReconnectAttempting, ReconnectIdle,
-  ReconnectSpent, Shared, View,
+  ReconnectSpent, View,
 } as tui_model
 import tui/peer_links
 import tui/recording
+import tui/session_model.{Shared}
 import tui/session_selector
 import tui/workspace
 import weft

@@ -27,6 +27,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 import tui_test/gateway
 import tui_test/pushed
@@ -229,7 +230,7 @@ pub fn the_tick_times_the_live_row_test() {
   let ticked =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         summaries: labels,
         generation_started_ms: Some(base.view.monotonic_time_ms() - 64_000),
@@ -273,7 +274,7 @@ pub fn a_pushed_label_repaints_a_cached_row_test() {
   let before =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, records: [record]),
+      shared: session_model.Shared(..base.shared, records: [record]),
     )
     |> tui.update(backend.Tick, _)
   assert string.contains(paint(before), "Opening line.  [Ctrl+G to expand]")
@@ -486,7 +487,7 @@ pub fn a_label_read_back_by_exact_key_labels_the_block_test() {
     inbound.apply_channel_update(
       tui_model.Model(
         ..model,
-        shared: tui_model.Shared(..model.shared, records: [record]),
+        shared: session_model.Shared(..model.shared, records: [record]),
       ),
       session_channel.Auxiliary(event),
     )
@@ -618,7 +619,7 @@ fn thought_of(records: List(protocol.EntryRecord)) -> protocol.EntryRecord {
 fn reading(records: List(protocol.EntryRecord)) -> tui_model.Model {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  tui_model.Model(..base, shared: tui_model.Shared(..base.shared, records:))
+  tui_model.Model(..base, shared: session_model.Shared(..base.shared, records:))
   |> tui.update(backend.Resize(100, 20), _)
   |> tui.update(backend.MouseScroll(5, 5, True), _)
   |> tui.update(backend.MouseScroll(5, 5, True), _)

@@ -70,12 +70,10 @@ import tui/daemon/protocol as control_protocol
 import tui/job
 import tui/layout
 import tui/model.{
-  type Interrupt, type Model, type Peer, type Reconnect, type StrandWorkspace,
-  type UnconfirmedSubmission, AgentInspector, ApprovalInspector, Attached,
-  DaemonSelector, Disconnected, GoalInspector, HoldGoalReport, Interrupt, Model,
-  ModelSelector, NoOverlay, PeerLinkManager, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, Shared,
-  StrandWorkspace, UnconfirmedSubmission, View,
+  type Model, type Reconnect, type StrandWorkspace, AgentInspector,
+  ApprovalInspector, DaemonSelector, GoalInspector, Model, ModelSelector,
+  NoOverlay, PeerLinkManager, PromptNext, ReconnectAttempting, ReconnectIdle,
+  ReconnectSpent, StrandWorkspace, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -83,6 +81,10 @@ import tui/outbound
 import tui/queue_editor
 import tui/queue_panel
 import tui/render
+import tui/session_model.{
+  type Interrupt, type Peer, type UnconfirmedSubmission, Attached, Disconnected,
+  HoldGoalReport, Interrupt, Preview, Replaying, Shared, UnconfirmedSubmission,
+}
 import tui/surfaces
 
 /// The authenticated build belongs to the retained control host. Projecting
@@ -1145,8 +1147,8 @@ pub fn drain_connection(model: Model, remaining: Int) -> Model {
   // holding at least what this drain may take is one whose read filled its
   // room and may have left frames in the mailbox.
   let connection_backlog = case buffered.held(model.shared.inbox) >= remaining {
-    True -> tui_model.MailboxMayHoldMore
-    False -> tui_model.MailboxDrained
+    True -> session_model.MailboxMayHoldMore
+    False -> session_model.MailboxDrained
   }
   let drained =
     operator.drain(model, remaining, take_connection, handle_connection_message)

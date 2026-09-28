@@ -39,12 +39,12 @@ import tui/agent_strip
 import tui/agents
 import tui/diff_panel
 import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, Attached, DaemonSelector,
-  DiffHidden, DiffVisible, Disconnected, GoalInspector, ModelSelector, NoOverlay,
-  PeerLinkManager, Preview, Replaying,
+  type Model, AgentInspector, ApprovalInspector, DaemonSelector, DiffHidden,
+  DiffVisible, GoalInspector, ModelSelector, NoOverlay, PeerLinkManager,
 } as tui_model
 import tui/queue_editor
 import tui/queue_panel
+import tui/session_model.{Attached, Disconnected, Preview, Replaying}
 import tui/todo_panel
 
 /// The area inside a one-cell rounded border.

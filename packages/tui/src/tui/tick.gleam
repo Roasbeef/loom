@@ -31,10 +31,11 @@ import tui/inbound
 import tui/interaction
 import tui/job_runner
 import tui/layout
-import tui/model.{type Model, Caches, FrameCache, Model, Replaying, Shared, View} as tui_model
+import tui/model.{type Model, Caches, FrameCache, Model, View} as tui_model
 import tui/pacing
 import tui/render
 import tui/session_control
+import tui/session_model.{Replaying, Shared}
 import tui/surfaces
 
 /// Starts the Herdr pane reporter when the launch environment carries a
@@ -191,12 +192,12 @@ fn settle_tick(model: Model, drained: Model) -> Model {
 pub fn adopted_backlog(
   before: Model,
   after: Model,
-) -> tui_model.ConnectionBacklog {
+) -> session_model.ConnectionBacklog {
   case
     buffered.sender(after.shared.inbox) == buffered.sender(before.shared.inbox)
   {
     True -> after.shared.connection_backlog
-    False -> tui_model.MailboxMayHoldMore
+    False -> session_model.MailboxMayHoldMore
   }
 }
 
@@ -616,7 +617,7 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
   // once. The ticks this costs are the batches the burst needs anyway, and
   // frame pacing still paints at most one frame per interval.
   use <- bool.guard(
-    model.shared.connection_backlog == tui_model.MailboxMayHoldMore,
+    model.shared.connection_backlog == session_model.MailboxMayHoldMore,
     0,
   )
   case viewport_pacing(model) {
@@ -697,7 +698,7 @@ pub fn wakes_itself(model: Model) -> Bool {
   || model.view.frame_debt == pacing.FrameDeferred
   || job_runner.size(model.view.running) > 0
   || buffered.held(model.shared.inbox) > 0
-  || model.shared.connection_backlog == tui_model.MailboxMayHoldMore
+  || model.shared.connection_backlog == session_model.MailboxMayHoldMore
 }
 
 fn drain_candidate(model: Model) -> Model {

@@ -10,6 +10,7 @@ import session_view/pasted_image
 import tui
 import tui/connection
 import tui/model as tui_model
+import tui/session_model
 import tui/workspace
 
 fn model(draft: String) -> tui_model.Model {
@@ -60,7 +61,7 @@ pub fn multiline_paste_keeps_the_suffix_and_existing_image_attachment_test() {
   let initial = {
     let base = model("")
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, attachments: [image()]),
+      shared: session_model.Shared(..base.shared, attachments: [image()]),
       view: tui_model.View(..base.view, input: cursor),
     )
   }
@@ -78,7 +79,7 @@ pub fn compact_paste_keeps_the_draft_and_existing_attachments_test() {
     let base = model("review this")
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, attachments: [image()]),
+      shared: session_model.Shared(..base.shared, attachments: [image()]),
     )
   }
   let pasted = tui.update(backend.Paste(source), initial)

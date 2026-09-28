@@ -22,12 +22,12 @@ import session_view/command
 import session_view/context_view
 import session_view/session_channel
 import session_view/worktree_view
-import tui/model.{
-  type Model, Attached, ComposerSubmission, ConfirmGoal, Disconnected,
-  HoldGoalReport, Model, OverlaySubmission, Preview, PromptNext, Replaying,
-  ReportGoal, Shared, View,
-} as tui_model
+import tui/model.{type Model, Model, PromptNext, View} as tui_model
 import tui/queue_editor
+import tui/session_model.{
+  Attached, ComposerSubmission, ConfirmGoal, Disconnected, HoldGoalReport,
+  OverlaySubmission, Preview, Replaying, ReportGoal, Shared,
+}
 import tui/terminal_lane
 
 /// Sets the notice shown while a submission waits for the channel.

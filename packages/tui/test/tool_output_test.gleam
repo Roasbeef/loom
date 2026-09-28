@@ -23,6 +23,7 @@ import session_view/transcript_line
 import session_view/transcript_lines
 import tui/inbound
 import tui/model as tui_model
+import tui/session_model
 import tui_test/pushed
 
 // Details open, which is where a running command's output window is
@@ -30,7 +31,7 @@ import tui_test/pushed
 fn expanded(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: tui_model.Shared(..model.shared, details_expanded: True),
+    shared: session_model.Shared(..model.shared, details_expanded: True),
   )
 }
 

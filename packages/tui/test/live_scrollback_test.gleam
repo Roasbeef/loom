@@ -15,6 +15,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 import tui_test/gateway
 
@@ -158,7 +159,10 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
   let offline =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, peer: tui_model.Disconnected),
+      shared: session_model.Shared(
+        ..base.shared,
+        peer: session_model.Disconnected,
+      ),
     )
   assert string.contains(
     border_text(offline),
@@ -168,9 +172,9 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
   let interrupting =
     tui_model.Model(
       ..offline,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..offline.shared,
-        interrupt: Some(tui_model.Interrupt(
+        interrupt: Some(session_model.Interrupt(
           base.shared.active_strand,
           None,
           None,
@@ -192,7 +196,10 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
   let live =
     tui_model.Model(
       ..interrupting,
-      shared: tui_model.Shared(..interrupting.shared, peer: tui_model.Preview),
+      shared: session_model.Shared(
+        ..interrupting.shared,
+        peer: session_model.Preview,
+      ),
     )
   assert string.contains(border_text(live), "stopped · enter sends held input")
 }
@@ -202,7 +209,7 @@ pub fn switching_agents_restores_the_frozen_reader_without_crossing_streams_test
   let reading =
     tui_model.Model(
       ..reading,
-      shared: tui_model.Shared(..reading.shared, strands: [
+      shared: session_model.Shared(..reading.shared, strands: [
         protocol.Strand("main", Some("main"), Some("assistant")),
         protocol.Strand("worker", Some("worker"), Some("assistant")),
       ]),

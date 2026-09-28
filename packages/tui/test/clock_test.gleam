@@ -27,6 +27,7 @@ import tui/model as tui_model
 import tui/msg
 import tui/pacing
 import tui/runtime
+import tui/session_model
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -103,7 +104,7 @@ pub fn wheel_then_press_captures_one_painted_copy_layout_test() {
       let base = initial(-10_000)
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, transcript: lines),
+        shared: session_model.Shared(..base.shared, transcript: lines),
       )
     }
     |> tui.update(backend.Resize(50, 12), _)
@@ -250,7 +251,7 @@ const assistant_phase = "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand
 fn stamped_at(model: tui_model.Model, now: Int) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..model.shared,
       stamp: msg.Stamp(..model.shared.stamp, now_ms: now),
     ),
@@ -392,7 +393,7 @@ pub fn a_step_ticks_the_lane_at_the_stamped_transport_reading_test() {
   let at = fn(model: tui_model.Model, transport: Int) {
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..model.shared,
         stamp: msg.Stamp(..model.shared.stamp, transport_ms: transport),
       ),

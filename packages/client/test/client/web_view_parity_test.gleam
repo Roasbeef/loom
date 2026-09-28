@@ -36,6 +36,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/msg
 import tui/projection
+import tui/session_model
 import tui/workspace
 import web_view/component
 import web_view/operator_page
@@ -386,9 +387,9 @@ fn terminal() -> tui_model.Model {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("test", None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
-        peer: tui_model.Attached,
+        peer: session_model.Attached,
         stamp: msg.Stamp(now_ms: 0, transport_ms: 0),
         channel: Some(
           session_channel.replay(snapshot.Expected(

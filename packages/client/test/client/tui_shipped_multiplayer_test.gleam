@@ -62,6 +62,7 @@ import tui/daemon/protocol
 import tui/daemon/selection
 import tui/model as tui_model
 import tui/peer_links
+import tui/session_model
 import tui/workspace
 import weft
 import weft/actor
@@ -1367,7 +1368,7 @@ fn revoke_live_member(
   // at admission, closing the terminal's independently owned socket too.
   let closed =
     tui_v2_test.await(bob.data, fn(sample) {
-      sample.model.shared.peer == tui_model.Disconnected
+      sample.model.shared.peer == session_model.Disconnected
     })
   assert closed.model.shared.records == before.model.shared.records
   list.each([alice, reader], fn(driver) {
@@ -1400,7 +1401,7 @@ fn revoke_live_member(
     as "both surviving terminals have completed their own authoritative capture"
   assert alice_configuration == reader_configuration
   let retained = tui_driver.play(bob.data, [])
-  assert retained.model.shared.peer == tui_model.Disconnected
+  assert retained.model.shared.peer == session_model.Disconnected
   assert retained.model.shared.records == before.model.shared.records
   assert configuration_of(retained) == configuration_of(before)
 
