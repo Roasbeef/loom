@@ -149,12 +149,15 @@ errors.
 Use `make test-<package>` or `bash scripts/test.sh <package>`. The full
 gate, E2E targets and soak chunks use the same runner. It starts the
 package application, prints EUnit test names and timings, and preserves
-the existing per-test timeout scale. An independent process deadline
-defaults to 1,200 seconds per package invocation, including compilation.
-Set `LOOM_TEST_TIMEOUT_SECONDS` to a finite positive value for a measured
-shorter or longer run. A timeout exits 124, never success, and kills the
-test command's process group. That kill is a test failure, not proof that
-external effects drained safely.
+the existing per-test timeout scale. The compile runs first, under its own
+independent process deadline, defaulting to 1,200 seconds; set
+`LOOM_BUILD_TIMEOUT_SECONDS` to change it. The test run then gets its own
+independent process deadline, also defaulting to 1,200 seconds per package
+invocation but no longer covering compilation. Set `LOOM_TEST_TIMEOUT_SECONDS`
+to a finite positive value for a measured shorter or longer run. Either
+deadline exits 124, never success, and kills its command's process group.
+That kill is a test failure, not proof that external effects drained
+safely.
 
 For a focused run, use an explicit filter:
 
