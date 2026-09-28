@@ -48,6 +48,11 @@ pub fn step(
     as "a shared call's queue notices were stored without hold_shared"
   assert next.shared.goal_observations == []
     as "a shared call's goal observations were stored without hold_shared"
+
+  // The event fold's surface facts are applied and emptied by the terminal
+  // form that called it, so any left after a step were never applied.
+  assert next.shared.surface_facts == []
+    as "an event fold call's surface facts were never applied"
   #(next, effects)
 }
 

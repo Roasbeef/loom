@@ -42,15 +42,15 @@ pub type State {
   )
 }
 
-/// Something the lane did with the editor's requests that the editor has to
-/// show, recorded by a function over `Shared` and shown by the host that owns
-/// an editor.
+/// Something the lane did with the editor's requests, or brought back for
+/// them, that the editor has to show, recorded by a function over `Shared`
+/// and shown by the host that owns an editor.
 ///
-/// The functions that send frames and service the queued-input read take the
-/// shared record alone, so they cannot write the editor's message or its
-/// delivery lock themselves. They append a notice to `Shared.queue_notices`
-/// instead, and the terminal's `tui_model.hold_shared` hands each one to
-/// `queue_editor.show` at the point of the call that recorded it.
+/// The functions that send frames, service the queued-input read and apply
+/// its reply take the shared record alone, so they cannot write the editor's
+/// draft, message or delivery lock themselves. They append a notice to
+/// `Shared.queue_notices` instead, and the terminal's `tui_model.hold_shared`
+/// hands each one to `queue_editor.show` after the call that recorded it.
 pub type Notice {
   /// The lane refused to send a frame, for `reason`. Any frame counts, as it
   /// did when the refusal wrote the editor directly: a save waiting on the
@@ -61,6 +61,11 @@ pub type Notice {
   /// changed or there is no live one. The editor shows `message` and keeps
   /// its draft as it is.
   Dropped(message: String)
+
+  /// The queued-input document answering the read this client issued
+  /// arrived, for the attachment `owner` and the queue `namespace`. The
+  /// editor fills its draft from it, as `queue_editor.receive` decides.
+  Received(owner: String, namespace: String, document: Document)
 }
 
 /// Starts with no read wanted, none issued and no request to correlate. A

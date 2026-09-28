@@ -217,6 +217,12 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// `tui_model.hold_shared` hands each to `queue_editor.show` and empties
     /// the list.
     queue_notices: List(queue_request.Notice),
+    /// What the event fold did that a host's own surfaces have to follow,
+    /// oldest first: a workspace switch, a listed model catalogue, a notes
+    /// board, a jobs board and the like (`SurfaceFact`). The terminal's
+    /// `inbound.settle_surfaces` applies each after the call that recorded
+    /// it and empties the list.
+    surface_facts: List(SurfaceFact),
     /// The models the daemon listed.
     models: List(protocol.ModelInfo),
     /// Slash commands loaded by the currently attached daemon.
@@ -535,6 +541,46 @@ pub type GoalObservation {
   GoalUnavailable(reason: String)
 }
 
+/// Something the event fold did that a host's own surfaces have to follow.
+///
+/// The event fold (`tui/event_fold`) takes the shared record alone, so it
+/// cannot write the terminal's editor, overlays or footer. Where an event
+/// used to write them at the point it was applied, the fold records one of
+/// these in `Shared.surface_facts`, and the terminal applies it after the
+/// call that recorded it, in the order recorded.
+@internal
+pub type SurfaceFact {
+  /// The session state moved from `departing` to `arriving`, each a session
+  /// and strand. The host parks its editor and viewport under `departing`
+  /// and restores `arriving`'s. `previous_session` is the session before the
+  /// switch, which says whether the session itself changed.
+  WorkspaceSwitched(
+    departing: #(String, String),
+    arriving: #(String, String),
+    previous_session: String,
+  )
+
+  /// A full snapshot replaced every row of the transcript, so the host's
+  /// gutters and scroll position describe rows that are gone.
+  SessionSynchronized
+
+  /// The daemon listed its models; an open model selector lists them, with
+  /// `current` the active strand's model at that moment.
+  ModelsListed(models: List(protocol.ModelInfo), current: String)
+
+  /// The active strand's cache watch was forgotten, so the outlook a host
+  /// shows for it is gone.
+  OutlookCleared
+
+  /// A notes board arrived. The host decides whether a notes surface shows
+  /// its strand, and if so takes it as `Shared.note_board`.
+  NotesArrived(board: notes_view.Board)
+
+  /// A live-jobs board answering this attachment's read replaced
+  /// `previous`; a host cursor over the old board follows its job.
+  JobsReplaced(previous: Option(live_jobs.Board), board: live_jobs.Board)
+}
+
 // --- the operations over the shared record -----------------------------------
 //
 // Every function below takes and returns `Shared` alone and reads no terminal
@@ -542,6 +588,22 @@ pub type GoalObservation {
 // terminal calls the writers through `tui_model.hold_shared`, which moves
 // what they queued into the step's outbox and carries the activity mark to
 // the terminal's idle timer.
+
+/// Records a fact the host's own surfaces have to follow, after any already
+/// recorded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = session_model.record_surface(shared, OutlookCleared)
+/// ```
+@internal
+pub fn record_surface(
+  shared: Shared(socket, recorder, source, replay_source),
+  fact: SurfaceFact,
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(..shared, surface_facts: list.append(shared.surface_facts, [fact]))
+}
 
 /// Appends a system line to the transcript and shows it as the notice.
 ///
