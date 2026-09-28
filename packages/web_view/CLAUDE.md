@@ -52,10 +52,15 @@ page keys and nonces, and the relay into the session's gateway.
   terminal renders as Markdown (assistant, reasoning, tool detail) and for
   the bodies of the result, nudge and peer cards, which are agent prose
   the terminal draws as tool-detail rows; every other row stays a `pre`.
-  The trees are parsed in `update`, with the pieces, into `Model.parsed`
-  (keyed by `Line`, a card's body as a `ToolDetail` line, reusing the
+  The trees of the newest `cached_rows` (100) Markdown lines are parsed
+  in `update`, with the pieces, into `Model.parsed` (keyed by `Line`, which
+  shares the row's text, a card's body as a `ToolDetail` line, reusing the
   previous capture's tree for an unchanged line), and `lane_view` takes
-  them beside the pieces, so the view never parses.
+  them beside the pieces. An older row is parsed by the view when the lane
+  is drawn. A tree is about eight times its text, so caching every row
+  added 64% to the component's retained model; the bound keeps the cache
+  to about a tenth of it, at about 16 ms of parsing per capture for 500
+  older rows.
 - `component.{submit, decide}`: the two commands, through the engine's
   arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
   never offers remembering a grant for the session.

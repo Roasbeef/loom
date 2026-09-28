@@ -8,6 +8,7 @@
 //// `markdown_view`; the construct cases draw a parsed tree directly.
 
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -57,6 +58,27 @@ pub fn a_capture_parses_its_answers_in_update_test() {
         markdown.Paragraph([markdown.Strong([markdown.Text("bold")])]),
       ]),
     ]
+}
+
+// Only the newest hundred Markdown rows keep a tree between captures, which
+// bounds what the component retains; an older row is parsed when the lane
+// is drawn, and renders the same.
+pub fn only_the_newest_rows_keep_a_tree_test() {
+  let texts =
+    int.range(from: 150, to: 0, with: [], run: fn(acc, n) {
+      ["**answer " <> int.to_string(n) <> "**", ..acc]
+    })
+  let model =
+    component.new(page_fixture.start())
+    |> component.apply([lane_fixture.answered(texts)])
+  assert dict.size(component.parsed(model)) == 100
+  assert !dict.has_key(
+    component.parsed(model),
+    transcript_line.Line(transcript_line.Assistant, "**answer 1**"),
+  )
+  let html = model |> component.view |> element.to_string
+  assert string.contains(html, "<strong>answer 1</strong>")
+  assert string.contains(html, "<strong>answer 150</strong>")
 }
 
 pub fn the_settled_answer_is_rendered_and_its_prompt_is_not_test() {

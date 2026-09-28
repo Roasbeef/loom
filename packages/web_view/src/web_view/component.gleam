@@ -259,10 +259,11 @@ pub opaque type Model(socket) {
     /// The same blocks laid out as turns (`session_view/turns`), derived
     /// with them.
     pieces: List(turns.Piece),
-    /// The Markdown tree of every line in `pieces` the page renders as
-    /// Markdown, keyed by the line. Derived with the pieces, and a line
-    /// already parsed for the last capture reuses its tree, so a capture
-    /// parses only the lines it changed and the view parses nothing.
+    /// The Markdown trees of the newest `cached_rows` lines in `pieces`
+    /// the page renders as Markdown, keyed by the line, which shares the
+    /// row's own text rather than copying it. Derived with the pieces, and a
+    /// line already parsed for the last capture reuses its tree. Older lines
+    /// are parsed by the view when it draws them.
     parsed: Dict(Line, List(markdown.Block)),
     /// Every strand's agent row from the last capture (`agent_view`), and
     /// the reviewer rows it is observed with.
@@ -781,16 +782,32 @@ fn relaned(model: Model(socket)) -> Model(socket) {
   }
 }
 
-// The Markdown trees for the lines of `pieces` that are drawn as Markdown.
-// A line the previous capture already parsed takes its tree from `before`,
-// so an answer is parsed once when it lands rather than once per capture;
-// a line that left the window is dropped with the old table.
+// How many of the newest Markdown lines keep their tree between captures.
+//
+// A tree takes about one word per byte of the text it came from, eight times
+// the text, so keeping one for every row of a 600-row lane added 64% to the
+// component's retained model. The newest rows are the ones a capture most
+// often changes and a reader is looking at, so they keep theirs, and the
+// cache costs at most a tenth of the lane's model. Every older row is parsed
+// when the lane is drawn, which a capture does once: about 16 ms for 500
+// rows of Markdown-heavy text.
+const cached_rows = 100
+
+// The Markdown trees for the newest `cached_rows` lines of `pieces` that
+// are drawn as Markdown. A line the previous capture already parsed takes
+// its tree from `before`, so such an answer is parsed once when it lands
+// rather than once per capture; a line that left the newest rows is dropped
+// with the old table.
 fn parsed_lines(
   pieces: List(turns.Piece),
   before: Dict(Line, List(markdown.Block)),
 ) -> Dict(Line, List(markdown.Block)) {
-  pieces
-  |> list.flat_map(piece_lines)
+  let lines =
+    pieces
+    |> list.flat_map(piece_lines)
+    |> list.filter(fn(line) { body_of(line.speaker) == Markdown })
+  lines
+  |> list.drop(list.length(lines) - cached_rows)
   |> list.fold(dict.new(), fn(parsed, line) {
     case body_of(line.speaker) {
       Literal -> parsed
@@ -824,8 +841,8 @@ fn card_line(body: String) -> Line {
   transcript_line.Line(transcript_line.ToolDetail, body)
 }
 
-// A card's body drawn from its Markdown tree, parsed in `update` like a
-// row's (`parsed_lines`), with the same fallback parse `line_element` has.
+// A card's body drawn from its Markdown tree, held or parsed as a row's is
+// (`parsed_lines`, `line_element`).
 fn card_body(
   body: String,
   parsed: Dict(Line, List(markdown.Block)),
@@ -1824,11 +1841,10 @@ fn line_element(
         html.text(line.text),
       ])
 
-    // The tree was parsed in `update` when the capture landed
-    // (`parsed_lines`), so the view only draws it. The fallback parse is
-    // for a line the table does not hold, which `relaned` never produces;
-    // it keeps the view total rather than trusting that. Each row is its
-    // own tree, so an unclosed fence ends with its row.
+    // A newest row's tree was parsed in `update` when the capture landed
+    // (`parsed_lines`), so the view only draws it; an older row is not
+    // held, and is parsed here, once per drawing of the lane. Each row is
+    // its own tree, so an unclosed fence ends with its row.
     Markdown -> {
       let tree =
         dict.get(parsed, line)
