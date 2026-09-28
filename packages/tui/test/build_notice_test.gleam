@@ -12,6 +12,7 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{Some}
 import gleam/string
 import host/build_identity
 import session_view/session_channel
@@ -31,6 +32,12 @@ pub fn the_notice_compares_with_the_build_read_at_creation_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let host = host_with_build(owner, "9.9.9", "feedface")
   let base = runtime.adopt_control(pushed.attached(), host)
+
+  // Adopting the control connection copies its build into the session
+  // state, which is what a cut reads; the connection stays the terminal's.
+  assert base.shared.daemon_build
+    == Some(build_identity.Identity("9.9.9", "feedface"))
+    as "the adopted daemon's build is shared data"
 
   let differing =
     tui_model.Model(

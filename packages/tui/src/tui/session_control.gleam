@@ -98,8 +98,7 @@ fn apply_reconnect_reply(
     weft.PulledOutcome(weft.Completed(value: host, ..)) -> {
       let model =
         Model(..model, view: View(..model.view, reconnect: ReconnectSpent))
-      let model =
-        Model(..model, view: View(..model.view, daemon_host: Some(host)))
+      let model = tui_model.adopt_daemon(model, host)
       reattach_after_reconnect(model)
     }
     weft.PulledOutcome(weft.Failed(error:, ..)) ->

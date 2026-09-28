@@ -618,6 +618,10 @@ pub fn returned_input_keeps_its_owner_while_another_draft_is_open_test() {
     )
   assert textarea.value(returned.view.input) == "worker draft"
   assert returned.shared.active_strand == "worker"
+
+  // The return passed through the session state and the terminal took it
+  // into the parked editor in the same call, so none is left waiting.
+  assert returned.shared.returned_drafts == []
   let main = returned |> press("f2") |> press("up") |> press("enter")
   assert textarea.value(main.view.input) == "main draft\n\nreturned main prompt"
 }

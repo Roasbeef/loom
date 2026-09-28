@@ -16,7 +16,6 @@ import gleam/option.{None}
 import session_view/connection_event
 import session_view/transcript_line
 import tui
-import tui/agents
 import tui/connection
 import tui/model as tui_model
 import tui/session_model
@@ -71,6 +70,7 @@ pub fn replay_model() -> #(Subject(connection_event.Message), tui_model.Model) {
 // same state.
 fn replay_posture(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
+    ..model,
     shared: session_model.Shared(
       ..model.shared,
       peer: session_model.Replaying,
@@ -80,7 +80,6 @@ fn replay_posture(model: tui_model.Model) -> tui_model.Model {
       strands: [],
       notice: "bench",
     ),
-    view: tui_model.View(..model.view, agent_summary: agents.summary([])),
   )
 }
 

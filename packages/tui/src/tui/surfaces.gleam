@@ -42,6 +42,7 @@ import tui/model.{
 } as tui_model
 import tui/outbound
 import tui/queue_editor
+import tui/queue_request
 import tui/render
 import tui/session_model.{
   Attached, ConfirmGoal, Disconnected, HoldGoalReport, OverlaySubmission,
@@ -199,7 +200,7 @@ pub fn select_note(model: Model, direction: Int) -> Model {
 /// or drops the request when the attachment changed since it was made.
 @internal
 pub fn service_queue_read(model: Model) -> Model {
-  case model.shared.channel, model.view.queue_editor.fetch {
+  case model.shared.channel, model.shared.queue_request.fetch {
     Some(channel), Some(fetch) ->
       case session_channel.ready_for_read(channel) {
         True ->
@@ -208,10 +209,10 @@ pub fn service_queue_read(model: Model) -> Model {
               outbound.send_frame(
                 Model(
                   ..model,
-                  view: View(
-                    ..model.view,
-                    queue_editor: queue_editor.State(
-                      ..model.view.queue_editor,
+                  shared: Shared(
+                    ..model.shared,
+                    queue_request: queue_request.State(
+                      ..model.shared.queue_request,
                       fetch: None,
                       awaiting: Some(fetch),
                     ),
@@ -225,12 +226,17 @@ pub fn service_queue_read(model: Model) -> Model {
               )
             False ->
               Model(
-                ..model,
+                shared: Shared(
+                  ..model.shared,
+                  queue_request: queue_request.State(
+                    ..model.shared.queue_request,
+                    fetch: None,
+                  ),
+                ),
                 view: View(
                   ..model.view,
                   queue_editor: queue_editor.State(
                     ..model.view.queue_editor,
-                    fetch: None,
                     message: "Attachment changed; select the input again",
                   ),
                 ),
@@ -240,12 +246,17 @@ pub fn service_queue_read(model: Model) -> Model {
       }
     None, Some(_) ->
       Model(
-        ..model,
+        shared: Shared(
+          ..model.shared,
+          queue_request: queue_request.State(
+            ..model.shared.queue_request,
+            fetch: None,
+          ),
+        ),
         view: View(
           ..model.view,
           queue_editor: queue_editor.State(
             ..model.view.queue_editor,
-            fetch: None,
             message: "Queue editing requires a live conversation attachment",
           ),
         ),

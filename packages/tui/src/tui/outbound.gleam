@@ -24,6 +24,7 @@ import session_view/session_channel
 import session_view/worktree_view
 import tui/model.{type Model, Model, PromptNext, View} as tui_model
 import tui/queue_editor
+import tui/queue_request
 import tui/session_model.{
   Attached, ComposerSubmission, ConfirmGoal, Disconnected, HoldGoalReport,
   OverlaySubmission, Preview, Replaying, ReportGoal, Shared,
@@ -233,10 +234,10 @@ pub fn apply_submission(
         "queued_input" | "edit_queued_input" ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              queue_editor: queue_editor.State(
-                ..model.view.queue_editor,
+            shared: Shared(
+              ..model.shared,
+              queue_request: queue_request.State(
+                ..model.shared.queue_request,
                 request_id: Some(request_id),
               ),
             ),
@@ -339,7 +340,10 @@ pub fn apply_submission(
         {
           let discarded = discard_own_turn(model)
           Model(
-            ..discarded,
+            shared: Shared(
+              ..discarded.shared,
+              queue_request: queue_request.new(),
+            ),
             view: View(
               ..discarded.view,
               queue_editor: queue_editor.refused(

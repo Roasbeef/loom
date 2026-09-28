@@ -30,7 +30,6 @@ import gleam/string
 import session_view/connection_event
 import session_view/transcript_line
 import tui
-import tui/agents
 import tui/buffered
 import tui/connection
 import tui/frame
@@ -543,6 +542,7 @@ fn quiet_model(
     let base =
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
+      ..base,
       shared: session_model.Shared(
         ..base.shared,
         transcript: [],
@@ -553,7 +553,6 @@ fn quiet_model(
           Expanded -> True
         },
       ),
-      view: tui_model.View(..base.view, agent_summary: agents.summary([])),
     )
   }
 }

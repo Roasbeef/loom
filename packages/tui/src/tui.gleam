@@ -64,7 +64,6 @@ import session_view/transcript_line.{
 import session_view/worktree_view
 import tui/admission
 import tui/agent_strip
-import tui/agents
 import tui/appearance
 import tui/attachment
 import tui/attempt_replay
@@ -93,6 +92,7 @@ import tui/note_panel
 import tui/pacing
 import tui/projection
 import tui/queue_editor
+import tui/queue_request
 import tui/recording
 import tui/render
 import tui/runtime
@@ -482,6 +482,7 @@ pub fn new_model_with_clock(
       quit: False,
       parked_scrollback: dict.new(),
       attachments: [],
+      returned_drafts: [],
       pending_submission: None,
       interrupt: None,
       submitting: None,
@@ -526,6 +527,7 @@ pub fn new_model_with_clock(
       goal_report: HoldGoalReport,
       note_board: None,
       notes_requested: None,
+      queue_request: queue_request.new(),
       models: interaction.demo_models(),
       skills: [],
       current_model: "baseten-kimi-k3",
@@ -571,6 +573,7 @@ pub fn new_model_with_clock(
       frame_revision: 0,
       stamp:,
       client_build: build_identity.current(),
+      daemon_build: None,
       activity_revision: 0,
       connection_backlog: session_model.MailboxDrained,
       recorder: None,
@@ -605,7 +608,6 @@ pub fn new_model_with_clock(
       note_mode: note_panel.Readable,
       note_scroll: 0,
       overlay: NoOverlay,
-      agent_summary: agents.summary(strands),
       strip_focus: agent_strip.Composing,
       local_options: None,
       candidate: attachment.idle(),
@@ -1520,6 +1522,7 @@ pub fn replay_steps(
     let fresh =
       new_model(inbox, workspace.Context(path: "replay", branch: None))
     Model(
+      ..fresh,
       shared: Shared(
         ..fresh.shared,
         peer: Replaying,
@@ -1536,7 +1539,6 @@ pub fn replay_steps(
         reviewer_rows: [],
         notice: "replaying",
       ),
-      view: tui_model.View(..fresh.view, agent_summary: agents.summary([])),
     )
   }
   use run <- result.try(run_script(
@@ -1659,6 +1661,7 @@ pub fn connect_remote(
 
 fn live_base(base: Model) -> Model {
   Model(
+    ..base,
     shared: Shared(
       ..base.shared,
       peer: Disconnected,
@@ -1675,7 +1678,6 @@ fn live_base(base: Model) -> Model {
       advisor_history: advisor_history.Board(items: [], unloaded: None),
       notice: "select a saved session or create one",
     ),
-    view: tui_model.View(..base.view, agent_summary: agents.summary([])),
   )
 }
 
@@ -1709,7 +1711,7 @@ fn attach_daemon(
           shared: Shared(
             ..model.shared,
             transcript: inbound.daemon_build_lines(
-              model.view.daemon_host,
+              model.shared.daemon_build,
               base.shared.client_build,
             ),
           ),
