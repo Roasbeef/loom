@@ -70,14 +70,16 @@ pub fn replay_model() -> #(Subject(connection_event.Message), tui_model.Model) {
 // same state.
 fn replay_posture(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
-    ..model,
-    peer: tui_model.Replaying,
-    transcript: [],
-    models: [],
-    session: "bench",
-    strands: [],
-    agent_summary: agents.summary([]),
-    notice: "bench",
+    shared: tui_model.Shared(
+      ..model.shared,
+      peer: tui_model.Replaying,
+      transcript: [],
+      models: [],
+      session: "bench",
+      strands: [],
+      notice: "bench",
+    ),
+    view: tui_model.View(..model.view, agent_summary: agents.summary([])),
   )
 }
 
@@ -93,7 +95,10 @@ fn replay_posture(model: tui_model.Model) -> tui_model.Model {
 /// let model = tui_perf_dev.live(model)
 /// ```
 pub fn live(model: tui_model.Model) -> tui_model.Model {
-  tui_model.Model(..model, peer: tui_model.Preview)
+  tui_model.Model(
+    ..model,
+    shared: tui_model.Shared(..model.shared, peer: tui_model.Preview),
+  )
 }
 
 /// The admission witness for a replay: how many durable records the model
@@ -110,8 +115,8 @@ pub fn live(model: tui_model.Model) -> tui_model.Model {
 /// ```
 pub fn witness(model: tui_model.Model) -> #(Int, Int) {
   #(
-    list.length(model.records),
-    list.count(model.transcript, fn(line) {
+    list.length(model.shared.records),
+    list.count(model.shared.transcript, fn(line) {
       line.speaker == transcript_line.Failure
     }),
   )

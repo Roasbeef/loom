@@ -125,7 +125,7 @@ fn view(operations, cells) -> snapshot_view.View {
     leaves: dict.new(),
     configurations: dict.new(),
     operations: dict.from_list(operations),
-    usage: model().usage,
+    usage: model().shared.usage,
     settings: snapshot_view.RunSettings("one_at_a_time", "parallel", None),
     peers: [],
     cells:,
@@ -466,7 +466,13 @@ pub fn the_badge_names_a_viewed_agents_task_but_never_mains_test() {
 
 pub fn the_strip_draws_one_row_per_live_agent_under_the_footer_test() {
   let text =
-    tui_model.Model(..model(), strands: roster())
+    {
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    }
     |> painted(120, 30)
   let lines = string.split(text, "\n")
   let tail = list.drop(lines, list.length(lines) - 3)
@@ -478,98 +484,139 @@ pub fn the_strip_draws_one_row_per_live_agent_under_the_footer_test() {
 
 pub fn a_short_terminal_keeps_its_rows_for_the_conversation_test() {
   let text =
-    tui_model.Model(..model(), strands: roster())
+    {
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    }
     |> painted(120, 15)
   assert !string.contains(text, "audit-panics ")
 }
 
 pub fn down_enters_the_strip_and_enter_opens_the_agent_test() {
   let initial =
-    tui_model.Model(
-      ..model(),
-      strands: roster(),
-      input: textarea.state_from_string("main draft"),
-    )
+    {
+      let base = model()
+      tui_model.Model(
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+        view: tui_model.View(
+          ..base.view,
+          input: textarea.state_from_string("main draft"),
+        ),
+      )
+    }
     |> sized(120, 30)
   let browsing = initial |> press("down")
-  assert browsing.strip.focus == Browsing("sub:main/audit-panics-1a2b3c")
-  assert browsing.active_strand == "main"
-  assert browsing.input == initial.input
+  assert browsing.view.strip_focus == Browsing("sub:main/audit-panics-1a2b3c")
+  assert browsing.shared.active_strand == "main"
+  assert browsing.view.input == initial.view.input
   assert string.contains(painted(browsing, 120, 30), "enter opens · x stops")
 
   // Moving the cursor never retargets the composer.
   let moved = browsing |> press("down")
-  assert moved.strip.focus == Browsing("sub:main/read-docs-9f8e7d")
-  assert moved.active_strand == "main"
+  assert moved.view.strip_focus == Browsing("sub:main/read-docs-9f8e7d")
+  assert moved.shared.active_strand == "main"
 
   let opened = moved |> press("enter")
-  assert opened.active_strand == "sub:main/read-docs-9f8e7d"
-  assert opened.strip.focus == Composing
-  assert textarea.value(opened.input) == ""
+  assert opened.shared.active_strand == "sub:main/read-docs-9f8e7d"
+  assert opened.view.strip_focus == Composing
+  assert textarea.value(opened.view.input) == ""
 
   // From the last row the cursor wraps to main, and the parked draft comes
   // back with its strand.
   let back = opened |> press("down")
-  assert back.strip.focus == Browsing("main")
+  assert back.view.strip_focus == Browsing("main")
   let returned = back |> press("enter")
-  assert returned.active_strand == "main"
-  assert textarea.value(returned.input) == "main draft"
+  assert returned.shared.active_strand == "main"
+  assert textarea.value(returned.view.input) == "main draft"
 }
 
 pub fn typing_while_browsing_returns_the_key_to_the_composer_test() {
   let browsing =
-    tui_model.Model(..model(), strands: roster())
+    {
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    }
     |> sized(120, 30)
     |> press("down")
   let typed = browsing |> press("q")
-  assert typed.strip.focus == Composing
-  assert textarea.value(typed.input) == "q"
-  assert typed.active_strand == "main"
+  assert typed.view.strip_focus == Composing
+  assert textarea.value(typed.view.input) == "q"
+  assert typed.shared.active_strand == "main"
 }
 
 pub fn escape_and_up_from_the_top_hand_the_keyboard_back_test() {
   let browsing =
-    tui_model.Model(..model(), strands: roster())
+    {
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    }
     |> sized(120, 30)
     |> press("down")
-  assert { browsing |> press("esc") }.strip.focus == Composing
+  assert { browsing |> press("esc") }.view.strip_focus == Composing
   let top = browsing |> press("up")
-  assert top.strip.focus == Browsing("main")
-  assert { top |> press("up") }.strip.focus == Composing
+  assert top.view.strip_focus == Browsing("main")
+  assert { top |> press("up") }.view.strip_focus == Composing
 }
 
 // Down belongs to prompt history while the operator is walking it.
 pub fn down_walks_history_before_it_enters_the_strip_test() {
   let initial =
-    tui_model.Model(..model(), strands: roster(), history: ["older"])
+    {
+      let base = model()
+      tui_model.Model(
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+        view: tui_model.View(..base.view, history: ["older"]),
+      )
+    }
     |> sized(120, 30)
   let recalled = initial |> press("up")
-  assert textarea.value(recalled.input) == "older"
+  assert textarea.value(recalled.view.input) == "older"
   let back = recalled |> press("down")
-  assert back.strip.focus == Composing
-  assert { back |> press("down") }.strip.focus
+  assert back.view.strip_focus == Composing
+  assert { back |> press("down") }.view.strip_focus
     == Browsing("sub:main/audit-panics-1a2b3c")
 }
 
 pub fn opening_a_sub_agent_badges_the_composer_with_its_task_test() {
   let opened =
-    tui_model.Model(..model(), strands: roster())
+    {
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    }
     |> sized(120, 30)
     |> press("down")
     |> press("enter")
-  assert opened.active_strand == "sub:main/audit-panics-1a2b3c"
+  assert opened.shared.active_strand == "sub:main/audit-panics-1a2b3c"
   assert string.contains(painted(opened, 120, 30), " Task unavailable ")
 }
 
 pub fn x_stops_the_selected_agent_without_retargeting_test() {
   let stopped =
-    tui_model.Model(..model(), strands: roster())
+    {
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    }
     |> sized(120, 30)
     |> press("down")
     |> press("x")
-  assert stopped.active_strand == "main"
-  assert stopped.notice == "stopping sub:main/audit-panics-1a2b3c"
-  assert stopped.strip.focus == Browsing("sub:main/audit-panics-1a2b3c")
+  assert stopped.shared.active_strand == "main"
+  assert stopped.shared.notice == "stopping sub:main/audit-panics-1a2b3c"
+  assert stopped.view.strip_focus == Browsing("sub:main/audit-panics-1a2b3c")
 }
 
 // The re-anchor to a glance lands a capture after the daemon measured it,
@@ -594,57 +641,79 @@ pub fn a_re_anchor_never_steps_the_elapsed_time_backwards_test() {
 // keyboard, not a cursor that turns the next Enter into a strand switch.
 pub fn an_overlay_takes_the_keyboard_out_of_the_strip_test() {
   let browsing =
-    tui_model.Model(
-      ..model(),
-      strands: roster(),
-      input: textarea.state_from_string("send me"),
-    )
+    {
+      let base = model()
+      tui_model.Model(
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+        view: tui_model.View(
+          ..base.view,
+          input: textarea.state_from_string("send me"),
+        ),
+      )
+    }
     |> sized(120, 30)
     |> press("down")
-  assert browsing.strip.focus == Browsing("sub:main/audit-panics-1a2b3c")
+  assert browsing.view.strip_focus == Browsing("sub:main/audit-panics-1a2b3c")
   let covered =
     tui_model.Model(
       ..browsing,
-      overlay: tui_model.AgentInspector(agents.inspect("main")),
+      view: tui_model.View(
+        ..browsing.view,
+        overlay: tui_model.AgentInspector(agents.inspect("main")),
+      ),
     )
   let closed = covered |> press("esc")
-  assert closed.overlay == tui_model.NoOverlay
-  assert closed.strip.focus == Composing
+  assert closed.view.overlay == tui_model.NoOverlay
+  assert closed.view.strip_focus == Composing
   let sent = closed |> press("enter")
-  assert sent.active_strand == "main"
-  assert textarea.value(sent.input) == ""
+  assert sent.shared.active_strand == "main"
+  assert textarea.value(sent.view.input) == ""
 }
 
 // Every agent settles while the cursor rests in the strip, so the strip is
 // no longer drawn; the next Enter is the composer's.
 pub fn a_strip_that_disappears_returns_the_keyboard_test() {
   let browsing =
-    tui_model.Model(
-      ..model(),
-      strands: roster(),
-      input: textarea.state_from_string("send me"),
-    )
+    {
+      let base = model()
+      tui_model.Model(
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+        view: tui_model.View(
+          ..base.view,
+          input: textarea.state_from_string("send me"),
+        ),
+      )
+    }
     |> sized(120, 30)
     |> press("down")
   let settled =
-    tui_model.Model(..browsing, strands: [
-      protocol.Strand("main", Some("main"), None),
-    ])
+    tui_model.Model(
+      ..browsing,
+      shared: tui_model.Shared(..browsing.shared, strands: [
+        protocol.Strand("main", Some("main"), None),
+      ]),
+    )
   let sent = settled |> press("enter")
-  assert sent.strip.focus == Composing
-  assert sent.active_strand == "main"
-  assert textarea.value(sent.input) == ""
+  assert sent.view.strip_focus == Composing
+  assert sent.shared.active_strand == "main"
+  assert textarea.value(sent.view.input) == ""
 }
 
 pub fn x_on_an_idle_primary_stops_nothing_test() {
   let stopped =
-    tui_model.Model(..model(), strands: roster())
+    {
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    }
     |> sized(120, 30)
     |> press("down")
     |> press("up")
     |> press("x")
-  assert stopped.strip.focus == Browsing("main")
-  assert stopped.notice == "nothing is running"
+  assert stopped.view.strip_focus == Browsing("main")
+  assert stopped.shared.notice == "nothing is running"
 }
 
 // The whole path the daemon's glance takes to the screen: a capture whose
@@ -677,7 +746,7 @@ pub fn a_captured_glance_reaches_the_strip_and_the_badge_test() {
   let cut =
     snapshot.Captured(
       snapshot.Attachment(
-        snapshot.Expected(initial.session, "epoch", "instance"),
+        snapshot.Expected(initial.shared.session, "epoch", "instance"),
         "peer",
         message.Origin("operator", "Operator"),
         snapshot.Owner,
@@ -698,7 +767,7 @@ pub fn a_captured_glance_reaches_the_strip_and_the_badge_test() {
   assert string.contains(text, "58.2k ctx")
 
   let opened = captured |> press("down") |> press("enter")
-  assert opened.active_strand == child
+  assert opened.shared.active_strand == child
   assert string.contains(painted(opened, 120, 30), " Audit funding panics ")
 }
 
@@ -734,18 +803,23 @@ pub fn minted_ids_in_the_activity_read_as_names_test() {
 // does, and leaves the draft and its recipient untouched.
 pub fn ctrl_o_opens_and_closes_the_agent_inspector_test() {
   let initial =
-    tui_model.Model(
-      ..model(),
-      strands: roster(),
-      input: textarea.state_from_string("draft"),
-    )
+    {
+      let base = model()
+      tui_model.Model(
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+        view: tui_model.View(
+          ..base.view,
+          input: textarea.state_from_string("draft"),
+        ),
+      )
+    }
     |> sized(120, 30)
   let opened = initial |> press("ctrl+o")
-  let assert tui_model.AgentInspector(_) = opened.overlay
+  let assert tui_model.AgentInspector(_) = opened.view.overlay
     as "ctrl+o opens the inspector"
-  assert opened.input == initial.input
+  assert opened.view.input == initial.view.input
   let closed = opened |> press("ctrl+o")
-  assert closed.overlay == tui_model.NoOverlay
-  assert closed.active_strand == "main"
-  assert closed.input == initial.input
+  assert closed.view.overlay == tui_model.NoOverlay
+  assert closed.shared.active_strand == "main"
+  assert closed.view.input == initial.view.input
 }

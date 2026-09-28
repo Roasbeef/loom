@@ -37,7 +37,8 @@ import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
   Attached, ComposerSubmission, DiffHidden, DiffVisible, Disconnected, Interrupt,
   Model, ModelSelector, NoOverlay, OverlaySubmission, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SteerNow,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, Shared,
+  SteerNow, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -50,10 +51,12 @@ import tui/surfaces
 @internal
 pub fn open_agents(model: Model) -> Model {
   Model(
-    ..model,
-    overlay: AgentInspector(agents.inspect(model.active_strand)),
-    repaint_phase: !model.repaint_phase,
-    notice: "agent workspace",
+    shared: Shared(..model.shared, notice: "agent workspace"),
+    view: View(
+      ..model.view,
+      overlay: AgentInspector(agents.inspect(model.shared.active_strand)),
+      repaint_phase: !model.view.repaint_phase,
+    ),
   )
 }
 
@@ -64,7 +67,10 @@ pub fn submit(model: Model) -> Model {
   case
     outbound.mutation_refusal(
       model,
-      command.parse_with_skills(text_area.value(model.input), model.skills),
+      command.parse_with_skills(
+        text_area.value(model.view.input),
+        model.shared.skills,
+      ),
     )
   {
     Some(reason) -> tui_model.append_error(model, reason)
@@ -74,29 +80,46 @@ pub fn submit(model: Model) -> Model {
       let prepared = case
         outbound.mutating_submission(
           model,
-          command.parse_with_skills(text_area.value(model.input), model.skills),
+          command.parse_with_skills(
+            text_area.value(model.view.input),
+            model.shared.skills,
+          ),
         ),
-        model.peer
+        model.shared.peer
       {
         True, Attached ->
-          Model(..model, pending_submission: Some(ComposerSubmission))
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              pending_submission: Some(ComposerSubmission),
+            ),
+          )
         _, _ -> model
       }
       let after = submit_admitted(prepared)
-      case after.channel {
+      case after.shared.channel {
         Some(channel) ->
           case session_channel.has_unsent(channel) {
             True -> after
-            False -> Model(..after, pending_submission: None)
+            False ->
+              Model(
+                ..after,
+                shared: Shared(..after.shared, pending_submission: None),
+              )
           }
-        None -> Model(..after, pending_submission: None)
+        None ->
+          Model(
+            ..after,
+            shared: Shared(..after.shared, pending_submission: None),
+          )
       }
     }
   }
 }
 
 fn submit_admitted(model: Model) -> Model {
-  case composer.has_images(model.attachments) {
+  case composer.has_images(model.shared.attachments) {
     True -> submit_with_images(model)
     False -> submit_text(model)
   }
@@ -111,7 +134,7 @@ fn submit_admitted(model: Model) -> Model {
 /// ```
 @internal
 pub fn open_session_selector(model: Model) -> Model {
-  case model.daemon_host {
+  case model.view.daemon_host {
     Some(_) -> session_control.load_catalogue(model, "", None)
     None ->
       tui_model.append_error(
@@ -122,73 +145,85 @@ pub fn open_session_selector(model: Model) -> Model {
 }
 
 fn submit_text(model: Model) -> Model {
-  let input = text_area.value(model.input)
-  let expanded = composer.expand(input, model.attachments)
-  let cleared = case model.pending_submission {
+  let input = text_area.value(model.view.input)
+  let expanded = composer.expand(input, model.shared.attachments)
+  let cleared = case model.shared.pending_submission {
     Some(ComposerSubmission) -> model
     Some(OverlaySubmission) | None -> outbound.clear_composer_text(model)
   }
-  let prompt_cleared = case model.pending_submission {
+  let prompt_cleared = case model.shared.pending_submission {
     Some(ComposerSubmission) -> cleared
     Some(OverlaySubmission) | None ->
-      Model(..cleared, attachments: [], submission_mode: PromptNext)
+      Model(
+        shared: Shared(..cleared.shared, attachments: []),
+        view: View(..cleared.view, submission_mode: PromptNext),
+      )
   }
-  case command.parse_with_skills(input, model.skills) {
+  case command.parse_with_skills(input, model.shared.skills) {
     command.Empty ->
-      case model.attachments {
+      case model.shared.attachments {
         [] -> cleared
         _ -> send_prompt(prompt_cleared, expanded)
       }
     command.Quit -> quit(cleared)
     command.Help ->
       Model(
-        ..cleared,
-        help_open: True,
-        notes_open: False,
-        note_board: None,
-        note_selected: None,
-        notes_requested: None,
-        scroll_offset: 0,
-        repaint_phase: !cleared.repaint_phase,
-        notice: "/help",
+        shared: Shared(
+          ..cleared.shared,
+          note_board: None,
+          notes_requested: None,
+          notice: "/help",
+        ),
+        view: View(
+          ..cleared.view,
+          help_open: True,
+          notes_open: False,
+          note_selected: None,
+          scroll_offset: 0,
+          repaint_phase: !cleared.view.repaint_phase,
+        ),
       )
     command.Clear ->
       Model(
-        ..cleared,
-        transcript: [],
-        records: [],
-        record_gutters: [],
-        record_cache_epoch: cleared.record_cache_epoch + 1,
-        compact_call_cache: dict.new(),
-        compact_entry_cache: dict.new(),
-        pending_records: [],
-        record_cache_valid: False,
-        // `/clear` empties the local view, and an echo is part of that view
-        // rather than something it is drawn over.
-        queued: [],
-        awaiting_outcome: None,
-        notice: "local view cleared",
+        shared: Shared(
+          ..cleared.shared,
+          transcript: [],
+          records: [],
+          record_cache_epoch: cleared.shared.record_cache_epoch + 1,
+          compact_call_cache: dict.new(),
+          compact_entry_cache: dict.new(),
+          pending_records: [],
+          record_cache_valid: False,
+          // `/clear` empties the local view, and an echo is part of that view
+          // rather than something it is drawn over.
+          queued: [],
+          awaiting_outcome: None,
+          notice: "local view cleared",
+        ),
+        view: View(..cleared.view, record_gutters: []),
       )
       |> tui_model.invalidate_transcript
     command.Models -> {
       let opened =
         Model(
-          ..cleared,
-          overlay: ModelSelector(model_selector.new(
-            model.models,
-            model.current_model,
-          )),
-          repaint_phase: !cleared.repaint_phase,
-          notice: "model selector",
+          shared: Shared(..cleared.shared, notice: "model selector"),
+          view: View(
+            ..cleared.view,
+            overlay: ModelSelector(model_selector.new(
+              model.shared.models,
+              model.shared.current_model,
+            )),
+            repaint_phase: !cleared.view.repaint_phase,
+          ),
         )
-      outbound.send_frame(opened, protocol.models(opened.next_id))
+      outbound.send_frame(opened, protocol.models(opened.shared.next_id))
     }
     command.Model(name) -> {
       let switched =
         inbound.select_model(cleared, name)
         |> outbound.send_frame(protocol.set_model(
-          cleared.next_id,
-          cleared.active_strand,
+          cleared.shared.next_id,
+          cleared.shared.active_strand,
           name,
         ))
       tui_model.append_system(switched, "active model changed to " <> name)
@@ -196,62 +231,68 @@ fn submit_text(model: Model) -> Model {
     command.Strands | command.Agents -> open_agents(cleared)
     command.PeerLinks -> session_control.begin_peer_workspace(cleared)
     command.Schedules ->
-      outbound.send_frame(cleared, protocol.schedules(cleared.next_id))
+      outbound.send_frame(cleared, protocol.schedules(cleared.shared.next_id))
     command.Unschedule(name:, target:) -> {
       // An absent target means the strand the operator is looking at,
       // which is the row the listing above the prompt just printed. A
       // schedule a parent set onto a subagent needs the second word.
-      let target = option.unwrap(target, cleared.active_strand)
+      let target = option.unwrap(target, cleared.shared.active_strand)
       outbound.send_frame(
         tui_model.append_system(
           cleared,
           "cancelling schedule " <> name <> " on " <> target,
         ),
-        protocol.schedule_cancel(cleared.next_id, target, name),
+        protocol.schedule_cancel(cleared.shared.next_id, target, name),
       )
     }
     command.Sessions -> open_session_selector(cleared)
     command.Rename(name) ->
-      case cleared.session {
+      case cleared.shared.session {
         "" -> tui_model.append_error(cleared, "no session is attached")
         id -> session_control.begin_rename(cleared, id, name)
       }
     command.Approvals(None) ->
       list.fold(
-        inbound.approval_lines(cleared.approvals),
+        inbound.approval_lines(cleared.shared.approvals),
         cleared,
         fn(model, line) { tui_model.append_system(model, line.text) },
       )
     command.Approvals(Some(id)) ->
       inbound.request_decisions(
-        Model(..cleared, inspecting_approval: Some(id)),
+        Model(
+          ..cleared,
+          view: View(..cleared.view, inspecting_approval: Some(id)),
+        ),
         [id],
       )
     command.AddDirectory(path, access) ->
       outbound.send_frame(
         cleared,
-        protocol.add_directory(cleared.next_id, path, access),
+        protocol.add_directory(cleared.shared.next_id, path, access),
       )
     command.Approve(id) -> inbound.decide(cleared, id, operator.AllowOnce)
     command.Deny(id) -> inbound.decide(cleared, id, operator.Deny)
     command.Notes ->
-      surfaces.refresh_notes(
-        Model(
-          ..cleared,
-          help_open: False,
-          diff_view: DiffHidden,
+      surfaces.refresh_notes(Model(
+        shared: Shared(
+          ..cleared.shared,
           worktree: worktree_view.State(
-            ..cleared.worktree,
+            ..cleared.shared.worktree,
             focus: worktree_view.Composer,
           ),
+          notice: "agent notes",
+        ),
+        view: View(
+          ..cleared.view,
+          help_open: False,
+          diff_view: DiffHidden,
           notes_open: True,
           note_mode: note_panel.Readable,
           note_scroll: 0,
           scroll_offset: 0,
-          repaint_phase: !cleared.repaint_phase,
-          notice: "agent notes",
+          repaint_phase: !cleared.view.repaint_phase,
         ),
-      )
+      ))
     command.QueueInspect -> open_queue(cleared)
     command.Summary -> surfaces.open_summary(cleared)
     command.Context -> surfaces.open_context(cleared, context_view.Overview)
@@ -259,7 +300,7 @@ fn submit_text(model: Model) -> Model {
     command.Diff -> open_diff(cleared)
     command.Details -> toggle_details(cleared)
     command.Strand(name) ->
-      case tui_model.is_known_strand(cleared.strands, name) {
+      case tui_model.is_known_strand(cleared.shared.strands, name) {
         True ->
           tui_model.append_system(
             switch_active_strand(cleared, name),
@@ -270,15 +311,26 @@ fn submit_text(model: Model) -> Model {
     command.Fork(name) ->
       outbound.send_frame(
         tui_model.append_system(cleared, "fork queued: " <> name),
-        protocol.fork(cleared.next_id, cleared.active_strand, name),
+        protocol.fork(
+          cleared.shared.next_id,
+          cleared.shared.active_strand,
+          name,
+        ),
       )
     command.Effort(level) ->
       outbound.send_frame(
         tui_model.append_system(
           cleared,
-          "reasoning level for " <> cleared.active_strand <> ": " <> level,
+          "reasoning level for "
+            <> cleared.shared.active_strand
+            <> ": "
+            <> level,
         ),
-        protocol.set_thinking(cleared.next_id, cleared.active_strand, level),
+        protocol.set_thinking(
+          cleared.shared.next_id,
+          cleared.shared.active_strand,
+          level,
+        ),
       )
     command.GoalStatus -> surfaces.request_goal_status(cleared)
 
@@ -295,7 +347,7 @@ fn submit_text(model: Model) -> Model {
             <> int.to_string(token_budget)
             <> " tokens · /goal --budget N sets it",
         ),
-        protocol.goal_set(cleared.next_id, objective, token_budget),
+        protocol.goal_set(cleared.shared.next_id, objective, token_budget),
       )
 
     // The confirmation names the command back, because an operator who
@@ -304,17 +356,17 @@ fn submit_text(model: Model) -> Model {
     command.GoalCheck(command: Some(check)) ->
       outbound.send_frame(
         surfaces.confirming(cleared, "the goal check is " <> check),
-        protocol.goal_check(cleared.next_id, Some(check)),
+        protocol.goal_check(cleared.shared.next_id, Some(check)),
       )
     command.GoalCheck(command: None) ->
       outbound.send_frame(
         surfaces.confirming(cleared, "the goal check is cleared"),
-        protocol.goal_check(cleared.next_id, None),
+        protocol.goal_check(cleared.shared.next_id, None),
       )
     command.GoalClear ->
       outbound.send_frame(
         surfaces.confirming(cleared, "the session goal is cleared"),
-        protocol.goal_clear(cleared.next_id),
+        protocol.goal_clear(cleared.shared.next_id),
       )
     command.GoalPause -> surfaces.submit_goal_action(cleared, command.GoalPause)
     command.GoalResume ->
@@ -356,26 +408,29 @@ fn submit_text(model: Model) -> Model {
       outbound.send_frame(
         tui_model.append_system(
           cleared,
-          "compaction queued for " <> cleared.active_strand,
+          "compaction queued for " <> cleared.shared.active_strand,
         ),
-        protocol.compact(cleared.next_id, cleared.active_strand),
+        protocol.compact(cleared.shared.next_id, cleared.shared.active_strand),
       )
     command.Abort ->
       outbound.send_frame(
         tui_model.append_system(
           cleared,
-          "abort queued for " <> cleared.active_strand,
+          "abort queued for " <> cleared.shared.active_strand,
         ),
-        protocol.abort(cleared.next_id, cleared.active_strand),
+        protocol.abort(cleared.shared.next_id, cleared.shared.active_strand),
       )
     command.Steer(text) ->
       send_explicit_steer(
         prompt_cleared,
-        composer.expand(text, model.attachments),
+        composer.expand(text, model.shared.attachments),
         model,
       )
     command.Queue(text) ->
-      send_follow_up(prompt_cleared, composer.expand(text, model.attachments))
+      send_follow_up(
+        prompt_cleared,
+        composer.expand(text, model.shared.attachments),
+      )
     command.Unknown(name) ->
       tui_model.append_error(cleared, "unknown command /" <> name)
     command.MissingArgument(name) ->
@@ -391,8 +446,8 @@ fn submit_text(model: Model) -> Model {
 // question: `prompt` on a busy strand is held by the daemon and drained when
 // the run settles, so an image prompt goes out and comes back `queued`.
 fn submit_with_images(model: Model) -> Model {
-  let input = text_area.value(model.input)
-  case command.parse_with_skills(input, model.skills) {
+  let input = text_area.value(model.view.input)
+  case command.parse_with_skills(input, model.shared.skills) {
     command.Empty | command.Prompt(_) -> send_image_prompt(model, input)
     command.QueueInspect
     | command.Diff
@@ -443,10 +498,10 @@ fn submit_with_images(model: Model) -> Model {
 }
 
 fn send_image_prompt(model: Model, input: String) -> Model {
-  let expanded = composer.expand(input, model.attachments)
-  let images = composer.images(model.attachments)
+  let expanded = composer.expand(input, model.shared.attachments)
+  let images = composer.images(model.shared.attachments)
   let content = image_prompt_content(expanded, images)
-  let cleared = case model.pending_submission {
+  let cleared = case model.shared.pending_submission {
     Some(ComposerSubmission) -> model
     Some(OverlaySubmission) | None -> outbound.clear_composer(model)
   }
@@ -477,17 +532,26 @@ fn send_prompt_content(
   text: String,
   images: List(pasted_image.Image),
 ) -> Model {
-  let sent =
+  let sent = {
+    let expected = inbound.expect_own_turn(model, HeldPrompt(text))
     Model(
-      ..inbound.expect_own_turn(model, HeldPrompt(text)),
-      submitting: Some(model.active_strand),
-      notice: "image prompt sent to " <> model.active_strand,
+      ..expected,
+      shared: Shared(
+        ..expected.shared,
+        submitting: Some(model.shared.active_strand),
+        notice: "image prompt sent to " <> model.shared.active_strand,
+      ),
     )
-  case model.peer {
+  }
+  case model.shared.peer {
     Attached ->
       outbound.send_frame(
         sent,
-        protocol.prompt_content(model.next_id, model.active_strand, content),
+        protocol.prompt_content(
+          model.shared.next_id,
+          model.shared.active_strand,
+          content,
+        ),
       )
 
     // A replay stops exactly where the live client's local work stopped.
@@ -497,12 +561,18 @@ fn send_prompt_content(
     Preview ->
       Model(
         ..model,
-        transcript: list.append(model.transcript, [
-          Line(User, image_prompt_preview(text, images, model.details_expanded)),
-          Line(Assistant, "Design-preview echo received."),
-        ]),
-        record_cache_valid: False,
-        notice: "image prompt accepted",
+        shared: Shared(
+          ..model.shared,
+          transcript: list.append(model.shared.transcript, [
+            Line(
+              User,
+              image_prompt_preview(text, images, model.shared.details_expanded),
+            ),
+            Line(Assistant, "Design-preview echo received."),
+          ]),
+          record_cache_valid: False,
+          notice: "image prompt accepted",
+        ),
       )
       |> tui_model.invalidate_transcript
   }
@@ -538,17 +608,20 @@ fn image_prompt_preview(
 pub fn navigate_history(model: Model, older: Bool) -> Model {
   let #(history_index, history_draft, value) =
     history_selection(
-      model.history,
-      model.history_index,
-      model.history_draft,
-      text_area.value(model.input),
+      model.view.history,
+      model.view.history_index,
+      model.view.history_draft,
+      text_area.value(model.view.input),
       older,
     )
   Model(
     ..model,
-    input: text_area.state_from_string(value),
-    history_index:,
-    history_draft:,
+    view: View(
+      ..model.view,
+      input: text_area.state_from_string(value),
+      history_index:,
+      history_draft:,
+    ),
   )
 }
 
@@ -600,7 +673,7 @@ fn send_user_text(cleared: Model, text: String, before: Model) -> Model {
   case tui_model.active_interrupt(before) {
     Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
     None ->
-      case tui_model.active_strand_live(before), before.submission_mode {
+      case tui_model.active_strand_live(before), before.view.submission_mode {
         False, _ -> send_prompt(cleared, text)
 
         // A prompt aimed at a running strand is held by the daemon and run
@@ -618,7 +691,7 @@ fn send_user_text(cleared: Model, text: String, before: Model) -> Model {
 // for (`protocol-change/033`). Only a legacy host without a gateway queue falls
 // back to the client-side hold.
 fn send_explicit_steer(cleared: Model, text: String, before: Model) -> Model {
-  use <- bool.lazy_guard(before.channel != None, fn() {
+  use <- bool.lazy_guard(before.shared.channel != None, fn() {
     send_steer(cleared, text)
   })
   case tui_model.active_interrupt(before) {
@@ -639,29 +712,36 @@ fn hold_or_send_interrupt(
   strand: String,
   text: String,
 ) -> Model {
-  use <- bool.lazy_guard(before.channel != None, fn() {
+  use <- bool.lazy_guard(before.shared.channel != None, fn() {
     inbound.send_prompt_to(cleared, strand, text)
   })
   case tui_model.active_strand_live(before) {
     False ->
-      inbound.send_prompt_to(Model(..cleared, interrupt: None), strand, text)
+      inbound.send_prompt_to(
+        Model(..cleared, shared: Shared(..cleared.shared, interrupt: None)),
+        strand,
+        text,
+      )
     True -> {
-      let pending = case before.interrupt {
+      let pending = case before.shared.interrupt {
         Some(Interrupt(pending: Some(earlier), ..)) ->
           Some(earlier <> "\n\n" <> text)
         _ -> Some(text)
       }
       Model(
         ..cleared,
-        interrupt: Some(Interrupt(strand:, operation: None, pending:)),
-        notice: "steer captured; waiting for stop",
+        shared: Shared(
+          ..cleared.shared,
+          interrupt: Some(Interrupt(strand:, operation: None, pending:)),
+          notice: "steer captured; waiting for stop",
+        ),
       )
     }
   }
 }
 
 fn send_prompt(model: Model, text: String) -> Model {
-  inbound.send_prompt_to(model, model.active_strand, text)
+  inbound.send_prompt_to(model, model.shared.active_strand, text)
 }
 
 // A steer draws no echo, but the entry it commits is indistinguishable from a
@@ -670,16 +750,21 @@ fn send_prompt(model: Model, text: String) -> Model {
 // operator watches their own line disappear, which is the symptom the echo
 // exists to prevent.
 fn send_steer(model: Model, text: String) -> Model {
+  let expected =
+    inbound.expect_own_turn(model, steering_submission(model, text))
   outbound.send_via(
     Model(
-      ..inbound.expect_own_turn(model, steering_submission(model, text)),
-      notice: "steered " <> model.active_strand,
+      ..expected,
+      shared: Shared(
+        ..expected.shared,
+        notice: "steered " <> model.shared.active_strand,
+      ),
     ),
     fn(lane, now) {
       operator.submit(
         lane,
-        model.next_id,
-        model.active_strand,
+        model.shared.next_id,
+        model.shared.active_strand,
         text,
         operator.Steer,
         now,
@@ -691,17 +776,22 @@ fn send_steer(model: Model, text: String) -> Model {
 // Both controls transfer input custody to the modern host queue. Older
 // recordings still account for their original in-operation interjections.
 fn send_follow_up(model: Model, text: String) -> Model {
+  let expected =
+    inbound.expect_own_turn(model, steering_submission(model, text))
   outbound.send_frame(
     Model(
-      ..inbound.expect_own_turn(model, steering_submission(model, text)),
-      notice: "queued after " <> model.active_strand,
+      ..expected,
+      shared: Shared(
+        ..expected.shared,
+        notice: "queued after " <> model.shared.active_strand,
+      ),
     ),
-    protocol.follow_up(model.next_id, model.active_strand, text),
+    protocol.follow_up(model.shared.next_id, model.shared.active_strand, text),
   )
 }
 
 fn steering_submission(model: Model, text: String) -> Submission {
-  case model.channel {
+  case model.shared.channel {
     Some(_) -> HeldPrompt(text)
     None -> Interjection
   }
@@ -714,15 +804,34 @@ pub fn toggle_submission_mode(model: Model) -> Model {
   case
     tui_model.active_interrupt(model),
     tui_model.active_strand_live(model),
-    model.submission_mode
+    model.view.submission_mode
   {
-    Some(_), _, _ -> Model(..model, notice: "interrupt steer is already armed")
+    Some(_), _, _ ->
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          notice: "interrupt steer is already armed",
+        ),
+      )
     None, False, _ ->
-      Model(..model, notice: "steering is available while an agent runs")
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          notice: "steering is available while an agent runs",
+        ),
+      )
     None, True, PromptNext ->
-      Model(..model, submission_mode: SteerNow, notice: "steer now")
+      Model(
+        shared: Shared(..model.shared, notice: "steer now"),
+        view: View(..model.view, submission_mode: SteerNow),
+      )
     None, True, SteerNow ->
-      Model(..model, submission_mode: PromptNext, notice: "queue for next turn")
+      Model(
+        shared: Shared(..model.shared, notice: "queue for next turn"),
+        view: View(..model.view, submission_mode: PromptNext),
+      )
   }
 }
 
@@ -730,22 +839,32 @@ pub fn toggle_submission_mode(model: Model) -> Model {
 @internal
 pub fn interrupt_active(model: Model) -> Model {
   case tui_model.active_strand_phase(model), tui_model.active_interrupt(model) {
-    None, _ -> Model(..model, notice: "nothing is running")
-    Some(_), Some(_) -> Model(..model, notice: "interrupt already requested")
+    None, _ ->
+      Model(
+        ..model,
+        shared: Shared(..model.shared, notice: "nothing is running"),
+      )
+    Some(_), Some(_) ->
+      Model(
+        ..model,
+        shared: Shared(..model.shared, notice: "interrupt already requested"),
+      )
     Some(_), None -> {
-      let strand = model.active_strand
+      let strand = model.shared.active_strand
       outbound.send_frame(
         Model(
-          ..model,
-          interrupt: Some(Interrupt(
-            strand:,
-            operation: captured_operation(model, strand),
-            pending: None,
-          )),
-          submission_mode: PromptNext,
-          notice: "stopping; held input waits · enter sends it with your message",
+          shared: Shared(
+            ..model.shared,
+            interrupt: Some(Interrupt(
+              strand:,
+              operation: captured_operation(model, strand),
+              pending: None,
+            )),
+            notice: "stopping; held input waits · enter sends it with your message",
+          ),
+          view: View(..model.view, submission_mode: PromptNext),
         ),
-        protocol.abort(model.next_id, strand),
+        protocol.abort(model.shared.next_id, strand),
       )
     }
   }
@@ -765,13 +884,23 @@ pub fn interrupt_active(model: Model) -> Model {
 /// ```
 @internal
 pub fn stop_strand(model: Model, strand: String) -> Model {
-  case strand == model.active_strand, layout.strand_running(model, strand) {
+  case
+    strand == model.shared.active_strand,
+    layout.strand_running(model, strand)
+  {
     True, _ -> interrupt_active(model)
-    False, False -> Model(..model, notice: strand <> " is not running")
+    False, False ->
+      Model(
+        ..model,
+        shared: Shared(..model.shared, notice: strand <> " is not running"),
+      )
     False, True ->
       outbound.send_frame(
-        Model(..model, notice: "stopping " <> strand),
-        protocol.abort(model.next_id, strand),
+        Model(
+          ..model,
+          shared: Shared(..model.shared, notice: "stopping " <> strand),
+        ),
+        protocol.abort(model.shared.next_id, strand),
       )
   }
 }
@@ -787,12 +916,15 @@ pub fn interrupt_and_insert(model: Model, character: String) -> Model {
   let editor = text_area.textarea_new() |> text_area.with_max_lines(1)
   Model(
     ..interrupted,
-    input: text_area.insert_char(editor, interrupted.input, character),
+    view: View(
+      ..interrupted.view,
+      input: text_area.insert_char(editor, interrupted.view.input, character),
+    ),
   )
 }
 
 fn captured_operation(model: Model, strand: String) -> Option(String) {
-  case model.captured {
+  case model.shared.captured {
     Some(#(_, view)) -> dict.get(view.operations, strand) |> option.from_result
     None -> None
   }
@@ -801,15 +933,17 @@ fn captured_operation(model: Model, strand: String) -> Option(String) {
 /// Shows or hides the agent rail.
 @internal
 pub fn toggle_agent_rail(model: Model) -> Model {
-  let visible = !model.agent_rail_visible
+  let visible = !model.view.agent_rail_visible
   Model(
-    ..model,
-    agent_rail_visible: visible,
-    repaint_phase: !model.repaint_phase,
-    notice: case visible {
+    shared: Shared(..model.shared, notice: case visible {
       True -> "agent rail shown"
       False -> "agent rail hidden"
-    },
+    }),
+    view: View(
+      ..model.view,
+      agent_rail_visible: visible,
+      repaint_phase: !model.view.repaint_phase,
+    ),
   )
 }
 
@@ -817,15 +951,17 @@ pub fn toggle_agent_rail(model: Model) -> Model {
 /// output.
 @internal
 pub fn toggle_details(model: Model) -> Model {
-  let expanded = !model.details_expanded
+  let expanded = !model.shared.details_expanded
   Model(
-    ..model,
-    details_expanded: expanded,
-    repaint_phase: !model.repaint_phase,
-    notice: case expanded {
-      True -> "details expanded"
-      False -> "details collapsed"
-    },
+    shared: Shared(
+      ..model.shared,
+      details_expanded: expanded,
+      notice: case expanded {
+        True -> "details expanded"
+        False -> "details collapsed"
+      },
+    ),
+    view: View(..model.view, repaint_phase: !model.view.repaint_phase),
   )
 }
 
@@ -841,7 +977,7 @@ pub fn quit(model: Model) -> Model {
   // The adopted lane closes ahead of the provisional attempt. A recording
   // has always noted the adopted lane's close before the attempt's, whose
   // close the `Abandon` below decides only when the runtime performs it.
-  let model = case model.channel {
+  let model = case model.shared.channel {
     Some(channel) ->
       tui_model.hold_channel(model, session_channel.close(channel))
     None -> model
@@ -849,8 +985,8 @@ pub fn quit(model: Model) -> Model {
 
   // The attempt moves into its cancel effect, which closes what it opened.
   let model =
-    Model(..model, candidate: attachment.idle())
-    |> tui_model.emit_attachment(attachment.Abandon(model.candidate))
+    Model(..model, view: View(..model.view, candidate: attachment.idle()))
+    |> tui_model.emit_attachment(attachment.Abandon(model.view.candidate))
 
   // Every running job is cancelled by its key, and its slot is cleared in
   // the same step, so nothing a cancelled job sends afterwards is admitted
@@ -859,40 +995,40 @@ pub fn quit(model: Model) -> Model {
   // run on to its own deadline, follows them, and a session creation's
   // configuration job, which did not exist while the step resolved the
   // configuration itself, is cancelled last.
-  let model = case model.control_request {
+  let model = case model.view.control_request {
     None -> model
     Some(run) ->
-      Model(..model, control_request: None)
+      Model(..model, view: View(..model.view, control_request: None))
       |> tui_model.emit(effect.CancelJob(job.key(run.job)))
   }
 
   // A relaunch may be mid-start when the operator quits. Cancelling it stops
   // spawning a daemon nobody will talk to, and the close below covers the
   // control owner it may already have minted.
-  let model = case model.reconnect {
+  let model = case model.view.reconnect {
     ReconnectIdle | ReconnectSpent -> model
     ReconnectAttempting(job: awaiting) ->
-      Model(..model, reconnect: ReconnectSpent)
+      Model(..model, view: View(..model.view, reconnect: ReconnectSpent))
       |> tui_model.release_reconnect(awaiting)
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
-  let model = case model.activity_poll {
+  let model = case model.view.activity_poll {
     ActivityDue | ActivityResting(..) -> model
     ActivityAsking(job: awaiting, ..) ->
-      Model(..model, activity_poll: ActivityDue)
+      Model(..model, view: View(..model.view, activity_poll: ActivityDue))
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
-  let model = case model.configuring {
+  let model = case model.view.configuring {
     None -> model
     Some(awaiting) ->
-      Model(..model, configuring: None)
+      Model(..model, view: View(..model.view, configuring: None))
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
-  let model = case model.daemon_host {
+  let model = case model.view.daemon_host {
     None -> model
     Some(host) -> tui_model.emit(model, effect.CloseControl(host.control))
   }
-  Model(..model, quit: True)
+  Model(..model, shared: Shared(..model.shared, quit: True))
 }
 
 /// Makes `strand` the active strand, cancelling unsent frames for the old
@@ -901,26 +1037,34 @@ pub fn quit(model: Model) -> Model {
 @internal
 pub fn switch_active_strand(model: Model, strand: String) -> Model {
   let model =
-    inbound.cancel_pending(model, "target change from " <> model.session)
-  let model = inbound.select_workspace(model, model.session, strand)
+    inbound.cancel_pending(model, "target change from " <> model.shared.session)
+  let model = inbound.select_workspace(model, model.shared.session, strand)
   let selected =
     Model(
-      ..model,
-      overlay: NoOverlay,
-      active_strand: strand,
-      queued: [],
-      awaiting_outcome: None,
-      cache_outlook: "",
-      current_model: "loading…",
-      record_cache_valid: False,
-      repaint_phase: !model.repaint_phase,
-      notice: "active strand: " <> strand,
+      shared: Shared(
+        ..model.shared,
+        active_strand: strand,
+        queued: [],
+        awaiting_outcome: None,
+        current_model: "loading…",
+        record_cache_valid: False,
+        notice: "active strand: " <> strand,
+      ),
+      view: View(
+        ..model.view,
+        overlay: NoOverlay,
+        cache_outlook: "",
+        repaint_phase: !model.view.repaint_phase,
+      ),
     )
     |> tui_model.invalidate_transcript
-  case model.captured {
+  case model.shared.captured {
     Some(#(cut, view)) -> inbound.apply_cut(selected, cut, view)
     None ->
-      outbound.send_frame(selected, protocol.config(model.next_id, strand))
+      outbound.send_frame(
+        selected,
+        protocol.config(model.shared.next_id, strand),
+      )
   }
 }
 
@@ -933,7 +1077,13 @@ pub fn switch_active_strand(model: Model, strand: String) -> Model {
 /// ```
 @internal
 pub fn open_queue(model: Model) -> Model {
-  Model(..model, queue_editor: queue_editor.open(model.queue_editor))
+  Model(
+    ..model,
+    view: View(
+      ..model.view,
+      queue_editor: queue_editor.open(model.view.queue_editor),
+    ),
+  )
   |> tui_model.invalidate_frame
 }
 
@@ -947,15 +1097,18 @@ pub fn open_queue(model: Model) -> Model {
 @internal
 pub fn open_diff(model: Model) -> Model {
   case layout.diff_shown(model) {
-    True -> Model(..model, diff_view: DiffHidden)
+    True -> Model(..model, view: View(..model.view, diff_view: DiffHidden))
     False ->
       inbound.refresh_worktree(
         Model(
           ..model,
-          diff_view: DiffVisible,
-          diff_scroll_offset: 0,
-          help_open: False,
-          notes_open: False,
+          view: View(
+            ..model.view,
+            diff_view: DiffVisible,
+            diff_scroll_offset: 0,
+            help_open: False,
+            notes_open: False,
+          ),
         ),
       )
   }

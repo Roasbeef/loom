@@ -26,11 +26,19 @@ import tui/surfaces
 import tui/workspace
 
 fn model() {
-  tui_model.Model(
-    ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-    input: textarea.state_from_string("continue my unfinished draft"),
-    attachments: [composer.Attachment("retained context", 4)],
-  )
+  {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+    tui_model.Model(
+      shared: tui_model.Shared(..base.shared, attachments: [
+        composer.Attachment("retained context", 4),
+      ]),
+      view: tui_model.View(
+        ..base.view,
+        input: textarea.state_from_string("continue my unfinished draft"),
+      ),
+    )
+  }
 }
 
 fn painted(model) {
@@ -46,9 +54,9 @@ fn key(model, value) {
 pub fn summary_without_captured_evidence_keeps_composer_and_reports_absence_test() {
   let initial = model()
   let opened = surfaces.open_summary(initial)
-  assert opened.summary_surface == queue_editor.Inspector
-  assert opened.input == initial.input
-  assert opened.attachments == initial.attachments
+  assert opened.view.summary_surface == queue_editor.Inspector
+  assert opened.view.input == initial.view.input
+  assert opened.shared.attachments == initial.shared.attachments
   let text = painted(opened)
   assert string.contains(
     text,
@@ -61,10 +69,10 @@ pub fn summary_without_captured_evidence_keeps_composer_and_reports_absence_test
   assert string.contains(jobs, "Live jobs unavailable")
   assert !string.contains(jobs, "Observed roster: 0")
   let closed = tui.update(backend.KeyPress("esc"), opened)
-  assert closed.summary_surface == queue_editor.Closed
-  assert closed.input == initial.input
-  assert closed.attachments == initial.attachments
-  assert closed.interrupt == initial.interrupt
+  assert closed.view.summary_surface == queue_editor.Closed
+  assert closed.view.input == initial.view.input
+  assert closed.shared.attachments == initial.shared.attachments
+  assert closed.shared.interrupt == initial.shared.interrupt
 }
 
 pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
@@ -85,7 +93,13 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
       1,
       0,
     )
-  let initial = tui_model.Model(..model(), jobs: Some(board))
+  let initial = {
+    let base = model()
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, jobs: Some(board)),
+    )
+  }
   let opened = surfaces.open_summary(initial) |> key("3")
   let text = painted(opened)
   assert string.contains(text, "3 Jobs")
@@ -95,19 +109,26 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
   assert string.contains(text, "Command excerpt: sleep 30")
   assert string.contains(text, "Age 2s · deadline in 28s")
   assert !string.contains(text, "Completed by assistant")
-  assert opened.jobs == Some(board)
-  assert opened.input == initial.input
-  assert opened.attachments == initial.attachments
+  assert opened.shared.jobs == Some(board)
+  assert opened.view.input == initial.view.input
+  assert opened.shared.attachments == initial.shared.attachments
 
   // A strand switch cannot present the last strand's job roster as current
   // work for the newly selected strand.
-  let other = tui_model.Model(..opened, active_strand: "other")
+  let other =
+    tui_model.Model(
+      ..opened,
+      shared: tui_model.Shared(..opened.shared, active_strand: "other"),
+    )
   assert !string.contains(painted(other), "job-7")
   assert string.contains(
     painted(
       tui_model.Model(
         ..other,
-        jobs_notice: "Live jobs observed separately from completion",
+        shared: tui_model.Shared(
+          ..other.shared,
+          jobs_notice: "Live jobs observed separately from completion",
+        ),
       ),
     ),
     "Live jobs unavailable for the current strand",
@@ -119,7 +140,16 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
 pub fn summary_separates_current_context_from_cumulative_usage_test() {
   let initial = model()
   let last_usage =
-    message.Usage(110, 70, 400, 100, None, Some(20), 680, initial.usage.cost)
+    message.Usage(
+      110,
+      70,
+      400,
+      100,
+      None,
+      Some(20),
+      680,
+      initial.shared.usage.cost,
+    )
   let cumulative =
     message.Usage(
       ..last_usage,
@@ -156,8 +186,11 @@ pub fn summary_separates_current_context_from_cumulative_usage_test() {
   let updated =
     tui_model.Model(
       ..initial,
-      records: [protocol.EntryRecord("main", measured)],
-      usage: cumulative,
+      shared: tui_model.Shared(
+        ..initial.shared,
+        records: [protocol.EntryRecord("main", measured)],
+        usage: cumulative,
+      ),
     )
   let text = painted(surfaces.open_summary(updated) |> key("2"))
   assert string.contains(text, "Input 9000")
@@ -172,18 +205,27 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
   let second = live_jobs.Job("b", "draining", "op-b", "second", 2, 90)
   let board = live_jobs.Board("main", 50, [first, second], 3, 1)
   let opened =
-    tui_model.Model(..model(), jobs: Some(board))
+    {
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, jobs: Some(board)),
+      )
+    }
     |> surfaces.open_summary
     |> fn(model) {
       tui_model.Model(
         ..model,
-        jobs_notice: "Refreshing live jobs; previous observation may be stale",
+        shared: tui_model.Shared(
+          ..model.shared,
+          jobs_notice: "Refreshing live jobs; previous observation may be stale",
+        ),
       )
     }
     |> key("3")
     |> key("]")
-  assert opened.summary_tab == summary_panel.Jobs
-  assert opened.summary_job_selected == 1
+  assert opened.view.summary_tab == summary_panel.Jobs
+  assert opened.view.summary_job_selected == 1
   let stale = painted(opened)
   assert string.contains(stale, "previous observation may be stale")
   assert string.contains(stale, "1 omitted")
@@ -191,9 +233,15 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
   let reordered = live_jobs.Board("main", 60, [second, first], 2, 0)
   let refreshed =
     inbound.apply_channel_update(
-      tui_model.Model(..opened, jobs_awaiting: Some(#("", "main"))),
+      tui_model.Model(
+        ..opened,
+        shared: tui_model.Shared(
+          ..opened.shared,
+          jobs_awaiting: Some(#("", "main")),
+        ),
+      ),
       session_channel.Auxiliary(protocol.LiveJobsSnapshot(reordered)),
     )
-  assert refreshed.summary_job_selected == 0
+  assert refreshed.view.summary_job_selected == 0
   assert string.contains(painted(refreshed), "▸ [DRAINING] b")
 }

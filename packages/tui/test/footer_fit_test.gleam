@@ -38,11 +38,13 @@ fn model() {
   )
   |> fn(base) {
     tui_model.Model(
-      ..base,
-      usage: usage(),
-      cache_outlook: "cache idle 3m",
-      output_rate_tps: Some(45),
-      notice: "",
+      shared: tui_model.Shared(
+        ..base.shared,
+        usage: usage(),
+        output_rate_tps: Some(45),
+        notice: "",
+      ),
+      view: tui_model.View(..base.view, cache_outlook: "cache idle 3m"),
     )
   }
 }
@@ -82,7 +84,13 @@ pub fn the_outlook_rides_the_cache_piece_test() {
 // At every layout the detailed footer either shows the cache pair whole or
 // leaves it out; no row ends in a cut figure.
 pub fn the_detailed_footer_never_cuts_a_figure_test() {
-  let expanded = tui_model.Model(..model(), details_expanded: True)
+  let expanded = {
+    let base = model()
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, details_expanded: True),
+    )
+  }
   list.each([240, 180, 120, 90, 60], fn(width) {
     let text = footer_rows(expanded, width) |> string.join("\n")
     assert !string.contains(text, "cac…")
@@ -100,8 +108,13 @@ pub fn the_detailed_footer_never_cuts_a_figure_test() {
 
 // With room to spare the rate joins the row as its own whole piece.
 pub fn the_rate_shows_when_the_outlook_leaves_room_test() {
-  let quiet =
-    tui_model.Model(..model(), details_expanded: True, cache_outlook: "")
+  let quiet = {
+    let base = model()
+    tui_model.Model(
+      shared: tui_model.Shared(..base.shared, details_expanded: True),
+      view: tui_model.View(..base.view, cache_outlook: ""),
+    )
+  }
   let text = footer_rows(quiet, 180) |> string.join("\n")
   assert string.contains(
     text,
@@ -118,11 +131,16 @@ pub fn the_compact_footer_drops_whole_pieces_test() {
     "cache idle 3m · baseten-kimi-k3 · ctx — · est $4.00",
   )
 
-  let crowded =
+  let crowded = {
+    let base = model()
     tui_model.Model(
-      ..model(),
-      notice: "steer captured; waiting for the running operation to stop",
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        notice: "steer captured; waiting for the running operation to stop",
+      ),
     )
+  }
   let text = footer_rows(crowded, 120) |> string.join("\n")
   assert !string.contains(text, "est $4…")
   assert string.contains(text, "steer captured")

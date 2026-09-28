@@ -40,7 +40,7 @@ import tui/model.{
   type Model, AgentInspector, ApprovalInspector, Attached, ConfirmGoal,
   DaemonSelector, Disconnected, GoalInspector, HoldGoalReport, Model,
   ModelSelector, NoOverlay, OverlaySubmission, PeerLinkManager, Preview,
-  Replaying, ReportGoal,
+  Replaying, ReportGoal, Shared, View,
 } as tui_model
 import tui/outbound
 import tui/queue_editor
@@ -51,10 +51,10 @@ import tui/summary_panel
 /// active strand, its parked draft, or the next submitted message.
 @internal
 pub fn notes_target(model: Model) -> String {
-  case model.overlay {
+  case model.view.overlay {
     AgentInspector(agents.Inspector(detail: agents.Notes, selected:, ..)) ->
       selected
-    _ -> model.active_strand
+    _ -> model.shared.active_strand
   }
 }
 
@@ -62,7 +62,7 @@ pub fn notes_target(model: Model) -> String {
 /// agent inspector's Notes tab.
 @internal
 pub fn notes_surface(model: Model) -> Bool {
-  case model.notes_open, model.overlay {
+  case model.view.notes_open, model.view.overlay {
     True, _
     | False, AgentInspector(agents.Inspector(detail: agents.Notes, ..))
     -> True
@@ -82,13 +82,13 @@ pub fn notes_surface(model: Model) -> Bool {
 /// seeds the board just the same when it is for the same strand.
 @internal
 pub fn service_todo_seed(model: Model) -> Model {
-  case model.todo_seed {
+  case model.shared.todo_seed {
     None -> model
     Some(strand) ->
-      case dict.has_key(model.todo_boards, strand) {
+      case dict.has_key(model.shared.todo_boards, strand) {
         // Another read or a fresh result already brought the board, so the
         // seed has nothing left to find.
-        True -> Model(..model, todo_seed: None)
+        True -> Model(..model, shared: Shared(..model.shared, todo_seed: None))
         False -> send_seed_when_free(model, strand)
       }
   }
@@ -97,7 +97,7 @@ pub fn service_todo_seed(model: Model) -> Model {
 // An operator's own notes read goes first, and a seed with no attached
 // channel waits; session replacement clears it either way.
 fn send_seed_when_free(model: Model, strand: String) -> Model {
-  case model.notes_requested, model.channel, model.peer {
+  case model.shared.notes_requested, model.shared.channel, model.shared.peer {
     None, Some(channel), Attached ->
       case session_channel.ready_for_read(channel) {
         True -> send_todo_seed(model, strand)
@@ -109,8 +109,8 @@ fn send_seed_when_free(model: Model, strand: String) -> Model {
 
 fn send_todo_seed(model: Model, strand: String) -> Model {
   outbound.send_frame(
-    Model(..model, todo_seed: None),
-    protocol.notes(model.next_id, strand),
+    Model(..model, shared: Shared(..model.shared, todo_seed: None)),
+    protocol.notes(model.shared.next_id, strand),
   )
 }
 
@@ -121,8 +121,11 @@ pub fn refresh_notes(model: Model) -> Model {
   service_notes_read(
     Model(
       ..model,
-      notes_requested: Some(notes_target(model)),
-      notice: "refreshing notes for " <> notes_target(model),
+      shared: Shared(
+        ..model.shared,
+        notes_requested: Some(notes_target(model)),
+        notice: "refreshing notes for " <> notes_target(model),
+      ),
     ),
   )
 }
@@ -131,22 +134,25 @@ pub fn refresh_notes(model: Model) -> Model {
 /// owns an earlier command. Old replies may be retained, but never relabelled.
 @internal
 pub fn service_notes_read(model: Model) -> Model {
-  case model.notes_requested, model.channel {
+  case model.shared.notes_requested, model.shared.channel {
     None, _ -> model
     Some(target), Some(channel) -> {
       case session_channel.ready_for_read(channel) {
         False -> model
         True ->
           outbound.send_frame(
-            Model(..model, notes_requested: None),
-            protocol.notes(model.next_id, target),
+            Model(
+              ..model,
+              shared: Shared(..model.shared, notes_requested: None),
+            ),
+            protocol.notes(model.shared.next_id, target),
           )
       }
     }
     Some(target), None ->
       outbound.send_frame(
-        Model(..model, notes_requested: None),
-        protocol.notes(model.next_id, target),
+        Model(..model, shared: Shared(..model.shared, notes_requested: None)),
+        protocol.notes(model.shared.next_id, target),
       )
   }
 }
@@ -155,7 +161,7 @@ pub fn service_notes_read(model: Model) -> Model {
 @internal
 pub fn select_note(model: Model, direction: Int) -> Model {
   let target = notes_target(model)
-  case model.note_board {
+  case model.shared.note_board {
     Some(board) if board.strand == target -> {
       let index =
         list.index_map(board.notes, fn(note, position) {
@@ -177,7 +183,10 @@ pub fn select_note(model: Model, direction: Int) -> Model {
 
       // Note navigation moves only the surface that owns this key. The
       // transcript beneath an inspector retains its independent anchor.
-      Model(..model, note_selected: selected, note_scroll: 0)
+      Model(
+        ..model,
+        view: View(..model.view, note_selected: selected, note_scroll: 0),
+      )
       |> tui_model.invalidate_transcript
     }
     _ -> model
@@ -188,7 +197,7 @@ pub fn select_note(model: Model, direction: Int) -> Model {
 /// or drops the request when the attachment changed since it was made.
 @internal
 pub fn service_queue_read(model: Model) -> Model {
-  case model.channel, model.queue_editor.fetch {
+  case model.shared.channel, model.view.queue_editor.fetch {
     Some(channel), Some(fetch) ->
       case session_channel.ready_for_read(channel) {
         True ->
@@ -197,21 +206,31 @@ pub fn service_queue_read(model: Model) -> Model {
               outbound.send_frame(
                 Model(
                   ..model,
-                  queue_editor: queue_editor.State(
-                    ..model.queue_editor,
-                    fetch: None,
-                    awaiting: Some(fetch),
+                  view: View(
+                    ..model.view,
+                    queue_editor: queue_editor.State(
+                      ..model.view.queue_editor,
+                      fetch: None,
+                      awaiting: Some(fetch),
+                    ),
                   ),
                 ),
-                protocol.queued_input(model.next_id, fetch.strand, fetch.id),
+                protocol.queued_input(
+                  model.shared.next_id,
+                  fetch.strand,
+                  fetch.id,
+                ),
               )
             False ->
               Model(
                 ..model,
-                queue_editor: queue_editor.State(
-                  ..model.queue_editor,
-                  fetch: None,
-                  message: "Attachment changed; select the input again",
+                view: View(
+                  ..model.view,
+                  queue_editor: queue_editor.State(
+                    ..model.view.queue_editor,
+                    fetch: None,
+                    message: "Attachment changed; select the input again",
+                  ),
                 ),
               )
           }
@@ -220,10 +239,13 @@ pub fn service_queue_read(model: Model) -> Model {
     None, Some(_) ->
       Model(
         ..model,
-        queue_editor: queue_editor.State(
-          ..model.queue_editor,
-          fetch: None,
-          message: "Queue editing requires a live conversation attachment",
+        view: View(
+          ..model.view,
+          queue_editor: queue_editor.State(
+            ..model.view.queue_editor,
+            fetch: None,
+            message: "Queue editing requires a live conversation attachment",
+          ),
         ),
       )
     _, None -> model
@@ -236,12 +258,19 @@ pub fn service_queue_read(model: Model) -> Model {
 pub fn service_worktree_read(model: Model) -> Model {
   // Both observations borrow the same server worker slot. An acknowledged
   // context read still owns it until its final push arrives.
-  use <- bool.guard(context_in_flight(model.context), model)
-  case model.channel, model.worktree.refresh, model.worktree.awaiting {
+  use <- bool.guard(context_in_flight(model.shared.context), model)
+  case
+    model.shared.channel,
+    model.shared.worktree.refresh,
+    model.shared.worktree.awaiting
+  {
     Some(channel), worktree_view.Requested, None ->
       case session_channel.ready_for_read(channel) {
         True ->
-          outbound.send_frame(model, protocol.worktree_diff(model.next_id))
+          outbound.send_frame(
+            model,
+            protocol.worktree_diff(model.shared.next_id),
+          )
         False -> model
       }
     _, _, _ -> model
@@ -257,45 +286,51 @@ pub fn service_worktree_read(model: Model) -> Model {
 /// ```
 @internal
 pub fn open_summary(model: Model) -> Model {
-  service_jobs_read(
-    Model(
-      ..model,
+  service_jobs_read(Model(
+    shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
+    view: View(
+      ..model.view,
       summary_surface: queue_editor.Inspector,
       summary_scroll: 0,
       summary_tab: summary_panel.Completion,
       summary_job_selected: 0,
-      jobs_refresh: worktree_view.Requested,
     ),
-  )
+  ))
   |> tui_model.invalidate_frame
 }
 
 /// Sends a requested live-jobs read once the channel is ready for it.
 @internal
 pub fn service_jobs_read(model: Model) -> Model {
-  case model.channel, model.jobs_refresh, model.peer {
+  case model.shared.channel, model.shared.jobs_refresh, model.shared.peer {
     Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
             Model(
               ..model,
-              jobs_refresh: worktree_view.Settled,
-              jobs_awaiting: Some(#(
-                tui_model.queue_owner(model),
-                model.active_strand,
-              )),
-              jobs_notice: "Refreshing live jobs; previous observation may be stale",
+              shared: Shared(
+                ..model.shared,
+                jobs_refresh: worktree_view.Settled,
+                jobs_awaiting: Some(#(
+                  tui_model.queue_owner(model),
+                  model.shared.active_strand,
+                )),
+                jobs_notice: "Refreshing live jobs; previous observation may be stale",
+              ),
             ),
-            protocol.live_jobs(model.next_id, model.active_strand),
+            protocol.live_jobs(model.shared.next_id, model.shared.active_strand),
           )
         False -> model
       }
     _, worktree_view.Requested, _ ->
       Model(
         ..model,
-        jobs_refresh: worktree_view.Settled,
-        jobs_notice: "Live jobs unavailable without a live conversation attachment",
+        shared: Shared(
+          ..model.shared,
+          jobs_refresh: worktree_view.Settled,
+          jobs_notice: "Live jobs unavailable without a live conversation attachment",
+        ),
       )
     _, worktree_view.Settled, _ -> model
   }
@@ -373,10 +408,13 @@ pub fn sync_advisor_nudges(before: Model, after: Model) -> Model {
     DropNudges ->
       Model(
         ..after,
-        nudges: None,
-        nudges_refresh: worktree_view.Settled,
-        nudges_awaiting: None,
-        nudges_request: None,
+        shared: Shared(
+          ..after.shared,
+          nudges: None,
+          nudges_refresh: worktree_view.Settled,
+          nudges_awaiting: None,
+          nudges_request: None,
+        ),
       )
 
     ReadNudges -> {
@@ -385,11 +423,14 @@ pub fn sync_advisor_nudges(before: Model, after: Model) -> Model {
         && layout.strand_running(after, advisor_pending.primary_strand)
       Model(
         ..after,
-        nudges: case started {
-          True -> None
-          False -> after.nudges
-        },
-        nudges_refresh: worktree_view.Requested,
+        shared: Shared(
+          ..after.shared,
+          nudges: case started {
+            True -> None
+            False -> after.shared.nudges
+          },
+          nudges_refresh: worktree_view.Requested,
+        ),
       )
     }
   }
@@ -399,17 +440,20 @@ pub fn sync_advisor_nudges(before: Model, after: Model) -> Model {
 /// queued prompt is never held up behind an advisory panel.
 @internal
 pub fn service_advisor_nudges_read(model: Model) -> Model {
-  case model.channel, model.nudges_refresh, model.peer {
+  case model.shared.channel, model.shared.nudges_refresh, model.shared.peer {
     Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
             Model(
               ..model,
-              nudges_refresh: worktree_view.Settled,
-              nudges_awaiting: Some(tui_model.queue_owner(model)),
+              shared: Shared(
+                ..model.shared,
+                nudges_refresh: worktree_view.Settled,
+                nudges_awaiting: Some(tui_model.queue_owner(model)),
+              ),
             ),
-            protocol.advisor_pending(model.next_id),
+            protocol.advisor_pending(model.shared.next_id),
           )
         False -> model
       }
@@ -417,7 +461,10 @@ pub fn service_advisor_nudges_read(model: Model) -> Model {
     // A request that cannot be sent is dropped rather than left standing:
     // the next attachment reaches an idle primary and raises it again.
     _, worktree_view.Requested, _ ->
-      Model(..model, nudges_refresh: worktree_view.Settled)
+      Model(
+        ..model,
+        shared: Shared(..model.shared, nudges_refresh: worktree_view.Settled),
+      )
 
     _, worktree_view.Settled, _ -> model
   }
@@ -454,9 +501,12 @@ pub fn retire_delivered_nudges(
         Some(transcript_lines.Nudges(..)) ->
           Model(
             ..model,
-            nudges: None,
-            nudges_refresh: worktree_view.Requested,
-            nudges_awaiting: None,
+            shared: Shared(
+              ..model.shared,
+              nudges: None,
+              nudges_refresh: worktree_view.Requested,
+              nudges_awaiting: None,
+            ),
           )
           |> tui_model.invalidate_transcript
           |> tui_model.invalidate_frame
@@ -479,17 +529,17 @@ pub fn retire_delivered_nudges(
 /// the least urgent thing on screen.
 @internal
 pub fn service_block_summaries(model: Model) -> Model {
-  case model.channel, model.peer {
+  case model.shared.channel, model.shared.peer {
     Some(channel), Attached ->
       case session_channel.ready_for_read(channel) {
         False -> model
         True ->
-          case block_summary.next_read(model.summaries) {
+          case block_summary.next_read(model.shared.summaries) {
             None -> model
             Some(#(keys, summaries)) ->
               outbound.send_frame(
-                Model(..model, summaries:),
-                protocol.block_summaries(model.next_id, keys),
+                Model(..model, shared: Shared(..model.shared, summaries:)),
+                protocol.block_summaries(model.shared.next_id, keys),
               )
           }
       }
@@ -506,15 +556,18 @@ pub fn receive_advisor_nudges(
   board: advisor_pending.Board,
 ) -> Model {
   let current = tui_model.queue_owner(model)
-  case model.nudges_awaiting {
+  case model.shared.nudges_awaiting {
     Some(owner) ->
       case owner == current {
         True ->
           Model(
             ..model,
-            nudges: Some(board),
-            nudges_awaiting: None,
-            nudges_request: None,
+            shared: Shared(
+              ..model.shared,
+              nudges: Some(board),
+              nudges_awaiting: None,
+              nudges_request: None,
+            ),
           )
           |> tui_model.invalidate_transcript
           |> tui_model.invalidate_frame
@@ -558,7 +611,7 @@ pub type GoalAction {
 @internal
 pub fn goal_action(before: Model, after: Model) -> GoalAction {
   let started =
-    before.session != after.session
+    before.shared.session != after.shared.session
     || {
       !layout.strand_running(before, advisor_pending.primary_strand)
       && layout.strand_running(after, advisor_pending.primary_strand)
@@ -576,7 +629,11 @@ pub fn goal_action(before: Model, after: Model) -> GoalAction {
 pub fn sync_goal(before: Model, after: Model) -> Model {
   case goal_action(before, after) {
     HoldGoal -> after
-    ReadGoal -> Model(..after, goal_refresh: worktree_view.Requested)
+    ReadGoal ->
+      Model(
+        ..after,
+        shared: Shared(..after.shared, goal_refresh: worktree_view.Requested),
+      )
   }
 }
 
@@ -588,7 +645,10 @@ pub fn sync_goal(before: Model, after: Model) -> Model {
 /// scheduled: `report_goal` finds the line where `receive_goal` leaves it.
 @internal
 pub fn confirming(model: Model, line: String) -> Model {
-  Model(..model, goal_report: ConfirmGoal(line:))
+  Model(
+    ..model,
+    shared: Shared(..model.shared, goal_report: ConfirmGoal(line:)),
+  )
 }
 
 /// Slash commands and inspector keys enter one gate. The pending-submission
@@ -600,20 +660,27 @@ pub fn submit_goal_action(model: Model, action: command.Command) -> Model {
   case outbound.mutation_refusal(model, action) {
     Some(reason) -> tui_model.append_error(model, reason)
     None -> {
-      let prepared = case model.pending_submission {
+      let prepared = case model.shared.pending_submission {
         Some(_) -> model
-        None -> Model(..model, pending_submission: Some(OverlaySubmission))
+        None ->
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              pending_submission: Some(OverlaySubmission),
+            ),
+          )
       }
       case action {
         command.GoalPause ->
           outbound.send_frame(
             confirming(prepared, "the session goal is held"),
-            protocol.goal_pause(prepared.next_id),
+            protocol.goal_pause(prepared.shared.next_id),
           )
         command.GoalResume ->
           outbound.send_frame(
             confirming(prepared, "the session goal continues"),
-            protocol.goal_resume(prepared.next_id),
+            protocol.goal_resume(prepared.shared.next_id),
           )
         _ -> prepared
       }
@@ -625,32 +692,42 @@ pub fn submit_goal_action(model: Model, action: command.Command) -> Model {
 /// mode shows an illustrative observation instead.
 @internal
 pub fn request_goal_status(model: Model) -> Model {
-  let panel = case model.overlay {
+  let panel = case model.view.overlay {
     GoalInspector(state) -> state
-    _ -> focused_goal_panel.new(model.goal, goal_observation(model))
+    _ -> focused_goal_panel.new(model.shared.goal, goal_observation(model))
   }
-  case model.peer {
+  case model.shared.peer {
     Preview ->
       Model(
-        ..model,
-        overlay: GoalInspector(panel),
-        goal_report: HoldGoalReport,
-        repaint_phase: !model.repaint_phase,
-        notice: "goal inspector · illustrative observation",
+        shared: Shared(
+          ..model.shared,
+          goal_report: HoldGoalReport,
+          notice: "goal inspector · illustrative observation",
+        ),
+        view: View(
+          ..model.view,
+          overlay: GoalInspector(panel),
+          repaint_phase: !model.view.repaint_phase,
+        ),
       )
     Attached | Disconnected | Replaying ->
       Model(
-        ..model,
-        overlay: GoalInspector(panel),
-        goal_refresh: worktree_view.Requested,
-        goal_report: ReportGoal,
-        repaint_phase: !model.repaint_phase,
+        shared: Shared(
+          ..model.shared,
+          goal_refresh: worktree_view.Requested,
+          goal_report: ReportGoal,
+        ),
+        view: View(
+          ..model.view,
+          overlay: GoalInspector(panel),
+          repaint_phase: !model.view.repaint_phase,
+        ),
       )
   }
 }
 
 fn goal_observation(model: Model) -> String {
-  case model.goal, model.peer {
+  case model.shared.goal, model.shared.peer {
     Some(_), Attached -> "Last server observation · refreshing"
     Some(_), Disconnected -> "Last server observation · disconnected"
     Some(_), Preview | Some(_), Replaying -> "Illustrative observation"
@@ -663,13 +740,19 @@ fn goal_observation(model: Model) -> String {
 /// The read waits for a free command lane like every other observation.
 @internal
 pub fn service_goal_read(model: Model) -> Model {
-  case model.channel, model.goal_refresh, model.peer {
+  case model.shared.channel, model.shared.goal_refresh, model.shared.peer {
     Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
-            Model(..model, goal_refresh: worktree_view.Settled),
-            protocol.goal_get(model.next_id),
+            Model(
+              ..model,
+              shared: Shared(
+                ..model.shared,
+                goal_refresh: worktree_view.Settled,
+              ),
+            ),
+            protocol.goal_get(model.shared.next_id),
           )
         False -> model
       }
@@ -686,23 +769,25 @@ pub fn service_goal_read(model: Model) -> Model {
 fn unreachable_goal(model: Model) -> Model {
   let settled =
     Model(
-      ..model,
-      goal_refresh: worktree_view.Settled,
-      overlay: case model.overlay {
+      shared: Shared(..model.shared, goal_refresh: worktree_view.Settled),
+      view: View(..model.view, overlay: case model.view.overlay {
         GoalInspector(state) ->
           GoalInspector(focused_goal_panel.unavailable(
             state,
             "no conversation is attached",
           ))
         other -> other
-      },
+      }),
     )
-  case model.goal_report {
+  case model.shared.goal_report {
     HoldGoalReport -> settled
 
     ReportGoal | ConfirmGoal(..) ->
       tui_model.append_error(
-        Model(..settled, goal_report: HoldGoalReport),
+        Model(
+          ..settled,
+          shared: Shared(..settled.shared, goal_report: HoldGoalReport),
+        ),
         "the session goal cannot be read: no conversation is attached",
       )
   }
@@ -712,21 +797,23 @@ fn unreachable_goal(model: Model) -> Model {
 /// an attachment, so the owner is what tells a fresh board from a stale one.
 @internal
 pub fn receive_goal(model: Model, board: goal_view.Board) -> Model {
-  case model.goal_awaiting == Some(tui_model.queue_owner(model)) {
+  case model.shared.goal_awaiting == Some(tui_model.queue_owner(model)) {
     False -> model
 
     True ->
       report_goal(
         Model(
-          ..model,
-          goal: Some(board),
-          overlay: case model.overlay {
+          shared: Shared(
+            ..model.shared,
+            goal: Some(board),
+            goal_awaiting: None,
+            goal_request: None,
+          ),
+          view: View(..model.view, overlay: case model.view.overlay {
             GoalInspector(state) ->
               GoalInspector(focused_goal_panel.observe(state, board))
             other -> other
-          },
-          goal_awaiting: None,
-          goal_request: None,
+          }),
         ),
         board,
       )
@@ -738,21 +825,27 @@ pub fn receive_goal(model: Model, board: goal_view.Board) -> Model {
 // composer holds one. An automatic refresh updates the row and prints
 // nothing.
 fn report_goal(model: Model, board: goal_view.Board) -> Model {
-  case model.goal_report {
+  case model.shared.goal_report {
     HoldGoalReport -> tui_model.invalidate_frame(model)
 
     // A committed mutation prints its one line here and nothing else. The
     // fresh board is already in the model, so the row beside the composer
     // carries the new state and a second block would repeat it.
     ConfirmGoal(line:) ->
-      Model(..model, goal_report: HoldGoalReport)
+      Model(
+        ..model,
+        shared: Shared(..model.shared, goal_report: HoldGoalReport),
+      )
       |> tui_model.append_system(line)
       |> tui_model.invalidate_frame
 
     ReportGoal ->
       goal_view.lines(board)
       |> list.fold(
-        Model(..model, goal_report: HoldGoalReport),
+        Model(
+          ..model,
+          shared: Shared(..model.shared, goal_report: HoldGoalReport),
+        ),
         tui_model.append_system,
       )
       |> tui_model.invalidate_frame
@@ -769,22 +862,24 @@ pub fn refuse_goal(
   code: String,
   message: String,
 ) -> Model {
-  use <- bool.guard(model.goal_request != Some(request_id), model)
+  use <- bool.guard(model.shared.goal_request != Some(request_id), model)
   let cleared =
     Model(
-      ..model,
-      goal: None,
-      overlay: case model.overlay {
+      shared: Shared(
+        ..model.shared,
+        goal: None,
+        goal_request: None,
+        goal_awaiting: None,
+        goal_report: HoldGoalReport,
+      ),
+      view: View(..model.view, overlay: case model.view.overlay {
         GoalInspector(state) ->
           GoalInspector(focused_goal_panel.unavailable(
             state,
             goal_view.refusal(code, message),
           ))
         other -> other
-      },
-      goal_request: None,
-      goal_awaiting: None,
-      goal_report: HoldGoalReport,
+      }),
     )
 
   // An automatic refresh the operator never asked for stays silent: an
@@ -792,7 +887,7 @@ pub fn refuse_goal(
   // would be a scrolling complaint about a feature this session lacks. A
   // mutation and an explicit `/goal` are always the operator's own.
   use <- bool.guard(
-    model.goal_report == HoldGoalReport && command == "goal_get",
+    model.shared.goal_report == HoldGoalReport && command == "goal_get",
     cleared,
   )
 
@@ -804,14 +899,14 @@ pub fn refuse_goal(
 /// listed.
 @internal
 pub fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
-  case model.jobs_awaiting {
+  case model.shared.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
       case owner == tui_model.queue_owner(model) {
         True -> {
-          let old = case model.jobs {
+          let old = case model.shared.jobs {
             Some(previous) if previous.strand == board.strand ->
               previous.jobs
-              |> list.drop(model.summary_job_selected)
+              |> list.drop(model.view.summary_job_selected)
               |> list.first
             Some(_) | None -> Error(Nil)
           }
@@ -824,13 +919,15 @@ pub fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
             Error(Nil) -> 0
           }
           Model(
-            ..model,
-            jobs: Some(board),
-            summary_job_selected: selected,
-            jobs_observed_ms: Some(model.stamp.now_ms),
-            jobs_awaiting: None,
-            jobs_request: None,
-            jobs_notice: "Live jobs observed separately from operation completion",
+            shared: Shared(
+              ..model.shared,
+              jobs: Some(board),
+              jobs_observed_ms: Some(model.shared.stamp.now_ms),
+              jobs_awaiting: None,
+              jobs_request: None,
+              jobs_notice: "Live jobs observed separately from operation completion",
+            ),
+            view: View(..model.view, summary_job_selected: selected),
           )
           |> tui_model.invalidate_transcript
         }
@@ -850,12 +947,12 @@ pub fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
 pub fn sync_context(before: Model, after: Model) -> Model {
   let selected =
     context_view.select(
-      after.context,
+      after.shared.context,
       tui_model.queue_owner(after),
-      after.active_strand,
+      after.shared.active_strand,
     )
   let changed = context_refresh_due(before, after)
-  let context = case after.peer {
+  let context = case after.shared.peer {
     Attached ->
       case changed {
         True -> context_view.invalidate(selected)
@@ -870,7 +967,7 @@ pub fn sync_context(before: Model, after: Model) -> Model {
         notice: "Context observation requires a live connection",
       )
   }
-  Model(..after, context:)
+  Model(..after, shared: Shared(..after.shared, context:))
 }
 
 /// Whether this model transition is worth another automatic context read.
@@ -887,11 +984,11 @@ pub fn sync_context(before: Model, after: Model) -> Model {
 /// ```
 @internal
 pub fn context_refresh_due(before: Model, after: Model) -> Bool {
-  case before.captured, after.captured {
+  case before.shared.captured, after.shared.captured {
     Some(#(_, old)), Some(#(_, current)) ->
-      before.active_strand != after.active_strand
-      || dict.get(old.configurations, before.active_strand)
-      != dict.get(current.configurations, after.active_strand)
+      before.shared.active_strand != after.shared.active_strand
+      || dict.get(old.configurations, before.shared.active_strand)
+      != dict.get(current.configurations, after.shared.active_strand)
       || operation_settled(before, after)
     None, Some(_) -> True
     _, None -> False
@@ -912,14 +1009,19 @@ fn operation_settled(before: Model, after: Model) -> Bool {
 pub fn service_context_read(model: Model) -> Model {
   // A worktree acknowledgement releases the command lane, not its worker.
   // Wait for that observation before borrowing the shared slot for context.
-  use <- bool.guard(model.worktree.awaiting != None, model)
-  case model.channel, model.context.request, model.peer, model.captured {
+  use <- bool.guard(model.shared.worktree.awaiting != None, model)
+  case
+    model.shared.channel,
+    model.shared.context.request,
+    model.shared.peer,
+    model.shared.captured
+  {
     Some(channel), context_view.Requested, Attached, Some(_) ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
             model,
-            protocol.context(model.next_id, model.active_strand),
+            protocol.context(model.shared.next_id, model.shared.active_strand),
           )
         False -> model
       }
@@ -939,10 +1041,13 @@ pub fn open_context(model: Model, surface: context_view.Surface) -> Model {
   service_context_read(
     Model(
       ..model,
-      context: context_view.State(
-        ..context_view.invalidate(model.context),
-        surface:,
-        scroll: 0,
+      shared: Shared(
+        ..model.shared,
+        context: context_view.State(
+          ..context_view.invalidate(model.shared.context),
+          surface:,
+          scroll: 0,
+        ),
       ),
     ),
   )
@@ -966,7 +1071,7 @@ fn nudge_boundary(before: Model, after: Model) -> NudgeAction {
     !layout.strand_listed(before, advisor_pending.primary_strand)
     && layout.strand_listed(after, advisor_pending.primary_strand)
 
-  let session_changed = before.session != after.session
+  let session_changed = before.shared.session != after.shared.session
   case primary_settled || newly_listed || session_changed {
     True -> ReadNudges
     False -> HoldNudges

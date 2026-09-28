@@ -519,7 +519,7 @@ approval text, names, file paths. The agent can write all of it.
   newline, so a key containing one of those corrupts every path under it
   **(source)** ([`path.gleam`][src-path], the `separator_*` constants).
 - **Classes from a closed type.** Map a domain variant to a class string
-  with a `case`, as `speaker_class` in `web_view/component` does.
+  with a `case`, as `speaker_class` in `web_view/view/lane` does.
 
 ### Escaping, and `unsafe_raw_html` is never used
 
@@ -760,7 +760,7 @@ survives under a key that stays the same. To memoize many small things,
 put the memos at the leaves with no memo around them, and give their keyed
 ancestors stable keys. Every render then visits each memo and carries each
 hit forward, for the cost of one dependency comparison each. The lane does
-this per transcript line (`component.lane_rows`), and `lane_memo_test`
+this per transcript line (`lane.rows` in `web_view/view/lane`), and `lane_memo_test`
 counts the lines a render draws through Lustre's own diff.
 
 **Fragments and `none`.** `element.fragment` and `keyed.fragment` group

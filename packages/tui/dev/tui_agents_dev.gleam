@@ -84,19 +84,19 @@ pub fn run(palette: String) -> Nil {
 pub fn run_context(palette: String) -> Nil {
   ffi_terminal.silence_logger()
   let initial = fixture_model(palette)
-  run_model(
-    tui_model.Model(
-      ..initial,
-      overlay: tui_model.NoOverlay,
+  run_model(tui_model.Model(
+    shared: tui_model.Shared(
+      ..initial.shared,
       peer: tui_model.Replaying,
       context: context_view.State(
-        ..initial.context,
+        ..initial.shared.context,
         surface: context_view.Overview,
         request: context_view.Idle,
         notice: "Illustrative captured observation · no provider calls",
       ),
     ),
-  )
+    view: tui_model.View(..initial.view, overlay: tui_model.NoOverlay),
+  ))
 }
 
 fn fixture_model(palette: String) -> tui_model.Model {
@@ -150,14 +150,14 @@ fn fixture_model(palette: String) -> tui_model.Model {
   let items =
     fixture
     |> list.index_map(fn(agent, index) {
-      agent_entries(agent, index * 10 + 1, base.usage)
+      agent_entries(agent, index * 10 + 1, base.shared.usage)
     })
     |> list.flatten
   let metadata =
     json.Object([
       #("cells", json.Array(cells)),
       #("message_count", json.Int(list.length(items))),
-      #("usage", core_codec.encode_usage(base.usage)),
+      #("usage", core_codec.encode_usage(base.shared.usage)),
       #(
         "host_run_settings",
         json.Object([
@@ -186,13 +186,15 @@ fn fixture_model(palette: String) -> tui_model.Model {
     as "the native fixture must pass the shipped capture decoder"
   let initial =
     tui_model.Model(
-      ..base,
-      session: "native-fixture",
-      strands: [],
-      transcript: [],
-      models: [],
-      current_model: "fixture-model",
-      palette: selected_palette(palette),
+      shared: tui_model.Shared(
+        ..base.shared,
+        session: "native-fixture",
+        strands: [],
+        transcript: [],
+        models: [],
+        current_model: "fixture-model",
+      ),
+      view: tui_model.View(..base.view, palette: selected_palette(palette)),
     )
     |> inbound.apply_channel_update(session_channel.Captured(
       captured,
@@ -201,27 +203,32 @@ fn fixture_model(palette: String) -> tui_model.Model {
     ))
   let initial =
     tui_model.Model(
-      ..initial,
-      overlay: tui_model.AgentInspector(agents.inspect("main")),
-      notice: "illustrative fixture · no provider calls",
-      diff_view: tui_model.DiffVisible,
-      worktree: fixture_worktree(),
-      note_board: Some(fixture_notes()),
-      note_selected: Some("plan"),
-      goal: Some(fixture_goal()),
-      context: fixture_context(),
-      jobs: Some(fixture_jobs()),
-      jobs_observed_ms: Some(initial.last_frame_ms),
-      jobs_notice: "Illustrative live-job observation · no provider calls",
-      queue_editor: fixture_queue_editor(),
-      nudges: Some(advisor_pending.Board(
-        "main",
-        1,
-        [
-          "Keep exact approval ownership intact.\nThe selected preview is not permission to broaden the request.",
-        ],
-        1,
-      )),
+      shared: tui_model.Shared(
+        ..initial.shared,
+        notice: "illustrative fixture · no provider calls",
+        worktree: fixture_worktree(),
+        note_board: Some(fixture_notes()),
+        goal: Some(fixture_goal()),
+        context: fixture_context(),
+        jobs: Some(fixture_jobs()),
+        jobs_observed_ms: Some(initial.view.last_frame_ms),
+        jobs_notice: "Illustrative live-job observation · no provider calls",
+        nudges: Some(advisor_pending.Board(
+          "main",
+          1,
+          [
+            "Keep exact approval ownership intact.\nThe selected preview is not permission to broaden the request.",
+          ],
+          1,
+        )),
+      ),
+      view: tui_model.View(
+        ..initial.view,
+        overlay: tui_model.AgentInspector(agents.inspect("main")),
+        diff_view: tui_model.DiffVisible,
+        note_selected: Some("plan"),
+        queue_editor: fixture_queue_editor(),
+      ),
     )
   initial
 }
@@ -233,7 +240,7 @@ fn run_model(initial: tui_model.Model) -> Nil {
       initial,
       render.view,
       fixture_update,
-      fn(model) { model.quit },
+      fn(model) { model.shared.quit },
       tick.terminal_poll_timeout,
     )
   Nil
@@ -412,7 +419,7 @@ fn fixture_update(
   model: tui_model.Model,
 ) -> tui_model.Model {
   let changed = tui.update(event, model)
-  let target = case changed.overlay, changed.notes_open {
+  let target = case changed.view.overlay, changed.view.notes_open {
     tui_model.AgentInspector(agents.Inspector(
       detail: agents.Notes,
       selected:,
@@ -420,7 +427,7 @@ fn fixture_update(
     )),
       _
     -> Some(selected)
-    _, True -> Some(changed.active_strand)
+    _, True -> Some(changed.shared.active_strand)
     _, False -> None
   }
   case target {
@@ -444,7 +451,7 @@ fn fixture_update(
             ),
           ])
       }
-      case changed.note_board == Some(board) {
+      case changed.shared.note_board == Some(board) {
         True -> changed
         False ->
           changed

@@ -159,10 +159,10 @@ fn exercise(server, directory, paths: endpoint.Paths) {
     as "the native terminal begins selection of the real assembling session"
   let selecting =
     tui_v2_test.await(pending.data, fn(sample) {
-      attachment.busy(sample.model.candidate)
+      attachment.busy(sample.model.view.candidate)
     })
-  assert selecting.model.channel == None
-  assert selecting.model.captured == None
+  assert selecting.model.shared.channel == None
+  assert selecting.model.shared.captured == None
   let assert Ok(protocol.SessionReply(still_opening)) =
     daemon.request(
       first.control,
@@ -184,7 +184,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   // or an ambiguous prompt. No completed conversation may appear after loss.
   let failed =
     tui_v2_test.await(pending.data, fn(sample) {
-      !attachment.busy(sample.model.candidate)
+      !attachment.busy(sample.model.view.candidate)
     })
 
   // Accept only the worker's closed set of control-loss outcomes. This fixture
@@ -195,19 +195,19 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       "open session: unknown outcome for sessions.open; request was not retried",
       "open session: daemon authentication did not complete",
     ],
-    failed.model.notice,
+    failed.model.shared.notice,
   )
     as "native departure ends selection in an exact control-loss failure class"
   io.println_error(
-    "pending selection after native departure: " <> failed.model.notice,
+    "pending selection after native departure: " <> failed.model.shared.notice,
   )
-  assert failed.model.session == selecting.model.session
-  assert failed.model.channel == selecting.model.channel
-  assert failed.model.captured == selecting.model.captured
-  assert failed.model.records == selecting.model.records
-  assert failed.model.channel == None
-  assert failed.model.captured == None
-  assert failed.model.records == []
+  assert failed.model.shared.session == selecting.model.shared.session
+  assert failed.model.shared.channel == selecting.model.shared.channel
+  assert failed.model.shared.captured == selecting.model.shared.captured
+  assert failed.model.shared.records == selecting.model.shared.records
+  assert failed.model.shared.channel == None
+  assert failed.model.shared.captured == None
+  assert failed.model.shared.records == []
   stop_driver(pending)
   assert durable(paths) == #(reserved, selected)
   assert reserved.state == catalogue.Reserved
@@ -288,14 +288,14 @@ fn exercise(server, directory, paths: endpoint.Paths) {
     as "the unchanged owner credential attaches through replacement discovery"
   let captured =
     tui_v2_test.await(recovered.data, fn(sample) {
-      case sample.model.channel {
+      case sample.model.shared.channel {
         Some(channel) -> session_channel.mutation_available(channel)
         None -> False
       }
     })
-  let assert Some(#(cut, _)) = captured.model.captured
+  let assert Some(#(cut, _)) = captured.model.shared.captured
     as "the fresh native terminal validates a complete credited capture"
-  assert captured.model.session == reserved.id
+  assert captured.model.shared.session == reserved.id
   assert cut.attachment.expected.session == reserved.id
   assert cut.attachment.expected.epoch
     == daemon.hello(second.control).epoch.value

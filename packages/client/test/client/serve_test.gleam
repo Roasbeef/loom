@@ -527,7 +527,7 @@ fn subscribed_cut(
       captured,
       view,
     )
-  assert list.any(terminal.transcript, fn(line) { line.text == notice })
+  assert list.any(terminal.shared.transcript, fn(line) { line.text == notice })
     as "the refusal is an operator startup line rather than daemon-log-only text"
   let _closed = ffi_ws.tcp_close(socket)
   Nil

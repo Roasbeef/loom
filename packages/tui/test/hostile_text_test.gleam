@@ -87,11 +87,13 @@ pub fn hostile_tool_calls_render_inert_test() {
   assert_inert(collapsed)
   assert_no_residue(collapsed)
 
-  let detailed =
+  let detailed = {
+    let base = quiet_model(connection.new_inbox())
     tui_model.Model(
-      ..quiet_model(connection.new_inbox()),
-      details_expanded: True,
+      ..base,
+      shared: tui_model.Shared(..base.shared, details_expanded: True),
     )
+  }
   let expanded = last_rows(detailed, 96, 30, calls())
   assert_shows(expanded, ["argument-sentinel", "result-sentinel"])
   assert_inert(expanded)
@@ -128,19 +130,29 @@ pub fn hostile_agent_names_render_inert_test() {
       #("sub:one", hostile_tail("child-sentinel"), "idle"),
     ])
   let rail_inbox = connection.new_inbox()
-  let railed =
-    tui_model.Model(..quiet_model(rail_inbox), agent_rail_visible: True)
+  let railed = {
+    let base = quiet_model(rail_inbox)
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(..base.view, agent_rail_visible: True),
+    )
+  }
   let rail = last_rows(railed, 120, 24, [deliver(names)])
   assert_shows(rail, ["active-sentinel", "child-sentinel", "phase-sentinel"])
   assert_inert(rail)
   assert_no_residue(rail)
 
   let overlay_inbox = connection.new_inbox()
-  let opened =
+  let opened = {
+    let base = quiet_model(overlay_inbox)
     tui_model.Model(
-      ..quiet_model(overlay_inbox),
-      overlay: tui_model.AgentInspector(agents.inspect("main")),
+      ..base,
+      view: tui_model.View(
+        ..base.view,
+        overlay: tui_model.AgentInspector(agents.inspect("main")),
+      ),
     )
+  }
   let inspector = last_rows(opened, 120, 30, [deliver(names)])
   assert_shows(inspector, [
     "active-sentinel",
@@ -166,12 +178,16 @@ pub fn hostile_agent_names_render_inert_test() {
 pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
   let review = hostile_review()
   let panel = approval_panel.new(review)
-  let model =
+  let model = {
+    let base = quiet_model(connection.new_inbox())
     tui_model.Model(
-      ..quiet_model(connection.new_inbox()),
-      approvals: [review],
-      overlay: tui_model.ApprovalInspector(panel),
+      shared: tui_model.Shared(..base.shared, approvals: [review]),
+      view: tui_model.View(
+        ..base.view,
+        overlay: tui_model.ApprovalInspector(panel),
+      ),
     )
+  }
   let rows = last_rows(model, 110, 30, [])
 
   // Readable mode keeps the action, exact grant path and every control
@@ -189,7 +205,13 @@ pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
     approval_panel.update(keys.Ctrl("g"), panel)
   let raw_rows =
     last_rows(
-      tui_model.Model(..model, overlay: tui_model.ApprovalInspector(raw)),
+      tui_model.Model(
+        ..model,
+        view: tui_model.View(
+          ..model.view,
+          overlay: tui_model.ApprovalInspector(raw),
+        ),
+      ),
       110,
       30,
       [],
@@ -320,7 +342,7 @@ fn last_rows(
     virtual_backend.script(
       backend.TerminalSize(width:, height:),
       steps,
-      buffered.sender(model.inbox),
+      buffered.sender(model.shared.inbox),
     )
   let assert Ok(run) = tui.run_script(model, script)
     as "the scripted backend cannot refuse to start"
@@ -332,11 +354,17 @@ fn last_rows(
 // The demo scaffolding removed, so a frame shows only what this module put
 // there and a stray control character can only have come from the payload.
 fn quiet_model(inbox: Subject(connection_event.Message)) -> tui_model.Model {
-  tui_model.Model(
-    ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
-    transcript: [],
-    strands: [],
-    agent_summary: agents.summary([]),
-    notice: "ready",
-  )
+  {
+    let base =
+      tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
+    tui_model.Model(
+      shared: tui_model.Shared(
+        ..base.shared,
+        transcript: [],
+        strands: [],
+        notice: "ready",
+      ),
+      view: tui_model.View(..base.view, agent_summary: agents.summary([])),
+    )
+  }
 }

@@ -58,9 +58,12 @@ pub fn run(path: String) {
   let base =
     tui_model.Model(
       ..base,
-      records: records,
-      transcript: [],
-      record_cache_valid: False,
+      shared: tui_model.Shared(
+        ..base.shared,
+        records: records,
+        transcript: [],
+        record_cache_valid: False,
+      ),
     )
   let start = now(Microsecond)
   let model = tui.update(backend.Resize(160, 48), base)
@@ -88,7 +91,7 @@ pub fn run(path: String) {
     "history records="
     <> int.to_string(list.length(records))
     <> " rows="
-    <> int.to_string(model.rendered_row_count)
+    <> int.to_string(model.view.rendered_row_count)
     <> " initial_ms="
     <> milliseconds(layout)
     <> " key_median_ms="

@@ -222,8 +222,11 @@ pub fn a_drained_answer_marks_the_open_picker_test() {
   let model =
     tui_model.Model(
       ..model,
-      overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
-      activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
+      view: tui_model.View(
+        ..model.view,
+        overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
+        activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
+      ),
     )
     |> runtime.hold(job.ActivityArrived(
       key,
@@ -233,14 +236,14 @@ pub fn a_drained_answer_marks_the_open_picker_test() {
     ))
     |> runtime.hold(job.ActivityArrived(key, weft.AllDelivered))
   let answered = session_control.drain_activity(model)
-  let assert tui_model.DaemonSelector(selector) = answered.overlay
+  let assert tui_model.DaemonSelector(selector) = answered.view.overlay
     as "the picker stays open"
   let assert Ok(busy) =
     list.find(page().sessions, fn(row) { row.session_id == "busy" })
     as "the fixture has a busy row"
   assert session_selector.presence(selector, busy) == session_selector.Working
   let settled = session_control.drain_activity(answered)
-  assert settled.activity_poll == tui_model.ActivityResting(-2000)
+  assert settled.view.activity_poll == tui_model.ActivityResting(-2000)
 }
 
 // An answer that outlived its picker changes nothing, and with no daemon the
@@ -254,7 +257,10 @@ pub fn a_closed_picker_ignores_a_late_answer_test() {
   let model =
     tui_model.Model(
       ..model,
-      activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
+      view: tui_model.View(
+        ..model.view,
+        activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
+      ),
     )
     |> runtime.hold(job.ActivityArrived(
       key,
@@ -263,14 +269,17 @@ pub fn a_closed_picker_ignores_a_late_answer_test() {
       ),
     ))
   let after = session_control.drain_activity(model)
-  assert after.overlay == tui_model.NoOverlay
+  assert after.view.overlay == tui_model.NoOverlay
   let idle =
     tui_model.Model(
       ..model,
-      overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
-      activity_poll: tui_model.ActivityDue,
+      view: tui_model.View(
+        ..model.view,
+        overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
+        activity_poll: tui_model.ActivityDue,
+      ),
     )
-  assert session_control.service_activity(idle).activity_poll
+  assert session_control.service_activity(idle).view.activity_poll
     == tui_model.ActivityDue
 }
 

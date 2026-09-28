@@ -350,12 +350,14 @@ pub fn history_sparse_strand_keeps_endpoint_across_unrelated_pages_test() {
 }
 
 fn top_identity(model: tui_model.Model) {
-  let prefix = model.rendered_row_count - list.length(model.rendered_anchors)
+  let prefix =
+    model.view.rendered_row_count - list.length(model.view.rendered_anchors)
   let height = layout.hit_area(model, geometry.Position(5, 5)).size.height
-  model.rendered_anchors
+  model.view.rendered_anchors
   |> list.index_map(fn(row, index) { #(row, prefix + index) })
   |> list.filter(fn(pair) {
-    pair.1 >= model.scroll_offset && pair.1 < model.scroll_offset + height
+    pair.1 >= model.view.scroll_offset
+    && pair.1 < model.view.scroll_offset + height
   })
   |> list.reverse
   |> list.find_map(fn(pair) {
@@ -404,7 +406,10 @@ pub fn history_pages_and_live_cuts_preserve_the_visible_message_in_the_tui_test(
   let pending =
     tui_model.Model(
       ..reading,
-      scrollback: history_view.sent(reading.scrollback, 131),
+      shared: tui_model.Shared(
+        ..reading.shared,
+        scrollback: history_view.sent(reading.shared.scrollback, 131),
+      ),
     )
   let page =
     window(
@@ -418,7 +423,7 @@ pub fn history_pages_and_live_cuts_preserve_the_visible_message_in_the_tui_test(
       session_channel.HistoryPage(page, 131, 30),
     )
     |> fn(model) { tui.update(backend.Tick, model) }
-  assert list.length(expanded.records) == 200
+  assert list.length(expanded.shared.records) == 200
   assert top_identity(expanded) == anchor
   let latest =
     snapshot.Captured(..cut, next_seq: 251, window: window(list.take(all, 100)))
@@ -429,11 +434,11 @@ pub fn history_pages_and_live_cuts_preserve_the_visible_message_in_the_tui_test(
     )
     |> fn(model) { tui.update(backend.Tick, model) }
   assert top_identity(arrived) == anchor
-  assert arrived.captured == Some(#(latest, view(250)))
+  assert arrived.shared.captured == Some(#(latest, view(250)))
   let resumed = tui.update(backend.KeyPress("end"), arrived)
-  assert resumed.scroll_offset == 0
-  assert resumed.scrollback.mode == history_view.Live
-  let assert Ok(newest) = list.first(resumed.records)
+  assert resumed.view.scroll_offset == 0
+  assert resumed.shared.scrollback.mode == history_view.Live
+  let assert Ok(newest) = list.first(resumed.shared.records)
     as "returning to live uses the latest cut"
   assert newest.entry.seq == 250
 }
@@ -546,7 +551,7 @@ fn frozen_history() {
     ))
     |> tui.update(backend.Resize(272, 84), _)
     |> tui.update(backend.MouseScroll(5, 5, True), _)
-  assert !list.is_empty(reading.rendered_anchors)
+  assert !list.is_empty(reading.view.rendered_anchors)
     as "the workload must have frozen durable anchors"
   #(cut, current, reading)
 }
@@ -568,16 +573,17 @@ pub fn metadata_refresh_reuses_frozen_history_anchors_test() {
       session_channel.Refreshed,
     ))
     |> tui.update(backend.Tick, _)
-  assert refreshed.view.rendered_rows == reading.view.rendered_rows
-  assert refreshed.scroll_offset == reading.scroll_offset
+  assert refreshed.view.caches.rendered_rows
+    == reading.view.caches.rendered_rows
+  assert refreshed.view.scroll_offset == reading.view.scroll_offset
   assert ffi_term.same_term(
-    reading.view.record_rows,
-    refreshed.view.record_rows,
+    reading.view.caches.record_rows,
+    refreshed.view.caches.record_rows,
   )
     as "the durable row cache stays valid across metadata-only refreshes"
   assert ffi_term.same_term(
-    reading.rendered_anchors,
-    refreshed.rendered_anchors,
+    reading.view.rendered_anchors,
+    refreshed.view.rendered_anchors,
   )
     as "unchanged durable rows must retain their existing source anchors"
 }
@@ -594,13 +600,16 @@ pub fn streamed_output_reuses_frozen_history_anchors_test() {
       "Output arriving below the reader.",
     ))
     |> tui.update(backend.Tick, _)
-  assert streamed.streams != reading.streams
+  assert streamed.shared.streams != reading.shared.streams
     as "live output must still be consumed while reading history"
-  assert streamed.render_revision > reading.render_revision
+  assert streamed.shared.render_revision > reading.shared.render_revision
     as "the test must reach a transcript refresh"
-  assert streamed.view.rendered_rows == reading.view.rendered_rows
-  assert streamed.scroll_offset == reading.scroll_offset
-  assert ffi_term.same_term(reading.rendered_anchors, streamed.rendered_anchors)
+  assert streamed.view.caches.rendered_rows == reading.view.caches.rendered_rows
+  assert streamed.view.scroll_offset == reading.view.scroll_offset
+  assert ffi_term.same_term(
+    reading.view.rendered_anchors,
+    streamed.view.rendered_anchors,
+  )
     as "live fragments cannot rebuild the unchanged durable anchor projection"
 }
 
@@ -622,15 +631,15 @@ pub fn cached_anchors_match_fresh_anchors_after_layout_changes_test() {
         let changed = tui.update(event, model)
         case event {
           backend.Resize(..) | backend.KeyPress("ctrl+g") -> {
-            assert changed.rendered_anchors != model.rendered_anchors
+            assert changed.view.rendered_anchors != model.view.rendered_anchors
               as "reflow and expansion must change durable anchors in this fixture"
           }
           backend.KeyPress("enter") -> {
-            assert changed.help_open
-            assert changed.rendered_anchors == []
+            assert changed.view.help_open
+            assert changed.view.rendered_anchors == []
           }
           backend.KeyPress("esc") -> {
-            assert !changed.help_open
+            assert !changed.view.help_open
           }
           _ -> Nil
         }
@@ -640,14 +649,23 @@ pub fn cached_anchors_match_fresh_anchors_after_layout_changes_test() {
         // reflow, a detail toggle, or a surface with no durable provenance.
         let fresh =
           tui_model.Model(
-            ..changed,
-            record_cache_valid: False,
-            rendered_revision: -1,
-            rendered_anchors: [],
+            shared: tui_model.Shared(
+              ..changed.shared,
+              record_cache_valid: False,
+            ),
+            view: tui_model.View(
+              ..changed.view,
+              rendered_revision: -1,
+              rendered_anchors: [],
+            ),
           )
-          |> tui.update(backend.Resize(changed.width, changed.height), _)
-        assert changed.view.rendered_rows == fresh.view.rendered_rows
-        assert changed.rendered_anchors == fresh.rendered_anchors
+          |> tui.update(
+            backend.Resize(changed.view.width, changed.view.height),
+            _,
+          )
+        assert changed.view.caches.rendered_rows
+          == fresh.view.caches.rendered_rows
+        assert changed.view.rendered_anchors == fresh.view.rendered_anchors
         changed
       },
     )
@@ -668,10 +686,10 @@ pub fn short_frozen_history_keeps_return_to_live_available_at_zero_offset_test()
     ))
     |> tui.update(backend.Resize(170, 104), _)
   let reading = tui.update(backend.MouseScroll(5, 5, True), initial)
-  assert reading.scroll_offset == 0
+  assert reading.view.scroll_offset == 0
     as "the loaded compact history is shorter than the video viewport"
-  assert reading.scrollback.mode == history_view.Reading
-  assert reading.reading_lines != None
+  assert reading.shared.scrollback.mode == history_view.Reading
+  assert reading.view.reading_lines != None
     as "zero offset cannot silently unfreeze the live preview"
   let later = captured_window(list.take(entries(11), 5), 7, 12)
   let waiting =
@@ -680,12 +698,12 @@ pub fn short_frozen_history_keeps_return_to_live_available_at_zero_offset_test()
       session_channel.Captured(later, view(11), session_channel.Refreshed),
     )
     |> tui.update(backend.Tick, _)
-  assert list.map(waiting.records, fn(record) { record.entry.seq })
+  assert list.map(waiting.shared.records, fn(record) { record.entry.seq })
     == [10, 9, 8, 7, 6]
   let resumed = tui.update(backend.KeyPress("end"), waiting)
-  assert resumed.scrollback.mode == history_view.Live
-  assert resumed.reading_lines == None
-  assert list.any(resumed.records, fn(record) { record.entry.seq == 11 })
+  assert resumed.shared.scrollback.mode == history_view.Live
+  assert resumed.view.reading_lines == None
+  assert list.any(resumed.shared.records, fn(record) { record.entry.seq == 11 })
 }
 
 pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
@@ -713,12 +731,16 @@ pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
     |> tui.update(backend.MouseScroll(5, 5, True), _)
   let finished =
     list.fold(list.repeat(Nil, 11), initial, fn(model, _) {
-      let assert Some(#(after, before)) = history_view.range(model.scrollback)
+      let assert Some(#(after, before)) =
+        history_view.range(model.shared.scrollback)
         as "one wheel gesture keeps demand alive across unrelated sequence pages"
       let pending =
         tui_model.Model(
           ..model,
-          scrollback: history_view.sent(model.scrollback, before),
+          shared: tui_model.Shared(
+            ..model.shared,
+            scrollback: history_view.sent(model.shared.scrollback, before),
+          ),
         )
       let page =
         window(
@@ -732,9 +754,9 @@ pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
       )
       |> tui.update(backend.Tick, _)
     })
-  assert list.map(finished.records, fn(record) { record.entry.seq })
+  assert list.map(finished.shared.records, fn(record) { record.entry.seq })
     == [1200, 1]
-  assert finished.scrollback.request == history_view.Quiet
+  assert finished.shared.scrollback.request == history_view.Quiet
 }
 
 // The strand-switch fixture below needs two real ancestry chains sharing one
@@ -806,7 +828,8 @@ fn two_strand_view(main_leaf: Int, sub_leaf: Int) {
 
 /// Drives one bounded older page for whatever the model currently demands.
 fn deliver_page(model: tui_model.Model, all) {
-  let assert Some(#(after, before)) = history_view.range(model.scrollback)
+  let assert Some(#(after, before)) =
+    history_view.range(model.shared.scrollback)
     as "a strand missing its parent keeps one bounded demand alive"
   let page =
     window(
@@ -816,7 +839,10 @@ fn deliver_page(model: tui_model.Model, all) {
     )
   tui_model.Model(
     ..model,
-    scrollback: history_view.sent(model.scrollback, before),
+    shared: tui_model.Shared(
+      ..model.shared,
+      scrollback: history_view.sent(model.shared.scrollback, before),
+    ),
   )
   |> inbound.apply_channel_update(session_channel.HistoryPage(
     page,
@@ -869,8 +895,8 @@ pub fn switching_strands_and_back_preserves_loaded_history_test() {
     list.fold(list.repeat(Nil, 3), two_strand_model(all, current), fn(model, _) {
       deliver_page(model, all)
     })
-  let full = list.length(loaded.records)
-  assert history_view.branch(loaded.scrollback, current).unloaded == None
+  let full = list.length(loaded.shared.records)
+  assert history_view.branch(loaded.shared.scrollback, current).unloaded == None
   assert full == 20
     as "three pages recover the whole main chain the cut window omitted"
 
@@ -881,17 +907,18 @@ pub fn switching_strands_and_back_preserves_loaded_history_test() {
     loaded
     |> run_command("/strand sub:reviewer")
     |> run_command("/strand main")
-  assert returned.active_strand == "main"
-  assert returned.scrollback.mode == loaded.scrollback.mode
-  assert returned.scroll_offset == loaded.scroll_offset
-  assert list.length(returned.records) == full
-  assert history_view.branch(returned.scrollback, current).unloaded == None
-  assert list.first(returned.transcript)
+  assert returned.shared.active_strand == "main"
+  assert returned.shared.scrollback.mode == loaded.shared.scrollback.mode
+  assert returned.view.scroll_offset == loaded.view.scroll_offset
+  assert list.length(returned.shared.records) == full
+  assert history_view.branch(returned.shared.scrollback, current).unloaded
+    == None
+  assert list.first(returned.shared.transcript)
     == Ok(transcript_line.Line(
       transcript_line.System,
       "Beginning of this conversation.",
     ))
-  assert returned.scrollback.request == history_view.Quiet
+  assert returned.shared.scrollback.request == history_view.Quiet
 }
 
 pub fn returning_to_a_sub_strand_preserves_its_loaded_history_test() {
@@ -904,16 +931,17 @@ pub fn returning_to_a_sub_strand_preserves_its_loaded_history_test() {
     list.fold(list.repeat(Nil, 3), visited, fn(model, _) {
       scroll_to_top(model) |> deliver_page(all)
     })
-  let full = list.length(loaded.records)
-  assert history_view.branch(loaded.scrollback, current).unloaded == None
+  let full = list.length(loaded.shared.records)
+  assert history_view.branch(loaded.shared.scrollback, current).unloaded == None
   assert full > 300 as "the sub chain holds every sequence that is not main's"
   let returned =
     loaded
     |> run_command("/strand main")
     |> run_command("/strand sub:reviewer")
-  assert returned.active_strand == "sub:reviewer"
-  assert list.length(returned.records) == full
-  assert history_view.branch(returned.scrollback, current).unloaded == None
+  assert returned.shared.active_strand == "sub:reviewer"
+  assert list.length(returned.shared.records) == full
+  assert history_view.branch(returned.shared.scrollback, current).unloaded
+    == None
 }
 
 pub fn a_retired_strand_releases_its_parked_scrollback_test() {
@@ -923,8 +951,8 @@ pub fn a_retired_strand_releases_its_parked_scrollback_test() {
     two_strand_model(all, current)
     |> run_command("/strand sub:reviewer")
     |> run_command("/strand main")
-  assert dict.has_key(visited.strand_workspaces, #(
-    visited.session,
+  assert dict.has_key(visited.view.strand_workspaces, #(
+    visited.shared.session,
     "sub:reviewer",
   ))
 
@@ -945,12 +973,22 @@ pub fn a_retired_strand_releases_its_parked_scrollback_test() {
       ),
     )
     |> tui.update(backend.Tick, _)
-  let assert Ok(parked) =
-    dict.get(retired.strand_workspaces, #(retired.session, "sub:reviewer"))
+  let assert Ok(_) =
+    dict.get(retired.view.strand_workspaces, #(
+      retired.shared.session,
+      "sub:reviewer",
+    ))
     as "draft ownership survives retirement"
-  assert parked.scrollback == history_view.empty()
+  assert dict.get(retired.shared.parked_scrollback, #(
+      retired.shared.session,
+      "sub:reviewer",
+    ))
+    == Ok(history_view.empty())
     as "retired history is released independently of the draft"
-  assert !dict.has_key(retired.strand_workspaces, #(retired.session, "main"))
+  assert !dict.has_key(retired.view.strand_workspaces, #(
+    retired.shared.session,
+    "main",
+  ))
     as "the active strand's window is held directly, not parked beside it"
 }
 
@@ -969,17 +1007,18 @@ pub fn history_prefetch_starts_before_the_last_ten_rows_test() {
     |> tui.update(backend.Resize(120, 24), _)
   let requested =
     list.fold(list.repeat(Nil, 200), initial, fn(model, _) {
-      case model.scrollback.request {
+      case model.shared.scrollback.request {
         history_view.Quiet -> tui.update(backend.MouseScroll(5, 5, True), model)
         history_view.Wanted | history_view.Pending(_) -> model
       }
     })
-  assert requested.scrollback.request == history_view.Wanted
+  assert requested.shared.scrollback.request == history_view.Wanted
 
   // The entire terminal is taller than the transcript viewport. Subtracting
   // it gives a conservative lower bound on the rows still available to read.
-  assert requested.rendered_row_count - requested.scroll_offset - 24 > 10
+  assert requested.view.rendered_row_count - requested.view.scroll_offset - 24
+    > 10
     as "the read starts while more than the old ten-row margin remains"
-  assert history_view.range(requested.scrollback) == Some(#(200, 301))
+  assert history_view.range(requested.shared.scrollback) == Some(#(200, 301))
     as "earlier admission preserves the hundred-position page bound"
 }

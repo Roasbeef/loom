@@ -54,7 +54,7 @@ fn model(role, peers) {
       dict.new(),
       dict.new(),
       dict.new(),
-      base.usage,
+      base.shared.usage,
       snapshot_view.RunSettings("one_at_a_time", "parallel", None),
       peers,
       [],
@@ -64,11 +64,14 @@ fn model(role, peers) {
     )
   tui_model.Model(
     ..base,
-    captured: Some(#(cut, view)),
-    transcript: [],
-    records: [
-      record(owner(), "my prompt"),
-    ],
+    shared: tui_model.Shared(
+      ..base.shared,
+      captured: Some(#(cut, view)),
+      transcript: [],
+      records: [
+        record(owner(), "my prompt"),
+      ],
+    ),
   )
 }
 
@@ -106,12 +109,17 @@ pub fn owner_attribution_solo_owner_hides_only_current_local_identity_test() {
     ],
     fn(author) {
       let historical =
-        tui_model.Model(..solo, records: [record(author, "historical prompt")])
+        tui_model.Model(
+          ..solo,
+          shared: tui_model.Shared(..solo.shared, records: [
+            record(author, "historical prompt"),
+          ]),
+        )
       assert string.contains(
         paint(historical),
         origin.display_label(author) <> ":",
       )
-      assert historical.records == [record(author, "historical prompt")]
+      assert historical.shared.records == [record(author, "historical prompt")]
     },
   )
 }
@@ -140,7 +148,12 @@ pub fn owner_attribution_multiplayer_and_uncertain_presence_keep_labels_test() {
   )
   let solo = model(snapshot.Owner, [local_peer()])
   assert string.contains(
-    paint(tui_model.Model(..solo, captured: None)),
+    paint(
+      tui_model.Model(
+        ..solo,
+        shared: tui_model.Shared(..solo.shared, captured: None),
+      ),
+    ),
     "Owner:",
   )
 }
@@ -161,17 +174,23 @@ pub fn owner_attribution_presence_change_rebuilds_cached_rows_test() {
   let joined =
     tui_model.Model(
       ..cached,
-      captured: multiplayer.captured,
-      record_cache_valid: False,
-      render_revision: cached.render_revision + 1,
+      shared: tui_model.Shared(
+        ..cached.shared,
+        captured: multiplayer.shared.captured,
+        record_cache_valid: False,
+        render_revision: cached.shared.render_revision + 1,
+      ),
     )
   assert string.contains(paint(joined), "Owner:")
   let left =
     tui_model.Model(
       ..joined,
-      captured: solo.captured,
-      record_cache_valid: False,
-      render_revision: joined.render_revision + 1,
+      shared: tui_model.Shared(
+        ..joined.shared,
+        captured: solo.shared.captured,
+        record_cache_valid: False,
+        render_revision: joined.shared.render_revision + 1,
+      ),
     )
   assert !string.contains(paint(left), "Owner:")
 }

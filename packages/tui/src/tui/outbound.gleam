@@ -25,7 +25,7 @@ import session_view/worktree_view
 import tui/model.{
   type Model, Attached, ComposerSubmission, ConfirmGoal, Disconnected,
   HoldGoalReport, Model, OverlaySubmission, Preview, PromptNext, Replaying,
-  ReportGoal,
+  ReportGoal, Shared, View,
 } as tui_model
 import tui/queue_editor
 import tui/terminal_lane
@@ -33,7 +33,13 @@ import tui/terminal_lane
 /// Sets the notice shown while a submission waits for the channel.
 @internal
 pub fn waiting_notice(model: Model) -> Model {
-  Model(..model, notice: "Waiting to send · draft locked · Esc cancels")
+  Model(
+    ..model,
+    shared: Shared(
+      ..model.shared,
+      notice: "Waiting to send · draft locked · Esc cancels",
+    ),
+  )
 }
 
 /// The reason a command may not be sent now, if there is one. The draft is
@@ -46,11 +52,16 @@ pub fn mutation_refusal(
   let mutates = mutating_submission(model, command)
   use <- bool.guard(
     mutates
-      && model.captured != None
-      && !tui_model.is_known_strand(model.strands, model.active_strand),
-    Some("recipient unavailable; draft retained for " <> model.active_strand),
+      && model.shared.captured != None
+      && !tui_model.is_known_strand(
+      model.shared.strands,
+      model.shared.active_strand,
+    ),
+    Some(
+      "recipient unavailable; draft retained for " <> model.shared.active_strand,
+    ),
   )
-  case mutates, model.peer, model.channel {
+  case mutates, model.shared.peer, model.shared.channel {
     False, _, _ -> None
     True, Disconnected, _ -> Some("no conversation is attached; draft retained")
     True, Attached, Some(channel) ->
@@ -87,7 +98,7 @@ pub fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Steer(_)
     | command.Queue(_) -> True
     command.Approve(_) | command.Deny(_) | command.AddDirectory(..) -> True
-    command.Empty -> model.attachments != []
+    command.Empty -> model.shared.attachments != []
     command.Help
     | command.Models
     | command.Strands
@@ -120,10 +131,11 @@ pub fn mutating_submission(model: Model, command: command.Command) -> Bool {
 // case. Consecutive duplicates collapse because resend remains available
 // without allowing accidental double-enter presses to crowd out useful history.
 fn remember_submission(model: Model, text: String) -> Model {
-  case string.trim(text), model.history {
+  case string.trim(text), model.view.history {
     "", _ -> model
     value, [latest, ..] if value == latest -> model
-    value, history -> Model(..model, history: [value, ..history])
+    value, history ->
+      Model(..model, view: View(..model.view, history: [value, ..history]))
   }
 }
 
@@ -131,9 +143,10 @@ fn remember_submission(model: Model, text: String) -> Model {
 /// so the echo goes away with the submission rather than outliving it.
 @internal
 pub fn discard_own_turn(model: Model) -> Model {
-  case model.awaiting_outcome {
+  case model.shared.awaiting_outcome {
     Some(_) ->
-      Model(..model, awaiting_outcome: None) |> tui_model.invalidate_transcript
+      Model(..model, shared: Shared(..model.shared, awaiting_outcome: None))
+      |> tui_model.invalidate_transcript
     None -> model
   }
 }
@@ -168,9 +181,10 @@ pub fn send_via(
   arm: fn(terminal_lane.Lane, Int) ->
     #(terminal_lane.Lane, session_channel.Disposition),
 ) -> Model {
-  case model.channel {
+  case model.shared.channel {
     Some(channel) -> {
-      let #(channel, disposition) = arm(channel, model.stamp.transport_ms)
+      let #(channel, disposition) =
+        arm(channel, model.shared.stamp.transport_ms)
       apply_submission(tui_model.hold_channel(model, channel), disposition)
     }
 
@@ -192,7 +206,7 @@ pub fn apply_submission(
 ) -> Model {
   case disposition {
     session_channel.Waiting(_) -> {
-      let pending = case model.channel {
+      let pending = case model.shared.channel {
         Some(channel) -> session_channel.has_unsent(channel)
         None -> False
       }
@@ -201,11 +215,14 @@ pub fn apply_submission(
           waiting_notice(
             Model(
               ..model,
-              pending_submission: Some(option.unwrap(
-                model.pending_submission,
-                OverlaySubmission,
-              )),
-              submitting: None,
+              shared: Shared(
+                ..model.shared,
+                pending_submission: Some(option.unwrap(
+                  model.shared.pending_submission,
+                  OverlaySubmission,
+                )),
+                submitting: None,
+              ),
             ),
           )
         False -> model
@@ -216,15 +233,32 @@ pub fn apply_submission(
         "queued_input" | "edit_queued_input" ->
           Model(
             ..model,
-            queue_editor: queue_editor.State(
-              ..model.queue_editor,
-              request_id: Some(request_id),
+            view: View(
+              ..model.view,
+              queue_editor: queue_editor.State(
+                ..model.view.queue_editor,
+                request_id: Some(request_id),
+              ),
             ),
           )
         "context" ->
-          Model(..model, context: context_view.sent(model.context, request_id))
-        "live_jobs" -> Model(..model, jobs_request: Some(request_id))
-        "advisor_pending" -> Model(..model, nudges_request: Some(request_id))
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              context: context_view.sent(model.shared.context, request_id),
+            ),
+          )
+        "live_jobs" ->
+          Model(
+            ..model,
+            shared: Shared(..model.shared, jobs_request: Some(request_id)),
+          )
+        "advisor_pending" ->
+          Model(
+            ..model,
+            shared: Shared(..model.shared, nudges_request: Some(request_id)),
+          )
 
         // Every goal command is answered with a board, so a mutation owns
         // the same slot its read does: the server renders the fresh panel
@@ -237,58 +271,84 @@ pub fn apply_submission(
         | "goal_resume" ->
           Model(
             ..model,
-            goal_request: Some(request_id),
-            goal_awaiting: Some(tui_model.queue_owner(model)),
+            shared: Shared(
+              ..model.shared,
+              goal_request: Some(request_id),
+              goal_awaiting: Some(tui_model.queue_owner(model)),
+            ),
           )
         "worktree_diff" ->
           Model(
             ..model,
-            worktree: worktree_view.sent(model.worktree, request_id),
+            shared: Shared(
+              ..model.shared,
+              worktree: worktree_view.sent(model.shared.worktree, request_id),
+            ),
           )
         _ -> model
       }
-      let sent = case model.pending_submission {
+      let sent = case model.shared.pending_submission {
         Some(ComposerSubmission) -> clear_composer(model)
         Some(OverlaySubmission) | None -> model
       }
-      let submitting = case command, model.pending_submission {
-        "prompt", Some(ComposerSubmission) -> Some(model.active_strand)
-        _, _ -> sent.submitting
+      let submitting = case command, model.shared.pending_submission {
+        "prompt", Some(ComposerSubmission) -> Some(model.shared.active_strand)
+        _, _ -> sent.shared.submitting
       }
       Model(
         ..sent,
-        submitting: submitting,
-        pending_submission: None,
-        next_id: sent.next_id + 1,
-        notice: case command {
-          // Automatic observation must not erase a user's command outcome.
-          "context" -> sent.notice
-          "goal_get" ->
-            case sent.goal_report {
-              HoldGoalReport -> sent.notice
-              ReportGoal | ConfirmGoal(..) -> command <> " sent"
-            }
-          _ -> command <> " sent"
-        },
+        shared: Shared(
+          ..sent.shared,
+          submitting: submitting,
+          pending_submission: None,
+          next_id: sent.shared.next_id + 1,
+          notice: case command {
+            // Automatic observation must not erase a user's command outcome.
+            "context" -> sent.shared.notice
+            "goal_get" ->
+              case sent.shared.goal_report {
+                HoldGoalReport -> sent.shared.notice
+                ReportGoal | ConfirmGoal(..) -> command <> " sent"
+              }
+            _ -> command <> " sent"
+          },
+        ),
       )
       |> tui_model.invalidate_frame
     }
     session_channel.DefinitelyNotSent(reason) -> {
-      let retained = case model.channel {
+      let retained = case model.shared.channel {
         Some(channel) -> session_channel.has_unsent(channel)
         None -> False
       }
       let model = case retained {
         True -> model
-        False -> Model(..model, pending_submission: None, submitting: None)
+        False ->
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              pending_submission: None,
+              submitting: None,
+            ),
+          )
       }
 
       // The frame never reached the wire, so no entry answers it.
       tui_model.append_error(
-        Model(
-          ..discard_own_turn(model),
-          queue_editor: queue_editor.refused(model.queue_editor, reason),
-        ),
+        {
+          let discarded = discard_own_turn(model)
+          Model(
+            ..discarded,
+            view: View(
+              ..discarded.view,
+              queue_editor: queue_editor.refused(
+                model.view.queue_editor,
+                reason,
+              ),
+            ),
+          )
+        },
         "Not sent: " <> reason <> "; draft retained",
       )
     }
@@ -299,17 +359,23 @@ pub fn apply_submission(
 @internal
 pub fn clear_composer(model: Model) -> Model {
   let cleared = clear_composer_text(model)
-  Model(..cleared, attachments: [], submission_mode: PromptNext)
+  Model(
+    shared: Shared(..cleared.shared, attachments: []),
+    view: View(..cleared.view, submission_mode: PromptNext),
+  )
 }
 
 /// Clears the composer text after remembering it in the input history.
 @internal
 pub fn clear_composer_text(model: Model) -> Model {
-  let remembered = remember_submission(model, text_area.value(model.input))
+  let remembered = remember_submission(model, text_area.value(model.view.input))
   Model(
     ..remembered,
-    input: text_area.state_new(),
-    history_index: 0,
-    history_draft: "",
+    view: View(
+      ..remembered.view,
+      input: text_area.state_new(),
+      history_index: 0,
+      history_draft: "",
+    ),
   )
 }

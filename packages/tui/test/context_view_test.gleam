@@ -148,7 +148,7 @@ fn body(board) {
 }
 
 pub fn ready_push_can_precede_its_pending_acknowledgement_test() {
-  let assert Some(channel) = pushed.attached().channel
+  let assert Some(channel) = pushed.attached().shared.channel
     as "fixture has a synchronized channel"
   let #(channel, sent) =
     session_channel.submit(channel, protocol.context(500, "main"), now: 0)
@@ -206,7 +206,10 @@ pub fn inspector_retains_the_draft_and_shows_unavailable_without_a_connection_te
   let original =
     tui_model.Model(
       ..base,
-      input: textarea.state_from_string("unfinished draft"),
+      view: tui_model.View(
+        ..base.view,
+        input: textarea.state_from_string("unfinished draft"),
+      ),
     )
   let opened =
     surfaces.open_context(original, context.Overview)
@@ -218,12 +221,12 @@ pub fn inspector_retains_the_draft_and_shows_unavailable_without_a_connection_te
   )
   let ignored = tui.update(backend.Paste("do not edit"), opened)
   let scrolled = tui.update(backend.KeyPress("pagedown"), ignored)
-  assert textarea.value(scrolled.input) == "unfinished draft"
-  assert scrolled.context.scroll == 0
+  assert textarea.value(scrolled.view.input) == "unfinished draft"
+  assert scrolled.shared.context.scroll == 0
     as "an unavailable one-line observation has no phantom scroll range"
   let resumed = tui.update(backend.KeyPress("esc"), scrolled)
-  assert resumed.context.surface == context.Hidden
-  assert textarea.value(resumed.input) == "unfinished draft"
+  assert resumed.shared.context.surface == context.Hidden
+  assert textarea.value(resumed.view.input) == "unfinished draft"
 }
 
 pub fn strand_change_waits_for_the_occupied_observation_slot_test() {
@@ -250,8 +253,8 @@ pub fn wheel_scrolls_the_visible_inspector_without_moving_transcript_test() {
     surfaces.open_context(base, context.All)
     |> fn(model) { tui.update(backend.Resize(100, 30), model) }
   let moved = tui.update(backend.MouseScroll(5, 5, False), opened)
-  assert moved.context.scroll == 0
-  assert moved.scroll_offset == opened.scroll_offset
+  assert moved.shared.context.scroll == 0
+  assert moved.view.scroll_offset == opened.view.scroll_offset
 }
 
 pub fn refused_refresh_invalidates_the_cached_percentage_test() {
@@ -263,7 +266,14 @@ pub fn refused_refresh_invalidates_the_cached_percentage_test() {
     )
   let observed =
     context.receive(waiting(8), "owner", context.Ready(board(8, "main")))
-  let refreshing = tui_model.Model(..base, context: context.sent(observed, 9))
+  let refreshing =
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        context: context.sent(observed, 9),
+      ),
+    )
   let refused =
     inbound.apply_channel_update(
       refreshing,
@@ -274,21 +284,27 @@ pub fn refused_refresh_invalidates_the_cached_percentage_test() {
         "capture failed",
       ),
     )
-  assert refused.context.board == None
-  assert refused.frame_revision > refreshing.frame_revision
+  assert refused.shared.context.board == None
+  assert refused.shared.frame_revision > refreshing.shared.frame_revision
 }
 
 pub fn automatic_context_read_preserves_the_session_refusal_notice_test() {
   let base = pushed.attached()
   let refused =
-    tui_model.Model(..base, notice: "open session: not_found: request refused")
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        notice: "open session: not_found: request refused",
+      ),
+    )
   let reading =
     inbound.apply_channel_update(
       refused,
       session_channel.Submission(session_channel.Sent("context", 500)),
     )
-  assert reading.context.request == context.Awaiting(500)
-  assert reading.notice == refused.notice
+  assert reading.shared.context.request == context.Awaiting(500)
+  assert reading.shared.notice == refused.shared.notice
 }
 
 // One captured cell in the shape a metadata fragment carries it.
@@ -373,12 +389,19 @@ fn observing(
     )
   let assert Ok(view) = snapshot_view.decode(captured)
     as "the fixture cut is coherent metadata"
-  tui_model.Model(
-    ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-    active_strand: "main",
-    strands: [protocol.Strand("main", Some("main"), phase)],
-    captured: Some(#(captured, view)),
-  )
+  {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        active_strand: "main",
+        strands: [protocol.Strand("main", Some("main"), phase)],
+        captured: Some(#(captured, view)),
+      ),
+    )
+  }
 }
 
 fn entry_leaf(seed: Int) -> json.JsonValue {
@@ -395,7 +418,10 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
   // always worth a read.
   let idle = observing(first, "first", None)
   assert surfaces.context_refresh_due(
-    tui_model.Model(..idle, captured: None),
+    tui_model.Model(
+      ..idle,
+      shared: tui_model.Shared(..idle.shared, captured: None),
+    ),
     idle,
   )
 
@@ -415,7 +441,10 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
   // a transition that changes none of the four starts nothing.
   assert surfaces.context_refresh_due(
     settled,
-    tui_model.Model(..settled, active_strand: "fork"),
+    tui_model.Model(
+      ..settled,
+      shared: tui_model.Shared(..settled.shared, active_strand: "fork"),
+    ),
   )
   assert surfaces.context_refresh_due(
     settled,
@@ -429,18 +458,27 @@ pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {
   let pending =
     tui_model.Model(
       ..base,
-      worktree: worktree_view.request(worktree_view.new(), "owner"),
-      context: waiting(8),
+      shared: tui_model.Shared(
+        ..base.shared,
+        worktree: worktree_view.request(worktree_view.new(), "owner"),
+        context: waiting(8),
+      ),
     )
 
   // Both reads borrow the same bounded server worker. An acknowledged context
   // read owns it until its final push, so the worktree request stays parked
   // rather than being refused `busy` on the wire.
   let held = tui.update(backend.Tick, pending)
-  assert held.worktree.awaiting == None
-  assert held.worktree.refresh == worktree_view.Requested
+  assert held.shared.worktree.awaiting == None
+  assert held.shared.worktree.refresh == worktree_view.Requested
 
   let released =
-    tui.update(backend.Tick, tui_model.Model(..pending, context: context.new()))
-  assert released.worktree.awaiting != None
+    tui.update(
+      backend.Tick,
+      tui_model.Model(
+        ..pending,
+        shared: tui_model.Shared(..pending.shared, context: context.new()),
+      ),
+    )
+  assert released.shared.worktree.awaiting != None
 }

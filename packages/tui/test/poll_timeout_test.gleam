@@ -45,18 +45,28 @@ fn lane(pushed_first: List(connection_event.Message)) {
 // A quiet attached model at transport reading `now`, holding `channel`. The
 // design preview's strands are running, so a quiet model lists none.
 fn attached(channel, now: Int) -> tui_model.Model {
-  tui_model.Model(
-    ..unattached(),
-    channel: Some(channel),
-    stamp: msg.Stamp(now_ms: 0, transport_ms: now, wall_ms: 0),
-  )
+  {
+    let base = unattached()
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        channel: Some(channel),
+        stamp: msg.Stamp(now_ms: 0, transport_ms: now, wall_ms: 0),
+      ),
+    )
+  }
 }
 
 fn unattached() -> tui_model.Model {
-  tui_model.Model(
-    ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
-    strands: [],
-  )
+  {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("test", None))
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, strands: []),
+    )
+  }
 }
 
 // With nothing moving, the loop sleeps exactly until the lane is due: a
@@ -102,7 +112,7 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   // cap the loop had before wakes, so its animation keeps its cadence.
   let paced =
     int.min(
-      pacing.paced_poll_timeout(pacing.FrameSettled, quiet.quiet_for_ms),
+      pacing.paced_poll_timeout(pacing.FrameSettled, quiet.view.quiet_for_ms),
       tick.self_wake_ceiling_ms,
     )
   assert paced == 250
@@ -110,21 +120,34 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   // A running strand: the activity glyph and the strip clocks advance on
   // ticks.
   let running =
-    tui_model.Model(..quiet, strands: [
-      protocol.Strand("side", None, Some("assistant")),
-    ])
+    tui_model.Model(
+      ..quiet,
+      shared: tui_model.Shared(..quiet.shared, strands: [
+        protocol.Strand("side", None, Some("assistant")),
+      ]),
+    )
   assert tick.wakes_itself(running)
   assert tick.terminal_poll_timeout(running) == paced
 
   // A deferred frame is painted by the tick after its burst.
-  let deferred = tui_model.Model(..quiet, frame_debt: pacing.FrameDeferred)
+  let deferred =
+    tui_model.Model(
+      ..quiet,
+      view: tui_model.View(..quiet.view, frame_debt: pacing.FrameDeferred),
+    )
   assert tick.wakes_itself(deferred)
   assert tick.terminal_poll_timeout(deferred) == 8
 
   // A drain that stopped at its batch may have left frames whose wakes were
   // spent on earlier ticks, so the next batch is taken without waiting.
   let backlogged =
-    tui_model.Model(..quiet, connection_backlog: tui_model.MailboxMayHoldMore)
+    tui_model.Model(
+      ..quiet,
+      shared: tui_model.Shared(
+        ..quiet.shared,
+        connection_backlog: tui_model.MailboxMayHoldMore,
+      ),
+    )
   assert tick.wakes_itself(backlogged)
   assert tick.terminal_poll_timeout(backlogged) == 0
 
@@ -133,15 +156,18 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   let running_job =
     tui_model.Model(
       ..allocated,
-      running: job_runner.start_task(
-        allocated.running,
-        key,
-        fn() {
-          process.sleep(200)
-          Ok([])
-        },
-        5000,
-        job.ActivityArrived,
+      view: tui_model.View(
+        ..allocated.view,
+        running: job_runner.start_task(
+          allocated.view.running,
+          key,
+          fn() {
+            process.sleep(200)
+            Ok([])
+          },
+          5000,
+          job.ActivityArrived,
+        ),
       ),
     )
   assert tick.wakes_itself(running_job)
@@ -150,7 +176,14 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   // Frames the buffer still holds, as after an Escape that cancelled first.
   let inbox = buffered.new(process.new_subject())
   process.send(buffered.sender(inbox), connection_event.Connected)
-  let held = tui_model.Model(..quiet, inbox: buffered.top_up(inbox, up_to: 64))
+  let held =
+    tui_model.Model(
+      ..quiet,
+      shared: tui_model.Shared(
+        ..quiet.shared,
+        inbox: buffered.top_up(inbox, up_to: 64),
+      ),
+    )
   assert tick.wakes_itself(held)
   assert tick.terminal_poll_timeout(held) == paced
 }
@@ -159,14 +192,14 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
 // left frames in the mailbox, and a short one read everything there was.
 pub fn a_drain_records_whether_it_stopped_at_its_batch_test() {
   let model = attached(lane([]), 0)
-  let sender = buffered.sender(model.inbox)
+  let sender = buffered.sender(model.shared.inbox)
   list.each(list.repeat(Nil, 70), fn(_) {
     process.send(sender, connection_event.NetworkFault("x"))
   })
   let full = drain(model)
-  assert full.connection_backlog == tui_model.MailboxMayHoldMore
+  assert full.shared.connection_backlog == tui_model.MailboxMayHoldMore
   let rest = drain(full)
-  assert rest.connection_backlog == tui_model.MailboxDrained
+  assert rest.shared.connection_backlog == tui_model.MailboxDrained
 }
 
 // One step's receive and drain of the connection, as a tick runs them.
@@ -174,7 +207,13 @@ fn drain(model: tui_model.Model) -> tui_model.Model {
   let topped =
     tui_model.Model(
       ..model,
-      inbox: buffered.top_up(model.inbox, up_to: tui_model.connection_batch),
+      shared: tui_model.Shared(
+        ..model.shared,
+        inbox: buffered.top_up(
+          model.shared.inbox,
+          up_to: tui_model.connection_batch,
+        ),
+      ),
     )
   inbound.drain_connection(topped, tui_model.connection_batch)
 }
@@ -186,12 +225,21 @@ pub fn an_adopting_tick_owes_one_more_batch_test() {
   let before = attached(lane([]), 0)
   assert tick.adopted_backlog(before, before) == tui_model.MailboxDrained
   let adopted =
-    tui_model.Model(..before, inbox: buffered.new(connection.new_inbox()))
+    tui_model.Model(
+      ..before,
+      shared: tui_model.Shared(
+        ..before.shared,
+        inbox: buffered.new(connection.new_inbox()),
+      ),
+    )
   assert tick.adopted_backlog(before, adopted) == tui_model.MailboxMayHoldMore
   assert tick.terminal_poll_timeout(
       tui_model.Model(
         ..adopted,
-        connection_backlog: tick.adopted_backlog(before, adopted),
+        shared: tui_model.Shared(
+          ..adopted.shared,
+          connection_backlog: tick.adopted_backlog(before, adopted),
+        ),
       ),
     )
     == 0

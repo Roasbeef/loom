@@ -28,7 +28,10 @@ import tui_test/pushed
 // Details open, which is where a running command's output window is
 // drawn. `tool_tail_lines` is the whole of what this toggle changes here.
 fn expanded(model: tui_model.Model) -> tui_model.Model {
-  tui_model.Model(..model, details_expanded: True)
+  tui_model.Model(
+    ..model,
+    shared: tui_model.Shared(..model.shared, details_expanded: True),
+  )
 }
 
 fn output(
@@ -74,7 +77,7 @@ pub fn a_later_frame_replaces_the_tail_of_its_stream_test() {
       "compiling core\ncompiling tools\n",
       31,
     ))
-  assert model.tool_tails
+  assert model.shared.tool_tails
     == [
       transcript_line.ToolTail(
         strand: "main",
@@ -121,7 +124,7 @@ pub fn streams_and_steps_are_kept_apart_test() {
       "ab",
       2,
     ))
-  assert list.map(model.tool_tails, fn(tail) {
+  assert list.map(model.shared.tool_tails, fn(tail) {
       #(tail.step, tail.stream, tail.text)
     })
     == [
@@ -215,7 +218,7 @@ pub fn another_strands_tail_is_not_drawn_here_test() {
         ),
       ]),
     )
-  assert list.length(model.tool_tails) == 1
+  assert list.length(model.shared.tool_tails) == 1
   assert transcript_lines.tool_tail_lines(
       tui_model.presentation(expanded(model)),
     )
@@ -250,7 +253,9 @@ pub fn two_calls_in_one_step_keep_separate_tails_test() {
     |> inbound.accept_connection_message(call(0, "a"))
     |> inbound.accept_connection_message(call(1, "b"))
     |> inbound.accept_connection_message(call(0, "aa"))
-  assert list.map(model.tool_tails, fn(tail) { #(tail.source_index, tail.text) })
+  assert list.map(model.shared.tool_tails, fn(tail) {
+      #(tail.source_index, tail.text)
+    })
     == [#(0, "aa"), #(1, "b")]
 }
 
@@ -270,8 +275,8 @@ pub fn missed_captures_cannot_grow_tail_retention_without_bound_test() {
         ),
       )
     })
-  assert list.length(model.tool_tails) == transcript_lines.max_tool_tails
-  let assert [oldest, ..rest] = model.tool_tails
+  assert list.length(model.shared.tool_tails) == transcript_lines.max_tool_tails
+  let assert [oldest, ..rest] = model.shared.tool_tails
   assert oldest.operation == "op-1"
     as "the oldest observation is evicted when the global bound is full"
   assert list.last(rest) |> result.map(fn(tail) { tail.operation })

@@ -54,18 +54,24 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     // Driven outside the terminal loop, so the subscribe the channel queued
     // is performed here rather than by the next step.
     let model =
-      tui_model.Model(
-        ..tui.new_model(inbox, target.workspace),
-        peer: tui_model.Attached,
-        session: session,
-      )
+      {
+        let base = tui.new_model(inbox, target.workspace)
+        tui_model.Model(
+          ..base,
+          shared: tui_model.Shared(
+            ..base.shared,
+            peer: tui_model.Attached,
+            session: session,
+          ),
+        )
+      }
       |> tui_model.hold_channel(channel)
       |> runtime.flush
     let #(initial, ending) = hold_snapshot_end(model, 32)
     let initial =
       inbound.accept_connection_message(runtime.stamp(initial), ending)
       |> runtime.flush
-    let assert Some(channel) = initial.channel
+    let assert Some(channel) = initial.shared.channel
       as "initial cut keeps its channel"
     assert session_channel.mutation_available(channel)
 
@@ -83,29 +89,36 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     let #(channel, outputs) = session_channel.take_outputs(channel)
     list.each(outputs, terminal_lane.perform)
     let #(waiting, ending) =
-      hold_snapshot_end(tui_model.Model(..initial, channel: Some(channel)), 32)
+      hold_snapshot_end(
+        tui_model.Model(
+          ..initial,
+          shared: tui_model.Shared(..initial.shared, channel: Some(channel)),
+        ),
+        32,
+      )
     let waiting = tui.update(backend.Paste("queued reply prompt"), waiting)
     let refused = tui.update(backend.KeyPress("enter"), waiting)
-    assert textarea.value(refused.input) == "queued reply prompt"
+    assert textarea.value(refused.view.input) == "queued reply prompt"
       as "a genuinely incomplete cut retains the draft"
-    assert refused.next_id == waiting.next_id
-    assert refused.pending_submission == Some(tui_model.ComposerSubmission)
+    assert refused.shared.next_id == waiting.shared.next_id
+    assert refused.shared.pending_submission
+      == Some(tui_model.ComposerSubmission)
     assert prompts(issued) == []
     let refused = tui.update(backend.KeyPress("enter"), refused)
     let refused =
       tui.update(backend.Paste("must not replace queued intent"), refused)
-    assert textarea.value(refused.input) == "queued reply prompt"
+    assert textarea.value(refused.view.input) == "queued reply prompt"
 
     // The actual final response completes the waiting intent during idle
     // progress. There is no second Enter and no mutation before this reply.
     process.send(inbox, ending)
     let admitted = tui.update(backend.Tick, refused)
-    assert textarea.value(admitted.input) == ""
-    assert admitted.next_id == refused.next_id + 1
+    assert textarea.value(admitted.view.input) == ""
+    assert admitted.shared.next_id == refused.shared.next_id + 1
     let assert [_] = prompts(issued)
       as "exactly one prompt was issued after the completed cut"
     let assert #(_, Ok(connection_event.Incoming(reply))) =
-      buffered.receive(admitted.inbox, 2000)
+      buffered.receive(admitted.shared.inbox, 2000)
       as "the real server acknowledges the transmitted mutation"
     let assert Ok(json.Object(fields)) = json.parse(reply) as "response is JSON"
     assert list.key_find(fields, "event") == Ok(json.String("mutation_outcome"))
@@ -133,9 +146,10 @@ fn collect_prompts(issued, collected) {
 
 fn hold_snapshot_end(model: tui_model.Model, remaining: Int) {
   assert remaining > 0 as "fixture transfers have a finite frame budget"
-  let assert #(inbox, Ok(incoming)) = buffered.receive(model.inbox, 1000)
+  let assert #(inbox, Ok(incoming)) = buffered.receive(model.shared.inbox, 1000)
     as "each credited response arrives within its deadline"
-  let model = tui_model.Model(..model, inbox:)
+  let model =
+    tui_model.Model(..model, shared: tui_model.Shared(..model.shared, inbox:))
   let ended = case incoming {
     connection_event.Incoming(text) -> {
       let assert Ok(json.Object(fields)) = json.parse(text)
@@ -188,7 +202,8 @@ pub fn await_within(driver, predicate, within) {
         let sample = tui_driver.play(driver, [])
         case predicate(sample) {
           True -> poll.Settled(sample)
-          False -> poll.Pending(sample.model.notice <> "\n" <> sample.frame)
+          False ->
+            poll.Pending(sample.model.shared.notice <> "\n" <> sample.frame)
         }
       },
     )
@@ -232,19 +247,19 @@ pub fn assert_history_answers(driver, answers: List(String)) -> Nil {
     int.range(1, 8, latest, fn(_, _) {
       tui_driver.play(driver, [backend.KeyPress("pagedown")])
     })
-  assert restored.model.scroll_offset == 0
+  assert restored.model.view.scroll_offset == 0
     as "history inspection returns the terminal to the newest viewport"
 }
 
 fn synchronized(sample: tui_driver.Sample) {
-  case sample.model.peer, sample.model.captured {
+  case sample.model.shared.peer, sample.model.shared.captured {
     tui_model.Attached, Some(_) -> True
     _, _ -> False
   }
 }
 
 fn users(sample: tui_driver.Sample) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(message: message.UserMessage(content:, ..), ..) ->
         Ok(
@@ -262,7 +277,7 @@ fn users(sample: tui_driver.Sample) {
 }
 
 fn assistant_settled(sample: tui_driver.Sample) {
-  list.any(sample.model.records, fn(record) {
+  list.any(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
         list.any(content, fn(block) {
@@ -274,7 +289,7 @@ fn assistant_settled(sample: tui_driver.Sample) {
       _ -> False
     }
   })
-  && list.all(sample.model.strands, fn(strand) {
+  && list.all(sample.model.shared.strands, fn(strand) {
     strand.live_phase == option.None
   })
 }
@@ -288,9 +303,9 @@ pub fn tui_v2_two_terminals_validate_initial_cuts_and_share_a_real_turn_test() {
       as "second terminal has independent control and conversation lifetimes"
     let a = await(alice.data, synchronized)
     let b = await(bob.data, synchronized)
-    let assert Some(#(a_cut, _)) = a.model.captured
+    let assert Some(#(a_cut, _)) = a.model.shared.captured
       as "Alice adopted a validated cut"
-    let assert Some(#(b_cut, _)) = b.model.captured
+    let assert Some(#(b_cut, _)) = b.model.shared.captured
       as "Bob adopted a validated cut"
     assert a_cut.attachment.expected.epoch == epoch
     assert a_cut.attachment.expected == b_cut.attachment.expected
@@ -317,7 +332,7 @@ pub fn tui_v2_two_terminals_validate_initial_cuts_and_share_a_real_turn_test() {
       as "durable human attribution is rendered on the peer terminal"
     let a = await(alice.data, assistant_settled)
     let b = await(bob.data, assistant_settled)
-    assert a.model.records == b.model.records
+    assert a.model.shared.records == b.model.shared.records
       as "both terminals reconcile the committed assistant result after operation settlement"
     tui_driver.stop(bob.data)
     tui_driver.stop(alice.data)

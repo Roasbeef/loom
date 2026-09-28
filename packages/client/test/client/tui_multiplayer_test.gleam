@@ -54,14 +54,14 @@ fn invited(address, owner, epoch, session, principal, role, name) {
 }
 
 fn writable(sample: tui_driver.Sample) {
-  case sample.model.channel {
+  case sample.model.shared.channel {
     Some(channel) -> session_channel.mutation_available(channel)
     None -> False
   }
 }
 
 fn decision(sample: tui_driver.Sample, id) {
-  list.find(sample.model.approvals, fn(record) { record.id == id })
+  list.find(sample.model.shared.approvals, fn(record) { record.id == id })
 }
 
 fn resolved(sample: tui_driver.Sample, id) {
@@ -94,7 +94,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
     let _ = tui_v2_test.await(bob.data, writable)
     let observed =
       tui_v2_test.await(observer.data, fn(sample) {
-        case sample.model.captured {
+        case sample.model.shared.captured {
           Some(#(cut, view)) ->
             cut.attachment.role == snapshot.Observer
             && list.length(view.peers) == 3
@@ -107,7 +107,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
     // to operators and observer, independently of the transcript cursor.
     let _ = send(alice.data, "/effort high")
     let changed = fn(sample: tui_driver.Sample) {
-      case sample.model.captured {
+      case sample.model.shared.captured {
         Some(#(_, view)) ->
           case dict.get(view.configurations, "main") {
             Ok(config) ->
@@ -129,7 +129,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
         changed(sample) && string.contains(sample.frame, "changed by Alice")
       })
     assert string.contains(before.frame, "changed by Alice")
-    let assert Some(#(before_cut, before_view)) = before.model.captured
+    let assert Some(#(before_cut, before_view)) = before.model.shared.captured
       as "observer has the shared coherent configuration cut"
 
     let pending =
@@ -183,7 +183,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
 
       // Operators receive the pending question automatically. The read-only
       // observer opens the same exact record through an explicit lookup.
-      case resized.model.overlay {
+      case resized.model.view.overlay {
         tui_model.ApprovalInspector(_) -> Nil
         _ -> {
           let _ = send(driver, "/approvals ui-approval")
@@ -192,7 +192,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
       }
       let inspected =
         tui_v2_test.await(driver, fn(sample) {
-          case sample.model.overlay {
+          case sample.model.view.overlay {
             tui_model.ApprovalInspector(_) ->
               string.contains(sample.frame, "Permission required")
             _ -> False
@@ -206,13 +206,13 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
         "\"seq\":" <> int.to_string(a_question.seq),
       )
       let closed = tui_driver.play(driver, [backend.KeyPress("esc")])
-      assert closed.model.overlay == tui_model.NoOverlay
+      assert closed.model.view.overlay == tui_model.NoOverlay
       Nil
     })
     let _ = tui_v2_test.await(alice.data, writable)
     let _ = tui_v2_test.await(bob.data, writable)
     let blocked = send(observer.data, "/deny ui-approval")
-    assert textarea.value(blocked.model.input) == "/deny ui-approval"
+    assert textarea.value(blocked.model.view.input) == "/deny ui-approval"
     assert decision(blocked, pending.id) == Ok(a_question)
 
     // Both terminal inputs race under the existing managed test-run boundary.
@@ -270,7 +270,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
     // a terminal change recorded as a follow-up, not a test to loosen.
     let _ = loser
     assert string.contains(o.frame, origin.display_label(author))
-    let assert Some(#(after_cut, after_view)) = o.model.captured
+    let assert Some(#(after_cut, after_view)) = o.model.shared.captured
       as "decision lookup never substitutes its sparse metadata for the conversation view"
     assert after_cut.window == before_cut.window
     assert after_view.configurations == before_view.configurations
@@ -315,7 +315,7 @@ pub fn tui_session_dialog_commits_the_displayed_permissions_test() {
       as "the fixture raises only the pending request"
     let opened =
       tui_v2_test.await(terminal.data, fn(sample) {
-        case sample.model.overlay {
+        case sample.model.view.overlay {
           tui_model.ApprovalInspector(_) ->
             string.contains(sample.frame, "Allow for session")
           _ -> False
@@ -345,7 +345,7 @@ pub fn tui_session_dialog_commits_the_displayed_permissions_test() {
       as "the same gateway decision stores standing session authority"
     assert permissions.decode(saved.value)
       == Ok([policy.GrantNetwork(policy.NetworkFull)])
-    assert answered.model.overlay == tui_model.NoOverlay
+    assert answered.model.view.overlay == tui_model.NoOverlay
     tui_driver.stop(terminal.data)
     Nil
   })

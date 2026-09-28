@@ -49,6 +49,7 @@ import host/build_identity
 import host/claim as claim_token
 import host/endpoint
 import session_view/advisor_history
+import session_view/agent_roster
 import session_view/attempt
 import session_view/block_summary
 import session_view/cache_watch
@@ -86,7 +87,7 @@ import tui/layout
 import tui/model.{
   type Model, DiffAutomatic, Disconnected, HoldGoalReport, Model, Newer,
   NoClipboard, NoOverlay, Older, Preview, PromptNext, ReconnectIdle, Replaying,
-  TerminalClipboard,
+  Shared, TerminalClipboard,
 } as tui_model
 import tui/msg
 import tui/note_panel
@@ -475,169 +476,175 @@ pub fn new_model_with_clock(
   let stamp =
     runtime.read_stamp(monotonic_time_ms, host_bootstrap.monotonic_time_ms)
   Model(
-    quit: False,
-    width: 80,
-    height: 24,
-    palette: appearance.Dark,
-    input: text_area.state_new(),
-    strand_workspaces: dict.new(),
-    restored_workspace: None,
-    attachments: [],
-    history: [],
-    history_index: 0,
-    history_draft: "",
-    command_selected: 0,
-    submission_mode: PromptNext,
-    pending_submission: None,
-    interrupt: None,
-    submitting: None,
-    queued: [],
-    awaiting_outcome: None,
-    transcript: [
-      Line(System, "etui input and gateway paths ready"),
-      Line(
-        Reasoning,
-        "Mapped the frozen ClientGateway events onto one immutable view model.",
-      ),
-      Line(ToolResult, "read · packages/client/CLAUDE.md"),
-      Line(
-        Assistant,
-        "## Native client\n\nThe pure-Gleam path is live. Use `/model` to switch models or `/help` for the command map.",
-      ),
-    ],
-    records: [],
-    cache: cache_watch.new(),
-    cache_notices: [],
-    cache_outlook: "",
-    scrollback: history_view.empty(),
-    notice: "interactive design preview",
-    queue_editor: queue_editor.new(),
-    worktree: worktree_view.new(),
-    context: context_view.new(),
-    completion: completion_summary.new(),
-    completion_owner: "",
-    summary_surface: queue_editor.Closed,
-    summary_scroll: 0,
-    summary_tab: summary_panel.Completion,
-    summary_job_selected: 0,
-    jobs: None,
-    jobs_observed_ms: None,
-    jobs_refresh: worktree_view.Settled,
-    jobs_awaiting: None,
-    jobs_request: None,
-    jobs_notice: "Live jobs unavailable; /summary requests a current observation",
-    nudges: None,
-    nudges_refresh: worktree_view.Settled,
-    nudges_awaiting: None,
-    nudges_request: None,
-    summaries: block_summary.new(),
-    goal: None,
-    goal_refresh: worktree_view.Settled,
-    goal_awaiting: None,
-    goal_request: None,
-    goal_report: HoldGoalReport,
-    help_open: False,
-    notes_open: False,
-    diff_view: DiffAutomatic,
-    diff_scroll_offset: 0,
-    diff_row_count: 0,
-    diff_worktree_source: #(None, 0),
-    note_board: None,
-    note_selected: None,
-    note_mode: note_panel.Readable,
-    note_scroll: 0,
-    notes_requested: None,
-    overlay: NoOverlay,
-    models: interaction.demo_models(),
-    skills: [],
-    current_model: "baseten-kimi-k3",
-    workspace: project,
-    strands:,
-    agent_summary: agents.summary(strands),
-    reviewer_rows: [],
-    agent_rows: [],
-    agent_messages: [],
-    advisor_history: advisor_history.Board(items: [], unloaded: None),
-    strip: agent_strip.new(),
-    todo_boards: dict.new(),
-    todo_seed: None,
-    todo_asked: set.new(),
-    active_strand: "main",
-    session: "demo",
-    session_label: None,
-    local_options: None,
-    inbox: buffered.new(inbox),
-    peer: Preview,
-    candidate: attachment.idle(),
-    channel: None,
-    captured: None,
-    last_capture: session_channel.Requested,
-    notices: 0,
-    daemon_host: None,
-    control_request: None,
-    activity_poll: tui_model.ActivityDue,
-    reconnect: ReconnectIdle,
-    creation_key: None,
-    configuring: None,
-    approvals: [],
-    prompted_approvals: [],
-    inspecting_approval: None,
-    unconfirmed: None,
-    next_attempt: 1,
-    replay_state: attempt_replay.new(),
-    replay_inbox: buffered.new(process.new_subject()),
-    replay_error: None,
-    next_id: 1,
-    usage: inbound.zero_usage(),
-    generation_started_ms: None,
-    output_rate_tps: None,
-    agent_rail_visible: False,
-    details_expanded: False,
-    repaint_phase: False,
-    activity_frame: 0,
-    activity_started_ms: None,
-    generation_elapsed_s: 0,
-    activity_elapsed_s: 0,
-    streams: [],
-    reading_lines: None,
-    tool_tails: [],
-    scroll_offset: 0,
-    render_revision: 0,
-    rendered_revision: -1,
-    rendered_row_count: 0,
-    revealed_rows: 0,
-    rendered_anchors: [],
-    rendered_gutters: [],
-    record_gutters: [],
-    compact_call_cache: dict.new(),
-    compact_entry_cache: dict.new(),
-    pending_records: [],
-    record_cache_valid: False,
-    record_cache_width: 0,
-    record_cache_strand: "",
-    record_cache_details: False,
-    frame_revision: 0,
-    frame_debt: pacing.FrameSettled,
-    monotonic_time_ms:,
-    transport_time_ms: host_bootstrap.monotonic_time_ms,
-    stamp:,
-    terminal: runtime.terminal_identity(),
-    client_build: build_identity.current(),
-    last_frame_ms: stamp.now_ms,
-    activity_revision: 0,
-    quiet_for_ms: pacing.quiet_after_ms,
-    connection_backlog: tui_model.MailboxDrained,
-    recorder: None,
-    herdr_reporter: None,
-    herdr_published: None,
-    outbox: [],
-    next_job: job.first(),
-    running: job_runner.new(),
-    selection: None,
-    selection_gutters: [],
-    clipboard: NoClipboard,
-    record_cache_epoch: 0,
-    view: tui_model.empty_view(),
+    shared: Shared(
+      quit: False,
+      parked_scrollback: dict.new(),
+      attachments: [],
+      pending_submission: None,
+      interrupt: None,
+      submitting: None,
+      queued: [],
+      awaiting_outcome: None,
+      transcript: [
+        Line(System, "etui input and gateway paths ready"),
+        Line(
+          Reasoning,
+          "Mapped the frozen ClientGateway events onto one immutable view model.",
+        ),
+        Line(ToolResult, "read · packages/client/CLAUDE.md"),
+        Line(
+          Assistant,
+          "## Native client\n\nThe pure-Gleam path is live. Use `/model` to switch models or `/help` for the command map.",
+        ),
+      ],
+      records: [],
+      cache: cache_watch.new(),
+      cache_notices: [],
+      scrollback: history_view.empty(),
+      notice: "interactive design preview",
+      worktree: worktree_view.new(),
+      context: context_view.new(),
+      completion: completion_summary.new(),
+      completion_owner: "",
+      jobs: None,
+      jobs_observed_ms: None,
+      jobs_refresh: worktree_view.Settled,
+      jobs_awaiting: None,
+      jobs_request: None,
+      jobs_notice: "Live jobs unavailable; /summary requests a current observation",
+      nudges: None,
+      nudges_refresh: worktree_view.Settled,
+      nudges_awaiting: None,
+      nudges_request: None,
+      summaries: block_summary.new(),
+      goal: None,
+      goal_refresh: worktree_view.Settled,
+      goal_awaiting: None,
+      goal_request: None,
+      goal_report: HoldGoalReport,
+      note_board: None,
+      notes_requested: None,
+      models: interaction.demo_models(),
+      skills: [],
+      current_model: "baseten-kimi-k3",
+      workspace: project,
+      strands:,
+      reviewer_rows: [],
+      agent_rows: [],
+      roster: agent_roster.new(),
+      agent_messages: [],
+      advisor_history: advisor_history.Board(items: [], unloaded: None),
+      todo_boards: dict.new(),
+      todo_seed: None,
+      todo_asked: set.new(),
+      active_strand: "main",
+      session: "demo",
+      session_label: None,
+      inbox: buffered.new(inbox),
+      peer: Preview,
+      channel: None,
+      captured: None,
+      last_capture: session_channel.Requested,
+      notices: 0,
+      approvals: [],
+      unconfirmed: None,
+      replay_state: attempt_replay.new(),
+      replay_inbox: buffered.new(process.new_subject()),
+      replay_error: None,
+      next_id: 1,
+      usage: inbound.zero_usage(),
+      generation_started_ms: None,
+      output_rate_tps: None,
+      details_expanded: False,
+      activity_started_ms: None,
+      generation_elapsed_s: 0,
+      activity_elapsed_s: 0,
+      streams: [],
+      tool_tails: [],
+      render_revision: 0,
+      compact_call_cache: dict.new(),
+      compact_entry_cache: dict.new(),
+      pending_records: [],
+      record_cache_valid: False,
+      frame_revision: 0,
+      stamp:,
+      client_build: build_identity.current(),
+      activity_revision: 0,
+      connection_backlog: tui_model.MailboxDrained,
+      recorder: None,
+      outbox: [],
+      record_cache_epoch: 0,
+    ),
+    view: tui_model.View(
+      width: 80,
+      height: 24,
+      palette: appearance.Dark,
+      input: text_area.state_new(),
+      strand_workspaces: dict.new(),
+      restored_workspace: None,
+      history: [],
+      history_index: 0,
+      history_draft: "",
+      command_selected: 0,
+      submission_mode: PromptNext,
+      cache_outlook: "",
+      queue_editor: queue_editor.new(),
+      summary_surface: queue_editor.Closed,
+      summary_scroll: 0,
+      summary_tab: summary_panel.Completion,
+      summary_job_selected: 0,
+      help_open: False,
+      notes_open: False,
+      diff_view: DiffAutomatic,
+      diff_scroll_offset: 0,
+      diff_row_count: 0,
+      diff_worktree_source: #(None, 0),
+      note_selected: None,
+      note_mode: note_panel.Readable,
+      note_scroll: 0,
+      overlay: NoOverlay,
+      agent_summary: agents.summary(strands),
+      strip_focus: agent_strip.Composing,
+      local_options: None,
+      candidate: attachment.idle(),
+      daemon_host: None,
+      control_request: None,
+      activity_poll: tui_model.ActivityDue,
+      reconnect: ReconnectIdle,
+      creation_key: None,
+      configuring: None,
+      prompted_approvals: [],
+      inspecting_approval: None,
+      next_attempt: 1,
+      agent_rail_visible: False,
+      repaint_phase: False,
+      activity_frame: 0,
+      reading_lines: None,
+      scroll_offset: 0,
+      rendered_revision: -1,
+      rendered_row_count: 0,
+      revealed_rows: 0,
+      rendered_anchors: [],
+      rendered_gutters: [],
+      record_gutters: [],
+      record_cache_width: 0,
+      record_cache_strand: "",
+      record_cache_details: False,
+      frame_debt: pacing.FrameSettled,
+      monotonic_time_ms:,
+      transport_time_ms: host_bootstrap.monotonic_time_ms,
+      terminal: runtime.terminal_identity(),
+      last_frame_ms: stamp.now_ms,
+      quiet_for_ms: pacing.quiet_after_ms,
+      herdr_reporter: None,
+      herdr_published: None,
+      next_job: job.first(),
+      running: job_runner.new(),
+      selection: None,
+      selection_gutters: [],
+      clipboard: NoClipboard,
+      caches: tui_model.empty_caches(),
+    ),
   )
 }
 
@@ -668,17 +675,23 @@ fn interactive(launch: Launch, record: String) -> Nil {
       // later `/sessions` switch derives it the same way from its choice.
       let local =
         Model(
-          ..base,
-          local_options: Some(options),
-          workspace: case options.workspace {
-            "" -> base.workspace
+          shared: Shared(..base.shared, workspace: case options.workspace {
+            "" -> base.shared.workspace
             path -> workspace.discover_from(path)
-          },
+          }),
+          view: tui_model.View(..base.view, local_options: Some(options)),
         )
       case bootstrap.resolve_daemon(options, process.self(), 90_000) {
         Error(reason) ->
           tui_model.append_error(
-            Model(..local, peer: Disconnected, notice: "daemon startup failed"),
+            Model(
+              ..local,
+              shared: Shared(
+                ..local.shared,
+                peer: Disconnected,
+                notice: "daemon startup failed",
+              ),
+            ),
             reason,
           )
         Ok(connected) ->
@@ -692,7 +705,10 @@ fn interactive(launch: Launch, record: String) -> Nil {
       }
     }
     Invalid(reason) ->
-      tui_model.append_error(Model(..base, notice: "invalid launch"), reason)
+      tui_model.append_error(
+        Model(..base, shared: Shared(..base.shared, notice: "invalid launch")),
+        reason,
+      )
     Remote(address, session, token) ->
       connect_remote(base, inbox, address, session, token)
   }
@@ -703,12 +719,15 @@ fn interactive(launch: Launch, record: String) -> Nil {
     open_recording(
       Model(
         ..launched,
-        clipboard: TerminalClipboard,
-        palette: appearance.detect(
-          host_bootstrap.getenv("COLORTERM") |> result.unwrap(""),
-          host_bootstrap.getenv("TERM") |> result.unwrap(""),
-          host_bootstrap.getenv("COLORFGBG") |> result.unwrap(""),
-          host_bootstrap.getenv("NO_COLOR") |> option.from_result,
+        view: tui_model.View(
+          ..launched.view,
+          clipboard: TerminalClipboard,
+          palette: appearance.detect(
+            host_bootstrap.getenv("COLORTERM") |> result.unwrap(""),
+            host_bootstrap.getenv("TERM") |> result.unwrap(""),
+            host_bootstrap.getenv("COLORFGBG") |> result.unwrap(""),
+            host_bootstrap.getenv("NO_COLOR") |> option.from_result,
+          ),
         ),
       ),
       record,
@@ -721,7 +740,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
       initial,
       render.view,
       update,
-      fn(model) { model.quit },
+      fn(model) { model.shared.quit },
       tick.terminal_poll_timeout,
     )
   Nil
@@ -743,7 +762,7 @@ pub fn loop() -> virtual_backend.Loop(Model) {
   virtual_backend.Loop(
     update: update,
     view: render.view,
-    should_quit: fn(model: Model) { model.quit },
+    should_quit: fn(model: Model) { model.shared.quit },
     poll_timeout: tick.terminal_poll_timeout,
   )
 }
@@ -773,14 +792,19 @@ fn open_recording(model: Model, record: String) -> Model {
       case recording.start(path) {
         Ok(recorder) ->
           Model(
-            ..model,
-            recorder: Some(recorder),
-            notice: "recording",
-            candidate: attachment.with_trace(
-              model.candidate,
-              recording.trace(
-                Some(recorder),
-                attempt.Id(model.next_attempt - 1),
+            shared: Shared(
+              ..model.shared,
+              recorder: Some(recorder),
+              notice: "recording",
+            ),
+            view: tui_model.View(
+              ..model.view,
+              candidate: attachment.with_trace(
+                model.view.candidate,
+                recording.trace(
+                  Some(recorder),
+                  attempt.Id(model.view.next_attempt - 1),
+                ),
               ),
             ),
           )
@@ -1488,30 +1512,37 @@ pub fn replay_steps(
   size: backend.TerminalSize,
 ) -> Result(List(buffer.Buffer), String) {
   let inbox = connection.new_inbox()
-  let model =
+  let model = {
+    let fresh =
+      new_model(inbox, workspace.Context(path: "replay", branch: None))
     Model(
-      ..new_model(inbox, workspace.Context(path: "replay", branch: None)),
-      peer: Replaying,
-      transcript: [],
-      // The demo catalogue goes with the demo peer. `connect_remote`
-      // empties it for the same reason: a client shows the models the
-      // server named, and a replay whose recording never carried a
-      // catalogue snapshot must show the empty selector the live client
-      // showed, not four invented entries.
-      models: [],
-      skills: [],
-      session: "replay",
-      strands: [],
-      agent_summary: agents.summary([]),
-      reviewer_rows: [],
-      notice: "replaying",
+      shared: Shared(
+        ..fresh.shared,
+        peer: Replaying,
+        transcript: [],
+        // The demo catalogue goes with the demo peer. `connect_remote`
+        // empties it for the same reason: a client shows the models the
+        // server named, and a replay whose recording never carried a
+        // catalogue snapshot must show the empty selector the live client
+        // showed, not four invented entries.
+        models: [],
+        skills: [],
+        session: "replay",
+        strands: [],
+        reviewer_rows: [],
+        notice: "replaying",
+      ),
+      view: tui_model.View(..fresh.view, agent_summary: agents.summary([])),
     )
+  }
   use run <- result.try(run_script(
     model,
     virtual_backend.script(size, steps, inbox)
-      |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox)),
+      |> virtual_backend.with_attempts(buffered.sender(
+        model.shared.replay_inbox,
+      )),
   ))
-  case run.final.replay_error {
+  case run.final.shared.replay_error {
     None -> Ok(run.frames)
     Some(reason) -> Error(reason)
   }
@@ -1593,7 +1624,10 @@ pub fn connect_remote(
   session: String,
   token: String,
 ) -> Model {
-  let base = live_base(Model(..base, inbox: buffered.new(inbox)))
+  let base =
+    live_base(
+      Model(..base, shared: Shared(..base.shared, inbox: buffered.new(inbox))),
+    )
   let connected = {
     use address <- result.try(daemon_selection.control_address(address))
     use control <- result.try(
@@ -1621,21 +1655,23 @@ pub fn connect_remote(
 
 fn live_base(base: Model) -> Model {
   Model(
-    ..base,
-    peer: Disconnected,
-    session: "",
-    models: [],
-    skills: [],
-    strands: [],
-    records: [],
-    streams: [],
-    tool_tails: [],
-    transcript: [],
-    current_model: "unconfigured",
-    agent_summary: agents.summary([]),
-    reviewer_rows: [],
-    advisor_history: advisor_history.Board(items: [], unloaded: None),
-    notice: "select a saved session or create one",
+    shared: Shared(
+      ..base.shared,
+      peer: Disconnected,
+      session: "",
+      models: [],
+      skills: [],
+      strands: [],
+      records: [],
+      streams: [],
+      tool_tails: [],
+      transcript: [],
+      current_model: "unconfigured",
+      reviewer_rows: [],
+      advisor_history: advisor_history.Board(items: [], unloaded: None),
+      notice: "select a saved session or create one",
+    ),
+    view: tui_model.View(..base.view, agent_summary: agents.summary([])),
   )
 }
 
@@ -1666,9 +1702,12 @@ fn attach_daemon(
       let model =
         Model(
           ..model,
-          transcript: inbound.daemon_build_lines(
-            model.daemon_host,
-            base.client_build,
+          shared: Shared(
+            ..model.shared,
+            transcript: inbound.daemon_build_lines(
+              model.view.daemon_host,
+              base.shared.client_build,
+            ),
           ),
         )
 
@@ -1790,11 +1829,14 @@ fn apply_input(event: msg.Event, model: Model) -> Model {
     msg.Resized(width:, height:) ->
       Model(
         ..model,
-        width:,
-        height:,
-        selection: None,
-        selection_gutters: [],
-        view: tui_model.View(..model.view, selection_frame: None),
+        view: tui_model.View(
+          ..model.view,
+          width:,
+          height:,
+          selection: None,
+          selection_gutters: [],
+          caches: tui_model.Caches(..model.view.caches, selection_frame: None),
+        ),
       )
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
@@ -1881,8 +1923,8 @@ fn settle_update(event: msg.Event, model: Model, updated: Model) -> Model {
     pacing.frame_boundary(
       event,
       pacing.tick_traffic(
-        before: model.render_revision,
-        after: settled.render_revision,
+        before: model.shared.render_revision,
+        after: settled.shared.render_revision,
       ),
     ),
   )
@@ -1896,6 +1938,12 @@ fn snap_viewport_for(model: Model, event: msg.Event) -> Model {
   case pacing.viewport_address(event) {
     pacing.AddressesElsewhere -> model
     pacing.AddressesTranscript ->
-      Model(..model, revealed_rows: model.rendered_row_count)
+      Model(
+        ..model,
+        view: tui_model.View(
+          ..model.view,
+          revealed_rows: model.view.rendered_row_count,
+        ),
+      )
   }
 }
