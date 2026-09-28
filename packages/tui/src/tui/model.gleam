@@ -656,6 +656,12 @@ pub fn viewport_backlog(model: Model) -> Int {
 ///
 /// The terminal's form of `session_model.mark_activity`, for a reducer
 /// that still takes the whole model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.mark_activity(model)
+/// ```
 @internal
 pub fn mark_activity(model: Model) -> Model {
   hold_shared(model, session_model.mark_activity(model.shared))
@@ -832,6 +838,12 @@ pub fn record(model: Model, event: recording.Recorded) -> Model {
 ///
 /// The terminal's form of `session_model.record_arrival`, for a reducer
 /// that still takes the whole model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.record_arrival(model, connection_event.Connected)
+/// ```
 @internal
 pub fn record_arrival(
   model: Model,
@@ -931,6 +943,12 @@ pub fn start_job(model: Model, spec: job.Spec) -> #(Model, job.Key) {
 ///
 /// The terminal's form of `session_model.invalidate_frame`, for a reducer
 /// that still takes the whole model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.invalidate_frame(model)
+/// ```
 @internal
 pub fn invalidate_frame(model: Model) -> Model {
   hold_shared(model, session_model.invalidate_frame(model.shared))
@@ -951,6 +969,12 @@ pub fn reading_history(model: Model) -> Bool {
 ///
 /// The terminal's form of `session_model.append_system`, for a reducer
 /// that still takes the whole model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.append_system(model, "attached")
+/// ```
 @internal
 pub fn append_system(model: Model, text: String) -> Model {
   hold_shared(model, session_model.append_system(model.shared, text))
@@ -960,6 +984,12 @@ pub fn append_system(model: Model, text: String) -> Model {
 ///
 /// The terminal's form of `session_model.append_error`, for a reducer
 /// that still takes the whole model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.append_error(model, "network: closed")
+/// ```
 @internal
 pub fn append_error(model: Model, text: String) -> Model {
   hold_shared(model, session_model.append_error(model.shared, text))
@@ -970,6 +1000,12 @@ pub fn append_error(model: Model, text: String) -> Model {
 ///
 /// The terminal's form of `session_model.append_notice`, for a reducer
 /// that still takes the whole model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.append_notice(model, "daemon build differs")
+/// ```
 @internal
 pub fn append_notice(model: Model, text: String) -> Model {
   hold_shared(model, session_model.append_notice(model.shared, text))
@@ -979,6 +1015,12 @@ pub fn append_notice(model: Model, text: String) -> Model {
 ///
 /// The terminal's form of `session_model.invalidate_transcript`, for a reducer
 /// that still takes the whole model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.invalidate_transcript(model)
+/// ```
 @internal
 pub fn invalidate_transcript(model: Model) -> Model {
   hold_shared(model, session_model.invalidate_transcript(model.shared))
