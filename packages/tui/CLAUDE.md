@@ -374,13 +374,19 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   surfaces, so that the call need not write them: `drafts_sent` counts the
   composer drafts the lane has sent, `queue_notices` holds the
   `queue_request.Notice` values (`Refused(reason)`, `Dropped(message)`,
-  `Received(owner, namespace, document)`) the queue editor has not shown,
+  `Received(owner, namespace, document)`, `Saved`, `Unknown`) the queue
+  editor has not shown,
   `goal_observations` holds the `GoalObserved(board)` and
   `GoalUnavailable(reason)` entries the goal inspector has not shown, and
-  `surface_facts` holds the `SurfaceFact` values the event fold recorded
-  (`WorkspaceSwitched(departing, arriving, previous_session)`,
-  `SessionSynchronized`, `ModelsListed(models, current)`, `OutlookCleared`,
-  `NotesArrived(board)`, `JobsReplaced(previous, board)`). The three lists
+  `surface_facts` holds the `SurfaceFact` values the event fold and the
+  lane fold recorded (`WorkspaceSwitched(departing, arriving,
+  previous_session)`, `SessionSynchronized`, `ModelsListed(models,
+  current)`, `OutlookCleared`, `NotesArrived(board)`, `JobsReplaced(previous,
+  board)`, `LookupAnswered(records, missing)`, `ApprovalSettled`,
+  `ApprovalsPresented`, `QueueRowsCaptured(previous, rows)`,
+  `HistoryReleased(session, strands)`, `AgentMessagesCaptured`,
+  `GoalReleased`, `ConnectionLost` and `ReplayAdopted(SessionChange)`).
+  The three lists
   are empty between calls. `record_surface` appends a fact.
   The functions are the writers `append_system`, `append_error`,
   `append_notice`, `invalidate_transcript`, `invalidate_frame`,
@@ -564,18 +570,37 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   queued-input reply appends `queue_request.Received`. It reads no terminal
   state; it calls `outbound`'s and `surfaces`' functions over `Shared` and
   no other function of either.
-- `tui/inbound`: `drain_connection`, `accept_connection_message`,
-  `apply_channel_update` and `render_cut`, the lane fold, still over the
-  whole model. `run_event` applies one pushed event through
-  `event_fold.apply_event` and then `settle_surfaces`, which applies the
-  surface facts the call recorded (the editor park and restore of a
-  workspace switch, a snapshot's gutters and scroll, the model selector,
-  the cache outlook, the notes panel through `surfaces.notes_target` and
-  `notes_surface`, and the summary's job cursor through
-  `summary_panel.follow_selected_job`) and moves returned drafts into the
-  editors (`restore_returned_drafts`). `select_workspace` and
-  `select_model` are the terminal forms of the event fold's, which settle
-  the facts their call recorded.
+- `tui/lane_fold`: the lane fold over `Shared` alone, one update per call.
+  `apply_channel_update(shared, update, around)` folds one
+  `session_channel.Update` (`reconcile_cut`, `render_cut`,
+  `receive_history`, the approval lookup, `apply_request_refused`, the
+  acknowledgements, a lost lane); `receive_unlaned` applies a channelless
+  message; `apply_replay_change` applies one change of a replayed attempt
+  event. `tick`, `receive` and `cancel_unsent` hold the lane and return its
+  updates, and `take_replayed` returns a replay event's changes, so the
+  host keeps the loop. `Surroundings(worktree, notes, reviewing, wanted)` is
+  what the host shows that a decision inside an update reads (the
+  worktree request, the refused notes read, the "settled elsewhere" close);
+  `nothing_shown()` is a host that shows none of it. Terminal writes are
+  recorded as surface facts, and queue editor writes as queue notices. Also
+  `request_decisions`, `apply_cut`, `service_history`,
+  `request_visible_worktree`, `refresh_worktree`, `daemon_build_lines`,
+  `approval_lines` and `retains_history`.
+- `tui/inbound`: the terminal's loop over the lane fold.
+  `drain_connection` takes messages from the inbox, `tick_channel`,
+  `accept_connection_message` and `cancel_pending` take a lane's updates,
+  and `apply_channel_update(model, update)` applies one: it reads
+  `surroundings(model)`, runs `lane_fold.apply_channel_update` through
+  `run_shared`, and calls `settle_surfaces(before, held)`, which applies the
+  surface facts the call recorded (the event fold's, and the lane fold's:
+  `inspect_looked_up`, the dialog's close, `present_pending_approval`,
+  `follow_queue_selection`, the parked editors' pruning,
+  `reconcile_agent_message_selection`, the goal inspector's close,
+  `begin_reconnect` and the replay adoption's resets)
+  and moves returned drafts into the editors (`restore_returned_drafts`).
+  `select_workspace`, `select_model`, `apply_cut`, `request_decisions`,
+  `service_history`, `request_visible_worktree` and `refresh_worktree` are
+  terminal forms of the folds' functions.
 - `tui/session_control`: daemon control requests and reconnection. It
   describes each request as a `job.Spec`, and `drain_control`,
   `drain_reconnect`, `drain_activity` and `drain_configuration` take their
@@ -2187,15 +2212,19 @@ untouched.
   the cut. A result stored without `hold_shared` leaves them behind;
   `tui_test/stepping.step` asserts both lists are empty after every step,
   as it does for `Shared.outbox`.
-- **An event's surface facts are settled after that event.** The event
-  fold records a `SurfaceFact` where an event used to write the terminal's
-  editor, overlays or footer, and `inbound.settle_surfaces` applies them
-  after each call into the fold (`run_event`, and the terminal forms of
-  `select_workspace` and `select_model`), not at the end of the step. One
-  step applies many events, and a later event reads or overwrites what an
-  earlier one wrote: a stream fragment replaces the notice a notes board
-  set, and a returned draft must reach the composer before a later switch
-  parks it. A workspace switch parks the viewport height measured on the
+- **An update's surface facts are settled after that update.** The event
+  fold and the lane fold record a `SurfaceFact` where an update used to
+  write the terminal's editor, overlays or footer, and
+  `inbound.settle_surfaces` applies them after each call into a fold
+  (`inbound.apply_channel_update` per update, the tick's
+  `apply_replay_change` per replay change, the channelless message, and
+  the terminal forms), not at the end of the step. One step applies many
+  updates, and a later update reads or overwrites what an earlier one
+  wrote: a cut presents a question the next cut may show settled
+  elsewhere, a stream fragment replaces the notice a notes board set, and a
+  returned draft must reach the composer before a later switch parks it.
+  The terminal state a decision inside an update reads comes from the
+  `lane_fold.Surroundings` the host passes in, which no update changes. A workspace switch parks the viewport height measured on the
   model before the call, because layout reads shared state the rest of the
   event changes. `tui_test/stepping.step` asserts `surface_facts` is empty
   after every step.

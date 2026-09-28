@@ -190,28 +190,28 @@ terminal, 4 handles, 3 split.
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
 | `agent_rail_visible` | b | A pane toggle. |
-| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/session_model.gleam:932`), and `advance_generation_clock` checks it (`tui/tick.gleam:402`); a page will toggle it too. |
+| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/session_model.gleam:1002`), and `advance_generation_clock` checks it (`tui/tick.gleam:323`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
 | `streams`, `tool_tails` | a | The live answer and tool tails. |
 | `reading_lines` | b | Frozen transient rows while reading above the tail. |
 | `scroll_offset` | b | The viewport. |
-| `render_revision` | a | A presentation revision shared reducers bump (`tui/session_model.gleam:690` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
+| `render_revision` | a | A presentation revision shared reducers bump (`tui/session_model.gleam:746` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
 | `rendered_revision`, `rendered_row_count`, `revealed_rows`, `rendered_anchors`, `rendered_gutters`, `record_gutters` | b | The row projection's outputs. |
 | `compact_call_cache`, `compact_entry_cache` | a | Line caches keyed by `transcript_line.Line`, read by the shared line builders through `Presentation`. |
 | `pending_records` | a | Legacy entries awaiting append. |
 | `record_cache_valid` | a | Today a flag cleared at twelve write sites; it becomes a counter the terminal compares, in the shape of `record_cache_epoch`. |
 | `record_cache_width`, `record_cache_strand`, `record_cache_details` | b | What the record rows were built for. |
-| `frame_revision` | a | A presentation revision (`tui/session_model.gleam:709` (`invalidate_frame`)); every `append_system` bumps it. |
+| `frame_revision` | a | A presentation revision (`tui/session_model.gleam:765` (`invalidate_frame`)); every `append_system` bumps it. |
 | `frame_debt` | b | Frame pacing. |
 | `monotonic_time_ms`, `transport_time_ms` | b | The host's clocks; the shell reads them into the stamp. |
 | `stamp` | a | The readings the step applies at. |
 | `terminal` | b | This terminal's identity in a creation key. |
 | `client_build` | a | The build the mismatch line compares; data, read once. |
 | `last_frame_ms` | b | Frame pacing. |
-| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/session_model.gleam:727` (`mark_activity`)); the terminal's quiet timer reads it. |
+| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/session_model.gleam:777` (`mark_activity`)); the terminal's quiet timer reads it. |
 | `quiet_for_ms` | b | Idle pacing. |
-| `connection_backlog` | a | Set by the shared drain from the inbox it holds (`tui/inbound.gleam:1140` (`drain_connection`)); the terminal's poll reads it. |
+| `connection_backlog` | a | Set by the shared drain from the inbox it holds (`tui/inbound.gleam:410` (`drain_connection`)); the terminal's poll reads it. |
 | `recorder` | c | `Option(recorder)`. |
 | `selection`, `selection_gutters`, `clipboard` | b | Mouse selection and where a copy goes. |
 | `herdr_reporter`, `herdr_published` | b | The pane reporter, a host handle the terminal alone performs against; it stays in the terminal's record rather than becoming a type parameter because no shared reducer names it. |
@@ -397,10 +397,9 @@ entry points above gain the parameter with it.
 
 `Effect` is two variants because those are the two effects the shared
 reducers decide. Every `Channel` effect comes through `hold_channel`
-(`tui/session_model.gleam:749` (`hold_channel`)), and the one `Record` a shared
+(`tui/session_model.gleam:799` (`hold_channel`)), and the one `Record` a shared
 reducer queues is the channelless arrival
-(`tui/inbound.gleam:1187` (`handle_connection_message`), its `None`
-arm). The input's own recording line is queued by `start_step` before
+(`tui/lane_fold.gleam:1040` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
 the reducer runs
 (`tui/model.gleam:1102` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
@@ -421,7 +420,7 @@ fields the adoption arm resets today (`tui/interaction.gleam:236`
 `Attached`. `next_due` is
 `option.then(model.channel, session_channel.next_due)`; a host that has
 other reasons to wake, as the terminal does, combines it with its own
-(`tui/tick.gleam:689` (`lane_wait`)).
+(`tui/tick.gleam:610` (`lane_wait`)).
 
 ### The shells
 
@@ -508,28 +507,28 @@ they reach that it misses.
 
 - The lane fold: `tick_channel`, `apply_channel_update`, `reconcile_cut`,
   `request_decisions`, `apply_cut` and `render_cut`
-  (`tui/inbound.gleam:211` (`tick_channel`) through
-  `tui/inbound.gleam:571` (`render_cut`)), less the four writes named
+  (`tui/inbound.gleam:154` (`tick_channel`) through
+  `tui/lane_fold.gleam:647` (`render_cut`)), less the four writes named
   below.
 - The connection drain and the event fold: `drain_connection`,
   `handle_connection_message`, `handle_presentation_message`,
   `apply_event` and everything under it: streams, tool tails, usage, the
   cache watch, summaries, schedules, skills and models
-  (`tui/inbound.gleam:1140` (`drain_connection`),
-  `tui/inbound.gleam:1251` (`apply_event`)).
+  (`tui/inbound.gleam:394` (`drain_connection`),
+  `tui/event_fold.gleam:80` (`apply_event`)).
 - Submission bookkeeping: `send_frame` (`tui/outbound.gleam:52`),
   `send_via`, `apply_submission`, `discard_own_turn` and
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
 - The command arms: `interrupt_active` (`tui/submit.gleam:859`),
   `stop_strand`, `switch_active_strand` (`tui/submit.gleam:1060`),
-  `select_model`, `decide` (`tui/inbound.gleam:1112`), `send_prompt_to`,
+  `select_model`, `decide` (`tui/inbound.gleam:366`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from
   `service_todo_seed` (`tui/surfaces.gleam:113`) onward, `sync_context`,
   `sync_advisor_nudges`, `sync_goal`, `receive_jobs`, `receive_goal` and
   `receive_advisor_nudges`, less `notes_target` and `notes_surface`.
-- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:344`)
+- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:265`)
   and `advance_generation_clock` read the stamp and shared fields;
   `drain_replay` (`tui/tick.gleam:226`) and `apply_replay_change`.
 - `queue_owner`, `queue_namespace`, `active_strand_phase`,
@@ -559,7 +558,7 @@ knows something the session does not, such as which pane is open.
 
 The worst cases in the code, and the cut for each:
 
-1. **`render_cut`** (`tui/inbound.gleam:571` (`render_cut`)) writes 31
+1. **`render_cut`** (`tui/lane_fold.gleam:647` (`render_cut`)) writes 31
    fields; four touch terminal state. `strip: agent_strip.observe(..)`
    becomes `roster: agent_roster.observe(..)`, the strip's focus being
    untouched by a capture. `cache_outlook` is reset when the active
@@ -586,7 +585,7 @@ The worst cases in the code, and the cut for each:
    shared field, `returned_drafts: List(#(strand, text))`, and the shell
    appends it to the editor it owns.
 
-3. **`apply_channel_update`'s `Failed` arm** (`tui/inbound.gleam:419`
+3. **`apply_channel_update`'s `Failed` arm** (`tui/lane_fold.gleam:425`
    (`Failed`)) closes a `GoalInspector` overlay, fails the
    worktree navigator and starts the reconnect job (`tui/inbound.gleam:195`
    (`begin_reconnect`)). The shared arm keeps the peer transition, the
@@ -594,7 +593,10 @@ The worst cases in the code, and the cut for each:
    `before.shared.peer == Attached && after.shared.peer == Disconnected`
    closes the overlay and starts the job, which is a `StartJob` the
    terminal already owns. The same edge covers the arm of
-   `handle_presentation_message` for `Closed` (`tui/inbound.gleam:1223`).
+   `handle_presentation_message` for `Closed` (`tui/lane_fold.gleam:1050` (`receive_unlaned`)).
+   *As landed (S3d′):* recorded facts rather than a comparison of `peer`:
+   `GoalReleased` and `ConnectionLost` on `Failed`, `ConnectionLost` on
+   `Closed`, applied after the update.
 
 4. **`apply_submission`** (`tui/outbound.gleam:112`
    (`apply_submission`)) writes `queue_editor.request_id` on a sent
@@ -618,17 +620,23 @@ The worst cases in the code, and the cut for each:
    `pending_submission` marker moves into the shared `Submit` arm.
 
 6. **`present_pending_approval` and `close_settled_approval`**
-   (`tui/inbound.gleam:640` (`present_pending_approval`),
-   `tui/inbound.gleam:586` (`close_settled_approval`)) open and close the
+   (`tui/inbound.gleam:567` (`present_pending_approval`),
+   `tui/lane_fold.gleam:594` (`close_settled_approval`)) open and close the
    approval inspector from the projected approvals. Both are terminal:
    the page has no inspector and draws every pending record. They become
    the shell's edge on `after.shared.approvals`, run after every shared
    call that can change it, which is where `apply_cut` and the `LookedUp`
    arm call them today. `prompted_approvals` moves to the view with them.
-   `decide_captured_approval` (`tui/inbound.gleam:1083`
+   `decide_captured_approval` (`tui/inbound.gleam:337`
    (`decide_captured_approval`)) becomes the inspector producing
    `Acted(Decide(id, seq, choice))`, with `AllowForSession` mapped through
-   `operator.Choice`, which already has it.
+   `operator.Choice`, which already has it. *As landed (S3d′):* the close
+   is decided in the shared fold, from the approval the host passes in as
+   `Surroundings.reviewing`, because the decision writes a transcript line
+   that later lines of the same cut must follow; the dialog's close
+   (`ApprovalSettled`), the presentation (`ApprovalsPresented`) and the
+   lookup's inspector (`LookupAnswered`) are facts the terminal applies
+   after the update.
 
 7. **`settle_update`** (`packages/tui/src/tui.gleam:1922`
    (`settle_update`)) runs nine calls after every event. Three are
@@ -636,7 +644,7 @@ The worst cases in the code, and the cut for each:
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
    `request_visible_worktree` on a diff pane appearing, which becomes
    `Acted(RefreshWorktree)` because only the shell knows the pane appeared
-   (`tui/inbound.gleam:1854` (`request_visible_worktree`) reads
+   (`tui/inbound.gleam:1037` (`request_visible_worktree`) reads
    `layout.diff_shown`); `request_history_for_view`, which becomes
    `Acted(OlderHistory)` for the same reason
    (`tui/interaction.gleam:1798` (`request_history_for_view`) reads the
@@ -653,8 +661,8 @@ The worst cases in the code, and the cut for each:
    chain. The order is kept by having the terminal's tick call the shared
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
-   (`tui/inbound.gleam:2140` (`tick_strip`)) reads the strip's focus and
-   stays; `advance_cache_outlook` (`tui/tick.gleam:436`
+   (`tui/inbound.gleam:1141` (`tick_strip`)) reads the strip's focus and
+   stays; `advance_cache_outlook` (`tui/tick.gleam:357`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
    bookkeeping stays terminal (`tui/tick.gleam:156` (`settle_tick`)).
@@ -1267,6 +1275,138 @@ presented nor reported. The visible-worktree refresh does not have this
 problem: `layout.diff_shown` reads only `diff_view` and the width, which
 no update changes. Section 6, question 11, has the options.
 
+*S3d′ as landed, second half: the lane fold.* The owner ruled on question
+11 on 2026-09-28 for option (a), and the lane fold moved under it.
+`apply_channel_update` and its arms (`reconcile_cut`, `render_cut`,
+`receive_history`, the approval lookup, the refusals through
+`apply_request_refused`, the acknowledgements, `Noticed`, the lost lane),
+the preview peer's channelless messages (`receive_unlaned`, formerly
+`handle_presentation_message`) and a replay's changes
+(`apply_replay_change`, formerly the body of `tick.drain_replay`) moved into
+a new module, `tui/lane_fold`, over `Shared` alone. The module reads no
+terminal state; it calls `event_fold`, and `outbound`'s and `surfaces`'
+functions over `Shared`.
+
+The host keeps the loop. `lane_fold.tick`, `receive` and `cancel_unsent`
+hold the lane and return its updates, and `take_replayed` takes a replay's
+event and returns its changes. `tui/inbound` applies each update through
+`inbound.apply_channel_update`, and `tui/tick` each change through its own
+`apply_replay_change`, as one shared call followed by
+`inbound.settle_surfaces`. `drain_connection`'s loop over messages,
+`tick_channel`'s and `cancel_pending`'s folds over updates and the
+connection backlog stay terminal, as the ruling has it.
+
+Three decisions inside one update read terminal state, and the fold takes
+each from a `lane_fold.Surroundings` value the host reads before the
+update (`inbound.surroundings`):
+
+- `worktree`, whether captured edits are on screen, decides whether a new
+  cut asks for a fresh worktree. `layout.diff_shown` reads only `diff_view`
+  and the width, which no update writes.
+- `notes`, whether a notes surface is open, decides whether a refused
+  notes read is reported. The refusal is the first thing its update does.
+- `reviewing`, the approval the inspector shows, and `wanted`, the
+  approval `/approvals <id>` waits for, decide whether a cut or a lookup
+  closes the dialog with "Approval … was settled elsewhere". The fold
+  writes that line where it always did, before the lines the same update
+  writes after it ("decision lookup not sent", "Additional resolutions are
+  not loaded", "Decisions not available"). In a lookup's update the
+  inspector can open before the close; the fold computes the record it
+  opens on from `wanted` and the lookup's records, as `inspect_looked_up`
+  does.
+
+Recording these as facts after the update would have moved the line after
+those later lines and changed the notice the update leaves, which is the
+difference the ruling was meant to avoid. Passing the three values in is
+not option (b) of question 11: nothing about the inspector is stored in
+`Shared`, and a host with no inspector, such as the web view, passes
+`lane_fold.nothing_shown()`.
+
+The terminal writes became facts, applied after each update in the order
+recorded: `LookupAnswered(records, missing)` runs `inspect_looked_up`;
+`ApprovalSettled` closes the dialog; `ApprovalsPresented` runs
+`present_pending_approval`, after every close, as before;
+`QueueRowsCaptured(previous, rows)` moves the queue editor's selection
+(`follow_queue_selection`, formerly `retain_queue_selection`);
+`HistoryReleased(session, strands)` prunes the parked editors' reading
+positions; `AgentMessagesCaptured` runs
+`reconcile_agent_message_selection`; `OutlookCleared` empties the outlook
+when a cut leaves the active strand without a watch; `GoalReleased`
+closes a goal inspector on a lost lane; `ConnectionLost` runs
+`begin_reconnect` on a lost lane or a closed channelless connection;
+`ReplayAdopted(SameSession | NewSession)` clears the note selection, the
+prompted approvals and the pending lookup and resets the viewport on a new
+session. The activity glyph is not a fact: it already advanced in the
+terminal after the hold of the shared clocks, reading
+`active_strand_live`, and a fact recorded and cleared on every tick of a
+live strand cost two copies of the shared record, 190 more words on the
+idle tick of a live strand (from 9,455 to 9,675), which is over question
+5's two percent. The queue editor's acknowledged save and unknown outcome
+are the notices `queue_request.Saved` and `Unknown`, and its refusals the
+existing `Refused`. `mark_activity`'s quiet time was already an edge in
+`hold_shared`.
+
+Two departures from the plan. The queue preview's height, which bounds
+the preview's scroll when the selected row survives a cut, is measured on
+the shared record from before the update with the terminal state as the
+earlier facts left it. The old code measured inside `render_cut`, after
+`observe_completion` and before the cut wrote anything layout reads
+(`observe_completion` writes the completion, the worktree and the jobs,
+none of which the queue preview's layout reads), and for a replay's adoption the old rows are
+empty, so the height is never read. And `drain_replay`'s view resets are
+one fact, `ReplayAdopted`, rather than edges on the session.
+
+The census in the S3 entry holds for the lane fold, with the two
+corrections the first half's entry made. The terminal forms that remain
+in `tui/inbound` for the command arms and the tests are
+`apply_channel_update`, `apply_cut`, `request_decisions`,
+`service_history`, `cancel_pending`, `request_visible_worktree` and
+`refresh_worktree`.
+
+Removing each fact's application, and each queue notice, in turn failed
+2, 3, 6, 1, 4 and 1 tests for the lookup's inspector, the dialog's close,
+the presentation, the queue selection, the reconnect and the unknown
+save. Removing the rest failed none: the pruned reading positions, the
+agent inspector's selection, the goal inspector's close, the replay
+adoption's resets, the activity glyph, the acknowledged save, and two of
+the three `Surroundings` reads (the notes surface and the shown diff).
+None of these behaviours is new, and nothing observed them on either
+tree, so the slice adds a test for each, in `surface_facts_test`,
+`agent_workspace_test` and `history_view_test`; each passes on `main`,
+except the replay adoption's, which drives `tick.apply_replay_change`, a
+function `main` keeps private, and each fails when its application is
+removed. Removing the third read, the approval under review, failed four
+tests, one of them new: `snapshot_view_test`'s check that the "settled
+elsewhere" line comes before the lookup's "Decisions not available" line,
+which is the notice the update leaves.
+
+Measured against `main` at `ddd88a690`, whose tree is the one #601 merged.
+The `tui` suite passes 963 tests on `main` and 971 here, the eight new
+ones; `session_view` passes 112, `web_view` 81 and `client` 2,292 on
+both. Both committed recordings replay byte-identical with `--all
+--plain`, and the synthesized `tui_perf` replays of 64, 512 and 4,096
+frames end on identical frames. The P model's ten cases find no bug at
+30,000 schedules each. The shipped fixtures, the fifteen tests matching
+`_shipped_`, pass against each build's `bin/loomd` with `HOME` pointed at
+an empty directory. `scripts/tui_perf.sh`, median of three alternating
+runs: an idle tick costs 7,532 reductions against 7,525 (+0.09%) and
+9,458 words against 9,455 (+0.03%), a 64-frame tick 225,491 reductions
+against 226,017 (−0.23%), a key 100,972 on both, and a 500-frame burst
+5,526 reductions per frame against 5,529 and 11,844 words against
+11,848. With `TUI_PERF_MIN_HEAP=4000000` the idle tick is 7,532 against
+7,525, the 64-frame tick 216,497 against 216,942 and the burst 5,377 per
+frame against 5,384. `erlc` through `profile_module.py`, median of three
+alternating runs, wall time and `core_inline_module`: `tui@inbound`
+0.64 s against 1.22 s (inlining 0.026 s against 0.061 s), the new
+`tui@lane_fold` 0.74 s (0.039 s), `tui@tick` 0.36 s against 0.43 s
+(0.013 s against 0.018 s), and `tui` 0.47 s, `tui@event_fold` 0.78 s,
+`tui@interaction` 2.10 s, `tui@submit` 0.95 s, `tui@model` 0.42 s and
+`tui@session_model` 0.30 s, each within 0.03 s of `main`. Lint finds no
+error-tier finding on either; the `tui` census falls from 97 to 96
+warnings (R11 from 4 to 3, `render_cut` no longer one undivided block).
+A report-only review from `ddd88a690` found no behaviour change; its
+three notes were comments, now corrected.
+
 **S4: the move.** `tui/model`'s shared record and helpers,
 `tui/msg`, the frame and replay admission, `tui/inbound`, `tui/outbound`,
 `tui/surfaces`, the shared half of `tui/submit`, `tui/completion_summary`,
@@ -1355,10 +1495,15 @@ them.
    *Measured in the first half of S3d′:* the edges run in
    `inbound.settle_surfaces`, a fold over the recorded facts called once
    per event, not in a chain of local steps, so no third settle chain was
-   formed yet. `core_inline_module` on `tui@inbound` fell from 0.099 s to 0.061 s,
-and on the new `tui@event_fold` it is 0.041 s; `tui` and `tui@tick` are
-unchanged. The lane fold's half is where the chain would
-   form, if its edges move to `settle_update`.
+   formed yet. `core_inline_module` on `tui@inbound` fell from 0.099 s to
+   0.061 s, and on the new `tui@event_fold` it is 0.041 s; `tui` and
+   `tui@tick` are unchanged. The lane fold's half is where the chain would
+   form, if its edges move to `settle_update`. *Measured in the second
+   half:* the edges stayed in `settle_surfaces` under the ruling on
+   question 11, so no third chain was formed. `core_inline_module` on `tui@inbound` fell
+   from 0.061 s to 0.026 s, and on the new `tui@lane_fold` it is 0.039 s;
+   `tui@tick` fell from 0.018 s to 0.013 s, and `tui`, `tui@event_fold`,
+   `tui@interaction` and `tui@submit` are unchanged.
 
 5. **Allocation per event.** Today one event copies one 152-field record
    per field write. After S1 a shared write copies an 80-field record and
@@ -1424,3 +1569,8 @@ unchanged. The lane fold's half is where the chain would
     web view, which has no inspector, runs the same loop with no facts to
     apply. It needs the owner's ruling, because it changes the shape of
     `step.update`'s `Ticked` from one call into a host-driven loop.
+    *Ruled 2026-09-28: (a).* The host keeps the loop over a drain's
+    updates, one update is the shared unit, and the recorded facts are
+    applied between updates. Section 5's "S3d′ as landed, second half"
+    entry says how it landed: the three reads inside an update come from a
+    `Surroundings` value the host passes in.
