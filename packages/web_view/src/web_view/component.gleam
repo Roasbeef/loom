@@ -804,17 +804,39 @@ fn parsed_lines(
   })
 }
 
-// Every transcript line a piece draws through `line_element`.
+// Every transcript line a piece draws through `line_element`, and the
+// Markdown body of each card, keyed as `card_line` keys it.
 fn piece_lines(piece: turns.Piece) -> List(Line) {
   case piece {
     turns.Plain(block:) | turns.Commentary(block:) -> block_lines(block)
     turns.Work(items:, ..) -> list.flat_map(items, item_lines)
-    turns.Spawned(..)
-    | turns.Returned(..)
-    | turns.Nudged(..)
-    | turns.Peer(..)
-    | turns.Missed(..) -> []
+    turns.Returned(report: body, ..)
+    | turns.Nudged(body:, ..)
+    | turns.Peer(text: body, ..) -> [card_line(body)]
+    turns.Spawned(..) | turns.Missed(..) -> []
   }
+}
+
+// The key a card's body is parsed under in the table of trees. A child's
+// report, an advisor's body and a peer's message are agent prose, which the
+// terminal draws as a `ToolDetail` row, so the body is keyed as one.
+fn card_line(body: String) -> Line {
+  transcript_line.Line(transcript_line.ToolDetail, body)
+}
+
+// A card's body drawn from its Markdown tree, parsed in `update` like a
+// row's (`parsed_lines`), with the same fallback parse `line_element` has.
+fn card_body(
+  body: String,
+  parsed: Dict(Line, List(markdown.Block)),
+) -> Element(message) {
+  let tree =
+    dict.get(parsed, card_line(body))
+    |> result.lazy_unwrap(fn() { markdown.parse(body) })
+  html.div(
+    [attribute.class("card-body"), attribute.class("markdown")],
+    markdown_view.blocks(tree),
+  )
 }
 
 fn item_lines(item: turns.Item) -> List(Line) {
@@ -1684,7 +1706,7 @@ fn piece_element(
             <> outcome,
           ),
         ]),
-        html.pre([attribute.class("card-body")], [html.text(report)]),
+        card_body(report, parsed),
       ])
 
     turns.Nudged(frame:, body:, ..) ->
@@ -1695,7 +1717,7 @@ fn piece_element(
             turns.Advice -> "advisor · advice · delivered"
           }),
         ]),
-        html.pre([attribute.class("card-body")], [html.text(body)]),
+        card_body(body, parsed),
       ])
 
     // Another session's message. The daemon records that it was stored and
@@ -1708,7 +1730,7 @@ fn piece_element(
           ]),
           html.span([attribute.class("receipt")], [html.text("stored")]),
         ]),
-        html.pre([attribute.class("card-body")], [html.text(text)]),
+        card_body(text, parsed),
       ])
 
     turns.Missed(text:, ..) ->

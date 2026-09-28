@@ -33,6 +33,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/advisor_history
+import session_view/agent_roster
 import session_view/block_summary
 import session_view/composer
 import session_view/file_read_view
@@ -1458,6 +1459,9 @@ pub fn entry_lines(
         details_extent(details_expanded),
         block_label(found, 0),
       )
+      |> option.lazy_or(fn() {
+        peer_message_lines(value, details_extent(details_expanded))
+      })
       |> option.lazy_unwrap(fn() {
         message_lines(value, details_expanded, local_owner, found)
       })
@@ -1522,6 +1526,43 @@ fn harness_message_lines(
       value
       |> advisor_payload
       |> option.map(labelled_advisor_lines(_, extent, label))
+  }
+}
+
+// A message another session's agent sent to this strand. It arrives as a
+// user message, but an agent wrote it and the operator did not type it, so
+// it is drawn as the advisor's messages are: a system heading naming where
+// it came from, then its body as Markdown, which is how both hosts draw an
+// agent's prose. The web view's peer card draws the same body the same way.
+fn peer_message_lines(
+  value: message.AgentMessage,
+  extent: notes_view.Extent,
+) -> Option(List(Line)) {
+  case value {
+    message.UserMessage(
+      content:,
+      origin: Some(message.PeerOrigin(session:, strand:)),
+      ..,
+    ) -> {
+      let expanded = case extent {
+        notes_view.Complete -> True
+        notes_view.Excerpt -> False
+      }
+      Some([
+        Line(
+          System,
+          "peer · "
+            <> text_hygiene.single_line(session)
+            <> " · "
+            <> text_hygiene.single_line(strand),
+        ),
+        Line(
+          ToolDetail,
+          content |> user_body |> composer.transcript_text(expanded),
+        ),
+      ])
+    }
+    _ -> None
   }
 }
 
@@ -2424,6 +2465,18 @@ fn tool_result_lines(
       ),
     ]
 
+    // Expanded, a wait shows each child's report as the child's answer
+    // rather than inside the tool's plain text; collapsed, it keeps the one
+    // compact row every result has.
+    "agent_wait", False, Some(json.Object(fields)) ->
+      case details_expanded, list.key_find(fields, "results") {
+        True, Ok(json.Array(results)) -> [
+          Line(ToolResult, "agent_wait"),
+          ..list.flat_map(results, waited_lines)
+        ]
+        _, _ -> plain_result_lines(tool_name, result, details_expanded)
+      }
+
     // The pinned panel carries the board, so a collapsed result names only
     // the progress it left rather than the checklist flattened onto one
     // row; Ctrl+g still shows the whole list the model read back.
@@ -2434,6 +2487,56 @@ fn tool_result_lines(
           plain_result_lines(tool_name, result, details_expanded)
       }
     _, False, _ -> plain_result_lines(tool_name, result, details_expanded)
+  }
+}
+
+// One child's part of an expanded `agent_wait` result, read from the
+// result's details. A ready child's report is its final answer, model prose
+// like the parent's own, so it is drawn as Markdown under a heading that
+// names the child and how its run ended, as the web view's result card
+// draws it. A structured result and notes, when the child left them, follow
+// as they are; a child still working is one row.
+fn waited_lines(value: json.JsonValue) -> List(Line) {
+  case value {
+    json.Object(fields) -> {
+      let child =
+        string_field(fields, "strand")
+        |> option.map(agent_roster.short_name)
+        |> option.unwrap("sub-agent")
+      case string_field(fields, "state") {
+        Some("ready") ->
+          list.flatten([
+            [
+              Line(
+                System,
+                "from sub:"
+                  <> child
+                  <> " · result · "
+                  <> option.unwrap(string_field(fields, "outcome"), "settled"),
+              ),
+              Line(ToolDetail, case string_field(fields, "report") {
+                Some("") | None ->
+                  "(no report: the run ended without a final answer)"
+                Some(report) -> report
+              }),
+            ],
+            case list.key_find(fields, "result") {
+              Ok(result) -> [
+                Line(System, "result · " <> json.to_string(result)),
+              ]
+              Error(Nil) -> []
+            },
+            case list.key_find(fields, "notes") {
+              Ok(json.Object([_, ..]) as notes) -> [
+                Line(System, "notes · " <> json.to_string(notes)),
+              ]
+              _ -> []
+            },
+          ])
+        _ -> [Line(System, "sub:" <> child <> " · still working")]
+      }
+    }
+    _ -> []
   }
 }
 
