@@ -388,19 +388,30 @@ message(#{<<"t">> := <<"incoming">>, <<"text">> := T}) -> {incoming, T}.
 %% one long paragraph, which is the worst case for the live tail: a block
 %% that never closes is parsed on every frame. TUI_PERF_SHAPE=paragraphs
 %% makes every break a blank line instead, so the reply is many short
-%% paragraphs, which is how most answers are written.
+%% paragraphs, which is how most answers are written. TUI_PERF_SHAPE=markdown
+%% writes half the words as bold, code or a link, and opens a new paragraph
+%% as a list item every 48 words, so the Markdown parser does real work on
+%% every frame and the live tail cannot take its plain-text checkpoint.
 delta_text(N) ->
-    Break = case {N rem 12, os:getenv("TUI_PERF_SHAPE")} of
-                {11, "paragraphs"} -> "\n\n";
-                {11, _} -> "\n";
+    Shape = os:getenv("TUI_PERF_SHAPE"),
+    Break = case {N rem 12, N rem 48, Shape} of
+                {11, 47, "markdown"} -> "\n\n- ";
+                {11, _, "paragraphs"} -> "\n\n";
+                {11, _, _} -> "\n";
                 _ -> ""
             end,
+    I = integer_to_list(N),
+    Word = case {Shape, N rem 6} of
+               {"markdown", 1} -> ["**word", I, "**"];
+               {"markdown", 3} -> ["`word", I, "`"];
+               {"markdown", 5} -> ["[word", I, "](https://x.test/", I, ")"];
+               _ -> ["word", I]
+           end,
     iolist_to_binary(json:encode(#{
         <<"v">> => 1, <<"event">> => <<"stream_delta">>,
         <<"body">> => #{<<"strand">> => <<"main">>, <<"op">> => ?OP,
                         <<"ephemeral">> => true, <<"kind">> => <<"text">>,
-                        <<"text">> => iolist_to_binary(
-                            ["word", integer_to_list(N), " ", Break])}})).
+                        <<"text">> => iolist_to_binary([Word, " ", Break])}})).
 
 delta(N) -> {incoming, delta_text(N)}.
 
