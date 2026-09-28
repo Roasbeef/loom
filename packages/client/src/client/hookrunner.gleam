@@ -54,6 +54,7 @@ import broker/budget
 import broker/exec.{type EnforcementDemand}
 import broker/policy
 import core/clock.{type Clock}
+import core/glance
 import core/ids.{type OpId}
 import gleam/bit_array
 import gleam/erlang/process
@@ -61,6 +62,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import tools/tool
 
 /// One command handler the runner can execute, already stripped of the
@@ -326,15 +328,26 @@ fn argv(command: Command) -> List(String) {
 // cancelled or timed-out run reports no text at all — the contract
 // discards a timed-out hook's output, and a decision read out of a
 // half-written stdout would be worse than no decision. A failed
-// clearance keeps the code the bash tool uses for the same story so
-// the caller renders one failure voice, not two.
+// clearance keeps exit 1 and the broker's bounded refusal text. Enforcement
+// entries explain a degraded refusal without exposing the hook's decision.
 fn settled(collected: tool.Collected) -> Outcome {
   case collected.outcome {
-    broker.CallFailed(_) ->
+    broker.CallFailed(exec.DegradedExecution(result))
+      if result.cancelled || result.timed_out
+    ->
       Outcome(
         code: 1,
         stdout: "",
-        stderr: "the sandbox did not settle the hook",
+        stderr: "",
+        capture: Whole,
+        ending: WallCancelled,
+      )
+
+    broker.CallFailed(failure) ->
+      Outcome(
+        code: 1,
+        stdout: "",
+        stderr: glance.clip(hook_failure_text(failure), 2048),
         capture: Whole,
         ending: RanToExit,
       )
@@ -415,5 +428,19 @@ fn result_try(
   case step {
     Ok(value) -> next(value)
     Error(refusal) -> Error(Refused(refusal))
+  }
+}
+
+// The enforcement report belongs to the refusal, not to the hook's stdout.
+// Even a degraded run that printed a decision remains failed and unreadable.
+fn hook_failure_text(failure: exec.ExecFailure) -> String {
+  case failure {
+    exec.DegradedExecution(result) ->
+      tool.exec_failure_text(failure)
+      <> ": "
+      <> string.join(result.enforcement, "; ")
+    exec.DegradedHelper(features) ->
+      tool.exec_failure_text(failure) <> ": " <> string.join(features, "; ")
+    other -> tool.exec_failure_text(other)
   }
 }

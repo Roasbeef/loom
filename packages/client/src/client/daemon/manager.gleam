@@ -35,6 +35,7 @@ import client/distill
 import client/distillpass
 import client/internal/instance_host as host
 import client/internal/instance_owner as custody
+import core/glance
 import core/ids
 import filepath
 import gleam/bit_array
@@ -96,9 +97,10 @@ pub type Error {
   StaleOperation
 
   /// This exact operation's builder returned an error. Distinct from
-  /// `StaleOperation`, which claims the request was overtaken; the daemon log
-  /// carries the classified cause under `daemon.session_start_failed`.
-  StartFailed
+  /// `StaleOperation`, which claims the request was overtaken. The reason is
+  /// one line of at most 2048 UTF-8 bytes, available only through authorized
+  /// reads of this exact operation.
+  StartFailed(reason: String)
 
   /// Parked process preparation failed before session work began.
   Preparation(reason: String)
@@ -733,7 +735,7 @@ type Book(instance) {
     // an operator their request was overtaken when in truth it failed. One
     // entry per session, capped at `limit`, cleared when that session opens
     // again; see `remember_failure`.
-    failed_operations: Dict(String, String),
+    failed_operations: Dict(String, #(String, String)),
     domains: Dict(String, DomainSlot),
     commands: Subject(Message(instance)),
     parent: Pid,
@@ -1258,10 +1260,11 @@ pub fn resolve_incarnation(
   |> result.unwrap(Error(Unavailable))
 }
 
-/// Reads an operation only while its original reservation remains retained.
+/// Reads a retained operation or the exact bounded opening failure.
 ///
-/// A blocked reservation still has an operation identity. Once custody drains,
-/// the registry forgets the operation instead of accumulating terminal history.
+/// A recorded failure takes precedence over a closing reservation's status.
+/// Custody still fences replacement; the next admission clears the failure
+/// memo. Successful operations are forgotten when their custody drains.
 ///
 /// ## Examples
 ///
@@ -1587,21 +1590,19 @@ fn handle(
       sm.keep(book)
     }
     Operation(id, operation, reply) -> {
-      // Compare and observe in one registry turn, including blocked custody.
-      let view = case dict.get(book.slots, id) {
-        Ok(Slot(operation: current, ..)) if current == operation ->
-          catalogue.get(book.catalogue, id)
-          |> result.map_error(Catalogue)
-          |> result.map(fn(record) { View(record, status(book, record)) })
-
-        // No slot answers to this operation. Before calling it stale, ask
-        // whether it is the operation whose builder failed: the terminal that
-        // is polling it deserves the failure rather than a claim that some
-        // replacement overtook it.
-        Ok(Slot(..)) | Error(Nil) ->
-          case dict.get(book.failed_operations, id) == Ok(operation) {
-            True -> Error(StartFailed)
-            False -> Error(StaleOperation)
+      // A recorded opening failure is already final even while its custody
+      // is closing. The operator must see that reason on the first poll;
+      // retirement still owns the separate capacity and replacement fences.
+      let view = case dict.get(book.failed_operations, id) {
+        Ok(#(failed, reason)) if failed == operation ->
+          Error(StartFailed(reason))
+        Ok(_) | Error(Nil) ->
+          case dict.get(book.slots, id) {
+            Ok(Slot(operation: current, ..)) if current == operation ->
+              catalogue.get(book.catalogue, id)
+              |> result.map_error(Catalogue)
+              |> result.map(fn(record) { View(record, status(book, record)) })
+            Ok(Slot(..)) | Error(Nil) -> Error(StaleOperation)
           }
       }
       process.send(reply, view)
@@ -2424,7 +2425,13 @@ fn domain_failed(book: Book(instance), id, operation, reason) {
         )
       dict.fold(book.slots, book, fn(book, session_id, session) {
         case session.domain_id == id {
-          True -> stop_slot(book, session_id)
+          True ->
+            remember_failure(
+              stop_slot(book, session_id),
+              session_id,
+              session.operation,
+              reason,
+            )
           False -> book
         }
       })
@@ -2835,10 +2842,10 @@ fn opened(
         // Cleanup is ordered by the same `stop_slot` a deliberate stop uses,
         // but a build that returned an error is not a stop: the memo is what
         // keeps that distinction observable after the slot is gone. The
-        // reason itself stays out of it — it can name the session path, and
-        // the classified cause already reached the daemon log.
-        Building, Error(_reason) ->
-          remember_failure(stop_slot(book, id), id, operation)
+        // bounded reason survives retirement for the authenticated operator
+        // polling this exact operation. It grants no replacement authority.
+        Building, Error(reason) ->
+          remember_failure(stop_slot(book, id), id, operation, reason)
         WaitingForDomain, _ | Closing, _ | Blocked(_), _ | Running(_), _ -> book
       }
     Ok(_) | Error(Nil) -> book
@@ -2858,6 +2865,7 @@ fn remember_failure(
   book: Book(instance),
   id: String,
   operation: String,
+  reason: String,
 ) -> Book(instance) {
   case
     dict.has_key(book.failed_operations, id)
@@ -2866,7 +2874,10 @@ fn remember_failure(
     True ->
       Book(
         ..book,
-        failed_operations: dict.insert(book.failed_operations, id, operation),
+        failed_operations: dict.insert(book.failed_operations, id, #(
+          operation,
+          glance.clip(reason, 2048),
+        )),
       )
     False -> book
   }

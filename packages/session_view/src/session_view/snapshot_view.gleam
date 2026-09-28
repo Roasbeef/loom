@@ -109,6 +109,8 @@ pub type ToolAvailability {
     registered: List(String),
     /// Why the host could not register code mode, or disabled it explicitly.
     code_mode_issue: Option(String),
+    /// At most 32 startup extension refusals, each at most 2048 UTF-8 bytes.
+    extension_refusals: List(String),
   )
 }
 
@@ -280,11 +282,12 @@ fn decode_tools(fields) {
           }
         }),
       )
+      use refusals <- result.try(decode_extension_refusals(fields))
       use reason <- result.try(field(fields, "code_mode_issue"))
       case reason {
-        json.Null -> Ok(Some(ToolAvailability(registered, None)))
+        json.Null -> Ok(Some(ToolAvailability(registered, None, refusals)))
         json.String(reason) ->
-          Ok(Some(ToolAvailability(registered, Some(reason))))
+          Ok(Some(ToolAvailability(registered, Some(reason), refusals)))
         _ -> Error("invalid code mode diagnostic")
       }
     }
@@ -724,4 +727,33 @@ pub fn has_tool_result(
       _ -> False
     }
   })
+}
+
+// Older daemons omit the additive field. A present list must satisfy its wire
+// bounds before a host adopts any of the captured metadata.
+fn decode_extension_refusals(
+  fields: List(#(String, json.JsonValue)),
+) -> Result(List(String), String) {
+  case list.key_find(fields, "extension_refusals") {
+    Error(Nil) -> Ok([])
+    Ok(json.Array(values)) -> {
+      use <- bool.guard(
+        list.drop(values, 32) != [],
+        Error("too many extension refusals"),
+      )
+      list.try_map(values, fn(value) {
+        case value {
+          json.String(reason) -> {
+            use <- bool.guard(
+              string.byte_size(reason) > 2048,
+              Error("extension refusal is too large"),
+            )
+            Ok(reason)
+          }
+          _ -> Error("invalid extension refusal")
+        }
+      })
+    }
+    Ok(_) -> Error("invalid extension refusals")
+  }
 }

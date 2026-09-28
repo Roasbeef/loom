@@ -2,19 +2,27 @@
 //// The production assembly resolves a deliberately missing helper, while the
 //// real domain uses maintenance-off configuration and never calls a provider.
 
+import client/catalog
 import client/daemon/main
 import client/daemon/manager
 import client/daemon/root
+import client/daemon_server_test as wire
 import client/internal/ffi_os
 import client/owned_assembly_test
 import client/serve
 import core/clock
+import core/glance
 import core/ids
+import core/json
 import filepath
+import gleam/bytes_tree
 import gleam/erlang/process
+import gleam/http/response
 import gleam/int
+import gleam/option.{Some}
 import gleam/string
 import host/bootstrap
+import mist
 import session/session
 import simplifile
 import storage/domain
@@ -23,6 +31,10 @@ import telemetry/field
 import telemetry/level
 import telemetry/log
 import telemetry/record
+import tui/daemon as terminal_control
+import tui/daemon/protocol as terminal_protocol
+import tui/daemon/selection
+import weft/poll
 
 pub fn daemon_start_diagnostic_classifies_missing_helper_without_raw_error_test() {
   let settings = owned_assembly_test.settings()
@@ -143,6 +155,19 @@ pub fn daemon_start_diagnostic_keeps_other_storage_failures_opaque_test() {
 }
 
 pub fn daemon_start_diagnostic_classifies_rejected_domain_configuration_test() {
+  rejected_configuration(MissingRoleModel)
+}
+
+pub fn malformed_toml_reaches_the_operator_with_path_and_parser_context_test() {
+  rejected_configuration(MalformedToml)
+}
+
+type ConfigDefect {
+  MissingRoleModel
+  MalformedToml
+}
+
+fn rejected_configuration(defect: ConfigDefect) {
   let settings = owned_assembly_test.settings()
   let directory = filepath.directory_name(settings.session_path)
   let workspace = directory <> "-workspace"
@@ -150,15 +175,17 @@ pub fn daemon_start_diagnostic_classifies_rejected_domain_configuration_test() {
     as "fixture workspace is outside protected daemon state"
   let private_detail = "diagnostic-private-missing-model"
   let configuration = workspace <> "/loom.toml"
-  let assert Ok(Nil) =
-    simplifile.write(
-      configuration,
+  let contents = case defect {
+    MissingRoleModel ->
       "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED_TEST_KEY\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\nsummarize = [\""
-        <> private_detail
-        <> "\"]\n[memory]\ndistill = \"off\"\n",
-    )
-    as "valid TOML still rejects a role naming an absent model"
-  let assert Ok(config) = main.parse(["--state-dir", directory])
+      <> private_detail
+      <> "\"]\n[memory]\ndistill = \"off\"\n"
+    MalformedToml -> "[roles\nmain = [\"fixture\"]\n"
+  }
+  let assert Ok(Nil) = simplifile.write(configuration, contents)
+    as "the fixture rejects configuration during real domain assembly"
+  let assert Ok(config) =
+    main.parse(["--state-dir", directory, "--bind", "127.0.0.1:0"])
     as "metadata startup must not eagerly validate a domain catalogue"
   let events = process.new_subject()
   let logger = log.new(sink: log.to_subject(events), threshold: level.Error)
@@ -185,19 +212,105 @@ pub fn daemon_start_diagnostic_classifies_rejected_domain_configuration_test() {
       configuration: configuration,
     )
   let observed = process.receive(events, 5000)
+  let assert Ok(view) = created
+    as "creation reserves identity before domain loading"
+  let assert manager.Opening(operation) = view.status
+    as "creation exposes the exact opening operation"
+  let settled =
+    poll.until(within: 5000, every: 5, attempt: fn() {
+      case manager.operation(ready.registry, view.registration.id, operation) {
+        Error(manager.StartFailed(reason)) -> poll.Done(reason)
+        Ok(manager.View(status: manager.Opening(_), ..)) -> poll.Retry
+        Ok(view) ->
+          poll.Fail(
+            "startup polling terminated: " <> string.inspect(view.status),
+          )
+        Error(error) -> poll.Fail(string.inspect(error))
+      }
+    })
+  let assert Ok(serving) =
+    main.listen(config, daemon, fn(_, _) {
+      response.new(501)
+      |> response.set_body(
+        mist.Bytes(bytes_tree.from_string("unused session route")),
+      )
+    })
+    as "the real control listener serves the failed operation"
+  let assert Ok(credential) = root.listener_credential(daemon)
+    as "owner credential is private to the fixture"
+  let #(socket, _) =
+    wire.connect(serving.listener.port, credential, "/v2/control")
+  let _hello = wire.frame(socket, within_ms: 1000)
+  let refused =
+    wire.send(
+      socket,
+      1,
+      "operations.get",
+      json.Object([
+        #("session_id", json.String(view.registration.id)),
+        #("operation", json.String(operation)),
+        #("epoch", json.String(ready.epoch)),
+      ]),
+      within_ms: 1000,
+    )
+  let stale =
+    wire.send(
+      socket,
+      2,
+      "operations.get",
+      json.Object([
+        #("session_id", json.String(view.registration.id)),
+        #("operation", json.String("another-operation")),
+        #("epoch", json.String(ready.epoch)),
+      ]),
+      within_ms: 1000,
+    )
+  let obsolete =
+    wire.send(
+      socket,
+      3,
+      "operations.get",
+      json.Object([
+        #("session_id", json.String(view.registration.id)),
+        #("operation", json.String(operation)),
+        #("epoch", json.String("another-epoch")),
+      ]),
+      within_ms: 1000,
+    )
   let retired = root.shutdown(daemon, within: 10_000)
   assert retired == Ok(Nil)
-  let assert Ok(_) = created
-    as "creation reserves identity before domain loading"
+  assert terminal_protocol.decode(json.to_string(stale))
+    == Ok(terminal_protocol.Refused(
+      Some(2),
+      "stale_operation",
+      "request refused",
+    ))
+  assert terminal_protocol.decode(json.to_string(obsolete))
+    == Ok(terminal_protocol.Refused(Some(3), "stale_epoch", "request refused"))
+  let assert poll.Answered(reason) = settled
+    as "domain failure survives slot retirement"
+  let assert Error(parse_reason) = catalog.parse(contents)
+    as "the catalogue provides the original diagnosis"
+  assert reason == glance.clip(configuration <> ": " <> parse_reason, 2048)
+  assert string.contains(reason, configuration)
+  assert case defect {
+    MissingRoleModel -> string.contains(reason, private_detail)
+    MalformedToml -> string.contains(reason, "not valid toml")
+  }
+  let assert Ok(terminal_protocol.Refused(Some(1), "start_failed", delivered)) =
+    terminal_protocol.decode(json.to_string(refused))
+    as "the terminal decodes the same exact diagnostic"
+  assert delivered == reason
+  assert selection.failure(terminal_control.Refused("start_failed", delivered))
+    == "session startup failed: " <> reason
   let assert Ok(event) = observed
-    as "domain failure emits a classification before operation retirement"
+    as "domain failure emits its class and bounded reason"
   assert event.level == level.Error
   assert event.event == "daemon.domain_start_failed"
   assert event.fields
     == [
       field.text("stage", "domain_assembly"),
       field.text("class", "configuration_rejected"),
+      field.text("reason", reason),
     ]
-  assert !string.contains(record.render(event), private_detail)
-  assert !string.contains(record.render(event), workspace)
 }

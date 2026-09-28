@@ -898,11 +898,11 @@ fn control(
             control_use(request.command),
             within: 1000,
           )
-          |> result.replace_error("unavailable"),
+          |> result.replace_error(#("unavailable", "request refused")),
         )
         use principal <- result.try(
           manager.authenticate(current.registry, digest)
-          |> result.replace_error("unauthorized"),
+          |> result.replace_error(#("unauthorized", "request refused")),
         )
         dispatch(config, state, digest, principal, request.id, request.command)
       }
@@ -943,8 +943,8 @@ fn control(
           }
           #(protocol.event(Some(request.id), event, body), after)
         }
-        Error(code) -> #(
-          refusal(protocol.Fault(Some(request.id), code, "request refused")),
+        Error(#(code, message)) -> #(
+          refusal(protocol.Fault(Some(request.id), code, message)),
           KeepServing,
         )
       }
@@ -1016,7 +1016,44 @@ fn authorized(state: root.Ready(instance), digest, id) {
   |> result.map_error(error_code)
 }
 
+// Startup diagnostics follow the same epoch and membership checks as every
+// operation read. Other control refusals retain their fixed public wording.
 fn dispatch(
+  config: Config(instance),
+  state: root.Ready(instance),
+  digest: access.Digest,
+  principal: access.Principal,
+  reply_to: Int,
+  command: protocol.Command,
+) -> Result(#(String, JsonValue), #(String, String)) {
+  case command {
+    protocol.GetOperation(id, operation, supplied) -> {
+      use Nil <- result.try(
+        epoch(state, supplied) |> result.map_error(control_refusal),
+      )
+      use _ <- result.try(
+        authorized(state, digest, id) |> result.map_error(control_refusal),
+      )
+      manager.operation(state.registry, id, operation)
+      |> result.map_error(fn(error) {
+        case error {
+          manager.StartFailed(reason) -> #("start_failed", reason)
+          other -> control_refusal(error_code(other))
+        }
+      })
+      |> result.map(fn(view) { #("operations.get", view_json(view)) })
+    }
+    _ ->
+      dispatch_class(config, state, digest, principal, reply_to, command)
+      |> result.map_error(control_refusal)
+  }
+}
+
+fn control_refusal(code: String) -> #(String, String) {
+  #(code, "request refused")
+}
+
+fn dispatch_class(
   config: Config(instance),
   state: root.Ready(instance),
   digest,
@@ -1586,7 +1623,7 @@ fn status_json(status) {
 fn error_code(error) {
   case error {
     manager.StaleOperation -> "stale_operation"
-    manager.StartFailed -> "start_failed"
+    manager.StartFailed(..) -> "start_failed"
     manager.Capacity -> "capacity"
     manager.SessionArchived -> "session_archived"
     manager.NotInitialized -> "not_initialized"

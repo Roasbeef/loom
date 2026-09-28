@@ -1,5 +1,17 @@
 # tui
 
+## Operator startup diagnostics
+
+Protocol 055 uses the existing daemon error envelope and credited snapshot.
+`daemon/protocol.decode` accepts at most 2048 UTF-8 bytes of error text;
+`daemon/selection.failure` displays the `start_failed` reason after the
+opening operation's owner has retired. `inbound.configuration_lines` renders
+`snapshot_view.ToolAvailability.extension_refusals` as ordinary startup lines
+on each adopted capture, including reconnects. It carries the installed name,
+refusal reason and existing remove-then-install guidance. The shared decoder
+owns the list and byte bounds; the terminal adds no diagnostic authority.
+
+
 ## Agent workspace
 
 `Ctrl+O`, `F2` and `/agents` open `agents.Inspector`, whose selection is a strand ID.

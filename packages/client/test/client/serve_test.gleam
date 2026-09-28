@@ -53,6 +53,8 @@ import runtime/api
 import runtime/effects
 import session/session
 import session_view/connection_event
+import session_view/snapshot
+import session_view/snapshot_view
 import simplifile
 import storage/sqlite
 import support/addresses
@@ -61,7 +63,10 @@ import support/provider as provider_test
 import telemetry/level
 import telemetry/log
 import telemetry/record
+import tui
 import tui/connection
+import tui/inbound
+import tui/workspace
 import weft
 import weft/poll
 import weft/registry as address
@@ -339,6 +344,7 @@ pub fn boot_serves_healthz_and_ws_subscribe_test() {
     as "the daemon rejects an unauthenticated request"
   assert control_response.status == 401
   subscribed_cut(serving, instance, incarnation, token)
+  subscribed_cut(serving, instance, incarnation, token)
 }
 
 // The root remains outside the bounded assertion task, so a failed wire or
@@ -346,9 +352,23 @@ pub fn boot_serves_healthz_and_ws_subscribe_test() {
 fn with_daemon_instance(run) {
   // Default prompt rendering checks the helper's advertised jail capabilities.
   // Its peer must speak the helper protocol and confirm retirement at shutdown.
+  let fixture_root = fresh_instance_root()
+  let fixture_home = absolute(fixture_root) <> "/operator-home"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      fixture_home <> "/.loom/extensions/web_search",
+    )
+    as "a refused installed extension is present on disk"
+  let assert Ok(Nil) =
+    simplifile.write(
+      fixture_home <> "/.loom/extensions/web_search/install.json",
+      "{\"format\":1}",
+    )
+    as "an old install record is retained for diagnosis"
   let settings =
     serve.Settings(
-      ..settings_under(fresh_instance_root()),
+      ..settings_under(fixture_root),
+      home: Some(fixture_home),
       helper_path: absolute("../sandbox/loom-exec"),
     )
   let assert Ok(config) =
@@ -454,7 +474,61 @@ fn subscribed_cut(
   assert wire_field(begin, "epoch") == json.String(serving.ready.epoch)
   assert wire_field(begin, "incarnation") == json.String(incarnation)
   assert wire_field(begin, "role") == json.String("owner")
-  assert transfer.drain(socket, snapshot_id, 0, [], 32, within_ms: 1000) != []
+  let chunks = transfer.drain(socket, snapshot_id, 0, [], 32, within_ms: 1000)
+  let bytes =
+    chunks
+    |> list.filter(fn(chunk) {
+      wire_field(chunk, "record_id") == json.String("metadata")
+    })
+    |> list.map(fn(chunk) {
+      let assert json.String(data) = wire_field(chunk, "data")
+        as "snapshot metadata is base64"
+      let assert Ok(bytes) = bit_array.base64_decode(data)
+        as "snapshot metadata decodes"
+      bytes
+    })
+    |> bit_array.concat
+  let assert Ok(text) = bit_array.to_string(bytes)
+    as "captured metadata is UTF-8"
+  let assert Ok(metadata) = json.parse(text) as "captured metadata is JSON"
+  let availability = wire_field(metadata, "tool_availability")
+  let assert json.Array([json.String(notice)]) =
+    wire_field(availability, "extension_refusals")
+    as "the real assembly carries refusal to every authenticated attachment"
+  assert string.contains(notice, "Extension web_search refused:")
+  assert string.contains(notice, "format 1")
+  assert string.contains(notice, "loom ext remove web_search")
+  assert string.contains(notice, "loom ext install <source>")
+  let assert json.Array(names) = wire_field(availability, "registered")
+    as "actual dispatch registry is reported"
+  assert !list.contains(names, json.String("web_search"))
+
+  // The terminal renders the same notice from the credited production capture.
+  let assert json.Int(next_seq) = wire_field(begin, "next_seq")
+    as "the fixture preserves the production cut frontier"
+  let captured =
+    snapshot.Captured(
+      snapshot.Attachment(
+        snapshot.Expected(id, serving.ready.epoch, incarnation),
+        "fixture",
+        message.Origin("fixture", "Fixture owner"),
+        snapshot.Owner,
+      ),
+      next_seq,
+      metadata,
+      snapshot.Window([], 0, None),
+      None,
+    )
+  let assert Ok(view) = snapshot_view.decode(captured)
+    as "the shared total decoder adopts the bounded refusal"
+  let terminal =
+    inbound.apply_cut(
+      tui.new_model(connection.new_inbox(), workspace.Context("fixture", None)),
+      captured,
+      view,
+    )
+  assert list.any(terminal.transcript, fn(line) { line.text == notice })
+    as "the refusal is an operator startup line rather than daemon-log-only text"
   let _closed = ffi_ws.tcp_close(socket)
   Nil
 }

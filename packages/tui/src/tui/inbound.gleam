@@ -854,7 +854,11 @@ fn configuration_lines(view: snapshot_view.View, active: String) {
         <> view.settings.tool_execution
         <> changed_by(view.settings.origin),
     ),
-    ..configuration
+    ..list.append(configuration, case view.tools {
+      None -> []
+      Some(tools) ->
+        list.map(tools.extension_refusals, fn(reason) { Line(System, reason) })
+    })
   ]
 }
 

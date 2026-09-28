@@ -431,10 +431,16 @@ A successful reply's `event` name is the command name. A failure is an
 `reply_to`.
 Source: (`client/daemon/server.gleam:403-435`).
 
-Every failure the dispatcher itself produces carries the fixed message
-`request refused`; the code is the machine-readable part and the message
-never quotes the request or a private path.
-Source: (`client/daemon/server.gleam:429-433`).
+Dispatcher refusals carry `request refused`, except an authorized exact
+`operations.get` startup failure (protocol 055). Its `start_failed` code
+remains machine-readable and its message preserves one line of at most 2048
+UTF-8 bytes, including the configuration path and available parser context.
+The recorded failure precedes live `stopping` status while cleanup retains
+the slot. Diagnostic reads release no capacity or replacement fence; the
+next admitted operation clears the old failure memo.
+Credential, membership and epoch checks precede that read; other failures
+never quote the request or a private path.
+Source: (`client/daemon/server.gleam:1016`).
 
 ### 3.3 `status`
 
@@ -529,7 +535,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:1286`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:1319`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1289,7 +1295,7 @@ state: everything a client needs besides the entries themselves.
 | `peers` | array | required | Presence roster at capture time; same shape as the `presence` event's entries. |
 | `stream_preview` | object or null | required | A bounded, discontinuous sample of a live request, or `null`. |
 | `pending_inputs` | array | optional | Host-held input ordered by priority and arrival; empty authoritatively clears the queue. |
-| `tool_availability` | object or null | optional | Actual registered names and an optional code-mode boot diagnostic. |
+| `tool_availability` | object or null | optional | Actual registered names, optional code-mode boot diagnostic, and bounded extension startup refusals. |
 
 Source: (`client/gateway.gleam:1393-1437`).
 
@@ -1323,8 +1329,15 @@ Source: (`client/gateway.gleam:1849-1857`).
 and `text` (at most 512 UTF-8 bytes). The ID combines connection and request
 identity; repeated text is not interchangeable. The host retains the full
 message and author. Unadmitted input has the gateway's transient lifetime.
-`tool_availability` contains `registered` (names) and `code_mode_issue` (text
-or null). Strand configuration still decides which registered tools are enabled.
+`tool_availability` contains `registered` (names), `code_mode_issue` (text
+or null), and optional `extension_refusals` (protocol 055). A missing refusal
+list means no reported refusals; a present list holds at most 32 strings of
+2048 UTF-8 bytes each. Wrong types or excess bounds refuse the whole capture.
+Each assembly notice names the extension, its refusal and the existing
+remove-then-install guidance. Above 32 refusals, the first 31 are followed by
+a notice pointing at `loom ext list`. These immutable startup observations
+reach every attachment and reconnect. Strand configuration still decides
+which registered tools are enabled.
 
 ### 4.4 `subscribe`
 
@@ -1347,7 +1360,7 @@ single strand's chain. Source: (`client/gateway.gleam:1353-1356`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:1931`).
+`wrong_session`. Source: (`client/gateway.gleam:1956`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1615,7 +1628,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:5767`).
+   is `stale_approval`. Source: (`client/gateway.gleam:5796`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -2945,7 +2958,7 @@ Sources: (`client/protocol.gleam:489-517`),
 | `forbidden` | An owner-only command from a member, or an observer opening a session. | Disable the control. |
 | `stale_epoch` | The supplied epoch is not the daemon's current one. | Re-read `hello` and retry with the new epoch. |
 | `stale_operation` | `operations.get` named an operation from a replaced incarnation. | Re-read the session's status. |
-| `start_failed` | `operations.get` named the operation of an open whose builder returned an error. Distinct from `stale_operation`, which claims the request was overtaken. | Read `daemon.session_start_failed` in the daemon log for the classified cause, then decide whether to retry. |
+| `start_failed` | `operations.get` named the operation of an open whose builder returned an error. Distinct from `stale_operation`, which claims the request was overtaken. | Display the bounded startup reason in `message`, then decide whether to retry; the daemon log retains the classified cause. |
 | `revision_changed` | `sessions.list` supplied a revision that no longer holds. | Restart the listing from the empty cursor. |
 | `metadata_too_large` | A single session record exceeds the page budget. | Report; nothing to page around. |
 | `isolation_required` | `sessions.invite` or a membership-creating `sessions.set_role` on a workspace-private session. | Offer `sessions.isolate` first. |
@@ -3251,7 +3264,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3358`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:3387`) and `navigating`
    (`client/gateway.gleam:3027`).
 
 9. **The spec's control command list is incomplete.**

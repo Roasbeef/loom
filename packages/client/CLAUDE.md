@@ -1,5 +1,37 @@
 # client
 
+## Operator startup diagnostics
+
+Protocol 055 records the bounded operator diagnostics contract. The manager's
+`StartFailed(reason)` retains one line of at most 2048 UTF-8 bytes in the
+existing capacity-capped operation memo. Both session builder errors and
+failed domain construction memo the initiating session operation before
+cleanup; `daemon/server.dispatch` sends that reason only after epoch and
+session authority checks for `operations.get`. Exact failures precede live
+`Stopping` status while retirement holds the reservation; next admission
+clears the old memo before builder publication. The log retains the domain
+failure class and adds the same bounded configuration reason. Retirement
+still owns replacement permission; a diagnostic is never custody evidence.
+
+`serve.extension_registrations` returns the successful registrations and
+bounded refusal notices from the same discovery. `gateway.with_extension_refusals`
+captures at most 32 notices of 2048 bytes in `Options` and actor state;
+`captured_transfer` includes them in `tool_availability.extension_refusals`
+for every authenticated snapshot. Assembly reports up to 32 refusals, or the first 31 and an
+explicit `loom ext list` overflow notice. Reinstall guidance follows the
+existing remove-then-install policy. Refused extensions register no tools.
+
+`hookrunner.settled` preserves broker failure text in bounded stderr while
+keeping exit 1 and empty stdout. A degraded execution includes the exact
+enforcement entries; a timed-out or cancelled degraded execution instead
+returns `WallCancelled` with both streams empty. `hook_diagnostic_test`
+proves these outcomes through the real broker and helper wire protocol,
+independent of host enforcement availability.
+This proof ends at `hookrunner.Outcome`: existing compatibility consumers
+may discard exit-1 stderr. Transcript or debug-log delivery through those
+consumers is not established, and their decision policy is unchanged.
+
+
 ## Remembered permission decisions
 
 `permissions` owns `fact.custom/client/permission_grants`, separate from the
@@ -2729,10 +2761,10 @@ no `env_allow`, and `policy.summary` counts bindings rather than naming
 values. `client/extension_e2e_test` reads the `LaunchSpec` and taps every
 frame in both directions and asserts the value appears in neither.
 
-**Boot registration is in `serve.assemble`.** `extension_contributions`
+**Boot registration is in `serve.assemble`.** `extension_registrations`
 reads `installed.discover(record.root_for(Settings.home))`, logs each
-`Refused` under `extension.refused` (an operator who sees nothing cannot
-tell "broken" from "I imagined it"), logs `extension.unavailable` for a
+`Refused` under `extension.refused` and retains its bounded operator notice,
+ logs `extension.unavailable` for a
 `Ready` on a host with no toolchain — no `erl` means no satellite, and
 registering tools that can only fail would put them in the provider's
 cached byte prefix — and returns *both* halves of one discovery: the
