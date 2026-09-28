@@ -85,6 +85,7 @@ import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/turns
 import web_view/markdown_view
+import web_view/view/heading
 
 /// The most frames one `Arrived` carries: the frame the selector matched
 /// and up to this many less one already waiting behind it.
@@ -1258,16 +1259,11 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   ])
 }
 
-/// The page's heading: the session's name, the workspace it runs in, and
-/// the connection's status.
+/// The page's heading, drawn by `web_view/view/heading` from the session's
+/// identity, the catalogue's label and the connection's status.
 ///
-/// The name is the catalogue's label, or the session's identity shortened
-/// to its first eight characters when it has none; the whole identity is
-/// the heading's `title`. The workspace is drawn as its last path segment,
-/// with the whole path in a `title`. Both are text nodes and attribute
-/// values that Lustre escapes. The catalogue's fields are written by the
-/// owner and the host, never by the session's agent, and a `title` is
-/// inert, so neither needs the stricter handling transcript text gets.
+/// The heading module takes the label's two fields and the status's words
+/// as plain values, because it cannot import the types this module defines.
 ///
 /// ## Examples
 ///
@@ -1275,46 +1271,21 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 /// // component.heading(model)
 /// ```
 pub fn heading(model: Model(socket)) -> Element(message) {
-  html.header([attribute.class("session-head")], [
-    html.h1([attribute.title(model.session_id)], [
-      html.text(session_name(model.session_id, model.label)),
-    ]),
-    workspace(model.label),
-    html.p([attribute.class("status"), attribute.role("status")], [
-      html.text(status_text(model.status)),
-    ]),
-  ])
+  heading.view(
+    session_id: model.session_id,
+    name: option.map(model.label, fn(label) { label.name }),
+    workspace: option.map(model.label, fn(label) { label.workspace }),
+    status: status_text(model.status),
+  )
 }
 
-// A session with no name, or none the host could read, is named by its
-// identity's first eight characters. The whole identity is in the
-// heading's `title`, so the shortening loses nothing a reader can need.
-fn session_name(session_id: String, label: Option(Label)) -> String {
-  case label {
-    Some(Label(name: "", ..)) | None ->
-      "Session " <> string.slice(session_id, 0, 8)
-    Some(Label(name:, ..)) -> name
+// The connection's status as the heading words it.
+fn status_text(status: Status) -> String {
+  case status {
+    Connecting -> "connecting"
+    Following -> "following"
+    Ended(reason:) -> "disconnected: " <> reason
   }
-}
-
-// The workspace's last path segment, or nothing when it is unknown. The
-// heading keeps three children either way, so the status line keeps its
-// place in the tree.
-fn workspace(label: Option(Label)) -> Element(message) {
-  case label {
-    Some(Label(workspace: "", ..)) | None -> element.none()
-    Some(Label(workspace:, ..)) ->
-      html.span([attribute.class("workspace"), attribute.title(workspace)], [
-        html.text(basename(workspace)),
-      ])
-  }
-}
-
-fn basename(path: String) -> String {
-  string.split(path, "/")
-  |> list.filter(fn(segment) { segment != "" })
-  |> list.last
-  |> result.unwrap(path)
 }
 
 /// The agent strip: one chip per listed strand, the advisor's chip last,
@@ -1771,14 +1742,6 @@ fn block_element(
     [attribute.class("block")],
     list.map(block.rows, fn(row) { line_row(row.1, draw) }),
   )
-}
-
-fn status_text(status: Status) -> String {
-  case status {
-    Connecting -> "connecting"
-    Following -> "following"
-    Ended(reason:) -> "disconnected: " <> reason
-  }
 }
 
 fn line_element(line: Line) -> Element(message) {
