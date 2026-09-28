@@ -48,6 +48,7 @@
 //// from the output wherever it stands; any other line that merely looks
 //// like one is paragraph text.
 
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -438,8 +439,12 @@ fn block_line(indent: Int, rest: String, context: Context) -> Line {
 // not read, stays text rather than vanishing. A footnote definition is a
 // container, so past `max_depth` it is text as well.
 fn definition_line(rest: String, context: Context) -> Result(Line, Nil) {
-  case rest {
-    "[^" <> _ -> {
+  // Most text defines nothing, and a line opening with a bracket is then
+  // paragraph text without reading it as a definition.
+  let notes = set.is_empty(context.refs.notes)
+  let links = dict.is_empty(context.refs.links)
+  case rest, notes, links {
+    "[^" <> _, False, _ -> {
       use #(label, content) <- result.try(note_definition(rest))
       case
         context.depth < max_depth && set.contains(context.refs.notes, label)
@@ -448,14 +453,14 @@ fn definition_line(rest: String, context: Context) -> Result(Line, Nil) {
         False -> Error(Nil)
       }
     }
-    "[" <> _ -> {
+    "[" <> _, _, False -> {
       use #(label, _) <- result.try(link_definition(rest))
       case dict.has_key(context.refs.links, label) {
         True -> Ok(DefinitionLine)
         False -> Error(Nil)
       }
     }
-    _ -> Error(Nil)
+    _, _, _ -> Error(Nil)
   }
 }
 
@@ -700,11 +705,21 @@ fn take_digits(text: String, digits: String, count: Int) -> #(String, String) {
   }
 }
 
-// The character classes below are tested by containment in a string of
-// ASCII characters. A grapheme is one user-perceived character, and no
-// grapheme is made of two of these, so containment is membership.
+// The character classes below are ranges of ASCII, tested on the byte of a
+// one-byte grapheme. A grapheme of more than one byte belongs to none of
+// them. Reading the byte costs nothing, where testing containment in a
+// string of the class's characters built a search pattern for every
+// grapheme the parser looked at, which was a measurable part of a frame.
+fn ascii(grapheme: String) -> Int {
+  case bit_array.from_string(grapheme) {
+    <<byte>> -> byte
+    _ -> -1
+  }
+}
+
 fn is_digit(grapheme: String) -> Bool {
-  string.contains("0123456789", grapheme)
+  let byte = ascii(grapheme)
+  byte >= 0x30 && byte <= 0x39
 }
 
 // The lines of a quote after its first. A line carrying its own `>` stays
@@ -1262,14 +1277,28 @@ fn unquoted(line: String) -> String {
   }
 }
 
+// A definition's label is closed by `]:`, so a line opening with a bracket
+// but holding no such pair is passed over before it is read grapheme by
+// grapheme.
 fn define(rest: String, refs: Refs) -> Refs {
+  case rest {
+    "[" <> _ ->
+      case string.contains(rest, "]:") {
+        True -> defined(rest, refs)
+        False -> refs
+      }
+    _ -> refs
+  }
+}
+
+fn defined(rest: String, refs: Refs) -> Refs {
   case rest {
     "[^" <> _ ->
       case note_definition(rest) {
         Ok(#(label, _)) -> Refs(..refs, notes: set.insert(refs.notes, label))
         Error(Nil) -> refs
       }
-    "[" <> _ ->
+    _ ->
       case link_definition(rest) {
         Ok(#(label, destination)) ->
           case dict.has_key(refs.links, label) {
@@ -1279,7 +1308,6 @@ fn define(rest: String, refs: Refs) -> Refs {
           }
         Error(Nil) -> refs
       }
-    _ -> refs
   }
 }
 
@@ -1651,8 +1679,14 @@ fn escaped(
   }
 }
 
+// ASCII punctuation: `!` to `/`, `:` to `@`, `[` to the backtick, and `{`
+// to `~`.
 fn is_punctuation(grapheme: String) -> Bool {
-  string.contains("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", grapheme)
+  let byte = ascii(grapheme)
+  { byte >= 0x21 && byte <= 0x2F }
+  || { byte >= 0x3A && byte <= 0x40 }
+  || { byte >= 0x5B && byte <= 0x60 }
+  || { byte >= 0x7B && byte <= 0x7E }
 }
 
 fn code_span(input: List(String), position: Int, state: Scan) -> List(Inline) {
@@ -2245,10 +2279,10 @@ fn is_domain_label(label: String) -> Bool {
 }
 
 fn is_alphanumeric(grapheme: String) -> Bool {
-  string.contains(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-    grapheme,
-  )
+  let byte = ascii(grapheme)
+  { byte >= 0x30 && byte <= 0x39 }
+  || { byte >= 0x41 && byte <= 0x5A }
+  || { byte >= 0x61 && byte <= 0x7A }
 }
 
 // A bare link, as GitHub's autolink extension has it: `http://`, `https://`
@@ -2420,10 +2454,10 @@ fn is_scheme(scheme: String) -> Bool {
   length >= 2
   && length <= 32
   && list.all(string.to_graphemes(scheme), fn(grapheme) {
-    string.contains(
-      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-",
-      grapheme,
-    )
+    is_alphanumeric(grapheme)
+    || grapheme == "+"
+    || grapheme == "."
+    || grapheme == "-"
   })
 }
 
