@@ -64,7 +64,6 @@ import session_view/transcript_line.{
 import session_view/worktree_view
 import tui/admission
 import tui/agent_strip
-import tui/agents
 import tui/appearance
 import tui/attachment
 import tui/attempt_replay
@@ -607,7 +606,6 @@ pub fn new_model_with_clock(
       note_mode: note_panel.Readable,
       note_scroll: 0,
       overlay: NoOverlay,
-      agent_summary: agents.summary(strands),
       strip_focus: agent_strip.Composing,
       local_options: None,
       candidate: attachment.idle(),
@@ -1522,6 +1520,7 @@ pub fn replay_steps(
     let fresh =
       new_model(inbox, workspace.Context(path: "replay", branch: None))
     Model(
+      ..fresh,
       shared: Shared(
         ..fresh.shared,
         peer: Replaying,
@@ -1538,7 +1537,6 @@ pub fn replay_steps(
         reviewer_rows: [],
         notice: "replaying",
       ),
-      view: tui_model.View(..fresh.view, agent_summary: agents.summary([])),
     )
   }
   use run <- result.try(run_script(
@@ -1661,6 +1659,7 @@ pub fn connect_remote(
 
 fn live_base(base: Model) -> Model {
   Model(
+    ..base,
     shared: Shared(
       ..base.shared,
       peer: Disconnected,
@@ -1677,7 +1676,6 @@ fn live_base(base: Model) -> Model {
       advisor_history: advisor_history.Board(items: [], unloaded: None),
       notice: "select a saved session or create one",
     ),
-    view: tui_model.View(..base.view, agent_summary: agents.summary([])),
   )
 }
 

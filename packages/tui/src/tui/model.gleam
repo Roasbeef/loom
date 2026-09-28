@@ -440,9 +440,6 @@ pub type View {
     note_scroll: Int,
     /// The modal surface that has the keyboard, if any.
     overlay: Overlay,
-    /// The footer's agent count, derived from the strands or agent rows
-    /// when they change.
-    agent_summary: String,
     /// Whether the pinned agent strip or the composer has the keyboard, and
     /// the strip's cursor.
     strip_focus: agent_strip.Focus,

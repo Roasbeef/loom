@@ -906,12 +906,7 @@ fn render_cut(
       },
       transcript:,
     ),
-    view: View(
-      ..model.view,
-      agent_summary: agents.summary_rows(rows),
-      strand_workspaces: workspaces,
-      cache_outlook:,
-    ),
+    view: View(..model.view, strand_workspaces: workspaces, cache_outlook:),
   )
   |> settle_pending_cache(cut.next_seq)
   |> reconcile_agent_message_selection
@@ -1293,22 +1288,12 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           notice: "session synchronized",
           transcript: [Line(System, "attached to session " <> session)],
         ),
-        view: View(
-          ..model.view,
-          agent_summary: agents.summary(strands),
-          record_gutters: [],
-          scroll_offset: 0,
-        ),
+        view: View(..model.view, record_gutters: [], scroll_offset: 0),
       )
       |> tui_model.invalidate_transcript
     }
-    protocol.StrandsSnapshot(strands:) -> {
-      let summary = agents.summary(strands)
-      Model(
-        shared: Shared(..model.shared, strands:),
-        view: View(..model.view, agent_summary: summary),
-      )
-    }
+    protocol.StrandsSnapshot(strands:) ->
+      Model(..model, shared: Shared(..model.shared, strands:))
     protocol.SkillsSnapshot(page:) -> {
       let previous = case page.offset {
         0 -> []
@@ -1609,6 +1594,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
 
       let updated =
         Model(
+          ..model,
           shared: Shared(
             ..model.shared,
             submitting:,
@@ -1625,7 +1611,6 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
             },
             notice: strand <> ": " <> phase,
           ),
-          view: View(..model.view, agent_summary: agents.summary(strands)),
         )
       let settled = settle_interrupt(updated, strand, phase)
       case phase == "done" && strand == model.shared.active_strand {
