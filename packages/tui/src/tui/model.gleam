@@ -111,6 +111,7 @@ import tui/queue_editor
 import tui/recording
 import tui/selection
 import tui/session_selector
+import tui/step_effect
 import tui/summary_panel
 import tui/terminal_lane
 import tui/transcript_anchor
@@ -1040,7 +1041,7 @@ pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
   let #(channel, outputs) = session_channel.take_outputs(channel)
   let outbox =
     list.fold(outputs, model.shared.outbox, fn(outbox, output) {
-      [effect.Channel(output), ..outbox]
+      [effect.Step(step_effect.Lane(output)), ..outbox]
     })
   Model(
     ..model,
@@ -1139,15 +1140,44 @@ pub fn emit_attachment(model: Model, output: attachment.Out) -> Model {
 
 /// Queues one line for the model's recording, if the terminal is recording.
 ///
+/// `start_step` queues each input's line through this. A message that
+/// arrived with no lane is queued by `record_arrival` instead.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// tui_model.record(model, recording.Arrived(connection_event.Connected))
+/// tui_model.record(model, recording.Key("enter"))
 /// ```
 @internal
 pub fn record(model: Model, event: recording.Recorded) -> Model {
   case model.shared.recorder {
     Some(recorder) -> emit(model, effect.Record(recorder, event))
+    None -> model
+  }
+}
+
+/// Queues the recording line for a message that arrived while the model
+/// held no lane, if the terminal is recording.
+///
+/// The line is a session reducer's decision, so it is queued as the step
+/// effect `Recorded` rather than as a terminal `Record`. The runtime writes
+/// it as `recording.Arrived(message)`, the untagged arrival the preview
+/// peer has always written, so the recording's bytes do not depend on
+/// which of the two effects carried the line.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.record_arrival(model, connection_event.Connected)
+/// ```
+@internal
+pub fn record_arrival(
+  model: Model,
+  message: connection_event.Message,
+) -> Model {
+  case model.shared.recorder {
+    Some(recorder) ->
+      emit(model, effect.Step(step_effect.Recorded(recorder, message)))
     None -> model
   }
 }

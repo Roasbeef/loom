@@ -62,6 +62,7 @@ import tui/keymap
 import tui/model.{type Model, Model, Shared, View} as tui_model
 import tui/msg.{type Msg, type Stamp, Stamp}
 import tui/recording
+import tui/step_effect
 import tui/terminal_lane
 import weft
 
@@ -422,7 +423,7 @@ fn perform_one(
     effect.StartJob(key, spec) -> job_runner.start(running, key, spec)
     effect.CancelJob(key) -> job_runner.cancel(running, key)
     effect.CloseControl(control) -> job_runner.close_control(running, control)
-    effect.Channel(_)
+    effect.Step(_)
     | effect.Attachment(_)
     | effect.CloseSocket(_)
     | effect.Discard(_)
@@ -438,7 +439,9 @@ fn perform_one(
 
 fn perform_io(requested: Effect) -> Nil {
   case requested {
-    effect.Channel(output) -> terminal_lane.perform(output)
+    effect.Step(step_effect.Lane(output)) -> terminal_lane.perform(output)
+    effect.Step(step_effect.Recorded(recorder, message)) ->
+      recording.append(recorder, recording.Arrived(message))
     effect.Attachment(output) -> attachment.perform(output)
     effect.CloseSocket(socket) -> connection.close(socket)
     effect.Discard(inbox) -> buffered.discard(inbox)

@@ -28,6 +28,7 @@ import tui/effect.{type Effect}
 import tui/job
 import tui/model as tui_model
 import tui/runtime
+import tui/step_effect
 import tui/terminal_lane
 import tui/workspace
 import tui_test/pushed
@@ -102,7 +103,7 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   assert quit.shared.outbox == []
   assert effects
     == [
-      effect.Channel(session_channel.Shut(socket)),
+      effect.Step(step_effect.Lane(session_channel.Shut(socket))),
       effect.CancelJob(replacement),
       effect.Attachment(attachment.Abandon(attempt)),
       effect.CancelJob(request),
@@ -229,7 +230,7 @@ fn is_clipboard_write(requested: Effect) -> Bool {
 
 fn is_write(requested: Effect) -> Bool {
   case requested {
-    effect.Channel(session_channel.Transmit(..)) -> True
+    effect.Step(step_effect.Lane(session_channel.Transmit(..))) -> True
     effect.Attachment(attachment.FromChannel(session_channel.Transmit(..))) ->
       True
     _ -> False
