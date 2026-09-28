@@ -1046,6 +1046,8 @@ pub fn unsent_composer_locks_then_cancels_without_abort_or_draft_copy_test() {
   assert cancelled.shared.attachments == model.shared.attachments
   assert cancelled.shared.next_id == model.shared.next_id
     as "Escape cancels unsent intent without emitting abort"
+  assert cancelled.view.queue_editor.message == "cancelled by Escape"
+    as "every frame the lane did not send is shown to the queue editor"
   let ended = finish_model(cancelled, remaining)
   assert ended.shared.next_id == model.shared.next_id
     as "later End cannot resurrect cancelled intent"

@@ -358,7 +358,8 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/session_model`: the session state, `Shared(socket, recorder,
   source, replay_source)`, the types it names (`Peer`, `Interrupt`,
   `SubmissionSource`, `UnconfirmedSubmission`, `ConnectionBacklog`,
-  `GoalReport`, `ReturnedDraft`), and the functions over `Shared` alone. `Shared` is what a
+  `GoalReport`, `ReturnedDraft`, `GoalObservation`), and the functions
+  over `Shared` alone. `Shared` is what a
   second host would need (what the daemon said, what was sent and not yet
   committed, the reads in flight, the presentation revisions) and the four
   host handles, typed by its parameters: `channel` is
@@ -369,6 +370,13 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   parameters because the terminal reads them from differently typed
   subjects. `Shared.outbox` holds the `step_effect.Effect` values a
   function over `Shared` decided, newest first, and is empty between calls.
+  Three fields record what a shared call means for a host's editors, so
+  that the call need not write them: `drafts_sent` counts the composer
+  drafts the lane has sent, `queue_notices` holds the
+  `queue_request.Notice` values (`Refused(reason)`, `Dropped(message)`) the
+  queue editor has not shown, and `goal_observations` holds the
+  `GoalObserved(board)` and `GoalUnavailable(reason)` entries the goal
+  inspector has not shown. Both lists are empty between calls.
   The functions are the writers `append_system`, `append_error`,
   `append_notice`, `invalidate_transcript`, `invalidate_frame`,
   `mark_activity` (bumps `activity_revision` only), `hold_channel` (stores
@@ -388,11 +396,19 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `hold_shared(model, shared)` is how a terminal reducer stores the result
   of any function over `Shared`: it moves `Shared.outbox` into
   `View.outbox`, wrapped as `effect.Step`, at the point of the call, so
-  lane effects keep their order with the terminal's own, and it resets
-  `View.quiet_for_ms` when `activity_revision` moved. The writers above
-  keep terminal forms here of the same names, each a `hold_shared` of the
-  shared call; the readers have none, so a caller passes `model.shared` to
-  the `session_model` function.
+  lane effects keep their order with the terminal's own, and it applies
+  the terminal's consequences of what the call recorded, at the point of
+  the call: it resets `View.quiet_for_ms` when `activity_revision` moved,
+  empties the composer (`clear_composer`) when `drafts_sent` moved, hands
+  each queue notice to `queue_editor.show`, and applies each goal
+  observation to an open goal inspector. `run_shared(model, reducer)` is
+  `hold_shared(model, reducer(model.shared))`, for a pipeline of shared
+  calls such as the tick's reads. The writers above keep terminal forms
+  here of the same names, each a `hold_shared` of the shared call, and so
+  do `tui/outbound`'s `send_frame`, `send_via` and `apply_submission`; the
+  readers have none, so a caller passes `model.shared` to the shared
+  function. `clear_composer` and `clear_composer_text` are the terminal's
+  and live here.
   `View` is the terminal's own state (screen size, composer, panels,
   overlays, the row projection's outputs, pacing, clocks and
   `View.wall_ms`, the daemon-control and attachment job slots, the step's
@@ -513,10 +529,27 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   transcript width and height.
 - `tui/render`: `view`, `cached_frame` and `render_frame`; a pure function of
   the model.
-- `tui/outbound`: `send_frame`, `apply_submission` and `mutation_refusal`.
-- `tui/surfaces`: the `service_*_read` functions, their reply handlers and the
-  `sync_*` edge detectors for notes, the queue, the worktree diff, live jobs,
-  context, advisor nudges and the goal.
+- `tui/outbound`: `send_frame`, `send_via`, `apply_submission`,
+  `discard_own_turn`, `waiting_notice`, `mutation_refusal` and
+  `mutating_submission`, all over `Shared` alone. A sent
+  `ComposerSubmission` empties `attachments` and bumps `drafts_sent`; a
+  frame the lane did not send appends `queue_request.Refused(reason)`.
+  Terminal reducers call `tui_model.send_frame`, `send_via` and
+  `apply_submission`, or `tui_model.run_shared` for the others.
+- `tui/surfaces`: the `service_*` reads (`service_todo_seed`,
+  `service_notes_read`, `service_queue_read`, `service_worktree_read`,
+  `service_jobs_read`, `service_advisor_nudges_read`,
+  `service_block_summaries`, `service_goal_read`, `service_context_read`)
+  and the receivers (`receive_jobs`, `receive_goal`,
+  `receive_advisor_nudges`, `retire_delivered_nudges`, `refuse_goal`), all
+  over `Shared` alone; a dropped queue read appends
+  `queue_request.Dropped`, and a goal board or failed goal read appends a
+  `GoalObservation`. The functions that open a surface or read its target
+  (`refresh_notes`, `select_note`, `open_summary`, `open_context`,
+  `request_goal_status`, `notes_target`, `notes_surface`) and the `sync_*`
+  edge detectors still take the whole model. The summary's job cursor
+  follows its job in `inbound.receive_jobs`, after the shared receiver,
+  through `summary_panel.follow_selected_job`.
 - `tui/inbound`: `drain_connection`, `accept_connection_message`,
   `apply_channel_update`, `apply_event` and `render_cut`, with stream, tail,
   usage and cache accounting.
@@ -2121,6 +2154,16 @@ untouched.
   decides is written when the runtime performs the `Abandon`, at its place
   in the queue. An advance that fails part way through a poll keeps its
   notes and loses its writes, as it did when notes were synchronous.
+- **A shared call's editor consequences land at its hold.** A function
+  over `Shared` cannot write the composer, the queue editor or the goal
+  inspector, so it records what they must show: `drafts_sent` moves on a
+  sent composer draft, `queue_notices` and `goal_observations` gain an
+  entry. `tui_model.hold_shared` applies and empties them before it
+  returns, which is where the send or receiver used to write the editor
+  itself, so the terminal's state after each call is what it was before
+  the cut. A result stored without `hold_shared` leaves them behind;
+  `tui_test/stepping.step` asserts both lists are empty after every step,
+  as it does for `Shared.outbox`.
 - **A replay reproduces inbound traffic and rendering, never an outbound
   effect.** No websocket write, no daemon start, no local catalogue read,
   and no line the live client would have been *sent*. Submitting under

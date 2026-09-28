@@ -68,7 +68,7 @@ pub fn open_agents(model: Model) -> Model {
 pub fn submit(model: Model) -> Model {
   case
     outbound.mutation_refusal(
-      model,
+      model.shared,
       command.parse_with_skills(
         text_area.value(model.view.input),
         model.shared.skills,
@@ -81,7 +81,7 @@ pub fn submit(model: Model) -> Model {
       // the later send. The draft itself never leaves its existing fields.
       let prepared = case
         outbound.mutating_submission(
-          model,
+          model.shared,
           command.parse_with_skills(
             text_area.value(model.view.input),
             model.shared.skills,
@@ -151,7 +151,7 @@ fn submit_text(model: Model) -> Model {
   let expanded = composer.expand(input, model.shared.attachments)
   let cleared = case model.shared.pending_submission {
     Some(ComposerSubmission) -> model
-    Some(OverlaySubmission) | None -> outbound.clear_composer_text(model)
+    Some(OverlaySubmission) | None -> tui_model.clear_composer_text(model)
   }
   let prompt_cleared = case model.shared.pending_submission {
     Some(ComposerSubmission) -> cleared
@@ -218,12 +218,12 @@ fn submit_text(model: Model) -> Model {
             repaint_phase: !cleared.view.repaint_phase,
           ),
         )
-      outbound.send_frame(opened, protocol.models(opened.shared.next_id))
+      tui_model.send_frame(opened, protocol.models(opened.shared.next_id))
     }
     command.Model(name) -> {
       let switched =
         inbound.select_model(cleared, name)
-        |> outbound.send_frame(protocol.set_model(
+        |> tui_model.send_frame(protocol.set_model(
           cleared.shared.next_id,
           cleared.shared.active_strand,
           name,
@@ -233,13 +233,13 @@ fn submit_text(model: Model) -> Model {
     command.Strands | command.Agents -> open_agents(cleared)
     command.PeerLinks -> session_control.begin_peer_workspace(cleared)
     command.Schedules ->
-      outbound.send_frame(cleared, protocol.schedules(cleared.shared.next_id))
+      tui_model.send_frame(cleared, protocol.schedules(cleared.shared.next_id))
     command.Unschedule(name:, target:) -> {
       // An absent target means the strand the operator is looking at,
       // which is the row the listing above the prompt just printed. A
       // schedule a parent set onto a subagent needs the second word.
       let target = option.unwrap(target, cleared.shared.active_strand)
-      outbound.send_frame(
+      tui_model.send_frame(
         tui_model.append_system(
           cleared,
           "cancelling schedule " <> name <> " on " <> target,
@@ -268,7 +268,7 @@ fn submit_text(model: Model) -> Model {
         [id],
       )
     command.AddDirectory(path, access) ->
-      outbound.send_frame(
+      tui_model.send_frame(
         cleared,
         protocol.add_directory(cleared.shared.next_id, path, access),
       )
@@ -311,7 +311,7 @@ fn submit_text(model: Model) -> Model {
         False -> tui_model.append_error(cleared, "unknown strand: " <> name)
       }
     command.Fork(name) ->
-      outbound.send_frame(
+      tui_model.send_frame(
         tui_model.append_system(cleared, "fork queued: " <> name),
         protocol.fork(
           cleared.shared.next_id,
@@ -320,7 +320,7 @@ fn submit_text(model: Model) -> Model {
         ),
       )
     command.Effort(level) ->
-      outbound.send_frame(
+      tui_model.send_frame(
         tui_model.append_system(
           cleared,
           "reasoning level for "
@@ -342,7 +342,7 @@ fn submit_text(model: Model) -> Model {
     // it claimed a goal was pinned and was then followed by the sentence
     // saying no advisor is routed.
     command.GoalSet(objective:, token_budget:) ->
-      outbound.send_frame(
+      tui_model.send_frame(
         surfaces.confirming(
           cleared,
           "goal pinned · budget "
@@ -356,17 +356,17 @@ fn submit_text(model: Model) -> Model {
     // mistyped it should see what the harness will run before the reviewer
     // is shown its result.
     command.GoalCheck(command: Some(check)) ->
-      outbound.send_frame(
+      tui_model.send_frame(
         surfaces.confirming(cleared, "the goal check is " <> check),
         protocol.goal_check(cleared.shared.next_id, Some(check)),
       )
     command.GoalCheck(command: None) ->
-      outbound.send_frame(
+      tui_model.send_frame(
         surfaces.confirming(cleared, "the goal check is cleared"),
         protocol.goal_check(cleared.shared.next_id, None),
       )
     command.GoalClear ->
-      outbound.send_frame(
+      tui_model.send_frame(
         surfaces.confirming(cleared, "the session goal is cleared"),
         protocol.goal_clear(cleared.shared.next_id),
       )
@@ -407,7 +407,7 @@ fn submit_text(model: Model) -> Model {
           <> int.to_string(command.objective_limit),
       )
     command.Compact ->
-      outbound.send_frame(
+      tui_model.send_frame(
         tui_model.append_system(
           cleared,
           "compaction queued for " <> cleared.shared.active_strand,
@@ -415,7 +415,7 @@ fn submit_text(model: Model) -> Model {
         protocol.compact(cleared.shared.next_id, cleared.shared.active_strand),
       )
     command.Abort ->
-      outbound.send_frame(
+      tui_model.send_frame(
         tui_model.append_system(
           cleared,
           "abort queued for " <> cleared.shared.active_strand,
@@ -505,7 +505,7 @@ fn send_image_prompt(model: Model, input: String) -> Model {
   let content = image_prompt_content(expanded, images)
   let cleared = case model.shared.pending_submission {
     Some(ComposerSubmission) -> model
-    Some(OverlaySubmission) | None -> outbound.clear_composer(model)
+    Some(OverlaySubmission) | None -> tui_model.clear_composer(model)
   }
   send_prompt_content(cleared, content, expanded, images)
 }
@@ -547,7 +547,7 @@ fn send_prompt_content(
   }
   case model.shared.peer {
     Attached ->
-      outbound.send_frame(
+      tui_model.send_frame(
         sent,
         protocol.prompt_content(
           model.shared.next_id,
@@ -757,7 +757,7 @@ fn send_prompt(model: Model, text: String) -> Model {
 fn send_steer(model: Model, text: String) -> Model {
   let expected =
     inbound.expect_own_turn(model, steering_submission(model, text))
-  outbound.send_via(
+  tui_model.send_via(
     Model(
       ..expected,
       shared: Shared(
@@ -783,7 +783,7 @@ fn send_steer(model: Model, text: String) -> Model {
 fn send_follow_up(model: Model, text: String) -> Model {
   let expected =
     inbound.expect_own_turn(model, steering_submission(model, text))
-  outbound.send_frame(
+  tui_model.send_frame(
     Model(
       ..expected,
       shared: Shared(
@@ -859,7 +859,7 @@ pub fn interrupt_active(model: Model) -> Model {
       )
     Some(_), None -> {
       let strand = model.shared.active_strand
-      outbound.send_frame(
+      tui_model.send_frame(
         Model(
           shared: Shared(
             ..model.shared,
@@ -903,7 +903,7 @@ pub fn stop_strand(model: Model, strand: String) -> Model {
         shared: Shared(..model.shared, notice: strand <> " is not running"),
       )
     False, True ->
-      outbound.send_frame(
+      tui_model.send_frame(
         Model(
           ..model,
           shared: Shared(..model.shared, notice: "stopping " <> strand),
@@ -1069,7 +1069,7 @@ pub fn switch_active_strand(model: Model, strand: String) -> Model {
   case model.shared.captured {
     Some(#(cut, view)) -> inbound.apply_cut(selected, cut, view)
     None ->
-      outbound.send_frame(
+      tui_model.send_frame(
         selected,
         protocol.config(model.shared.next_id, strand),
       )

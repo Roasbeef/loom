@@ -44,6 +44,7 @@ import session_view/composer
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
+import session_view/live_jobs
 import session_view/operator
 import session_view/protocol.{Strand}
 import session_view/reviewer_status
@@ -86,6 +87,7 @@ import tui/session_model.{
   HoldGoalReport, Interrupt, Preview, Replaying, ReturnedDraft, Shared,
   UnconfirmedSubmission,
 }
+import tui/summary_panel
 import tui/surfaces
 
 /// The authenticated build belongs to the retained control host. Projecting
@@ -241,7 +243,7 @@ pub fn apply_channel_update(
 ) -> Model {
   case update {
     session_channel.Submission(disposition) ->
-      outbound.apply_submission(model, disposition)
+      tui_model.apply_submission(model, disposition)
     session_channel.Captured(cut, view, trigger) ->
       reconcile_cut(model, cut, view, trigger)
     session_channel.HistoryPage(window, before, after) ->
@@ -419,7 +421,7 @@ pub fn apply_channel_update(
     session_channel.Failed(reason) ->
       tui_model.append_error(
         {
-          let discarded = outbound.discard_own_turn(model)
+          let discarded = tui_model.run_shared(model, outbound.discard_own_turn)
           Model(
             shared: Shared(
               ..discarded.shared,
@@ -1085,7 +1087,7 @@ pub fn decide_captured_approval(
   record: approval.Review,
   choice: approval_panel.Choice,
 ) -> Model {
-  case outbound.mutation_refusal(model, command.Approve(record.id)) {
+  case outbound.mutation_refusal(model.shared, command.Approve(record.id)) {
     Some(reason) -> tui_model.append_error(model, reason)
     None -> {
       let choice = case choice {
@@ -1096,7 +1098,7 @@ pub fn decide_captured_approval(
       case operator.decision(model.shared.next_id, record, choice) {
         Error(reason) -> tui_model.append_error(model, reason)
         Ok(frame) ->
-          outbound.send_frame(
+          tui_model.send_frame(
             Model(..model, view: View(..model.view, overlay: NoOverlay)),
             frame,
           )
@@ -1119,7 +1121,7 @@ pub fn decide(model: Model, id: String, choice: operator.Choice) -> Model {
     Ok(record) ->
       case operator.decision(model.shared.next_id, record, choice) {
         Error(reason) -> tui_model.append_error(model, reason)
-        Ok(frame) -> outbound.send_frame(model, frame)
+        Ok(frame) -> tui_model.send_frame(model, frame)
       }
   }
 }
@@ -1311,7 +1313,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           case page.next {
             None -> loaded
             Some(offset) ->
-              outbound.send_frame(
+              tui_model.send_frame(
                 loaded,
                 protocol.skills(loaded.shared.next_id, offset),
               )
@@ -1342,7 +1344,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ),
         view: View(..model.view, overlay:),
       )
-      |> outbound.send_frame(protocol.skills(model.shared.next_id, 0))
+      |> tui_model.send_frame(protocol.skills(model.shared.next_id, 0))
     }
     protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
     protocol.ConfigSnapshot(model_name:, directories:) -> {
@@ -1368,9 +1370,9 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           )
       }
     }
-    protocol.LiveJobsSnapshot(board) -> surfaces.receive_jobs(model, board)
+    protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
     protocol.AdvisorPendingSnapshot(board) ->
-      surfaces.receive_advisor_nudges(model, board)
+      tui_model.run_shared(model, surfaces.receive_advisor_nudges(_, board))
 
     // Labels change the words of rows the record cache already holds, so
     // the cache is rebuilt; its entry-level keys carry the labels, which
@@ -1387,7 +1389,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       |> tui_model.invalidate_transcript
     protocol.BlockSummarized(subject:, text:) ->
       receive_block_summary(model, subject, text)
-    protocol.GoalSnapshot(board) -> surfaces.receive_goal(model, board)
+    protocol.GoalSnapshot(board) ->
+      tui_model.run_shared(model, surfaces.receive_goal(_, board))
     protocol.ContextSnapshot(observation) ->
       Model(
         ..model,
@@ -1528,7 +1531,11 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
             },
           ),
         )
-      let updated = surfaces.retire_delivered_nudges(updated, record)
+      let updated =
+        tui_model.run_shared(updated, surfaces.retire_delivered_nudges(
+          _,
+          record,
+        ))
 
       case strand == model.shared.active_strand {
         True -> tui_model.invalidate_transcript(updated)
@@ -1671,7 +1678,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.ServerError(code:, message:) ->
       tui_model.append_error(
         {
-          let discarded = outbound.discard_own_turn(model)
+          let discarded = tui_model.run_shared(model, outbound.discard_own_turn)
           Model(
             ..discarded,
             shared: Shared(..discarded.shared, submitting: None),
@@ -1732,6 +1739,30 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       updated
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
+  }
+}
+
+// A live-jobs board, in two halves. `surfaces.receive_jobs` takes it into
+// the session state when it answers this attachment's read, which it shows
+// by clearing `jobs_awaiting`. The summary's job cursor is the terminal's,
+// and it follows the job it pointed at in the board being replaced, so it
+// moves here, after the shared call, from the board `model` still holds.
+fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
+  let received = tui_model.run_shared(model, surfaces.receive_jobs(_, board))
+  case received.shared.jobs_awaiting == model.shared.jobs_awaiting {
+    True -> received
+    False ->
+      Model(
+        ..received,
+        view: View(
+          ..received.view,
+          summary_job_selected: summary_panel.follow_selected_job(
+            model.view.summary_job_selected,
+            model.shared.jobs,
+            board,
+          ),
+        ),
+      )
   }
 }
 
@@ -2740,7 +2771,7 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
   }
   case model.shared.peer {
     Attached ->
-      outbound.send_via(sent, fn(lane, now) {
+      tui_model.send_via(sent, fn(lane, now) {
         operator.submit(
           lane,
           model.shared.next_id,
@@ -3194,18 +3225,17 @@ pub fn request_visible_worktree(model: Model) -> Model {
 pub fn refresh_worktree(model: Model) -> Model {
   case model.shared.peer, model.shared.channel {
     Attached, Some(_) ->
-      surfaces.service_worktree_read(
-        Model(
-          ..model,
-          shared: Shared(
-            ..model.shared,
-            worktree: worktree_view.request(
-              model.shared.worktree,
-              session_model.queue_owner(model.shared),
-            ),
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          worktree: worktree_view.request(
+            model.shared.worktree,
+            session_model.queue_owner(model.shared),
           ),
         ),
       )
+      |> tui_model.run_shared(surfaces.service_worktree_read)
     _, _ ->
       Model(
         ..model,
@@ -3357,7 +3387,13 @@ fn apply_request_refused(
   // refuses all five, and an operator watching a panel fail to appear has
   // no way to tell that from a session with no goal.
   use <- bool.lazy_guard(string.starts_with(command, "goal_"), fn() {
-    surfaces.refuse_goal(model, command, request_id, code, message)
+    tui_model.run_shared(model, surfaces.refuse_goal(
+      _,
+      command,
+      request_id,
+      code,
+      message,
+    ))
   })
 
   // Labels are optional presentation read with no operator keystroke. An

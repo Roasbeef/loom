@@ -15,6 +15,22 @@
 //// strand switch is dropped rather than shown against the wrong target.
 //// The `sync_*` functions compare the model before and after an event and
 //// decide whether that event makes a surface's data stale.
+////
+//// The reads (`service_*`) and the receivers (`receive_jobs`,
+//// `receive_goal`, `receive_advisor_nudges`, `retire_delivered_nudges` and
+//// `refuse_goal`) take and return the shared record alone
+//// (`tui/session_model`), so a second host of the session can run them with
+//// its own handle bindings. The surfaces they feed are the terminal's, and
+//// what a read or a reply means for them is recorded rather than written: a
+//// dropped queued-input read appends a `queue_request.Dropped` notice, and a
+//// goal board or a failed goal read appends a `GoalObservation`. The
+//// terminal stores each result through `tui_model.hold_shared` or
+//// `tui_model.run_shared`, which shows those at the point of the call. The
+//// live-jobs cursor is the one surface write that depends on the terminal's
+//// own state, the job selected before the board changed, so the terminal
+//// moves it itself after `receive_jobs` (`inbound`'s `receive_jobs`). The
+//// functions that open a surface, move its cursor or decide a surface's
+//// target read the terminal's state and still take the whole model.
 
 import core/entry
 import gleam/bool
@@ -45,8 +61,9 @@ import tui/queue_editor
 import tui/queue_request
 import tui/render
 import tui/session_model.{
-  Attached, ConfirmGoal, Disconnected, HoldGoalReport, OverlaySubmission,
-  Preview, Replaying, ReportGoal, Shared,
+  type Shared, Attached, ConfirmGoal, Disconnected, GoalObserved,
+  GoalUnavailable, HoldGoalReport, OverlaySubmission, Preview, Replaying,
+  ReportGoal, Shared,
 }
 import tui/summary_panel
 
@@ -83,79 +100,104 @@ pub fn notes_surface(model: Model) -> Bool {
 /// Sends the pending todo seed as an ordinary `notes` read once the read
 /// lane is free. An operator's own notes read goes first, and its reply
 /// seeds the board just the same when it is for the same strand.
+///
+/// Over the shared record alone; the terminal's tick runs it through
+/// `tui_model.run_shared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_todo_seed(model.shared)
+/// ```
 @internal
-pub fn service_todo_seed(model: Model) -> Model {
-  case model.shared.todo_seed {
-    None -> model
+pub fn service_todo_seed(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.todo_seed {
+    None -> shared
     Some(strand) ->
-      case dict.has_key(model.shared.todo_boards, strand) {
+      case dict.has_key(shared.todo_boards, strand) {
         // Another read or a fresh result already brought the board, so the
         // seed has nothing left to find.
-        True -> Model(..model, shared: Shared(..model.shared, todo_seed: None))
-        False -> send_seed_when_free(model, strand)
+        True -> Shared(..shared, todo_seed: None)
+        False -> send_seed_when_free(shared, strand)
       }
   }
 }
 
 // An operator's own notes read goes first, and a seed with no attached
 // channel waits; session replacement clears it either way.
-fn send_seed_when_free(model: Model, strand: String) -> Model {
-  case model.shared.notes_requested, model.shared.channel, model.shared.peer {
+fn send_seed_when_free(
+  shared: Shared(socket, recorder, source, replay_source),
+  strand: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.notes_requested, shared.channel, shared.peer {
     None, Some(channel), Attached ->
       case session_channel.ready_for_read(channel) {
-        True -> send_todo_seed(model, strand)
-        False -> model
+        True -> send_todo_seed(shared, strand)
+        False -> shared
       }
-    Some(_), _, _ | None, None, _ | None, Some(_), _ -> model
+    Some(_), _, _ | None, None, _ | None, Some(_), _ -> shared
   }
 }
 
-fn send_todo_seed(model: Model, strand: String) -> Model {
+fn send_todo_seed(
+  shared: Shared(socket, recorder, source, replay_source),
+  strand: String,
+) -> Shared(socket, recorder, source, replay_source) {
   outbound.send_frame(
-    Model(..model, shared: Shared(..model.shared, todo_seed: None)),
-    protocol.notes(model.shared.next_id, strand),
+    Shared(..shared, todo_seed: None),
+    protocol.notes(shared.next_id, strand),
   )
 }
 
 /// Asks for a fresh read of the notes board for the strand the notes
-/// surface is showing.
+/// surface is showing. The target is the terminal's, so this takes the
+/// whole model.
 @internal
 pub fn refresh_notes(model: Model) -> Model {
-  service_notes_read(
-    Model(
-      ..model,
-      shared: Shared(
-        ..model.shared,
-        notes_requested: Some(notes_target(model)),
-        notice: "refreshing notes for " <> notes_target(model),
-      ),
+  Model(
+    ..model,
+    shared: Shared(
+      ..model.shared,
+      notes_requested: Some(notes_target(model)),
+      notice: "refreshing notes for " <> notes_target(model),
     ),
   )
+  |> tui_model.run_shared(service_notes_read)
 }
 
 /// Reads coalesce to the latest inspected target while the existing channel
 /// owns an earlier command. Old replies may be retained, but never relabelled.
+///
+/// Over the shared record alone; a terminal caller stores the result through
+/// `tui_model.run_shared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_notes_read(model.shared)
+/// ```
 @internal
-pub fn service_notes_read(model: Model) -> Model {
-  case model.shared.notes_requested, model.shared.channel {
-    None, _ -> model
+pub fn service_notes_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.notes_requested, shared.channel {
+    None, _ -> shared
     Some(target), Some(channel) -> {
       case session_channel.ready_for_read(channel) {
-        False -> model
+        False -> shared
         True ->
           outbound.send_frame(
-            Model(
-              ..model,
-              shared: Shared(..model.shared, notes_requested: None),
-            ),
-            protocol.notes(model.shared.next_id, target),
+            Shared(..shared, notes_requested: None),
+            protocol.notes(shared.next_id, target),
           )
       }
     }
     Some(target), None ->
       outbound.send_frame(
-        Model(..model, shared: Shared(..model.shared, notes_requested: None)),
-        protocol.notes(model.shared.next_id, target),
+        Shared(..shared, notes_requested: None),
+        protocol.notes(shared.next_id, target),
       )
   }
 }
@@ -198,95 +240,95 @@ pub fn select_note(model: Model, direction: Int) -> Model {
 
 /// Sends a requested queued-input read once the channel is ready for it,
 /// or drops the request when the attachment changed since it was made.
+///
+/// Over the shared record alone. A dropped read cannot write the terminal's
+/// queue editor, so it appends a `queue_request.Dropped` notice, which
+/// `tui_model.hold_shared` shows in the editor at the point of the call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_queue_read(model.shared)
+/// ```
 @internal
-pub fn service_queue_read(model: Model) -> Model {
-  case model.shared.channel, model.shared.queue_request.fetch {
+pub fn service_queue_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.queue_request.fetch {
     Some(channel), Some(fetch) ->
       case session_channel.ready_for_read(channel) {
         True ->
-          case session_model.queue_owner(model.shared) == fetch.owner {
+          case session_model.queue_owner(shared) == fetch.owner {
             True ->
               outbound.send_frame(
-                Model(
-                  ..model,
-                  shared: Shared(
-                    ..model.shared,
-                    queue_request: queue_request.State(
-                      ..model.shared.queue_request,
-                      fetch: None,
-                      awaiting: Some(fetch),
-                    ),
+                Shared(
+                  ..shared,
+                  queue_request: queue_request.State(
+                    ..shared.queue_request,
+                    fetch: None,
+                    awaiting: Some(fetch),
                   ),
                 ),
-                protocol.queued_input(
-                  model.shared.next_id,
-                  fetch.strand,
-                  fetch.id,
-                ),
+                protocol.queued_input(shared.next_id, fetch.strand, fetch.id),
               )
             False ->
-              Model(
-                shared: Shared(
-                  ..model.shared,
-                  queue_request: queue_request.State(
-                    ..model.shared.queue_request,
-                    fetch: None,
-                  ),
-                ),
-                view: View(
-                  ..model.view,
-                  queue_editor: queue_editor.State(
-                    ..model.view.queue_editor,
-                    message: "Attachment changed; select the input again",
-                  ),
-                ),
+              drop_queue_read(
+                shared,
+                "Attachment changed; select the input again",
               )
           }
-        False -> model
+        False -> shared
       }
     None, Some(_) ->
-      Model(
-        shared: Shared(
-          ..model.shared,
-          queue_request: queue_request.State(
-            ..model.shared.queue_request,
-            fetch: None,
-          ),
-        ),
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
-            ..model.view.queue_editor,
-            message: "Queue editing requires a live conversation attachment",
-          ),
-        ),
+      drop_queue_read(
+        shared,
+        "Queue editing requires a live conversation attachment",
       )
-    _, None -> model
+    _, None -> shared
   }
+}
+
+// A wanted read that can no longer be sent is forgotten, and the editor that
+// wanted it is told why.
+fn drop_queue_read(
+  shared: Shared(socket, recorder, source, replay_source),
+  message: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(
+    ..shared,
+    queue_request: queue_request.State(..shared.queue_request, fetch: None),
+    queue_notices: list.append(shared.queue_notices, [
+      queue_request.Dropped(message),
+    ]),
+  )
 }
 
 /// Sends a requested worktree diff once the channel is ready and no
 /// context read holds the shared worker slot.
+///
+/// Over the shared record alone; a terminal caller stores the result through
+/// `tui_model.run_shared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_worktree_read(model.shared)
+/// ```
 @internal
-pub fn service_worktree_read(model: Model) -> Model {
+pub fn service_worktree_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
   // Both observations borrow the same server worker slot. An acknowledged
   // context read still owns it until its final push arrives.
-  use <- bool.guard(context_in_flight(model.shared.context), model)
-  case
-    model.shared.channel,
-    model.shared.worktree.refresh,
-    model.shared.worktree.awaiting
-  {
+  use <- bool.guard(context_in_flight(shared.context), shared)
+  case shared.channel, shared.worktree.refresh, shared.worktree.awaiting {
     Some(channel), worktree_view.Requested, None ->
       case session_channel.ready_for_read(channel) {
         True ->
-          outbound.send_frame(
-            model,
-            protocol.worktree_diff(model.shared.next_id),
-          )
-        False -> model
+          outbound.send_frame(shared, protocol.worktree_diff(shared.next_id))
+        False -> shared
       }
-    _, _, _ -> model
+    _, _, _ -> shared
   }
 }
 
@@ -299,7 +341,7 @@ pub fn service_worktree_read(model: Model) -> Model {
 /// ```
 @internal
 pub fn open_summary(model: Model) -> Model {
-  service_jobs_read(Model(
+  Model(
     shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
     view: View(
       ..model.view,
@@ -308,44 +350,50 @@ pub fn open_summary(model: Model) -> Model {
       summary_tab: summary_panel.Completion,
       summary_job_selected: 0,
     ),
-  ))
+  )
+  |> tui_model.run_shared(service_jobs_read)
   |> tui_model.invalidate_frame
 }
 
 /// Sends a requested live-jobs read once the channel is ready for it.
+///
+/// Over the shared record alone; a terminal caller stores the result through
+/// `tui_model.run_shared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_jobs_read(model.shared)
+/// ```
 @internal
-pub fn service_jobs_read(model: Model) -> Model {
-  case model.shared.channel, model.shared.jobs_refresh, model.shared.peer {
+pub fn service_jobs_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.jobs_refresh, shared.peer {
     Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
-            Model(
-              ..model,
-              shared: Shared(
-                ..model.shared,
-                jobs_refresh: worktree_view.Settled,
-                jobs_awaiting: Some(#(
-                  session_model.queue_owner(model.shared),
-                  model.shared.active_strand,
-                )),
-                jobs_notice: "Refreshing live jobs; previous observation may be stale",
-              ),
+            Shared(
+              ..shared,
+              jobs_refresh: worktree_view.Settled,
+              jobs_awaiting: Some(#(
+                session_model.queue_owner(shared),
+                shared.active_strand,
+              )),
+              jobs_notice: "Refreshing live jobs; previous observation may be stale",
             ),
-            protocol.live_jobs(model.shared.next_id, model.shared.active_strand),
+            protocol.live_jobs(shared.next_id, shared.active_strand),
           )
-        False -> model
+        False -> shared
       }
     _, worktree_view.Requested, _ ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          jobs_refresh: worktree_view.Settled,
-          jobs_notice: "Live jobs unavailable without a live conversation attachment",
-        ),
+      Shared(
+        ..shared,
+        jobs_refresh: worktree_view.Settled,
+        jobs_notice: "Live jobs unavailable without a live conversation attachment",
       )
-    _, worktree_view.Settled, _ -> model
+    _, worktree_view.Settled, _ -> shared
   }
 }
 
@@ -451,35 +499,40 @@ pub fn sync_advisor_nudges(before: Model, after: Model) -> Model {
 
 /// The read waits for a free command lane like every other observation, so a
 /// queued prompt is never held up behind an advisory panel.
+///
+/// Over the shared record alone; the terminal's tick runs it through
+/// `tui_model.run_shared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_advisor_nudges_read(model.shared)
+/// ```
 @internal
-pub fn service_advisor_nudges_read(model: Model) -> Model {
-  case model.shared.channel, model.shared.nudges_refresh, model.shared.peer {
+pub fn service_advisor_nudges_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.nudges_refresh, shared.peer {
     Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
-            Model(
-              ..model,
-              shared: Shared(
-                ..model.shared,
-                nudges_refresh: worktree_view.Settled,
-                nudges_awaiting: Some(session_model.queue_owner(model.shared)),
-              ),
+            Shared(
+              ..shared,
+              nudges_refresh: worktree_view.Settled,
+              nudges_awaiting: Some(session_model.queue_owner(shared)),
             ),
-            protocol.advisor_pending(model.shared.next_id),
+            protocol.advisor_pending(shared.next_id),
           )
-        False -> model
+        False -> shared
       }
 
     // A request that cannot be sent is dropped rather than left standing:
     // the next attachment reaches an idle primary and raises it again.
     _, worktree_view.Requested, _ ->
-      Model(
-        ..model,
-        shared: Shared(..model.shared, nudges_refresh: worktree_view.Settled),
-      )
+      Shared(..shared, nudges_refresh: worktree_view.Settled)
 
-    _, worktree_view.Settled, _ -> model
+    _, worktree_view.Settled, _ -> shared
   }
 }
 
@@ -496,38 +549,38 @@ pub fn service_advisor_nudges_read(model: Model) -> Model {
 /// An earlier read still in flight is disowned, as `DropNudges` disowns
 /// one, so its reply cannot land after the fresh read and hide it.
 ///
+/// Over the shared record alone; a terminal caller stores the result through
+/// `tui_model.run_shared`.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // surfaces.retire_delivered_nudges(model, record)
+/// // surfaces.retire_delivered_nudges(model.shared, record)
 /// ```
 @internal
 pub fn retire_delivered_nudges(
-  model: Model,
+  shared: Shared(socket, recorder, source, replay_source),
   record: protocol.EntryRecord,
-) -> Model {
+) -> Shared(socket, recorder, source, replay_source) {
   case record {
     protocol.EntryRecord(strand:, entry: entry.MessageEntry(message: value, ..))
       if strand == advisor_pending.primary_strand
     ->
       case transcript_lines.advisor_payload(value) {
         Some(transcript_lines.Nudges(..)) ->
-          Model(
-            ..model,
-            shared: Shared(
-              ..model.shared,
-              nudges: None,
-              nudges_refresh: worktree_view.Requested,
-              nudges_awaiting: None,
-            ),
+          Shared(
+            ..shared,
+            nudges: None,
+            nudges_refresh: worktree_view.Requested,
+            nudges_awaiting: None,
           )
-          |> tui_model.invalidate_transcript
-          |> tui_model.invalidate_frame
+          |> session_model.invalidate_transcript
+          |> session_model.invalidate_frame
 
-        Some(_) | None -> model
+        Some(_) | None -> shared
       }
 
-    protocol.EntryRecord(..) -> model
+    protocol.EntryRecord(..) -> shared
   }
 }
 
@@ -540,55 +593,72 @@ pub fn retire_delivered_nudges(
 /// daemon has no label for keeps its first-line digest until a push brings
 /// one. A read waits behind every other observation's, because a label is
 /// the least urgent thing on screen.
+///
+/// Over the shared record alone; the terminal's tick runs it through
+/// `tui_model.run_shared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_block_summaries(model.shared)
+/// ```
 @internal
-pub fn service_block_summaries(model: Model) -> Model {
-  case model.shared.channel, model.shared.peer {
+pub fn service_block_summaries(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.peer {
     Some(channel), Attached ->
       case session_channel.ready_for_read(channel) {
-        False -> model
+        False -> shared
         True ->
-          case block_summary.next_read(model.shared.summaries) {
-            None -> model
+          case block_summary.next_read(shared.summaries) {
+            None -> shared
             Some(#(keys, summaries)) ->
               outbound.send_frame(
-                Model(..model, shared: Shared(..model.shared, summaries:)),
-                protocol.block_summaries(model.shared.next_id, keys),
+                Shared(..shared, summaries:),
+                protocol.block_summaries(shared.next_id, keys),
               )
           }
       }
     Some(_), Disconnected | Some(_), Preview | Some(_), Replaying | None, _ ->
-      model
+      shared
   }
 }
 
 /// Only the attachment that asked may be answered. Request ids restart with an
 /// attachment, so the owner is what tells a fresh board from a stale one.
+///
+/// Over the shared record alone; a terminal caller stores the result through
+/// `tui_model.run_shared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surfaces.receive_advisor_nudges(model.shared, board)
+/// ```
 @internal
 pub fn receive_advisor_nudges(
-  model: Model,
+  shared: Shared(socket, recorder, source, replay_source),
   board: advisor_pending.Board,
-) -> Model {
-  let current = session_model.queue_owner(model.shared)
-  case model.shared.nudges_awaiting {
+) -> Shared(socket, recorder, source, replay_source) {
+  let current = session_model.queue_owner(shared)
+  case shared.nudges_awaiting {
     Some(owner) ->
       case owner == current {
         True ->
-          Model(
-            ..model,
-            shared: Shared(
-              ..model.shared,
-              nudges: Some(board),
-              nudges_awaiting: None,
-              nudges_request: None,
-            ),
+          Shared(
+            ..shared,
+            nudges: Some(board),
+            nudges_awaiting: None,
+            nudges_request: None,
           )
-          |> tui_model.invalidate_transcript
-          |> tui_model.invalidate_frame
+          |> session_model.invalidate_transcript
+          |> session_model.invalidate_frame
 
-        False -> model
+        False -> shared
       }
 
-    None -> model
+    None -> shared
   }
 }
 
@@ -670,7 +740,7 @@ pub fn confirming(model: Model, line: String) -> Model {
 /// never cleared as though the operator had submitted it.
 @internal
 pub fn submit_goal_action(model: Model, action: command.Command) -> Model {
-  case outbound.mutation_refusal(model, action) {
+  case outbound.mutation_refusal(model.shared, action) {
     Some(reason) -> tui_model.append_error(model, reason)
     None -> {
       let prepared = case model.shared.pending_submission {
@@ -686,12 +756,12 @@ pub fn submit_goal_action(model: Model, action: command.Command) -> Model {
       }
       case action {
         command.GoalPause ->
-          outbound.send_frame(
+          tui_model.send_frame(
             confirming(prepared, "the session goal is held"),
             protocol.goal_pause(prepared.shared.next_id),
           )
         command.GoalResume ->
-          outbound.send_frame(
+          tui_model.send_frame(
             confirming(prepared, "the session goal continues"),
             protocol.goal_resume(prepared.shared.next_id),
           )
@@ -751,56 +821,57 @@ fn goal_observation(model: Model) -> String {
 }
 
 /// The read waits for a free command lane like every other observation.
+///
+/// Over the shared record alone. A read that cannot be sent appends a
+/// `GoalUnavailable` observation, which `tui_model.hold_shared` applies to
+/// the terminal's goal inspector, if it is open, at the point of the call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_goal_read(model.shared)
+/// ```
 @internal
-pub fn service_goal_read(model: Model) -> Model {
-  case model.shared.channel, model.shared.goal_refresh, model.shared.peer {
+pub fn service_goal_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.goal_refresh, shared.peer {
     Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
-            Model(
-              ..model,
-              shared: Shared(
-                ..model.shared,
-                goal_refresh: worktree_view.Settled,
-              ),
-            ),
-            protocol.goal_get(model.shared.next_id),
+            Shared(..shared, goal_refresh: worktree_view.Settled),
+            protocol.goal_get(shared.next_id),
           )
-        False -> model
+        False -> shared
       }
 
     // A request that cannot be sent is dropped rather than left standing,
     // and an operator who asked for the panel is told why it is not coming
     // instead of watching for it.
-    _, worktree_view.Requested, _ -> unreachable_goal(model)
+    _, worktree_view.Requested, _ -> unreachable_goal(shared)
 
-    _, worktree_view.Settled, _ -> model
+    _, worktree_view.Settled, _ -> shared
   }
 }
 
-fn unreachable_goal(model: Model) -> Model {
+fn unreachable_goal(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
   let settled =
-    Model(
-      shared: Shared(..model.shared, goal_refresh: worktree_view.Settled),
-      view: View(..model.view, overlay: case model.view.overlay {
-        GoalInspector(state) ->
-          GoalInspector(focused_goal_panel.unavailable(
-            state,
-            "no conversation is attached",
-          ))
-        other -> other
-      }),
+    Shared(
+      ..shared,
+      goal_refresh: worktree_view.Settled,
+      goal_observations: list.append(shared.goal_observations, [
+        GoalUnavailable("no conversation is attached"),
+      ]),
     )
-  case model.shared.goal_report {
+  case shared.goal_report {
     HoldGoalReport -> settled
 
     ReportGoal | ConfirmGoal(..) ->
-      tui_model.append_error(
-        Model(
-          ..settled,
-          shared: Shared(..settled.shared, goal_report: HoldGoalReport),
-        ),
+      session_model.append_error(
+        Shared(..settled, goal_report: HoldGoalReport),
         "the session goal cannot be read: no conversation is attached",
       )
   }
@@ -808,27 +879,34 @@ fn unreachable_goal(model: Model) -> Model {
 
 /// Only the attachment that asked may be answered. Request ids restart with
 /// an attachment, so the owner is what tells a fresh board from a stale one.
+///
+/// Over the shared record alone. An answered board appends a `GoalObserved`
+/// observation, which `tui_model.hold_shared` applies to the terminal's goal
+/// inspector, if it is open, at the point of the call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surfaces.receive_goal(model.shared, board)
+/// ```
 @internal
-pub fn receive_goal(model: Model, board: goal_view.Board) -> Model {
-  case
-    model.shared.goal_awaiting == Some(session_model.queue_owner(model.shared))
-  {
-    False -> model
+pub fn receive_goal(
+  shared: Shared(socket, recorder, source, replay_source),
+  board: goal_view.Board,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.goal_awaiting == Some(session_model.queue_owner(shared)) {
+    False -> shared
 
     True ->
       report_goal(
-        Model(
-          shared: Shared(
-            ..model.shared,
-            goal: Some(board),
-            goal_awaiting: None,
-            goal_request: None,
-          ),
-          view: View(..model.view, overlay: case model.view.overlay {
-            GoalInspector(state) ->
-              GoalInspector(focused_goal_panel.observe(state, board))
-            other -> other
-          }),
+        Shared(
+          ..shared,
+          goal: Some(board),
+          goal_awaiting: None,
+          goal_request: None,
+          goal_observations: list.append(shared.goal_observations, [
+            GoalObserved(board),
+          ]),
         ),
         board,
       )
@@ -839,62 +917,62 @@ pub fn receive_goal(model: Model, board: goal_view.Board) -> Model {
 // voice, because the status block is several lines and the band beside the
 // composer holds one. An automatic refresh updates the row and prints
 // nothing.
-fn report_goal(model: Model, board: goal_view.Board) -> Model {
-  case model.shared.goal_report {
-    HoldGoalReport -> tui_model.invalidate_frame(model)
+fn report_goal(
+  shared: Shared(socket, recorder, source, replay_source),
+  board: goal_view.Board,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.goal_report {
+    HoldGoalReport -> session_model.invalidate_frame(shared)
 
     // A committed mutation prints its one line here and nothing else. The
     // fresh board is already in the model, so the row beside the composer
     // carries the new state and a second block would repeat it.
     ConfirmGoal(line:) ->
-      Model(
-        ..model,
-        shared: Shared(..model.shared, goal_report: HoldGoalReport),
-      )
-      |> tui_model.append_system(line)
-      |> tui_model.invalidate_frame
+      Shared(..shared, goal_report: HoldGoalReport)
+      |> session_model.append_system(line)
+      |> session_model.invalidate_frame
 
     ReportGoal ->
       goal_view.lines(board)
       |> list.fold(
-        Model(
-          ..model,
-          shared: Shared(..model.shared, goal_report: HoldGoalReport),
-        ),
-        tui_model.append_system,
+        Shared(..shared, goal_report: HoldGoalReport),
+        session_model.append_system,
       )
-      |> tui_model.invalidate_frame
+      |> session_model.invalidate_frame
   }
 }
 
 /// A refused goal command, worded once. A refusal answering a request this
 /// terminal no longer owns says nothing about the goal it is watching now.
+///
+/// Over the shared record alone. A refusal it accepts appends a
+/// `GoalUnavailable` observation, which `tui_model.hold_shared` applies to
+/// the terminal's goal inspector, if it is open, at the point of the call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surfaces.refuse_goal(model.shared, "goal_get", 7, "unsupported", text)
+/// ```
 @internal
 pub fn refuse_goal(
-  model: Model,
+  shared: Shared(socket, recorder, source, replay_source),
   command: String,
   request_id: Int,
   code: String,
   message: String,
-) -> Model {
-  use <- bool.guard(model.shared.goal_request != Some(request_id), model)
+) -> Shared(socket, recorder, source, replay_source) {
+  use <- bool.guard(shared.goal_request != Some(request_id), shared)
   let cleared =
-    Model(
-      shared: Shared(
-        ..model.shared,
-        goal: None,
-        goal_request: None,
-        goal_awaiting: None,
-        goal_report: HoldGoalReport,
-      ),
-      view: View(..model.view, overlay: case model.view.overlay {
-        GoalInspector(state) ->
-          GoalInspector(focused_goal_panel.unavailable(
-            state,
-            goal_view.refusal(code, message),
-          ))
-        other -> other
-      }),
+    Shared(
+      ..shared,
+      goal: None,
+      goal_request: None,
+      goal_awaiting: None,
+      goal_report: HoldGoalReport,
+      goal_observations: list.append(shared.goal_observations, [
+        GoalUnavailable(goal_view.refusal(code, message)),
+      ]),
     )
 
   // An automatic refresh the operator never asked for stays silent: an
@@ -902,53 +980,47 @@ pub fn refuse_goal(
   // would be a scrolling complaint about a feature this session lacks. A
   // mutation and an explicit `/goal` are always the operator's own.
   use <- bool.guard(
-    model.shared.goal_report == HoldGoalReport && command == "goal_get",
+    shared.goal_report == HoldGoalReport && command == "goal_get",
     cleared,
   )
 
-  tui_model.append_error(cleared, goal_view.refusal(code, message))
+  session_model.append_error(cleared, goal_view.refusal(code, message))
 }
 
 /// Applies a live-jobs board if it answers the outstanding read for the
-/// current attachment, keeping the selected job selected when it is still
-/// listed.
+/// current attachment.
+///
+/// Over the shared record alone. The summary's job cursor is the terminal's
+/// and follows the job it selected, which only the terminal knows, so the
+/// terminal moves it after this call when `jobs_awaiting` shows the board
+/// was taken (`summary_panel.follow_selected_job`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surfaces.receive_jobs(model.shared, board)
+/// ```
 @internal
-pub fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
-  case model.shared.jobs_awaiting {
+pub fn receive_jobs(
+  shared: Shared(socket, recorder, source, replay_source),
+  board: live_jobs.Board,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
-      case owner == session_model.queue_owner(model.shared) {
-        True -> {
-          let old = case model.shared.jobs {
-            Some(previous) if previous.strand == board.strand ->
-              previous.jobs
-              |> list.drop(model.view.summary_job_selected)
-              |> list.first
-            Some(_) | None -> Error(Nil)
-          }
-          let selected = case old {
-            Ok(job) ->
-              board.jobs
-              |> list.index_map(fn(item, index) { #(item.id, index) })
-              |> list.key_find(job.id)
-              |> result.unwrap(0)
-            Error(Nil) -> 0
-          }
-          Model(
-            shared: Shared(
-              ..model.shared,
-              jobs: Some(board),
-              jobs_observed_ms: Some(model.shared.stamp.now_ms),
-              jobs_awaiting: None,
-              jobs_request: None,
-              jobs_notice: "Live jobs observed separately from operation completion",
-            ),
-            view: View(..model.view, summary_job_selected: selected),
+      case owner == session_model.queue_owner(shared) {
+        True ->
+          Shared(
+            ..shared,
+            jobs: Some(board),
+            jobs_observed_ms: Some(shared.stamp.now_ms),
+            jobs_awaiting: None,
+            jobs_request: None,
+            jobs_notice: "Live jobs observed separately from operation completion",
           )
-          |> tui_model.invalidate_transcript
-        }
-        False -> model
+          |> session_model.invalidate_transcript
+        False -> shared
       }
-    Some(_) | None -> model
+    Some(_) | None -> shared
   }
 }
 
@@ -1021,27 +1093,33 @@ fn operation_settled(before: Model, after: Model) -> Bool {
 
 /// Sends a requested context read once the channel is ready and no
 /// worktree observation holds the shared worker slot.
+///
+/// Over the shared record alone; a terminal caller stores the result through
+/// `tui_model.run_shared`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_context_read(model.shared)
+/// ```
 @internal
-pub fn service_context_read(model: Model) -> Model {
+pub fn service_context_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
   // A worktree acknowledgement releases the command lane, not its worker.
   // Wait for that observation before borrowing the shared slot for context.
-  use <- bool.guard(model.shared.worktree.awaiting != None, model)
-  case
-    model.shared.channel,
-    model.shared.context.request,
-    model.shared.peer,
-    model.shared.captured
-  {
+  use <- bool.guard(shared.worktree.awaiting != None, shared)
+  case shared.channel, shared.context.request, shared.peer, shared.captured {
     Some(channel), context_view.Requested, Attached, Some(_) ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
-            model,
-            protocol.context(model.shared.next_id, model.shared.active_strand),
+            shared,
+            protocol.context(shared.next_id, shared.active_strand),
           )
-        False -> model
+        False -> shared
       }
-    _, _, _, _ -> model
+    _, _, _, _ -> shared
   }
 }
 
@@ -1054,19 +1132,18 @@ pub fn service_context_read(model: Model) -> Model {
 /// ```
 @internal
 pub fn open_context(model: Model, surface: context_view.Surface) -> Model {
-  service_context_read(
-    Model(
-      ..model,
-      shared: Shared(
-        ..model.shared,
-        context: context_view.State(
-          ..context_view.invalidate(model.shared.context),
-          surface:,
-          scroll: 0,
-        ),
+  Model(
+    ..model,
+    shared: Shared(
+      ..model.shared,
+      context: context_view.State(
+        ..context_view.invalidate(model.shared.context),
+        surface:,
+        scroll: 0,
       ),
     ),
   )
+  |> tui_model.run_shared(service_context_read)
 }
 
 fn context_in_flight(state: context_view.State) -> Bool {

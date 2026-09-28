@@ -42,6 +42,27 @@ pub type State {
   )
 }
 
+/// Something the lane did with the editor's requests that the editor has to
+/// show, recorded by a function over `Shared` and shown by the host that owns
+/// an editor.
+///
+/// The functions that send frames and service the queued-input read take the
+/// shared record alone, so they cannot write the editor's message or its
+/// delivery lock themselves. They append a notice to `Shared.queue_notices`
+/// instead, and the terminal's `tui_model.hold_shared` hands each one to
+/// `queue_editor.show` at the point of the call that recorded it.
+pub type Notice {
+  /// The lane refused to send a frame, for `reason`. Any frame counts, as it
+  /// did when the refusal wrote the editor directly: a save waiting on the
+  /// lane is unlocked, and the editor shows the reason.
+  Refused(reason: String)
+
+  /// A wanted read was dropped before it was sent, because the attachment
+  /// changed or there is no live one. The editor shows `message` and keeps
+  /// its draft as it is.
+  Dropped(message: String)
+}
+
 /// Starts with no read wanted, none issued and no request to correlate. A
 /// refusal of a queue command, a lost lane and an acknowledged save each
 /// return the requests to this state.

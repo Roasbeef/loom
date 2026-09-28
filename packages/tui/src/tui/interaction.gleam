@@ -129,7 +129,7 @@ fn handle_composer_paste(
   image: Result(Option(pasted_image.Image), String),
 ) -> Model {
   case model.shared.pending_submission {
-    Some(_) -> outbound.waiting_notice(model)
+    Some(_) -> tui_model.run_shared(model, outbound.waiting_notice)
     None -> paste_unlocked(model, text, image)
   }
 }
@@ -417,7 +417,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       }
       let adopted =
         adopted
-        |> outbound.send_frame(protocol.models(1))
+        |> tui_model.send_frame(protocol.models(1))
         |> inbound.request_visible_worktree
 
       // An adoption proves the daemon answers, so a relaunch still in flight
@@ -630,7 +630,7 @@ fn update_model_selector(
             repaint_phase: !model.view.repaint_phase,
           ),
         )
-        |> outbound.send_frame(protocol.set_model(
+        |> tui_model.send_frame(protocol.set_model(
           model.shared.next_id,
           model.shared.active_strand,
           name,
@@ -1457,7 +1457,7 @@ pub fn update_ready_key(key: keys.Key, model: Model) -> Model {
         None, _ -> update_key_over_selection(key, model)
         Some(_), keys.PageUp -> scroll_transcript(model, True, 10)
         Some(_), keys.PageDown -> scroll_transcript(model, False, 10)
-        Some(_), _ -> outbound.waiting_notice(model)
+        Some(_), _ -> tui_model.run_shared(model, outbound.waiting_notice)
       }
     }
   }
@@ -2189,23 +2189,26 @@ fn select_queue_input(model: Model) -> Model {
               row.strand,
               row.id,
             )
-          surfaces.service_queue_read(Model(
-            shared: Shared(
-              ..model.shared,
-              queue_request: queue_request.State(
-                fetch: Some(fetch),
-                awaiting: None,
-                request_id: None,
+          tui_model.run_shared(
+            Model(
+              shared: Shared(
+                ..model.shared,
+                queue_request: queue_request.State(
+                  fetch: Some(fetch),
+                  awaiting: None,
+                  request_id: None,
+                ),
+              ),
+              view: View(
+                ..model.view,
+                queue_editor: queue_editor.State(
+                  ..state,
+                  message: "Waiting for the full queued input…",
+                ),
               ),
             ),
-            view: View(
-              ..model.view,
-              queue_editor: queue_editor.State(
-                ..state,
-                message: "Waiting for the full queued input…",
-              ),
-            ),
-          ))
+            surfaces.service_queue_read,
+          )
         }
         False, snapshot_view.ReadOnly ->
           Model(
@@ -2268,22 +2271,25 @@ fn reconcile_queue_draft(model: Model) -> Model {
           draft.document.strand,
           draft.document.id,
         )
-      surfaces.service_queue_read(Model(
-        shared: Shared(
-          ..model.shared,
-          queue_request: queue_request.State(
-            ..model.shared.queue_request,
-            fetch: Some(fetch),
+      tui_model.run_shared(
+        Model(
+          shared: Shared(
+            ..model.shared,
+            queue_request: queue_request.State(
+              ..model.shared.queue_request,
+              fetch: Some(fetch),
+            ),
+          ),
+          view: View(
+            ..model.view,
+            queue_editor: queue_editor.State(
+              ..state,
+              message: "Explicitly reconciling with the current queue…",
+            ),
           ),
         ),
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
-            ..state,
-            message: "Explicitly reconciling with the current queue…",
-          ),
-        ),
-      ))
+        surfaces.service_queue_read,
+      )
     }
     Some(_) | None -> model
   }
@@ -2298,7 +2304,7 @@ fn save_queue_draft(model: Model) -> Model {
         && session_model.queue_namespace(model.shared) == draft.namespace
       case available {
         True ->
-          outbound.send_frame(
+          tui_model.send_frame(
             Model(
               shared: Shared(
                 ..model.shared,
@@ -2462,10 +2468,13 @@ fn update_summary_key(key: keys.Key, model: Model) -> Model {
         view: View(..model.view, summary_surface: queue_editor.Closed),
       )
     keys.Char("r") ->
-      surfaces.service_jobs_read(Model(
-        shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
-        view: View(..model.view, summary_scroll: 0),
-      ))
+      tui_model.run_shared(
+        Model(
+          shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
+          view: View(..model.view, summary_scroll: 0),
+        ),
+        surfaces.service_jobs_read,
+      )
     keys.Char("1") ->
       Model(
         ..model,
@@ -2561,7 +2570,7 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
         ),
       )
     keys.Char("r") ->
-      surfaces.service_context_read(
+      tui_model.run_shared(
         Model(
           ..model,
           shared: Shared(
@@ -2572,6 +2581,7 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
             ),
           ),
         ),
+        surfaces.service_context_read,
       )
     keys.Char("a") ->
       Model(

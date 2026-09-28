@@ -254,7 +254,7 @@ pub fn a_seed_for_a_known_board_is_dropped_test() {
       ..known,
       shared: session_model.Shared(..known.shared, todo_seed: Some("main")),
     )
-  assert surfaces.service_todo_seed(waiting).shared.todo_seed == None
+  assert surfaces.service_todo_seed(waiting.shared).todo_seed == None
 }
 
 pub fn the_seed_waits_behind_an_operator_notes_read_test() {
@@ -269,7 +269,7 @@ pub fn the_seed_waits_behind_an_operator_notes_read_test() {
       ),
     )
   }
-  assert surfaces.service_todo_seed(waiting) == waiting
+  assert surfaces.service_todo_seed(waiting.shared) == waiting.shared
 }
 
 // A response carrying prose beside the call is a narrative, drawn message

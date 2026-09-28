@@ -9,6 +9,7 @@
 import etui/widgets/textarea
 import gleam/option.{type Option, None, Some}
 import session_view/queued_input.{type Document}
+import tui/queue_request
 
 /// Whether the queue inspector or a retained draft is visible.
 pub type Surface {
@@ -193,4 +194,24 @@ pub fn refused(state: State, reason: String) -> State {
       })
     }),
   )
+}
+
+/// Shows one thing the lane did with the editor's requests.
+///
+/// The functions over `Shared` that send frames and service the queued-input
+/// read record a `queue_request.Notice` rather than write the editor, and
+/// the terminal applies each here, in the order they were recorded, at the
+/// point of the call that recorded it. A refusal is `refused`; a dropped
+/// read replaces only the message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// queue_editor.show(queue_editor.new(), queue_request.Refused("closed"))
+/// ```
+pub fn show(state: State, notice: queue_request.Notice) -> State {
+  case notice {
+    queue_request.Refused(reason:) -> refused(state, reason)
+    queue_request.Dropped(message:) -> State(..state, message:)
+  }
 }

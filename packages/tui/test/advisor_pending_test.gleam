@@ -313,26 +313,26 @@ pub fn a_delivered_nudges_entry_retires_the_board_test() {
     )
   }
   let delivered = nudges_record("main", "no down step")
-  let retired = surfaces.retire_delivered_nudges(observed, delivered)
-  assert retired.shared.nudges == None
+  let retired = surfaces.retire_delivered_nudges(observed.shared, delivered)
+  assert retired.nudges == None
 
   // The fresh read is what keeps advice queued after the drain visible.
-  assert retired.shared.nudges_refresh == worktree_view.Requested
+  assert retired.nudges_refresh == worktree_view.Requested
 
   // The same frame on another strand, or an ordinary turn on the primary,
   // is not the primary's queue draining.
   let elsewhere =
     surfaces.retire_delivered_nudges(
-      observed,
+      observed.shared,
       nudges_record("advisor", "no down step"),
     )
-  assert elsewhere.shared.nudges == observed.shared.nudges
+  assert elsewhere.nudges == observed.shared.nudges
   let ordinary =
     surfaces.retire_delivered_nudges(
-      observed,
+      observed.shared,
       record("main", "please look at the migration"),
     )
-  assert ordinary.shared.nudges == observed.shared.nudges
+  assert ordinary.nudges == observed.shared.nudges
 }
 
 fn nudges_record(strand: String, text: String) -> protocol.EntryRecord {

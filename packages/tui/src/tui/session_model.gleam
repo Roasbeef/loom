@@ -111,6 +111,11 @@ pub type Shared(socket, recorder, source, replay_source) {
     returned_drafts: List(ReturnedDraft),
     /// Ownership marker only; the unsent encoded intent belongs to Channel.
     pending_submission: Option(SubmissionSource),
+    /// How many composer drafts the lane has sent. `outbound.apply_submission`
+    /// bumps it when a frame marked `ComposerSubmission` is sent, and empties
+    /// `attachments` with it; a host empties its own editor when it moves,
+    /// which the terminal does in `tui_model.hold_shared`.
+    drafts_sent: Int,
     /// The interrupt held until the operation it stopped settles.
     interrupt: Option(Interrupt),
     /// The strand whose prompt is on its way to the daemon, if any.
@@ -193,6 +198,11 @@ pub type Shared(socket, recorder, source, replay_source) {
     goal_request: Option(Int),
     /// Whether the next board is the operator's own `/goal` question.
     goal_report: GoalReport,
+    /// What happened to the goal board that a host's goal surface has not
+    /// shown yet, oldest first: a correlated board, or the reason a read or
+    /// command could not refresh it. The terminal's `tui_model.hold_shared`
+    /// hands each to an open goal inspector and empties the list.
+    goal_observations: List(GoalObservation),
     /// Latest explicit read of the notes board, with its own revision.
     note_board: Option(notes_view.Board),
     /// Latest explicit notes target waiting for the existing command lane.
@@ -202,6 +212,11 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// matched against. Shared because the lane's replies, refusals and
     /// failures settle it; the editor it fills is `View.queue_editor`.
     queue_request: queue_request.State,
+    /// What the lane did with the queue editor's requests that the editor
+    /// has not shown yet, oldest first. The terminal's
+    /// `tui_model.hold_shared` hands each to `queue_editor.show` and empties
+    /// the list.
+    queue_notices: List(queue_request.Notice),
     /// The models the daemon listed.
     models: List(protocol.ModelInfo),
     /// Slash commands loaded by the currently attached daemon.
@@ -501,6 +516,23 @@ pub type GoalReport {
 
   /// An automatic refresh. The row is updated and nothing is printed.
   HoldGoalReport
+}
+
+/// Something that happened to the goal board which a host showing a goal
+/// surface has to reflect there.
+///
+/// The goal's receivers take the shared record alone, so they cannot write
+/// the terminal's goal inspector. They record one of these in
+/// `Shared.goal_observations` instead, and the terminal applies it to the
+/// inspector, if one is open, at the point of the call that recorded it.
+@internal
+pub type GoalObservation {
+  /// A board answering this client's goal read or command arrived.
+  GoalObserved(board: goal_view.Board)
+
+  /// A goal read or command could not refresh the board, for `reason`: the
+  /// daemon refused it, or no conversation was attached to ask.
+  GoalUnavailable(reason: String)
 }
 
 // --- the operations over the shared record -----------------------------------

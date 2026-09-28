@@ -71,11 +71,13 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import host/build_identity
 import session_view/attempt
 import session_view/composer
 import session_view/connection_event
 import session_view/history_view
+import session_view/session_channel
 import session_view/transcript_line.{type Line}
 import session_view/worktree_view
 import tui/agent_strip
@@ -94,6 +96,7 @@ import tui/live_tail
 import tui/model_selector
 import tui/msg
 import tui/note_panel
+import tui/outbound
 import tui/pacing
 import tui/peer_links
 import tui/queue_editor
@@ -678,11 +681,20 @@ pub fn mark_activity(model: Model) -> Model {
 /// this returns, so no effect can be queued twice or wait past the call
 /// that decided it.
 ///
-/// The one terminal consequence of a session fact that has to follow every
-/// call rather than wait for the end of the step is the idle timer: a
-/// shared function records activity by bumping `activity_revision`, and
-/// this resets `View.quiet_for_ms` when the revision moved, as the
-/// terminal's `mark_activity` always did.
+/// Some terminal consequences of a session fact have to follow every call
+/// rather than wait for the end of the step, because any function that
+/// sends a frame can cause them and they used to be written at that point:
+///
+/// - The idle timer. A shared function records activity by bumping
+///   `activity_revision`, and this resets `View.quiet_for_ms` when the
+///   revision moved, as the terminal's `mark_activity` always did.
+/// - The composer. A sent composer draft moves `drafts_sent`, and this
+///   empties the editor and remembers its text in the input history, as
+///   `clear_composer` did inside the send.
+/// - The queue editor. Each `queue_request.Notice` the call recorded is
+///   shown by `queue_editor.show`, oldest first.
+/// - The goal inspector. Each `GoalObservation` the call recorded is applied
+///   to the inspector when it is open, oldest first, and dropped otherwise.
 ///
 /// ## Examples
 ///
@@ -695,7 +707,7 @@ pub fn hold_shared(model: Model, shared: TerminalShared) -> Model {
     True -> model.view
     False -> View(..model.view, quiet_for_ms: 0)
   }
-  case shared.outbox {
+  let held = case shared.outbox {
     [] -> Model(shared:, view:)
     decided ->
       Model(
@@ -705,6 +717,198 @@ pub fn hold_shared(model: Model, shared: TerminalShared) -> Model {
           outbox: list.append(list.map(decided, effect.Step), view.outbox),
         ),
       )
+  }
+
+  // The three surface edges read only what this call recorded, so a call
+  // that recorded nothing, which is nearly every call, costs three checks.
+  let held = case shared.drafts_sent == model.shared.drafts_sent {
+    True -> held
+    False -> clear_composer(held)
+  }
+  held
+  |> show_queue_notices
+  |> show_goal_observations
+}
+
+/// Stores the result of `reducer`, a function over the shared record alone,
+/// applied to this model's shared record, through `hold_shared`.
+///
+/// It is `hold_shared(model, reducer(model.shared))`, written so that a
+/// pipeline of such calls holds each result before the next call runs,
+/// which keeps their effects in the order they were decided.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.run_shared(model, outbound.discard_own_turn)
+@internal
+pub fn run_shared(
+  model: Model,
+  reducer: fn(TerminalShared) -> TerminalShared,
+) -> Model {
+  hold_shared(model, reducer(model.shared))
+}
+
+// The queue editor is the terminal's, so a shared send or read records what
+// it has to show and the terminal shows it here, at the point of that call.
+fn show_queue_notices(model: Model) -> Model {
+  case model.shared.queue_notices {
+    [] -> model
+    notices ->
+      Model(
+        shared: Shared(..model.shared, queue_notices: []),
+        view: View(
+          ..model.view,
+          queue_editor: list.fold(
+            notices,
+            model.view.queue_editor,
+            queue_editor.show,
+          ),
+        ),
+      )
+  }
+}
+
+// The goal inspector follows the board only while it is open; an
+// observation that arrives with the inspector closed has nothing to update,
+// and the next `/goal` builds the panel from `Shared.goal`.
+fn show_goal_observations(model: Model) -> Model {
+  case model.shared.goal_observations {
+    [] -> model
+    observations -> {
+      let overlay = case model.view.overlay {
+        GoalInspector(panel) ->
+          GoalInspector(list.fold(observations, panel, observe_goal))
+        other -> other
+      }
+      Model(
+        shared: Shared(..model.shared, goal_observations: []),
+        view: View(..model.view, overlay:),
+      )
+    }
+  }
+}
+
+// A board replaces the panel's board and its label; a failed refresh keeps
+// the board and says why it was not refreshed.
+fn observe_goal(
+  panel: focused_goal_panel.State,
+  observation: session_model.GoalObservation,
+) -> focused_goal_panel.State {
+  case observation {
+    session_model.GoalObserved(board:) ->
+      focused_goal_panel.observe(panel, board)
+    session_model.GoalUnavailable(reason:) ->
+      focused_goal_panel.unavailable(panel, reason)
+  }
+}
+
+/// Sends one encoded command frame and stores the result.
+///
+/// The terminal's form of `outbound.send_frame`, for a reducer that still
+/// takes the whole model. `hold_shared` empties the composer when the frame
+/// was the composer's own and was sent, and shows a refusal to the queue
+/// editor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.send_frame(model, protocol.goal_get(model.shared.next_id))
+/// ```
+@internal
+pub fn send_frame(model: Model, frame: String) -> Model {
+  hold_shared(model, outbound.send_frame(model.shared, frame))
+}
+
+/// Submits through the adopted lane with `arm` and stores the result.
+///
+/// The terminal's form of `outbound.send_via`, for a reducer that still
+/// takes the whole model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.send_via(model, fn(lane, now) {
+///   operator.submit(lane, model.shared.next_id, "main", text, operator.Prompt, now)
+/// })
+/// ```
+@internal
+pub fn send_via(
+  model: Model,
+  arm: fn(terminal_lane.Lane, Int) ->
+    #(terminal_lane.Lane, session_channel.Disposition),
+) -> Model {
+  hold_shared(model, outbound.send_via(model.shared, arm))
+}
+
+/// Folds the session channel's disposition for a submitted frame back into
+/// the model.
+///
+/// The terminal's form of `outbound.apply_submission`, for a reducer that
+/// still takes the whole model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.apply_submission(model, disposition)
+/// ```
+@internal
+pub fn apply_submission(
+  model: Model,
+  disposition: session_channel.Disposition,
+) -> Model {
+  hold_shared(model, outbound.apply_submission(model.shared, disposition))
+}
+
+/// Clears the composer text, its attachments and its submission mode.
+///
+/// The composer is the terminal's; its attachments are session state,
+/// because they are what the next submission carries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.clear_composer(model)
+/// ```
+@internal
+pub fn clear_composer(model: Model) -> Model {
+  let cleared = clear_composer_text(model)
+  Model(
+    shared: Shared(..cleared.shared, attachments: []),
+    view: View(..cleared.view, submission_mode: PromptNext),
+  )
+}
+
+/// Clears the composer text after remembering it in the input history.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.clear_composer_text(model)
+/// ```
+@internal
+pub fn clear_composer_text(model: Model) -> Model {
+  let remembered = remember_submission(model, text_area.value(model.view.input))
+  Model(
+    ..remembered,
+    view: View(
+      ..remembered.view,
+      input: text_area.state_new(),
+      history_index: 0,
+      history_draft: "",
+    ),
+  )
+}
+
+// Submitted text is newest-first so Up is a constant-time move to the common
+// case. Consecutive duplicates collapse because resend remains available
+// without allowing accidental double-enter presses to crowd out useful history.
+fn remember_submission(model: Model, text: String) -> Model {
+  case string.trim(text), model.view.history {
+    "", _ -> model
+    value, [latest, ..] if value == latest -> model
+    value, history ->
+      Model(..model, view: View(..model.view, history: [value, ..history]))
   }
 }
 
