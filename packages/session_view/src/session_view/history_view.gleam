@@ -106,15 +106,31 @@ pub fn capture(
     Reading -> state
     Live -> {
       let leaf = result.unwrap(dict.get(view.leaves, strand), None)
-      let retained = case
+      let joins =
         leaf == state.leaf || newest(state.window) >= oldest(window) - 1
-      {
+      let retained = case joins {
         True -> state.window
         False -> snapshot.empty()
       }
+      let whole = merge(retained, window)
+      let merged = bounded(whole)
 
-      let merged = merge(retained, window) |> bounded
-      State(strand, Live, leaf, merged, oldest(merged), Quiet)
+      // A page read below the window can hold no record of this strand's
+      // ancestry, when other strands wrote every sequence in it. `accept`
+      // then lowers `before_seq` past that interval while the window's
+      // oldest record stays where it was. When the kept window joins this
+      // capture and the bound evicted nothing, that progress still holds,
+      // so the lower of the two is kept; otherwise the next read would ask
+      // for the same empty interval again. A window that did not join, or
+      // lost its oldest records to the bound, starts again beneath what it
+      // holds.
+      let before_seq = case
+        joins && state.before_seq > 0 && oldest(merged) == oldest(whole)
+      {
+        True -> int.min(state.before_seq, oldest(merged))
+        False -> oldest(merged)
+      }
+      State(strand, Live, leaf, merged, before_seq, Quiet)
     }
   }
 }

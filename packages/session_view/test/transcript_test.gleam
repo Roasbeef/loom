@@ -296,3 +296,41 @@ pub fn a_live_window_is_trimmed_to_what_is_drawn_test() {
   let owed = history_view.older(trimmed, Some("parent"))
   assert history_view.retain_from(owed, 3) == owed
 }
+
+// A page read below the window can hold none of the strand's ancestry,
+// when another strand wrote every sequence in it. The next capture keeps
+// the progress `accept` made past that interval, so the next read asks for
+// the sequences below it and not the same ones again.
+pub fn a_capture_keeps_the_progress_of_an_empty_read_test() {
+  // Main's record at 200 names 2 as its parent; 100 to 199 are elsewhere.
+  let captured =
+    cut([said(201, Some(200), "later"), said(200, Some(2), "resumed")])
+  let shown = view([#("main", 201)])
+  let history =
+    history_view.empty()
+    |> history_view.capture(captured.window, shown, "main")
+  assert history.before_seq == 200
+
+  let wanted =
+    history_view.older(history, history_view.branch(history, shown).unloaded)
+  let assert Some(#(after, before)) = history_view.range(wanted)
+    as "a read is owed"
+  let page =
+    snapshot.Window(
+      [said(199, Some(198), "elsewhere"), said(150, Some(149), "elsewhere")],
+      200,
+      None,
+    )
+  let read =
+    history_view.accept(
+      history_view.sent(wanted, before),
+      page,
+      before,
+      after,
+      shown,
+    )
+    |> history_view.resume
+    |> history_view.capture(captured.window, shown, "main")
+  assert read.before_seq == after + 1
+  assert read.before_seq < 200
+}

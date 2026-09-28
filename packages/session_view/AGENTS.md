@@ -80,7 +80,9 @@ read, takes the lane's outputs and performs them.
   it through the lane's `history` read, for the terminal and the web view
   alike. `retain_from(state, seq)` drops the records older than `seq` from
   a live window with no read owed, for a host that draws only the newest
-  rows (the web view).
+  rows (the web view). A `capture` into a window that joins it keeps the
+  lower `before_seq` an earlier `accept` reached, so a read that found none
+  of the strand's records is not asked again.
 - `protocol.Event`, `protocol.EntryRecord` and the board types, and
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
