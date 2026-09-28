@@ -355,8 +355,8 @@ pub fn terminal_identity() -> String {
 /// ```
 pub fn take(model: Model) -> #(Model, List(Effect)) {
   #(
-    Model(..model, shared: Shared(..model.shared, outbox: [])),
-    list.reverse(model.shared.outbox),
+    Model(..model, view: View(..model.view, outbox: [])),
+    list.reverse(model.view.outbox),
   )
 }
 

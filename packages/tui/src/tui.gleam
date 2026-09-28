@@ -572,7 +572,6 @@ pub fn new_model_with_clock(
       activity_revision: 0,
       connection_backlog: tui_model.MailboxDrained,
       recorder: None,
-      outbox: [],
       record_cache_epoch: 0,
     ),
     view: tui_model.View(
@@ -638,6 +637,7 @@ pub fn new_model_with_clock(
       quiet_for_ms: pacing.quiet_after_ms,
       herdr_reporter: None,
       herdr_published: None,
+      outbox: [],
       next_job: job.first(),
       running: job_runner.new(),
       selection: None,

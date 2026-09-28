@@ -100,7 +100,7 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
 
   let #(quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), model)
   assert quit.shared.quit
-  assert quit.shared.outbox == []
+  assert quit.view.outbox == []
   assert effects
     == [
       effect.Step(step_effect.Lane(session_channel.Shut(socket))),

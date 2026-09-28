@@ -709,13 +709,6 @@ pub type Shared {
     /// the model because the reducers that decide recording lines, input
     /// and channelless messages alike, name it in the effects they queue.
     recorder: Option(recording.Recorder),
-    /// Effects this step has decided on, newest first, and the only queue a
-    /// step has. The reducer only appends here, through `emit`, `record` and
-    /// `hold_channel`; `runtime.take` empties it at the end of every step,
-    /// so between two `update` calls it is empty. A caller that runs a
-    /// reducer outside `update` leaves its effects here until it calls
-    /// `runtime.flush` or the next step collects them.
-    outbox: List(effect.Effect),
     /// Bumped by a reducer that empties the transcript (`/clear`, a new
     /// session), so the view drops its record rows at the next projection.
     record_cache_epoch: Int,
@@ -903,6 +896,19 @@ pub type View {
     herdr_reporter: Option(herdr.Reporter),
     /// The pane state and session last reported, so only a change sends.
     herdr_published: Option(herdr.Publication),
+    /// Effects this step has decided on, newest first, and the only queue a
+    /// step has. The reducer only appends here, through `emit`, `record`,
+    /// `record_arrival` and `hold_channel`; `runtime.take` empties it at the
+    /// end of every step, so between two `update` calls it is empty. A
+    /// caller that runs a reducer outside `update` leaves its effects here
+    /// until it calls `runtime.flush` or the next step collects them.
+    ///
+    /// It is the terminal's queue, so it lives here rather than in `Shared`:
+    /// it holds terminal effects (jobs, the attachment, the clipboard,
+    /// Herdr) in one order with the session reducers' `effect.Step`
+    /// effects, and one queue is what keeps that order. While every reducer
+    /// takes the whole model, the session reducers append here too.
+    outbox: List(effect.Effect),
     /// The key the next background job is given. Keys are never reused,
     /// so a reply tagged with one belongs to exactly one job.
     next_job: job.Key,
@@ -1040,12 +1046,12 @@ pub fn mark_activity(model: Model) -> Model {
 pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
   let #(channel, outputs) = session_channel.take_outputs(channel)
   let outbox =
-    list.fold(outputs, model.shared.outbox, fn(outbox, output) {
+    list.fold(outputs, model.view.outbox, fn(outbox, output) {
       [effect.Step(step_effect.Lane(output)), ..outbox]
     })
   Model(
-    ..model,
-    shared: Shared(..model.shared, channel: Some(channel), outbox:),
+    shared: Shared(..model.shared, channel: Some(channel)),
+    view: View(..model.view, outbox:),
   )
 }
 
@@ -1219,7 +1225,7 @@ pub fn start_step(model: Model, at: msg.Stamp, event: msg.Event) -> Model {
 pub fn emit(model: Model, requested: effect.Effect) -> Model {
   Model(
     ..model,
-    shared: Shared(..model.shared, outbox: [requested, ..model.shared.outbox]),
+    view: View(..model.view, outbox: [requested, ..model.view.outbox]),
   )
 }
 
