@@ -96,7 +96,7 @@ pub type Arrival {
 /// different things: a test may fix the presentation clock to pin frames
 /// while a live socket in the same test still needs real deadlines. The
 /// wall clock is not here: its one reader is the terminal's session
-/// creation key, so it travels in `Input.wall_ms` and is stored in the
+/// creation key, so it is carried in `Input.wall_ms` and is stored in the
 /// terminal's view.
 @internal
 pub type Stamp {

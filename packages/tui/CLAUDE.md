@@ -350,7 +350,7 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   step decides on, input recording lines among them (`Record`). The session
   reducers' effects arrive as `Step(step_effect.Effect(Connection,
   Recorder))`. It imports the modules whose handles its variants carry
-  (`attachment`, `connection`, `daemon`, `herdr`, `job`, `recording`,
+  (`attachment`, `connection`, `herdr`, `job`, `recording`,
   `step_effect`) and nothing that imports the model.
 - `tui/model`: the `Model` record, `Model(shared: TerminalShared, view:
   View)`. `Shared(socket, recorder, source, replay_source)` is the session

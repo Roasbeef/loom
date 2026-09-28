@@ -479,7 +479,9 @@ pub type Model {
 /// - `source` identifies where the connection inbox's frames were read from;
 ///   admission compares it to drop a frame from a socket the model no longer
 ///   reads.
-/// - `replay_source` is the same for the replay inbox.
+/// - `replay_source` identifies where the replay inbox's recorded events are
+///   read from. Nothing compares it: admission files every replayed event,
+///   and the source is only the subject the runtime reads before a step.
 ///
 /// The two inboxes need separate source parameters because the terminal
 /// reads each from a subject typed by its message, `Subject(Message)` for

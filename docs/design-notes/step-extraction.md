@@ -33,7 +33,7 @@ template, the web shell reads `now()` once at the top of its `update`, and
 ## Where the step is today
 
 The terminal's whole update is `runtime.settle(step(runtime.message(event,
-model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1702`
+model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1742`
 (`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:48` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
 (`packages/tui/src/tui.gleam:1833` (`apply_input`),
@@ -43,7 +43,7 @@ Every reducer reads and writes one record, `State(view)`
 (`tui/model.gleam:448` (`Model`)), whose `view` field already holds the
 terminal's etui render caches (`tui/model.gleam:380` (`Caches`)). The lane's
 outputs join the step's one outbox through `hold_channel`
-(`tui/model.gleam:1094` (`hold_channel`)), and `runtime.take` returns
+(`tui/model.gleam:1096` (`hold_channel`)), and `runtime.take` returns
 them with the model (`tui/runtime.gleam:355` (`take`)).
 
 The web view holds the lane, an inbox and what it derived from the last
@@ -112,8 +112,8 @@ and its interleavings are the attachment worker's and the gateway's
 ### The terminal's `Model`
 
 152 fields, in the record's own order as it stood before S1, which split
-it into `Shared` (`tui/model.gleam:491`) and `View`
-(`tui/model.gleam:770`). The counts: 80 shared, 65
+it into `Shared` (`tui/model.gleam:493`) and `View`
+(`tui/model.gleam:772`). The counts: 80 shared, 65
 terminal, 4 handles, 3 split.
 
 | Field | Group | Reason |
@@ -186,26 +186,26 @@ terminal, 4 handles, 3 split.
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
 | `agent_rail_visible` | b | A pane toggle. |
-| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/model.gleam:1537`), and `advance_generation_clock` checks it (`tui/tick.gleam:328`); a page will toggle it too. |
+| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/model.gleam:1539`), and `advance_generation_clock` checks it (`tui/tick.gleam:328`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
 | `streams`, `tool_tails` | a | The live answer and tool tails. |
 | `reading_lines` | b | Frozen transient rows while reading above the tail. |
 | `scroll_offset` | b | The viewport. |
-| `render_revision` | a | A presentation revision shared reducers bump (`tui/model.gleam:1455` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
+| `render_revision` | a | A presentation revision shared reducers bump (`tui/model.gleam:1457` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
 | `rendered_revision`, `rendered_row_count`, `revealed_rows`, `rendered_anchors`, `rendered_gutters`, `record_gutters` | b | The row projection's outputs. |
 | `compact_call_cache`, `compact_entry_cache` | a | Line caches keyed by `transcript_line.Line`, read by the shared line builders through `Presentation`. |
 | `pending_records` | a | Legacy entries awaiting append. |
 | `record_cache_valid` | a | Today a flag cleared at twelve write sites; it becomes a counter the terminal compares, in the shape of `record_cache_epoch`. |
 | `record_cache_width`, `record_cache_strand`, `record_cache_details` | b | What the record rows were built for. |
-| `frame_revision` | a | A presentation revision (`tui/model.gleam:1328` (`invalidate_frame`)); every `append_system` bumps it. |
+| `frame_revision` | a | A presentation revision (`tui/model.gleam:1330` (`invalidate_frame`)); every `append_system` bumps it. |
 | `frame_debt` | b | Frame pacing. |
 | `monotonic_time_ms`, `transport_time_ms` | b | The host's clocks; the shell reads them into the stamp. |
 | `stamp` | a | The readings the step applies at. |
 | `terminal` | b | This terminal's identity in a creation key. |
 | `client_build` | a | The build the mismatch line compares; data, read once. |
 | `last_frame_ms` | b | Frame pacing. |
-| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/model.gleam:1067` (`mark_activity`)); the terminal's quiet timer reads it. |
+| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/model.gleam:1069` (`mark_activity`)); the terminal's quiet timer reads it. |
 | `quiet_for_ms` | b | Idle pacing. |
 | `connection_backlog` | a | Set by the shared drain from the inbox it holds (`tui/inbound.gleam:1140` (`drain_connection`)); the terminal's poll reads it. |
 | `recorder` | c | `Option(recorder)`. |
@@ -213,7 +213,7 @@ terminal, 4 handles, 3 split.
 | `herdr_reporter`, `herdr_published` | b | The pane reporter, a host handle the terminal alone performs against; it stays in the terminal's record rather than becoming a type parameter because no shared reducer names it. |
 | `outbox` | a | `List(Effect(socket, recorder))`; the terminal moves it into its own outbox at each call boundary, as `hold_channel` does for the lane. |
 | `next_job`, `running` | b | Job keys and the runtime's table. |
-| `record_cache_epoch` | a | Already the counter shape (`tui/model.gleam:743` (`record_cache_epoch`)). |
+| `record_cache_epoch` | a | Already the counter shape (`tui/model.gleam:745` (`record_cache_epoch`)). |
 | `view` | b | The etui caches themselves. |
 
 The shared record therefore holds no etui type, no `Subject`, no weft
@@ -393,12 +393,12 @@ entry points above gain the parameter with it.
 
 `Effect` is two variants because those are the two effects the shared
 reducers decide. Every `Channel` effect comes through `hold_channel`
-(`tui/model.gleam:1094` (`hold_channel`)), and the one `Record` a shared
+(`tui/model.gleam:1096` (`hold_channel`)), and the one `Record` a shared
 reducer queues is the channelless arrival
 (`tui/inbound.gleam:1187` (`handle_connection_message`), its `None`
 arm). The input's own recording line is queued by `start_step` before
 the reducer runs
-(`tui/model.gleam:1255` (`start_step`)); the terminal's shell keeps
+(`tui/model.gleam:1257` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
 terminal maps `Recorded(recorder, message)` to
 `recording.append(recorder, recording.Arrived(message))`, which writes the
@@ -771,7 +771,8 @@ lines moved between functions, few added.
 **S4: the move.** `tui/model`'s shared record and helpers,
 `tui/msg`, the frame and replay admission, `tui/inbound`, `tui/outbound`,
 `tui/surfaces`, the shared half of `tui/submit`, `tui/completion_summary`,
-`tui/agent_messages` and `tui/attempt_replay` move to `session_view`
+`tui/agent_messages`, `tui/attempt_replay` and `tui/step_effect` move to
+`session_view`
 under the names in section 2, and `step.update`, `attach`, `new` and
 `next_due` are written as the entry points `tui.step` calls. *Proves:*
 `make lint-session_view` passes R6 at error level, `gleam export
