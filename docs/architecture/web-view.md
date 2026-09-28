@@ -447,9 +447,12 @@ covered in full in [lustre.md](../lustre.md).
   tree.** Nothing skips the render when the model did not change, and an
   idle page receives a patch per message, which is why arrivals are
   batched before `update`. So the rows are projected once, in
-  `apply`, when a capture arrives, and `component.transcript_view` is
-  memoized on them with `element.memo`, which skips both the view call and
-  its diff while the rows are unchanged
+  `apply`, when a capture arrives, and the lane draws every transcript
+  line and card body inside its own `element.memo`, so a capture draws,
+  parses and diffs only the lines that are new. The memos are the lane's
+  leaves with no memo around them, and a turn's work is keyed by its
+  input, because Lustre forgets memos nested in a memo that hit and
+  redraws a keyed subtree whose key changed
   ([lustre.md](../lustre.md#cost-of-a-message-and-sizing)).
 
 Two further rules come from the runtime's process model: every

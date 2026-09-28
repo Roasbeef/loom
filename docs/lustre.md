@@ -745,6 +745,24 @@ pub fn transcript_view(rows: List(transcript.Row)) -> Element(message) {
 }
 ```
 
+**A memo inside a memo that hit is forgotten.** The runtime keeps memo
+elements in a table it starts afresh on every render: `diff.diff` calls
+`cache.tick` first, which moves the last render's table to `old_vdoms` and
+starts an empty one ([`diff.gleam`][src-diff-memo], line 39;
+[`cache.gleam`][src-cache], `tick`). A memo whose dependencies are equal
+copies only its own element into the new table (`keep_memo`), and the
+memos nested inside that element are not visited. So after one render in
+which an enclosing memo hit, the inner memos have no entries, and the next
+render that changes the enclosing memo calls every inner view again
+**(source)**. A keyed child whose key changes is replaced, and a replaced
+subtree's memos are evaluated fresh (`cache.add_children`), so a memo only
+survives under a key that stays the same. To memoize many small things,
+put the memos at the leaves with no memo around them, and give their keyed
+ancestors stable keys. Every render then visits each memo and carries each
+hit forward, for the cost of one dependency comparison each. The lane does
+this per transcript line (`component.lane_rows`), and `lane_memo_test`
+counts the lines a render draws through Lustre's own diff.
+
 **Fragments and `none`.** `element.fragment` and `keyed.fragment` group
 children without a wrapper element ([`lustre/element`][doc-element]); the
 client marks a fragment's position with an empty text node or a comment.
