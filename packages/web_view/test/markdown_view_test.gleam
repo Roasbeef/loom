@@ -124,6 +124,57 @@ pub fn a_table_test() {
   )
 }
 
+// The constructs the terminal drew through mork and the shared parser now
+// recognises for both hosts: alerts, task boxes, footnotes, and links named
+// by a reference or written bare.
+pub fn alerts_tasks_footnotes_and_references_test() {
+  let html =
+    drawn(
+      "> [!WARNING]\n> careful\n\n- [x] done\n\nSee [docs][d], www.x.test and <me@x.test>[^1].\n\n[d]: https://x.test/docs\n[^1]: The note.",
+    )
+  assert string.contains(
+    html,
+    "<blockquote class=\"md-quote\"><p class=\"md-heading md-h4\">Warning</p><p class=\"md-p\">careful</p></blockquote>",
+  )
+  assert string.contains(
+    html,
+    "<div class=\"md-item-body\"><p class=\"md-p\">☑ done</p>",
+  )
+  assert string.contains(
+    html,
+    "<span><span class=\"md-link\">docs</span><span class=\"md-link-target\"> (https://x.test/docs)</span></span>",
+  )
+  assert string.contains(
+    html,
+    "<span><span class=\"md-link\">www.x.test</span></span>",
+  )
+  assert string.contains(
+    html,
+    "<span><span class=\"md-link\">me@x.test</span></span>",
+  )
+  assert string.contains(html, "<span class=\"md-link-target\">[1]</span>")
+  assert string.contains(
+    html,
+    "<div class=\"md-item\"><span class=\"md-marker\">[1]</span><div class=\"md-item-body\"><p class=\"md-p\">The note.</p></div></div>",
+  )
+  assert !string.contains(html, "[d]:")
+  assert !string.contains(html, "href")
+}
+
+// A label and a destination named through a definition reach the page only
+// as text, as an inline link's do.
+pub fn a_reference_destination_stays_text_test() {
+  let html =
+    drawn(
+      "[x][evil] and [^\"onclick=a]\n\n[evil]: javascript:alert(1)\n[^\"onclick=a]: \" onmouseover=\"b",
+    )
+  assert !string.contains(html, "href")
+  assert !string.contains(html, " onclick=\"")
+  assert !string.contains(html, " onmouseover=\"")
+  assert string.contains(html, "(javascript:alert(1))")
+  assert string.contains(html, "[&quot;onclick=a]")
+}
+
 // ------------------------------------------------------------- security
 
 pub fn html_in_an_answer_is_text_test() {

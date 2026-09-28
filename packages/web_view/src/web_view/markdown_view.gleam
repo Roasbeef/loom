@@ -71,6 +71,16 @@ fn block_element(block: Block) -> Element(message) {
         list.map(blocks, block_element),
       )
 
+    // An alert is a quote with its kind as a title line. The title is one
+    // of five fixed words chosen by a `case`, never text from the session.
+    markdown.Alert(kind:, blocks:) ->
+      html.blockquote([attribute.class("md-quote")], [
+        html.p([attribute.class("md-heading"), attribute.class("md-h4")], [
+          html.text(alert_title(kind)),
+        ]),
+        ..list.map(blocks, block_element)
+      ])
+
     markdown.BulletList(items:) ->
       html.ul(
         [attribute.class("md-list")],
@@ -97,7 +107,31 @@ fn block_element(block: Block) -> Element(message) {
         ]),
       ])
 
+    // A footnote's definition is drawn where the model wrote it, laid out
+    // as a list item whose marker is its label in brackets. The label is
+    // text in the marker, never an id or an anchor.
+    markdown.Footnote(label:, blocks:) ->
+      html.div([attribute.class("md-item")], [
+        html.span([attribute.class("md-marker")], [
+          html.text("[" <> label <> "]"),
+        ]),
+        html.div(
+          [attribute.class("md-item-body")],
+          list.map(blocks, block_element),
+        ),
+      ])
+
     markdown.Rule -> html.hr([attribute.class("md-rule")])
+  }
+}
+
+fn alert_title(kind: markdown.AlertKind) -> String {
+  case kind {
+    markdown.Note -> "Note"
+    markdown.Tip -> "Tip"
+    markdown.Important -> "Important"
+    markdown.Warning -> "Warning"
+    markdown.Caution -> "Caution"
   }
 }
 
@@ -158,17 +192,35 @@ fn inline_element(inline: Inline) -> Element(message) {
         html.text("[image: " <> alt <> " · " <> destination <> "]"),
       ])
 
+    // A task box is the glyph the terminal draws, as text.
+    markdown.Task(state: markdown.Open) -> html.text("☐ ")
+    markdown.Task(state: markdown.Done) -> html.text("☑ ")
+
+    // A footnote reference is its label in brackets, as text. It links to
+    // nothing: an anchor would put the label into an attribute.
+    markdown.FootnoteRef(label:) ->
+      html.span([attribute.class("md-link-target")], [
+        html.text("[" <> label <> "]"),
+      ])
+
     markdown.Break -> html.br([])
   }
 }
 
 // The label, styled as a link, then the destination as text, in one
 // unstyled span so the two stay one inline node and the underline does not
-// reach the destination. An autolink's
-// label is its destination, and an empty destination says nothing, so
-// neither repeats it.
+// reach the destination. An autolink's label is its destination, or its
+// destination without the `http://` or `mailto:` the parser put in front of
+// a bare `www.` link or an address, and an empty destination says nothing,
+// so none of those repeats it.
 fn link(label: List(Inline), destination: String) -> Element(message) {
-  let target = case destination == "" || markdown.plain(label) == destination {
+  let shown = markdown.plain(label)
+  let repeats =
+    destination == ""
+    || destination == shown
+    || destination == "http://" <> shown
+    || destination == "mailto:" <> shown
+  let target = case repeats {
     True -> element.none()
     False ->
       html.span([attribute.class("md-link-target")], [
