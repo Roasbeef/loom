@@ -541,13 +541,15 @@ pub type GoalObservation {
   GoalUnavailable(reason: String)
 }
 
-/// Something the event fold did that a host's own surfaces have to follow.
+/// Something the event fold or the lane fold did that a host's own surfaces
+/// have to follow.
 ///
-/// The event fold (`tui/event_fold`) takes the shared record alone, so it
-/// cannot write the terminal's editor, overlays or footer. Where an event
-/// used to write them at the point it was applied, the fold records one of
-/// these in `Shared.surface_facts`, and the terminal applies it after the
-/// call that recorded it, in the order recorded.
+/// The folds (`tui/event_fold`, `tui/lane_fold`) take the shared record
+/// alone, so they cannot write the terminal's editor, overlays or footer.
+/// Where an event or an update used to write them at the point it was
+/// applied, the fold records one of these in `Shared.surface_facts`, and the
+/// terminal applies it after the call that recorded it, in the order
+/// recorded, before the next update.
 @internal
 pub type SurfaceFact {
   /// The session state moved from `departing` to `arriving`, each a session
@@ -579,6 +581,57 @@ pub type SurfaceFact {
   /// A live-jobs board answering this attachment's read replaced
   /// `previous`; a host cursor over the old board follows its job.
   JobsReplaced(previous: Option(live_jobs.Board), board: live_jobs.Board)
+
+  /// An approval lookup answered. The host opens the record the operator
+  /// asked to inspect when it is among `records`, and forgets the request
+  /// when it is among `missing` or a dialog is already open.
+  LookupAnswered(records: List(approval.Review), missing: List(String))
+
+  /// The approval the host's dialog shows was settled elsewhere; the fold
+  /// has written the line saying so, and the host closes the dialog.
+  ApprovalSettled
+
+  /// The captured approvals may hold a pending question the host has not
+  /// offered yet; the host presents it if no overlay is open.
+  ApprovalsPresented
+
+  /// A cut replaced the active strand's pending inputs, `previous` before
+  /// and `rows` after. A host selection over the old rows follows its row.
+  QueueRowsCaptured(
+    previous: List(snapshot_view.PendingInput),
+    rows: List(snapshot_view.PendingInput),
+  )
+
+  /// A cut listed `strands` for `session`; a parked editor of a strand no
+  /// longer listed releases its reading position.
+  HistoryReleased(session: String, strands: List(protocol.Strand))
+
+  /// A cut replaced the agent messages; a host browsing them keeps its
+  /// selection valid.
+  AgentMessagesCaptured
+
+  /// The lane failed and released the goal board; a host's goal surface
+  /// closes.
+  GoalReleased
+
+  /// The conversation was lost; the host starts its one bounded reconnect
+  /// if it can.
+  ConnectionLost
+
+  /// A replay adopted a recorded attempt. The host forgets its note
+  /// selection and approval prompts, and returns its viewport to the tail
+  /// when the session changed.
+  ReplayAdopted(session: SessionChange)
+}
+
+/// Whether a change of attachment kept the session.
+@internal
+pub type SessionChange {
+  /// The same session, attached again.
+  SameSession
+
+  /// A different session.
+  NewSession
 }
 
 // --- the operations over the shared record -----------------------------------
@@ -781,6 +834,25 @@ pub fn record_arrival(
         ..shared.outbox
       ])
     None -> shared
+  }
+}
+
+/// The active strand's pending inputs in the captured cut.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = session_model.queue_rows(shared)
+/// ```
+@internal
+pub fn queue_rows(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> List(snapshot_view.PendingInput) {
+  case shared.captured {
+    Some(#(_, view)) ->
+      option.unwrap(view.pending_inputs, [])
+      |> list.filter(fn(row) { row.strand == shared.active_strand })
+    None -> []
   }
 }
 

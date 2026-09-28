@@ -790,12 +790,7 @@ pub fn transcript_width(model: Model) -> Int {
 /// The active strand's pending inputs in the captured cut.
 @internal
 pub fn queue_rows(model: Model) -> List(snapshot_view.PendingInput) {
-  case model.shared.captured {
-    Some(#(_, view)) ->
-      option.unwrap(view.pending_inputs, [])
-      |> list.filter(fn(row) { row.strand == model.shared.active_strand })
-    None -> []
-  }
+  session_model.queue_rows(model.shared)
 }
 
 /// The control hint shown in the smallest queue panel.

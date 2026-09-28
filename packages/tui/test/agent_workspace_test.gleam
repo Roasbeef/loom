@@ -1085,3 +1085,60 @@ pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
   assert string.contains(rendered, "To main")
   assert string.contains(rendered, "retained draft")
 }
+
+// A cut replaces the agent messages the Messages tab browses, so the tab's
+// selection is checked against the captured list: a selection whose message
+// is no longer listed moves, and its scroll starts over.
+pub fn a_cut_revalidates_the_message_selection_test() {
+  let gone =
+    agent_messages.Item(
+      entry_id: "gone-entry",
+      call_id: "gone-call",
+      source: "main",
+      target: "worker",
+      body: "gone body",
+      body_extent: agent_messages.Complete,
+      seq: 3,
+      state: agent_messages.Accepted,
+    )
+  let inspector = agents.inspect("main")
+  let base = model()
+  let browsing =
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(
+        ..base.view,
+        overlay: tui_model.AgentInspector(
+          agents.Inspector(
+            ..inspector,
+            detail: agents.Messages,
+            message: Some(agent_message_panel.identity(gone)),
+            scroll: 3,
+          ),
+        ),
+      ),
+    )
+  let cut =
+    snapshot.Captured(
+      snapshot.Attachment(
+        snapshot.Expected(browsing.shared.session, "epoch", "instance"),
+        "peer",
+        message.Origin("operator", "Operator"),
+        snapshot.Owner,
+      ),
+      1,
+      json.Object([]),
+      snapshot.empty(),
+      None,
+    )
+  let captured =
+    inbound.apply_channel_update(
+      browsing,
+      session_channel.Captured(cut, empty_view(), session_channel.Notified),
+    )
+  let assert tui_model.AgentInspector(after) = captured.view.overlay
+    as "the inspector stays open"
+  assert after.message != Some(agent_message_panel.identity(gone))
+    as "a message the cut no longer lists is not selected"
+  assert after.scroll == 0
+}

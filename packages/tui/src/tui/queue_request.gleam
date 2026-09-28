@@ -66,6 +66,14 @@ pub type Notice {
   /// arrived, for the attachment `owner` and the queue `namespace`. The
   /// editor fills its draft from it, as `queue_editor.receive` decides.
   Received(owner: String, namespace: String, document: Document)
+
+  /// The lane acknowledged the editor's save. The editor closes and forgets
+  /// the draft.
+  Saved
+
+  /// The editor's save was sent and its outcome is unknown. The editor
+  /// locks the draft until the operator refreshes it.
+  Unknown
 }
 
 /// Starts with no read wanted, none issued and no request to correlate. A

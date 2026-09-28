@@ -215,5 +215,7 @@ pub fn show(state: State, notice: queue_request.Notice) -> State {
     queue_request.Dropped(message:) -> State(..state, message:)
     queue_request.Received(owner:, namespace:, document:) ->
       receive(state, owner, namespace, document)
+    queue_request.Saved -> new()
+    queue_request.Unknown -> unknown(state)
   }
 }
