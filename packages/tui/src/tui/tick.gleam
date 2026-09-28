@@ -244,8 +244,7 @@ pub fn apply_replay_change(
   change: attempt_replay.Change,
 ) -> Model {
   let around = inbound.surroundings(model)
-  tui_model.run_shared(model, lane_fold.apply_replay_change(_, change, around))
-  |> inbound.settle_surfaces(model, _)
+  inbound.run_settled(model, lane_fold.apply_replay_change(_, change, around))
 }
 
 // The activity indicator has a session half and a terminal half. The

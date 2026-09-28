@@ -27,7 +27,6 @@ import session_view/agent_view
 import session_view/composer
 import session_view/context_view
 import session_view/goal_view
-import session_view/protocol.{Strand}
 import session_view/reviewer_status
 import session_view/snapshot_view
 import session_view/text_hygiene
@@ -517,8 +516,14 @@ fn reviewer_band_lines(model: Model) -> List(String) {
   let idle_advisor =
     model.view.height >= 20
     && model.shared.active_strand != advisor_pending.advisor_strand
-    && strand_listed(model, advisor_pending.advisor_strand)
-    && !strand_running(model, advisor_pending.advisor_strand)
+    && session_model.is_known_strand(
+      model.shared.strands,
+      advisor_pending.advisor_strand,
+    )
+    && !session_model.strand_running(
+      model.shared,
+      advisor_pending.advisor_strand,
+    )
   case
     reviewer_status.lines(
       model.shared.reviewer_rows,
@@ -897,29 +902,6 @@ pub fn queue_draft_area(area: Rect) -> Rect {
     inner.size.width,
     int.max(0, inner.size.height - controls),
   )
-}
-
-/// Whether one named strand has work in flight. Unlike `active_strand_phase`
-/// this asks about a strand the operator may not be looking at, and it counts
-/// a local submission the server has not yet reported a phase for.
-@internal
-pub fn strand_running(model: Model, target: String) -> Bool {
-  model.shared.submitting == Some(target)
-  || list.any(model.shared.strands, fn(strand) {
-    let Strand(id:, live_phase:, ..) = strand
-    id == target && live_phase != None
-  })
-}
-
-/// Whether the roster names this strand at all. A terminal that has just
-/// attached holds no roster, so the primary's first appearance in one is the
-/// edge that says there is a session here to ask about.
-@internal
-pub fn strand_listed(model: Model, target: String) -> Bool {
-  list.any(model.shared.strands, fn(strand) {
-    let Strand(id:, ..) = strand
-    id == target
-  })
 }
 
 /// The part of the summary surface below its tab row.

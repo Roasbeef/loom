@@ -14,6 +14,7 @@ import gleam/option.{None, Some}
 import machine/codec as machine_codec
 import machine/strand
 import session_view/approval
+import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
@@ -438,6 +439,46 @@ pub fn pending_permission_automatically_opens_a_dialog_with_captured_consent_tes
         #("path", json.String("/shared/output")),
       ]),
     ])
+}
+
+// The dialog closes once its decision is handed to the lane, and a refused
+// decision leaves the question on screen with the reason beside it, so the
+// operator can answer it again once the conversation is back.
+pub fn a_decision_closes_the_dialog_unless_it_is_refused_test() {
+  let captured =
+    capture_permission(pushed.attached(), pending_permission_cut(41))
+  let assert tui_model.ApprovalInspector(panel) = captured.view.overlay
+    as "the pending request opens its dialog"
+  let review = approval_panel.review(panel)
+
+  // The cut lists no strands; the decision goes to a strand the session
+  // knows, or it is refused before it is encoded.
+  let opened =
+    tui_model.Model(
+      ..captured,
+      shared: session_model.Shared(..captured.shared, strands: [
+        protocol.Strand("main", Some("main"), None),
+      ]),
+    )
+
+  let decided =
+    inbound.decide_captured_approval(opened, review, approval_panel.Deny)
+  assert decided.view.overlay == tui_model.NoOverlay
+    as "a decision on its way takes the question off the screen"
+
+  let offline =
+    tui_model.Model(
+      ..opened,
+      shared: session_model.Shared(
+        ..opened.shared,
+        peer: session_model.Disconnected,
+      ),
+    )
+  let refused =
+    inbound.decide_captured_approval(offline, review, approval_panel.Deny)
+  let assert tui_model.ApprovalInspector(_) = refused.view.overlay
+    as "a refused decision leaves the question open"
+  assert refused.shared.notice == "no conversation is attached; draft retained"
 }
 
 pub fn deferred_question_is_not_reopened_until_its_sequence_changes_test() {

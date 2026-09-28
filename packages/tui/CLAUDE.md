@@ -378,14 +378,15 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   editor has not shown,
   `goal_observations` holds the `GoalObserved(board)` and
   `GoalUnavailable(reason)` entries the goal inspector has not shown, and
-  `surface_facts` holds the `SurfaceFact` values the event fold and the
-  lane fold recorded (`WorkspaceSwitched(departing, arriving,
+  `surface_facts` holds the `SurfaceFact` values the event fold, the
+  lane fold and the commands recorded (`WorkspaceSwitched(departing, arriving,
   previous_session)`, `SessionSynchronized`, `ModelsListed(models,
   current)`, `OutlookCleared`, `NotesArrived(board)`, `JobsReplaced(previous,
   board)`, `LookupAnswered(records, missing)`, `ApprovalSettled`,
   `ApprovalsPresented`, `QueueRowsCaptured(previous, rows)`,
   `HistoryReleased(session, strands)`, `AgentMessagesCaptured`,
-  `GoalReleased`, `ConnectionLost` and `ReplayAdopted(SessionChange)`).
+  `GoalReleased`, `ConnectionLost`, `ReplayAdopted(SessionChange)`,
+  `InterruptRequested` and `ReviewAnswered`).
   The three lists
   are empty between calls. `record_surface` appends a fact.
   The functions are the writers `append_system`, `append_error`,
@@ -555,10 +556,25 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `receive_advisor_nudges`, `retire_delivered_nudges`, `refuse_goal`), all
   over `Shared` alone; a dropped queue read appends
   `queue_request.Dropped`, and a goal board or failed goal read appends a
-  `GoalObservation`. The functions that open a surface or read its target
-  (`refresh_notes`, `select_note`, `open_summary`, `open_context`,
-  `request_goal_status`, `notes_target`, `notes_surface`) and the `sync_*`
-  edge detectors still take the whole model.
+  `GoalObservation`. The `sync_*` edges (`sync_context`,
+  `sync_advisor_nudges`, `sync_goal`, with `context_refresh_due`,
+  `advisor_nudges_action` and `goal_action`) compare two shared records, and
+  the goal commands `submit_goal_action` and `confirming` take one. The
+  functions that open a surface or read its target (`refresh_notes`,
+  `select_note`, `open_summary`, `open_context`, `request_goal_status`,
+  `notes_target`, `notes_surface`) still take the whole model.
+- `tui/commands`: what an operator does to a session, over `Shared` alone:
+  `interrupt_active`, `stop_strand`, `decide` (by ID, the displayed
+  record), `decide_review` (the dialog's captured record), `select_model`,
+  `focus` and `load_strand` (the second and third units of a strand switch,
+  after the lane's `cancel_unsent`), and `quit` (the lane's close and the
+  quit flag). An interrupt records `InterruptRequested` and a decision on
+  the dialog `ReviewAnswered`; the terminal forms in `tui/submit` and
+  `tui/inbound` hold the result and call `settle_surfaces`.
+- `tui/session_step`: `settle(before, after)`, the shared step's own settle
+  after every event: `sync_context`, `sync_advisor_nudges` and `sync_goal`
+  in that order. `settle_update` in `tui.gleam` runs it through
+  `run_shared`.
 - `tui/event_fold`: the event fold over `Shared` alone. `apply_event`
   handles each pushed event: streams, tool tails, entries, phases, usage and
   the cache watch, the side-surface replies, schedules, skills, models and a
@@ -596,11 +612,14 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `inspect_looked_up`, the dialog's close, `present_pending_approval`,
   `follow_queue_selection`, the parked editors' pruning,
   `reconcile_agent_message_selection`, the goal inspector's close,
-  `begin_reconnect` and the replay adoption's resets)
-  and moves returned drafts into the editors (`restore_returned_drafts`).
-  `select_workspace`, `select_model`, `apply_cut`, `request_decisions`,
-  `service_history`, `request_visible_worktree` and `refresh_worktree` are
-  terminal forms of the folds' functions.
+  `begin_reconnect`, the replay adoption's resets, and the commands'
+  composer reset and dialog close) and moves returned drafts into the
+  editors (`restore_returned_drafts`). `run_settled(model, reducer)` holds
+  a shared call and settles its facts in one call; every call that can
+  record a fact goes through it. `select_workspace`, `apply_cut`,
+  `request_decisions`, `service_history`, `request_visible_worktree`,
+  `refresh_worktree` and `decide_captured_approval` are terminal forms of
+  the folds' and the commands' functions.
 - `tui/session_control`: daemon control requests and reconnection. It
   describes each request as a `job.Spec`, and `drain_control`,
   `drain_reconnect`, `drain_activity` and `drain_configuration` take their
@@ -619,8 +638,13 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   growing paragraph re-wraps from its last row (`markdown.rewrap`), and a
   long paragraph is parsed only after a checkpoint past its plain leading
   lines (`markdown.join_soft_break`).
-- `tui/submit`: composer submission, input history, interrupts and target
-  switches.
+- `tui/submit`: composer submission, input history, and the terminal forms
+  of the commands: `interrupt_active`, `stop_strand`, `quit` (the session's
+  half through `commands.quit`, then the terminal's cancellations) and
+  `switch_active_strand` (`cancel_pending`, `commands.focus`, the overlay
+  and outlook reset, then `commands.load_strand`, each settled before the
+  next). `submit_text` still parses and dispatches every slash command; its
+  session arms call the commands' functions.
 - `tui/interaction`: key, paste, mouse and candidate-event handling.
 - `tui/tick`: `update_tick`, `settle_tick`, the frame cache, viewport pacing
   and the Herdr reporter.
@@ -1814,8 +1838,9 @@ untouched.
   screen would show.
 - **`update` is a dispatch and a settle.** `update` records the event, calls
   `apply_input` to dispatch on it, and hands the result to `settle_update`
-  for the worktree request, context sync, Herdr report, projection, viewport
-  snap and frame decision. `settle_update` taking the dispatched model as a
+  for the worktree request, the shared step's settle
+  (`session_step.settle`: the context, pending-nudge and goal edges), Herdr
+  report, projection, viewport snap and frame decision. `settle_update` taking the dispatched model as a
   parameter is what keeps the module compiling in seconds; `apply_input` is
   a readability split. The Erlang inliner attempts every local call and, on
   abandoning an attempt for effort, restores the state it began from,
@@ -2213,10 +2238,10 @@ untouched.
   `tui_test/stepping.step` asserts both lists are empty after every step,
   as it does for `Shared.outbox`.
 - **An update's surface facts are settled after that update.** The event
-  fold and the lane fold record a `SurfaceFact` where an update used to
-  write the terminal's editor, overlays or footer, and
-  `inbound.settle_surfaces` applies them after each call into a fold
-  (`inbound.apply_channel_update` per update, the tick's
+  fold, the lane fold and the commands record a `SurfaceFact` where an
+  update or a command used to write the terminal's editor, overlays or
+  footer, and `inbound.settle_surfaces` applies them after each call into a
+  fold or a command (`inbound.apply_channel_update` per update, the tick's
   `apply_replay_change` per replay change, the channelless message, and
   the terminal forms), not at the end of the step. One step applies many
   updates, and a later update reads or overwrites what an earlier one

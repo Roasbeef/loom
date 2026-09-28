@@ -41,6 +41,7 @@ import tui/agents
 import tui/approval_panel
 import tui/attachment
 import tui/buffered
+import tui/commands
 import tui/context_panel
 import tui/daemon/protocol as control_protocol
 import tui/effect
@@ -540,9 +541,15 @@ fn update_goal_inspector(
       Model(..model, view: View(..model.view, overlay: GoalInspector(next)))
     focused_goal_panel.Refresh -> surfaces.request_goal_status(model)
     focused_goal_panel.Pause ->
-      surfaces.submit_goal_action(model, command.GoalPause)
+      tui_model.run_shared(model, surfaces.submit_goal_action(
+        _,
+        command.GoalPause,
+      ))
     focused_goal_panel.Resume ->
-      surfaces.submit_goal_action(model, command.GoalResume)
+      tui_model.run_shared(model, surfaces.submit_goal_action(
+        _,
+        command.GoalResume,
+      ))
   }
 }
 
@@ -619,23 +626,21 @@ fn update_model_selector(
           repaint_phase: !model.view.repaint_phase,
         ),
       )
+
+    // The selector closes before the session's half runs. The notice it
+    // sets is replaced by the line `commands.select_model` appends, as it
+    // always was; the switch reads neither the notice nor the overlay.
     model_selector.Choose(name) -> {
-      let switched = inbound.select_model(model, name)
-      let selected =
+      let closed =
         Model(
-          shared: Shared(..switched.shared, notice: "model: " <> name),
+          shared: Shared(..model.shared, notice: "model: " <> name),
           view: View(
-            ..switched.view,
+            ..model.view,
             overlay: NoOverlay,
             repaint_phase: !model.view.repaint_phase,
           ),
         )
-        |> tui_model.send_frame(protocol.set_model(
-          model.shared.next_id,
-          model.shared.active_strand,
-          name,
-        ))
-      tui_model.append_system(selected, "active model changed to " <> name)
+      inbound.run_settled(closed, commands.select_model(_, name))
     }
   }
 }

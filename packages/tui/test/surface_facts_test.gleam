@@ -12,7 +12,9 @@
 //// active strand is live, and an acknowledged queue save closing the queue
 //// editor. So do two of the three things the lane fold reads from its
 //// `Surroundings`: whether a notes surface is open when a notes read is
-//// refused, and whether a diff is shown when a new cut arrives.
+//// refused, and whether a diff is shown when a new cut arrives. The
+//// commands (`tui/commands`) record facts too; the one no other test
+//// reached is an interrupt returning a steering composer to prompting.
 
 import core/json
 import core/message
@@ -33,6 +35,7 @@ import tui/model.{DiffVisible, GoalInspector, ModelSelector, NoOverlay} as tui_m
 import tui/model_selector
 import tui/queue_editor
 import tui/session_model
+import tui/submit
 import tui/tick
 import tui/workspace
 import tui_test/pushed
@@ -48,6 +51,35 @@ fn model() -> tui_model.Model {
       active_strand: "main",
     ),
   )
+}
+
+// Input typed after an interrupt is released with the input the daemon
+// holds, so a composer that was set to steer the running turn goes back to
+// prompting when the interrupt is sent, and stays as it was when there is
+// nothing to interrupt.
+pub fn an_interrupt_returns_the_composer_to_prompting_test() {
+  // The demo roster shows `main` streaming.
+  let base = model()
+  let steering =
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(..base.view, submission_mode: tui_model.SteerNow),
+    )
+  let interrupted = submit.interrupt_active(steering)
+  assert interrupted.shared.interrupt != None
+    as "the interrupt is held for the running strand"
+  assert interrupted.view.submission_mode == tui_model.PromptNext
+    as "the next line is a prompt, not a steer into the stopping turn"
+
+  let idle =
+    tui_model.Model(
+      shared: session_model.Shared(..base.shared, strands: [], submitting: None),
+      view: tui_model.View(..base.view, submission_mode: tui_model.SteerNow),
+    )
+  let untouched = submit.interrupt_active(idle)
+  assert untouched.shared.notice == "nothing is running"
+  assert untouched.view.submission_mode == tui_model.SteerNow
+    as "an interrupt with nothing running leaves the composer alone"
 }
 
 pub fn a_full_snapshot_returns_the_viewport_to_the_tail_test() {

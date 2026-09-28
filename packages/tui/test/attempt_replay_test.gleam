@@ -1140,8 +1140,9 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   assert adopted.shared.nudges_request == None
   assert adopted.shared.goal_awaiting == None
   assert adopted.shared.goal_request == None
-  assert surfaces.advisor_nudges_action(model, adopted) == surfaces.ReadNudges
-  assert surfaces.goal_action(model, adopted) == surfaces.ReadGoal
+  assert surfaces.advisor_nudges_action(model.shared, adopted.shared)
+    == surfaces.ReadNudges
+  assert surfaces.goal_action(model.shared, adopted.shared) == surfaces.ReadGoal
   assert adopted.shared.pending_submission == None
   assert textarea.value(adopted.view.input) == ""
     as "a replacement session never inherits the previous recipient's draft"
