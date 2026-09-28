@@ -884,6 +884,11 @@ boundaries and the split's measurements under Invariants.
   is automatically resent. A borrowed control still has one outstanding slot:
   concurrent requests can return `Busy` rather than queueing. Recovered actions
   use separate temporary owners and their own authenticated hello epochs.
+  `selection.open`'s startup wait and the stop path's retirement wait each
+  hold one deadline for the whole wait, and every `GetOperation` or
+  `GetSession` read inside it is given what is left of that deadline, never
+  a fixed budget: a timed-out read retires the control owner, so one slow
+  reply under a fixed budget ended a wait that still had most of its time.
   `tui/daemon/protocol` is the independent, total control codec:
   `Page` is bounded to 100 authorized records, lifecycle requests use the hello
   epoch, and `GetOperation` refuses an operation from another epoch locally.
