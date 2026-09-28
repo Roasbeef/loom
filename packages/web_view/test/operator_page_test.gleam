@@ -176,6 +176,65 @@ pub fn an_empty_or_oversized_draft_is_refused_before_the_lane_test() {
   assert page_fixture.commands(page_fixture.sent(wire)) == []
 }
 
+// The notice states the outcome of the latest command. A refusal the page
+// made itself is replaced by the next command that is sent, and that
+// "sent" by the daemon's acknowledgement of it.
+pub fn a_later_outcome_replaces_the_notice_test() {
+  let #(model, wire) = page("operator", [])
+  let model = send(model, [operator_page.Submitted("   ", operator.Prompt)])
+  assert component.notice(model) == component.Warned("Nothing to send.")
+
+  let model = send(model, [operator_page.Submitted("hi", operator.Prompt)])
+  assert component.notice(model) == component.Said("prompt sent")
+
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one prompt is one command"
+  let model =
+    send(model, [
+      reply(frame, "\"mutation_outcome\",\"body\":{\"status\":\"admitted\"}"),
+    ])
+  assert component.notice(model) == component.Said("prompt admitted")
+}
+
+// A command the daemon refuses replaces the "sent" notice with the
+// command's name and the refusal's code, never the daemon's message.
+pub fn a_refusal_replaces_the_sent_notice_test() {
+  let #(model, wire) = page("operator", [])
+  let model = send(model, [operator_page.Submitted("go left", operator.Steer)])
+  assert component.notice(model) == component.Said("steer sent")
+
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one steer is one command"
+  let model =
+    send(model, [
+      reply(
+        frame,
+        "\"error\",\"body\":{\"code\":\"conflict\",\"message\":\"<b>busy</b>\"}",
+      ),
+    ])
+  assert component.notice(model) == component.Warned("steer refused: conflict")
+}
+
+// The daemon's correlated reply to `frame`, a command the page sent: the
+// event and the body after `"event":`.
+fn reply(
+  frame: String,
+  event: String,
+) -> operator_page.Msg(process.Subject(String)) {
+  let assert Ok(#(_, after)) = string.split_once(frame, "\"id\":")
+    as "a command carries its request identity"
+  let assert Ok(#(id, _)) = string.split_once(after, ",")
+    as "the identity is followed by the command"
+  operator_page.Observed(component.Arrived(
+    [
+      connection_event.Incoming(
+        "{\"v\":2,\"reply_to\":" <> id <> ",\"event\":" <> event <> "}",
+      ),
+    ],
+    0,
+  ))
+}
+
 pub fn the_composer_refuses_any_field_it_does_not_offer_test() {
   assert operator_page.composition([#("draft", "hi")])
     == Ok(operator_page.Submitted("hi", operator.Prompt))
@@ -199,18 +258,50 @@ pub fn the_composer_refuses_any_field_it_does_not_offer_test() {
   )
 }
 
-// A card appearing must never move the composer: the agent chooses when a
-// card lands and how tall it is, so drawn above the composer it could slide
-// Deny or Allow under a click on its way to the editor or to Send. The
-// approvals therefore come after the composer.
-pub fn the_composer_comes_before_the_approvals_test() {
+// The composer is drawn inside the dock, the footer the stylesheet pins to
+// the viewport's bottom edge, so rows landing above it never move Send or
+// Steer out from under a click.
+pub fn the_composer_is_drawn_in_the_dock_test() {
+  let #(model, _) = page("operator", [])
+  let html = element.to_string(operator_page.view(model))
+  let assert Ok(#(_, from_dock)) =
+    string.split_once(html, "<footer class=\"dock\">")
+    as "the page draws a dock"
+  let assert Ok(#(dock, _)) = string.split_once(from_dock, "</footer>")
+    as "the dock is closed"
+  assert string.contains(dock, "class=\"composer\"")
+}
+
+// A pending card is drawn in the dock, directly above the composer, so it
+// is on screen wherever the operator has scrolled. The dock is pinned by
+// its bottom edge, so a card appearing grows it upward and never moves the
+// composer's controls. Nothing from the transcript is inside the dock.
+pub fn the_approvals_sit_above_the_composer_in_the_dock_test() {
   let #(model, _) = page("operator", pending())
   let html = element.to_string(operator_page.view(model))
-  let assert Ok(#(before_composer, _)) =
-    string.split_once(html, "class=\"composer\"")
-    as "the page draws a composer"
-  assert !string.contains(before_composer, "class=\"approvals\"")
-  assert string.contains(html, "class=\"approvals\"")
+  let assert Ok(#(before_dock, from_dock)) =
+    string.split_once(html, "<footer class=\"dock\">")
+    as "the page draws a dock"
+  let assert Ok(#(dock, _)) = string.split_once(from_dock, "</footer>")
+    as "the dock is closed"
+  assert !string.contains(before_dock, "class=\"approvals\"")
+  let assert Ok(#(above_composer, _)) =
+    string.split_once(dock, "class=\"composer\"")
+    as "the dock holds the composer"
+  assert string.contains(above_composer, "class=\"approvals\"")
+  assert !string.contains(dock, "class=\"transcript lane\"")
+}
+
+// A card's action row carries the arming class, which the stylesheet uses
+// to refuse clicks on Deny and Allow for 600 ms after the card is inserted,
+// so a click already on its way to the transcript cannot land on Allow.
+pub fn an_approval_cards_buttons_are_armed_test() {
+  let #(model, _) = page("operator", pending())
+  let html = element.to_string(operator_page.view(model))
+  let assert Ok(#(_, actions)) =
+    string.split_once(html, "<div class=\"approval-actions arming\">")
+    as "the card's action row carries the arming class"
+  assert string.contains(actions, "Allow fs_write once")
 }
 
 // The card is drawn from the record alone, outside the transcript: Deny is

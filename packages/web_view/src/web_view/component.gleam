@@ -105,14 +105,31 @@ pub const prompt_limit = 262_144
 /// for, and the transport the lane's frames travel over.
 pub type Start(socket) {
   Start(
-    /// The canonical session identity, shown in the page's heading.
+    /// The canonical session identity. The heading carries it whole in a
+    /// `title` and shows it shortened when the session has no name.
     session_id: String,
+    /// What the daemon's catalogue says about the session, or `None` when
+    /// the host could not read it.
+    label: Option(Label),
     /// The attachment the lane must see on every captured cut. A cut for
     /// another session, epoch or incarnation fails the lane rather than
     /// being drawn.
     expected: snapshot.Expected,
     /// The host's transport.
     transport: Transport(socket),
+  )
+}
+
+/// What the daemon's catalogue says about a session, for the page's
+/// heading. Neither field comes from the session's transcript: the name is
+/// the label the owner gave the session, and the workspace is the working
+/// directory the host validated when the session was created.
+pub type Label {
+  Label(
+    /// The session's display name, which may be empty.
+    name: String,
+    /// The canonical working directory the session runs in.
+    workspace: String,
   )
 }
 
@@ -222,6 +239,7 @@ pub type Strip {
 pub opaque type Model(socket) {
   Model(
     session_id: String,
+    label: Option(Label),
     expected: snapshot.Expected,
     transport: Transport(socket),
     /// `None` until the transport has opened.
@@ -317,6 +335,7 @@ pub fn app() -> lustre.App(Start(socket), Model(socket), Msg(socket)) {
 pub fn new(start: Start(socket)) -> Model(socket) {
   Model(
     session_id: start.session_id,
+    label: start.label,
     expected: start.expected,
     transport: start.transport,
     lane: None,
@@ -543,6 +562,20 @@ pub fn apply(
             "The daemon's reply to your last command was lost. It was not resent.",
           ),
         )
+
+      // The daemon's answer to the page's own command replaces whatever
+      // the page said before, as the terminal's footer does, so the notice
+      // always states the outcome of the latest command rather than an
+      // earlier refusal or a "sent" the daemon has since answered. The
+      // page's lane sends no read that expects a reply, so every
+      // acknowledgement and every refusal it sees answers a command this
+      // page issued. A refusal names its code, which the daemon chooses,
+      // and not its message.
+      session_channel.Acknowledged(command:, status:) ->
+        Model(..model, notice: Said(command <> " " <> status))
+      session_channel.RequestRefused(command:, code:, ..) ->
+        Model(..model, notice: Warned(command <> " refused: " <> code))
+
       session_channel.Auxiliary(protocol.UsageChanged(
         strand:,
         seq:,
@@ -552,11 +585,9 @@ pub fn apply(
       session_channel.HistoryPage(..)
       | session_channel.LookedUp(..)
       | session_channel.Auxiliary(..)
-      | session_channel.RequestRefused(..)
       | session_channel.Streamed(..)
       | session_channel.ToolStreamed(..)
-      | session_channel.Noticed(..)
-      | session_channel.Acknowledged(..) -> model
+      | session_channel.Noticed(..) -> model
     }
   })
 }
@@ -1218,7 +1249,16 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   ])
 }
 
-/// The page's heading: the session and the connection's status.
+/// The page's heading: the session's name, the workspace it runs in, and
+/// the connection's status.
+///
+/// The name is the catalogue's label, or the session's identity shortened
+/// to its first eight characters when it has none; the whole identity is
+/// the heading's `title`. The workspace is drawn as its last path segment,
+/// with the whole path in a `title`. Both are text nodes and attribute
+/// values that Lustre escapes. The catalogue's fields are written by the
+/// owner and the host, never by the session's agent, and a `title` is
+/// inert, so neither needs the stricter handling transcript text gets.
 ///
 /// ## Examples
 ///
@@ -1227,11 +1267,45 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 /// ```
 pub fn heading(model: Model(socket)) -> Element(message) {
   html.header([attribute.class("session-head")], [
-    html.h1([], [html.text("Session " <> model.session_id)]),
+    html.h1([attribute.title(model.session_id)], [
+      html.text(session_name(model.session_id, model.label)),
+    ]),
+    workspace(model.label),
     html.p([attribute.class("status"), attribute.role("status")], [
       html.text(status_text(model.status)),
     ]),
   ])
+}
+
+// A session with no name, or none the host could read, is named by its
+// identity's first eight characters. The whole identity is in the
+// heading's `title`, so the shortening loses nothing a reader can need.
+fn session_name(session_id: String, label: Option(Label)) -> String {
+  case label {
+    Some(Label(name: "", ..)) | None ->
+      "Session " <> string.slice(session_id, 0, 8)
+    Some(Label(name:, ..)) -> name
+  }
+}
+
+// The workspace's last path segment, or nothing when it is unknown. The
+// heading keeps three children either way, so the status line keeps its
+// place in the tree.
+fn workspace(label: Option(Label)) -> Element(message) {
+  case label {
+    Some(Label(workspace: "", ..)) | None -> element.none()
+    Some(Label(workspace:, ..)) ->
+      html.span([attribute.class("workspace"), attribute.title(workspace)], [
+        html.text(basename(workspace)),
+      ])
+  }
+}
+
+fn basename(path: String) -> String {
+  string.split(path, "/")
+  |> list.filter(fn(segment) { segment != "" })
+  |> list.last
+  |> result.unwrap(path)
 }
 
 /// The agent strip: one chip per listed strand, the advisor's chip last,
@@ -1442,6 +1516,12 @@ fn status_glyph(status: agent_view.Status) -> String {
 /// capture costs no diff here and a window that drops its oldest rows
 /// removes them rather than rewriting every piece after them.
 ///
+/// The lane is drawn inside a `<loom-follow>` (`packages/web_client`),
+/// which scrolls the page to a row that lands below the viewport while the
+/// reader is at the bottom, and stops once they scroll up to read. Where
+/// the reader has scrolled is the browser's to know: the server never
+/// renders it, so scrolling costs no message here.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1449,10 +1529,12 @@ fn status_glyph(status: agent_view.Status) -> String {
 /// ```
 pub fn lane_view(pieces: List(turns.Piece)) -> Element(message) {
   use <- element.memo([element.ref(pieces)])
-  keyed.div(
-    [attribute.class("transcript lane"), attribute.role("log")],
-    list.map(pieces, fn(piece) { #(piece_key(piece), piece_element(piece)) }),
-  )
+  element.element("loom-follow", [attribute.class("follow")], [
+    keyed.div(
+      [attribute.class("transcript lane"), attribute.role("log")],
+      list.map(pieces, fn(piece) { #(piece_key(piece), piece_element(piece)) }),
+    ),
+  ])
 }
 
 fn piece_key(piece: turns.Piece) -> String {

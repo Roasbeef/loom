@@ -14,7 +14,13 @@
 //// renders the state and the element is keyed by the turn it folds. The
 //// button is a real button, so a keyboard opens it as it opens any button;
 //// the element handles no key itself.
+////
+//// Each toggle dispatches `toggled_event` from the element, bubbling and
+//// composed, with no data. `<loom-follow>` hears it and takes the growth
+//// that follows as the reader's own doing, so opening the newest turn's
+//// fold does not scroll the page past the divider the reader just pressed.
 
+import gleam/json
 import lustre
 import lustre/attribute
 import lustre/component
@@ -25,6 +31,10 @@ import lustre/event
 
 /// The element's tag.
 pub const name = "loom-fold"
+
+/// The event the element dispatches from itself each time it opens or
+/// closes. It carries no data.
+pub const toggled_event = "loom-fold-toggled"
 
 /// Whether the work is shown.
 pub type Model {
@@ -66,9 +76,16 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
 /// ```
 pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message, model {
-    Toggled, Closed -> #(Opened, effect.none())
-    Toggled, Opened -> #(Closed, effect.none())
+    Toggled, Closed -> #(Opened, announce())
+    Toggled, Opened -> #(Closed, announce())
   }
+}
+
+// Lustre performs this effect in the same turn as the update and renders
+// on the next animation frame, so the event reaches `<loom-follow>` before
+// the fold's size changes.
+fn announce() -> Effect(Msg) {
+  event.emit(toggled_event, json.null())
 }
 
 fn view(model: Model) -> Element(Msg) {

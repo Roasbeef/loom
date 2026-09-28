@@ -551,16 +551,20 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   browser's clock need not agree with the daemon's. No attribute carries
   session text.
 - **Session text reaches it only as the server's children.** `<loom-fold>`
-  shows the divider and the work through a named and a default slot; the
-  words are light-DOM nodes the server rendered and escaped.
+  shows the divider and the work through a named and a default slot, and
+  `<loom-follow>` shows the lane through a default slot; the words are
+  light-DOM nodes the server rendered and escaped.
 - **No key handling and no focus near an approval card.** A client
   component's button is a real button, which the browser activates; no
-  element listens for a key or calls `focus`.
+  element listens for a key or calls `focus`. `<loom-follow>` scrolls the
+  page and observes the lane's size; the approval cards and the composer
+  are outside it, in the dock, and it reads nothing inside either.
 - **No raw HTML.** It renders through Lustre's virtual DOM, as the server
   component does.
-- **Nothing the server needs.** A fold's open state and a clock reading live
-  only in the browser; the server never renders them, so its later patches
-  leave them alone, and it never reads them.
+- **Nothing the server needs.** A fold's open state, a clock reading and
+  whether the reader is following the tail live only in the browser; the
+  server never renders them, so its later patches leave them alone, and it
+  never reads them.
 
 Its styles are the page's: the client runtime adopts the document's
 stylesheets into the element's shadow root, as the server component's does.
@@ -886,7 +890,8 @@ In a server component the choice is narrower still:
   Loom uses one only for behaviour that changes with nothing the server
   knows, so the server would otherwise render and diff the whole page for
   it: a clock that moves every second (`<loom-elapsed>`), a fold the reader
-  opens (`<loom-fold>`). The server component renders it by tag name like
+  opens (`<loom-fold>`), the page's scroll position while it follows the
+  tail (`<loom-follow>`). The server component renders it by tag name like
   any element. It holds no session state and sends no command; the rules
   it keeps are in section 3, "Client components inside the server
   component".

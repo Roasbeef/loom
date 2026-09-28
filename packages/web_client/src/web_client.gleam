@@ -4,14 +4,16 @@
 //// The server component (`web_view/component`) holds every piece of session
 //// state and is the only thing that talks to the session. Some behaviour
 //// belongs in the browser anyway, because it changes with nothing the
-//// server knows: a clock that moves every second, or a fold the reader
-//// opens. Each such behaviour is one Lustre client component registered as
+//// server knows: a clock that moves every second, a fold the reader opens,
+//// or where the reader has scrolled. Each such behaviour is one Lustre client component registered as
 //// a custom element, which the server renders like any other tag:
 ////
 //// - `<loom-elapsed since="...">` (`web_client/elapsed`) counts an
 ////   operation's elapsed time.
 //// - `<loom-fold>` (`web_client/fold`) opens and closes a turn's folded
 ////   work.
+//// - `<loom-follow>` (`web_client/follow`) keeps the lane's newest row in
+////   view while the reader is at the bottom of the page.
 ////
 //// Every element keeps the page's rules (protocol-change/051): it renders
 //// only what its own attributes say, and those hold daemon identities or
@@ -24,6 +26,7 @@
 
 import web_client/elapsed
 import web_client/fold
+import web_client/follow
 
 /// Registers every element. The bundle calls this once when the page loads
 /// it; an element already registered is left as it is.
@@ -36,5 +39,6 @@ import web_client/fold
 pub fn main() -> Nil {
   let _ = elapsed.register()
   let _ = fold.register()
+  let _ = follow.register()
   Nil
 }

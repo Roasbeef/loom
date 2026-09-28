@@ -310,7 +310,18 @@ fn admit(
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
     )
-  let start = component.Start(attachment.session_id, expected, transport)
+  let start =
+    component.Start(
+      session_id: attachment.session_id,
+      // The route read the registration when it resolved the session,
+      // so the heading's name and workspace cost no second lookup.
+      label: Some(component.Label(
+        name: attachment.registration.name,
+        workspace: attachment.registration.workspace,
+      )),
+      expected:,
+      transport:,
+    )
   let started = case transferred {
     Error(_) -> Error(Nil)
     Ok(Nil) -> start_page(attachment.authority, start)
