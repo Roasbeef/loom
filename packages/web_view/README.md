@@ -126,7 +126,8 @@ flowchart TB
    `Observed` and adds `Submitted(text, delivery)` and `Decided(id, seq,
    answer)`. Its view adds the composer, an uncontrolled form whose
    editor is keyed by the count of sent drafts so a send empties it, and
-   the approval cards in a region below the composer, Deny first, keyed by
+   the approval cards in a region directly above the composer, both in a
+   dock pinned to the bottom of the viewport, Deny first, keyed by
    the record's sequence. `composition` is the total decoder for the
    form's fields: one `draft`, at most one `delivery` of `prompt` or
    `steer`, and nothing else.

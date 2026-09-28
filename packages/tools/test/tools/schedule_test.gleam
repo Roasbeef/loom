@@ -374,3 +374,39 @@ pub fn absent_bounds_stay_absent_test() {
   assert !outcome.is_error as "an unbounded recurring request must succeed"
   assert string.contains(text_of(outcome), "fires=- window=-")
 }
+
+// A clamped wake needs an operator action, while a subagent target remains
+// steering-only under that same grant. Both facts must reach the model.
+pub fn a_clamped_wake_names_the_operator_setting_test() {
+  let schedules =
+    schedule.Schedules(
+      ..accepting(),
+      create: fn(ctx: tool.Ctx, request: schedule.Request) {
+        Ok(schedule.Created(
+          name: request.name,
+          target: ctx.strand,
+          when: describe(request),
+          wake: schedule.SteersOnly,
+        ))
+      },
+    )
+  let assert Ok(create) =
+    list.find(schedule.tools(schedules, limits()), fn(candidate: tool.Tool) {
+      candidate.name == schedule.create_tool_name
+    })
+    as "the creation tool must be registered"
+  let outcome =
+    create.run(
+      a_ctx(),
+      json.Object([
+        #("name", json.String("heartbeat")),
+        #("body", json.String("check progress")),
+        #("every_seconds", json.Int(60)),
+        #("wake", json.Bool(True)),
+      ]),
+    )
+  assert !outcome.is_error
+  let text = text_of(outcome)
+  assert string.contains(text, "[schedules] model_created = \"wake\"")
+  assert string.contains(text, "subagents always steer")
+}

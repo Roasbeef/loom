@@ -199,6 +199,7 @@ pub fn escalation(
 pub fn start() -> component.Start(Wire) {
   component.Start(
     session_id: "A",
+    label: None,
     expected: snapshot.Expected("A", "epoch", "incarnation"),
     transport: component.Transport(
       connect: fn(_, _) { Nil },

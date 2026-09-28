@@ -1084,6 +1084,10 @@ fn apply_reply(
           send_queued(channel, [Captured(cut, view, channel.trigger)], now)
         }
       }
+
+    // A correlated reply answers the one request this channel issued, so a
+    // host may read Acknowledged and RequestRefused as its own command's
+    // outcome; the web view's notice relies on that.
     AwaitingReply(name, Mutation), session_wire.Mutation(status) -> {
       let channel = Channel(..channel, phase: Ready, refresh_at: now)
       send_queued(channel, [Acknowledged(name, status)], now)

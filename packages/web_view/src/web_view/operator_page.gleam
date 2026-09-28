@@ -97,15 +97,24 @@ pub fn update(
   #(model, effect.map(effects, Observed))
 }
 
-/// The operator's page: the heading, the agent strip, the lane, the
-/// composer, and below it the approvals waiting for a decision, in a region
-/// of their own.
+/// The operator's page: the heading, the agent strip, the lane, and the
+/// dock, which holds the approvals waiting for a decision, in a region of
+/// their own, directly above the composer.
 ///
-/// The approvals come after the composer so that a card appearing never
-/// moves the composer. The agent decides when an escalation lands and how
-/// tall its card is (an action preview can run to 16 KiB); drawn above the
-/// composer, a card could slide Deny or Allow under a click already on its
-/// way to the editor or to Send.
+/// The dock is a footer the stylesheet pins to the bottom edge of the
+/// viewport. In the document's flow the composer moved down every time a
+/// row landed or its editor grew, so a click aimed at Send or Steer could
+/// land on whatever had slid under the pointer. Pinned, it stays where the
+/// operator last saw it however the transcript moves.
+///
+/// The approvals are in the dock so that a pending card is on screen
+/// wherever the operator has scrolled. They sit above the composer, and the
+/// dock is pinned by its bottom edge, so a card appearing grows the dock
+/// upward and leaves the composer's controls where they were: the agent
+/// decides when an escalation lands and how tall its card is, and neither
+/// can move Send or Steer. The region's height is capped by the stylesheet
+/// and scrolls on its own, so a 16 KiB action preview cannot push the
+/// composer off the screen.
 ///
 /// ## Examples
 ///
@@ -117,8 +126,10 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
     component.heading(model),
     component.strip_view(component.strip(model)),
     component.lane_view(component.pieces(model)),
-    composer(model),
-    approvals(component.pending(model)),
+    html.footer([attribute.class("dock")], [
+      approvals(component.pending(model)),
+      composer(model),
+    ]),
   ])
 }
 
@@ -129,6 +140,12 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
 // own sequence, so no two pending records share one, and a card keeps its
 // key when a sibling leaves. A card never takes focus and nothing here has
 // `autofocus`.
+//
+// With nothing pending the region is `element.none()`, an empty text node,
+// rather than nothing at all. The composer therefore stays the dock's
+// second child whether or not a card is drawn, so the path a browser event
+// names for the composer's form is the same before and after a card
+// appears, and a submit in flight still reaches the form.
 fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
   case pending {
     [] -> element.none()
@@ -155,6 +172,15 @@ fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
 // button names the tool it answers; and Allow is offered only when the
 // record's whole authority was captured, which `approval.presentation`
 // decides.
+//
+// The action row carries `arming`, which the stylesheet uses to refuse
+// clicks on the row for 600 ms after the card is inserted, with the buttons
+// drawn dimmed meanwhile. A card appears above the composer when the agent
+// decides, so a click already on its way to the bottom of the transcript
+// could otherwise land on Allow. The delay is a CSS animation, so it needs
+// no script and no timer here, and it runs once per inserted card: cards
+// are keyed by sequence, so a later patch updates the same node rather
+// than inserting a new one, and the animation does not start again.
 fn card(record: approval.Review) -> Element(Msg(socket)) {
   let tool = case record.tool {
     "" -> "this request"
@@ -180,14 +206,17 @@ fn card(record: approval.Review) -> Element(Msg(socket)) {
           [attribute.class("approval-authority")],
           list.map(shown.authority, fn(line) { html.li([], [html.text(line)]) }),
         ),
-        html.div([attribute.class("approval-actions")], [
-          deny,
-          button(
-            "approval-allow",
-            "Allow " <> tool <> " once",
-            Decided(record.id, record.seq, component.AllowOnce),
-          ),
-        ]),
+        html.div(
+          [attribute.class("approval-actions"), attribute.class("arming")],
+          [
+            deny,
+            button(
+              "approval-allow",
+              "Allow " <> tool <> " once",
+              Decided(record.id, record.seq, component.AllowOnce),
+            ),
+          ],
+        ),
       ])
     Error(reason) ->
       html.article([attribute.class("approval-card")], [
@@ -197,7 +226,10 @@ fn card(record: approval.Review) -> Element(Msg(socket)) {
         html.p([attribute.class("approval-question")], [
           html.text("This request cannot be approved from the page: " <> reason),
         ]),
-        html.div([attribute.class("approval-actions")], [deny]),
+        html.div(
+          [attribute.class("approval-actions"), attribute.class("arming")],
+          [deny],
+        ),
       ])
   }
 }

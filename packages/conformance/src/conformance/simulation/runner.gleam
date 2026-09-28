@@ -1490,10 +1490,10 @@ fn accept(ctx: Context, op: Op) -> Result(OpId, String) {
   }
 }
 
-// Compaction and navigation have no api entry point yet, so the runner
-// builds their acceptance the way `runtime/api` builds a run's and
-// commits it through the same writer. Nothing is bypassed: the plan
-// comes from `machine/acceptance` and the commit from the session's one
+// The simulation builds compaction and navigation acceptance directly,
+// using the same `machine/acceptance` planner and writer as `api.compact`
+// and `api.navigate`. The fixture controls the logical clock and prepared
+// structural inputs; the commit still goes through the session's one
 // committer.
 fn accept_directly(
   ctx: Context,

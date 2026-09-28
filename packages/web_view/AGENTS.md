@@ -23,8 +23,12 @@ page keys and nonces, and the relay into the session's gateway.
 ## Key Types
 
 - `component.Start(socket)`: what the daemon supplies when it starts a
-  component: the session ID, the `snapshot.Expected` attachment every cut
-  must match, and a `Transport(socket)`.
+  component: the session ID, the catalogue's `Label(name, workspace)` for
+  the heading (or `None`, which only tests pass), the `snapshot.Expected` attachment every cut
+  must match, and a `Transport(socket)`. The heading shows the name (or
+  `Session` and the ID's first eight characters) with the whole ID in a
+  `title`, and the workspace's last segment with the whole path in a
+  `title`.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
   and `now()`. All run in the component's process.
@@ -72,11 +76,15 @@ page keys and nonces, and the relay into the session's gateway.
   `session_channel.next_due` (mapped to `Ticked`). Each source is one
   `server_component.select` from `init`, so its subjects belong to the
   component's process. Of the lane's updates,
-  `Captured` projects the page and `Auxiliary(UsageChanged)` feeds the cache
-  ledger and the roster.
+  `Captured` projects the page, `Auxiliary(UsageChanged)` feeds the cache
+  ledger and the roster, and `Submission`, `Acknowledged`,
+  `RequestRefused` and `UnknownOutcome` replace the operator's notice, so
+  it always states the outcome of the latest command.
 - The page renders `web_client`'s custom elements by tag:
-  `<loom-elapsed offset>` in each chip and `<loom-fold>` around a settled
-  turn's work. They run in the browser and send the server nothing.
+  `<loom-elapsed offset>` in each chip, `<loom-fold>` around a settled
+  turn's work, and `<loom-follow>` around the lane, which keeps the newest
+  row in view while the reader is at the bottom. They run in the browser
+  and send the server nothing.
 - An operator's page also receives Lustre's `EventFired` for its two
   handlers: a click on an approval button and the composer form's submit.
 - Outputs leave through the transport only: `Transmit` and `Shut`, in the
@@ -117,8 +125,15 @@ page keys and nonces, and the relay into the session's gateway.
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever
   `html.text`; nothing uses `unsafe_raw_html`.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
-  in its own region outside the transcript and after the composer, so a
-  card appearing never moves the composer. Deny comes first; each button
+  in its own region outside the transcript, directly above the composer in
+  the dock, the footer pinned to the viewport's bottom edge. A card
+  appearing grows the dock upward and never moves the composer, and the
+  region's height is capped so it scrolls on its own. With nothing pending
+  the region is `element.none()`, so the composer's path does not change
+  when a card appears. The action row carries `arming`: for 600 ms after
+  a card is inserted the stylesheet refuses clicks on it and dims the
+  buttons, and cards keyed by sequence keep their node so a patch never
+  restarts it; reduced motion drops only the dimming. Deny comes first; each button
   names the tool; nothing has `autofocus`; the composer's submit never
   decides an approval; a decision is sent only for the record still pending
   at the drawn sequence (`operator.drawn`).

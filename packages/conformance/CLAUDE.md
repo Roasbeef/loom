@@ -509,10 +509,10 @@ storage suite over the backends.
 
   The exemption covers the **construct and not the message**. Part IV rule
   3 admits `panic`/`let assert` only "always with an `as \"message\"`"
-  naming the invariant; none of the ninety sites here carries one, R4
-  checks presence rather than message, and the checker for that half is a
-  separate rule nobody has written yet (issue #73, item F). So this list
-  excuses `let assert` in a test harness — it does not excuse a bare one.
+  naming the invariant. R4 checks presence rather than message; R7
+  (`assert-without-message`) checks the message and warns, including in
+  this package's `src`. Only `test/` disables R7. Bare assertions remain
+  lint debt, not an exemption from the guide.
 
 ## Deep Docs
 

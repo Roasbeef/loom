@@ -51,3 +51,11 @@ Full make check stopped at machine dependency resolution on a Hex rate limit.
 Hosted CI and exact-head Linux/shipped-server signoff must be read from the PR.
 These component results are not a complete signoff. The shared wave handoff is
 maintained by the documentation-cleanup PR.
+
+## Main integration
+
+Main advanced to 5f9df823a after the documentation-cleanup PR merged. The
+topic integrates that baseline, preserving the reviewed diagnostic algorithms
+and upstream UI changes. The conflicting source citation was refreshed from
+the actual merged gateway. The nine diagnostic tests and deterministic cleanup
+regression passed again, as did formatting and documentation checks.

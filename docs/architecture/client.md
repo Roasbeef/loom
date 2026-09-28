@@ -965,12 +965,11 @@ or several did.
 **The hub commits nothing of its own.** Its reads go straight to the store
 handle, but every write it causes goes through the session's one writer.
 Prompt, steer, follow-up, abort, and the escalation decisions go through
-`runtime/api`. Compaction and navigation have no api entry point yet, so each
-is committed as a `machine/acceptance` plan through `runtime/writer`, the same
-pattern the conformance simulation runner uses. Strand seeding for `fork` and
-`create_strand` writes its three registers in one compare-and-swap-guarded
-transaction through that same writer, because the api's creation path always
-takes a task brief and the protocol requires idle strands.
+`runtime/api`, as do compaction and navigation through `api.compact` and
+`api.navigate`. The API builds `machine/acceptance` plans and commits through
+`runtime/writer`. Protocol `fork` and `create_strand` use
+`api.create_idle_strand`, whose compare-and-swap-guarded transaction seeds the
+three strand registers without admitting a task brief.
 
 The hub is a plain actor started by `serve`, not a child of the session
 supervision tree, and nothing restarts it. It is linked to the process that

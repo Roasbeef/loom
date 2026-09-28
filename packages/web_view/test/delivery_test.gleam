@@ -20,6 +20,7 @@ import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{None}
 import gleam/otp/system
 import gleam/string
 import lustre
@@ -67,6 +68,7 @@ fn started() -> Page {
   let start =
     component.Start(
       session_id: "A",
+      label: None,
       expected: snapshot.Expected("A", "epoch", "incarnation"),
       transport:,
     )

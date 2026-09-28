@@ -123,6 +123,10 @@ pub type Attachment(instance) {
     /// cost a round trip per frame, and a timeout on that round trip once
     /// dropped the incarnation stop a poisoned reader depends on.
     registry: manager.Manager(instance),
+    /// The session's catalogue registration, read while the route resolved
+    /// the session. The web view's heading takes its name and workspace
+    /// from here, so a page needs no second read of the catalogue.
+    registration: catalogue.Registration,
   )
 }
 
@@ -440,11 +444,11 @@ fn resident_upgrade(
       id,
       incarnation,
     ))
-    Ok(#(principal, authority, incarnation, instance))
+    Ok(#(principal, authority, incarnation, instance, view.registration))
   }
   case target {
     Error(_) -> plain(409, "session unavailable")
-    Ok(#(principal, membership, incarnation, instance)) -> {
+    Ok(#(principal, membership, incarnation, instance, registration)) -> {
       let authority = case role {
         MembershipRole -> membership
         PageRole(ceiling:) -> ui_relay.capped(membership, ceiling)
@@ -471,6 +475,7 @@ fn resident_upgrade(
                 digest:,
                 permit:,
                 registry: state.registry,
+                registration:,
               ),
             )
           root.release(config.daemon, permit)

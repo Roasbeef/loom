@@ -182,3 +182,63 @@ pub fn an_idle_tick_leaves_the_model_as_it_was_test() {
   assert element.to_string(component.view(after))
     == element.to_string(component.view(before))
 }
+
+// The heading names the session by the catalogue's label, with the whole
+// identity in its `title`, and the workspace by its last path segment, with
+// the whole path in its `title`. Both are escaped.
+pub fn the_heading_names_the_session_and_its_workspace_test() {
+  let start =
+    component.Start(
+      ..page_fixture.start(),
+      session_id: "0f8e2a41-5d3c-4b7a-9e61-2c4d8b9f1a30",
+      label: Some(component.Label(
+        name: "review <auth>",
+        workspace: "/home/me/src/loom/",
+      )),
+    )
+  let html = element.to_string(component.heading(component.new(start)))
+  assert string.contains(
+    html,
+    "<h1 title=\"0f8e2a41-5d3c-4b7a-9e61-2c4d8b9f1a30\">review &lt;auth&gt;</h1>",
+  )
+  assert string.contains(
+    html,
+    "<span class=\"workspace\" title=\"/home/me/src/loom/\">loom</span>",
+  )
+}
+
+// A session with no name, or whose label the host could not read, is
+// named by its identity's first eight characters, and no workspace is
+// drawn when none is known.
+pub fn a_session_without_a_name_is_named_by_its_short_identity_test() {
+  let id = "0f8e2a41-5d3c-4b7a-9e61-2c4d8b9f1a30"
+  let unnamed =
+    component.Start(
+      ..page_fixture.start(),
+      session_id: id,
+      label: Some(component.Label(name: "", workspace: "")),
+    )
+  let unknown = component.Start(..page_fixture.start(), session_id: id)
+  list.each([unnamed, unknown], fn(start) {
+    let html = element.to_string(component.heading(component.new(start)))
+    assert string.contains(html, ">Session 0f8e2a41</h1>")
+    assert string.contains(html, "title=\"" <> id <> "\"")
+    assert !string.contains(html, "class=\"workspace\"")
+  })
+}
+
+// The lane is drawn inside `<loom-follow>`, the client component that keeps
+// the newest row in view, and it carries no attribute: the element reads
+// the page's scroll position and the lane's size, never session text.
+pub fn the_lane_is_drawn_inside_the_follower_test() {
+  let page =
+    simulate.message(simulation(), component.Opened(wire(), 0))
+    |> arrive(page_fixture.transfer("observer", []))
+  let html = element.to_string(simulate.view(page))
+  let assert Ok(#(_, inside)) =
+    string.split_once(html, "<loom-follow class=\"follow\">")
+    as "the page draws the follower with no attribute but its class"
+  let assert Ok(#(lane, _)) = string.split_once(inside, "</loom-follow>")
+    as "the follower is closed"
+  assert string.contains(lane, "class=\"transcript lane\"")
+}

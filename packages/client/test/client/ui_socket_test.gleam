@@ -9,6 +9,7 @@ import client/daemon/ui_socket
 import gleam/erlang/process
 import gleam/json
 import gleam/list
+import gleam/option.{None}
 import gleam/string
 import session_view/snapshot
 import storage/access
@@ -19,6 +20,7 @@ import web_view/component
 fn start() -> component.Start(ui_relay.Relay) {
   component.Start(
     session_id: "A",
+    label: None,
     expected: snapshot.Expected("A", "epoch", "incarnation"),
     transport: component.Transport(
       connect: fn(_, _) { Nil },

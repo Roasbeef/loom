@@ -18,7 +18,7 @@ import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
 import gleam/json as gleam_json
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
 import lustre
@@ -69,6 +69,7 @@ fn start_page(
   let start =
     component.Start(
       session_id: session,
+      label: None,
       expected: snapshot.Expected(session, "epoch", "incarnation"),
       transport: component.Transport(
         connect: fn(inbox, opened) {

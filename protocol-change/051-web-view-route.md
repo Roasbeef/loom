@@ -807,3 +807,78 @@ at a host name listed with `loomd --ui-origin`, with a `__Host-` `Secure`
 cookie, an exact `https` `Origin` rule and a `wss:` socket policy. A
 teammate mints their own ticket with `loom --ui --addr wss://…` and their
 member credential.
+
+## Addendum: the pinned composer and the approval card (2026-09-27)
+
+The operator addendum placed the approval card in its own region below the
+composer. The first live drive of an operator's page (issue #569) found
+two problems with that layout. The composer sat in the document's flow
+under the transcript, so it moved down each time a row landed and each
+time its editor grew, and a click aimed at Send or Steer landed on
+whatever had moved under the pointer. And the card, below the composer at
+the very end of the page, was off screen whenever the operator had
+scrolled up to read.
+
+**The composer is pinned.** The composer is drawn in a dock, a footer
+the stylesheet pins to the bottom edge of the viewport with `position:
+sticky`. It no longer moves when the transcript does.
+
+**The card sits directly above the composer, inside the dock.** A
+pending card is therefore on screen wherever the operator has scrolled.
+The reason this addendum's original rule gave for "below, not above" was
+that a card drawn above the composer would move the composer's controls
+under a click already on its way to them. That held for a composer in the
+flow, which a card above it pushed down. It does not hold for a composer
+pinned by its bottom edge: a card appearing grows the dock upward, and
+the composer's controls stay where they were. The region's height is
+capped at 35% of the viewport and scrolls on its own, so a long action
+preview cannot push the composer off the screen.
+
+Every other rule for the card is unchanged: it is drawn from the
+escalation record alone, in a region transcript content cannot occupy and
+in a style no transcript line uses; Deny comes first and each button
+names the tool; nothing takes focus; the card's buttons are
+`type="button"` outside the composer's form; and a decision names the
+drawn identity and sequence. The client component that follows the tail
+(`<loom-follow>`) wraps only the lane, so it neither reads nor scrolls
+anything in the dock.
+
+**What was considered.**
+
+- **Keep the card below a pinned composer, inside the dock.** The card
+  would still be on screen, and a card appearing below the composer would
+  push the composer up, which is the movement the original rule refused.
+  Not taken.
+- **Draw the card beside the call that holds the claim, in the
+  transcript.** The direction in `docs/design-notes/web-ui.md` already
+  places a buttonless `waits for approval` marker there. A card with
+  buttons inline in the transcript would move every row after it when it
+  appears and leaves, and would sit in the region transcript content
+  occupies. Not taken.
+
+**The card's buttons are armed after a delay.** For 600 ms after a card is
+inserted, its action row refuses clicks and its buttons are drawn dimmed.
+The dock covers the bottom of the transcript by the height of any pending
+cards, so a card that appears while the pointer is travelling toward a
+transcript row just above the dock could otherwise take that click on
+Allow. Browsers delay their own permission prompts in the same way, for
+the same reason. The delay is a CSS animation on the action row, keyed
+off its `arming` class: the keyframes hold `pointer-events: none`, and
+when the animation ends the row goes back to its own style. It needs no
+script, no client component near the card, and no server timer. It runs
+once per card, because cards are keyed by the record's sequence and a
+later patch updates the same node rather than inserting a new one. A page
+that reconnects draws every card again and arms each one again, which is
+the right reading for a card the person has not seen since. With
+`prefers-reduced-motion` the dimming is not drawn, and the delay still
+applies. The delay does not affect the keyboard: nothing on the page takes
+focus when a card appears, so a key cannot reach a new card's buttons
+without the person first moving focus to them.
+
+**Ruling (owner, 2026-09-27).** The cards stay above the composer in the
+dock, with the arming delay above.
+
+**Cost.** The dock covers the bottom of the transcript by the height of
+any pending cards, and a card's buttons do nothing for their first 600 ms,
+so a person who reads fast and clicks at once has to click again. The
+page tests pin the placement and the arming class (`operator_page_test`).
