@@ -882,3 +882,66 @@ dock, with the arming delay above.
 any pending cards, and a card's buttons do nothing for their first 600 ms,
 so a person who reads fast and clicks at once has to click again. The
 page tests pin the placement and the arming class (`operator_page_test`).
+
+## Addendum: history paging on an observer's page (2026-09-27)
+
+The web view now holds a bounded number of transcript rows and loads older
+ones on request (issue #569, PR #590). The request is the lane's `history`
+read, the read the terminal pages with: a "Load older" button above the
+lane's oldest row sends it for the hundred sequences below. Under the
+operator addendum, an observer's page carries no event handler at all and
+its socket drops every browser frame, so an observer could follow the
+session but never read further back than the page held.
+
+**Ruling (owner, 2026-09-27).** An observer's page may carry exactly one
+event handler: the fixed "Load older" click. The page socket admits only
+that event from an observer and nothing else.
+
+**Why.** Reading history is observation. The gateway already admits a
+`history` read from an observer's binding (`gateway.read_only` lists
+`History`), and the lane sends it on any attachment. What the observer's
+page lacked was a way for the browser to ask, not the right to the read.
+
+**What it is, exactly.**
+
+- The observer's message type gains one constructor,
+  `component.OlderRequested`. Its only effect is `component.older`, which
+  asks `history_view` for older records and sends the `history` read on
+  the page's own lane. It holds no command, and no message can widen the
+  type while the page runs, so the component's type still cannot produce
+  a mutation.
+- The observer's view attaches one handler: `click` on the lane's "Load
+  older" button, drawn only while older rows exist. Its path is the
+  constant `component.older_path`, and `page_events_test` pins that the
+  observer's rendered view registers that one handler and no other.
+- The page socket's filter for an observer (`ui_socket.observer_accepts`)
+  admits a Lustre `EventFired` frame only when its kind is 1, its name is
+  `click` and its path is `component.older_path`. Every other frame is
+  dropped before the runtime sees it: any other event name, a click at
+  any other path, a batch, a frame of another kind, and a malformed frame.
+  The inbound frame limit stays at 64 KiB.
+- The gateway's refusal of an observer's mutation is unchanged and still
+  stands on its own, as does the lane's (`session_channel.can_mutate`).
+
+**What was considered.**
+
+- **Keep observers from paging.** The page would stay bounded, and an
+  observer would lose history they are entitled to read. Not taken.
+- **Page automatically when the observer scrolls to the top.** The browser
+  would still have to tell the server, which is the same one event with a
+  second trigger that is harder to reason about. Not taken.
+
+**Cost.** One read-only browser event is admitted from observers. A holder
+of an observer's page (its cookie, key and nonce) can make the daemon read
+and send up to a hundred sequences of history per press, one read at a
+time on the page's lane, which is what the same person's terminal may
+already ask for. The observer's page is no longer free of handlers, so
+"an observer's view attaches no handler" in the operator addendum now
+reads "an observer's view attaches only the Load older click".
+
+**Verification.** `ui_socket_test` admits the click at `older_path` and
+drops a submit, a click elsewhere, a forged event name at the button's
+path, a batch and malformed frames. `page_events_test` pins the observer's
+one handler. `paging_test` shows an observer's click reaching
+`OlderRequested`, an observer's press writing one `history` frame and no
+command, and a forged submit on the button finding no handler.
