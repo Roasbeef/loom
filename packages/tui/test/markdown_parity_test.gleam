@@ -65,17 +65,11 @@ pub fn a_hostile_run_rerenders_as_a_growing_prefix_test() {
 
 // The same runs streamed through the live tail, which also wraps each
 // frame's rows and keeps its cache from frame to frame as the projection
-// does. Each run is broken into words here: etui's word wrapper breaks a
-// word wider than the row in time quadratic in the word's length, a cost of
-// the wrapper rather than of Markdown, and a single 50,000-character word
-// would measure that instead. The last frame must still be what a full
+// does. Each run is one word as wide as the answer, so this also holds the
+// word wrapper to its bound. The last frame must still be what a full
 // render draws.
 pub fn a_hostile_answer_streams_through_the_live_tail_test() {
-  [
-    string.repeat("[a ", 17_000),
-    string.repeat("![a ", 12_500),
-    string.repeat("[a]( ", 10_000),
-  ]
+  hostile_runs()
   |> list.each(fn(source) {
     let step = string.length(source) / 50
     stream(source, step, 1, [], live_tail.new())
