@@ -1,5 +1,15 @@
 # session_view
 
+## Operator diagnostic metadata
+
+Protocol 055 adds optional `tool_availability.extension_refusals` to credited
+snapshot metadata. `snapshot_view.ToolAvailability` retains at most 32
+strings of at most 2048 UTF-8 bytes each. An omitted field decodes to an
+empty list for old-daemon compatibility; wrong types, excess count or excess
+bytes refuse the entire capture before a host adopts it. The strings are
+server-owned startup observations, with no mutation or execution authority.
+
+
 ## Purpose
 
 The part of a Loom client that no host owns: the session lane that speaks
