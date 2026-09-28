@@ -275,11 +275,13 @@ flowchart LR
   the component a render per dropped frame.
 - **The operator's page** is `web_view/operator_page`. It wraps the
   observer's messages in `Observed` and adds `Submitted(text, delivery)`
-  and `Decided(id, seq, answer)`. Its model is the observer's model. The
+  and `Decided(id, seq, answer)`, and `OlderRequested` for the lane's
+  "Load older" button, a read. Its model is the observer's model. The
   commands reach the lane through `component.submit` and
   `component.decide`, which call the engine's command arms in
-  `session_view/operator`. The socket forwards only Lustre's `EventFired`
-  for `click` and `submit`, alone or in a batch (`operator_accepts`).
+  `session_view/operator`, and the read through `component.older`. The
+  socket forwards only Lustre's `EventFired` for `click` and `submit`,
+  alone or in a batch (`operator_accepts`).
 
 The socket's inbound frame limit follows the role: 64 KiB for an
 observer's page, which is the daemon's observer limit, and 1 MiB for an
@@ -348,13 +350,88 @@ recorder, so its recorder type is `Nil` and the lane never queues a
 `Note`. The interpreter has the shape of the terminal's
 `tui/terminal_lane.perform`.
 
-**Projection.** When the lane reports `Captured`, `component.apply`
-projects the capture once, with `transcript.project_rows`, into keyed
-rows for `main`, and folds the capture's escalation cells into the
-approval list. Only durable records are drawn: the component ignores
-`Streamed` and `ToolStreamed`, so the page shows no live answer or tool
-tail. The terminal's streaming live tail (`tui/live_tail`, held in
-`View.live_tail`) is terminal view state and has no counterpart here yet.
+**Projection.** When the lane reports `Captured`, `component.apply` folds
+the capture into the page's history window (`history_view.capture`, the
+terminal's `scrollback`), projects the window's branch once, with
+`transcript.branch_blocks`, into keyed blocks for `main`, keeps the newest
+turns that fit the page's row limit (below), and folds the capture's
+escalation cells into the approval list. Only durable records are drawn:
+the component ignores `Streamed` and `ToolStreamed`, so the page shows no
+live answer or tool tail. The terminal's streaming live tail
+(`tui/live_tail`, held in `View.live_tail`) is terminal view state and has
+no counterpart here yet.
+
+Of the lane's updates, the component folds `Captured`, `HistoryPage` (the
+reply to its own history read), `Auxiliary(UsageChanged)`, the outcomes of
+its own commands (`Submission`, `Acknowledged`, `RequestRefused`,
+`UnknownOutcome`) and `Failed`. It drops `LookedUp`, since it sends no
+escalation lookup, the other `Auxiliary` events, `Streamed`,
+`ToolStreamed` and `Noticed`.
+
+## Paging older history
+
+The page holds a bounded number of transcript rows, so its memory does not
+grow with the session. Lustre's server runtime keeps every element it
+rendered, to diff the next render against, and a row of rendered Markdown
+retains several times what a plain row does: 600 Markdown rows held 6.7
+MB where the same rows as plain text held 2.5 MB (#587).
+
+**The window.** The page holds the newest `component.live_rows` (150) rows
+of `main`. The rows are cut between turns (`turns.grouped`), so the oldest
+row the page holds is a turn's input. A turn keyed by its input keeps its
+key when rows are added above it or the oldest turn leaves, and its lines'
+memos are reused (`lane_memo_test`). When a new capture brings rows, the
+oldest turns leave the page. The one exception to the turn boundary is a
+single turn longer than the limit, which the page holds from its newest
+blocks back. Once rows are cut, the history window is trimmed to the
+oldest record the page draws (`history_view.retain_from`), so each capture
+projects only what the page draws and the records the capture adds.
+
+**Load older.** Above the oldest row the lane draws `lane.Top`: the
+beginning of the conversation, a "Load older" button, "Loading older
+rows…" while a read is out, or a line saying the page is full. The button
+sends `operator_page.OlderRequested`, which `component.older` turns into
+`history_view.older`: the history window asks for the interval of at most
+100 sequences below its oldest record. The page sends that as a `history`
+read on its own lane, the read the terminal pages with
+(`session_channel.history`), and the lane's `HistoryPage` update is folded
+back with `history_view.accept`. The lane has one request out at a time:
+when it is busy the demand stays `Wanted` and is offered again after every
+reduction until the lane takes it, and a second press while a read is out
+asks nothing. While the read is out the history window is frozen, so a
+capture that lands meanwhile cannot move the endpoint the reply is placed
+against; the reply, or a refusal, resumes it and folds in the newest
+capture.
+
+**The cap.** Loading older rows raises the page's limit to
+`component.held_rows` (300). The page still holds the newest rows, so new
+rows keep arriving at the bottom. When the page, paged, has to cut a whole
+turn to stay within 300 rows, it is `Full`: it keeps its newest 300 rows
+and loads no more, and the lane says so. The page refuses rather than
+dropping its newest rows because dropping them would stop it following the
+session and need a second mode to return to the tail, which the terminal
+has and the page does not.
+
+**Keeping the reader's place.** Rows loaded above the reader would move
+everything they are reading down by the height of what arrived, in a
+browser that does not anchor scrolling. `<loom-follow>` hears the click on
+the button (it carries a fixed `data-loom-older` marker) as it hears a
+fold's toggle: it becomes `Reading`, so the growth that follows does not
+scroll to the tail, and it holds the lane's first row and its position on
+screen. When that row stops being the lane's first, the older rows have
+arrived, and it scrolls the page by however far the row moved. A browser
+that anchors scrolling itself has already kept the row in place, and the
+scroll is zero.
+
+**Observers.** A `history` read is a read. The gateway admits it for an
+observer's binding (`gateway.read_only` lists `History`), and the lane
+sends it on any attachment (`session_channel.history` checks no role).
+But the observer's page cannot send the press: protocol-change/051 keeps
+its view free of every event handler and has the page socket drop every
+browser frame (`ui_socket.observer_accepts`). So only the operator's page
+draws the button; an observer's page says in words that it does not load
+older rows. Paging for observers needs a 051 addendum that admits one
+`click` for this one handler.
 
 ## Security layers
 
@@ -468,9 +545,14 @@ browser goes away, because a runtime outlives its last client.
   proposed and not implemented. Today a remote person reaches the page
   through `ssh -L`, which presents a loopback `Host`.
 - **The extracted step.** The page drives the lane and the projection, not
-  the terminal's step. Strand focus, history paging, streams and the
-  auxiliary reads wait for the four changes ADR-014 lists under "Why the
-  step waits for the build-out phase".
+  the terminal's step. Strand focus, streams and the auxiliary reads wait
+  for the four changes ADR-014 lists under "Why the step waits for the
+  build-out phase". History paging is built on the page's own
+  `history_view.State`, the field the shared step will hold for both hosts
+  (`docs/design-notes/step-extraction.md`, `scrollback`); the row limit and
+  `Paging` stay the page's view state.
+- **Paging on an observer's page.** It needs the 051 addendum described
+  under "Paging older history".
 - **One strand, one session.** The page shows and addresses `main`. The
   routes already carry the session ID, so a later page can mount one
   component per session or agent.
@@ -479,12 +561,12 @@ browser goes away, because a runtime outlives its last client.
 
 | Path | What it owns |
 |---|---|
-| `packages/web_view/src/web_view/component.gleam` | The observer's application: the lane's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the command arms `submit` and `decide`, projection on `Captured`, and `view`, which lays out the regions below. |
+| `packages/web_view/src/web_view/component.gleam` | The observer's application: the lane's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the command arms `submit` and `decide`, the history read `older`, projection on `Captured` and `HistoryPage` into the row window (`live_rows`, `held_rows`, `Paging`), and `view`, which lays out the regions below. |
 | `packages/web_view/src/web_view/view/heading.gleam` | The heading: the session's name, its workspace and the connection's status, drawn from plain values the component hands it. |
 | `packages/web_view/src/web_view/view/strip.gleam` | The agent strip and its `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
-| `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the keyed pieces, folded work, the cards, and each transcript line and card body in its own leaf memo. |
+| `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces, folded work, the cards, and each transcript line and card body in its own leaf memo. |
 | `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |
-| `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted` and `Decided`, the uncontrolled composer and its total form decoder, the approval cards. |
+| `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted`, `Decided` and `OlderRequested`, the uncontrolled composer and its total form decoder, the approval cards. |
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
@@ -495,7 +577,10 @@ browser goes away, because a runtime outlives its last client.
 | `packages/session_view/src/session_view/operator.gleam` | What an operator's input becomes on the wire, shared with the terminal. |
 
 Tests: `web_view/test/component_test` and `operator_page_test` drive the
-components through `lustre/dev/simulate`; `client/web_view_parity_test`
+components through `lustre/dev/simulate`; `paging_test` holds the row
+window, the history read and its one-in-flight rule, the cap and the
+refused read, through the page's real lane, and `lane_memo_test` counts
+the lines a capture, a slide and a prepended page draw; `client/web_view_parity_test`
 checks that the component draws the lines the terminal's projection draws
 for the same capture; `client/ui_http_test`, `ui_route_test`,
 `ui_sessions_test`, `ui_socket_test`, `ui_relay_test` and
