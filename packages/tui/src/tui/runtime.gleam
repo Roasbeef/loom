@@ -62,6 +62,7 @@ import tui/keymap
 import tui/model.{type Model, Model, Shared, View} as tui_model
 import tui/msg.{type Msg, type Stamp, Stamp}
 import tui/recording
+import tui/step_effect
 import tui/terminal_lane
 import weft
 
@@ -79,7 +80,6 @@ import weft
 /// ```
 pub fn stamp(model: Model) -> Model {
   Model(
-    ..model,
     shared: Shared(
       ..model.shared,
       stamp: read_stamp(
@@ -87,6 +87,7 @@ pub fn stamp(model: Model) -> Model {
         model.view.transport_time_ms,
       ),
     ),
+    view: View(..model.view, wall_ms: host_bootstrap.system_time_ms()),
   )
 }
 
@@ -216,6 +217,7 @@ pub fn message(event: backend.InputEvent, model: Model) -> Msg {
   }
   msg.Input(
     at: read_stamp(model.view.monotonic_time_ms, model.view.transport_time_ms),
+    wall_ms: host_bootstrap.system_time_ms(),
     event: keymap.translate(event, pasted),
   )
 }
@@ -306,8 +308,10 @@ fn liveness(candidate: attachment.Status) -> job.SocketLiveness {
   }
 }
 
-/// Reads the presentation and transport clocks it is given and the host's
-/// wall clock, once each.
+/// Reads the presentation and transport clocks it is given, once each.
+///
+/// The host's wall clock is read beside it, by `message` and `stamp`,
+/// because it is stored in the terminal's view rather than in the stamp.
 ///
 /// ## Examples
 ///
@@ -319,11 +323,7 @@ fn liveness(candidate: attachment.Status) -> job.SocketLiveness {
 ///   )
 /// ```
 pub fn read_stamp(presentation: fn() -> Int, transport: fn() -> Int) -> Stamp {
-  Stamp(
-    now_ms: presentation(),
-    transport_ms: transport(),
-    wall_ms: host_bootstrap.system_time_ms(),
-  )
+  Stamp(now_ms: presentation(), transport_ms: transport())
 }
 
 /// Names this terminal for a session creation key: the OS process and the
@@ -354,8 +354,8 @@ pub fn terminal_identity() -> String {
 /// ```
 pub fn take(model: Model) -> #(Model, List(Effect)) {
   #(
-    Model(..model, shared: Shared(..model.shared, outbox: [])),
-    list.reverse(model.shared.outbox),
+    Model(..model, view: View(..model.view, outbox: [])),
+    list.reverse(model.view.outbox),
   )
 }
 
@@ -422,7 +422,7 @@ fn perform_one(
     effect.StartJob(key, spec) -> job_runner.start(running, key, spec)
     effect.CancelJob(key) -> job_runner.cancel(running, key)
     effect.CloseControl(control) -> job_runner.close_control(running, control)
-    effect.Channel(_)
+    effect.Step(_)
     | effect.Attachment(_)
     | effect.CloseSocket(_)
     | effect.Discard(_)
@@ -438,7 +438,9 @@ fn perform_one(
 
 fn perform_io(requested: Effect) -> Nil {
   case requested {
-    effect.Channel(output) -> terminal_lane.perform(output)
+    effect.Step(step_effect.Lane(output)) -> terminal_lane.perform(output)
+    effect.Step(step_effect.Recorded(recorder, message)) ->
+      recording.append(recorder, recording.Arrived(message))
     effect.Attachment(output) -> attachment.perform(output)
     effect.CloseSocket(socket) -> connection.close(socket)
     effect.Discard(inbox) -> buffered.discard(inbox)

@@ -7,8 +7,8 @@
 //// record names has to live here or below, never in a module that reduces
 //// or paints the record.
 ////
-//// The model is two records, `Model(shared: Shared, view: View)`. `Shared`
-//// is the session state: what the daemon said, what this client has sent
+//// The model is two records, `Model(shared: TerminalShared, view: View)`.
+//// `Shared` is the session state: what the daemon said, what this client has sent
 //// and not yet seen committed, the reads in flight, and the revision
 //// counters that tell a host its projection is stale. `View` is the
 //// terminal's own state: the screen size, the composer and its history, the
@@ -26,13 +26,25 @@
 //// because its lane correlation and its editor are updated together in too
 //// many places to cut mechanically.
 ////
-//// This is the first slice of moving the client step into `session_view`
-//// (`docs/design-notes/step-extraction.md`). Every reducer still takes the
-//// whole `Model` and reads a field through the half that holds it. The four
-//// host handles, `inbox`, `channel`, `replay_inbox` and `recorder`, sit in
-//// `Shared` with their terminal types until the next slice makes them type
-//// parameters; a later slice moves `Shared` and the reducers over it into
-//// `session_view`, where the web view can drive them.
+//// The record is shaped by the first two slices of moving the client
+//// step into `session_view` (`docs/design-notes/step-extraction.md`).
+//// `Shared` holds four host handles, the adopted lane (`channel`), the
+//// connection and replay inboxes (`inbox`, `replay_inbox`) and the
+//// recorder, and names none of them with a terminal type: it is
+//// `Shared(socket, recorder, source, replay_source)`. The terminal binds
+//// the parameters to its connection, its recording and the two subjects it
+//// reads in `TerminalShared`, which is the type of `Model.shared`. Every
+//// reducer still takes the whole `Model` and reads a field through the half
+//// that holds it, so every reducer sees the handles with the terminal's
+//// types. A later slice cuts the reducers that touch only session state
+//// down to `Shared` and moves them into `session_view`, where the web view
+//// can drive them with its own bindings.
+////
+//// The step's effect queue is `View.outbox`, not a `Shared` field. It
+//// holds the terminal's effects, jobs and the attachment among them, in
+//// one order with the session reducers' `effect.Step` effects, and it stays
+//// the one queue until the reducer cut gives the session reducers a queue
+//// of their own.
 ////
 //// Besides the types, the module holds the small operations that nearly
 //// every reducer needs and that read or bump only the record itself:
@@ -51,6 +63,7 @@ import etui/geometry.{type Rect}
 import etui/span
 import etui/widgets/textarea as text_area
 import gleam/dict.{type Dict}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -71,6 +84,7 @@ import session_view/connection_event
 import session_view/context_view
 import session_view/goal_view
 import session_view/history_view
+import session_view/inbox
 import session_view/live_jobs
 import session_view/notes_view
 import session_view/protocol.{Strand}
@@ -93,8 +107,8 @@ import tui/approval_panel
 import tui/attachment
 import tui/attempt_replay
 import tui/bootstrap
-import tui/buffered
 import tui/completion_summary
+import tui/connection
 import tui/effect
 import tui/focused_goal_panel
 import tui/herdr
@@ -110,6 +124,7 @@ import tui/queue_editor
 import tui/recording
 import tui/selection
 import tui/session_selector
+import tui/step_effect
 import tui/summary_panel
 import tui/terminal_lane
 import tui/transcript_anchor
@@ -433,8 +448,8 @@ pub fn empty_caches() -> Caches {
 pub type Model {
   Model(
     /// Session state: what a second host would need to show or act on the
-    /// session.
-    shared: Shared,
+    /// session, with the host handles bound to the terminal's types.
+    shared: TerminalShared,
     /// The terminal's own state.
     view: View,
   )
@@ -446,15 +461,36 @@ pub type Model {
 /// It holds what the daemon said, what this client has sent and not yet seen
 /// committed, the bookkeeping the lane's reads and the reads in flight need,
 /// and the revision counters shared reducers bump so a host can tell that a
-/// projection is stale without comparing the whole record. The four host
-/// handles, `inbox`, `channel`, `replay_inbox` and `recorder`, are here with
-/// their concrete terminal types for now, because the reducers that will
-/// move with this record name them in the effects they queue; they become
-/// type parameters in the next slice. The step extraction design
-/// (`docs/design-notes/step-extraction.md`) gives the reason for each
-/// field's placement.
+/// projection is stale without comparing the whole record. The step
+/// extraction design (`docs/design-notes/step-extraction.md`) gives the
+/// reason for each field's placement.
+///
+/// The record also holds the host's handles: the adopted lane, the two
+/// inboxes and the recorder. The reducers that will move with this record
+/// name those handles, in the effects they queue and in the inbox they file
+/// a frame into, but never act on them, so their types are parameters that
+/// the host binds:
+///
+/// - `socket` is the connection a lane writes to and closes, in
+///   `channel` and `replay_state`.
+/// - `recorder` is the recording handle a lane notes attempts to and a
+///   channelless arrival is written to, in `channel`, `replay_state` and
+///   `recorder`.
+/// - `source` identifies where the connection inbox's frames were read from;
+///   admission compares it to drop a frame from a socket the model no longer
+///   reads.
+/// - `replay_source` identifies where the replay inbox's recorded events are
+///   read from. Nothing compares it: admission files every replayed event,
+///   and the source is only the subject the runtime reads before a step.
+///
+/// The two inboxes need separate source parameters because the terminal
+/// reads each from a subject typed by its message, `Subject(Message)` for
+/// frames and `Subject(attempt.Event)` for a replay, and one parameter
+/// cannot be both. The terminal binds all four in `TerminalShared`; a host
+/// with no mailboxes and no recording, such as the web view, would bind the
+/// last three to `Nil`.
 @internal
-pub type Shared {
+pub type Shared(socket, recorder, source, replay_source) {
   Shared(
     /// Set when the operator or the session ends the loop; the runtime
     /// stops after the step that set it.
@@ -594,11 +630,11 @@ pub type Shared {
     /// The adopted connection's socket traffic, with what the runtime already
     /// received from it for the next step. An adoption replaces the whole
     /// value, so the old socket's held messages leave the model with it.
-    inbox: buffered.Inbox(connection_event.Message),
+    inbox: inbox.Inbox(source, connection_event.Message),
     /// Where commands go: a live lane, nowhere, the preview or a replay.
     peer: Peer,
     /// Serial credited state for the adopted socket only.
-    channel: Option(terminal_lane.Lane),
+    channel: Option(session_channel.Channel(socket, recorder)),
     /// Last complete raw cut and its coherent metadata projection.
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
     /// What made the lane ask for the last cut that changed something
@@ -620,9 +656,9 @@ pub type Shared {
     /// Last sent mutation whose outcome was not observed; survives adoption.
     unconfirmed: Option(UnconfirmedSubmission),
     /// Two-slot effect-free replay state and its terminal-owned delivery lane.
-    replay_state: attempt_replay.State,
+    replay_state: attempt_replay.State(socket, recorder),
     /// Filled one event at a time, since a tick applies at most one.
-    replay_inbox: buffered.Inbox(attempt.Event),
+    replay_inbox: inbox.Inbox(replay_source, attempt.Event),
     /// A malformed local recording stops replay rather than skipping a frame.
     replay_error: Option(String),
     /// The request identity the next command is encoded with.
@@ -703,19 +739,25 @@ pub type Shared {
     /// The open `--record` file, when the launch asked for one. Present in
     /// the model because the reducers that decide recording lines, input
     /// and channelless messages alike, name it in the effects they queue.
-    recorder: Option(recording.Recorder),
-    /// Effects this step has decided on, newest first, and the only queue a
-    /// step has. The reducer only appends here, through `emit`, `record` and
-    /// `hold_channel`; `runtime.take` empties it at the end of every step,
-    /// so between two `update` calls it is empty. A caller that runs a
-    /// reducer outside `update` leaves its effects here until it calls
-    /// `runtime.flush` or the next step collects them.
-    outbox: List(effect.Effect),
+    recorder: Option(recorder),
     /// Bumped by a reducer that empties the transcript (`/clear`, a new
     /// session), so the view drops its record rows at the next projection.
     record_cache_epoch: Int,
   )
 }
+
+/// The session state with its host handles bound to the terminal's types:
+/// the adopted lane writes to a `connection.Connection` and notes to a
+/// `recording.Recorder`, and each inbox is a `tui/buffered` inbox, whose
+/// source is the subject this process created and reads before each step.
+@internal
+pub type TerminalShared =
+  Shared(
+    connection.Connection,
+    recording.Recorder,
+    Subject(connection_event.Message),
+    Subject(attempt.Event),
+  )
 
 /// The terminal's own state: what only the terminal reads, or what names an
 /// etui type, a terminal surface, a daemon-control job or the pane reporter.
@@ -723,7 +765,8 @@ pub type Shared {
 /// It holds the screen size and the composer, the panels and overlays with
 /// their cursors and scroll offsets, the row projection's outputs, frame
 /// pacing, the host clocks, the daemon-control, reconnect and provisional
-/// attachment job slots, the runtime's job table, and the etui render caches.
+/// attachment job slots, the step's effect queue, the runtime's job table,
+/// and the etui render caches.
 /// A second host keeps its own view state beside the same `Shared`.
 @internal
 pub type View {
@@ -878,6 +921,11 @@ pub type View {
     /// This terminal's identity in a session creation key: the OS process
     /// and the BEAM process that created the model, read once at creation.
     terminal: String,
+    /// The host's wall clock when the current event was read, stored by
+    /// `start_step` beside `Shared.stamp`. Only a session creation key reads
+    /// it, and that key is built by the terminal's daemon control, so the
+    /// reading is terminal state and the shared stamp does not carry it.
+    wall_ms: Int,
     /// When the last frame was painted, on the presentation clock.
     last_frame_ms: Int,
     /// How long the terminal has gone without activity, which sets the
@@ -898,6 +946,19 @@ pub type View {
     herdr_reporter: Option(herdr.Reporter),
     /// The pane state and session last reported, so only a change sends.
     herdr_published: Option(herdr.Publication),
+    /// Effects this step has decided on, newest first, and the only queue a
+    /// step has. The reducer only appends here, through `emit`, `record`,
+    /// `record_arrival` and `hold_channel`; `runtime.take` empties it at the
+    /// end of every step, so between two `update` calls it is empty. A
+    /// caller that runs a reducer outside `update` leaves its effects here
+    /// until it calls `runtime.flush` or the next step collects them.
+    ///
+    /// It is the terminal's queue, so it lives here rather than in `Shared`:
+    /// it holds terminal effects (jobs, the attachment, the clipboard,
+    /// Herdr) in one order with the session reducers' `effect.Step`
+    /// effects, and one queue is what keeps that order. While every reducer
+    /// takes the whole model, the session reducers append here too.
+    outbox: List(effect.Effect),
     /// The key the next background job is given. Keys are never reused,
     /// so a reply tagged with one belongs to exactly one job.
     next_job: job.Key,
@@ -1035,12 +1096,12 @@ pub fn mark_activity(model: Model) -> Model {
 pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
   let #(channel, outputs) = session_channel.take_outputs(channel)
   let outbox =
-    list.fold(outputs, model.shared.outbox, fn(outbox, output) {
-      [effect.Channel(output), ..outbox]
+    list.fold(outputs, model.view.outbox, fn(outbox, output) {
+      [effect.Step(step_effect.Lane(output)), ..outbox]
     })
   Model(
-    ..model,
-    shared: Shared(..model.shared, channel: Some(channel), outbox:),
+    shared: Shared(..model.shared, channel: Some(channel)),
+    view: View(..model.view, outbox:),
   )
 }
 
@@ -1135,10 +1196,13 @@ pub fn emit_attachment(model: Model, output: attachment.Out) -> Model {
 
 /// Queues one line for the model's recording, if the terminal is recording.
 ///
+/// `start_step` queues each input's line through this. A message that
+/// arrived with no lane is queued by `record_arrival` instead.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// tui_model.record(model, recording.Arrived(connection_event.Connected))
+/// tui_model.record(model, recording.Key("enter"))
 /// ```
 @internal
 pub fn record(model: Model, event: recording.Recorded) -> Model {
@@ -1148,22 +1212,59 @@ pub fn record(model: Model, event: recording.Recorded) -> Model {
   }
 }
 
+/// Queues the recording line for a message that arrived while the model
+/// held no lane, if the terminal is recording.
+///
+/// The line is a session reducer's decision, so it is queued as the step
+/// effect `Recorded` rather than as a terminal `Record`. The runtime writes
+/// it as `recording.Arrived(message)`, the untagged arrival the preview
+/// peer has always written, so the recording's bytes do not depend on
+/// which of the two effects carried the line.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.record_arrival(model, connection_event.Connected)
+/// ```
+@internal
+pub fn record_arrival(
+  model: Model,
+  message: connection_event.Message,
+) -> Model {
+  case model.shared.recorder {
+    Some(recorder) ->
+      emit(model, effect.Step(step_effect.Recorded(recorder, message)))
+    None -> model
+  }
+}
+
 /// Opens a step for one input: stores the instant it is applied at and
 /// queues its recording line, if it is one that replays and the terminal
 /// is recording.
 ///
 /// `tui.step` calls this before the reducer runs, so every reducer reads
-/// the input's time from `Model.stamp`, and the input's line is the first
-/// effect of its step and precedes every line the input causes.
+/// the input's time from `Model.shared.stamp`, or the wall clock from
+/// `Model.view.wall_ms`, and the input's line is the first effect of its
+/// step and precedes every line the input causes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let model = tui_model.start_step(model, model.stamp, msg.Ticked)
+/// let model =
+///   tui_model.start_step(model, model.shared.stamp, model.view.wall_ms, msg.Ticked)
 /// ```
 @internal
-pub fn start_step(model: Model, at: msg.Stamp, event: msg.Event) -> Model {
-  let model = Model(..model, shared: Shared(..model.shared, stamp: at))
+pub fn start_step(
+  model: Model,
+  at: msg.Stamp,
+  wall_ms: Int,
+  event: msg.Event,
+) -> Model {
+  let model =
+    Model(
+      shared: Shared(..model.shared, stamp: at),
+      view: View(..model.view, wall_ms:),
+    )
   case msg.recorded(event) {
     Some(recorded) -> record(model, recorded)
     None -> model
@@ -1185,7 +1286,7 @@ pub fn start_step(model: Model, at: msg.Stamp, event: msg.Event) -> Model {
 pub fn emit(model: Model, requested: effect.Effect) -> Model {
   Model(
     ..model,
-    shared: Shared(..model.shared, outbox: [requested, ..model.shared.outbox]),
+    view: View(..model.view, outbox: [requested, ..model.view.outbox]),
   )
 }
 

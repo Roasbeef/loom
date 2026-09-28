@@ -47,7 +47,7 @@ pub fn an_arrival_is_filed_and_not_reduced_test() {
   assert admitted.shared.notice == model.shared.notice
   assert admitted.shared.render_revision == model.shared.render_revision
   assert admitted.shared.frame_revision == model.shared.frame_revision
-  assert admitted.shared.outbox == model.shared.outbox
+  assert admitted.view.outbox == model.view.outbox
 
   let #(ticked, _) = stepping.step(backend.Tick, admitted)
   assert list.contains(failures(ticked), "network: held")

@@ -49,8 +49,13 @@ pub type Msg {
   /// One event and the instant it is applied at, which the step reduces.
   Input(
     /// The clock readings the step is applied at. The step stores them as
-    /// `Model.stamp`, and every reducer reads the time there.
+    /// `Model.shared.stamp`, and every reducer reads the time there.
     at: Stamp,
+    /// The host's wall clock, read with `at`. The step stores it as
+    /// `Model.view.wall_ms`, where a session creation key reads it. It is
+    /// beside the stamp rather than in it because it is the terminal's
+    /// reading: no session reducer uses it.
+    wall_ms: Int,
     /// What happened.
     event: Event,
   )
@@ -85,11 +90,14 @@ pub type Arrival {
 
 /// The clock readings one event is applied at.
 ///
-/// Every reducer reads them from `Model.stamp` instead of calling a clock,
-/// so a step reads no clock and every reducer in one step sees the same
-/// instant. There are two monotonic readings because they time different
-/// things: a test may fix the presentation clock to pin frames while a live
-/// socket in the same test still needs real deadlines.
+/// Every reducer reads them from `Model.shared.stamp` instead of calling a
+/// clock, so a step reads no clock and every reducer in one step sees the
+/// same instant. There are two monotonic readings because they time
+/// different things: a test may fix the presentation clock to pin frames
+/// while a live socket in the same test still needs real deadlines. The
+/// wall clock is not here: its one reader is the terminal's session
+/// creation key, so it is carried in `Input.wall_ms` and is stored in the
+/// terminal's view.
 @internal
 pub type Stamp {
   Stamp(
@@ -100,8 +108,6 @@ pub type Stamp {
     /// The host's monotonic clock, which times the session lanes' request
     /// deadlines and idle refresh.
     transport_ms: Int,
-    /// The host's wall clock, which only a session creation key reads.
-    wall_ms: Int,
   )
 }
 

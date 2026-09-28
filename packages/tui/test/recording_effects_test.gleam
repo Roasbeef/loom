@@ -36,6 +36,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/recording
 import tui/runtime
+import tui/step_effect
 import tui/terminal_lane
 import tui/virtual_backend
 import tui/workspace
@@ -254,12 +255,17 @@ fn lifecycle(
   old_socket: connection.Connection,
 ) -> Result(String, Nil) {
   case decided {
-    effect.Channel(session_channel.Note(_, attempt.Closed(attempt.Id(id)))) ->
-      Ok("closed " <> int.to_string(id))
-    effect.Channel(session_channel.Note(_, attempt.Adopted(attempt.Id(id)))) ->
-      Ok("adopted " <> int.to_string(id))
-    effect.Channel(session_channel.Shut(socket)) if socket == old_socket ->
-      Ok("shut old socket")
+    effect.Step(step_effect.Lane(session_channel.Note(
+      _,
+      attempt.Closed(attempt.Id(id)),
+    ))) -> Ok("closed " <> int.to_string(id))
+    effect.Step(step_effect.Lane(session_channel.Note(
+      _,
+      attempt.Adopted(attempt.Id(id)),
+    ))) -> Ok("adopted " <> int.to_string(id))
+    effect.Step(step_effect.Lane(session_channel.Shut(socket)))
+      if socket == old_socket
+    -> Ok("shut old socket")
     _ -> Error(Nil)
   }
 }
@@ -464,7 +470,8 @@ fn replay_step(model: tui_model.Model, step: virtual_backend.Step) {
 fn records(decided: effect.Effect) -> Bool {
   case decided {
     effect.Record(..) -> True
-    effect.Channel(session_channel.Note(..)) -> True
+    effect.Step(step_effect.Recorded(..)) -> True
+    effect.Step(step_effect.Lane(session_channel.Note(..))) -> True
     effect.Attachment(attachment.FromChannel(session_channel.Note(..))) -> True
     _ -> False
   }
@@ -474,11 +481,11 @@ fn records(decided: effect.Effect) -> Bool {
 fn prompt_traffic(decided: effect.Effect) -> Result(String, Nil) {
   case decided {
     effect.Record(_, recording.Key(key)) -> Ok("input " <> key)
-    effect.Channel(session_channel.Note(
+    effect.Step(step_effect.Lane(session_channel.Note(
       _,
       attempt.Issued(_, attempt.Request(kind: "prompt", ..)),
-    )) -> Ok("issued prompt")
-    effect.Channel(session_channel.Transmit(_, frame)) ->
+    ))) -> Ok("issued prompt")
+    effect.Step(step_effect.Lane(session_channel.Transmit(_, frame))) ->
       case string.contains(frame, "\"prompt\"") {
         True -> Ok("sent prompt")
         False -> Error(Nil)

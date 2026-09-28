@@ -3,6 +3,14 @@
 //// The same channel reducer validates real and recorded bytes. This module
 //// contributes only local attempt custody and issued-request ordering; it
 //// never manufactures a socket, sends a frame or advances a wall clock.
+////
+//// The state is generic over the socket and recorder types of the lanes it
+//// holds, as `session_channel.Channel` is. A replay lane is built by
+//// `session_channel.replay`, which gives it neither a socket nor a recorder,
+//// so no value of either type ever exists here; the parameters are what let
+//// a host other than the terminal hold the same state beside its own lane.
+//// The terminal binds them to its connection and recording types in
+//// `tui_model.Shared.replay_state`.
 
 import gleam/bool
 import gleam/int
@@ -15,7 +23,6 @@ import session_view/session_channel
 import session_view/session_wire
 import session_view/snapshot
 import session_view/snapshot_view
-import tui/terminal_lane
 
 // A replay lane's time. A recording carries no clock the lane could honour:
 // its frames arrive as fast as the file is read, so a deadline measured from
@@ -30,10 +37,10 @@ type Credit {
   Issued
 }
 
-type Lane {
+type Lane(socket, recorder) {
   Lane(
     id: attempt.Id,
-    channel: terminal_lane.Lane,
+    channel: session_channel.Channel(socket, recorder),
     credit: Credit,
     last_request: Int,
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
@@ -41,8 +48,15 @@ type Lane {
 }
 
 /// At most two protocol buffers; retired identities require no retained map.
-pub opaque type State {
-  State(current: Option(Lane), candidate: Option(Lane), latest: Int)
+///
+/// `socket` and `recorder` are the lanes' handle types. They are never
+/// inhabited, because a replay lane holds no socket and no recorder.
+pub opaque type State(socket, recorder) {
+  State(
+    current: Option(Lane(socket, recorder)),
+    candidate: Option(Lane(socket, recorder)),
+    latest: Int,
+  )
 }
 
 /// A visible adoption or update from the currently adopted attempt only.
@@ -67,7 +81,7 @@ pub type Change {
 /// ```gleam
 /// let state = attempt_replay.new()
 /// ```
-pub fn new() -> State {
+pub fn new() -> State(socket, recorder) {
   State(None, None, 0)
 }
 
@@ -82,9 +96,9 @@ pub fn new() -> State {
 /// // attempt_replay.apply(state, event)
 /// ```
 pub fn apply(
-  state: State,
+  state: State(socket, recorder),
   event: attempt.Event,
-) -> Result(#(State, List(Change)), String) {
+) -> Result(#(State(socket, recorder), List(Change)), String) {
   case event {
     attempt.Started(attempt.Id(id) as key, expected) -> {
       use <- bool.guard(
@@ -109,7 +123,7 @@ pub fn apply(
   }
 }
 
-fn adopt(state: State, id) {
+fn adopt(state: State(socket, recorder), id) {
   case state.candidate {
     Some(Lane(id: candidate, captured: Some(#(cut, view)), ..) as lane)
       if candidate == id
@@ -128,7 +142,7 @@ fn adopt(state: State, id) {
   }
 }
 
-fn retire(state: State, id: attempt.Id) {
+fn retire(state: State(socket, recorder), id: attempt.Id) {
   let attempt.Id(value) = id
   use <- bool.guard(
     value > state.latest,
@@ -163,7 +177,7 @@ fn remove(lane, id) {
   }
 }
 
-fn advance(state: State, id: attempt.Id, event) {
+fn advance(state: State(socket, recorder), id: attempt.Id, event) {
   case state.current, state.candidate {
     Some(Lane(id: found, ..) as lane), _ if found == id -> {
       use #(lane, updates) <- result.map(advance_lane(lane, event))
@@ -191,7 +205,7 @@ fn advance(state: State, id: attempt.Id, event) {
   }
 }
 
-fn advance_lane(lane: Lane, event) {
+fn advance_lane(lane: Lane(socket, recorder), event) {
   case event {
     attempt.Issued(_, request) -> {
       use <- bool.guard(
@@ -237,7 +251,7 @@ fn advance_lane(lane: Lane, event) {
 
 // The credit this leaves the lane with is the caller's decision, because
 // only the caller knows whether the frame named a request.
-fn received(lane: Lane, message, credit: Credit) {
+fn received(lane: Lane(socket, recorder), message, credit: Credit) {
   let #(channel, updates) =
     session_channel.receive(lane.channel, message, now: replay_now)
   let captured =

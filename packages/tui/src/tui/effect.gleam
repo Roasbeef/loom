@@ -11,9 +11,16 @@
 //// is allowed to act.
 ////
 //// Effects are data rather than closures. A test can assert that a
-//// submitted prompt produced exactly one `Channel(Transmit(..))`, and a
+//// submitted prompt produced exactly one `Step(Lane(Transmit(..)))`, and a
 //// second runtime, such as a web view served by the daemon, interprets the
 //// same vocabulary against its own transport.
+////
+//// The effects the session reducers decide, a lane's outputs and the
+//// recording line for a message no lane noted, are `tui/step_effect` values
+//// generic over the socket and recorder, and reach this type through
+//// `Step`. Everything else here is the terminal's own: the provisional
+//// attachment, the control connection, jobs, inboxes the terminal created,
+//// the input recording lines, the clipboard and Herdr.
 ////
 //// Every effect names the resource it acts on. The model's handles move
 //// during a step: an adoption replaces the socket, a quit clears the
@@ -43,12 +50,15 @@ import tui/connection
 import tui/herdr
 import tui/job
 import tui/recording
-import tui/terminal_lane
+import tui/step_effect
 
 /// One side effect a reducer step decided on.
 pub type Effect {
-  /// An output of the adopted session channel: a frame write or a close.
-  Channel(terminal_lane.Output)
+  /// An effect a session reducer decided: an output of the adopted session
+  /// lane (a frame write, a close or an attempt note), or the recording line
+  /// for a message that arrived with no lane. The terminal binds the step
+  /// effect's handles to its own connection and recording.
+  Step(step_effect.Effect(connection.Connection, recording.Recorder))
 
   /// An output of a provisional attachment attempt.
   Attachment(attachment.Out)
@@ -74,8 +84,10 @@ pub type Effect {
   /// do not sit in the terminal's mailbox forever.
   Discard(inbox: Subject(connection_event.Message))
 
-  /// Appends one line to a recording: an input the terminal was given, or
-  /// a message that arrived with no channel to note it.
+  /// Appends one line to a recording: an input the terminal was given. A
+  /// message that arrived with no channel to note it is a
+  /// `Step(step_effect.Recorded(..))` instead, because a session reducer
+  /// decides it.
   Record(recorder: recording.Recorder, event: recording.Recorded)
 
   /// Writes an OSC 52 clipboard sequence to the terminal.

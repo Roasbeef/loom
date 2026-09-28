@@ -257,7 +257,7 @@ pub fn a_dropped_relaunch_outcome_closes_its_control_test() {
       job.ReconnectArrived(key, weft.PulledOutcome(weft.Completed(0, host))),
     )
   assert held.view.reconnect == tui_model.ReconnectIdle
-  let assert [effect.CloseControl(control)] = held.shared.outbox
+  let assert [effect.CloseControl(control)] = held.view.outbox
     as "the dropped outcome's control is queued for closing"
   assert job_runner.control(held.view.running, control) == Ok(host)
     as "the queued close names the relaunch's own connection"
@@ -582,7 +582,7 @@ pub fn an_adoption_cancels_a_relaunch_still_in_flight_test() {
     )
 
   assert adopted.view.reconnect == tui_model.ReconnectIdle
-  assert list.contains(adopted.shared.outbox, effect.CancelJob(key))
+  assert list.contains(adopted.view.outbox, effect.CancelJob(key))
     as "the relaunch the adoption made unnecessary is cancelled by its key"
 }
 
@@ -631,7 +631,7 @@ pub fn an_adoption_releases_a_relaunch_outcome_it_clears_test() {
 
   assert adopted.view.reconnect == tui_model.ReconnectIdle
   let lifecycle =
-    list.filter_map(list.reverse(adopted.shared.outbox), fn(decided) {
+    list.filter_map(list.reverse(adopted.view.outbox), fn(decided) {
       case decided {
         effect.CloseControl(_) -> Ok("close control")
         effect.CancelJob(cancelled) if cancelled == key -> Ok("cancel relaunch")
@@ -640,7 +640,7 @@ pub fn an_adoption_releases_a_relaunch_outcome_it_clears_test() {
     })
   assert lifecycle == ["close control", "cancel relaunch"]
     as "the cleared slot's outcome is released ahead of the cancel"
-  assert list.any(adopted.shared.outbox, fn(decided) {
+  assert list.any(adopted.view.outbox, fn(decided) {
     case decided {
       effect.CloseControl(control) ->
         job_runner.control(adopted.view.running, control) == Ok(host)

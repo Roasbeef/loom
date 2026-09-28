@@ -15,14 +15,19 @@ The package has about 80 modules. `tui.gleam` holds the entry points and the
 `update` dispatch that etui (the terminal UI library) drives; the immutable
 `Model` lives in `tui/model`, `view` in `tui/render`, and the rest of what
 used to share that one file is split by responsibility into the modules the
-table at the end names. The model is two records, `Model(shared: Shared,
-view: View)`: `Shared` is the session state a second host showing the same
-session would need, and `View` is the terminal's own state, including its
-etui render caches as `View.caches`. Every reducer still takes the whole
-model and reads a field through the half that holds it; the split is the
-first slice of moving the step into `session_view` so that the web view
-runs the same reducers
-([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
+table at the end names. The model is two records, `Model(shared:
+TerminalShared, view: View)`: `Shared` is the session state a second host
+showing the same session would need, and `View` is the terminal's own
+state, including its etui render caches as `View.caches` and the step's
+effect outbox. `Shared` names its host handles only by type parameter,
+`Shared(socket, recorder, source, replay_source)`: the adopted lane and the
+replay state take the socket and recorder types, and the connection and
+replay inboxes are keyed by their sources. `TerminalShared` binds them to
+the terminal's connection, its recording and the two subjects it reads.
+Every reducer still takes the whole model and reads a field through the
+half that holds it; the split and the parameters are the first two slices
+of moving the step into `session_view` so that the web view runs the same
+reducers ([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
 daemon bootstrap, two connections (a daemon control connection and a
 per-session conversation channel), pure projections that turn a captured
 snapshot into rows, one module per panel, Markdown rendering, Herdr
@@ -78,12 +83,13 @@ them into the model; `tui.step` computes the next model and the effects it
 decided on; and `runtime.settle` carries those effects out and stores the
 table of running jobs they left on the model. The step performs none of the
 fire-and-forget effects itself; "Effects are values" below describes that
-split. The step takes a `msg.Msg`: an `Input(at, event)`, which it reduces,
+split. The step takes a `msg.Msg`: an `Input(at, wall_ms, event)`, which it reduces,
 or `Arrived(arrivals)`, traffic it only files (`tui/admission`) and never
 reduces. An input's step has three stages:
 
-1. `tui_model.start_step` stores the input's stamp as `Model.shared.stamp` and
-   queues the event's recording line, if a `--record` file is open, before
+1. `tui_model.start_step` stores the input's stamp as `Model.shared.stamp`
+   and its wall clock reading as `Model.view.wall_ms`, and queues the
+   event's recording line, if a `--record` file is open, before
    anything interprets it, so it is the step's first effect.
 2. `apply_input` dispatches on the event: a key, a paste, a resize, a mouse
    wheel notch, a drag, or `Ticked`.
@@ -196,7 +202,10 @@ modules divide the work:
 
 - `tui/effect` is the vocabulary: a closed data type, not closures, so a test
   can assert on the effects a step produced and a second runtime can interpret
-  the same values against its own transport.
+  the same values against its own transport. The two effects the session
+  reducers decide, a lane output and the recording line for a message that
+  arrived with no lane, are `tui/step_effect` values generic over the socket
+  and recorder, carried as `effect.Step`; the rest are the terminal's own.
 - `session_view/session_channel` is a pure transition system. Its `emit`, `close`
   and receive queue `Transmit`, `Shut` and `Note` outputs on the channel
   itself, a `Note` being one attempt event for the recording, and
@@ -958,12 +967,13 @@ Paths are relative to the package's source root: `tui/...` is under
 | Module | What it owns |
 |---|---|
 | `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, `loom ui` (`run_view`), and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
-| `tui/effect` | The closed vocabulary of effects a step decides on. |
+| `tui/step_effect` | The two effects the session reducers decide, a lane output and a channelless arrival's recording line, generic over the host's socket and recorder. |
+| `tui/effect` | The closed vocabulary of effects a step decides on, with the session reducers' effects wrapped as `Step`. |
 | `tui/terminal_lane` | The session lane with the terminal's socket and recorder filled in, and `perform`, the one place a lane's outputs touch the websocket or the recording. |
 | `tui/view_link` | Printing the `loom ui` link and handing it to the platform's opener. |
-| `tui/model` | `Model` and its two halves, `Shared` (session state) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox (`emit`, `record`, `hold_channel`) and the other types every reducer shares. |
+| `tui/model` | `Model` and its two halves, `Shared` (session state, generic over the host handles and bound by `TerminalShared`) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox in `View` (`emit`, `record`, `record_arrival`, `hold_channel`) and the other types every reducer shares. |
 | `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
-| `tui/msg` | What the step is given: `Input(at, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`. |
+| `tui/msg` | What the step is given: `Input(at, wall_ms, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`. |
 | `tui/keymap` | `translate`, etui's input event to a `msg.Event`; parsing only. |
 | `tui/admission` | `admit`: files arrivals into inboxes and job slots, and reduces nothing. |
 | `tui/job` | Jobs as data: `Key`, the slot type `Awaiting`, `Spec`, and the keyed `Arrival`. |

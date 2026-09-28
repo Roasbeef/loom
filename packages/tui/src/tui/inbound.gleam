@@ -82,7 +82,6 @@ import tui/note_panel
 import tui/outbound
 import tui/queue_editor
 import tui/queue_panel
-import tui/recording
 import tui/render
 import tui/surfaces
 
@@ -1210,7 +1209,7 @@ fn handle_connection_message(
     // A message with no channel has no attempt to note it under, so it is
     // recorded as the untagged arrival the preview peer has always written.
     None ->
-      tui_model.record(model, recording.Arrived(incoming))
+      tui_model.record_arrival(model, incoming)
       |> handle_presentation_message(incoming)
   }
 }
