@@ -243,6 +243,71 @@ This is not ceremony. It has repeatedly produced the actual finding:
   false positive — which is what forced the rule's definition to become
   exact instead of broad.
 
+### Run the gates a change affects
+
+`make check-affected` runs the part of the full gate that a change can
+affect; `make affected` prints that selection and the reason for each
+gate without running anything. Both take `BASE=<rev>` (default
+`origin/main`). The change is everything between the merge base of
+`BASE` and HEAD, together with the working tree's uncommitted and
+untracked files. `scripts/affected.py` makes the selection and
+`scripts/check_affected.sh` runs it.
+
+The selection:
+
+- **Static gates, always:** `fmt-check`, `lint`, `doc-check`,
+  `prelude-check` and `client-check`. They run over the whole tree and
+  take about ten seconds together, so they are not narrowed.
+- **Packages:** every package with a changed file, every package that
+  depends on one through `[dependencies]` path edges (transitively), and
+  every package that names one in `[dev-dependencies]` (one step only,
+  since Gleam compiles dev dependencies only for the root package). The
+  edges are read from `packages/*/gleam.toml` on every run. A package
+  whose tests name a file outside it by a relative path literal, such as
+  the real-helper suites' `"/../sandbox/loom-exec"` or codemode's
+  `"../../docs/examples/…"`, is selected when that file changes. Each
+  package runs through `scripts/check.sh <pkg>`, the body of
+  `make check-<pkg>`, in the signoff's lane grouping.
+- **Other gates:** a change under `protocol/models/` runs
+  `make model-check` (the P models, which need the P tool); a sandbox
+  change runs `make selftest`.
+- **The full `make check`,** instead of a package list, for a change to
+  `scripts/`, the `Makefile`, `.github/`, the image files, any package's
+  `gleam.toml` or `manifest.toml`, the msgpack wire fixtures, or a path
+  the script does not classify, and for a change whose affected packages
+  are more than half of the Gleam packages (today only `core` reaches
+  that).
+- **Docs only** (`docs/`, `protocol-change/`, `skills/`, `.claude/`,
+  Markdown at the root or at a package's root): the static gates alone,
+  unless a test reads the changed file.
+
+For example, a `tui` change selects `tui` and `client` (whose tests take
+`tui` as a dev dependency) but not `conformance`, which depends on
+`client` without compiling its tests. A `session_view` change selects
+`session_view`, `tui`, `web_view`, `client` and `conformance`.
+
+The selector also prints `signoff required` or `signoff not-required`.
+The owner's rule (2026-09-28): a change may land on `make
+check-affected` plus the targeted proofs for the changed code (the
+focused tests or drive that show the change does what it claims),
+with the Fable review's findings dispositioned. The full signoff
+(`make signoff-remote`) is still required when the selector says so:
+when it selected the full check, when the change touches the daemon
+(`packages/client`), the sandbox (`packages/sandbox`), or the wire (the
+msgpack fixtures, `session_view`'s `protocol.gleam` and
+`session_wire.gleam`), or when it changes more than two packages
+directly.
+
+`check-affected` does not run what only the signoff runs: the bootstrap
+and shipped-daemon fixtures, the simulation soaks, the release and
+update verification, the skip census, and the enforcement expectations.
+That is why the changes above that reach those surfaces keep the
+signoff. The signoff, `make check` and CI are unchanged by it.
+
+It exits with the status of the first failed lane in the order the lanes
+are listed, after every lane has finished; per-lane logs are under
+`build/affected/`. Check that status directly, as above.
+
 ### Verify the claim, not the vicinity
 
 `make check-<package>` passing does not prove a *performance* fix landed. A
