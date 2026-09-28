@@ -40,20 +40,31 @@ page keys and nonces, and the relay into the session's gateway.
   turns laid out from them (`turns.Piece`), the agent rows, the roster, the
   cache ledger and its miss notices, the agent `Strip`, the approvals, the
   connection `Status`, the operator `Notice` and the sent-draft count.
-- `component.Strip` and `component.Chip`: the listed agents (`line`,
+- The view, one module per screen region under `web_view/view/`, laid out
+  by `component.view` and `operator_page.view`. None of them imports
+  `component`, which imports them, so each takes what it draws as its own
+  types or plain values. `heading.view(session_id, name, workspace,
+  status)` draws the heading; `component.heading(model)` reads those
+  values from the model and stays the entry point both pages call.
+  `strip.view(strip)` draws the agent strip, memoized on the whole strip;
+  `lane.view(pieces)` draws the transcript lane, memoized per line.
+- `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip
-  was built), the advisor's chip and the settled count. `strip_view` and `lane_view` draw them, memoized (the strip whole, the lane per line);
-  `hue_class` and `ring_class` map a hue and an outlook to literal classes.
+  was built), the advisor's chip and the settled count. The component
+  builds them and `strip.view` draws them. `strip.hue_class` and
+  `strip.ring_class` map a hue and an outlook to literal classes.
+  `strip.followed` is the strand the strip marks as current, and
+  `component.strand` is defined as it.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
-  `tui/markdown` also draws. `component` uses it for the speakers the
+  `tui/markdown` also draws. `view/lane` uses it for the speakers the
   terminal renders as Markdown (assistant, reasoning, tool detail) and for
   the bodies of the result, nudge and peer cards, which are agent prose
   the terminal draws as tool-detail rows; every other row stays a `pre`.
-  The model holds no trees. `lane_view` draws every transcript line and
+  The model holds no trees. `lane.view` draws every transcript line and
   card body inside its own `element.memo` keyed on that line or body, with
-  no memo around them (`lane_rows`), so a line is parsed and drawn when it
+  no memo around them (`lane.rows`), so a line is parsed and drawn when it
   first appears and Lustre reuses its element after that. Lustre forgets
   memos nested inside a memo that hit and redraws a keyed subtree whose
   key changed, which is why the memos are leaves and why `turns` keys a

@@ -382,7 +382,7 @@ keeps a page from acting.
 | Role ceiling | An operator's power by default. A page is an observer's unless minted with `--operate`, and never above Operator. | `ui_relay.capped` |
 | Component type | An observer's page sending a command. Its `Msg` has no command and its view no handler; the socket drops every frame. | `web_view/component`, `ui_socket.observer_accepts` |
 | Approval card rules | Tricking the person into approving (below). | `web_view/operator_page` |
-| Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is text. | `web_view/component`, `web_view/markdown_view`, `web_view/operator_page` |
+| Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is text. | `web_view/view/lane`, `web_view/view/strip`, `web_view/markdown_view`, `web_view/operator_page` |
 | Response headers | Inline script and style, framing, `Referer` leaks of the ticket and key, caching. | `ui_http.secured`, `page.content_security_policy` |
 
 The approval card follows its own rules, because it is where an agent
@@ -479,7 +479,10 @@ browser goes away, because a runtime outlives its last client.
 
 | Path | What it owns |
 |---|---|
-| `packages/web_view/src/web_view/component.gleam` | The observer's application: the lane's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the command arms `submit` and `decide`, projection on `Captured`, the keyed and memoized transcript. |
+| `packages/web_view/src/web_view/component.gleam` | The observer's application: the lane's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the command arms `submit` and `decide`, projection on `Captured`, and `view`, which lays out the regions below. |
+| `packages/web_view/src/web_view/view/heading.gleam` | The heading: the session's name, its workspace and the connection's status, drawn from plain values the component hands it. |
+| `packages/web_view/src/web_view/view/strip.gleam` | The agent strip and its `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
+| `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the keyed pieces, folded work, the cards, and each transcript line and card body in its own leaf memo. |
 | `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |
 | `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted` and `Decided`, the uncontrolled composer and its total form decoder, the approval cards. |
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
