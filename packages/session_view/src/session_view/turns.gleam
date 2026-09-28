@@ -139,7 +139,8 @@ pub type Piece {
   /// A block drawn as its rows: an input, an answer, harness speech.
   Plain(block: Block)
 
-  /// The work of one turn, behind one divider.
+  /// The work of one turn, behind one divider. `key` names the turn by its
+  /// input, or `work:window-start` for the turn the window opens inside.
   Work(key: String, worked: Worked, items: List(Item), folding: Folding)
 
   /// An `agent_spawn` call: the child it started, once its result names one,
@@ -719,9 +720,8 @@ fn lay_out(turn: Turn, folding: Folding) -> List(Piece) {
   }
   case working {
     [] -> list.append(lead, list.filter_map(turn.rest, placed))
-    [first, ..] -> {
-      let divider =
-        Work("work:" <> item_key(first), worked(turn), working, folding)
+    [_, ..] -> {
+      let divider = Work(work_key(turn), worked(turn), working, folding)
       list.fold(indexed, #([], Undrawn), fn(acc, pair) {
         let #(out, drawn) = acc
         let #(item, index) = pair
@@ -769,10 +769,30 @@ fn placed(item: Classified) -> Result(Piece, Nil) {
   }
 }
 
-fn item_key(item: Item) -> String {
-  case item {
-    Narrated(block:) -> block.key
-    Step(key:, ..) -> key
+// A turn's work is keyed by the input that opened it, which stays the same
+// while the turn grows. Only the turn before the window's first input can
+// lack one, and the window drops its oldest records as new ones arrive, so
+// that turn is keyed by its place at the window's start rather than by its
+// oldest item, which would change with every capture that dropped one. A
+// host that keys its rows (the web view's lane) matches the work to itself
+// across captures instead of replacing and redrawing all of it.
+fn work_key(turn: Turn) -> String {
+  case turn.input {
+    Some(Input(piece:, ..)) -> "work:" <> piece_key(piece)
+    Some(Answer(..)) | Some(Doing(..)) | Some(Outside(..)) | None ->
+      "work:window-start"
+  }
+}
+
+fn piece_key(piece: Piece) -> String {
+  case piece {
+    Plain(block:) | Commentary(block:) -> block.key
+    Work(key:, ..)
+    | Spawned(key:, ..)
+    | Returned(key:, ..)
+    | Nudged(key:, ..)
+    | Peer(key:, ..)
+    | Missed(key:, ..) -> key
   }
 }
 

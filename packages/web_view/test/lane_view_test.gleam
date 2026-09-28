@@ -229,12 +229,16 @@ pub fn a_spawn_and_its_result_wear_the_childs_hue_test() {
   ])
 }
 
+// The nudge's body is the advisor's prose, drawn as Markdown the way the
+// terminal draws it, so its `- ` line is a list item.
 pub fn a_delivered_nudge_is_an_advisor_row_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "class=\"nudge\">",
     "advisor · nudge · delivered",
-    "- Confirm the &lt;sweep&gt; excludes generated SQL.",
+    "class=\"card-body markdown\">",
+    "class=\"md-list\">",
+    "Confirm the &lt;sweep&gt; excludes generated SQL.",
   ])
 }
 

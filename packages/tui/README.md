@@ -118,7 +118,7 @@ flowchart TD
 ```
 
 `gleam.toml` has the package edges: `session_view`, `host`, `core` and
-`machine` from the tree, and `etui`, `mork`, `weft`, `gun`, `argv`,
+`machine` from the tree, and `etui`, `weft`, `gun`, `argv`,
 `simplifile` and `filepath` from outside. `session_view` imports only
 `core`, `machine` and the standard library, and lint R6 holds it there.
 Nothing in `session_view` imports `tui`.
@@ -206,12 +206,15 @@ invents authority.
 Assistant text crosses two transformations before etui sees it. First,
 `session_view/text_hygiene` replaces terminal controls, bidirectional
 controls, invisible formatters, variation selectors and tag characters
-with a visible replacement glyph. Then Mork parses the safe text into its
-`Document` tree, and `tui/markdown` maps that tree to etui lines and
-styles. There is no HTML render-and-reparse step and no ANSI
-intermediate: raw HTML is shown as quiet text, links keep an OSC 8
-destination through etui's own span field, and model-authored escape
-bytes cannot become terminal instructions.
+with a visible replacement glyph. Then `session_view/markdown`, the
+parser the web view also draws from, parses the safe text into a closed
+tree, and `tui/markdown` maps that tree to etui lines and styles. The
+parser is linear in its input, which matters because the live tail parses
+an answer again on every delta; mork, which this package used before,
+took time exponential in a run of unclosed `[`. There is no HTML
+render-and-reparse step and no ANSI intermediate: raw HTML is shown as
+text, links keep an OSC 8 destination through etui's own span field, and
+model-authored escape bytes cannot become terminal instructions.
 
 Fenced Gleam blocks get token highlighting that splits the original line
 into styled spans without rewriting it, so indentation and invalid syntax

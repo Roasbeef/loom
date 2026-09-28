@@ -305,7 +305,35 @@ pub fn captured_cells(
   running: List(#(String, String)),
   extra: List(snapshot_view.Cell),
 ) -> session_channel.Update {
-  let items = list.take(items(), count)
+  capture_of(list.take(items(), count), operation, running, extra)
+}
+
+/// A capture of `main` holding one prompt and then one assistant answer per
+/// text, with nothing running: the rows the Markdown tests draw.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.answered(["**bold**"])
+/// ```
+pub fn answered(texts: List(String)) -> session_channel.Update {
+  let answers =
+    list.index_map(texts, fn(text, index) {
+      item(
+        index + 2,
+        11_000 + index,
+        assistant([message.AssistantText(text, None)]),
+      )
+    })
+  capture_of([item(1, 10_000, said("go", None)), ..answers], None, [], [])
+}
+
+fn capture_of(
+  items: List(snapshot.Item),
+  operation: Option(String),
+  running: List(#(String, String)),
+  extra: List(snapshot_view.Cell),
+) -> session_channel.Update {
   let operations = case operation {
     Some(op) -> [#("main", op), ..running]
     None -> running

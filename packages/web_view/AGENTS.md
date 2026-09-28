@@ -43,8 +43,22 @@ page keys and nonces, and the relay into the session's gateway.
 - `component.Strip` and `component.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip
-  was built), the advisor's chip and the settled count. `strip_view` and `lane_view` draw them, memoized;
+  was built), the advisor's chip and the settled count. `strip_view` and `lane_view` draw them, memoized (the strip whole, the lane per line);
   `hue_class` and `ring_class` map a hue and an outlook to literal classes.
+- `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
+  drawn from `session_view/markdown`'s tree, the tree the terminal's
+  `tui/markdown` also draws. `component` uses it for the speakers the
+  terminal renders as Markdown (assistant, reasoning, tool detail) and for
+  the bodies of the result, nudge and peer cards, which are agent prose
+  the terminal draws as tool-detail rows; every other row stays a `pre`.
+  The model holds no trees. `lane_view` draws every transcript line and
+  card body inside its own `element.memo` keyed on that line or body, with
+  no memo around them (`lane_rows`), so a line is parsed and drawn when it
+  first appears and Lustre reuses its element after that. Lustre forgets
+  memos nested inside a memo that hit and redraws a keyed subtree whose
+  key changed, which is why the memos are leaves and why `turns` keys a
+  turn's work by its input (`docs/lustre.md`, "A memo inside a memo that
+  hit is forgotten"). `lane_memo_test` counts the lines a render draws.
 - `component.{submit, decide}`: the two commands, through the engine's
   arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
   never offers remembering a grant for the session.
@@ -123,7 +137,10 @@ page keys and nonces, and the relay into the session's gateway.
 - **No handler or attribute from session text.** Button messages carry the
   daemon's escalation identity and sequence; cards are keyed by sequence
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever
-  `html.text`; nothing uses `unsafe_raw_html`.
+  `html.text`; nothing uses `unsafe_raw_html`. Rendered Markdown keeps the
+  same rule: a link is its label and its destination as text, never an
+  `href`; an image is text and is never loaded; an ordered list's numbers
+  and a fence's language are text; classes come from closed types.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
   in its own region outside the transcript, directly above the composer in
   the dock, the footer pinned to the viewport's bottom edge. A card

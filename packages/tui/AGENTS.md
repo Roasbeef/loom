@@ -1016,8 +1016,11 @@ boundaries and the split's measurements under Invariants.
 - `tui/model_selector.State` owns the searchable `/model` overlay. Its
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
-- `tui/markdown` walks Mork's public CommonMark tree and emits etui
-  spans directly. `render(markdown, width)` takes the width the rows will
+- `tui/markdown` walks `session_view/markdown`'s closed tree, the one the
+  web view also draws, and emits etui spans directly. The parser is linear
+  in its input and bounds the tree's depth; mork, which this module walked
+  before, took time exponential in a run of unclosed `[` and hung the
+  terminal, since the live tail parses an answer again on every delta. `render(markdown, width)` takes the width the rows will
   occupy because a table is the one block whose shape must be settled before
   it is drawn: columns are measured in terminal cells with `etui/text`,
   narrowed by max-min fair share when the grid is wider than the width, and
@@ -1026,9 +1029,12 @@ boundaries and the split's measurements under Invariants.
   speaker mark or list marker is cells the grid does not have. Code rows
   carry a `▎ ` gutter rather than the block quote's `│ `, which is how
   `wrap_lines` recognises them without comparing styles, and they are
-  hard-wrapped on cell boundaries so source indentation survives. GFM alerts
-  are detected here, not by Mork, on the marker inlines of a quote's first
-  paragraph. It never passes model text through HTML or an ANSI renderer.
+  hard-wrapped on cell boundaries so source indentation survives. GFM
+  alerts, task boxes, footnotes, reference links and bare links arrive as
+  nodes of the tree. The parser folds a soft line break into the text
+  around it, so `join_soft_break` joins the space into the plain span on
+  either side exactly as a whole-paragraph parse does. It never passes
+  model text through HTML or an ANSI renderer.
 - `tui/agents` projects the server's strand snapshot and `live_op`
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
@@ -1139,9 +1145,8 @@ boundaries and the split's measurements under Invariants.
   (`etui_terminal_ffi:wake/1`), and a 40 ms bound on a lone escape byte's
   wait, so Escape does not wait for the idle poll, and a styled wrap that
   gives a grapheme wider than the row a row of its own rather than looping;
-  Mork
-  1.12.x for CommonMark;
-  and small Gleam utility packages. Stratus is a host dependency, not a direct
+  and small Gleam utility packages. Markdown parsing is `session_view`'s,
+  not a dependency's. Stratus is a host dependency, not a direct
   TUI dependency. Etui is pinned
   because its public API is still moving quickly. Loom issue #345 tracks
   upstreaming the complete remaining fork stack, including the earlier polling,
@@ -1882,8 +1887,12 @@ untouched.
   pass replaces C0/C1, bidirectional, zero-width, variation-selector, and tag
   codepoints before data reaches etui spans. Newlines survive only where the
   markdown block parser needs them.
-- **Markdown stays structured.** Mork parses CommonMark and the adapter emits
-  etui styles and OSC 8 links. A table is drawn as a bordered grid measured
+- **Markdown stays structured.** `session_view/markdown` parses it, in
+  time linear in the text, and the adapter emits etui styles and OSC 8
+  links. A parser that backtracks on hostile input hangs the terminal,
+  because the live tail parses an answer again on every delta;
+  `markdown_parity_test` holds 50,000-character runs of `[`, `![` and
+  `[a](` to EUnit's limit through both render entry points. A table is drawn as a bordered grid measured
   against the caller's width, and becomes stacked labelled records only where
   even the minimum grid will not fit, so the relationships survive a narrow
   terminal either way. Fenced Gleam token styling preserves the exact

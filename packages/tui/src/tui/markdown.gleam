@@ -1,8 +1,15 @@
-//// CommonMark-to-etui rendering for assistant output.
+//// Markdown-to-etui rendering for assistant output.
 ////
-//// Mork owns parsing. This module is a deliberately small presentation
-//// adapter over its public document tree, emitting styled etui spans without
-//// routing model text through HTML or an ANSI renderer.
+//// `session_view/markdown` owns parsing, and the web view draws the same
+//// tree, so the two hosts agree on what an answer's Markdown means. This
+//// module is a presentation adapter over that tree, emitting styled etui
+//// spans without routing model text through HTML or an ANSI renderer.
+////
+//// The parser is linear in its input and bounds the tree's depth. That is
+//// what the terminal needs from it: a live answer is parsed again on every
+//// delta, and the parser this module used before, mork, took time
+//// exponential in a run of unclosed `[`, so an answer holding one hung the
+//// terminal.
 ////
 //// Rendering takes the available width because one construct cannot be laid
 //// out without it. A table is a grid whose column widths are decided against
@@ -17,20 +24,10 @@ import etui/text
 import gleam/bit_array
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None, Some, unwrap}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import mork
-import mork/document.{
-  type Alignment, type Block, type Cell, type Destination, type Document,
-  type Inline, type LinkData, type ListItem, type THead, Absolute, Anchor,
-  Autolink, BlockQuote, BulletList, Cell, Center, Checkbox, Code, CodeSpan,
-  Delim, Document, EmailAutolink, Emphasis, Empty, Footnote, FullImage, FullLink,
-  HardBreak, Heading, Highlight, HtmlBlock, InlineFootnote, InlineHtml, Left,
-  LinkData, ListItem, Newline, OrderedList, Paragraph, RawHtml, RefImage,
-  RefLink, Relative, Right, SoftBreak, Strikethrough, Strong, THead, Table, Text,
-  ThematicBreak, lookup_link,
-}
+import session_view/markdown as tree
 import session_view/text_hygiene
 import tui/theme
 
@@ -87,17 +84,6 @@ type RowKind {
 type RecordField {
   FirstField
   LaterField
-}
-
-// A GitHub-flavoured alert: a block quote whose first paragraph opens with
-// one of five bracketed markers. Mork does not model these, so the marker is
-// recognised here, on the inlines the quote's first paragraph parsed into.
-type Alert {
-  Note
-  Tip
-  Important
-  Warning
-  Caution
 }
 
 // The gutter drawn down the left of a code block.
@@ -163,19 +149,9 @@ pub fn render(markdown: String, width: Int) -> List(span.Line) {
 /// ```
 @internal
 pub fn render_sanitized(safe: String, width: Int) -> List(span.Line) {
-  // Chat output is content, not a document envelope. Enable the extensions
-  // that affect presentation without treating a leading thematic break as
-  // frontmatter and silently discarding model text.
-  let options =
-    mork.configure()
-    |> mork.tables(True)
-    |> mork.tasklists(True)
-    |> mork.heading_ids(True)
-    |> mork.emojis(True)
-    |> mork.autolinks(True)
-  let document = mork.parse_with_options(options, safe)
-  let Document(blocks:, ..) = document
-  list.flat_map(blocks, render_block(document, _, width))
+  safe
+  |> tree.parse
+  |> list.flat_map(render_block(_, width))
 }
 
 /// Wraps flowing Markdown, hard-wrapping code and leaving fixed rows alone.
@@ -676,67 +652,59 @@ fn is_user_body_span(value: span.Span) -> Bool {
   && string.starts_with(content, "    ")
 }
 
-fn render_block(
-  document: Document,
-  block: Block,
-  width: Int,
-) -> List(span.Line) {
+fn render_block(block: tree.Block, width: Int) -> List(span.Line) {
   case block {
     // Claude Code, and every other terminal renderer a reader is likely to
     // have seen, marks a heading with weight alone. The bar that used to sit
     // here said nothing the bold did not and cost two cells of every row.
-    Heading(level:, inlines:, ..) ->
-      inline_lines(document, inlines, heading_style(level))
+    tree.Heading(level:, inlines:) ->
+      inline_lines(inlines, heading_style(level))
       |> trailing_blank
-    Paragraph(inlines:, ..) ->
-      inline_lines(document, inlines, style.default_style())
+    tree.Paragraph(inlines:) ->
+      inline_lines(inlines, style.default_style())
       |> trailing_blank
-    Code(lang:, text:) ->
-      text
-      |> string.split("\n")
-      |> drop_final_empty
+    tree.CodeBlock(language:, text:) ->
+      source_lines(text)
       |> list.map(fn(line) {
         span.line_new([
           span.span_styled(code_gutter, theme.signal_bold()),
-          ..code_spans(lang, line)
+          ..code_spans(language, line)
         ])
       })
-      |> prepend_code_language(lang)
+      |> prepend_code_language(language)
       |> trailing_blank
-    BlockQuote(blocks:) -> {
-      // A quote's bar costs two cells of every row it covers, and quotes
-      // nest, so the inner width is floored at one: a block measured against
-      // a width of zero or less would have no room at all to lay itself out.
-      let inner = int.max(1, width - 2)
-      alert_of(blocks)
-      |> result.map(fn(found) {
-        render_alert(document, found.0, found.1, inner)
-      })
-      |> result.lazy_unwrap(fn() { render_quote(document, blocks, inner) })
-    }
-    BulletList(items:, ..) -> render_list(document, items, None, width)
-    OrderedList(items:, start:, ..) ->
-      render_list(document, items, Some(unwrap(start, 1)), width)
-    Table(header:, rows:) -> render_table(document, header, rows, width)
-    ThematicBreak -> [
+
+    // A quote's bar costs two cells of every row it covers, and quotes nest,
+    // so the inner width is floored at one: a block measured against a width
+    // of zero or less would have no room at all to lay itself out. An alert
+    // indents its body by the same two cells.
+    tree.Quote(blocks:) -> render_quote(blocks, int.max(1, width - 2))
+    tree.Alert(kind:, blocks:) ->
+      render_alert(kind, blocks, int.max(1, width - 2))
+    tree.BulletList(items:) -> render_list(items, None, width)
+    tree.OrderedList(start:, items:) -> render_list(items, Some(start), width)
+    tree.Table(header:, rows:) -> render_table(header, rows, width)
+    tree.Footnote(label:, blocks:) -> render_footnote(label, blocks, width)
+    tree.Rule -> [
       span.line_new([span.span_styled("────────────────", theme.quiet_text())]),
       span.line_plain(""),
     ]
-    HtmlBlock(raw:) -> [
-      span.line_new([span.span_styled(raw, theme.quiet_text())]),
-      span.line_plain(""),
-    ]
-    Empty | Newline -> []
   }
 }
 
-fn render_quote(
-  document: Document,
-  blocks: List(Block),
-  width: Int,
-) -> List(span.Line) {
+// A code block's rows. The parser keeps a block's text without the line
+// feed that ended its last line, so every line of the text is a row, the
+// last included, and an empty block has none.
+fn source_lines(text: String) -> List(String) {
+  case text {
+    "" -> []
+    _ -> string.split(text, "\n")
+  }
+}
+
+fn render_quote(blocks: List(tree.Block), width: Int) -> List(span.Line) {
   blocks
-  |> list.flat_map(render_block(document, _, width))
+  |> list.flat_map(render_block(_, width))
   |> prefix_lines([span.span_styled(quote_gutter, theme.current_bold())], [
     span.span_styled(quote_gutter, theme.current_bold()),
   ])
@@ -746,9 +714,8 @@ fn render_quote(
 // carries its kind on a heading row instead. The body is indented under that
 // title so the callout reads as one unit even where colour is unavailable.
 fn render_alert(
-  document: Document,
-  alert: Alert,
-  blocks: List(Block),
+  alert: tree.AlertKind,
+  blocks: List(tree.Block),
   width: Int,
 ) -> List(span.Line) {
   let title =
@@ -758,89 +725,57 @@ fn render_alert(
     ])
   let body =
     blocks
-    |> list.flat_map(render_block(document, _, width))
+    |> list.flat_map(render_block(_, width))
     |> prefix_lines([span.span_plain("  ")], [span.span_plain("  ")])
   [title, ..body]
 }
 
-// Mork parses `[!NOTE]` as three adjacent text inlines, so the marker is
-// matched on that shape and then removed along with the separator that
-// followed it. A quote whose first paragraph does not open this way, or whose
-// marker names no known kind, stays an ordinary quotation.
-fn alert_of(blocks: List(Block)) -> Result(#(Alert, List(Block)), Nil) {
-  case blocks {
-    [
-      Paragraph(inlines: [Text("["), Text(marker), Text("]"), ..rest], ..),
-      ..tail
-    ] -> {
-      use alert <- result.try(alert_kind(marker))
-      Ok(#(alert, alert_body(rest, tail)))
-    }
-    _ -> Error(Nil)
-  }
-}
-
-// A marker alone on its line leaves an empty paragraph behind, which would
-// render as a blank row between the title and the body.
-fn alert_body(rest: List(Inline), tail: List(Block)) -> List(Block) {
-  case drop_leading_break(rest) {
-    [] -> tail
-    inlines -> [Paragraph(raw: "", inlines:), ..tail]
-  }
-}
-
-fn drop_leading_break(inlines: List(Inline)) -> List(Inline) {
-  case inlines {
-    [SoftBreak, ..rest] -> drop_leading_break(rest)
-    [Text(value), ..rest] -> drop_leading_space(value, rest)
-    _ -> inlines
-  }
-}
-
-fn drop_leading_space(value: String, rest: List(Inline)) -> List(Inline) {
-  case string.trim_start(value) {
-    "" -> drop_leading_break(rest)
-    trimmed -> [Text(trimmed), ..rest]
-  }
-}
-
-fn alert_kind(marker: String) -> Result(Alert, Nil) {
-  case string.lowercase(marker) {
-    "!note" -> Ok(Note)
-    "!tip" -> Ok(Tip)
-    "!important" -> Ok(Important)
-    "!warning" -> Ok(Warning)
-    "!caution" -> Ok(Caution)
-    _ -> Error(Nil)
-  }
-}
-
 // The palette has no violet, so `Important` takes the strongest neutral the
 // theme offers rather than borrowing a hue that already means something else.
-fn alert_style(alert: Alert) -> style.Style {
+fn alert_style(alert: tree.AlertKind) -> style.Style {
   case alert {
-    Note -> theme.current_bold()
-    Tip -> theme.success_text()
-    Important -> style.new(theme.paper, style.Default, style.bold())
-    Warning -> theme.signal_bold()
-    Caution -> theme.danger_text()
+    tree.Note -> theme.current_bold()
+    tree.Tip -> theme.success_text()
+    tree.Important -> style.new(theme.paper, style.Default, style.bold())
+    tree.Warning -> theme.signal_bold()
+    tree.Caution -> theme.danger_text()
   }
 }
 
-fn alert_title(alert: Alert) -> String {
+fn alert_title(alert: tree.AlertKind) -> String {
   case alert {
-    Note -> "Note"
-    Tip -> "Tip"
-    Important -> "Important"
-    Warning -> "Warning"
-    Caution -> "Caution"
+    tree.Note -> "Note"
+    tree.Tip -> "Tip"
+    tree.Important -> "Important"
+    tree.Warning -> "Warning"
+    tree.Caution -> "Caution"
   }
 }
 
-fn heading_style(level: Int) -> style.Style {
-  case level <= 2 {
-    True -> theme.current_bold()
-    False -> style.new(theme.paper, style.Default, style.bold())
+// A footnote's definition is laid out as a list item whose marker is its
+// label in brackets, in the quiet colour its references are drawn in, so a
+// reader can match `[1]` in the text to `[1]` here.
+fn render_footnote(
+  label: String,
+  blocks: List(tree.Block),
+  width: Int,
+) -> List(span.Line) {
+  let marker = "[" <> label <> "] "
+  let inner = int.max(1, width - string.length(marker))
+  blocks
+  |> list.flat_map(render_block(_, inner))
+  |> trim_trailing_blank
+  |> prefix_lines([span.span_styled(marker, theme.quiet_text())], [
+    span.span_plain(string.repeat(" ", string.length(marker))),
+  ])
+  |> trailing_blank
+}
+
+fn heading_style(level: tree.Level) -> style.Style {
+  case level {
+    tree.H1 | tree.H2 -> theme.current_bold()
+    tree.H3 | tree.H4 | tree.H5 | tree.H6 ->
+      style.new(theme.paper, style.Default, style.bold())
   }
 }
 
@@ -1161,14 +1096,12 @@ fn code_span(part: CodePart) -> span.Span {
 }
 
 fn render_list(
-  document: Document,
-  items: List(ListItem),
+  items: List(List(tree.Block)),
   ordered_start: Option(Int),
   width: Int,
 ) -> List(span.Line) {
   items
-  |> list.index_map(fn(item, index) {
-    let ListItem(blocks:, ..) = item
+  |> list.index_map(fn(blocks, index) {
     let marker = case ordered_start {
       Some(start) -> int.to_string(start + index) <> ". "
       None -> "• "
@@ -1180,7 +1113,7 @@ fn render_list(
     let inner = int.max(1, width - string.length(marker))
 
     blocks
-    |> list.flat_map(render_block(document, _, inner))
+    |> list.flat_map(render_block(_, inner))
     |> trim_trailing_blank
     |> prefix_lines([span.span_styled(marker, theme.signal_bold())], [
       span.span_plain(string.repeat(" ", string.length(marker))),
@@ -1194,40 +1127,32 @@ fn render_list(
 // wrapper, because a grid's columns can only be measured once and have to be
 // measured against the width the rows will be drawn in.
 fn render_table(
-  document: Document,
-  header: List(THead),
-  rows: List(List(Cell)),
+  header: List(tree.Cell),
+  rows: List(List(tree.Cell)),
   width: Int,
 ) -> List(span.Line) {
   case header {
     [] -> []
-    _ -> table_lines(document, header, rows, width)
+    _ -> table_lines(header, rows, width)
   }
 }
 
 fn table_lines(
-  document: Document,
-  header: List(THead),
-  rows: List(List(Cell)),
+  header: List(tree.Cell),
+  rows: List(List(tree.Cell)),
   width: Int,
 ) -> List(span.Line) {
   let columns = list.length(header)
-  let alignments =
-    list.map(header, fn(cell) {
-      let THead(align:, ..) = cell
-      align
-    })
+  let alignments = list.map(header, fn(cell) { cell.align })
   let headings =
     list.map(header, fn(cell) {
-      let THead(inlines:, ..) = cell
-      inline_spans(document, inlines, theme.current_bold()) |> trim_span_edges
+      inline_spans(cell.inlines, theme.current_bold()) |> trim_span_edges
     })
   let body =
     list.map(rows, fn(row) {
       row
       |> list.map(fn(cell) {
-        let Cell(inlines:, ..) = cell
-        inline_spans(document, inlines, style.default_style())
+        inline_spans(cell.inlines, style.default_style())
         |> trim_span_edges
       })
       |> fit_row(columns)
@@ -1264,7 +1189,7 @@ fn table_lines(
 fn narrowed_lines(
   headings: List(List(span.Span)),
   body: List(List(List(span.Span))),
-  alignments: List(Alignment),
+  alignments: List(tree.Align),
   natural: List(Int),
   budget: Int,
   columns: Int,
@@ -1276,7 +1201,7 @@ fn narrowed_lines(
   }
 }
 
-// Mork rejects a source row whose pipe count disagrees with the header, so a
+// The parser already cuts or pads every row to the header's width, so a
 // ragged row should not reach here; padding and truncating keeps the grid
 // rectangular regardless, because a short row would otherwise silently shift
 // every later column left.
@@ -1326,12 +1251,12 @@ fn fit_columns(natural: List(Int), budget: Int) -> List(Int) {
 fn grid_lines(
   headings: List(List(span.Span)),
   body: List(List(List(span.Span))),
-  alignments: List(Alignment),
+  alignments: List(tree.Align),
   widths: List(Int),
 ) -> List(span.Line) {
   let columns =
     list.map2(widths, alignments, fn(width, alignment) { #(width, alignment) })
-  let centred = list.map(widths, fn(width) { #(width, Center) })
+  let centred = list.map(widths, fn(width) { #(width, tree.Center) })
   list.flatten([
     [border_line(widths, "┌", "┬", "┐")],
     cell_lines(headings, centred),
@@ -1371,7 +1296,7 @@ fn grid_span(glyph: String) -> span.Span {
 // a narrowed column wraps inside its own box instead of pushing the grid wide.
 fn cell_lines(
   cells: List(List(span.Span)),
-  columns: List(#(Int, Alignment)),
+  columns: List(#(Int, tree.Align)),
 ) -> List(span.Line) {
   let wrapped =
     list.map2(cells, columns, fn(cell, column) { wrap_cell(cell, column.0) })
@@ -1411,7 +1336,7 @@ fn wrap_cell(cell: List(span.Span), width: Int) -> List(List(span.Span)) {
 
 fn grid_line(
   cells: List(List(span.Span)),
-  columns: List(#(Int, Alignment)),
+  columns: List(#(Int, tree.Align)),
 ) -> span.Line {
   let body =
     list.map2(cells, columns, fn(cell, column) {
@@ -1428,13 +1353,13 @@ fn grid_line(
 fn align_cell(
   cell: List(span.Span),
   width: Int,
-  alignment: Alignment,
+  alignment: tree.Align,
 ) -> List(span.Span) {
   let slack = int.max(0, width - spans_width(cell))
   let #(before, after) = case alignment {
-    Left -> #(0, slack)
-    Right -> #(slack, 0)
-    Center -> #(slack / 2, slack - slack / 2)
+    tree.Unaligned | tree.Left -> #(0, slack)
+    tree.Right -> #(slack, 0)
+    tree.Center -> #(slack / 2, slack - slack / 2)
   }
   list.flatten([pad_spans(before), cell, pad_spans(after)])
 }
@@ -1601,59 +1526,81 @@ fn trim_span_start(
 /// The line a paragraph draws when a soft line break joins text whose line
 /// is `head` to text whose first line is `next`.
 ///
-/// A paragraph's lines are its inline parts in order, one span each, and a
-/// soft break is a single space in the paragraph's plain style; nothing
-/// merges the spans on either side of it. Mork trims the trailing
-/// whitespace of the plain text a line ends with when a soft break follows,
-/// and keeps it when the paragraph ends there, so `head`'s last span, which
-/// was parsed as the end of a paragraph, is trimmed the same way and dropped
-/// if nothing is left. So when neither side's parse can reach into the
-/// other, the paragraph's line is `head`'s spans so trimmed, the space, then
-/// `next`'s. The live tail uses this to add the lines that just arrived to a
-/// long paragraph without parsing its start again, and it is the only place
-/// that knows what a soft break draws as.
+/// The parser turns a soft break into a space inside the text around it,
+/// dropping the spaces that ended the line, so a run of plain text across a
+/// line ending is one `Text` and draws as one span in the paragraph's plain
+/// style. A span is plain when it has that style and no link. So when
+/// neither side's parse can reach into the other, the paragraph's line is
+/// `head`'s spans and `next`'s with the space between them, where the space
+/// joins `head`'s last span if that span is plain and `next`'s first span if
+/// that one is, and stands as a span of its own when neither is. `head` was
+/// parsed as the end of a paragraph, which the parser trims, so its last
+/// span has no trailing spaces to drop. The live tail uses this to add the
+/// lines that just arrived to a long paragraph without parsing its start
+/// again, and it is the only place that knows what a soft break draws as.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let joined =
-///   markdown.join_soft_break(span.line_plain("one "), span.line_plain("two"))
-/// // "one", " ", "two"
+///   markdown.join_soft_break(span.line_plain("one"), span.line_plain("two"))
+/// // one span, "one two"
 /// ```
 @internal
 pub fn join_soft_break(head: span.Line, next: span.Line) -> span.Line {
-  let plain = style.default_style()
-  let kept = case list.reverse(head.spans) {
-    [last, ..before] if last.style == plain && last.link == "" ->
-      case string.trim_end(last.content) {
-        "" -> list.reverse(before)
-        trimmed -> list.reverse([span.Span(..last, content: trimmed), ..before])
+  let spans = case list.reverse(head.spans), next.spans {
+    [last, ..before], [first, ..after] ->
+      case is_plain(last), is_plain(first) {
+        True, True ->
+          list.reverse(before)
+          |> list.append([
+            span.Span(
+              ..last,
+              content: string.trim_end(last.content) <> " " <> first.content,
+            ),
+            ..after
+          ])
+        True, False ->
+          list.reverse(before)
+          |> list.append([
+            span.Span(..last, content: string.trim_end(last.content) <> " "),
+            ..next.spans
+          ])
+        False, True ->
+          list.append(head.spans, [
+            span.Span(..first, content: " " <> first.content),
+            ..after
+          ])
+        False, False -> spaced(head.spans, next.spans)
       }
-    _ -> head.spans
+    _, _ -> spaced(head.spans, next.spans)
   }
-  span.Line(
-    ..head,
-    spans: list.append(kept, [span.span_styled(" ", plain), ..next.spans]),
-  )
+  span.Line(..head, spans:)
+}
+
+fn is_plain(value: span.Span) -> Bool {
+  value.style == style.default_style() && value.link == ""
+}
+
+fn spaced(head: List(span.Span), next: List(span.Span)) -> List(span.Span) {
+  list.append(head, [span.span_styled(" ", style.default_style()), ..next])
 }
 
 fn inline_lines(
-  document: Document,
-  inlines: List(Inline),
+  inlines: List(tree.Inline),
   base: style.Style,
 ) -> List(span.Line) {
   inlines
-  |> list.flat_map(inline_parts(document, _, base))
+  |> list.flat_map(inline_parts(_, base))
   |> parts_to_lines([], [])
 }
 
 fn inline_spans(
-  document: Document,
-  inlines: List(Inline),
+  inlines: List(tree.Inline),
   base: style.Style,
 ) -> List(span.Span) {
   inlines
-  |> list.flat_map(inline_parts(document, _, base))
+  |> list.flat_map(inline_parts(_, base))
   |> list.filter_map(fn(part) {
     case part {
       Styled(value) -> Ok(value)
@@ -1662,155 +1609,86 @@ fn inline_spans(
   })
 }
 
-fn inline_parts(
-  document: Document,
-  inline: Inline,
-  base: style.Style,
-) -> List(InlinePart) {
+fn inline_parts(inline: tree.Inline, base: style.Style) -> List(InlinePart) {
   case inline {
-    Text(value) -> [Styled(span.span_styled(value, base))]
+    tree.Text(text:) -> [Styled(span.span_styled(text, base))]
 
     // An inline code span painted in the prose colour with no modifier was
     // prose as far as the reader was concerned. The cold hue separates a
     // symbol from the sentence around it without adding a background that
     // would break up a wrapped paragraph.
-    CodeSpan(value) -> [Styled(span.span_styled(value, theme.inline_code()))]
-    Emphasis(children) ->
-      nested_parts(document, children, style.add_modifier(base, style.italic()))
-    Strong(children) ->
-      nested_parts(document, children, style.add_modifier(base, style.bold()))
-
-    // Mork recognizes paired == delimiters even in ordinary comparisons.
-    // Preserve those operators as text instead of coloring unrelated prose.
-    Highlight(children) ->
-      list.append(
-        [
-          Styled(span.span_styled("==", base)),
-          ..nested_parts(document, children, base)
-        ],
-        [Styled(span.span_styled("==", base))],
-      )
+    tree.Code(text:) -> [Styled(span.span_styled(text, theme.inline_code()))]
+    tree.Emphasis(children:) ->
+      nested_parts(children, style.add_modifier(base, style.italic()))
+    tree.Strong(children:) ->
+      nested_parts(children, style.add_modifier(base, style.bold()))
 
     // Dim was a poor stand-in: it is also what quiet metadata uses, so struck
     // text and an aside were the same grey, and an unmatched `~~` run nearby
     // rendered in the base style and read as the emphasised one.
-    Strikethrough(children) ->
-      nested_parts(
-        document,
-        children,
-        style.add_modifier(base, style.strikethrough()),
-      )
-    FullLink(text:, data:) -> link_parts(document, text, data, base)
-    RefLink(text:, label:) ->
-      case lookup_link(document, label) {
-        Ok(data) -> link_parts(document, text, data, base)
-        Error(Nil) -> nested_parts(document, text, base)
-      }
-    Autolink(uri:, text:) -> [
-      link_span(unwrap(text, uri), uri, base) |> Styled,
+    tree.Strikethrough(children:) ->
+      nested_parts(children, style.add_modifier(base, style.strikethrough()))
+
+    // The destination becomes the span's OSC 8 hyperlink, so a terminal that
+    // supports them opens it on a click and one that does not shows the
+    // label alone.
+    tree.Link(label:, destination:) ->
+      nested_parts(label, link_style(base))
+      |> list.map(fn(part) {
+        case part {
+          Styled(value) -> Styled(span.with_link(value, destination))
+          Break -> Break
+        }
+      })
+
+    tree.Image(alt:, destination:) -> image_parts(alt, destination, base)
+    tree.Task(state:) -> [
+      Styled(span.span_styled(task_box(state), theme.signal_bold())),
     ]
-    EmailAutolink(mail:) -> [link_span(mail, "mailto:" <> mail, base) |> Styled]
-    FullImage(text:, data:) -> image_parts(document, text, data, base)
-    RefImage(text:, label:) ->
-      case lookup_link(document, label) {
-        Ok(data) -> image_parts(document, text, data, base)
-        Error(Nil) -> [
-          Styled(span.span_styled("[image: " <> label <> "]", base)),
-        ]
-      }
-    Footnote(num:, ..) -> [
-      Styled(span.span_styled(
-        "[" <> int.to_string(num) <> "]",
-        theme.quiet_text(),
-      )),
+    tree.FootnoteRef(label:) -> [
+      Styled(span.span_styled("[" <> label <> "]", theme.quiet_text())),
     ]
-    InlineFootnote(num:, text:) ->
-      [
-        Styled(span.span_styled(
-          "[" <> int.to_string(num) <> ": ",
-          theme.quiet_text(),
-        )),
-        ..nested_parts(document, text, theme.quiet_text())
-      ]
-      |> list.append([Styled(span.span_styled("]", theme.quiet_text()))])
-    Checkbox(checked:) -> [
-      Styled(span.span_styled(
-        case checked {
-          True -> "☑ "
-          False -> "☐ "
-        },
-        theme.signal_bold(),
-      )),
-    ]
-    InlineHtml(children:, ..) -> nested_parts(document, children, base)
-    RawHtml(raw) -> [Styled(span.span_styled(raw, theme.quiet_text()))]
-    SoftBreak -> [Styled(span.span_styled(" ", base))]
-    HardBreak -> [Break]
-    Delim(style: delimiter, len:, ..) -> [
-      Styled(span.span_styled(string.repeat(delimiter, len), base)),
-    ]
+    tree.Break -> [Break]
+  }
+}
+
+fn task_box(state: tree.TaskState) -> String {
+  case state {
+    tree.Open -> "☐ "
+    tree.Done -> "☑ "
   }
 }
 
 fn nested_parts(
-  document: Document,
-  inlines: List(Inline),
+  inlines: List(tree.Inline),
   base: style.Style,
 ) -> List(InlinePart) {
-  list.flat_map(inlines, inline_parts(document, _, base))
+  list.flat_map(inlines, inline_parts(_, base))
 }
 
-fn link_parts(
-  document: Document,
-  text: List(Inline),
-  data: LinkData,
-  base: style.Style,
-) -> List(InlinePart) {
-  let LinkData(dest:, ..) = data
-  let uri = destination(dest)
-  nested_parts(document, text, link_style(base))
-  |> list.map(fn(part) {
-    case part {
-      Styled(value) -> Styled(span.with_link(value, uri))
-      Break -> Break
-    }
-  })
-}
-
+// A terminal draws no image, so one is its alternative text and its
+// destination, framed in the quiet colour.
 fn image_parts(
-  document: Document,
-  text: List(Inline),
-  data: LinkData,
+  alt: String,
+  destination: String,
   base: style.Style,
 ) -> List(InlinePart) {
-  let LinkData(dest:, ..) = data
+  let label = case alt {
+    "" -> []
+    _ -> [Styled(span.span_styled(alt, base))]
+  }
   [
     Styled(span.span_styled("[image: ", theme.quiet_text())),
-    ..nested_parts(document, text, base)
+    ..list.append(label, [
+      Styled(span.span_styled(" · " <> destination <> "]", theme.quiet_text())),
+    ])
   ]
-  |> list.append([
-    Styled(span.span_styled(
-      " · " <> destination(dest) <> "]",
-      theme.quiet_text(),
-    )),
-  ])
-}
-
-fn link_span(label: String, uri: String, base: style.Style) -> span.Span {
-  span.span_styled(label, link_style(base)) |> span.with_link(uri)
 }
 
 fn link_style(base: style.Style) -> style.Style {
   base
   |> style.with_fg(theme.current)
   |> style.add_modifier(style.underline())
-}
-
-fn destination(value: Destination) -> String {
-  case value {
-    Absolute(uri) | Relative(uri) -> uri
-    Anchor(id) -> "#" <> id
-  }
 }
 
 fn parts_to_lines(
@@ -1878,13 +1756,6 @@ fn trim_trailing_blank(lines: List(span.Line)) -> List(span.Line) {
     [span.Line(spans: [], ..), ..rest] -> list.reverse(rest)
     [span.Line(spans: [span.Span(content: "", ..)], ..), ..rest] ->
       list.reverse(rest)
-    _ -> lines
-  }
-}
-
-fn drop_final_empty(lines: List(String)) -> List(String) {
-  case list.reverse(lines) {
-    ["", ..rest] -> list.reverse(rest)
     _ -> lines
   }
 }
