@@ -30,6 +30,7 @@ import session_view/worktree_view
 import tui/agents
 import tui/attachment
 import tui/effect
+import tui/event_fold
 import tui/inbound
 import tui/job
 import tui/layout
@@ -535,7 +536,11 @@ fn send_prompt_content(
   images: List(pasted_image.Image),
 ) -> Model {
   let sent = {
-    let expected = inbound.expect_own_turn(model, HeldPrompt(text))
+    let expected =
+      tui_model.run_shared(model, event_fold.expect_own_turn(
+        _,
+        HeldPrompt(text),
+      ))
     Model(
       ..expected,
       shared: Shared(
@@ -718,14 +723,13 @@ fn hold_or_send_interrupt(
   text: String,
 ) -> Model {
   use <- bool.lazy_guard(before.shared.channel != None, fn() {
-    inbound.send_prompt_to(cleared, strand, text)
+    tui_model.run_shared(cleared, event_fold.send_prompt_to(_, strand, text))
   })
   case session_model.active_strand_live(before.shared) {
     False ->
-      inbound.send_prompt_to(
+      tui_model.run_shared(
         Model(..cleared, shared: Shared(..cleared.shared, interrupt: None)),
-        strand,
-        text,
+        event_fold.send_prompt_to(_, strand, text),
       )
     True -> {
       let pending = case before.shared.interrupt {
@@ -746,7 +750,11 @@ fn hold_or_send_interrupt(
 }
 
 fn send_prompt(model: Model, text: String) -> Model {
-  inbound.send_prompt_to(model, model.shared.active_strand, text)
+  tui_model.run_shared(model, event_fold.send_prompt_to(
+    _,
+    model.shared.active_strand,
+    text,
+  ))
 }
 
 // A steer draws no echo, but the entry it commits is indistinguishable from a
@@ -756,7 +764,10 @@ fn send_prompt(model: Model, text: String) -> Model {
 // exists to prevent.
 fn send_steer(model: Model, text: String) -> Model {
   let expected =
-    inbound.expect_own_turn(model, steering_submission(model, text))
+    tui_model.run_shared(model, event_fold.expect_own_turn(
+      _,
+      steering_submission(model, text),
+    ))
   tui_model.send_via(
     Model(
       ..expected,
@@ -782,7 +793,10 @@ fn send_steer(model: Model, text: String) -> Model {
 // recordings still account for their original in-operation interjections.
 fn send_follow_up(model: Model, text: String) -> Model {
   let expected =
-    inbound.expect_own_turn(model, steering_submission(model, text))
+    tui_model.run_shared(model, event_fold.expect_own_turn(
+      _,
+      steering_submission(model, text),
+    ))
   tui_model.send_frame(
     Model(
       ..expected,

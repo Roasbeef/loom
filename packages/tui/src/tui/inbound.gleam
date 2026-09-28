@@ -2,26 +2,23 @@
 ////
 //// The websocket actor owns transport I/O; this module owns what the
 //// traffic means. `drain_connection` takes a bounded batch from the
-//// connection inbox, `apply_channel_update` folds each channel update into
-//// the model, and `apply_event` handles each pushed event: stream
-//// fragments, tool output tails, durable entries, strand phases, usage and
-//// the replies to side-surface reads. A captured snapshot cut is projected
-//// by `render_cut` into the transcript, approvals, workspaces and cache
-//// watches.
+//// connection inbox, and `apply_channel_update` folds each channel update
+//// into the model. A captured snapshot cut is projected by `render_cut` into
+//// the transcript, approvals, workspaces and cache watches.
 ////
-//// Live streams stay separate from durable entries because the server may
-//// replay the settled entry after its fragments; the stream is dropped
-//// when its entry lands, so the answer is never shown twice. Usage and
-//// prompt-cache accounting live here too, since both are observed on the
-//// same events.
+//// Each pushed event (stream fragments, tool output tails, durable entries,
+//// strand phases, usage and the replies to side-surface reads) goes to the
+//// shared event fold, `event_fold.apply_event`, which takes the session
+//// state alone. `run_event` calls it and then applies what it recorded for
+//// the terminal's own surfaces (`settle_surfaces`): the editor on a
+//// workspace switch, the model selector, the cache outlook, the notes panel,
+//// the summary's job cursor and a returned draft.
 
-import core/entry
 import core/json
 import core/message
 import core/origin
 import core/register
 import etui/widgets/textarea as text_area
-import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
@@ -37,26 +34,20 @@ import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
 import session_view/block_summary
-import session_view/cache_miss
 import session_view/cache_watch
 import session_view/command
-import session_view/composer
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
-import session_view/live_jobs
+import session_view/notes_view
 import session_view/operator
-import session_view/protocol.{Strand}
+import session_view/protocol
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
-import session_view/stream_identity
 import session_view/todo_board
-import session_view/transcript_line.{
-  type Line, type Stream, type Submission, type ToolTail, Assistant, CacheNotice,
-  HeldPrompt, Interjection, Line, Stream, System, ToolTail, User,
-}
+import session_view/transcript_line.{type Line, Line, System}
 import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agent_message_panel
@@ -67,6 +58,7 @@ import tui/approval_panel
 import tui/bootstrap
 import tui/buffered
 import tui/completion_summary
+import tui/event_fold
 import tui/job
 import tui/layout
 import tui/model.{
@@ -84,7 +76,7 @@ import tui/queue_request
 import tui/render
 import tui/session_model.{
   type Interrupt, type Peer, type UnconfirmedSubmission, Attached, Disconnected,
-  HoldGoalReport, Interrupt, Preview, Replaying, ReturnedDraft, Shared,
+  HoldGoalReport, Preview, Replaying, ReturnedDraft, Shared,
   UnconfirmedSubmission,
 }
 import tui/summary_panel
@@ -282,7 +274,7 @@ pub fn apply_channel_update(
           )
       }
     }
-    session_channel.Auxiliary(event) -> apply_event(model, event)
+    session_channel.Auxiliary(event) -> run_event(model, event)
     session_channel.RequestRefused("history", _, code, message) ->
       tui_model.append_error(
         Model(
@@ -311,7 +303,7 @@ pub fn apply_channel_update(
     // receives as a stream delta, so it lands in the same live-stream region
     // by the same route rather than through a second renderer.
     session_channel.Streamed(strand:, operation:, generation:, kind:, text:) ->
-      apply_event(
+      run_event(
         model,
         protocol.StreamDelta(strand:, operation:, generation:, kind:, text:),
       )
@@ -325,7 +317,7 @@ pub fn apply_channel_update(
       text:,
       total_bytes:,
     ) ->
-      apply_event(
+      run_event(
         model,
         protocol.ToolOutput(
           strand:,
@@ -359,7 +351,7 @@ pub fn apply_channel_update(
       |> tui_model.invalidate_frame
     session_channel.Acknowledged("prompt", "queued") ->
       {
-        let settled = settle_own_turn(model)
+        let settled = tui_model.run_shared(model, event_fold.settle_own_turn)
         Model(
           ..settled,
           shared: Shared(
@@ -379,7 +371,8 @@ pub fn apply_channel_update(
     // leaves the prompt echoes standing.
     session_channel.Acknowledged("abort", status) ->
       {
-        let abandoned = abandon_interjections(model)
+        let abandoned =
+          tui_model.run_shared(model, event_fold.abandon_interjections)
         Model(
           ..abandoned,
           shared: Shared(..abandoned.shared, notice: "abort " <> status),
@@ -393,7 +386,7 @@ pub fn apply_channel_update(
     // empty and pass through untouched.
     session_channel.Acknowledged(command, status) ->
       {
-        let settled = settle_own_turn(model)
+        let settled = tui_model.run_shared(model, event_fold.settle_own_turn)
         Model(
           ..settled,
           shared: Shared(..settled.shared, notice: command <> " " <> status),
@@ -904,7 +897,7 @@ fn render_cut(
     ),
     view: View(..model.view, strand_workspaces: workspaces, cache_outlook:),
   )
-  |> settle_pending_cache(cut.next_seq)
+  |> tui_model.run_shared(event_fold.settle_pending_cache(_, cut.next_seq))
   |> reconcile_agent_message_selection
   |> tui_model.invalidate_transcript
   // A completed cut can make the operation idle before the next animation
@@ -1242,7 +1235,7 @@ fn handle_presentation_message(
       |> tui_model.mark_activity
     connection_event.Incoming(text) ->
       case protocol.decode_event(text) {
-        Ok(event) -> apply_event(model, event)
+        Ok(event) -> run_event(model, event)
         Error(reason) ->
           tui_model.append_error(model, "protocol: " <> reason)
           |> tui_model.mark_activity
@@ -1250,85 +1243,65 @@ fn handle_presentation_message(
   }
 }
 
-fn apply_event(model: Model, event: protocol.Event) -> Model {
-  let updated = case event {
-    protocol.FullSnapshot(session:, strands:, entries:, usage:) -> {
-      let target = case model.shared.session == session {
-        True -> model.shared.active_strand
-        False -> "main"
-      }
-      let model = select_workspace(model, session, target)
+// One pushed event, applied through the shared event fold
+// (`event_fold.apply_event`) and settled into the terminal's surfaces. The
+// fold records what the terminal's editor, overlays and footer have to
+// follow, and `settle_surfaces` applies it here, after this event and
+// before the next one, which is where the fold used to write that state.
+fn run_event(model: Model, event: protocol.Event) -> Model {
+  tui_model.run_shared(model, event_fold.apply_event(_, event))
+  |> settle_surfaces(model, _)
+}
+
+// Applies what a call into the event fold recorded for the terminal's
+// surfaces, oldest first, and then moves any returned drafts into the
+// editors.
+//
+// `before` is the model the shared call started from and `held` the model
+// once its result was held. These writes used to happen inside the call, at
+// the point each fact is recorded. Applying them after the call gives the
+// same model because nothing the fold does after recording a fact reads the
+// terminal state the fact writes. They run here rather than in
+// `settle_update`, at the end of the step, because one step applies many
+// events and a later event reads what an earlier one wrote: a stream
+// fragment replaces the notice a notes board set, and a returned draft has
+// to be in the composer before a later switch parks it.
+fn settle_surfaces(before: Model, held: Model) -> Model {
+  let settled = case held.shared.surface_facts {
+    [] -> held
+    facts ->
+      list.fold(
+        facts,
+        Model(..held, shared: Shared(..held.shared, surface_facts: [])),
+        fn(model, fact) { show_surface(before, model, fact) },
+      )
+  }
+  case settled.shared.returned_drafts {
+    [] -> settled
+    _ -> restore_returned_drafts(settled)
+  }
+}
+
+// One fact, applied to the terminal state it stands for.
+fn show_surface(
+  before: Model,
+  model: Model,
+  fact: session_model.SurfaceFact,
+) -> Model {
+  case fact {
+    session_model.WorkspaceSwitched(departing:, arriving:, previous_session:) ->
+      switch_editor(before, model, departing, arriving, previous_session)
+    session_model.SessionSynchronized ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          session:,
-          active_strand: target,
-          strands:,
-          usage:,
-          records: list.reverse(entries),
-          streams: [],
-          tool_tails: [],
-          record_cache_epoch: model.shared.record_cache_epoch + 1,
-          compact_call_cache: dict.new(),
-          compact_entry_cache: dict.new(),
-          // The snapshot is the server's own account of the strand, so it
-          // already carries every submission the daemon committed while this
-          // client was away — the gateway holds its queue across a disconnect
-          // and drains it regardless. An echo kept across the rebuild would sit
-          // under the committed copy of itself.
-          queued: [],
-          awaiting_outcome: None,
-          pending_records: [],
-          record_cache_valid: False,
-          submitting: None,
-          notice: "session synchronized",
-          transcript: [Line(System, "attached to session " <> session)],
-        ),
+        ..model,
         view: View(..model.view, record_gutters: [], scroll_offset: 0),
       )
-      |> tui_model.invalidate_transcript
-    }
-    protocol.StrandsSnapshot(strands:) ->
-      Model(..model, shared: Shared(..model.shared, strands:))
-    protocol.SkillsSnapshot(page:) -> {
-      let previous = case page.offset {
-        0 -> []
-        _ -> model.shared.skills
-      }
-      case page.offset == list.length(previous) {
-        False ->
-          tui_model.append_error(
-            model,
-            "skill catalogue page arrived out of order",
-          )
-        True -> {
-          let loaded =
-            Model(
-              ..model,
-              shared: Shared(
-                ..model.shared,
-                skills: list.append(previous, page.commands),
-              ),
-            )
-          case page.next {
-            None -> loaded
-            Some(offset) ->
-              tui_model.send_frame(
-                loaded,
-                protocol.skills(loaded.shared.next_id, offset),
-              )
-          }
-        }
-      }
-    }
-    protocol.ModelsSnapshot(models:) -> {
+
+    // An open model selector lists what the daemon just named.
+    session_model.ModelsListed(models:, current:) -> {
       let overlay = case model.view.overlay {
         ModelSelector(selector) ->
-          ModelSelector(model_selector.replace_models(
-            selector,
-            models,
-            model.shared.current_model,
-          ))
+          ModelSelector(model_selector.replace_models(selector, models, current))
         NoOverlay -> NoOverlay
         AgentInspector(selected) -> AgentInspector(selected)
         GoalInspector(state) -> GoalInspector(state)
@@ -1336,429 +1309,24 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         PeerLinkManager(state) -> PeerLinkManager(state)
         ApprovalInspector(panel) -> ApprovalInspector(panel)
       }
-      Model(
-        shared: Shared(
-          ..model.shared,
-          models:,
-          notice: int.to_string(list.length(models)) <> " models loaded",
-        ),
-        view: View(..model.view, overlay:),
-      )
-      |> tui_model.send_frame(protocol.skills(model.shared.next_id, 0))
+      Model(..model, view: View(..model.view, overlay:))
     }
-    protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
-    protocol.ConfigSnapshot(model_name:, directories:) -> {
-      let model = case model_name {
-        Some(name) -> {
-          let selected = select_model(model, name)
-          Model(
-            ..selected,
-            shared: Shared(..selected.shared, notice: "model: " <> name),
-          )
-        }
-        None -> model
-      }
-      case directories {
-        None -> model
-        Some(value) ->
-          Model(
-            ..model,
-            shared: Shared(
-              ..model.shared,
-              notice: "Session directory access: " <> json.to_string(value),
-            ),
-          )
-      }
-    }
-    protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
-    protocol.AdvisorPendingSnapshot(board) ->
-      tui_model.run_shared(model, surfaces.receive_advisor_nudges(_, board))
 
-    // Labels change the words of rows the record cache already holds, so
-    // the cache is rebuilt; its entry-level keys carry the labels, which
-    // limits the re-projection to the entries whose labels moved.
-    protocol.BlockSummariesSnapshot(labels:) ->
+    session_model.OutlookCleared ->
+      Model(..model, view: View(..model.view, cache_outlook: ""))
+
+    session_model.NotesArrived(board:) -> show_notes(model, board)
+
+    // The summary's cursor follows the job it pointed at in the board being
+    // replaced.
+    session_model.JobsReplaced(previous:, board:) ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          summaries: block_summary.receive_board(model.shared.summaries, labels),
-          record_cache_valid: False,
-        ),
-      )
-      |> tui_model.invalidate_transcript
-    protocol.BlockSummarized(subject:, text:) ->
-      receive_block_summary(model, subject, text)
-    protocol.GoalSnapshot(board) ->
-      tui_model.run_shared(model, surfaces.receive_goal(_, board))
-    protocol.ContextSnapshot(observation) ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          context: context_view.receive(
-            model.shared.context,
-            session_model.queue_owner(model.shared),
-            observation,
-          ),
-        ),
-      )
-    protocol.WorktreeSnapshot(observation) ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          worktree: worktree_view.receive(
-            model.shared.worktree,
-            session_model.queue_owner(model.shared),
-            observation,
-          ),
-        ),
-      )
-      |> tui_model.invalidate_transcript
-    protocol.QueuedInputSnapshot(document) -> {
-      let owner = session_model.queue_owner(model.shared)
-      let namespace = session_model.queue_namespace(model.shared)
-
-      // Only the answer to the read this client issued may fill the
-      // editor; any other document leaves both halves as they were.
-      case
-        queue_request.receive(
-          model.shared.queue_request,
-          owner,
-          namespace,
-          document,
-        )
-      {
-        Ok(queue_request) ->
-          Model(
-            shared: Shared(..model.shared, queue_request:),
-            view: View(
-              ..model.view,
-              queue_editor: queue_editor.receive(
-                model.view.queue_editor,
-                owner,
-                namespace,
-                document,
-              ),
-            ),
-          )
-        Error(Nil) -> model
-      }
-    }
-    protocol.NotesSnapshot(board) -> {
-      // Every notes read may carry a strand's todo board, whichever surface
-      // asked for it, so the panel is seeded before the notes view decides
-      // whether this read is its own.
-      let model =
-        Model(
-          ..model,
-          shared: Shared(
-            ..model.shared,
-            todo_boards: todo_board.seed(model.shared.todo_boards, board),
-          ),
-        )
-      case board.strand == surfaces.notes_target(model) {
-        True -> {
-          let previous = case model.shared.note_board {
-            Some(old) if old.strand == board.strand ->
-              render.selected_note(model, old)
-            _ -> model.view.note_selected
-          }
-          let selected =
-            render.selected_note(
-              Model(..model, view: View(..model.view, note_selected: previous)),
-              board,
-            )
-          let scroll = case
-            model.shared.note_board,
-            selected == model.view.note_selected
-          {
-            Some(old), True if old.strand == board.strand ->
-              int.min(
-                model.view.note_scroll,
-                note_max_scroll(Model(
-                  shared: Shared(..model.shared, note_board: Some(board)),
-                  view: View(..model.view, note_selected: selected),
-                )),
-              )
-            None, True | Some(_), True | None, False | Some(_), False -> 0
-          }
-          tui_model.invalidate_transcript(Model(
-            shared: Shared(
-              ..model.shared,
-              note_board: Some(board),
-              // A read the terminal sent to seed the todo panel is not
-              // news to an operator who has no notes surface open.
-              notice: case surfaces.notes_surface(model) {
-                True -> "notes refreshed for " <> board.strand
-                False -> model.shared.notice
-              },
-            ),
-            view: View(
-              ..model.view,
-              note_selected: selected,
-              note_scroll: scroll,
-            ),
-          ))
-        }
-        False -> model
-      }
-    }
-    protocol.EntryAdded(record:) -> {
-      let protocol.EntryRecord(strand:, ..) = record
-      let updated =
-        Model(
-          ..model,
-          shared: Shared(
-            ..model.shared,
-            records: [record, ..model.shared.records],
-            todo_boards: todo_board.remember(model.shared.todo_boards, [record]),
-            streams: transcript_lines.clear_streams(
-              model.shared.streams,
-              strand,
-            ),
-            tool_tails: retire_recorded_tail(model.shared.tool_tails, record),
-            pending_records: case strand == model.shared.active_strand {
-              True -> [record, ..model.shared.pending_records]
-              False -> model.shared.pending_records
-            },
-            // A committed user turn on this strand is the daemon draining the
-            // head of its queue, so the echo standing in for it goes away.
-            queued: case strand == model.shared.active_strand {
-              True -> drained_echoes(model.shared.queued, record)
-              False -> model.shared.queued
-            },
-          ),
-        )
-      let updated =
-        tui_model.run_shared(updated, surfaces.retire_delivered_nudges(
-          _,
-          record,
-        ))
-
-      case strand == model.shared.active_strand {
-        True -> tui_model.invalidate_transcript(updated)
-        False -> updated
-      }
-    }
-    protocol.StreamDelta(strand:, operation:, generation:, kind:, text:) -> {
-      // The generation clock normally started when the strand entered
-      // its `assistant` phase (see `OperationChanged`); a fragment that
-      // finds it unset is the fallback, for a phase sequence that never
-      // said so. Later fragments, and other strands, leave it alone.
-      let generation_started_ms = generation_clock(model, strand)
-      let streams =
-        receive_stream(
-          streams_before_end(model, strand, operation, generation, kind),
-          strand,
-          operation,
-          generation,
-          kind,
-          text,
-        )
-
-      let updated =
-        Model(
-          ..model,
-          shared: Shared(
-            ..model.shared,
-            streams:,
-            generation_started_ms:,
-            notice: case kind {
-              "end" -> "request finished"
-              _ -> "streaming " <> kind
-            },
-          ),
-        )
-      case strand == model.shared.active_strand {
-        True -> tui_model.invalidate_transcript(updated)
-        False -> updated
-      }
-    }
-    protocol.OperationChanged(strand:, phase:) -> {
-      let submitting = case model.shared.submitting {
-        Some(target) if target == strand -> None
-        other -> other
-      }
-      let strands = set_strand_phase(model.shared.strands, strand, phase)
-
-      // The rate's clock starts when the request goes out, not when the
-      // first fragment lands. A provider that streams whole parts —
-      // Gemini does — can deliver a short reply as one burst at the end
-      // of a generation, and a clock started on that burst measured a
-      // millisecond and reported six-figure tokens per second.
-      let generation_started_ms = case phase {
-        "assistant" -> generation_clock(model, strand)
-        _other -> model.shared.generation_started_ms
-      }
-
-      let updated =
-        Model(
-          ..model,
-          shared: Shared(
-            ..model.shared,
-            submitting:,
-            strands:,
-            generation_started_ms:,
-            streams: case phase == "done" {
-              True ->
-                transcript_lines.clear_streams(model.shared.streams, strand)
-              False -> model.shared.streams
-            },
-            tool_tails: case phase == "done" {
-              True -> clear_tails(model.shared.tool_tails, strand)
-              False -> model.shared.tool_tails
-            },
-            notice: strand <> ": " <> phase,
-          ),
-        )
-      let settled = settle_interrupt(updated, strand, phase)
-      case phase == "done" && strand == model.shared.active_strand {
-        True -> tui_model.invalidate_transcript(settled)
-        False -> settled
-      }
-    }
-
-    // A tail replaces the one it supersedes rather than joining a list:
-    // the frame carries the whole window, so the newest is the only one
-    // worth drawing, and the region cannot grow with the command's output.
-    protocol.ToolOutput(
-      strand:,
-      operation:,
-      step:,
-      source_index:,
-      call_id:,
-      stream:,
-      text:,
-      total_bytes:,
-    ) -> {
-      let updated =
-        Model(
-          ..model,
-          shared: Shared(
-            ..model.shared,
-            tool_tails: receive_tail(
-              model.shared.tool_tails,
-              ToolTail(
-                strand:,
-                operation:,
-                step:,
-                source_index:,
-                call_id:,
-                stream:,
-                text:,
-                total_bytes:,
-              ),
-            ),
-          ),
-        )
-      case strand == model.shared.active_strand {
-        True -> tui_model.invalidate_transcript(updated)
-        False -> updated
-      }
-    }
-    protocol.UsageChanged(strand:, seq:, operation:, usage: settled) ->
-      case seq {
-        Some(seq) ->
-          receive_usage_observation(model, strand, seq, operation, settled)
-        None -> receive_usage(model, strand, settled)
-      }
-
-    protocol.EscalationPending(id:, tool:, preview: _) ->
-      tui_model.append_error(
-        model,
-        "approval required for " <> tool <> " [" <> id <> "]",
-      )
-
-    // The refusal answers whatever this terminal last submitted, because the
-    // conversation channel carries one mutation at a time. A prompt refused
-    // for a full hold queue commits no entry, so its echo is retired here or
-    // never.
-    protocol.ServerError(code:, message:) ->
-      tui_model.append_error(
-        {
-          let discarded = tui_model.run_shared(model, outbound.discard_own_turn)
-          Model(
-            ..discarded,
-            shared: Shared(..discarded.shared, submitting: None),
-          )
-        },
-        code <> ": " <> message,
-      )
-
-    // A commit notice and a metadata change say only that the next capture
-    // will differ. `session_view/session_channel` acts on them by capturing; there is
-    // nothing for a renderer to draw from the frame itself.
-    protocol.Committed(..) | protocol.MetadataChanged -> model
-
-    // A resumed marker names a stream that continues from a cut this
-    // terminal already holds. The lane reports it as its own update, so a
-    // frame arriving outside one is nothing to paint.
-    protocol.Resumed(_) -> model
-    protocol.Ignored(_) -> model
-
-    // The draining daemon handed a held prompt back, unsent. The held
-    // queue is memory-only, so this push is the draft's last copy: restore
-    // it into the composer rather than letting the operator's text die
-    // with the daemon. An empty composer takes the text outright; an
-    // occupied one keeps what the operator is typing, and the return is
-    // appended below it — both are theirs, and neither may be lost.
-    // The return carries no attachment bytes. Its count tells the operator
-    // which images must be reattached before submitting the restored draft.
-    protocol.HeldInputReturned(strand:, kind:, text:, attachment_count:, ..) ->
-      restore_returned_draft(model, strand, kind, text, attachment_count)
-  }
-  case event {
-    protocol.Committed(..) | protocol.MetadataChanged -> updated
-    protocol.Resumed(_) -> updated
-    protocol.HeldInputReturned(..) -> updated
-    protocol.Ignored(_) -> updated
-    protocol.FullSnapshot(..)
-    | protocol.StrandsSnapshot(..)
-    | protocol.ModelsSnapshot(..)
-    | protocol.SkillsSnapshot(..)
-    | protocol.NotesSnapshot(..)
-    | protocol.QueuedInputSnapshot(..)
-    | protocol.ContextSnapshot(..)
-    | protocol.WorktreeSnapshot(..)
-    | protocol.LiveJobsSnapshot(..)
-    | protocol.AdvisorPendingSnapshot(..)
-    | protocol.BlockSummariesSnapshot(..)
-    | protocol.BlockSummarized(..)
-    | protocol.GoalSnapshot(..)
-    | protocol.SchedulesSnapshot(..)
-    | protocol.ConfigSnapshot(..)
-    | protocol.EntryAdded(..)
-    | protocol.StreamDelta(..)
-    | protocol.ToolOutput(..)
-    | protocol.OperationChanged(..)
-    | protocol.UsageChanged(..)
-    | protocol.EscalationPending(..)
-    | protocol.ServerError(..) ->
-      updated
-      |> tui_model.mark_activity
-      |> tui_model.invalidate_frame
-  }
-}
-
-// A live-jobs board, in two halves. `surfaces.receive_jobs` takes it into
-// the session state when it answers this attachment's read, which it shows
-// by clearing `jobs_awaiting`. The summary's job cursor is the terminal's,
-// and it follows the job it pointed at in the board being replaced, so it
-// moves here, after the shared call, from the board `model` still holds.
-fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
-  let received = tui_model.run_shared(model, surfaces.receive_jobs(_, board))
-  case received.shared.jobs_awaiting == model.shared.jobs_awaiting {
-    True -> received
-    False ->
-      Model(
-        ..received,
         view: View(
-          ..received.view,
+          ..model.view,
           summary_job_selected: summary_panel.follow_selected_job(
             model.view.summary_job_selected,
-            model.shared.jobs,
+            previous,
             board,
           ),
         ),
@@ -1766,72 +1334,55 @@ fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
   }
 }
 
-// A pushed summarizer label (protocol 050). A settled label rewrites a row
-// the record cache holds, and so does a live one whose response has already
-// committed, because the committed block borrows it until its own label
-// arrives. Any other live label belongs to a row in the transient tail,
-// which every projection rebuilds, and leaves the record cache standing.
-fn receive_block_summary(
-  model: Model,
-  subject: block_summary.Subject,
-  text: String,
-) -> Model {
-  let summaries = block_summary.receive(model.shared.summaries, subject, text)
-  let recorded = case subject {
-    block_summary.SettledBlock(..) -> True
-    block_summary.LiveStream(generation:, ..) ->
-      transcript_lines.response_recorded(model.shared.records, generation)
+// A notes board belongs to the notes surface when it is for the strand that
+// surface shows: the agent inspector's strand while its Notes tab is open,
+// the active strand otherwise. That board replaces `note_board`, keeps the
+// selection on the same note where it can, and keeps the scroll while the
+// selection holds. Any other board only seeded the todo panel, which the
+// event fold has already done.
+fn show_notes(model: Model, board: notes_view.Board) -> Model {
+  case board.strand == surfaces.notes_target(model) {
+    False -> model
+    True -> {
+      let previous = case model.shared.note_board {
+        Some(old) if old.strand == board.strand ->
+          render.selected_note(model, old)
+        _ -> model.view.note_selected
+      }
+      let selected =
+        render.selected_note(
+          Model(..model, view: View(..model.view, note_selected: previous)),
+          board,
+        )
+      let scroll = case
+        model.shared.note_board,
+        selected == model.view.note_selected
+      {
+        Some(old), True if old.strand == board.strand ->
+          int.min(
+            model.view.note_scroll,
+            note_max_scroll(Model(
+              shared: Shared(..model.shared, note_board: Some(board)),
+              view: View(..model.view, note_selected: selected),
+            )),
+          )
+        None, True | Some(_), True | None, False | Some(_), False -> 0
+      }
+      tui_model.invalidate_transcript(Model(
+        shared: Shared(
+          ..model.shared,
+          note_board: Some(board),
+          // A read the terminal sent to seed the todo panel is not
+          // news to an operator who has no notes surface open.
+          notice: case surfaces.notes_surface(model) {
+            True -> "notes refreshed for " <> board.strand
+            False -> model.shared.notice
+          },
+        ),
+        view: View(..model.view, note_selected: selected, note_scroll: scroll),
+      ))
+    }
   }
-  let valid = model.shared.record_cache_valid && !recorded
-  Model(
-    ..model,
-    shared: Shared(..model.shared, summaries:, record_cache_valid: valid),
-  )
-  |> tui_model.invalidate_transcript
-}
-
-// Restores a custody-returned prompt as a local draft (protocol-change/038).
-//
-// The daemon held the prompt only in memory, so the returned text must be
-// retained before the socket closes. The return is session state first: it
-// joins `Shared.returned_drafts`, addressed to the session and strand that
-// submitted it, and the notice names the strand and the images the text
-// cannot carry, so nothing about the return is invisible. The terminal then
-// moves it into the editor it owns, in `restore_returned_drafts`, in the
-// same call, so the composer holds the text before the next frame arrives.
-fn restore_returned_draft(
-  model: Model,
-  strand: String,
-  kind: String,
-  text: String,
-  attachment_count: Int,
-) -> Model {
-  let returned = ReturnedDraft(session: model.shared.session, strand:, text:)
-  let model =
-    Model(
-      ..model,
-      shared: Shared(
-        ..model.shared,
-        returned_drafts: list.append(model.shared.returned_drafts, [returned]),
-      ),
-    )
-  let images = case attachment_count {
-    0 -> ""
-    n ->
-      " · "
-      <> int.to_string(n)
-      <> " attachment(s) stayed on the dead daemon — re-attach them"
-  }
-  tui_model.append_notice(
-    model,
-    "daemon returned the "
-      <> kind
-      <> " prompt held for "
-      <> strand
-      <> " — restored as a draft"
-      <> images,
-  )
-  |> restore_returned_drafts
 }
 
 // Moves every returned draft the session state holds into the terminal's
@@ -1886,339 +1437,6 @@ fn append_returned_text(
   text_area.state_from_string(restored)
 }
 
-// One line per schedule, in the listing's own order — the operator's
-// standing tables first, then what the session grew. `owner` is printed
-// rather than derived: "operator" and a strand that happens to be called
-// something similar are told apart by the server and never here.
-fn append_schedules(model: Model, rows: List(protocol.ScheduleRow)) -> Model {
-  case rows {
-    [] -> tui_model.append_system(model, "no schedules")
-    rows -> {
-      let listed =
-        list.fold(rows, model, fn(model, row) {
-          tui_model.append_system(model, schedule_line(row))
-        })
-      Model(
-        ..listed,
-        shared: Shared(
-          ..listed.shared,
-          notice: int.to_string(list.length(rows)) <> " schedules",
-        ),
-      )
-    }
-  }
-}
-
-fn schedule_line(row: protocol.ScheduleRow) -> String {
-  string.join(
-    [
-      row.name,
-      row.target,
-      row.owner,
-      row.when,
-      int.to_string(row.fired) <> " fired",
-      case row.wake {
-        protocol.WakesIdle -> "wakes"
-        protocol.SteersOnly -> "steers"
-      },
-    ],
-    "  ",
-  )
-}
-
-fn set_strand_phase(
-  strands: List(protocol.Strand),
-  target: String,
-  phase: String,
-) -> List(protocol.Strand) {
-  list.map(strands, fn(strand) {
-    let Strand(id:, ..) = strand
-    case id == target, phase {
-      True, "done" -> Strand(..strand, live_phase: None)
-      True, _ -> Strand(..strand, live_phase: Some(phase))
-      False, _ -> strand
-    }
-  })
-}
-
-// A client attaching near completion may have only a sampled preview, with
-// no later delta before end. Transfer that exact sample into the bounded live
-// region before adding the end marker; an older request's sample cannot qualify.
-fn streams_before_end(
-  model: Model,
-  strand: String,
-  operation: String,
-  generation: String,
-  kind: String,
-) -> List(Stream) {
-  use <- bool.guard(
-    kind != "end"
-      || stream_identity.response_entry(generation) == None
-      || list.any(model.shared.streams, fn(stream) { stream.strand == strand }),
-    model.shared.streams,
-  )
-  let preview =
-    option.then(model.shared.captured, fn(captured) { captured.1.preview })
-  case preview {
-    Some(sample)
-      if sample.operation == operation && sample.generation == generation
-    ->
-      case
-        transcript_lines.response_recorded(model.shared.records, generation)
-      {
-        True -> model.shared.streams
-        False -> [
-          transcript_lines.preview_stream(strand, sample),
-          ..model.shared.streams
-        ]
-      }
-    _ -> model.shared.streams
-  }
-}
-
-// A provider request owns all its fragment kinds. A new request replaces
-// them together; an old terminal can retire only its own request. Completion
-// comes from the same observer as deltas, independent of snapshot timing.
-fn receive_stream(
-  streams: List(Stream),
-  strand: String,
-  operation: String,
-  generation: String,
-  kind: String,
-  text: String,
-) -> List(Stream) {
-  // Completion is final for this exact request. Late fragments cannot
-  // reopen it, while a successor still replaces the whole old generation.
-  use <- bool.guard(
-    kind != "end"
-      && list.any(streams, fn(stream) {
-      stream.strand == strand
-      && stream.operation == operation
-      && stream.generation == generation
-      && stream.kind == "end"
-    }),
-    streams,
-  )
-  case kind {
-    "end" -> {
-      let newer =
-        list.any(streams, fn(stream) {
-          stream.strand == strand
-          && {
-            stream.operation != operation || stream.generation != generation
-          }
-        })
-      case newer {
-        True -> streams
-        False -> {
-          // A named response remains visible until its exact record replaces
-          // it. The marker suppresses stale previews without copying text.
-          let retained =
-            list.filter(streams, fn(stream) {
-              stream.strand != strand
-              || {
-                stream.kind != "end"
-                && stream_identity.response_entry(generation) != None
-              }
-            })
-          [Stream(strand, operation, generation, "end", [], 0), ..retained]
-        }
-      }
-    }
-    _ -> {
-      let retained =
-        list.filter(streams, fn(stream) {
-          stream.strand != strand
-          || {
-            stream.operation == operation
-            && stream.generation == generation
-            && stream.kind != "end"
-          }
-        })
-      append_stream(retained, strand, operation, generation, kind, text)
-    }
-  }
-}
-
-fn append_stream(
-  streams: List(Stream),
-  strand: String,
-  operation: String,
-  generation: String,
-  kind: String,
-  fragment: String,
-) -> List(Stream) {
-  let fragment = owned(fragment)
-  let width = string.byte_size(fragment)
-  case streams {
-    [] -> [
-      Stream(
-        strand:,
-        operation:,
-        generation:,
-        kind:,
-        fragments: [fragment],
-        bytes: width,
-      ),
-    ]
-    [
-      Stream(
-        strand: owner,
-        operation: current_op,
-        generation: current_generation,
-        kind: stream_kind,
-        fragments: current,
-        bytes: held,
-      ),
-      ..rest
-    ] ->
-      case owner == strand && stream_kind == kind {
-        // A fragment from a later operation replaces the previous answer
-        // rather than continuing it. Tool-call fragments never accumulate at
-        // all: only the latest name is renderable until the entry commits.
-        True -> {
-          let #(fragments, bytes) = case
-            kind == "tool_call" || current_op != operation
-          {
-            True -> #([fragment], width)
-            False -> bounded([fragment, ..current], held + width)
-          }
-          [
-            Stream(strand:, operation:, generation:, kind:, fragments:, bytes:),
-            ..rest
-          ]
-        }
-        False -> [
-          Stream(
-            strand: owner,
-            operation: current_op,
-            generation: current_generation,
-            kind: stream_kind,
-            fragments: current,
-            bytes: held,
-          ),
-          ..append_stream(rest, strand, operation, generation, kind, fragment)
-        ]
-      }
-  }
-}
-
-// A delta's text is a slice of the whole frame the socket delivered, so a
-// model that keeps the slice keeps the frame: an answer of a hundred thousand
-// tokens pinned a hundred thousand frames, which is most of what the resident
-// terminals were made of. Rebuilding the string owns its bytes and lets the
-// frame go, and at token size the copy is a few dozen bytes. This is the same
-// reason, and the same remedy, as `gateway.preview_text`.
-fn owned(text: String) -> String {
-  text |> string.to_utf_codepoints |> string.from_utf_codepoints
-}
-
-// Past the budget the fragments are collapsed into one holding the newest
-// bytes. Dropping the oldest one at a time would be the length of the answer
-// per token; collapsing pays that once per budget's worth of tokens and
-// leaves a single fragment for the next batch to accumulate against. What the
-// reader loses is the head of an answer that has not committed yet, and the
-// durable record replaces the whole region the moment it does.
-//
-// The trigger is twice what the collapse keeps, and the headroom is the whole
-// point: collapsing back to exactly the limit would put the next token over
-// it again, and the amortised cost would be the copy paid per token rather
-// than once per budget. So the region is bounded by twice `live_stream_limit`
-// rather than by it, and that is the number the invariant states.
-//
-// The newest bytes are a slice of the joined answer, so keeping the slice
-// would keep all of it: twice the limit held to show the limit. They are
-// copied out, as `owned` does for a delta, once per collapse.
-fn bounded(fragments: List(String), bytes: Int) -> #(List(String), Int) {
-  case bytes <= transcript_lines.live_stream_limit * 2 {
-    True -> #(fragments, bytes)
-    False -> {
-      let newest =
-        fragments
-        |> list.reverse
-        |> string.concat
-        |> newest_bytes(transcript_lines.live_stream_limit)
-        |> owned
-      #([newest], string.byte_size(newest))
-    }
-  }
-}
-
-// The trailing `limit` bytes, backing off to the next character boundary when
-// the cut would land inside a multi-byte one. Four attempts covers the widest
-// UTF-8 sequence.
-fn newest_bytes(text: String, limit: Int) -> String {
-  let bytes = bit_array.from_string(text)
-  let size = bit_array.byte_size(bytes)
-  newest_suffix(bytes, int.max(0, size - limit), 4)
-}
-
-fn newest_suffix(bytes: BitArray, from: Int, attempts: Int) -> String {
-  case attempts {
-    0 -> ""
-    _ -> {
-      let taken =
-        bit_array.slice(bytes, from, bit_array.byte_size(bytes) - from)
-        |> result.try(bit_array.to_string)
-      case taken {
-        Ok(text) -> text
-        Error(_) -> newest_suffix(bytes, from + 1, attempts - 1)
-      }
-    }
-  }
-}
-
-// The tails this strand's calls are printing, newest frame winning per
-// `{strand, operation, step, source_index, call_id, stream}`. Order is kept stable — a
-// replaced tail keeps its place and a new key goes to the end — so two
-// streams of one command do not swap positions on screen every time one
-// of them speaks.
-fn receive_tail(tails: List(ToolTail), incoming: ToolTail) -> List(ToolTail) {
-  let same_key = fn(tail: ToolTail) {
-    tail.strand == incoming.strand
-    && tail.operation == incoming.operation
-    && tail.step == incoming.step
-    && tail.source_index == incoming.source_index
-    && tail.call_id == incoming.call_id
-    && tail.stream == incoming.stream
-  }
-  case list.any(tails, same_key) {
-    True ->
-      list.map(tails, fn(tail) {
-        case same_key(tail) {
-          True -> incoming
-          False -> tail
-        }
-      })
-    False ->
-      case list.length(tails) >= transcript_lines.max_tool_tails {
-        True -> list.append(list.drop(tails, 1), [incoming])
-        False -> list.append(tails, [incoming])
-      }
-  }
-}
-
-fn clear_tails(tails: List(ToolTail), strand: String) -> List(ToolTail) {
-  list.filter(tails, fn(tail) { tail.strand != strand })
-}
-
-fn retire_recorded_tail(
-  tails: List(ToolTail),
-  record: protocol.EntryRecord,
-) -> List(ToolTail) {
-  let protocol.EntryRecord(strand:, entry:) = record
-  case entry {
-    entry.MessageEntry(
-      message: message.ToolResultMessage(tool_call_id:, ..),
-      ..,
-    ) ->
-      list.filter(tails, fn(tail) {
-        tail.strand != strand || tail.call_id != tool_call_id
-      })
-    _ -> tails
-  }
-}
-
 /// A usage record with every counter at zero.
 @internal
 pub fn zero_usage() -> message.Usage {
@@ -2240,330 +1458,21 @@ pub fn zero_usage() -> message.Usage {
   )
 }
 
-// Everything one usage row changes about the model.
-//
-// The row arrives once per settled generation, so this is both the moment
-// the output rate is known and the moment the prompt cache can be judged.
-// Both readings are per event rather than cumulative, which is why they sit
-// here rather than in the status-line arithmetic over `model.usage`.
-fn receive_usage(
-  model: Model,
-  strand: String,
-  settled: message.Usage,
-) -> Model {
-  let usage = add_usage(model.shared.usage, settled)
-  let updated =
-    settle_usage(
-      model,
-      strand,
-      settled,
-      transcript_lines.tokens(usage.total_tokens) <> " tokens",
-    )
-  watch_cache(
-    Model(..updated, shared: Shared(..updated.shared, usage:)),
-    strand,
-    settled,
-  )
-}
-
-// A network push is an observation of one durable row, not a second owner of
-// session totals. A capture may already include its sequence, or a delayed
-// push may arrive after that capture; only the capture sets cumulative usage.
-// Sequence identity prevents duplicate pushes from resetting the cache clock.
-// The cache comparison waits for a cut that covers this sequence, since a
-// remote model change can reach the socket before its configuration capture.
-// Which rows the ledger admits, holds and compares is `cache_watch`'s rule,
-// shared with the web view.
-fn receive_usage_observation(
-  model: Model,
-  strand: String,
-  seq: Int,
-  operation: Option(String),
-  settled: message.Usage,
-) -> Model {
-  let covered =
-    option.map(model.shared.captured, fn(shown) { { shown.0 }.next_seq })
-  case
-    cache_watch.admit(
-      model.shared.cache,
-      strand,
-      seq,
-      operation,
-      settled,
-      model.shared.stamp.now_ms,
-      covered,
-    )
-  {
-    Error(Nil) -> model
-    Ok(cache) -> {
-      // A row newer than any this strand has shown is the agent's current
-      // context size. The ledger's sequence guard is what keeps a delayed
-      // push from replacing a newer reading in the strip.
-      let observed =
-        Model(
-          ..model,
-          shared: Shared(
-            ..model.shared,
-            cache:,
-            roster: agent_roster.observe_usage(
-              model.shared.roster,
-              strand,
-              operation,
-              agent_roster.context(settled),
-            ),
-          ),
-        )
-        |> settle_usage(
-          strand,
-          settled,
-          transcript_lines.tokens(settled.total_tokens) <> " tokens this turn",
-        )
-      case covered {
-        Some(next_seq) -> settle_pending_cache(observed, next_seq)
-        None -> observed
-      }
-    }
-  }
-}
-
-// A cut covers every committed row below next_seq and supplies the model
-// configuration needed to compare its usage safely. The ledger settles the
-// rows it covers; each miss they reveal becomes a notice, in the order the
-// ledger reports them.
-fn settle_pending_cache(model: Model, next_seq: Int) -> Model {
-  let #(cache, missed) =
-    cache_watch.settle(model.shared.cache, next_seq, cache_timing(model))
-  list.fold(
-    missed,
-    Model(..model, shared: Shared(..model.shared, cache:)),
-    fn(current, found) { note_cache_miss(current, found.strand, found.miss) },
-  )
-}
-
-// The output rate and generation clock are per-row readings in both legacy
-// replay and live observations. Their common settlement does not touch the
-// cumulative usage figure, whose owner depends on the delivery path.
-fn settle_usage(
-  model: Model,
-  strand: String,
-  settled: message.Usage,
-  notice: String,
-) -> Model {
-  // The settlement's own output count over the time since the request went
-  // out. A settlement whose clock never started (a refusal, an empty turn)
-  // leaves the last rate standing. `generation_clock` starts the clock only
-  // for the active strand's own row, so only that strand's settlement may
-  // read it or clear it — a sub-agent's row arriving mid-generation must
-  // not report its own output over the primary's window, and must not stop
-  // the primary's clock out from under it.
-  let #(output_rate_tps, generation_started_ms) = case
-    strand == model.shared.active_strand,
-    model.shared.peer,
-    model.shared.generation_started_ms
-  {
-    False, _, _ -> #(
-      model.shared.output_rate_tps,
-      model.shared.generation_started_ms,
-    )
-
-    // The window is this client's own clock from the request going out to
-    // the settlement, and a replay spends that window playing a file rather
-    // than waiting on a provider. `output_rate_min_ms` already discards the
-    // short ones, so a brief replay would report nothing anyway; a long one
-    // would report how fast the replay ran. Declining outright is the same
-    // rule that stops a replay echoing a prompt.
-    True, Replaying, _ | True, Disconnected, _ -> #(
-      model.shared.output_rate_tps,
-      None,
-    )
-
-    True, Attached, Some(started) | True, Preview, Some(started) -> #(
-      transcript_lines.output_rate(
-        settled.output,
-        model.shared.stamp.now_ms - started,
-      ),
-      None,
-    )
-    True, Attached, None | True, Preview, None -> #(
-      model.shared.output_rate_tps,
-      None,
-    )
-  }
-  Model(
-    ..model,
-    shared: Shared(
-      ..model.shared,
-      generation_started_ms:,
-      output_rate_tps:,
-      notice:,
-    ),
-  )
-}
-
-// Folds one row into its strand's cache watch and raises any notice it
-// reveals.
-//
-// The clock is the terminal's own, the same one the frame pacing and the
-// throughput reading use, because the gap being measured is wall time the
-// operator spent away and no server field reports it. A replay plays its
-// file far faster than the session originally ran, so the gaps it would
-// measure are not the gaps that happened; it observes nothing.
-fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
-  let #(cache, missed) =
-    cache_watch.observe(
-      model.shared.cache,
-      strand,
-      settled,
-      model.shared.stamp.now_ms,
-      cache_timing(model),
-    )
-  let watched = Model(..model, shared: Shared(..model.shared, cache:))
-  case missed {
-    None -> watched
-    Some(found) -> note_cache_miss(watched, found.strand, found.miss)
-  }
-}
-
-// A watch describes one provider's prefix. A model change cannot inherit its
-// horizon or compare the new provider's first row with the old provider's
-// last row. Clear only the affected strand, leaving its historical notices
-// and other strands' watches in place.
-fn forget_cache(model: Model, strand: String) -> Model {
-  Model(
-    shared: Shared(
-      ..model.shared,
-      cache: cache_watch.forget(model.shared.cache, strand),
-    ),
-    view: View(
-      ..model.view,
-      cache_outlook: case strand == model.shared.active_strand {
-        True -> ""
-        False -> model.view.cache_outlook
-      },
-    ),
-  )
-}
-
 /// Records the strand's current model, forgetting the cache watch when the
 /// model changed, since a cache written by one model does not serve another.
+///
+/// The terminal's form of `event_fold.select_model`, which also clears the
+/// footer's outlook when the active strand's watch was forgotten.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = inbound.select_model(model, "claude-sonnet")
+/// ```
 @internal
 pub fn select_model(model: Model, name: String) -> Model {
-  let model = case name == model.shared.current_model {
-    True -> model
-    False -> forget_cache(model, model.shared.active_strand)
-  }
-  Model(..model, shared: Shared(..model.shared, current_model: name))
-}
-
-// Whether the instants this terminal hands the ledger are wall time: a
-// replay's are not, and it observes nothing.
-fn cache_timing(model: Model) -> cache_watch.Timing {
-  case replaying(model) {
-    True -> cache_watch.Replayed
-    False -> cache_watch.Live
-  }
-}
-
-// A replay has no idle time of its own to report.
-fn replaying(model: Model) -> Bool {
-  case model.shared.peer {
-    Replaying -> True
-    Attached | Preview | Disconnected -> False
-  }
-}
-
-// Files one cache-miss row against the strand's transcript.
-//
-// The row is anchored to the records the strand already holds rather than
-// appended to the local notice block, so it stays under the turn it
-// explains as later entries arrive. A new row changes the projection, so
-// the record cache is dropped whether or not the strand is the visible one:
-// switching to it later must find the row in place.
-fn note_cache_miss(
-  model: Model,
-  strand: String,
-  miss: cache_miss.CacheMiss,
-) -> Model {
-  // A strand holding no record has nowhere to put the row: a window that
-  // retained nothing, or a strand whose history this connection never
-  // fetched. A notice anchored to no entry would never be drawn, so it is
-  // not raised at all.
-  case transcript_lines.newest_entry(model.shared.records, strand) {
-    None -> model
-    Some(after_entry) ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          cache_notices: list.append(model.shared.cache_notices, [
-            CacheNotice(
-              strand:,
-              after_entry:,
-              text: cache_watch.notice_text(miss),
-            ),
-          ]),
-          record_cache_valid: False,
-        ),
-      )
-      |> tui_model.invalidate_transcript
-      |> tui_model.invalidate_frame
-  }
-}
-
-fn add_usage(left: message.Usage, right: message.Usage) -> message.Usage {
-  let message.UsageCost(
-    input: left_cost_input,
-    output: left_cost_output,
-    cache_read: left_cost_cache_read,
-    cache_write: left_cost_cache_write,
-    total: left_cost_total,
-  ) = left.cost
-  let message.UsageCost(
-    input: right_cost_input,
-    output: right_cost_output,
-    cache_read: right_cost_cache_read,
-    cache_write: right_cost_cache_write,
-    total: right_cost_total,
-  ) = right.cost
-  message.Usage(
-    input: left.input + right.input,
-    output: left.output + right.output,
-    cache_read: left.cache_read + right.cache_read,
-    cache_write: left.cache_write + right.cache_write,
-    cache_write_1h: add_optional_int(left.cache_write_1h, right.cache_write_1h),
-    reasoning: add_optional_int(left.reasoning, right.reasoning),
-    total_tokens: left.total_tokens + right.total_tokens,
-    cost: message.UsageCost(
-      input: left_cost_input +. right_cost_input,
-      output: left_cost_output +. right_cost_output,
-      cache_read: left_cost_cache_read +. right_cost_cache_read,
-      cache_write: left_cost_cache_write +. right_cost_cache_write,
-      total: left_cost_total +. right_cost_total,
-    ),
-  )
-}
-
-fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
-  case left, right {
-    None, None -> None
-    Some(value), None | None, Some(value) -> Some(value)
-    Some(left), Some(right) -> Some(left + right)
-  }
-}
-
-/// Formats the server-reported session usage for the terminal footer.
-/// The generation clock after an event that may start it: started now
-/// if the event is the active strand's and no clock is running, otherwise
-/// left as it was. Two events may start it — the `assistant` phase, and
-/// the first fragment as a fallback — and whichever comes first wins.
-fn generation_clock(model: Model, strand: String) -> Option(Int) {
-  case
-    model.shared.generation_started_ms,
-    strand == model.shared.active_strand
-  {
-    None, True -> Some(model.shared.stamp.now_ms)
-    started, _ -> started
-  }
+  tui_model.run_shared(model, event_fold.select_model(_, name))
+  |> settle_surfaces(model, _)
 }
 
 /// Keeps the agent inspector's selected message valid against the current
@@ -2752,233 +1661,6 @@ fn receive_history(
   }
 }
 
-/// The local submitting marker closes the interval between writing a prompt
-/// frame and receiving its first operation transition. Websocket ordering then
-/// lets an immediate Escape place abort after prompt on the same connection,
-/// even though the server's live phase has not reached the view yet.
-@internal
-pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
-  let sent = {
-    let expected = expect_own_turn(model, HeldPrompt(text))
-    Model(
-      ..expected,
-      shared: Shared(
-        ..expected.shared,
-        submitting: Some(strand),
-        notice: "prompt sent to " <> strand,
-      ),
-    )
-  }
-  case model.shared.peer {
-    Attached ->
-      tui_model.send_via(sent, fn(lane, now) {
-        operator.submit(
-          lane,
-          model.shared.next_id,
-          strand,
-          text,
-          operator.Prompt,
-          now,
-        )
-      })
-
-    // The server echoed this turn back as an entry, and the recording has
-    // it. Drawing a local copy here would show the operator's line twice.
-    Replaying -> sent
-    Disconnected -> tui_model.append_error(model, "no conversation is attached")
-    Preview ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          transcript: list.append(model.shared.transcript, [
-            Line(
-              User,
-              composer.transcript_text(text, model.shared.details_expanded),
-            ),
-            Line(Assistant, "Design-preview echo received."),
-          ]),
-          record_cache_valid: False,
-          notice: "prompt accepted",
-        ),
-      )
-      |> tui_model.invalidate_transcript
-  }
-}
-
-/// Records one submission this terminal made to a running active strand, so
-/// that the entry it eventually produces is accounted for.
-///
-/// For a `HeldPrompt` the record is also what the operator sees. A prompt
-/// submitted to a running strand does not become an entry until the daemon
-/// drains it, which is a whole turn away. Without a local copy the operator's
-/// line simply vanishes for as long as the run lasts, and the natural reading
-/// is that the keystroke was lost — which is what sent people looking for the
-/// bug this answers. The echo is drawn under the live tail and retired by the
-/// entry it stands for.
-///
-/// `Preview` draws its own echo and `Disconnected` sent nothing, so neither
-/// records anything here. An idle strand does not either: nothing is held, its
-/// entry is already on its way back, and two copies would be worse than a slow
-/// one.
-/// An attached submission waits in `awaiting_outcome` for the daemon's answer,
-/// because a refusal is a real outcome here and the echo has to go back with
-/// it. A replay has no daemon to answer, so its submission joins the list at
-/// once and the recording's own entry retires it.
-@internal
-pub fn expect_own_turn(model: Model, submission: Submission) -> Model {
-  case model.shared.peer, session_model.active_strand_live(model.shared) {
-    Attached, True ->
-      Model(
-        ..model,
-        shared: Shared(..model.shared, awaiting_outcome: Some(submission)),
-      )
-      |> tui_model.invalidate_transcript
-    Replaying, True ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          queued: in_commit_order(model.shared.queued, submission),
-        ),
-      )
-      |> tui_model.invalidate_transcript
-    Attached, False | Replaying, False | Preview, _ | Disconnected, _ -> model
-  }
-}
-
-// The daemon took the submission: it will commit an entry, so the submission
-// joins the list that waits for one.
-fn settle_own_turn(model: Model) -> Model {
-  case model.shared.awaiting_outcome {
-    Some(submission) ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          queued: in_commit_order(model.shared.queued, submission),
-          awaiting_outcome: None,
-        ),
-      )
-    None -> model
-  }
-}
-
-// Forgets the submissions an abort cancelled, keeping the ones it does not
-// reach.
-//
-// The invariant this restores is the queue's: every submission in the list is
-// owed an entry. An abort breaks that for interjections alone, because the
-// steer and follow-up items still queued on the run are discarded with the
-// run instead of being committed. Left in place they would absorb the entries
-// the held prompts produce, and each prompt's echo would outlive the line it
-// stood for.
-fn abandon_interjections(model: Model) -> Model {
-  let held =
-    list.filter(model.shared.queued, fn(submission) {
-      case submission {
-        Interjection -> False
-        HeldPrompt(..) -> True
-      }
-    })
-
-  // A submission still awaiting its outcome was sent to the same run, so an
-  // interjection there is cancelled on the same grounds. A prompt keeps
-  // waiting for the reply that is still coming for it.
-  let awaiting = case model.shared.awaiting_outcome {
-    Some(Interjection) -> None
-    Some(HeldPrompt(..)) | None -> model.shared.awaiting_outcome
-  }
-
-  Model(
-    ..model,
-    shared: Shared(..model.shared, queued: held, awaiting_outcome: awaiting),
-  )
-  |> tui_model.invalidate_transcript
-}
-
-// Places one submission where the daemon will commit it.
-//
-// Submission order is not commit order, which is the trap here. An
-// interjection joins the run that is already open and commits during it,
-// while every held prompt waits for that run to settle — so a steer typed
-// after a prompt was queued still commits first. Keeping the list in commit
-// order is what lets `drained_echoes` stay a drop of the head, and it is the
-// list's whole invariant: interjections first, in the order they were made,
-// then the held prompts in the order the daemon drains them.
-fn in_commit_order(
-  queued: List(Submission),
-  submission: Submission,
-) -> List(Submission) {
-  case submission {
-    HeldPrompt(..) -> list.append(queued, [submission])
-    Interjection -> {
-      let #(interjections, held) =
-        list.split_while(queued, fn(earlier) {
-          case earlier {
-            Interjection -> True
-            HeldPrompt(..) -> False
-          }
-        })
-      list.flatten([interjections, [submission], held])
-    }
-  }
-}
-
-// Retires the oldest outstanding submission when a user turn commits on the
-// strand it was made on.
-//
-// `in_commit_order` holds the list in the order the daemon commits these, so
-// the head is what the entry belongs to, and an interjection at the head
-// absorbs the entry without touching the echo behind it — which is the whole
-// reason steers and follow-ups are recorded here at all. Matching on the text
-// instead would have to reproduce the server's authorship prefix and its
-// block layout, and would still pick the wrong entry for two identical
-// prompts.
-//
-// A second operator's prompt or steer on the same strand still retires the
-// head early. That costs a queued marker one turn of visibility, and the
-// entry it stood for still arrives in its place.
-fn drained_echoes(
-  queued: List(Submission),
-  record: protocol.EntryRecord,
-) -> List(Submission) {
-  let protocol.EntryRecord(entry: value, ..) = record
-  case value {
-    entry.MessageEntry(message: message.UserMessage(..), ..) ->
-      list.drop(queued, 1)
-    entry.MessageEntry(..)
-    | entry.CompactionEntry(..)
-    | entry.BranchSummaryEntry(..)
-    | entry.CustomEntry(..) -> queued
-  }
-}
-
-fn settle_interrupt(model: Model, strand: String, phase: String) -> Model {
-  case phase == "done", model.shared.interrupt {
-    True, Some(Interrupt(strand: target, pending:, ..)) ->
-      case target == strand, pending {
-        True, Some(text) ->
-          send_prompt_to(
-            Model(..model, shared: Shared(..model.shared, interrupt: None)),
-            target,
-            text,
-          )
-        True, None ->
-          Model(
-            ..model,
-            shared: Shared(
-              ..model.shared,
-              interrupt: None,
-              notice: target <> ": interrupted",
-            ),
-          )
-        False, _ -> model
-      }
-    _, _ -> model
-  }
-}
-
 // A coherent cut may skip the idle interval between two queued turns. Match
 // the operation, not just the strand's busy flag, when retiring the stop UI.
 fn reconcile_interrupt(
@@ -3073,51 +1755,56 @@ fn empty_workspace() -> StrandWorkspace {
 
 /// Save before changing identity; both empty drafts and submission mode belong
 /// to the destination, so a first visit starts with a fresh editor.
+///
+/// The session state's half of the switch is `event_fold.select_workspace`;
+/// the terminal parks and restores its editor, attachments and viewport when
+/// it applies the switch that call records.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = inbound.select_workspace(model, model.shared.session, "worker")
+/// ```
 @internal
 pub fn select_workspace(
   model: Model,
   session: String,
   strand: String,
 ) -> Model {
-  use <- bool.guard(
-    model.shared.session == session && model.shared.active_strand == strand,
-    model,
-  )
+  tui_model.run_shared(model, event_fold.select_workspace(_, session, strand))
+  |> settle_surfaces(model, _)
+}
 
-  // Session observations belong to the attachment that read them. Reusing
-  // the common strand name "main" cannot transfer advice or a goal.
-  let model = case model.shared.session == session {
-    True -> model
+// The terminal's half of a workspace switch: the editor, the attachments
+// and the viewport park under the departing key, and the arriving key's are
+// restored. A change of session also closes the goal inspector, whose board
+// the session state has just released, and returns the strip's focus to the
+// composer.
+//
+// The parked viewport height is measured on the model from before the
+// shared half ran, with the boards and the goal inspector a session change
+// releases already released, because layout reads both and the switch used
+// to measure there: after releasing them and before anything else moved.
+fn switch_editor(
+  before: Model,
+  model: Model,
+  departing: #(String, String),
+  arriving: #(String, String),
+  previous_session: String,
+) -> Model {
+  let same_session = previous_session == arriving.0
+  let overlay = case same_session, model.view.overlay {
+    False, GoalInspector(_) -> NoOverlay
+    _, other -> other
+  }
+  let measured = case same_session {
+    True -> before
     False ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          nudges: None,
-          nudges_refresh: worktree_view.Settled,
-          nudges_awaiting: None,
-          nudges_request: None,
-          summaries: block_summary.new(),
-          goal: None,
-          goal_refresh: worktree_view.Settled,
-          goal_awaiting: None,
-          goal_request: None,
-          goal_report: HoldGoalReport,
-        ),
-        view: View(..model.view, overlay: case model.view.overlay {
-          GoalInspector(_) -> NoOverlay
-          other -> other
-        }),
+        shared: event_fold.leave_session(before.shared),
+        view: View(..before.view, overlay:),
       )
   }
-
-  // Before the first attachment there is no previous session to park in.
-  // Bind that unassigned editor to the explicitly chosen session once;
-  // later switches keep their existing session identities and own drafts.
-  let draft_session = case model.shared.session {
-    "" -> session
-    previous -> previous
-  }
-  let departing = #(draft_session, model.shared.active_strand)
   let parked =
     dict.insert(
       model.view.strand_workspaces,
@@ -3133,66 +1820,17 @@ pub fn select_workspace(
         model.view.scroll_offset,
         model.view.rendered_anchors,
         model.view.rendered_row_count - list.length(model.view.rendered_anchors),
-        layout.transcript_viewport_height(model),
+        layout.transcript_viewport_height(measured),
       ),
     )
-  let saved = dict.get(parked, #(session, strand)) |> option.from_result
+  let saved = dict.get(parked, arriving) |> option.from_result
   let restored = option.unwrap(saved, empty_workspace())
-
-  // The history window parks under the same key as the editor, in the shared
-  // record. A strand with no parked window restores an empty one, which is
-  // what a parked workspace without one held before the two were split.
-  let parked_scrollback =
-    dict.insert(
-      model.shared.parked_scrollback,
-      departing,
-      model.shared.scrollback,
-    )
-  let restored_scrollback =
-    dict.get(parked_scrollback, #(session, strand))
-    |> result.lazy_unwrap(history_view.empty)
   Model(
-    shared: Shared(
-      ..model.shared,
-      agent_rows: case model.shared.session == session {
-        True -> model.shared.agent_rows
-        False -> []
-      },
-      agent_messages: case model.shared.session == session {
-        True -> model.shared.agent_messages
-        False -> []
-      },
-      advisor_history: case model.shared.session == session {
-        True -> model.shared.advisor_history
-        False -> advisor_history.Board(items: [], unloaded: None)
-      },
-      todo_boards: case model.shared.session == session {
-        True -> model.shared.todo_boards
-        False -> dict.new()
-      },
-      todo_seed: case model.shared.session == session {
-        True -> model.shared.todo_seed
-        False -> None
-      },
-      todo_asked: case model.shared.session == session {
-        True -> model.shared.todo_asked
-        False -> set.new()
-      },
-      reviewer_rows: case model.shared.session == session {
-        True -> model.shared.reviewer_rows
-        False -> []
-      },
-      attachments: restored.attachments,
-      scrollback: history_view.cancel(restored_scrollback),
-      parked_scrollback: dict.delete(parked_scrollback, #(session, strand)),
-      roster: case model.shared.session == session {
-        True -> model.shared.roster
-        False -> agent_roster.new()
-      },
-    ),
+    shared: Shared(..model.shared, attachments: restored.attachments),
     view: View(
       ..model.view,
-      strand_workspaces: dict.delete(parked, #(session, strand)),
+      overlay:,
+      strand_workspaces: dict.delete(parked, arriving),
       restored_workspace: saved,
       input: restored.input,
       history: restored.history,
@@ -3202,7 +1840,7 @@ pub fn select_workspace(
       submission_mode: restored.submission_mode,
       reading_lines: restored.reading_lines,
       scroll_offset: restored.offset,
-      strip_focus: case model.shared.session == session {
+      strip_focus: case same_session {
         True -> model.view.strip_focus
         False -> agent_strip.Composing
       },
@@ -3481,7 +2119,7 @@ fn apply_request_refused(
       )
     _ -> model
   }
-  apply_event(updated, protocol.ServerError(code, message))
+  run_event(updated, protocol.ServerError(code, message))
 }
 
 /// Advances the agent strip's clock on the terminal tick.
