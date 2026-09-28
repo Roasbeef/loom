@@ -609,6 +609,15 @@ the window had closed. Each build now writes its own file and renames it over
 the shared path, which replaces the directory entry in one step and leaves
 the previous inode intact for anything still executing it.
 
+**Addendum (PR #585, 2026-09-27).** The staged rename above no longer
+exists. The concurrent builds it made safe also produced link failures on
+the containerised signoff, where some builds read a Go build-cache object
+that was zero from some offset on, so #585 removed the builds. The
+broker, tools, codemode and conformance suites now run the helper `make
+sandbox` builds at packages/sandbox/loom-exec and build nothing, and the Go
+tests' `testbin.Helper` uses that binary when it is newer than the module's
+sources.
+
 ### Two that never reproduced
 
 `host@bootstrap_test:a_log_tail_cut_inside_a_codepoint_still_reports_test`
