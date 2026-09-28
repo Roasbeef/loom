@@ -41,6 +41,8 @@ import session_view/approval
 import session_view/operator
 import session_view/snapshot
 import web_view/component
+import web_view/view/lane
+import web_view/view/strip
 
 /// Everything an operator's page can be told.
 pub type Msg(socket) {
@@ -124,8 +126,8 @@ pub fn update(
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
-    component.strip_view(component.strip(model)),
-    component.lane_view(component.pieces(model)),
+    strip.view(component.strip(model)),
+    lane.view(component.pieces(model)),
     html.footer([attribute.class("dock")], [
       approvals(component.pending(model)),
       composer(model),
@@ -315,18 +317,18 @@ fn identity(model: component.Model(socket)) -> Element(Msg(socket)) {
 // The addressed strand's cache outlook, drawn as the chip's ring is and
 // worded by `cache_miss.outlook_label`. A tail about to lapse is the one
 // reading worth the signal colour; nothing else here nags.
-fn outlook(chip: Option(component.Chip)) -> Element(Msg(socket)) {
+fn outlook(chip: Option(strip.Chip)) -> Element(Msg(socket)) {
   case chip {
-    Some(component.Chip(cache: Some(#(held, label)), ..)) ->
+    Some(strip.Chip(cache: Some(#(held, label)), ..)) ->
       html.span(
         [
           attribute.class("outlook"),
-          component.ring_class(held),
+          strip.ring_class(held),
           attribute.role("status"),
         ],
         [html.text(label)],
       )
-    Some(component.Chip(cache: None, ..)) | None -> element.none()
+    Some(strip.Chip(cache: None, ..)) | None -> element.none()
   }
 }
 
