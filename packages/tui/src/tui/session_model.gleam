@@ -111,6 +111,11 @@ pub type Shared(socket, recorder, source, replay_source) {
     returned_drafts: List(ReturnedDraft),
     /// Ownership marker only; the unsent encoded intent belongs to Channel.
     pending_submission: Option(SubmissionSource),
+    /// How many composer drafts the lane has sent. `outbound.apply_submission`
+    /// bumps it when a frame marked `ComposerSubmission` is sent, and empties
+    /// `attachments` with it; a host empties its own editor when it moves,
+    /// which the terminal does in `tui_model.hold_shared`.
+    drafts_sent: Int,
     /// The interrupt held until the operation it stopped settles.
     interrupt: Option(Interrupt),
     /// The strand whose prompt is on its way to the daemon, if any.
@@ -202,6 +207,11 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// matched against. Shared because the lane's replies, refusals and
     /// failures settle it; the editor it fills is `View.queue_editor`.
     queue_request: queue_request.State,
+    /// What the lane did with the queue editor's requests that the editor
+    /// has not shown yet, oldest first. The terminal's
+    /// `tui_model.hold_shared` hands each to `queue_editor.show` and empties
+    /// the list.
+    queue_notices: List(queue_request.Notice),
     /// The models the daemon listed.
     models: List(protocol.ModelInfo),
     /// Slash commands loaded by the currently attached daemon.

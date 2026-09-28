@@ -111,7 +111,7 @@ fn send_seed_when_free(model: Model, strand: String) -> Model {
 }
 
 fn send_todo_seed(model: Model, strand: String) -> Model {
-  outbound.send_frame(
+  tui_model.send_frame(
     Model(..model, shared: Shared(..model.shared, todo_seed: None)),
     protocol.notes(model.shared.next_id, strand),
   )
@@ -143,7 +143,7 @@ pub fn service_notes_read(model: Model) -> Model {
       case session_channel.ready_for_read(channel) {
         False -> model
         True ->
-          outbound.send_frame(
+          tui_model.send_frame(
             Model(
               ..model,
               shared: Shared(..model.shared, notes_requested: None),
@@ -153,7 +153,7 @@ pub fn service_notes_read(model: Model) -> Model {
       }
     }
     Some(target), None ->
-      outbound.send_frame(
+      tui_model.send_frame(
         Model(..model, shared: Shared(..model.shared, notes_requested: None)),
         protocol.notes(model.shared.next_id, target),
       )
@@ -206,7 +206,7 @@ pub fn service_queue_read(model: Model) -> Model {
         True ->
           case session_model.queue_owner(model.shared) == fetch.owner {
             True ->
-              outbound.send_frame(
+              tui_model.send_frame(
                 Model(
                   ..model,
                   shared: Shared(
@@ -280,7 +280,7 @@ pub fn service_worktree_read(model: Model) -> Model {
     Some(channel), worktree_view.Requested, None ->
       case session_channel.ready_for_read(channel) {
         True ->
-          outbound.send_frame(
+          tui_model.send_frame(
             model,
             protocol.worktree_diff(model.shared.next_id),
           )
@@ -319,7 +319,7 @@ pub fn service_jobs_read(model: Model) -> Model {
     Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
-          outbound.send_frame(
+          tui_model.send_frame(
             Model(
               ..model,
               shared: Shared(
@@ -457,7 +457,7 @@ pub fn service_advisor_nudges_read(model: Model) -> Model {
     Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
-          outbound.send_frame(
+          tui_model.send_frame(
             Model(
               ..model,
               shared: Shared(
@@ -550,7 +550,7 @@ pub fn service_block_summaries(model: Model) -> Model {
           case block_summary.next_read(model.shared.summaries) {
             None -> model
             Some(#(keys, summaries)) ->
-              outbound.send_frame(
+              tui_model.send_frame(
                 Model(..model, shared: Shared(..model.shared, summaries:)),
                 protocol.block_summaries(model.shared.next_id, keys),
               )
@@ -670,7 +670,7 @@ pub fn confirming(model: Model, line: String) -> Model {
 /// never cleared as though the operator had submitted it.
 @internal
 pub fn submit_goal_action(model: Model, action: command.Command) -> Model {
-  case outbound.mutation_refusal(model, action) {
+  case outbound.mutation_refusal(model.shared, action) {
     Some(reason) -> tui_model.append_error(model, reason)
     None -> {
       let prepared = case model.shared.pending_submission {
@@ -686,12 +686,12 @@ pub fn submit_goal_action(model: Model, action: command.Command) -> Model {
       }
       case action {
         command.GoalPause ->
-          outbound.send_frame(
+          tui_model.send_frame(
             confirming(prepared, "the session goal is held"),
             protocol.goal_pause(prepared.shared.next_id),
           )
         command.GoalResume ->
-          outbound.send_frame(
+          tui_model.send_frame(
             confirming(prepared, "the session goal continues"),
             protocol.goal_resume(prepared.shared.next_id),
           )
@@ -757,7 +757,7 @@ pub fn service_goal_read(model: Model) -> Model {
     Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
-          outbound.send_frame(
+          tui_model.send_frame(
             Model(
               ..model,
               shared: Shared(
@@ -1035,7 +1035,7 @@ pub fn service_context_read(model: Model) -> Model {
     Some(channel), context_view.Requested, Attached, Some(_) ->
       case session_channel.ready_for_read(channel) {
         True ->
-          outbound.send_frame(
+          tui_model.send_frame(
             model,
             protocol.context(model.shared.next_id, model.shared.active_strand),
           )

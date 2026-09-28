@@ -129,7 +129,7 @@ fn handle_composer_paste(
   image: Result(Option(pasted_image.Image), String),
 ) -> Model {
   case model.shared.pending_submission {
-    Some(_) -> outbound.waiting_notice(model)
+    Some(_) -> tui_model.run_shared(model, outbound.waiting_notice)
     None -> paste_unlocked(model, text, image)
   }
 }
@@ -417,7 +417,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       }
       let adopted =
         adopted
-        |> outbound.send_frame(protocol.models(1))
+        |> tui_model.send_frame(protocol.models(1))
         |> inbound.request_visible_worktree
 
       // An adoption proves the daemon answers, so a relaunch still in flight
@@ -630,7 +630,7 @@ fn update_model_selector(
             repaint_phase: !model.view.repaint_phase,
           ),
         )
-        |> outbound.send_frame(protocol.set_model(
+        |> tui_model.send_frame(protocol.set_model(
           model.shared.next_id,
           model.shared.active_strand,
           name,
@@ -1457,7 +1457,7 @@ pub fn update_ready_key(key: keys.Key, model: Model) -> Model {
         None, _ -> update_key_over_selection(key, model)
         Some(_), keys.PageUp -> scroll_transcript(model, True, 10)
         Some(_), keys.PageDown -> scroll_transcript(model, False, 10)
-        Some(_), _ -> outbound.waiting_notice(model)
+        Some(_), _ -> tui_model.run_shared(model, outbound.waiting_notice)
       }
     }
   }
@@ -2298,7 +2298,7 @@ fn save_queue_draft(model: Model) -> Model {
         && session_model.queue_namespace(model.shared) == draft.namespace
       case available {
         True ->
-          outbound.send_frame(
+          tui_model.send_frame(
             Model(
               shared: Shared(
                 ..model.shared,

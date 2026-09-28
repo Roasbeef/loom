@@ -241,7 +241,7 @@ pub fn apply_channel_update(
 ) -> Model {
   case update {
     session_channel.Submission(disposition) ->
-      outbound.apply_submission(model, disposition)
+      tui_model.apply_submission(model, disposition)
     session_channel.Captured(cut, view, trigger) ->
       reconcile_cut(model, cut, view, trigger)
     session_channel.HistoryPage(window, before, after) ->
@@ -419,7 +419,7 @@ pub fn apply_channel_update(
     session_channel.Failed(reason) ->
       tui_model.append_error(
         {
-          let discarded = outbound.discard_own_turn(model)
+          let discarded = tui_model.run_shared(model, outbound.discard_own_turn)
           Model(
             shared: Shared(
               ..discarded.shared,
@@ -1085,7 +1085,7 @@ pub fn decide_captured_approval(
   record: approval.Review,
   choice: approval_panel.Choice,
 ) -> Model {
-  case outbound.mutation_refusal(model, command.Approve(record.id)) {
+  case outbound.mutation_refusal(model.shared, command.Approve(record.id)) {
     Some(reason) -> tui_model.append_error(model, reason)
     None -> {
       let choice = case choice {
@@ -1096,7 +1096,7 @@ pub fn decide_captured_approval(
       case operator.decision(model.shared.next_id, record, choice) {
         Error(reason) -> tui_model.append_error(model, reason)
         Ok(frame) ->
-          outbound.send_frame(
+          tui_model.send_frame(
             Model(..model, view: View(..model.view, overlay: NoOverlay)),
             frame,
           )
@@ -1119,7 +1119,7 @@ pub fn decide(model: Model, id: String, choice: operator.Choice) -> Model {
     Ok(record) ->
       case operator.decision(model.shared.next_id, record, choice) {
         Error(reason) -> tui_model.append_error(model, reason)
-        Ok(frame) -> outbound.send_frame(model, frame)
+        Ok(frame) -> tui_model.send_frame(model, frame)
       }
   }
 }
@@ -1311,7 +1311,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           case page.next {
             None -> loaded
             Some(offset) ->
-              outbound.send_frame(
+              tui_model.send_frame(
                 loaded,
                 protocol.skills(loaded.shared.next_id, offset),
               )
@@ -1342,7 +1342,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ),
         view: View(..model.view, overlay:),
       )
-      |> outbound.send_frame(protocol.skills(model.shared.next_id, 0))
+      |> tui_model.send_frame(protocol.skills(model.shared.next_id, 0))
     }
     protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
     protocol.ConfigSnapshot(model_name:, directories:) -> {
@@ -1671,7 +1671,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.ServerError(code:, message:) ->
       tui_model.append_error(
         {
-          let discarded = outbound.discard_own_turn(model)
+          let discarded = tui_model.run_shared(model, outbound.discard_own_turn)
           Model(
             ..discarded,
             shared: Shared(..discarded.shared, submitting: None),
@@ -2740,7 +2740,7 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
   }
   case model.shared.peer {
     Attached ->
-      outbound.send_via(sent, fn(lane, now) {
+      tui_model.send_via(sent, fn(lane, now) {
         operator.submit(
           lane,
           model.shared.next_id,
