@@ -147,16 +147,16 @@ pub fn update_tick(model: Model) -> Model {
 fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
     drained
-    |> surfaces.service_queue_read
-    |> surfaces.service_worktree_read
-    |> surfaces.service_notes_read
-    |> surfaces.service_todo_seed
-    |> surfaces.service_jobs_read
-    |> surfaces.service_context_read
-    |> surfaces.service_advisor_nudges_read
-    |> surfaces.service_goal_read
+    |> tui_model.run_shared(surfaces.service_queue_read)
+    |> tui_model.run_shared(surfaces.service_worktree_read)
+    |> tui_model.run_shared(surfaces.service_notes_read)
+    |> tui_model.run_shared(surfaces.service_todo_seed)
+    |> tui_model.run_shared(surfaces.service_jobs_read)
+    |> tui_model.run_shared(surfaces.service_context_read)
+    |> tui_model.run_shared(surfaces.service_advisor_nudges_read)
+    |> tui_model.run_shared(surfaces.service_goal_read)
     |> session_control.service_activity
-    |> surfaces.service_block_summaries
+    |> tui_model.run_shared(surfaces.service_block_summaries)
     |> inbound.tick_channel
     |> advance_cache_outlook
   let quiet_for_ms =

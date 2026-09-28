@@ -2189,23 +2189,26 @@ fn select_queue_input(model: Model) -> Model {
               row.strand,
               row.id,
             )
-          surfaces.service_queue_read(Model(
-            shared: Shared(
-              ..model.shared,
-              queue_request: queue_request.State(
-                fetch: Some(fetch),
-                awaiting: None,
-                request_id: None,
+          tui_model.run_shared(
+            Model(
+              shared: Shared(
+                ..model.shared,
+                queue_request: queue_request.State(
+                  fetch: Some(fetch),
+                  awaiting: None,
+                  request_id: None,
+                ),
+              ),
+              view: View(
+                ..model.view,
+                queue_editor: queue_editor.State(
+                  ..state,
+                  message: "Waiting for the full queued input…",
+                ),
               ),
             ),
-            view: View(
-              ..model.view,
-              queue_editor: queue_editor.State(
-                ..state,
-                message: "Waiting for the full queued input…",
-              ),
-            ),
-          ))
+            surfaces.service_queue_read,
+          )
         }
         False, snapshot_view.ReadOnly ->
           Model(
@@ -2268,22 +2271,25 @@ fn reconcile_queue_draft(model: Model) -> Model {
           draft.document.strand,
           draft.document.id,
         )
-      surfaces.service_queue_read(Model(
-        shared: Shared(
-          ..model.shared,
-          queue_request: queue_request.State(
-            ..model.shared.queue_request,
-            fetch: Some(fetch),
+      tui_model.run_shared(
+        Model(
+          shared: Shared(
+            ..model.shared,
+            queue_request: queue_request.State(
+              ..model.shared.queue_request,
+              fetch: Some(fetch),
+            ),
+          ),
+          view: View(
+            ..model.view,
+            queue_editor: queue_editor.State(
+              ..state,
+              message: "Explicitly reconciling with the current queue…",
+            ),
           ),
         ),
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.State(
-            ..state,
-            message: "Explicitly reconciling with the current queue…",
-          ),
-        ),
-      ))
+        surfaces.service_queue_read,
+      )
     }
     Some(_) | None -> model
   }
@@ -2462,10 +2468,13 @@ fn update_summary_key(key: keys.Key, model: Model) -> Model {
         view: View(..model.view, summary_surface: queue_editor.Closed),
       )
     keys.Char("r") ->
-      surfaces.service_jobs_read(Model(
-        shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
-        view: View(..model.view, summary_scroll: 0),
-      ))
+      tui_model.run_shared(
+        Model(
+          shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
+          view: View(..model.view, summary_scroll: 0),
+        ),
+        surfaces.service_jobs_read,
+      )
     keys.Char("1") ->
       Model(
         ..model,
@@ -2561,7 +2570,7 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
         ),
       )
     keys.Char("r") ->
-      surfaces.service_context_read(
+      tui_model.run_shared(
         Model(
           ..model,
           shared: Shared(
@@ -2572,6 +2581,7 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
             ),
           ),
         ),
+        surfaces.service_context_read,
       )
     keys.Char("a") ->
       Model(

@@ -526,6 +526,7 @@ pub fn new_model_with_clock(
       goal_awaiting: None,
       goal_request: None,
       goal_report: HoldGoalReport,
+      goal_observations: [],
       note_board: None,
       notes_requested: None,
       queue_request: queue_request.new(),

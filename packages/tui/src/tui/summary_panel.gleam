@@ -10,6 +10,7 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import machine/operation
 import session_view/live_jobs
@@ -53,6 +54,44 @@ pub fn lines(
     Completion -> completion_lines(completion, width)
     Usage -> usage_lines(usage, latest_context, queue, width)
     Jobs -> jobs_lines(jobs, jobs_notice, jobs_observation, selected_job, width)
+  }
+}
+
+/// The job cursor's position in a board that replaces `previous`, so the
+/// job it pointed at stays selected when the new board still lists it.
+///
+/// The cursor is an index into the jobs list, and a fresh board can list
+/// the same jobs in another order or drop some, so the job is found again
+/// by its stable ID. When the old board was for another strand, the cursor
+/// pointed past its end, or the job is gone, the cursor returns to the
+/// first job. The terminal calls this after `surfaces.receive_jobs` has
+/// taken the board into the session state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// summary_panel.follow_selected_job(2, model.shared.jobs, board)
+/// ```
+@internal
+pub fn follow_selected_job(
+  selected: Int,
+  previous: Option(live_jobs.Board),
+  board: live_jobs.Board,
+) -> Int {
+  let old = case previous {
+    Some(previous) if previous.strand == board.strand ->
+      previous.jobs
+      |> list.drop(selected)
+      |> list.first
+    Some(_) | None -> Error(Nil)
+  }
+  case old {
+    Ok(job) ->
+      board.jobs
+      |> list.index_map(fn(item, index) { #(item.id, index) })
+      |> list.key_find(job.id)
+      |> result.unwrap(0)
+    Error(Nil) -> 0
   }
 }
 

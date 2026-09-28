@@ -693,6 +693,8 @@ pub fn mark_activity(model: Model) -> Model {
 ///   `clear_composer` did inside the send.
 /// - The queue editor. Each `queue_request.Notice` the call recorded is
 ///   shown by `queue_editor.show`, oldest first.
+/// - The goal inspector. Each `GoalObservation` the call recorded is applied
+///   to the inspector when it is open, oldest first, and dropped otherwise.
 ///
 /// ## Examples
 ///
@@ -717,13 +719,15 @@ pub fn hold_shared(model: Model, shared: TerminalShared) -> Model {
       )
   }
 
-  // The two surface edges read only what this call recorded, so a call
-  // that recorded nothing, which is nearly every call, costs two checks.
+  // The three surface edges read only what this call recorded, so a call
+  // that recorded nothing, which is nearly every call, costs three checks.
   let held = case shared.drafts_sent == model.shared.drafts_sent {
     True -> held
     False -> clear_composer(held)
   }
-  show_queue_notices(held)
+  held
+  |> show_queue_notices
+  |> show_goal_observations
 }
 
 /// Stores the result of `reducer`, a function over the shared record alone,
@@ -737,7 +741,6 @@ pub fn hold_shared(model: Model, shared: TerminalShared) -> Model {
 ///
 /// ```gleam
 /// tui_model.run_shared(model, outbound.discard_own_turn)
-/// ```
 @internal
 pub fn run_shared(
   model: Model,
@@ -763,6 +766,40 @@ fn show_queue_notices(model: Model) -> Model {
           ),
         ),
       )
+  }
+}
+
+// The goal inspector follows the board only while it is open; an
+// observation that arrives with the inspector closed has nothing to update,
+// and the next `/goal` builds the panel from `Shared.goal`.
+fn show_goal_observations(model: Model) -> Model {
+  case model.shared.goal_observations {
+    [] -> model
+    observations -> {
+      let overlay = case model.view.overlay {
+        GoalInspector(panel) ->
+          GoalInspector(list.fold(observations, panel, observe_goal))
+        other -> other
+      }
+      Model(
+        shared: Shared(..model.shared, goal_observations: []),
+        view: View(..model.view, overlay:),
+      )
+    }
+  }
+}
+
+// A board replaces the panel's board and its label; a failed refresh keeps
+// the board and says why it was not refreshed.
+fn observe_goal(
+  panel: focused_goal_panel.State,
+  observation: session_model.GoalObservation,
+) -> focused_goal_panel.State {
+  case observation {
+    session_model.GoalObserved(board:) ->
+      focused_goal_panel.observe(panel, board)
+    session_model.GoalUnavailable(reason:) ->
+      focused_goal_panel.unavailable(panel, reason)
   }
 }
 
