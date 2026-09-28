@@ -44,8 +44,8 @@ model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1745`
 `packages/tui/src/tui.gleam:1916` (`settle_update`)), or an `Arrived`
 that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
-(`tui/model.gleam:347` (`Model`)), whose `view` field already holds the
-terminal's etui render caches (`tui/model.gleam:320` (`Caches`)). The lane's
+(`tui/model.gleam:346` (`Model`)), whose `view` field already holds the
+terminal's etui render caches (`tui/model.gleam:278` (`Caches`)). The lane's
 outputs join the step's one outbox through `hold_channel`
 (`tui/model.gleam:725` (`hold_channel`)), and `runtime.take` returns
 them with the model (`tui/runtime.gleam:355` (`take`)).
@@ -402,7 +402,7 @@ reducer queues is the channelless arrival
 (`tui/inbound.gleam:1187` (`handle_connection_message`), its `None`
 arm). The input's own recording line is queued by `start_step` before
 the reducer runs
-(`tui/model.gleam:868` (`start_step`)); the terminal's shell keeps
+(`tui/model.gleam:871` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
 terminal maps `Recorded(recorder, message)` to
 `recording.append(recorder, recording.Arrived(message))`, which writes the
@@ -921,9 +921,10 @@ reasoning row and the indicator, so the count per tick was never fixed.
 Nothing in the types stops a terminal reducer from storing a shared result
 without `hold_shared`. The test driver `tui_test/stepping.step` therefore
 asserts that `Shared.outbox` is empty after every step it drives, which
-catches an effect left there at the end of a step. It cannot catch one
-stored without `hold_shared` and flushed by a later `hold_shared` in the
-same step, which would perform the effect late rather than lose it; the
+catches a result stored without `hold_shared` when it is the last shared
+call of the step. When a later `hold_shared` in the same step follows it,
+that call flushes the stranded effects, which are then performed late
+rather than lost, and the check sees an empty outbox; the
 effect-order tests in `effects_test` and `recording_effects_test` are what
 cover that.
 
