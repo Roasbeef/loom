@@ -935,7 +935,13 @@ page lacked was a way for the browser to ask, not the right to the read.
 of an observer's page (its cookie, key and nonce) can make the daemon read
 and send up to a hundred sequences of history per press, one read at a
 time on the page's lane, which is what the same person's terminal may
-already ask for. The observer's page is no longer free of handlers, so
+already ask for. A press also raises that page's row limit from 150 to
+300 for the rest of the page's life (`component.held_rows`), so an
+observer's page can hold up to twice the rows, and about a fifth more
+memory than the plain-row page Markdown was measured against (#590). The
+socket also parses every frame an observer sends, up to the 64 KiB limit,
+where it used to drop each one unread. The observer's page is no longer
+free of handlers, so
 "an observer's view attaches no handler" in the operator addendum now
 reads "an observer's view attaches only the Load older click".
 
