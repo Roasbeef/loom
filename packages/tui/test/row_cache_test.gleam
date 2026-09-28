@@ -42,7 +42,7 @@ fn checked_layout(model, width) {
     tui_model.Model(
       ..model,
       record_cache_valid: False,
-      view: tui_model.View(..model.view, record_line_cache: dict.new()),
+      view: tui_model.Caches(..model.view, record_line_cache: dict.new()),
       rendered_revision: -1,
     )
     |> fn(value) { tui.update(backend.Resize(width, 40), value) }

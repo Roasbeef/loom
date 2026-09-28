@@ -114,7 +114,7 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
     render.view(
       tui_model.Model(
         ..drafting,
-        view: tui_model.View(..drafting.view, frame_cache: None),
+        view: tui_model.Caches(..drafting.view, frame_cache: None),
       ),
       geometry.rect_new(0, 0, drafting.width, drafting.height),
     ).0

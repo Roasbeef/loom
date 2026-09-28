@@ -35,7 +35,7 @@ import session_view/transcript_lines.{
 import tui/layout
 import tui/live_tail
 import tui/markdown
-import tui/model.{type Model, Model, View} as tui_model
+import tui/model.{type Model, Caches, Model} as tui_model
 import tui/render
 import tui/surfaces
 import tui/transcript_anchor
@@ -168,7 +168,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
         restored_workspace: None,
         rendered_revision: cached.render_revision,
         rendered_row_count:,
-        view: View(..cached.view, rendered_rows:, live_tail:),
+        view: Caches(..cached.view, rendered_rows:, live_tail:),
         revealed_rows:,
         rendered_anchors:,
         rendered_gutters:,
@@ -199,7 +199,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
     False ->
       Model(
         ..after,
-        view: View(..after.view, diff_rows: [], diff_line_cache: dict.new()),
+        view: Caches(..after.view, diff_rows: [], diff_line_cache: dict.new()),
         diff_row_count: 0,
         diff_worktree_source: #(None, 0),
       )
@@ -224,7 +224,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
           let count = list.length(rows)
           Model(
             ..after,
-            view: View(
+            view: Caches(
               ..after.view,
               diff_rows: rows,
               diff_line_cache: line_cache,
@@ -330,7 +330,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         |> cached_record_lines(width, previous)
       Model(
         ..model,
-        view: View(
+        view: Caches(
           ..model.view,
           record_rows:,
           record_line_cache:,
@@ -366,7 +366,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       // the release of retired text belongs to the full rebuild.
       Model(
         ..model,
-        view: View(
+        view: Caches(
           ..model.view,
           record_rows: list.append(newest_rows, model.view.record_rows),
           record_line_cache: dict.merge(model.view.record_line_cache, appended),

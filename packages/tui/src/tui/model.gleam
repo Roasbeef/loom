@@ -331,8 +331,8 @@ pub type StrandWorkspace {
 /// mouse selection writes here. A second host keeps its own view state
 /// beside the same model (ADR-014, the third blocker).
 @internal
-pub type View {
-  View(
+pub type Caches {
+  Caches(
     /// The wrapped rows of the whole transcript, durable and live.
     rendered_rows: List(span.Line),
     /// The wrapped rows of the durable records alone.
@@ -369,11 +369,11 @@ pub type View {
 /// ## Examples
 ///
 /// ```gleam
-/// let view = tui_model.empty_view()
+/// let caches = tui_model.empty_caches()
 /// ```
 @internal
-pub fn empty_view() -> View {
-  View(
+pub fn empty_caches() -> Caches {
+  Caches(
     rendered_rows: [],
     record_rows: [],
     live_tail: live_tail.new(),
@@ -390,14 +390,14 @@ pub fn empty_view() -> View {
 /// as its view.
 @internal
 pub type Model =
-  State(View)
+  State(Caches)
 
 /// The immutable presentation state, with a host's view state as `view`.
 ///
 /// The constructor is `Model`, the name every reducer builds and updates
 /// it by. The type takes the host's view state as a parameter so that the
 /// state a reducer decides names no etui type of its own; the terminal's
-/// `Model` is `State(View)`.
+/// `Model` is `State(Caches)`.
 ///
 /// Published `@internal` so the virtual-backend harness can build a state
 /// by hand and drive the real loop over it. Nothing outside this package

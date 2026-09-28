@@ -936,7 +936,7 @@ pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
     render.view(
       tui_model.Model(
         ..initial,
-        view: tui_model.View(..initial.view, frame_cache: None),
+        view: tui_model.Caches(..initial.view, frame_cache: None),
       ),
       geometry.rect_new(0, 0, 40, 12),
     ).0

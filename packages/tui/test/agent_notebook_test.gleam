@@ -297,7 +297,7 @@ pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
     render.view(
       tui_model.Model(
         ..closed,
-        view: tui_model.View(..closed.view, frame_cache: None),
+        view: tui_model.Caches(..closed.view, frame_cache: None),
       ),
       geometry.rect_new(0, 0, 100, 30),
     ).0

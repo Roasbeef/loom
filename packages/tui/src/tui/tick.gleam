@@ -31,7 +31,7 @@ import tui/inbound
 import tui/interaction
 import tui/job_runner
 import tui/layout
-import tui/model.{type Model, FrameCache, Model, Replaying, View} as tui_model
+import tui/model.{type Model, Caches, FrameCache, Model, Replaying} as tui_model
 import tui/pacing
 import tui/render
 import tui/session_control
@@ -420,7 +420,7 @@ pub fn refresh_frame_cache(
         ..paced,
         frame_debt: pacing.FrameSettled,
         last_frame_ms: now,
-        view: View(
+        view: Caches(
           ..paced.view,
           frame_cache: Some(FrameCache(
             screen:,

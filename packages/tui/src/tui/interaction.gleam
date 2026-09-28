@@ -50,10 +50,10 @@ import tui/job
 import tui/layout
 import tui/model.{
   type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Attached,
-  DaemonSelector, DiffHidden, DiffVisible, FrameCache, GoalInspector, Model,
-  ModelSelector, Newer, NoClipboard, NoOverlay, Older, OverlaySubmission,
+  Caches, DaemonSelector, DiffHidden, DiffVisible, FrameCache, GoalInspector,
+  Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older, OverlaySubmission,
   PeerLinkManager, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  TerminalClipboard, View,
+  TerminalClipboard,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -1240,7 +1240,7 @@ pub fn clear_selection(model: Model) -> Model {
     ..model,
     selection: None,
     selection_gutters: [],
-    view: View(..model.view, selection_frame: None),
+    view: Caches(..model.view, selection_frame: None),
   )
 }
 
@@ -1279,7 +1279,7 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
             ..model,
             selection: None,
             selection_gutters: [],
-            view: View(..model.view, selection_frame: None),
+            view: Caches(..model.view, selection_frame: None),
             diff_scroll_offset: 0,
             worktree: worktree_view.State(
               ..model.worktree,
@@ -1294,7 +1294,7 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
             ..model,
             selection: Some(selection.start(layout.hit_area(model, at), at)),
             selection_gutters:,
-            view: View(..model.view, selection_frame: Some(shown)),
+            view: Caches(..model.view, selection_frame: Some(shown)),
           )
         }
       }
@@ -1328,7 +1328,7 @@ pub fn finish_selection(model: Model, at: geometry.Position) -> Model {
             ..model,
             selection: None,
             selection_gutters: [],
-            view: View(..model.view, selection_frame: None),
+            view: Caches(..model.view, selection_frame: None),
           )
         False -> {
           let shown =

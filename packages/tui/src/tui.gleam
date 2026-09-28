@@ -637,7 +637,7 @@ pub fn new_model_with_clock(
     selection_gutters: [],
     clipboard: NoClipboard,
     record_cache_epoch: 0,
-    view: tui_model.empty_view(),
+    view: tui_model.empty_caches(),
   )
 }
 
@@ -1794,7 +1794,7 @@ fn apply_input(event: msg.Event, model: Model) -> Model {
         height:,
         selection: None,
         selection_gutters: [],
-        view: tui_model.View(..model.view, selection_frame: None),
+        view: tui_model.Caches(..model.view, selection_frame: None),
       )
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame

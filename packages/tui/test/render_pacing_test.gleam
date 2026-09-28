@@ -337,7 +337,7 @@ pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
     render.view(
       tui_model.Model(
         ..backlogged,
-        view: tui_model.View(..backlogged.view, frame_cache: None),
+        view: tui_model.Caches(..backlogged.view, frame_cache: None),
       ),
       geometry.rect_new(0, 0, 84, 24),
     ).0
@@ -346,7 +346,7 @@ pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
     render.view(
       tui_model.Model(
         ..scrolled,
-        view: tui_model.View(..scrolled.view, frame_cache: None),
+        view: tui_model.Caches(..scrolled.view, frame_cache: None),
       ),
       geometry.rect_new(0, 0, 84, 24),
     ).0
@@ -410,7 +410,7 @@ pub fn the_idle_strand_snap_reveals_the_trailing_frame_test() {
     render.view(
       tui_model.Model(
         ..settled,
-        view: tui_model.View(..settled.view, frame_cache: None),
+        view: tui_model.Caches(..settled.view, frame_cache: None),
       ),
       geometry.rect_new(0, 0, 84, 24),
     )

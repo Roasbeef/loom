@@ -500,7 +500,7 @@ pub fn a_projection_keeping_the_cache_matches_one_that_kept_nothing_test() {
             painted,
             tui_model.Model(
               ..painted,
-              view: tui_model.View(..painted.view, live_tail: live_tail.new()),
+              view: tui_model.Caches(..painted.view, live_tail: live_tail.new()),
               rendered_revision: painted.rendered_revision - 1,
             ),
           )
