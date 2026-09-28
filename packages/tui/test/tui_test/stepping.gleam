@@ -20,6 +20,13 @@ import tui/msg
 /// The step the shipped loop takes for `event`, at `model.shared.stamp`,
 /// with the effects it decided returned rather than performed.
 ///
+/// It also checks, after every step it drives, that the shared record's
+/// outbox is empty. A terminal reducer stores the result of each call into
+/// a function over `Shared` through `tui_model.hold_shared`, which moves
+/// what that call queued into the step's own outbox; a result stored any
+/// other way leaves its effects on `Shared.outbox`, where the runtime never
+/// looks, so they would never be performed.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -29,7 +36,10 @@ pub fn step(
   event: backend.InputEvent,
   model: tui_model.Model,
 ) -> #(tui_model.Model, List(effect.Effect)) {
-  tui.step(message(event, model), model)
+  let #(next, effects) = tui.step(message(event, model), model)
+  assert next.shared.outbox == []
+    as "a shared call's effects were stored without hold_shared"
+  #(next, effects)
 }
 
 /// The message the shipped loop builds for `event`, at `model.shared.stamp`
