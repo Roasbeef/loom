@@ -201,8 +201,14 @@ through `submit`, the session's mutations. A read-only host never calls
   message are Markdown wherever their body is shown; prompts, tool calls,
   results and patches are not. The line builders put agent prose in
   `ToolDetail` rows (a peer message, an expanded `agent_wait` report) so
-  the terminal's rule is one speaker set, and the web view's cards key
-  their bodies as `ToolDetail` lines for the same reason.
+  the terminal's rule is one speaker set; the web view's result, nudge
+  and peer cards draw their bodies as Markdown too.
+- **`turns` keys a turn's work by its input.** `Work.key` is
+  `work:<input key>`, or `work:window-start` for the turn the window opens
+  inside, never the key of the work's first item. The window drops its
+  oldest records as new ones arrive, and a key naming the first item would
+  change on each such capture, which makes a keyed host replace and redraw
+  the whole turn (`web_view`'s `lane_memo_test`).
 
 ## Deep Docs
 
