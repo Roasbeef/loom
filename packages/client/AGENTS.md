@@ -1488,7 +1488,16 @@ catalogue without opening runtimes. Explicit admission invokes
   operator's say over that second door — `off`/`steer`/`wake` from a
   `[schedules]` table — and `default_policy` is **`ModelSchedulesSteer`**: the
   tools are registered and a model may create schedules, but none of
-  them can wake an idle strand until the operator writes `"wake"`. The
+  them can wake an idle strand until the operator writes
+  `[schedules] model_created = "wake"`. `off` disables model creation;
+  `steer` injects only into an open run; `wake` also permits fresh runs on
+  idle strands when the schedule requests waking. Schedules onto subagents
+  always steer. Every recurring schedule carries `expires_after_s`,
+  defaulting to and capped at 604800 seconds (seven days), measured from
+  the scanner's first durable observation. One-shots fire at most once and
+  may fire after their due time. Expiry bounds one schedule, not provider
+  spending: a model can
+  create another, so unattended check-ins require an operator opt-in. The
   design note's addendum has the whole history — the feature shipped
   operator-only, reopened with an open default on the strength of the
   per-schedule expiry, and settled on `steer` once #161 showed that
