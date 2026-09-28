@@ -3,8 +3,10 @@ import etui/widgets/textarea as text_area
 import filepath
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
@@ -301,6 +303,37 @@ pub fn process_identity_distinguishes_one_process_lifetime_test() {
   host_bootstrap.close_server_process(process_port)
   assert_process_stops(pid, 20)
   let _ = simplifile.delete(root)
+}
+
+// A wrapper leads its own process group from the moment spawn_server returns.
+// The port learns a child's pid as soon as it is forked, but the child calls
+// setsid(2) afterwards, on its own schedule; a group signal sent inside that
+// window reaches nobody, and the wrapper outlives its cleanup. Under load the
+// window was wide enough to fail the lifetime test above. Twenty spawns make an
+// early return near-certain to be caught, since an unsettled child was seen on
+// about one spawn in five even on an idle host. Procfs names the group
+// directly, so the check needs it; Darwin still runs the lifetime tests.
+pub fn spawned_wrapper_leads_its_own_process_group_test() {
+  case host_bootstrap.path_exists("/proc/self/stat") {
+    False -> Nil
+    True -> {
+      let root = test_root("process-group")
+      let log = filepath.join(root, "sleep.log")
+      let _ = simplifile.delete(root)
+      let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
+      int.range(from: 0, to: 20, with: Nil, run: fn(_, _) {
+        let assert Ok(#(process_port, pid)) =
+          host_bootstrap.spawn_server("/bin/sleep", ["30"], root, log)
+        assert process_group(pid) == Ok(pid)
+          as "a spawned wrapper must already lead its own process group"
+        host_bootstrap.terminate_process_group(pid)
+        host_bootstrap.close_server_process(process_port)
+        assert_process_stops(pid, 20)
+      })
+      let _ = simplifile.delete(root)
+      Nil
+    }
+  }
 }
 
 pub fn paused_server_dies_with_launcher_before_release_test() {
@@ -694,6 +727,21 @@ fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
     })
   assert observed == poll.Answered(Nil)
     as "the native process must be observed absent before replacement"
+}
+
+// The command name in a stat line is parenthesised and may hold spaces, so
+// the fields are counted from the last closing parenthesis: state, parent,
+// then the process group.
+fn process_group(pid: Int) -> Result(Int, Nil) {
+  use stat <- result.try(
+    simplifile.read("/proc/" <> int.to_string(pid) <> "/stat")
+    |> result.replace_error(Nil),
+  )
+  use fields <- result.try(list.last(string.split(stat, ") ")))
+  case string.split(fields, " ") {
+    [_state, _parent, group, ..] -> int.parse(group)
+    _ -> Error(Nil)
+  }
 }
 
 fn test_root(name: String) -> String {
