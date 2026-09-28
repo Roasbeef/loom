@@ -103,6 +103,12 @@ pub type Shared(socket, recorder, source, replay_source) {
     parked_scrollback: Dict(#(String, String), history_view.State),
     /// Images the next submission carries, taken from the composer.
     attachments: List(composer.Attachment),
+    /// Held prompts the daemon handed back unsent (protocol-change/038),
+    /// oldest first, which no host's editor has taken yet. Shared because
+    /// the returned text is the prompt's last copy and every host must keep
+    /// it; each host moves it into its own editor, the terminal in
+    /// `inbound.restore_returned_drafts`, and empties the list.
+    returned_drafts: List(ReturnedDraft),
     /// Ownership marker only; the unsent encoded intent belongs to Channel.
     pending_submission: Option(SubmissionSource),
     /// The interrupt held until the operation it stopped settles.
@@ -408,6 +414,21 @@ pub type Interrupt {
     operation: Option(String),
     /// Legacy recordings retain replacement text until their terminal event.
     pending: Option(String),
+  )
+}
+
+/// A held prompt the daemon returned, addressed to the editor of the strand
+/// that submitted it.
+@internal
+pub type ReturnedDraft {
+  ReturnedDraft(
+    /// The session the prompt was submitted in, when it came back.
+    session: String,
+    /// The strand the prompt was submitted to; the return follows it even
+    /// when the operator has opened another strand since.
+    strand: String,
+    /// The prompt's text; attachments do not come back with it.
+    text: String,
   )
 }
 

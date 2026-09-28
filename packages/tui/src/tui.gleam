@@ -482,6 +482,7 @@ pub fn new_model_with_clock(
       quit: False,
       parked_scrollback: dict.new(),
       attachments: [],
+      returned_drafts: [],
       pending_submission: None,
       interrupt: None,
       submitting: None,

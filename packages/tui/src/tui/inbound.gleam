@@ -84,7 +84,8 @@ import tui/queue_request
 import tui/render
 import tui/session_model.{
   type Interrupt, type Peer, type UnconfirmedSubmission, Attached, Disconnected,
-  HoldGoalReport, Interrupt, Preview, Replaying, Shared, UnconfirmedSubmission,
+  HoldGoalReport, Interrupt, Preview, Replaying, ReturnedDraft, Shared,
+  UnconfirmedSubmission,
 }
 import tui/surfaces
 
@@ -1768,12 +1769,12 @@ fn receive_block_summary(
 // Restores a custody-returned prompt as a local draft (protocol-change/038).
 //
 // The daemon held the prompt only in memory, so the returned text must be
-// retained before the socket closes. An untouched composer simply becomes the draft.
-// A composer the operator is typing in keeps its text and grows the return
-// below it, separated by a blank line: discarding either half would lose
-// work the operator can see, and silently replacing the draft would move
-// text out from under the cursor. The notice names the strand and the
-// images the text cannot carry, so nothing about the return is invisible.
+// retained before the socket closes. The return is session state first: it
+// joins `Shared.returned_drafts`, addressed to the session and strand that
+// submitted it, and the notice names the strand and the images the text
+// cannot carry, so nothing about the return is invisible. The terminal then
+// moves it into the editor it owns, in `restore_returned_drafts`, in the
+// same call, so the composer holds the text before the next frame arrives.
 fn restore_returned_draft(
   model: Model,
   strand: String,
@@ -1781,38 +1782,15 @@ fn restore_returned_draft(
   text: String,
   attachment_count: Int,
 ) -> Model {
-  // A return follows the prompt's original recipient even if the operator
-  // has opened another strand since submitting it. Only that owner's draft
-  // can accept the returned text.
-  let model = case strand == model.shared.active_strand {
-    True ->
-      Model(
-        ..model,
-        view: View(
-          ..model.view,
-          input: append_returned_text(model.view.input, text),
-        ),
-      )
-    False -> {
-      let owner = #(model.shared.session, strand)
-      let saved =
-        dict.get(model.view.strand_workspaces, owner)
-        |> result.unwrap(empty_workspace())
-      let saved =
-        StrandWorkspace(..saved, input: append_returned_text(saved.input, text))
-      Model(
-        ..model,
-        view: View(
-          ..model.view,
-          strand_workspaces: dict.insert(
-            model.view.strand_workspaces,
-            owner,
-            saved,
-          ),
-        ),
-      )
-    }
-  }
+  let returned = ReturnedDraft(session: model.shared.session, strand:, text:)
+  let model =
+    Model(
+      ..model,
+      shared: Shared(
+        ..model.shared,
+        returned_drafts: list.append(model.shared.returned_drafts, [returned]),
+      ),
+    )
   let images = case attachment_count {
     0 -> ""
     n ->
@@ -1829,6 +1807,46 @@ fn restore_returned_draft(
       <> " — restored as a draft"
       <> images,
   )
+  |> restore_returned_drafts
+}
+
+// Moves every returned draft the session state holds into the terminal's
+// editors, oldest first, and empties `Shared.returned_drafts`.
+//
+// A return follows the prompt's original recipient even if the operator has
+// opened another strand since submitting it, so only that strand's editor
+// can accept the text: the composer when the strand is the one on screen,
+// and its parked workspace otherwise. An untouched editor simply becomes the
+// draft. One the operator is typing in keeps its text and grows the return
+// below it, separated by a blank line: discarding either half would lose
+// work the operator can see, and silently replacing the draft would move
+// text out from under the cursor.
+fn restore_returned_drafts(model: Model) -> Model {
+  let view =
+    list.fold(model.shared.returned_drafts, model.view, fn(view, returned) {
+      let ReturnedDraft(session:, strand:, text:) = returned
+      case
+        session == model.shared.session && strand == model.shared.active_strand
+      {
+        True -> View(..view, input: append_returned_text(view.input, text))
+        False -> {
+          let owner = #(session, strand)
+          let saved =
+            dict.get(view.strand_workspaces, owner)
+            |> result.unwrap(empty_workspace())
+          let saved =
+            StrandWorkspace(
+              ..saved,
+              input: append_returned_text(saved.input, text),
+            )
+          View(
+            ..view,
+            strand_workspaces: dict.insert(view.strand_workspaces, owner, saved),
+          )
+        }
+      }
+    })
+  Model(shared: Shared(..model.shared, returned_drafts: []), view:)
 }
 
 // Keep both copies when the owner has continued typing before custody returns.
