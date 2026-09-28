@@ -18,7 +18,7 @@
 #
 # Versions are read out of .github/workflows/ci.yml and
 # .github/actions/setup-toolchain/action.yml, not guessed: this file
-# tracks GLEAM_VERSION, GLEAM_PATCHES, OTP_VERSION, REBAR3_VERSION and
+# tracks GLEAM_VERSION, OTP_VERSION, REBAR3_VERSION and
 # GO_VERSION from there, and a bump to any of those is a deliberate edit
 # here, not something this build discovers on its own the way a
 # `latest`-tagged base image would.
@@ -31,19 +31,18 @@
 # reusing what happens to be installed on the box.
 FROM ubuntu:24.04
 
-# GLEAM_PATCHES pins gleam-lang/gleam#6246's fix for issue #248 (path
-# dependencies re-resolving through the Hex API on every invocation),
-# cherry-picked onto the GLEAM_VERSION tag; see ci.yml's own comment for
-# why the released compiler cannot be substituted here. The released
-# 1.18.1 binary silently heals a stale path-dependency line in
-# manifest.toml that this patched build refuses to touch — which is
-# exactly what turned PR #378's manifest drift into a red run instead of
-# a quiet no-op, and exactly why this image builds the compiler from
-# source rather than installing the release tarball.
+# GLEAM_VERSION is the release candidate 1.19.0-rc2. Its tag already
+# carries gleam-lang/gleam#6246's fix for issue #248 (path dependencies
+# re-resolving through the Hex API on every invocation), which 1.18.1
+# took as a cherry-picked commit. The released 1.18.1 binary silently
+# healed a stale path-dependency line in manifest.toml that the fixed
+# compiler refuses to touch, which is what turned PR #378's manifest
+# drift into a red run instead of a quiet no-op. This image still builds
+# the compiler from source, because the maintained patches in
+# scripts/toolchain/gleam are applied to the tag.
 ARG OTP_VERSION=29.0.5
 ARG REBAR3_VERSION=3.27.0
-ARG GLEAM_VERSION=1.18.1
-ARG GLEAM_PATCHES=860f8224ddb7e1ecb7f983fb622ede12466225e5
+ARG GLEAM_VERSION=1.19.0-rc2
 ARG GO_VERSION=1.26.3
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -109,12 +108,12 @@ RUN curl -fsSL -o /usr/local/bin/rebar3 \
 	&& chmod +x /usr/local/bin/rebar3 \
 	&& rebar3 --version
 
-# --- Gleam, built from source with the same patch CI applies -----------
+# --- Gleam, built from source with the same patches CI applies ---------
 # This mirrors .github/actions/setup-toolchain/action.yml's
-# "Build Gleam ... from source" step line for line: clone the release
-# tag at depth 1, cherry-pick each patch commit in order with -X ours (the
-# only conflict in practice is CHANGELOG.md, whose unreleased-notes
-# section neither CI nor a developer reads from), then build gleam-bin —
+# "Build Gleam ... from source" step: clone the release tag at depth 1,
+# apply every scripts/toolchain/gleam/*.patch in filename order with
+# `git apply`, so a patch that no longer matches fails the build, then
+# build gleam-bin —
 # the workspace member that produces the `gleam` executable — in release
 # mode. A Rust toolchain is needed only for this step; it is not part of
 # Loom's own build and nothing downstream of this layer depends on cargo
@@ -129,11 +128,6 @@ RUN set -eux; \
 	git -C "$src" remote add origin https://github.com/gleam-lang/gleam; \
 	git -C "$src" fetch --depth 1 origin "refs/tags/v${GLEAM_VERSION}"; \
 	git -C "$src" checkout -q FETCH_HEAD; \
-	for patch in ${GLEAM_PATCHES}; do \
-		git -C "$src" fetch --depth 2 origin "$patch"; \
-		git -C "$src" -c user.name=signoff-image -c user.email=signoff-image@localhost \
-			cherry-pick -X ours "$patch"; \
-	done; \
 	for patch in /opt/loom-gleam-patches/*.patch; do \
 		git -C "$src" apply "$patch"; \
 	done; \

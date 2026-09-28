@@ -2,8 +2,9 @@
 #
 # Two stages. The build stage installs the same toolchain
 # scripts/signoff/Dockerfile (branch build/signoff-container) installs for
-# the test signoff: Ubuntu 24.04, OTP 29, Gleam 1.18.1 built from source
-# with the CI patch for issue #248, Go, the C toolchain esqlite3_nif.so
+# the test signoff: Ubuntu 24.04, OTP 29, Gleam 1.19.0-rc2 built from
+# source with the maintained compiler patches, Go, the C toolchain
+# esqlite3_nif.so
 # needs, and runs `make codemode-seed` and `make install` the same way a
 # developer building from source would (docs/distribution.md,
 # "Installing from a checkout"). The runtime stage starts over from a slim
@@ -23,7 +24,7 @@
 # the traded-off boundary that comes with the flags that close the gap.
 #
 # Versions below track the same four files scripts/signoff/Dockerfile
-# tracks: .github/workflows/ci.yml (GLEAM_PATCHES) and
+# tracks: .github/workflows/ci.yml and
 # .github/actions/setup-toolchain/action.yml (OTP_VERSION, REBAR3_VERSION,
 # GLEAM_VERSION, GO_VERSION). A bump to any of those is a deliberate edit
 # here, not something a `latest`-tagged base image would discover on its
@@ -45,8 +46,7 @@ FROM --platform=linux/amd64 ubuntu:24.04 AS build
 
 ARG OTP_VERSION=29.0.5
 ARG REBAR3_VERSION=3.27.0
-ARG GLEAM_VERSION=1.18.1
-ARG GLEAM_PATCHES=860f8224ddb7e1ecb7f983fb622ede12466225e5
+ARG GLEAM_VERSION=1.19.0-rc2
 ARG GO_VERSION=1.26.3
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -89,14 +89,14 @@ RUN curl -fsSL -o /usr/local/bin/rebar3 \
 	&& chmod +x /usr/local/bin/rebar3 \
 	&& rebar3 --version
 
-# --- Gleam, built from source with the same patch CI applies ------------
+# --- Gleam, built from source with the same patches CI applies ----------
 # Mirrors .github/actions/setup-toolchain/action.yml's "Build Gleam ...
-# from source" step: the released 1.18.1 binary silently heals a stale
-# manifest.toml path-dependency line that a tree with many path
-# dependencies needs re-checked against Hex on every invocation
-# (issue #248, gleam-lang/gleam#6244); GLEAM_PATCHES cherry-picks the
-# upstream fix (#6246) onto the release tag. A Rust toolchain is needed
-# only for this step and is removed once gleam is built.
+# from source" step: the release tag with every
+# scripts/toolchain/gleam/*.patch applied in filename order. The
+# 1.19.0-rc2 tag already carries the upstream fix for issue #248
+# (gleam-lang/gleam#6246), which 1.18.1 took as a cherry-picked commit.
+# A Rust toolchain is needed only for this step and is removed once
+# gleam is built.
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 COPY scripts/toolchain/gleam/ /opt/loom-gleam-patches/
@@ -107,11 +107,6 @@ RUN set -eux; \
 	git -C "$src" remote add origin https://github.com/gleam-lang/gleam; \
 	git -C "$src" fetch --depth 1 origin "refs/tags/v${GLEAM_VERSION}"; \
 	git -C "$src" checkout -q FETCH_HEAD; \
-	for patch in ${GLEAM_PATCHES}; do \
-		git -C "$src" fetch --depth 2 origin "$patch"; \
-		git -C "$src" -c user.name=docker-image -c user.email=docker-image@localhost \
-			cherry-pick -X ours "$patch"; \
-	done; \
 	for patch in /opt/loom-gleam-patches/*.patch; do \
 		git -C "$src" apply "$patch"; \
 	done; \

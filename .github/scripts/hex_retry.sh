@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Run one command, and run it again when the only thing wrong was Hex.
 #
-# Gleam 1.18.1 re-resolves path dependencies against the Hex API on
-# successive invocations (issue #248, gleam-lang/gleam#6244), and hosted
-# runners share egress addresses, so a burst of pull requests trips Hex's
-# per-address rate limit and a job dies a minute in with
+# Hosted runners share egress addresses, so a burst of pull requests can
+# exhaust Hex's per-address rate limit and a job dies a minute in with
 #
 #     The rate limit for the Hex API has been exceeded
 #
-# having proved nothing about the code. That sentence, the transport
+# having proved nothing about the code. Gleam 1.18.1 made this much more
+# likely by re-resolving path dependencies against the Hex API on
+# successive invocations (issue #248, gleam-lang/gleam#6244). Gleam 1.19
+# carries the fix, so each invocation now makes fewer Hex requests, but
+# the shared limit remains. That sentence, the transport
 # failure Gleam prints when the same limit answers 429 or 502 on a
 # release lookup ("error sending request for url (https://hex.pm/..."),
 # and the generic "Hex API failure" header are the only signals this

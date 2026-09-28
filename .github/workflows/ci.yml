@@ -78,38 +78,28 @@
 #                      used to have.
 #
 # One shared hazard, not created by this split but not fixed by it either:
-# issue #248 documents a Gleam 1.18.1 bug where a path dependency's
-# freshness fingerprint is rewritten one at a time, so successive `gleam`
-# invocations against the same tree keep re-resolving through the Hex API
-# regardless of how warm the build cache is. That was already true of the
-# old single job's later stages; running more jobs in parallel means more
-# concurrent Hex hits from the runner pool's shared egress addresses, which
-# is why every step below that invokes `gleam` — in `deps`, every check
-# bucket, and the two gleam-invoking `static` targets — stays wrapped in
-# `.github/scripts/hex_retry.sh`, exactly as the old job wrapped its own
-# gleam-invoking steps.
+# issue #248 documented a Gleam 1.18.1 bug where a path dependency's
+# freshness fingerprint was rewritten one at a time, so successive `gleam`
+# invocations against the same tree kept re-resolving through the Hex API
+# regardless of how warm the build cache was. Gleam 1.19 carries the fix
+# (gleam-lang/gleam#6246), which 1.18.1 builds took as a cherry-picked
+# commit. Running jobs in parallel still means concurrent Hex hits from
+# the runner pool's shared egress addresses, so every step below that
+# invokes `gleam` — in `deps`, every check bucket, and the two
+# gleam-invoking `static` targets — stays wrapped in
+# `.github/scripts/hex_retry.sh`: the fix removes the repeated
+# re-resolution but not every way a shared-egress runner can reach Hex's
+# rate limit.
 #
-# Gleam compiler: every `setup-toolchain` use below also passes
-# `gleam-patches: ${{ env.GLEAM_PATCHES }}`, which builds the compiler
-# from the GLEAM_VERSION release tag with that gleam-lang/gleam commit
-# cherry-picked on top, instead of installing the release unmodified.
-# It is a patched release, not a build from `main`: an earlier version
-# of this pin built `main` at the fix commit directly, which passed
-# `deps` but failed `gleam format --check` across the tree, because
-# `main`'s formatter had drifted from 1.18.1's between the release and
-# the fix — reformatting the tree to an unreleased formatter would fail
-# every contributor's `make fmt-check` on the released compiler they
-# actually run locally. Building the tag plus one cherry-picked commit
-# keeps the formatter, and everything else this pin is not patching,
-# byte-for-byte the release. The commit is past the fingerprint fix
-# (gleam-lang/gleam#6246), so the bug the paragraph above describes does
-# not reproduce on this compiler; `hex_retry.sh` stays wrapped around
-# every gleam-invoking step regardless, belt-and-braces until a release
-# carries the fix, since a fixed compiler removes the repeated
-# re-resolution but not every other way a shared-egress runner can trip
-# Hex's rate limit. Drop `GLEAM_PATCHES` and every `gleam-patches:` line
-# the day a release does carry it — GLEAM_VERSION alone is the pin from
-# then on, exactly as it was before this variable existed.
+# Gleam compiler: `setup-toolchain` builds the compiler from the
+# GLEAM_VERSION release tag with every scripts/toolchain/gleam/*.patch
+# applied, rather than installing the release binary. It is a patched
+# release, not a build from `main`: `main`'s formatter and warning set
+# drift from the release between tags, and reformatting the tree to an
+# unreleased formatter would fail every contributor's `make fmt-check` on
+# the released compiler they run locally. The action still accepts a
+# `gleam-patches` list of upstream commits to cherry-pick onto the tag;
+# none is needed on 1.19.0-rc2, so no job passes one.
 #
 #   the macOS gate    the same package gate on the second platform §0.3
 #                     demands, plus the Seatbelt self-test and both
@@ -226,23 +216,13 @@ concurrency:
 env:
   # Exact, never floating. The rationale for each number, and where it
   # came from, is in .github/actions/setup-toolchain/action.yml.
-  GLEAM_VERSION: "1.18.1"
-  # A space-separated list of commits on gleam-lang/gleam's `main`, past
-  # the fix for issue #248 / gleam-lang/gleam#6244 (merged 2026-08-31 as
-  # gleam-lang/gleam#6246), cherry-picked onto the GLEAM_VERSION tag and
-  # built from source instead of installing the 1.18.1 release every job
-  # below would otherwise use — see the "Gleam compiler" paragraph
-  # further down this file, under the six-job Linux gate header, and
-  # docs/distribution.md for the developer-facing note. Building the
-  # tag plus this one commit, rather than `main` at the commit, is
-  # deliberate: `main`'s formatter has already drifted from 1.18.1's, so
-  # a build straight from `main` passes `deps` but fails `gleam format
-  # --check` across the tree on an unreleased formatter every
-  # contributor's local, released compiler disagrees with. Remove this
-  # variable and the `gleam-patches` line at every `setup-toolchain` use
-  # below the day a Gleam release carries this commit; GLEAM_VERSION
-  # alone is the pin from then on.
-  GLEAM_PATCHES: "860f8224ddb7e1ecb7f983fb622ede12466225e5"
+  GLEAM_VERSION: "1.19.0-rc2"
+  # 1.19.0-rc2 is a release candidate. It is pinned because it already
+  # contains gleam-lang/gleam#6246 (the path-dependency fingerprint fix
+  # for issue #248), which 1.18.1 needed as a cherry-picked commit, and
+  # because the maintained patches in scripts/toolchain/gleam have been
+  # rebased onto it. When 1.19.0 ships, this line becomes "1.19.0",
+  # provided those patches still apply to the final tag.
   OTP_VERSION: "29.0.5"
   REBAR3_VERSION: "3.27.0"
   GO_VERSION: "1.26.3"
@@ -325,7 +305,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -428,7 +407,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -521,7 +499,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -569,7 +546,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -619,7 +595,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -800,7 +775,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -875,7 +849,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -938,7 +911,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -1123,7 +1095,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -1397,7 +1368,6 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}

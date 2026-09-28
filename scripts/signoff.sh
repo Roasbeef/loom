@@ -97,14 +97,14 @@
 # reproduce the sequential run when a failure needs to be told apart
 # from a concurrency effect.
 #
-# Hex. Gleam 1.18.1 as released re-resolves path dependencies through
+# Hex. Gleam 1.18.1 as released re-resolved path dependencies through
 # the Hex API on every invocation (issue #248), and seven lanes at once
 # is a burst the per-address rate limit answers with 429 — the first
 # dry run of this script lost five lanes to exactly that within seconds.
-# The real fix is the compiler CI builds, the release tag plus the fix
-# commit named by GLEAM_PATCHES in .github/workflows/ci.yml; run that
-# compiler here too. Every gleam-invoking lane is wrapped in
-# .github/scripts/hex_retry.sh regardless, as CI wraps its own steps.
+# Gleam 1.19 carries the fix (gleam-lang/gleam#6246); run the compiler
+# GLEAM_VERSION in .github/workflows/ci.yml names. Every gleam-invoking
+# lane is wrapped in .github/scripts/hex_retry.sh regardless, as CI
+# wraps its own steps.
 #
 # Exit status is the gate's verdict. Every lane runs to completion even
 # after one fails, so one run reports everything wrong, and the status is

@@ -10,9 +10,12 @@
 #
 # Where the numbers come from:
 #
-#   gleam    1.18.1     the version in the development environment; above
+#   gleam    1.19.0-rc2 a release candidate, built from the tag with the
+#                       patches in scripts/toolchain/gleam applied; above
 #                       the >= 1.18.0 floor every packages/*/gleam.toml
-#                       declares.
+#                       declares, which stays at 1.18 because the tree
+#                       uses no 1.19 feature. Becomes 1.19.0 when that
+#                       release ships.
 #   otp      29.0.5     the development environment's Erlang/OTP (`erl`
 #                       reports OTP 29, ERTS 17.0.5); at the >= 29
 #                       floor. Published for both ubuntu-24.04 (amd64,
@@ -46,7 +49,9 @@ inputs:
       `v${gleam-version}` tag, in order, before the compiler is built
       from source. Repository patches in scripts/toolchain/gleam are
       applied afterward. With neither upstream nor repository patches,
-      the released binary is installed. See ci.yml for the upstream pin.
+      the released binary is installed. No job passes a list on Gleam
+      1.19.0-rc2, whose tag already carries the one upstream fix that
+      1.18.1 needed.
     required: false
     default: ""
   otp-version:
