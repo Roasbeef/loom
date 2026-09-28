@@ -270,7 +270,7 @@ The selection:
   `make check-<pkg>`, in the signoff's lane grouping.
 - **Other gates:** a change under `protocol/models/` runs
   `make model-check` (the P models, which need the P tool); a sandbox
-  change runs `make selftest`.
+  change runs the helper's `--self-test`.
 - **The full `make check`,** instead of a package list, for a change to
   `scripts/`, the `Makefile`, `.github/`, the image files, any package's
   `gleam.toml` or `manifest.toml`, the msgpack wire fixtures, or a path
@@ -286,27 +286,49 @@ For example, a `tui` change selects `tui` and `client` (whose tests take
 `client` without compiling its tests. A `session_view` change selects
 `session_view`, `tui`, `web_view`, `client` and `conformance`.
 
+Before the package lanes it builds what their feature-detected suites
+need, with the targets the signoff's preparation uses: `binaries`
+always, `codemode-seed` when `codemode`, `tools`, `cap` or `client` is
+selected, and `server-shipment` when `client` or `tui` is. It sets
+`LOOM_BOOTSTRAP_E2E_SERVER` and the fixture provider key as the signoff
+does, and after the lanes it runs the skip census over their logs, so a
+suite that printed SKIP instead of running fails the run.
+
 The selector also prints `signoff required` or `signoff not-required`.
 The owner's rule (2026-09-28): a change may land on `make
 check-affected` plus the targeted proofs for the changed code (the
 focused tests or drive that show the change does what it claims),
 with the Fable review's findings dispositioned. The full signoff
 (`make signoff-remote`) is still required when the selector says so:
-when it selected the full check, when the change touches the daemon
-(`packages/client`), the sandbox (`packages/sandbox`), or the wire (the
-msgpack fixtures, `session_view`'s `protocol.gleam` and
-`session_wire.gleam`), or when it changes more than two packages
-directly.
+
+- when it selected the full check;
+- when the change touches the daemon, meaning the packages loomd is
+  built from. That set is derived, not listed: `client` (which
+  `make server-shipment` exports as loomd) and every package it reaches
+  through `[dependencies]`, less `session_view` and `web_view`, which
+  the owner's ruling exempts. Today it is `client`, `host`, `core`,
+  `storage`, `session`, `machine`, `prompt`, `events`, `runtime`,
+  `broker`, `provider`, `tools`, `codemode`, `mcp` and `telemetry`;
+- when it touches the sandbox (`packages/sandbox`) or the wire (the
+  msgpack fixtures, `session_view`'s `protocol.gleam` and
+  `session_wire.gleam`);
+- when it changes more than two packages directly.
+
+So a change confined to `tui`, `session_view`, `web_view`, `web_client`,
+`lint`, `cap`, `ext`, the P models or the docs can land on
+`check-affected`.
 
 `check-affected` does not run what only the signoff runs: the bootstrap
-and shipped-daemon fixtures, the simulation soaks, the release and
-update verification, the skip census, and the enforcement expectations.
-That is why the changes above that reach those surfaces keep the
-signoff. The signoff, `make check` and CI are unchanged by it.
+fixtures under shell sabotage (`scripts/e2e_client_bootstrap.sh`), the
+simulation soaks, the release and update verification, and the
+enforcement expectations. That is why the changes above that reach
+those surfaces keep the signoff. The signoff, `make check` and CI are
+unchanged by it.
 
-It exits with the status of the first failed lane in the order the lanes
-are listed, after every lane has finished; per-lane logs are under
-`build/affected/`. Check that status directly, as above.
+It exits with the status of the first failure (static lane, then the
+lanes in listed order, then the skip census) after every lane has
+finished; per-lane logs are under `build/affected/`. Check that status
+directly, as above.
 
 ### Verify the claim, not the vicinity
 
