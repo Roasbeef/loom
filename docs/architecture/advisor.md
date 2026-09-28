@@ -733,7 +733,7 @@ which is the same reason the run-start notes digest is already
 suppressed.
 
 `advisor_payload` (`session_view/transcript_lines.gleam:1523`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`session_view/transcript_lines.gleam:1880`) renders
+`AdvisorMessage` variants and `advisor_lines` (`session_view/transcript_lines.gleam:1921`) renders
 them. Delivered advice and nudges shorter than 512 bytes show their
 complete bodies even in compact mode, with a delivery label. A longer one
 collapses in compact mode to its heading and, beneath it as dim text of

@@ -725,8 +725,15 @@ zero-width and tag codepoints before text reaches an etui span, and complete
 ANSI CSI and OSC sequences are stripped before Markdown parsing. Model text
 therefore never becomes terminal control traffic.
 
-`tui/markdown` walks Mork's CommonMark tree and emits etui spans directly; it
-never routes text through HTML or an ANSI renderer. `markdown.render` takes the
+`tui/markdown` walks the closed tree `session_view/markdown` parses, the same
+tree the web view draws, and emits etui spans directly; it never routes text
+through HTML or an ANSI renderer. The parser is linear in its input and bounds
+the tree's depth. Mork, which the terminal used before, took time exponential
+in a run of unclosed `[`, and because the live tail parses an answer again on
+every delta, an answer holding such a run hung the terminal. Agent prose is
+Markdown in both hosts: an answer, reasoning, a `ToolDetail` row, and in the
+line builders a sub-agent's report in an expanded `agent_wait` result and a
+peer's message, which are `ToolDetail` rows. `markdown.render` takes the
 width because tables must be measured before they are drawn: columns are
 sized in terminal cells, narrowed by fair share when the grid is too wide, and
 replaced by one labelled record per row only when a column cannot keep three

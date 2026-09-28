@@ -47,12 +47,15 @@ page keys and nonces, and the relay into the session's gateway.
   was built), the advisor's chip and the settled count. `strip_view` and `lane_view` draw them, memoized;
   `hue_class` and `ring_class` map a hue and an outlook to literal classes.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
-  drawn from `session_view/markdown`'s tree. `component` uses it for the
-  speakers the terminal renders as Markdown (assistant, reasoning, tool
-  detail); every other row stays a `pre`. The trees are parsed in
-  `update`, with the pieces, into `Model.parsed` (keyed by `Line`, reusing
-  the previous capture's tree for an unchanged line), and `lane_view`
-  takes them beside the pieces, so the view never parses.
+  drawn from `session_view/markdown`'s tree, the tree the terminal's
+  `tui/markdown` also draws. `component` uses it for the speakers the
+  terminal renders as Markdown (assistant, reasoning, tool detail) and for
+  the bodies of the result, nudge and peer cards, which are agent prose
+  the terminal draws as tool-detail rows; every other row stays a `pre`.
+  The trees are parsed in `update`, with the pieces, into `Model.parsed`
+  (keyed by `Line`, a card's body as a `ToolDetail` line, reusing the
+  previous capture's tree for an unchanged line), and `lane_view` takes
+  them beside the pieces, so the view never parses.
 - `component.{submit, decide}`: the two commands, through the engine's
   arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
   never offers remembering a grant for the session.
