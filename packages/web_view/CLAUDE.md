@@ -37,7 +37,8 @@ page keys and nonces, and the relay into the session's gateway.
   (the deadline timer fired). It holds no command.
 - `component.Model(socket)` (opaque): the lane, the filed frames
   (`session_view/inbox`), the last capture, its transcript blocks and the
-  turns laid out from them (`turns.Piece`), the agent rows, the roster, the
+  turns laid out from them (`turns.Piece`) with the Markdown trees of their
+  answers (`parsed`), the agent rows, the roster, the
   cache ledger and its miss notices, the agent `Strip`, the approvals, the
   connection `Status`, the operator `Notice` and the sent-draft count.
 - `component.Strip` and `component.Chip`: the listed agents (`line`,
@@ -45,6 +46,13 @@ page keys and nonces, and the relay into the session's gateway.
   label, and `running_ms`, how long its operation had run when the strip
   was built), the advisor's chip and the settled count. `strip_view` and `lane_view` draw them, memoized;
   `hue_class` and `ring_class` map a hue and an outlook to literal classes.
+- `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
+  drawn from `session_view/markdown`'s tree. `component` uses it for the
+  speakers the terminal renders as Markdown (assistant, reasoning, tool
+  detail); every other row stays a `pre`. The trees are parsed in
+  `update`, with the pieces, into `Model.parsed` (keyed by `Line`, reusing
+  the previous capture's tree for an unchanged line), and `lane_view`
+  takes them beside the pieces, so the view never parses.
 - `component.{submit, decide}`: the two commands, through the engine's
   arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
   never offers remembering a grant for the session.
@@ -97,7 +105,7 @@ page keys and nonces, and the relay into the session's gateway.
   lists, what the cache may claim and what an operator's input becomes on
   the wire are `session_view`'s.
 - **Derive per capture, never per render or per tick.** A capture is
-  projected once into blocks, pieces and the strip, and an idle refresh
+  projected once into blocks, pieces, Markdown trees and the strip, and an idle refresh
   that brings back the capture already drawn projects nothing. A tick
   rebuilds the strip only when a cache label changed; the browser counts
   elapsed time. Logic that decides something about the session
@@ -123,7 +131,10 @@ page keys and nonces, and the relay into the session's gateway.
 - **No handler or attribute from session text.** Button messages carry the
   daemon's escalation identity and sequence; cards are keyed by sequence
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever
-  `html.text`; nothing uses `unsafe_raw_html`.
+  `html.text`; nothing uses `unsafe_raw_html`. Rendered Markdown keeps the
+  same rule: a link is its label and its destination as text, never an
+  `href`; an image is text and is never loaded; an ordered list's numbers
+  and a fence's language are text; classes come from closed types.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
   in its own region outside the transcript, directly above the composer in
   the dock, the footer pinned to the viewport's bottom edge. A card

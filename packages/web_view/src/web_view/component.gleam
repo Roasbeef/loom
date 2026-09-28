@@ -53,6 +53,7 @@
 //// engine's command arms.
 
 import core/message
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -73,6 +74,7 @@ import session_view/cache_miss
 import session_view/cache_watch
 import session_view/connection_event
 import session_view/inbox.{type Inbox}
+import session_view/markdown
 import session_view/operator
 import session_view/protocol
 import session_view/reviewer_status
@@ -83,6 +85,7 @@ import session_view/transcript
 import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/turns
+import web_view/markdown_view
 
 /// The most frames one `Arrived` carries: the frame the selector matched
 /// and up to this many less one already waiting behind it.
@@ -256,6 +259,11 @@ pub opaque type Model(socket) {
     /// The same blocks laid out as turns (`session_view/turns`), derived
     /// with them.
     pieces: List(turns.Piece),
+    /// The Markdown tree of every line in `pieces` the page renders as
+    /// Markdown, keyed by the line. Derived with the pieces, and a line
+    /// already parsed for the last capture reuses its tree, so a capture
+    /// parses only the lines it changed and the view parses nothing.
+    parsed: Dict(Line, List(markdown.Block)),
     /// Every strand's agent row from the last capture (`agent_view`), and
     /// the reviewer rows it is observed with.
     agents: List(agent_view.Row),
@@ -343,6 +351,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
     shown: None,
     blocks: [],
     pieces: [],
+    parsed: dict.new(),
     agents: [],
     reviewers: [],
     roster: agent_roster.new(),
@@ -760,14 +769,63 @@ fn relaned(model: Model(socket)) -> Model(socket) {
     Some(#(cut, view)) -> {
       let blocks = transcript.blocks(cut, view, strand, model.notices)
       let latest = turns.latest(view, model.agents, strand)
+      let pieces = turns.pieces(blocks, view.strands, latest)
       Model(
         ..model,
         blocks:,
-        pieces: turns.pieces(blocks, view.strands, latest),
+        pieces:,
+        parsed: parsed_lines(pieces, model.parsed),
       )
       |> restripped
     }
   }
+}
+
+// The Markdown trees for the lines of `pieces` that are drawn as Markdown.
+// A line the previous capture already parsed takes its tree from `before`,
+// so an answer is parsed once when it lands rather than once per capture;
+// a line that left the window is dropped with the old table.
+fn parsed_lines(
+  pieces: List(turns.Piece),
+  before: Dict(Line, List(markdown.Block)),
+) -> Dict(Line, List(markdown.Block)) {
+  pieces
+  |> list.flat_map(piece_lines)
+  |> list.fold(dict.new(), fn(parsed, line) {
+    case body_of(line.speaker) {
+      Literal -> parsed
+      Markdown -> {
+        let tree =
+          dict.get(before, line)
+          |> result.lazy_unwrap(fn() { markdown.parse(line.text) })
+        dict.insert(parsed, line, tree)
+      }
+    }
+  })
+}
+
+// Every transcript line a piece draws through `line_element`.
+fn piece_lines(piece: turns.Piece) -> List(Line) {
+  case piece {
+    turns.Plain(block:) | turns.Commentary(block:) -> block_lines(block)
+    turns.Work(items:, ..) -> list.flat_map(items, item_lines)
+    turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Peer(..)
+    | turns.Missed(..) -> []
+  }
+}
+
+fn item_lines(item: turns.Item) -> List(Line) {
+  case item {
+    turns.Narrated(block:) -> block_lines(block)
+    turns.Step(detail:, ..) -> detail
+  }
+}
+
+fn block_lines(block: transcript_lines.Block) -> List(Line) {
+  list.map(block.rows, fn(row) { row.1 })
 }
 
 // The agent strip from the roster, the agent rows and the cache ledger, as
@@ -1086,6 +1144,18 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
   model.pieces
 }
 
+/// The Markdown trees of the lane's Markdown lines, derived with the
+/// pieces, which `lane_view` draws those lines from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.lane_view(component.pieces(model), component.parsed(model))
+/// ```
+pub fn parsed(model: Model(socket)) -> Dict(Line, List(markdown.Block)) {
+  model.parsed
+}
+
 /// The agent strip as the page draws it.
 ///
 /// ## Examples
@@ -1240,7 +1310,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session")], [
     heading(model),
     strip_view(model.strip),
-    lane_view(model.pieces),
+    lane_view(model.pieces, model.parsed),
     html.p([attribute.class("observer-bar")], [
       html.text(
         "Observer · read-only · you can follow this session; ask the owner for operator access",
@@ -1525,14 +1595,19 @@ fn status_glyph(status: agent_view.Status) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.lane_view(component.pieces(model))
+/// // component.lane_view(component.pieces(model), component.parsed(model))
 /// ```
-pub fn lane_view(pieces: List(turns.Piece)) -> Element(message) {
-  use <- element.memo([element.ref(pieces)])
+pub fn lane_view(
+  pieces: List(turns.Piece),
+  parsed: Dict(Line, List(markdown.Block)),
+) -> Element(message) {
+  use <- element.memo([element.ref(pieces), element.ref(parsed)])
   element.element("loom-follow", [attribute.class("follow")], [
     keyed.div(
       [attribute.class("transcript lane"), attribute.role("log")],
-      list.map(pieces, fn(piece) { #(piece_key(piece), piece_element(piece)) }),
+      list.map(pieces, fn(piece) {
+        #(piece_key(piece), piece_element(piece, parsed))
+      }),
     ),
   ])
 }
@@ -1549,9 +1624,12 @@ fn piece_key(piece: turns.Piece) -> String {
   }
 }
 
-fn piece_element(piece: turns.Piece) -> Element(message) {
+fn piece_element(
+  piece: turns.Piece,
+  parsed: Dict(Line, List(markdown.Block)),
+) -> Element(message) {
   case piece {
-    turns.Plain(block:) -> block_element(block)
+    turns.Plain(block:) -> block_element(block, parsed)
 
     // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
     // collapsed until the reader opens it. The fold opens and closes in the
@@ -1569,12 +1647,18 @@ fn piece_element(piece: turns.Piece) -> Element(message) {
           ],
           [html.text(turns.divider(worked))],
         ),
-        html.div([attribute.class("work-items")], list.map(items, item_element)),
+        html.div(
+          [attribute.class("work-items")],
+          list.map(items, item_element(_, parsed)),
+        ),
       ])
 
     // The turn still running is drawn open, with no divider to fold it.
     turns.Work(items:, folding: turns.Open, ..) ->
-      html.div([attribute.class("work open")], list.map(items, item_element))
+      html.div(
+        [attribute.class("work open")],
+        list.map(items, item_element(_, parsed)),
+      )
 
     turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
       html.div([attribute.class("spawn"), hue_class(hue)], [
@@ -1636,14 +1720,17 @@ fn piece_element(piece: turns.Piece) -> Element(message) {
     turns.Commentary(block:) ->
       html.div(
         [attribute.class("block"), attribute.class("commentary")],
-        list.map(block.rows, fn(row) { line_element(row.1) }),
+        list.map(block.rows, fn(row) { line_element(row.1, parsed) }),
       )
   }
 }
 
-fn item_element(item: turns.Item) -> Element(message) {
+fn item_element(
+  item: turns.Item,
+  parsed: Dict(Line, List(markdown.Block)),
+) -> Element(message) {
   case item {
-    turns.Narrated(block:) -> block_element(block)
+    turns.Narrated(block:) -> block_element(block, parsed)
     turns.Step(standing:, summary:, detail:, ..) ->
       html.div([attribute.class("step"), standing_class(standing)], [
         html.p([attribute.class("step-head")], [
@@ -1655,7 +1742,7 @@ fn item_element(item: turns.Item) -> Element(message) {
             html.text(standing_text(standing)),
           ]),
         ]),
-        ..list.map(detail, line_element)
+        ..list.map(detail, line_element(_, parsed))
       ])
   }
 }
@@ -1687,10 +1774,13 @@ fn standing_text(standing: turns.Standing) -> String {
 // A block drawn as the transcript draws it, one line per row. The blank a
 // terminal places between tool groups is spacing here, so a spacer block
 // never reaches the lane.
-fn block_element(block: transcript_lines.Block) -> Element(message) {
+fn block_element(
+  block: transcript_lines.Block,
+  parsed: Dict(Line, List(markdown.Block)),
+) -> Element(message) {
   html.div(
     [attribute.class("block")],
-    list.map(block.rows, fn(row) { line_element(row.1) }),
+    list.map(block.rows, fn(row) { line_element(row.1, parsed) }),
   )
 }
 
@@ -1702,10 +1792,63 @@ fn status_text(status: Status) -> String {
   }
 }
 
-fn line_element(line: Line) -> Element(message) {
-  html.pre([attribute.class("line"), speaker_class(line.speaker)], [
-    html.text(line.text),
-  ])
+fn line_element(
+  line: Line,
+  parsed: Dict(Line, List(markdown.Block)),
+) -> Element(message) {
+  case body_of(line.speaker) {
+    Literal ->
+      html.pre([attribute.class("line"), speaker_class(line.speaker)], [
+        html.text(line.text),
+      ])
+
+    // The tree was parsed in `update` when the capture landed
+    // (`parsed_lines`), so the view only draws it. The fallback parse is
+    // for a line the table does not hold, which `relaned` never produces;
+    // it keeps the view total rather than trusting that. Each row is its
+    // own tree, so an unclosed fence ends with its row.
+    Markdown -> {
+      let tree =
+        dict.get(parsed, line)
+        |> result.lazy_unwrap(fn() { markdown.parse(line.text) })
+      html.div(
+        [
+          attribute.class("line"),
+          speaker_class(line.speaker),
+          attribute.class("markdown"),
+        ],
+        markdown_view.blocks(tree),
+      )
+    }
+  }
+}
+
+// How a line's text is drawn: as Markdown or as it is.
+type Body {
+  Markdown
+  Literal
+}
+
+// The speakers whose text the terminal renders as Markdown
+// (`tui/render.speaker_rows`), so both hosts agree on which rows are
+// formatted. Everything else, tool output above all, stays preformatted.
+fn body_of(speaker: transcript_line.Speaker) -> Body {
+  case speaker {
+    transcript_line.Assistant
+    | transcript_line.Reasoning
+    | transcript_line.ToolDetail -> Markdown
+    transcript_line.System
+    | transcript_line.User
+    | transcript_line.ReasoningDigest
+    | transcript_line.SummarizedReasoning
+    | transcript_line.SummarizedAdvice
+    | transcript_line.ToolCall
+    | transcript_line.ToolResult
+    | transcript_line.ToolPatch
+    | transcript_line.ToolFailure
+    | transcript_line.Failure
+    | transcript_line.Spacer -> Literal
+  }
 }
 
 // A class per speaker, which is the whole of a line's styling here as in the

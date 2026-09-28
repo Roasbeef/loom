@@ -24,6 +24,7 @@ import lustre/effect
 import lustre/element
 import session_view/approval
 import session_view/connection_event
+import session_view/markdown
 import session_view/operator
 import session_view/session_channel
 import session_view/snapshot
@@ -183,14 +184,73 @@ pub fn the_web_view_draws_the_terminals_lines_test() {
   assert web == terminal
 
   // The page holds each line's text, escaped as Lustre escapes text, in
-  // the order the terminal draws them.
+  // the order the terminal draws them. A line the terminal renders as
+  // Markdown is drawn from its parsed tree, so its visible text is the
+  // text of that tree's leaves rather than its source.
   let html = element.to_string(component.view(page))
   let texts =
     web
     |> list.filter(fn(line) { line.text != "" })
-    |> list.map(fn(line) { element.to_string(element.text(line.text)) })
+    |> list.flat_map(visible_texts)
+    |> list.map(fn(text) { element.to_string(element.text(text)) })
   assert in_order(html, texts)
   assert string.contains(html, "&lt;ordering&gt; &amp; report")
+  assert string.contains(
+    html,
+    "<code class=\"md-code-span\">a &lt; b</code> &amp; <code class=\"md-code-span\">b &gt; c</code>",
+  )
+}
+
+// The text a line shows, in order: its source for a literal row, and the
+// leaves of its Markdown tree for the speakers both hosts render as
+// Markdown.
+fn visible_texts(line: Line) -> List(String) {
+  case line.speaker {
+    transcript_line.Assistant
+    | transcript_line.Reasoning
+    | transcript_line.ToolDetail ->
+      list.flat_map(markdown.parse(line.text), block_texts)
+    transcript_line.System
+    | transcript_line.User
+    | transcript_line.ReasoningDigest
+    | transcript_line.SummarizedReasoning
+    | transcript_line.SummarizedAdvice
+    | transcript_line.ToolCall
+    | transcript_line.ToolResult
+    | transcript_line.ToolPatch
+    | transcript_line.ToolFailure
+    | transcript_line.Failure
+    | transcript_line.Spacer -> [line.text]
+  }
+}
+
+fn block_texts(block: markdown.Block) -> List(String) {
+  case block {
+    markdown.Paragraph(inlines:) | markdown.Heading(inlines:, ..) ->
+      list.flat_map(inlines, inline_texts)
+    markdown.CodeBlock(text:, ..) -> [text]
+    markdown.Quote(blocks:) -> list.flat_map(blocks, block_texts)
+    markdown.BulletList(items:) | markdown.OrderedList(items:, ..) ->
+      list.flat_map(items, list.flat_map(_, block_texts))
+    markdown.Table(header:, rows:) ->
+      list.flat_map([header, ..rows], fn(row) {
+        list.flat_map(row, fn(cell) {
+          list.flat_map(cell.inlines, inline_texts)
+        })
+      })
+    markdown.Rule -> []
+  }
+}
+
+fn inline_texts(inline: markdown.Inline) -> List(String) {
+  case inline {
+    markdown.Text(text:) | markdown.Code(text:) -> [text]
+    markdown.Emphasis(children:)
+    | markdown.Strong(children:)
+    | markdown.Strikethrough(children:) -> list.flat_map(children, inline_texts)
+    markdown.Link(label:, ..) -> list.flat_map(label, inline_texts)
+    markdown.Image(..) | markdown.Break -> []
+  }
 }
 
 fn reply(id: Int, event: String, body: json.JsonValue) {
