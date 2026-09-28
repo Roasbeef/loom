@@ -497,6 +497,11 @@ pub fn reserve_loopback_port() -> Result(Int, String)
 /// and birth identity. Privileged shell mode ignores inherited shell functions;
 /// if the launcher dies first, port EOF makes the wrapper exit.
 ///
+/// The call returns only after the wrapper has written one byte from the
+/// shell, so the returned pid already leads its own process group. The port
+/// reports a child's pid before the child calls `setsid`, and a group signal
+/// sent in between would reach nobody.
+///
 /// The wrapper's environment is this VM's environment plus `LOOM_LOG`, not a
 /// replacement for it: the daemon is expected to inherit provider credentials
 /// and locale from whoever started the launcher.
