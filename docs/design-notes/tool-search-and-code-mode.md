@@ -16,12 +16,13 @@ question was arrived at. Two things below are stale on their face: the
 MCP specification citations are pinned to revision 2025-06-18, which was
 current when this was written and is now two revisions behind, and the
 open questions about whether a generated module rebuilds cleanly inside a
-vendored prelude have been answered by building it. The verdicts about
-tool search itself — that Loom needs none for its own tool surface, and
-that the module namespace is the index while the compiler is the oracle —
-are unchanged, and the signature-oracle gap the note names has since been
-closed by rendering the prelude's surface into the `code_mode`
-description. Nothing in the body below has been rewritten.
+vendored prelude have been answered by building it. The September 27 census revisits the verdict on search for Loom's own
+surface. The distinction between module namespace as index and compiler
+as oracle still holds. The signature-oracle gap is now closed by indexed
+public types in the `code_mode` description and full declarations through
+`fs_read cap://<module>`. The array census and illustrative pricing below
+were refreshed on 2026-09-27; the MCP proposal sections remain the
+historical argument.
 
 External claims are sourced. Where I could not verify something, it is
 marked, and the estimates are labelled as estimates rather than dressed
@@ -195,20 +196,20 @@ protocol.
 
 ## Loom as built
 
-**Twelve tools ship.** Five core — `bash`, `grep`, `fs_read`,
-`fs_write`, `fs_edit` — six `agent_*` (`agent_note`, `agent_notes`,
-`agent_roster`, `agent_send`, `agent_spawn`, `agent_wait`), and
-`code_mode`. The last two groups are registered only when the host wired
-the corresponding seam, and `client/serve.registry` says why in a comment
-that anticipates most of this note: permanently-refusing definitions
-"would be paid for on every request of every strand for the life of the
-session."
+**The all-plane built-in registry offers 22 tools at `868dfedd`.** Five
+core tools (`bash`, `grep`, `fs_read`, `fs_write`, `fs_edit`), six `agent_*`
+tools and `todo`, `code_mode`, `history_search`, `remember`, three
+`schedule_*`, `context_remaining`, and three `job_*`. Optional planes are
+registered only when the host supplies their seam; extensions can add
+more. `client/contributions.built_in` owns this construction, and its
+comment states the cost: a permanently refusing definition would be paid
+for on every request of every strand for the life of the session.
 
-**The registry offers three operations and no fourth.**
+**The registry offers lookup and dispatch, not search.**
 `packages/tools/src/tools/tool.gleam` exposes `registry`, `lookup`,
-`names`, and `dispatch`. `names` returns sorted names; `lookup` returns a
-whole `Tool` including its schema. There is no search, no schema-only
-projection, and no partial load. At twelve tools this is exactly right.
+`names`, `registered`, `declarations`, `snippets` and `dispatch`.
+`names` returns sorted names; `lookup` returns a whole `Tool` including
+its schema. There is no deferred load or tool-search operation.
 
 **The wire array is built per strand and sorted for the cache.**
 `wiring.tool_specs(config, active)` sorts by name, dedupes, drops
@@ -228,20 +229,17 @@ package-local change rather than a frozen-interface break — but it is a
 change both adapters must answer for, and the OpenAI adapter would need
 its own decision about what deferral means there.
 
-**MCP is deferred and nothing is built.** `docs/spec-gaps.md` WP-G item 9
-records the MCP adapter — "spawn-in-sandbox, schema validation,
-provenance tagging" — as post-M2 work "layered on the same `clear_call`
-path." `docs/loom-design.md` §5.5 adds the sentence this note keeps
-returning to: "Prefer code mode over MCP round-trips where possible." The
-intuition in the brief is already in the design document; what has never
-been written down is *how* a program reaches an MCP tool at all.
+**MCP now reaches the model through code mode.** Configured servers
+contribute generated `cap/mcp/<server>` surfaces rather than direct
+registry entries; [the MCP architecture](../architecture/mcp.md) carries
+the implementation. Those generated surfaces add bytes to `code_mode` on
+that host and are excluded from the built-in census below.
 
-**One asymmetry worth naming.** The system prompt carries
-`Host.tools` — the registry's sorted names, session-pinned. The wire tool
-array carries the *active* subset. So a strand with a narrowed active set
-still sees every registered name in its prompt. Today that is a harmless
-twelve names. If MCP tools ever enter the registry, it becomes several
-hundred names in a session-pinned block that no narrowing can shrink.
+**One asymmetry worth naming.** The system prompt carries the registry's
+session-pinned index; the wire array carries the strand's *active* subset.
+Narrowing the active set does not shrink the pinned prompt. The census
+below measures the whole advertised built-in array, not one narrowed
+strand's request or the system prompt behind it.
 
 ## Pricing a dynamic tool surface
 
@@ -256,25 +254,88 @@ The arithmetic that matters is not the size of the tool array. It is
 render order. Tools render first, so **a change to the tool array
 invalidates the entire prefix** — the tool breakpoint, the system
 breakpoint behind it, and both tail breakpoints behind that. The cost of
-a moved tool array is therefore not "re-write three thousand tokens." It
-is "re-read the whole conversation at full price, and pay a write
-premium on top."
+a moved tool array includes the conversation behind it, not just the
+definitions: the old cache prefix is unavailable and the new prefix pays
+the write premium.
 
-Put numbers on it, with the caveat that both inputs are estimates. The
-twelve tools' model-facing description and schema text runs to roughly
-six to ten kilobytes of prose across the five source files, plus JSON
-scaffolding; at three to four characters per token that is a rendered
-array in the low thousands of tokens. I did not render it — no golden
-request exists in the tree — so treat two to four thousand tokens as an
-order of magnitude, not a measurement. Against Opus 5's $5/MTok input,
-a wasted one-hour head write of ~4K tokens costs about four cents; the
-read it displaced would have cost about two tenths of a cent.
+### Measured array, estimated tokens
 
-That twenty-fold ratio is the small half. The large half is the
-conversation. At turn thirty with a hundred-thousand-token context, a
-prefix hit costs about five cents and a prefix miss costs about fifty,
-before write premiums. **A tool surface that changes per turn does not
-cost a cache write. It costs the cache.**
+The 2026-09-27 census at `868dfedd8754e1b8a750add24227bd2b83fcd167`
+constructs all seven optional planes through
+`client/contributions.built_in`, sorts their 22 registered tools by name
+as `wiring.tool_specs` does, and passes their real descriptions and schemas
+through `provider/adapter/anthropic.build_request`. It extracts the
+`tools` array, including the last tool's one-hour cache marker, and
+serializes compact JSON with literal Unicode. No provider request is sent.
+
+The fixture has no extensions, MCP servers or model names; Agency wait is
+30 seconds, job poll is 30 seconds, schedule limits are `scheduleseam.limits()`, and code mode
+has background launch enabled with the default 300000/900000 ms budgets.
+It includes the host's notes and peer capabilities. All optional tool
+planes remain present in each row so the difference measures only the
+code-mode offer. These are construction fixtures, not three live daemons.
+
+| Code-mode offer | Tools | UTF-8 bytes | Unicode characters | Estimated tokens (characters ÷ 4 to ÷ 3) |
+|---|---:|---:|---:|---:|
+| Explicit effect-only workspace host | 22 | 57,348 | 57,258 | 14.3K–19.1K |
+| Orchestration mode alone, current full program surface | 22 | 66,754 | 66,646 | 16.7K–22.2K |
+| Both current full program modes | 22 | 68,419 | 68,311 | 17.1K–22.8K |
+
+The fixture is reproducible after building `packages/client`:
+
+```sh
+report_dir=$(mktemp -d)
+escript scripts/measure_tool_surface.escript "$PWD" "$report_dir"
+python3 scripts/measure_tool_surface.py "$report_dir"
+```
+
+The scripts retain the exact plane constructors, notes and peer additions,
+serialized requests, array hashes and character estimator for this census.
+
+The bytes and characters are measured. The token column is a **character
+estimator, not a tokenizer or provider count**; JSON escaping and provider
+rendering can change that count. To reproduce it, build `packages/client`,
+construct the optional seam records without invoking their closures, use
+`vet/policy.workspace_effects()` or `default()`, each widened with
+`cap/notes`, for the import lists and
+`client/codemode.seam_caps` for the full router vocabulary, then serialize
+`anthropic.build_request`'s `tools` field. Record the plane configuration
+with any new measurement: a host without jobs, schedules, a toolchain or
+an extension has a different array.
+
+The description grew deliberately. The earlier full-signature rendering
+kept type declarations (then estimated at roughly 40% of that rendering)
+because a program must be able to name and inspect a returned `proc.Output`.
+The current rendering keeps the module index and public types, including
+fields, variants and their documentation, in the standing description;
+full functions, constants and docs are read through `fs_read cap://<module>`
+in the conversation. In the both-mode fixture those module/type blocks
+occupy 29,758 of the description's 36,823 characters (about 81%). That
+measures the documented blocks, not bare declarations, so it does not
+repeat the old 40% as a current figure.
+
+`signature_sections` filters by each offer's allowlist and renders shared
+modules once. A genuinely narrow orchestration offer pays only for its
+imports; an effect-only workspace host omits `cap/strand` and
+`cap/workflow`. The default server now admits the same full program surface
+on both modes under [protocol 048](../../protocol-change/048-async-collaboration.md),
+so selecting orchestration alone no longer avoids the workspace modules.
+Adding the second full mode costs 1,665 characters in the array for
+mode selection and guidance, rather than a second copy of the shared types. Per-offer filtering still bounds a custom
+host's cost, and sharing prevents duplicate payment on the default host.
+
+At an **illustrative base input rate of $5 per million tokens**, the
+both-mode estimator gives $0.171–$0.228 for a one-hour tool-array write at
+2×, versus $0.0085–$0.0114 for a read at 0.1×. These figures exclude the
+system prompt and conversation and are not a current model-price quote.
+For a measured token count `T` and input rate `R` dollars per million,
+the corresponding costs are `2 × T × R / 1_000_000` and
+`0.1 × T × R / 1_000_000`. The twenty-fold ratio survives the correction.
+
+The larger cost is the conversation behind the array. At that same
+illustrative rate, a hundred-thousand-token prefix costs five cents to
+read from cache and fifty cents at base input, before write premiums.
+**A tool surface that changes per turn costs the cache behind it.**
 
 This is precisely why Anthropic's tool search puts discovered
 definitions *inline in the conversation* rather than in the `tools`
@@ -390,12 +451,12 @@ strictly larger piece of work than generating modules.
 
 ### Do nothing
 
-Twelve tools is not a problem, and this option is doing better than it
-sounds. Loom is below every published trigger for tool search: fewer than
-the ten tools where it starts to pay, an array in the low thousands of
-tokens rather than the 10K threshold, and nowhere near the 30–50 where
-selection accuracy is said to degrade.[^ts-docs] Nothing in the tree
-gets better today by adding a mechanism.
+The original twelve-tool census supported doing nothing. The current
+22-tool fixture remains below the cited 30–50-tool selection range, but
+its character estimator is above the cited 10K-token size threshold.[^ts-docs]
+A provider token count and workload measurement now belong before a new
+claim that Loom is below every trigger. Size alone does not establish that
+a search round trip will improve those workloads.
 
 The reason to reject it is not urgency. It is that WP-G item 9 as written
 does not say what MCP exposure looks like, and the cheapest moment to
@@ -474,15 +535,15 @@ demand — and that half costs no capability at all.
 
 ## Verdicts
 
-**Does Loom need tool search for the model's own tool surface? No, and
-not soon.** Twelve tools sits under every documented trigger, and the
-mechanism would cost a `ToolSpec` field, a breakpoint-placement change in
-`encode_tools`, and a decision the OpenAI adapter cannot avoid. Revisit
-when the rendered array crosses roughly 10K tokens or the active count
-crosses roughly thirty — the two thresholds Anthropic
-publishes[^ts-docs] — and not before. If MCP tools are ever exposed
-directly to the model as registry entries, both thresholds fall on the
-same day, and tool search stops being optional.
+**Does Loom need tool search for the model's own tool surface? Re-measure
+before deciding.** The original "no, and not soon" rested on an array
+estimate the serialized census contradicts. The current character
+estimator crosses the roughly 10K-token size trigger, while 22 tools stay
+below the roughly thirty-tool count trigger cited here.[^ts-docs] Neither
+is a measured accuracy result for Loom. Count the provider-rendered tokens
+and compare discovery latency and task accuracy before adopting deferral.
+The stable-prefix argument still holds: a harness that changes the array
+per turn invalidates the cache regardless of how large the array is.
 
 **Does code mode need anything? Yes: a signature oracle, not a search.**
 `code_mode_signatures(module)` — or the same thing folded into the
@@ -552,9 +613,11 @@ The item should say instead:
 
 ## What I could not determine
 
-- **The rendered size of Loom's twelve-tool array.** No golden request
-  exists in the tree and I did not build one; every token figure here is
-  an estimate from source text, with the method stated.
+- **The provider token count of the current array.** The census above
+  serializes the real 22-tool definitions through the Anthropic adapter,
+  but its token range is a character estimator. No tokenizer or provider
+  token-count endpoint was used, and no workload accuracy comparison was
+  run.
 - **Whether tool search's recall has been measured against a known
   ground truth.** The published figures are end-to-end task accuracy on
   internal MCP evals,[^atu] which conflates retrieval quality with
