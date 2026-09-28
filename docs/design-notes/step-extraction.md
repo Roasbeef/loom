@@ -967,10 +967,11 @@ on a refusal, become edges in S3d′ with the rest of the editor's writes.
 
 `agent_summary` had no reader. The footer already derived its agent count
 at paint, from `agents.summary_rows(layout.displayed_agents(model))` in
-`render`, so the field's five writers were dead: at launch and on
-`FullSnapshot`, `StrandsSnapshot` and `OperationChanged` it was written
-from the strands with the legacy `agents.summary`, and in `render_cut`
-from the agent rows with `summary_rows`. The field and its writes are
+`render`, so the field's seven writers were dead: at launch, in the
+replay and live bases (`replay_steps`, `live_base`) and on `FullSnapshot`,
+`StrandsSnapshot` and `OperationChanged` it was written from the strands
+with the legacy `agents.summary`, and in `render_cut` from the agent rows
+with `summary_rows`. The field and its writes are
 removed. There is nothing to reproduce, so no choice between a derived
 value and a shared field arose, and no output can change.
 
@@ -1007,14 +1008,15 @@ an idle tick costs 7,509 reductions on both and 9,423 words against
 `TUI_PERF_MIN_HEAP=4000000` the reductions are identical and the words
 within 0.21%. The shipped fixtures, the two `tui_shipped_*` suites and
 the seven `daemon_shipped_*` ones, pass against each build's `bin/loomd`
-with `HOME` pointed at an empty directory. `erlc` on the generated modules, median of three alternating runs of
-wall time: `tui` 0.42 s against 0.45 s, `tui@inbound` 1.84 s against
-1.74 s, `tui@interaction` 2.05 s against 1.93 s, `tui@submit` 0.88 s
-against 0.85 s, and `tui@outbound`, `tui@surfaces`, `tui@model` and
-`tui@session_model` each within 0.05 s. The rises of about 6% in
-`inbound` and `interaction` follow the queue editor's writes, which now
-update two records where they updated one; no settle chain was added. Lint finds the same census on both, with no
-error-tier finding.
+with `HOME` pointed at an empty directory. `erlc` on the generated
+modules, median of three alternating runs of wall time: `tui` 0.42 s
+against 0.45 s, `tui@inbound` 1.84 s against 1.74 s, `tui@interaction`
+2.05 s against 1.93 s, `tui@submit` 0.88 s against 0.85 s, and
+`tui@outbound`, `tui@surfaces`, `tui@model` and `tui@session_model` each
+within 0.05 s. The rises of about 6% in `inbound` and `interaction` follow
+the queue editor's writes, which now update two records where they
+updated one; no settle chain was added. Lint finds the same census on
+both, with no error-tier finding.
 
 **S4: the move.** `tui/model`'s shared record and helpers,
 `tui/msg`, the frame and replay admission, `tui/inbound`, `tui/outbound`,
