@@ -1,7 +1,7 @@
-//// Feature-detected end-to-end test: builds the real `loom-exec`
-//// helper with the Go toolchain, starts a real broker over it, and
-//// runs `echo hello` through the bash tool. Skipped (with the reason
-//// printed) when `go` is missing or the build fails.
+//// Feature-detected end-to-end test: starts a real broker over the real
+//// `loom-exec` helper, as `make sandbox` built it, and runs `echo hello`
+//// through the bash tool. Skipped (with the reason printed) when the
+//// helper has not been built.
 ////
 //// The development container usually lacks bwrap, so the helper runs
 //// degraded; the context demands `BestEffort` and asserts on the tool
@@ -28,8 +28,8 @@ import tools/fs
 import tools/job
 import tools/tool
 
-// Builds the helper (cached by Go, so cheap per run) and returns a
-// ready SpawnConfig, or the reason to skip.
+// Locates the prebuilt helper and returns a ready SpawnConfig, or the
+// reason to skip.
 fn helper_config() -> Result(#(exec.SpawnConfig, String), String) {
   case exec.unjailed_skip_reason(exec.host_platform()) {
     option.Some(reason) -> Error(reason)
@@ -37,40 +37,39 @@ fn helper_config() -> Result(#(exec.SpawnConfig, String), String) {
   }
 }
 
+// The suite runs the helper `make sandbox` built, at the path the Makefile
+// names, and never compiles one itself. A `go build` per test put several
+// builds in flight at once under a parallel run, beside the other packages'
+// real-helper suites, and on the containerised signoff some of them read a
+// Go build-cache object that was zero from some offset on and failed to
+// link. `make check`, `make test` and `make e2e` build the helper first; a
+// run without it skips with the remedy named, and the skip census counts
+// that skip as a failure.
 fn helper_config_here() -> Result(#(exec.SpawnConfig, String), String) {
-  case shell.find_executable("go") {
-    Error(Nil) -> Error("go toolchain not on PATH")
-    Ok(_go) -> {
-      let assert Ok(here) = simplifile.current_directory()
-      let work_dir = here <> "/build/integration"
-      let helper_path = work_dir <> "/loom-exec"
-      let workspace = work_dir <> "/work"
-      let assert Ok(Nil) = simplifile.create_directory_all(workspace)
-      let assert Ok(Nil) = simplifile.create_directory_all(work_dir <> "/tmp")
-      let output =
-        shell.os_cmd(
-          "cd ../sandbox && go build -o '"
-          <> helper_path
-          <> "' ./cmd/loom-exec && echo LOOM_BUILD_OK",
-        )
-      case string.contains(output, "LOOM_BUILD_OK") {
-        False -> Error("go build failed: " <> output)
-        True ->
-          Ok(#(
-            exec.SpawnConfig(
-              helper_path:,
-              shell_path: "/bin/sh",
-              base_policy: base_policy(workspace),
-              helper_args: [],
-              tmp_dir: work_dir <> "/tmp",
-              handshake_timeout_ms: 5000,
-              cancel_grace_ms: 3000,
-              heartbeat_interval_ms: 0,
-            ),
-            workspace,
-          ))
-      }
-    }
+  let assert Ok(here) = simplifile.current_directory()
+  let work_dir = here <> "/build/integration"
+  let helper_path = here <> "/../sandbox/loom-exec"
+  let workspace = work_dir <> "/work"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.create_directory_all(work_dir <> "/tmp")
+  case simplifile.is_file(helper_path) {
+    Ok(True) ->
+      Ok(#(
+        exec.SpawnConfig(
+          helper_path:,
+          shell_path: "/bin/sh",
+          base_policy: base_policy(workspace),
+          helper_args: [],
+          tmp_dir: work_dir <> "/tmp",
+          handshake_timeout_ms: 5000,
+          cancel_grace_ms: 3000,
+          heartbeat_interval_ms: 0,
+        ),
+        workspace,
+      ))
+
+    _absent_or_unreadable ->
+      Error("no loom-exec at " <> helper_path <> "; run `make sandbox`")
   }
 }
 

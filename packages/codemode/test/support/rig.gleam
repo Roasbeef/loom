@@ -1,12 +1,12 @@
 //// The feature-detected rig for the code-mode end-to-end suite: it finds
-//// the toolchain, builds the real Go `loom-exec` helper, checks the build
-//// seed is present and pinned, and stands up a real broker over a real
-//// helper pool on an isolated on-disk root.
+//// the toolchain and the real Go `loom-exec` helper `make sandbox` built,
+//// checks the build seed is present and pinned, and stands up a real
+//// broker over a real helper pool on an isolated on-disk root.
 ////
 //// Skipping is the caller's decision. `prerequisites` returns the reason
-//// when something is missing, so `make check` stays hermetic and fast on a
-//// machine with no Go toolchain and no prepared seed, and `make
-//// e2e-codemode` — which builds both first — runs the real thing.
+//// when something is missing, so a run with no built helper and no
+//// prepared seed says so rather than failing, and `make e2e-codemode` —
+//// which prepares both first — runs the real thing.
 
 import broker/broker.{type Broker}
 import broker/exec.{type Pool}
@@ -50,7 +50,7 @@ pub type Rig {
   )
 }
 
-/// Locates the toolchain, builds the helper, and checks the seed — or
+/// Locates the toolchain and the helper, and checks the seed — or
 /// reports the reason to skip. The first reason no toolchain can fix is
 /// a platform Loom has no jail for: the helper refuses to serve there,
 /// and running it unenforced would report success for a sandbox that
@@ -59,8 +59,7 @@ pub fn prerequisites() -> Result(Prerequisites, String) {
   use Nil <- try(jailed_platform())
   use gleam_path <- try(executable("gleam"))
   use erl_path <- try(executable("erl"))
-  use _go <- try(executable("go"))
-  use helper_path <- try(build_helper())
+  use helper_path <- try(prebuilt_helper())
   let seed_root = seed_root()
   case seed.verify(seed_root, compile.default_dependencies()) {
     Error(reason) -> Error(reason)
@@ -268,29 +267,21 @@ fn executable(name: String) -> Result(String, String) {
   |> replace_error(name <> " is not on PATH")
 }
 
-// Parallel prerequisites may rebuild this shared helper at the same time.
-// Go copies cached executables through an unlinked or truncated destination,
-// so another builder can mistake that interval for a non-object output.
-// Each invocation builds into its own file beside the helper, then publishes
-// the complete executable with an atomic rename. Go still checks freshness.
-fn build_helper() -> Result(String, String) {
+// The rig runs the helper `make sandbox` built, at the path the Makefile
+// names, and never compiles one itself. Every test's prerequisites used to
+// run a `go build`, so a parallel run had several in flight at once, beside
+// the other packages' real-helper suites; on the containerised signoff some
+// of them read a Go build-cache object that was zero from some offset on
+// and failed to link. `make e2e-codemode` and `make check` build the helper
+// first. A run without it skips with the remedy named, and the skip census
+// counts that skip as a failure.
+fn prebuilt_helper() -> Result(String, String) {
   let assert Ok(here) = simplifile.current_directory()
-  let directory = here <> "/build/e2e-codemode"
-  let assert Ok(Nil) = simplifile.create_directory_all(directory)
-  let helper_path = directory <> "/loom-exec"
-  let output =
-    ffi_peer.os_cmd(
-      "cd ../sandbox && helper_tmp=$(mktemp '"
-      <> helper_path
-      <> ".XXXXXX') && trap 'rm -f \"$helper_tmp\"' EXIT && "
-      <> "go build -o \"$helper_tmp\" ./cmd/loom-exec && "
-      <> "mv -f \"$helper_tmp\" '"
-      <> helper_path
-      <> "' && echo LOOM_BUILD_OK",
-    )
-  case string.contains(output, "LOOM_BUILD_OK") {
-    True -> Ok(helper_path)
-    False -> Error("go build failed: " <> output)
+  let helper_path = here <> "/../sandbox/loom-exec"
+  case simplifile.is_file(helper_path) {
+    Ok(True) -> Ok(helper_path)
+    _absent_or_unreadable ->
+      Error("no loom-exec at " <> helper_path <> "; run `make sandbox`")
   }
 }
 

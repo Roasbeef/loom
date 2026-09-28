@@ -1,8 +1,9 @@
-//// The feature-detected sandbox rig for the e2e suite: builds the real
-//// Go `loom-exec` helper, prepares an isolated on-disk root (workspace,
-//// helper tmp, blob store, session file), and stands up a real broker
-//// over a real helper pool. Skipping is the caller's decision — when
-//// `build_helper` fails, tests print the reason and return.
+//// The feature-detected sandbox rig for the e2e suite: locates the real
+//// Go `loom-exec` helper `make sandbox` built, prepares an isolated
+//// on-disk root (workspace, helper tmp, blob store, session file), and
+//// stands up a real broker over a real helper pool. Skipping is the
+//// caller's decision — when `prebuilt_helper` fails, tests print the
+//// reason and return.
 
 import broker/broker.{type Broker}
 import broker/exec.{type Pool}
@@ -10,9 +11,7 @@ import broker/policy.{type SandboxPolicy}
 import broker/token
 import core/clock.{type Clock}
 import gleam/option.{None, Some}
-import gleam/string
 import simplifile
-import support/internal/ffi_shell
 
 /// One live rig: the broker and pool plus the paths a wiring config
 /// needs.
@@ -29,35 +28,40 @@ pub type Jail {
   )
 }
 
-/// Builds the `loom-exec` helper with the Go toolchain (cached by Go,
-/// so cheap per run), or reports the reason to skip — including the one
-/// reason no toolchain can fix, a platform Loom has no jail for.
-pub fn build_helper() -> Result(String, String) {
+/// Locates the `loom-exec` helper `make sandbox` built, or reports the
+/// reason to skip — including the one reason no build can fix, a
+/// platform Loom has no jail for.
+///
+/// The suite never compiles the helper itself. It used to run a `go
+/// build` per test, and under a parallel run those builds were in flight
+/// at once with the other packages' real-helper suites; on the
+/// containerised signoff some of them read a Go build-cache object that
+/// was zero from some offset on and failed to link. `make e2e` and `make
+/// check` build the helper first. A run without it skips with the remedy
+/// named, and the skip census counts that skip as a failure.
+///
+/// ## Examples
+///
+/// ```gleam
+/// case jail.prebuilt_helper() {
+///   Error(reason) -> io.println_error("SKIP e2e: " <> reason)
+///   Ok(helper_path) -> run(helper_path)
+/// }
+/// ```
+pub fn prebuilt_helper() -> Result(String, String) {
   case exec.unjailed_skip_reason(exec.host_platform()) {
     Some(reason) -> Error(reason)
-    None -> build_helper_here()
+    None -> prebuilt_helper_here()
   }
 }
 
-fn build_helper_here() -> Result(String, String) {
-  case ffi_shell.find_executable("go") {
-    Error(Nil) -> Error("go toolchain not on PATH")
-    Ok(_go) -> {
-      let assert Ok(here) = simplifile.current_directory()
-      let dir = here <> "/build/e2e"
-      let assert Ok(Nil) = simplifile.create_directory_all(dir)
-      let helper_path = dir <> "/loom-exec"
-      let output =
-        ffi_shell.os_cmd(
-          "cd ../sandbox && go build -o '"
-          <> helper_path
-          <> "' ./cmd/loom-exec && echo LOOM_BUILD_OK",
-        )
-      case string.contains(output, "LOOM_BUILD_OK") {
-        True -> Ok(helper_path)
-        False -> Error("go build failed: " <> output)
-      }
-    }
+fn prebuilt_helper_here() -> Result(String, String) {
+  let assert Ok(here) = simplifile.current_directory()
+  let helper_path = here <> "/../sandbox/loom-exec"
+  case simplifile.is_file(helper_path) {
+    Ok(True) -> Ok(helper_path)
+    _absent_or_unreadable ->
+      Error("no loom-exec at " <> helper_path <> "; run `make sandbox`")
   }
 }
 

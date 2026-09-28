@@ -1302,9 +1302,9 @@ runs five scenarios through the real pipeline: real vetting, a real
 AF_UNIX socket, and a real `broker.clear_call` behind the capability.
 Four are in `test/codemode/e2e_test.gleam`; the fifth is the migration
 sample, in `test/codemode/migration_sample_test.gleam`. All are
-feature-detected. Without the Go toolchain, the Gleam and Erlang
-toolchains, or a prepared seed, each test prints its skip reason and
-passes, so `make check` stays hermetic and fast.
+feature-detected. Without the helper `make sandbox` builds, the Gleam and
+Erlang toolchains, or a prepared seed, each test prints its skip reason
+and passes, so `make check` stays hermetic and fast.
 
 1. **Happy path.** The program shells out to `/bin/echo` and returns what
    it printed. The assertions are specific: the compiled entry module

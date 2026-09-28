@@ -4,7 +4,7 @@
 # Usage: skip_census.sh <label> <log-file>...
 #
 # Several of Loom's heaviest suites are feature-detected: the jailed
-# end-to-end prints `SKIP jailed_end_to_end: go toolchain not on PATH` and
+# end-to-end prints `SKIP jailed_end_to_end: no loom-exec at ...` and
 # returns, the code-mode suites print `SKIP code_mode_end_to_end: ...`
 # when the build seed is missing, and the Go jail integration tests call
 # `t.Skip` when the kernel has no Landlock. Every one of those still exits

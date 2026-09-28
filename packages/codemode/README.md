@@ -269,8 +269,9 @@ and launch halves that need no kernel.
 
 `e2e_test`, `migration_sample_test` and `orchestration_sample_test` run a
 real hermetic build and a real jailed satellite. They skip, printing the
-reason, when the Go toolchain, the Gleam and Erlang toolchain, or the
-prepared build seed is missing, so `make check-codemode` stays fast. Run
+reason, when the helper `make sandbox` builds, the Gleam and Erlang
+toolchain, or the prepared build seed is missing, so `make check-codemode`
+stays fast. Run
 `make codemode-seed` first, then `make e2e-codemode`, which builds the
 helper and the seed and runs this suite with them in place.
 

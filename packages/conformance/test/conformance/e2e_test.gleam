@@ -50,21 +50,21 @@ import weft/actor
 import weft/poll
 
 pub fn jailed_end_to_end_test() {
-  case jail.build_helper() {
+  case jail.prebuilt_helper() {
     Error(reason) -> io.println_error("SKIP jailed_end_to_end: " <> reason)
     Ok(helper_path) -> run_happy(helper_path)
   }
 }
 
 pub fn escalation_round_trip_test() {
-  case jail.build_helper() {
+  case jail.prebuilt_helper() {
     Error(reason) -> io.println_error("SKIP escalation_round_trip: " <> reason)
     Ok(helper_path) -> run_escalation(helper_path)
   }
 }
 
 pub fn crash_mid_tool_recovers_test() {
-  case jail.build_helper() {
+  case jail.prebuilt_helper() {
     Error(reason) ->
       io.println_error("SKIP crash_mid_tool_recovers: " <> reason)
     Ok(helper_path) -> run_crash(helper_path)

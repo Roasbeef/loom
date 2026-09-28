@@ -245,8 +245,8 @@ The tests under `test/conformance/` are the suites themselves:
   `simulation_domain_test` run small fixed sets of daemon seeds, and
   `simulation_daemon_soak_test` is the opt-in daemon soak.
 - `e2e_test` is the M2 jailed acceptance through the real `loom-exec`
-  helper; it prints a skip reason and passes when the Go toolchain is
-  missing.
+  helper `make sandbox` builds; it prints a skip reason and passes when
+  that helper is missing.
 - `routing_test`, `vision_test`, `triggered_rules_test` and
   `responses_e2e_test` drive the production wiring, gateway, adapters and
   runtime with the HTTP transport scripted.
