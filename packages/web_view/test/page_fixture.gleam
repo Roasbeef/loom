@@ -11,11 +11,13 @@
 //// lane decided them.
 
 import core/codec
+import core/ids
 import core/json
 import core/message
 import gleam/bit_array
 import gleam/dynamic
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -85,13 +87,78 @@ pub fn transfer(
   role: String,
   cells: List(json.JsonValue),
 ) -> List(connection_event.Message) {
-  let data = metadata(cells)
-  [
+  replies(1, "recent", 10, role, cells, [])
+}
+
+/// The replies to a `history` read the lane sent as request `id` for the
+/// sequences below `before`, carrying the records of `window`, for an
+/// attachment with `role`. The lane credits one fragment per request, so
+/// the replies answer `id` and the requests after it, one each.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.history(4, "operator", window, 301)
+/// ```
+pub fn history(
+  id: Int,
+  role: String,
+  window: snapshot.Window,
+  before: Int,
+) -> List(connection_event.Message) {
+  replies(id, "history", before, role, [], list.reverse(window.items))
+}
+
+/// The replies to the catch-up the lane sent as request `id`, for an
+/// attachment with `role`: a transfer that brings no record, as the
+/// session `transfer` describes has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.catch_up(7, "operator")
+/// ```
+pub fn catch_up(id: Int, role: String) -> List(connection_event.Message) {
+  replies(id, "catch_up", 10, role, [], [])
+}
+
+/// The request identity a frame the page wrote carries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.request_id("{\"v\":2,\"id\":4,\"cmd\":\"history\"}")
+/// ```
+pub fn request_id(frame: String) -> Int {
+  case json.parse(frame) {
+    Ok(json.Object(fields)) ->
+      case list.key_find(fields, "id") {
+        Ok(json.Int(id)) -> id
+        _ -> 0
+      }
+    _ -> 0
+  }
+}
+
+// A credited transfer answering request `first` and the credits after it:
+// the begin, the metadata, one fragment per item in sequence order, and the
+// end. `next_seq` is the cursor the begin and the end both carry, above
+// every item's sequence.
+fn replies(
+  first: Int,
+  mode: String,
+  next_seq: Int,
+  role: String,
+  cells: List(json.JsonValue),
+  items: List(snapshot.Item),
+) -> List(connection_event.Message) {
+  let id = mode <> ":" <> int.to_string(first)
+  let begin =
     reply(
-      1,
+      first,
       "snapshot_begin",
       json.Object([
-        #("snapshot_id", json.String("1:1")),
+        #("snapshot_id", json.String(id)),
         #("session_id", json.String("A")),
         #("epoch", json.String("epoch")),
         #("incarnation", json.String("incarnation")),
@@ -104,42 +171,66 @@ pub fn transfer(
           ]),
         ),
         #("role", json.String(role)),
-        #("next_seq", json.Int(10)),
+        #("next_seq", json.Int(next_seq)),
         #("oldest_seq", json.Null),
-        #("window", json.String("recent")),
+        #("window", json.String(mode)),
         #("complete_history", json.Bool(False)),
         #("record_bytes_limit", json.Int(snapshot.record_limit)),
         #("fragment_bytes_limit", json.Int(snapshot.piece_limit)),
       ]),
-    ),
+    )
+  let pieces = [
+    #("metadata", "metadata", json.Null, metadata(cells)),
+    ..list.filter_map(items, fn(item) {
+      case item {
+        snapshot.Loaded(entry:, ..) ->
+          Ok(#(
+            "entry",
+            ids.entry_id_to_string(entry.id),
+            json.Int(entry.seq),
+            json.to_string(codec.encode_entry(entry)),
+          ))
+        snapshot.Unloaded(..) -> Error(Nil)
+      }
+    })
+  ]
+  let chunks =
+    list.index_map(pieces, fn(piece, index) {
+      let #(kind, record, seq, data) = piece
+      reply(
+        first + 1 + index,
+        "snapshot_chunk",
+        json.Object([
+          #("snapshot_id", json.String(id)),
+          #("index", json.Int(index)),
+          #("kind", json.String(kind)),
+          #("record_id", json.String(record)),
+          #("record_seq", seq),
+          #("total_bytes", json.Int(string.byte_size(data))),
+          #("offset", json.Int(0)),
+          #(
+            "data",
+            json.String(bit_array.base64_encode(
+              bit_array.from_string(data),
+              True,
+            )),
+          ),
+        ]),
+      )
+    })
+  let count = list.length(pieces)
+  let end =
     reply(
-      2,
-      "snapshot_chunk",
-      json.Object([
-        #("snapshot_id", json.String("1:1")),
-        #("index", json.Int(0)),
-        #("kind", json.String("metadata")),
-        #("record_id", json.String("metadata")),
-        #("record_seq", json.Null),
-        #("total_bytes", json.Int(string.byte_size(data))),
-        #("offset", json.Int(0)),
-        #(
-          "data",
-          json.String(bit_array.base64_encode(bit_array.from_string(data), True)),
-        ),
-      ]),
-    ),
-    reply(
-      3,
+      first + 1 + count,
       "snapshot_end",
       json.Object([
-        #("snapshot_id", json.String("1:1")),
-        #("index", json.Int(1)),
-        #("next_seq", json.Int(10)),
+        #("snapshot_id", json.String(id)),
+        #("index", json.Int(count)),
+        #("next_seq", json.Int(next_seq)),
         #("more_after", json.Null),
       ]),
-    ),
-  ]
+    )
+  [begin, ..list.append(chunks, [end])]
 }
 
 /// A pending escalation cell for `tool`, captured at `seq`, whose whole
@@ -208,6 +299,26 @@ pub fn start() -> component.Start(Wire) {
       now: fn() { 0 },
     ),
   )
+}
+
+/// A page for `role` whose lane has completed its first transfer, so it is
+/// following and has no request out, writing to `wire`. The frames of that
+/// transfer are taken off the wire, so what a test reads there next is what
+/// the page sent after it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.ready(process.new_subject(), "operator")
+/// ```
+pub fn ready(wire: Wire, role: String) -> component.Model(Wire) {
+  let page =
+    run(component.new(start()), component.update, [
+      component.Opened(wire, 0),
+      component.Arrived(transfer(role, []), 0),
+    ])
+  let _ = sent(wire)
+  page
 }
 
 /// Folds `messages` through `update` from `model`, performing every effect

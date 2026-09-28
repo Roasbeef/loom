@@ -20,12 +20,14 @@
 //// lines a render draws, and a change here must leave its counts as they
 //// are.
 
+import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
+import lustre/event
 import session_view/agent_roster
 import session_view/markdown
 import session_view/transcript_line.{type Line}
@@ -62,36 +64,121 @@ import web_view/view/strip
 /// the reader has scrolled is the browser's to know: the server never
 /// renders it, so scrolling costs no message here.
 ///
+/// Above the oldest row the lane says what lies before it (`Top`). The page
+/// holds only the newest rows of the strand, so older ones may exist that
+/// it does not draw. When they do and `load` is a message, the lane draws a
+/// "Load older" button that sends it. An observer's page passes `None`: its
+/// view attaches no handler (protocol-change/051), so it says in words that
+/// older rows are not loaded there.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.view(component.pieces(model))
+/// // lane.view(component.pieces(model), component.top(model), None)
 /// ```
-pub fn view(pieces: List(turns.Piece)) -> Element(message) {
-  rows(pieces, line_element)
+pub fn view(
+  pieces: List(turns.Piece),
+  top: Top,
+  load: Option(message),
+) -> Element(message) {
+  rows(pieces, boundary(top, load), line_element)
 }
 
-/// `view` with the drawing of a transcript line supplied, so a test
-/// can count the lines a render draws. `draw` must depend on nothing but
-/// the line it is given, because the line's memo depends on the line alone.
+/// What lies above the oldest row the page holds.
+pub type Top {
+  /// The page holds the strand's first row: there is nothing older.
+  Beginning
+
+  /// Older rows exist, and the page can load them.
+  Earlier
+
+  /// A read for older rows is outstanding.
+  Loading
+
+  /// Older rows exist, but the page already holds `rows`, its limit, and
+  /// loads no more.
+  Full(rows: Int)
+}
+
+/// The attribute that marks the "Load older" button, so `<loom-follow>`
+/// can tell a press of it from any other click in the lane and keep the
+/// reader's place while the older rows arrive above it. Its value is fixed
+/// here and never comes from the session.
+pub const older_marker = "loom-older"
+
+/// `view` with the boundary above the oldest row and the drawing of a
+/// transcript line supplied, so a test can count the lines a render draws.
+/// `draw` must depend on nothing but the line it is given, because the
+/// line's memo depends on the line alone.
+///
+/// The boundary is the first child of `<loom-follow>` and the rows are the
+/// second, whatever the boundary says, so the lane's own path does not move
+/// when the boundary changes from a button to a line of text.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.rows(pieces, fn(line) { html.text(line.text) })
+/// // lane.rows(pieces, element.none(), fn(line) { html.text(line.text) })
 /// ```
 @internal
 pub fn rows(
   pieces: List(turns.Piece),
+  top: Element(message),
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   element.element("loom-follow", [attribute.class("follow")], [
+    top,
     keyed.div(
       [attribute.class("transcript lane"), attribute.role("log")],
       list.map(pieces, fn(piece) {
         #(piece_key(piece), piece_element(piece, draw))
       }),
     ),
+  ])
+}
+
+// The line above the oldest row. Every word is fixed here; only the row
+// limit is a number, and it is the component's constant.
+//
+// The button is a real button with its label as its text. It carries the
+// marker `<loom-follow>` listens for, and the handler is the page's own
+// message, so an observer's page, which passes none, draws text instead.
+fn boundary(top: Top, load: Option(message)) -> Element(message) {
+  html.div([attribute.class("lane-top")], [
+    case top, load {
+      Beginning, _ ->
+        html.p([attribute.class("lane-boundary")], [
+          html.text("Beginning of this conversation."),
+        ])
+      Earlier, Some(message) ->
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("load-older"),
+            attribute.data(older_marker, "load"),
+            event.on_click(message),
+          ],
+          [html.text("Load older")],
+        )
+      Earlier, None ->
+        html.p([attribute.class("lane-boundary")], [
+          html.text(
+            "Older rows are not shown. An observer's page does not load them.",
+          ),
+        ])
+      Loading, _ ->
+        html.p([attribute.class("lane-boundary")], [
+          html.text("Loading older rows…"),
+        ])
+      Full(rows:), _ ->
+        html.p([attribute.class("lane-boundary")], [
+          html.text(
+            "This page holds at most "
+            <> int.to_string(rows)
+            <> " rows, so it loads no older ones.",
+          ),
+        ])
+    },
   ])
 }
 

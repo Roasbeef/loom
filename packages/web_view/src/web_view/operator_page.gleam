@@ -17,6 +17,11 @@
 //// about the session. It turns a browser event into one of those two
 //// calls, and draws the composer and the approval cards.
 ////
+//// The page also has one read to offer: the lane's "Load older" button,
+//// whose `OlderRequested` reaches `component.older`. It is here rather than
+//// in the observer's component because an observer's view attaches no
+//// handler at all (protocol-change/051), even for a read.
+////
 //// The browser can reach only the handlers the rendered tree holds, and a
 //// handler's message is fixed when the tree is drawn. So each approval
 //// button carries the escalation's identity and the sequence it was drawn
@@ -56,6 +61,10 @@ pub type Msg(socket) {
   /// An approval card's button: the escalation's identity, the sequence
   /// the card was drawn at, and the answer.
   Decided(id: String, seq: Int, answer: component.Answer)
+
+  /// The lane's "Load older" button. It asks for a read, not a mutation,
+  /// and `component.older` sends it only while the lane offers older rows.
+  OlderRequested
 }
 
 /// The Lustre application for one session's operator page.
@@ -95,6 +104,7 @@ pub fn update(
     Observed(message:) -> component.update(model, message)
     Submitted(text:, delivery:) -> component.submit(model, text, delivery)
     Decided(id:, seq:, answer:) -> component.decide(model, id, seq, answer)
+    OlderRequested -> component.older(model)
   }
   #(model, effect.map(effects, Observed))
 }
@@ -127,7 +137,11 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
     strip.view(component.strip(model)),
-    lane.view(component.pieces(model)),
+    lane.view(
+      component.pieces(model),
+      component.top(model),
+      Some(OlderRequested),
+    ),
     html.footer([attribute.class("dock")], [
       approvals(component.pending(model)),
       composer(model),
