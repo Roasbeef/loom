@@ -53,6 +53,14 @@ per call. The terminal keeps the loop over a drain's updates in
 `tui/inbound`: before each update it passes the `Surroundings` a decision
 inside the update reads (whether a diff or a notes surface is shown, and
 the approval under review), and after it applies the update's facts.
+The commands an operator gives the session (an interrupt, a stop, a
+decision, a model change, a change of strand, the session's half of a
+quit) take `Shared` alone too (`tui/commands`); the terminal decides from
+a key or a parsed slash command which one to run, and settles the facts
+it records, as it does for a fold. The three edges that decide after
+every event whether the context, the advisor's pending nudges or the goal
+need a fresh read compare two shared records, and run together as the
+shared step's settle (`tui/session_step`).
 The split, the parameters and the cut are the
 slices of moving the step into `session_view` so that the web view runs
 the same reducers ([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
@@ -1022,11 +1030,12 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
 | `tui/outbound`, `tui/inbound`, `tui/event_fold`, `tui/lane_fold` | Sending frames and folding the lane's disposition, over `Shared` alone (`outbound`); the terminal's loop over the lane's updates, and settling the surface facts each recorded (`inbound`); applying each pushed event (`event_fold`) and each lane update and replay change, captured cuts included (`lane_fold`), over `Shared` alone. |
-| `tui/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed) and their replies, over `Shared` alone, and the edge detectors and surface openers, over the whole model. |
+| `tui/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed), their replies, the edge detectors and the goal commands, over `Shared` alone, and the surface openers, over the whole model. |
+| `tui/commands`, `tui/session_step` | The operator's commands to the session, over `Shared` alone (`commands`), and the shared step's settle after every event (`session_step`). |
 | `tui/session_control` | Daemon control requests and reconnection, as job specs, and the drains that take their replies. |
 | `tui/projection` | The record row cache and render cache. |
 | `tui/live_tail` | The live answer's rows, rebuilt each frame from what changed: settled blocks, checked text, and the open tail. |
-| `tui/submit`, `tui/interaction` | Composer submission and keyboard and mouse handling. |
+| `tui/submit`, `tui/interaction` | Composer submission, the terminal forms of the commands, and keyboard and mouse handling. |
 | `tui/tick` | `update_tick`/`settle_tick`: the drain chain and the read services. |
 | `tui/todo_panel` | The pinned todo panel and the one-line transcript summary of a `todo` call. |
 | `session_view/advisor_history`, `tui/collaboration_view` | Advisor-only commentary in the main transcript, and the inspector's Collaboration tab. |
