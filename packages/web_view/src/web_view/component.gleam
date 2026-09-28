@@ -122,9 +122,11 @@ pub const strand = strip.followed
 /// Measured with #587's page of short Markdown answers, 150 rows retain
 /// less than 600 plain rows did before Markdown was drawn, which is the
 /// footprint the page had to stay within, and `held_rows` retains about a
-/// fifth more. 150 rows is also more than one capture brings, since a cut
-/// holds at most a hundred records of the whole session, and several
-/// screens of reading before the reader needs "Load older".
+/// fifth more. It is also several screens of reading before the reader
+/// needs "Load older". A cut holds at most a hundred records of the whole
+/// session, so on a session of one-row answers the page gathers its rows
+/// over several captures; records that draw several rows each fill it from
+/// one.
 pub const live_rows = 150
 
 /// The most transcript rows the page holds once its reader has loaded
@@ -643,7 +645,15 @@ pub fn apply(
   list.fold(updates, model, fn(model, update) {
     case update {
       session_channel.Captured(cut:, view:, ..) -> captured(model, cut, view)
-      session_channel.Failed(reason:) -> Model(..model, status: Ended(reason))
+
+      // A lane that failed answers no read it had out or still owed, so the
+      // demand is retired with it and the lane stops saying it is loading.
+      session_channel.Failed(reason:) ->
+        Model(
+          ..model,
+          status: Ended(reason),
+          scrollback: history_view.resume(history_view.cancel(model.scrollback)),
+        )
       session_channel.Submission(disposition:) -> settled(model, disposition)
       session_channel.UnknownOutcome(..) ->
         Model(
@@ -915,6 +925,17 @@ fn resumed(model: Model(socket)) -> Model(socket) {
 // draws and the records a capture adds. The window is trimmed only when
 // rows were cut: a record at the start of the strand that draws no row
 // would otherwise leave the page offering to load rows it will never draw.
+//
+// The end of a turn whose input is older than the window is not drawn, but
+// its records stay in the window (`AtInput`), so the next read asks for the
+// sequences below them. Trimming them too would make every read ask for
+// the same interval again, and a turn longer than one read could never be
+// loaded whole.
+//
+// Older rows can be loaded only while there are sequences below the window
+// to read (`history_view.older` asks for none below the first). A branch
+// whose oldest parent is missing with nothing below to read offers no
+// button that would do nothing.
 fn relaned(model: Model(socket)) -> Model(socket) {
   case model.shown {
     None -> restripped(model)
@@ -929,8 +950,13 @@ fn relaned(model: Model(socket)) -> Model(socket) {
       let pieces = turns.pieces(blocks, view.strands, latest)
       let #(scrollback, earlier) = case fit, branch.unloaded {
         Whole, None -> #(model.scrollback, Reached)
-        Whole, Some(_) -> #(model.scrollback, Unheld)
-        AtInput, _ | Cut, _ -> #(trimmed(model.scrollback, blocks), Unheld)
+        Whole, Some(_) ->
+          case model.scrollback.before_seq > 1 {
+            True -> #(model.scrollback, Unheld)
+            False -> #(model.scrollback, Reached)
+          }
+        AtInput, _ -> #(trimmed(model.scrollback, lead), Unheld)
+        Cut, _ -> #(trimmed(model.scrollback, blocks), Unheld)
       }
 
       // A paged page that had to cut a whole turn to stay within its
@@ -978,8 +1004,11 @@ fn limit(paging: Paging) -> Int {
 // The newest turn is always held. When it alone is over the limit, which a
 // long run of work can be, the page holds its newest blocks that fit, and
 // at least its newest block, so a page mid-turn still shows the turn's end.
-// That turn is then keyed by the window's start, which stays the same while
-// the window slides within it.
+// That turn is then keyed by the window's start. The window's start moves
+// each time the turn grows by a block, since the window is trimmed to its
+// oldest held block, so the key changes and the turn's held rows, at most
+// the limit, are drawn again on that capture. Only a turn longer than the
+// whole limit pays this.
 fn held(
   lead: List(transcript_lines.Block),
   opened: List(List(transcript_lines.Block)),
@@ -991,7 +1020,7 @@ fn held(
     [_, ..], [], _ | [_, ..], _, None -> #([lead, ..opened], Whole)
     [_, ..], [_, ..], Some(_) -> #(opened, AtInput)
   }
-  case list.reverse(groups) {
+  let #(blocks, fit) = case list.reverse(groups) {
     [] -> #([], fit)
     [newest, ..older] -> {
       let rows = row_count(newest)
@@ -1000,6 +1029,20 @@ fn held(
         False -> older_turns(older, limit, rows, newest, fit)
       }
     }
+  }
+
+  // The end of a turn left out above the held turns can only grow as older
+  // pages bring the rest of it. Once it alone no longer fits in the room
+  // left, the whole turn never will, so the page is as full as that turn
+  // lets it be. Calling it cut stops the page reading ever further down a
+  // turn it cannot draw, and keeps the window from filling with its records.
+  case fit {
+    AtInput ->
+      case row_count(blocks) + row_count(lead) > limit {
+        True -> #(blocks, Cut)
+        False -> #(blocks, AtInput)
+      }
+    Whole | Cut -> #(blocks, fit)
   }
 }
 

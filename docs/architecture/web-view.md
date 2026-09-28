@@ -385,7 +385,15 @@ oldest turns leave the page. The one exception to the turn boundary is a
 single turn longer than the limit, which the page holds from its newest
 blocks back. Once rows are cut, the history window is trimmed to the
 oldest record the page draws (`history_view.retain_from`), so each capture
-projects only what the page draws and the records the capture adds.
+projects only what the page draws and the records the capture adds. The
+end of a turn whose input is older than the window is not drawn but stays
+in the window, so the next read asks for the sequences below it; a turn
+longer than one read then arrives over several reads, and is drawn once
+its input does. When that end alone no longer fits in the room left, the
+page counts the turn as cut. A read that finds none of the strand's
+records, because other strands wrote every sequence in it, still moves the
+next read below it (`history_view.capture` keeps the progress `accept`
+made).
 
 **Load older.** Above the oldest row the lane draws `lane.Top`: the
 beginning of the conversation, a "Load older" button, "Loading older

@@ -176,11 +176,11 @@ pub fn a_full_page_loads_no_more_test() {
       ),
     ])
   let assert [read] = reads(wire) as "the second read, once the lane is free"
-  assert string.contains(read, "\"after_seq\":101,\"before_seq\":202")
+  assert string.contains(read, "\"after_seq\":100,\"before_seq\":201")
 
   let page =
     component.apply(page, [lane_fixture.conversation(301, 453)])
-    |> answer(read, lane_fixture.older_page(102, 201), 202)
+    |> answer(read, lane_fixture.older_page(101, 200), 201)
   assert list.length(component.rows(page)) == component.held_rows
   assert first_text(page) == "question 52"
   assert component.top(page) == lane.Full(component.held_rows)
@@ -228,4 +228,106 @@ pub fn only_the_operators_lane_offers_the_button_test() {
   let observer = element.to_string(component.view(page))
   assert !string.contains(observer, "<button")
   assert string.contains(observer, "Older rows are not shown.")
+}
+
+// The lane refreshes as soon as a page of history arrives. This answers
+// that refresh, which carries the fixture lane's empty session, and puts
+// back `update`, the capture a real refresh would have carried, so the
+// lane is free for the next read.
+fn settle(page, wire: page_fixture.Wire, update) {
+  let assert [refresh] = catch_ups(wire) as "the lane refreshes"
+  page_fixture.run(page, component.update, [
+    component.Arrived(
+      page_fixture.catch_up(page_fixture.request_id(refresh), "operator"),
+      0,
+    ),
+  ])
+  |> component.apply([update])
+}
+
+// A turn whose input is more than one read below the page's oldest input
+// arrives over several reads. The end of it that a read brings is not
+// drawn, since the page starts at an input, but it stays in the history
+// window, so the next read asks for the sequences below it rather than
+// the same interval again, and the turn is drawn whole once its input
+// arrives.
+pub fn a_turn_longer_than_one_read_is_loaded_whole_test() {
+  let wire = process.new_subject()
+  let live = lane_fixture.long_turn(142, 291)
+  let page =
+    page_fixture.ready(wire, "operator")
+    |> component.apply([live])
+    |> press
+  let assert [read] = reads(wire) as "the first read"
+  assert string.contains(read, "\"after_seq\":41,\"before_seq\":142")
+
+  let page = answer(page, read, lane_fixture.long_turn_page(42, 141), 142)
+  assert list.length(component.rows(page)) == 150
+  assert component.top(page) == lane.Earlier
+
+  let page = settle(page, wire, live) |> press
+  let assert [read] = reads(wire) as "the second read goes further down"
+  assert string.contains(read, "\"after_seq\":0,\"before_seq\":42")
+
+  let page = answer(page, read, lane_fixture.long_turn_page(1, 41), 42)
+  assert list.length(component.rows(page)) == 291
+  assert first_text(page) == "question 0"
+  assert component.top(page) == lane.Beginning
+}
+
+// Another strand can write every sequence of a read. The page then brings
+// nothing of its own strand, but the next read still asks for the
+// sequences below that interval, and reaches the rest of the strand.
+pub fn a_read_that_finds_only_other_strands_moves_on_test() {
+  let wire = process.new_subject()
+  let live = lane_fixture.gapped(153, 302)
+  let page =
+    page_fixture.ready(wire, "operator")
+    |> component.apply([live])
+    |> press
+  let assert [read] = reads(wire) as "the first read"
+  assert string.contains(read, "\"after_seq\":52,\"before_seq\":153")
+
+  let page = answer(page, read, lane_fixture.gapped_page(53, 152), 153)
+  assert list.length(component.rows(page)) == 150
+  assert component.top(page) == lane.Earlier
+
+  let page = settle(page, wire, live) |> press
+  let assert [read] = reads(wire) as "the second read is below the first"
+  assert string.contains(read, "\"after_seq\":0,\"before_seq\":53")
+
+  let page = answer(page, read, lane_fixture.gapped_page(1, 52), 53)
+  assert first_text(page) == "question 0"
+  assert component.top(page) == lane.Beginning
+}
+
+// A strand whose leaf the capture names but whose records it does not hold
+// has nothing below the window to read, so the lane offers no button that
+// would ask for nothing.
+pub fn no_button_when_there_is_nothing_to_read_test() {
+  let page =
+    component.new(page_fixture.start())
+    |> component.apply([lane_fixture.conversation(1, 0)])
+  assert component.rows(page) == []
+  assert component.top(page) == lane.Beginning
+  assert !string.contains(
+    element.to_string(operator_page.view(page)),
+    "load-older",
+  )
+}
+
+// A lane that fails with a read out never answers it, so the lane stops
+// saying it is loading.
+pub fn a_failed_lane_retires_the_read_test() {
+  let wire = process.new_subject()
+  let page =
+    page_fixture.ready(wire, "operator")
+    |> component.apply([lane_fixture.conversation(301, 450)])
+    |> press
+  assert component.top(page) == lane.Loading
+  let page =
+    page_fixture.run(page, component.update, [
+      component.Arrived([connection_event.Closed("gone")], 0),
+    ])
+  assert component.top(page) != lane.Loading
 }

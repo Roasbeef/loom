@@ -171,12 +171,15 @@ page keys and nonces, and the relay into the session's gateway.
   (`history_view.retain_from`), so what a capture projects is in
   proportion to the page. The page starts at a turn's input whenever it
   can, so prepending older rows and sliding the window leave every held
-  turn's key, and its lines' memos, as they were (`lane_memo_test`).
+  turn's key, and its lines' memos, as they were (`lane_memo_test`). The
+  undrawn end of a turn whose input is older stays in the window so the
+  next read goes below it, and counts as cut once it alone no longer fits.
 - **One read at a time.** The history read goes out only when the lane has
   no request out (`session_channel.history` refuses a busy lane); until
   then the demand stays `Wanted` and every reduction offers it again. While
   a read is out the history window is frozen, and the reply, a refusal or
-  the lane's failure is what ends it.
+  the lane's failure is what ends it. The button is offered only while
+  there are sequences below the window to read.
 - **One ordered effect.** The lane's outputs are performed in one
   `effect.from`, never split across `effect.batch`, which does not order.
 - **Which application runs is which commands exist.** An observer's page is
