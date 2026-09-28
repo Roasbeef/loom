@@ -9,10 +9,13 @@
    input 1888130c8f624c931ab2efbdb5f7aeafbb95b5e144359679942f9ac6bce2e193  packages/web_client/src/web_client/follow.gleam
    input d3e7b6394e383d35d7593807914933792b395f3ef3191415b4b03d13ab4afe08  packages/web_client/src/web_client/internal/ffi_clock.gleam
    input 9904ed32a30d04b1df2f5b25f9f6afc410e4ee5b4efb186ca45a176b50d8c4d6  packages/web_client/src/web_client/internal/ffi_follow.gleam
-   input 205599f5ceb4f573605d81093ffd3cb3c69764a3fc2737c03dab670e2f24768f  packages/web_view/src/web_view/component.gleam
+   input 31d6787361605e4c05e238874f3bdb5062ec43a4d2fc92124628bc33e79395c7  packages/web_view/src/web_view/component.gleam
    input c84c9143d768322adc419ebde35b903096cd77b2ee3fdf2913b644496dc58072  packages/web_view/src/web_view/markdown_view.gleam
-   input 8dccfdc254fef845fd09b08f7597988ead4954599ea68a3392f0845ff8d25325  packages/web_view/src/web_view/operator_page.gleam
+   input 10bbb834c1fecfa42d70541255f644393ad8ce30fbdf6979b81aeca00739aa8c  packages/web_view/src/web_view/operator_page.gleam
    input a75c1b298f03bf358f299f489f77e943844fa198e5280df96033873119723ebe  packages/web_view/src/web_view/page.gleam
+   input 490e0503a684204448d131ffd14b21ac6c6b7ac23c6d3a0c6087017fe03d3937  packages/web_view/src/web_view/view/heading.gleam
+   input 7d282e8c9bbc0034c013fd0219cef78e898505833a6e8bb3b48c4ffa567d5d4b  packages/web_view/src/web_view/view/lane.gleam
+   input 57306966a020d1ae18545b4d745c0f63a572ed7ada74968efb6c8bb941879486  packages/web_view/src/web_view/view/strip.gleam
    body f293e2f1f4147a935f506546aa5cca760395b9f269a1e67c94a416dbaf39233f
 */
 /* --- generated body: the digests above cover everything below this line --- */
