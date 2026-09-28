@@ -340,19 +340,36 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/terminal_lane`: `Lane` and `Output`, the session lane with the
   terminal's connection and recorder as its handle types, and `perform`,
   the only place a lane's outputs touch the websocket or the recording.
+- `tui/step_effect`: `Effect(socket, recorder)`, the two effects the session
+  reducers decide, generic over the host's handles: `Lane(output)`, an
+  output of the adopted lane, and `Recorded(recorder, message)`, the
+  recording line for a message that arrived with no lane. It imports only
+  `session_view`, so it moves into `session_view/step` unchanged in S4 of
+  `docs/design-notes/step-extraction.md`.
 - `tui/effect`: `Effect`, the closed vocabulary of fire-and-forget effects a
-  step decides on, recording appends among them (`Record`). It imports the
-  modules whose handles its variants carry (`attachment`, `connection`,
-  `daemon`, `herdr`, `job`, `recording`, `terminal_lane`) and nothing that
-  imports the model.
-- `tui/model`: the `Model` record, `Model(shared: Shared, view: View)`.
-  `Shared` is the session state a second host would need (what the daemon
-  said, what was sent and not yet committed, the reads in flight, the
-  presentation revisions, and for now the four host handles `inbox`,
-  `channel`, `replay_inbox` and `recorder` with their terminal types).
+  step decides on, input recording lines among them (`Record`). The session
+  reducers' effects arrive as `Step(step_effect.Effect(Connection,
+  Recorder))`. It imports the modules whose handles its variants carry
+  (`attachment`, `connection`, `daemon`, `herdr`, `job`, `recording`,
+  `step_effect`) and nothing that imports the model.
+- `tui/model`: the `Model` record, `Model(shared: TerminalShared, view:
+  View)`. `Shared(socket, recorder, source, replay_source)` is the session
+  state a second host would need (what the daemon said, what was sent and
+  not yet committed, the reads in flight, the presentation revisions) and
+  the four host handles, typed by its parameters: `channel` is
+  `Option(session_channel.Channel(socket, recorder))`, `replay_state` is
+  `attempt_replay.State(socket, recorder)`, `inbox` and `replay_inbox` are
+  `session_view/inbox` values keyed by `source` and `replay_source`, and
+  `recorder` is `Option(recorder)`. The inboxes have separate source
+  parameters because the terminal reads them from differently typed
+  subjects. `TerminalShared` binds the four to `connection.Connection`,
+  `recording.Recorder`, `Subject(connection_event.Message)` and
+  `Subject(attempt.Event)`; every reducer still takes `Model`, so it sees
+  the terminal's types (slice S2 of the step extraction).
   `View` is the terminal's own state (screen size, composer, panels,
-  overlays, the row projection's outputs, pacing, clocks, the
-  daemon-control and attachment job slots, the job table) and holds the
+  overlays, the row projection's outputs, pacing, clocks and
+  `View.wall_ms`, the daemon-control and attachment job slots, the step's
+  outbox, the job table) and holds the
   etui render caches, `Caches`, as `View.caches`: the rendered, record and
   diff rows, their line caches, the frame cache and the selection's frame;
   a reducer that empties the transcript bumps `Shared.record_cache_epoch`
@@ -370,12 +387,14 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `invalidate_transcript`, `mark_activity`, `queue_owner`,
   `active_strand_phase`). Importers alias it as `tui_model`, because `model`
   is the local variable in nearly every function and would shadow the module
-  name. Constructors stay unqualified. It also owns the effect outbox, the
-  step's one queue: `emit` queues an effect, `record` queues a recording
-  line when the terminal is recording, `start_step` stores an input's
-  stamp and queues its recording line before the reducer runs, and
+  name. Constructors stay unqualified. It also owns the effect outbox,
+  `View.outbox`, the step's one queue: `emit` queues an effect, `record`
+  queues an input's recording line when the terminal is recording,
+  `record_arrival` queues a channelless arrival's line as
+  `Step(Recorded(..))`, `start_step` stores an input's stamp and wall clock
+  reading and queues its recording line before the reducer runs, and
   `hold_channel` stores a transitioned adopted lane and moves what it
-  queued into the outbox. `start_job` allocates a job key from
+  queued into the outbox as `Step(Lane(..))`. `start_job` allocates a job key from
   `Model.view.next_job` and queues its `StartJob`; `allocate_job` only
   allocates, for a test that stands a slot in for a running job.
   `presentation` builds the `transcript_lines.Presentation` the line
@@ -394,8 +413,9 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   into `job.Finished` with the adopted socket's liveness read) and has
   admission file it. `tui.gleam` and test drivers import it; no reducer
   module does.
-- `tui/msg`: what the step is given. `Msg` is `Input(at, event)`, one
-  event and its `Stamp`, which the step reduces, or `Arrived(arrivals)`,
+- `tui/msg`: what the step is given. `Msg` is `Input(at, wall_ms, event)`,
+  one event with its `Stamp` (the presentation and transport clocks) and
+  the wall clock reading, which the step reduces, or `Arrived(arrivals)`,
   traffic the host received, which the step only files. `Event` is in the
   client's terms (`KeyPressed(text, key)`, `Pasted(text, image)`,
   `Resized`, `Scrolled`, `Pressed`, `Dragged`, `Released`, `Moved`,
@@ -934,10 +954,12 @@ boundaries and the split's measurements under Invariants.
   left alone. The confirmation explicitly includes stopping the selected session
   before deletion; the job remains asynchronous while cleanup settles.
 - `tui/effect.Effect` is what a step asks the runtime to do, as data:
-  `Channel(session_channel.Out)` and `Attachment(attachment.Out)` wrap the
-  two channels' queued outputs, and the rest name a socket write or close, a
+  `Step(step_effect.Lane(session_channel.Out))` and
+  `Attachment(attachment.Out)` wrap the two channels' queued outputs,
+  `Step(step_effect.Recorded(..))` is a channelless arrival's recording
+  line, and the rest name a socket write or close, a
   control close, a job start or cancel, an attachment cancel, an inbox
-  discard, a recording line, the OSC 52 clipboard write,
+  discard, an input's recording line, the OSC 52 clipboard write,
   or a Herdr announcement or report. Every variant carries the handle it
   acts on, because an adoption can replace the model's socket later in the
   same step and the effect must still reach the handle it was decided for.
@@ -947,7 +969,7 @@ boundaries and the split's measurements under Invariants.
   `Transmit(socket, frame)` or `Shut(socket)`; `attachment.Out` is a
   candidate channel output, `Acknowledge(to)` or `Abandon(status)`, and
   `tui_model.emit_attachment` queues an `Abandon` behind a `CancelJob` for
-  the attempt's key. `Model.shared.outbox` holds
+  the attempt's key. `Model.view.outbox` holds
   pending effects newest first and is empty between steps. ADR-013 records
   the design (issue #530, phase 1).
 - `tui/attachment.Status` owns one provisional replacement: the key of its
@@ -1717,13 +1739,14 @@ untouched.
 - **Presentation uses one caller-owned clock, read once per event.**
   `new_model` supplies the host's monotonic clock; `new_model_with_clock`
   lets a test supply its own. `tui.update` calls `runtime.message`, which
-  reads `Model.view.monotonic_time_ms`, `Model.view.transport_time_ms` and the wall
-  clock once each into the input's `msg.Stamp`; the step stores it as
-  `Model.shared.stamp` before any reducer runs (`tui_model.start_step`) and
+  reads `Model.view.monotonic_time_ms` and `Model.view.transport_time_ms`
+  once each into the input's `msg.Stamp`, and the wall clock once into its
+  `wall_ms`; the step stores them as `Model.shared.stamp` and
+  `Model.view.wall_ms` before any reducer runs (`tui_model.start_step`) and
   reads no clock: frame pacing, generation throughput, activity elapsed time, the
   cache outlook, the jobs and activity-poll ages and the strip all read
   `stamp.now_ms`, the session lanes read `stamp.transport_ms`, and the
-  creation key reads `stamp.wall_ms` with `Model.view.terminal`, the OS and BEAM
+  creation key reads `Model.view.wall_ms` with `Model.view.terminal`, the OS and BEAM
   process identity read once when the model is created. The build the
   mismatch notice compares with the daemon's is read once too, into
   `Model.shared.client_build`. The message is a cross-module call on `update`'s
