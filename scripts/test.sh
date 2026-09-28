@@ -80,6 +80,22 @@ export LOOM_TEST_PACKAGE="$package" LOOM_TEST_MATCH="$match"
 export LOOM_TEST_PARALLEL="$parallel"
 export LOOM_TEST_SERIAL="$serial"
 cd "$root/packages/$package"
+# The compile runs under its own deadline, ahead of and separate from the
+# test deadline below. A cold-cache client build has taken up to ~158s on
+# the hosted macOS e2e runner, which left a 180s shipped-fixture budget as
+# little as ~35s for the test itself and turned an ordinary slow build into
+# a timed-out test roughly 5% of runs (e2e_client_bootstrap.sh gives each
+# shipped fixture its own LOOM_TEST_TIMEOUT_SECONDS-scoped budget). Giving
+# the build a separate, independently-configurable window means
+# LOOM_TEST_TIMEOUT_SECONDS again bounds only the test run it names, and a
+# slow compiler is diagnosed as a build timeout rather than folded into the
+# test's own budget. LOOM_BUILD_TIMEOUT_SECONDS still guards against a
+# hanging compiler (see skills/beam-compile-review/SKILL.md); it is not
+# removing the bound, only moving it out of the timed window that matters
+# for test flakiness.
+python3 "$root/scripts/with_timeout.py" "${LOOM_BUILD_TIMEOUT_SECONDS:-1200}" -- \
+  gleam build --warnings-as-errors
+
 # The runner's own body is wrapped for two reasons. A raise inside it — the
 # --match path's `{module, M} = code:ensure_loaded(M)` is the reachable one —
 # otherwise reports as an emulator boot crash, writes an erl_crash.dump into
@@ -88,7 +104,7 @@ cd "$root/packages/$package"
 # And every exit goes through Halt, whose synchronous empty write orders the
 # whole eunit report ahead of the emulator's own shutdown.
 python3 "$root/scripts/with_timeout.py" "${LOOM_TEST_TIMEOUT_SECONDS:-1200}" -- \
-  bash -c 'gleam build --warnings-as-errors && exec erl -pa build/dev/erlang/*/ebin -noshell -eval "
+  bash -c 'exec erl -pa build/dev/erlang/*/ebin -noshell -eval "
     Halt = fun(Code) ->
       io:format(standard_io, \"\", []),
       erlang:halt(Code, [{flush, true}])
