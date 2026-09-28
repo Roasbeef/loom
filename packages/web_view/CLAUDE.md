@@ -33,13 +33,27 @@ page keys and nonces, and the relay into the session's gateway.
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
   and `now()`. All run in the component's process.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
-  (a batch of up to `arrival_batch` frames, reduced at once) and `Ticked`
-  (the deadline timer fired). It holds no command.
+  (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
+  (the deadline timer fired) and `OlderRequested` (the "Load older"
+  button, a read). It holds no command. `component.older_path` is the
+  button's Lustre event path, the one path the socket admits an
+  observer's click at.
 - `component.Model(socket)` (opaque): the lane, the filed frames
-  (`session_view/inbox`), the last capture, its transcript blocks and the
-  turns laid out from them (`turns.Piece`), the agent rows, the roster, the
+  (`session_view/inbox`), the last capture, the strand's history window
+  (`history_view.State`, the terminal's `scrollback`), how much history
+  the page holds (`Paging`), the transcript blocks it holds and the turns
+  laid out from them (`turns.Piece`), the agent rows, the roster, the
   cache ledger and its miss notices, the agent `Strip`, the approvals, the
   connection `Status`, the operator `Notice` and the sent-draft count.
+- `component.live_rows` (150) and `component.held_rows` (300): the page
+  holds the newest `live_rows` rows of `main`, cut between turns
+  (`turns.grouped`); once the reader loads older rows its limit is
+  `held_rows`. `component.Paging` is `Tail | Paged | Full`, and only moves
+  forward; `Full` means a paged page had to cut a whole turn, so it loads
+  no more. `component.older(model)` asks for the rows below the oldest one
+  held, as a `history` read on the page's lane; `component.top(model)` is
+  the `lane.Top` the lane draws above its oldest row (`Beginning`,
+  `Earlier`, `Loading`, `Full(rows)`).
 - The view, one module per screen region under `web_view/view/`, laid out
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
@@ -47,7 +61,10 @@ page keys and nonces, and the relay into the session's gateway.
   status)` draws the heading; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
   `strip.view(strip)` draws the agent strip, memoized on the whole strip;
-  `lane.view(pieces)` draws the transcript lane, memoized per line.
+  `lane.view(pieces, top, load)` draws the transcript lane, memoized per
+  line, with the line above its oldest row: a "Load older" button sending
+  `load` and carrying the fixed `data-loom-older` marker while older rows
+  exist, and words otherwise.
 - `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip
@@ -74,8 +91,10 @@ page keys and nonces, and the relay into the session's gateway.
   arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
   never offers remembering a grant for the session.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
-  delivery)` and `Decided(id, seq, answer)`. `composition(fields)` is the
-  total decoder of the composer form's fields.
+  delivery)` and `Decided(id, seq, answer)`. The lane's "Load older"
+  button sends `Observed(component.OlderRequested)`.
+  `composition(fields)` is the total decoder of the composer form's
+  fields.
 - `page`: the shell, the exchange page (`enter(next, nonce)`), the asset
   names (`stylesheet_asset`, `enter_asset`, `page_asset`, `client_asset`,
   `runtime_asset`) and where each is on disk (`static_file`,
@@ -85,7 +104,8 @@ page keys and nonces, and the relay into the session's gateway.
 ## Relationships
 
 - **Depends on**: `session_view` (the lane, the inbox, the operator arms,
-  `transcript.project_rows`, `approval`, the line types), `core` (the
+  `history_view`, `transcript.branch_blocks`, `turns`, `approval`, the
+  line types), `core` (the
   origin label; JSON in tests), `lustre == 5.7.1`, `houdini == 1.2.1`,
   `gleam_erlang`.
 - **Depended on by**: `client`, whose `client/daemon/ui_socket` starts one
@@ -101,15 +121,24 @@ page keys and nonces, and the relay into the session's gateway.
   `session_channel.next_due` (mapped to `Ticked`). Each source is one
   `server_component.select` from `init`, so its subjects belong to the
   component's process. Of the lane's updates,
-  `Captured` projects the page, `Auxiliary(UsageChanged)` feeds the cache
+  `Captured` is folded into the history window and projects the page,
+  `HistoryPage` answers the page's own `history` read and is folded in
+  with `history_view.accept`, `Auxiliary(UsageChanged)` feeds the cache
   ledger and the roster, and `Submission`, `Acknowledged`,
   `RequestRefused` and `UnknownOutcome` replace the operator's notice, so
-  it always states the outcome of the latest command.
+  it always states the outcome of the latest command; a refused `history`
+  read also retires the demand. `LookedUp`, `Streamed`, `ToolStreamed`,
+  `Noticed` and the other `Auxiliary` events are dropped.
+- Out on the lane, besides the lane's own snapshot requests and the
+  operator's commands: at most one `history` read at a time
+  (`session_channel.history`), for at most 100 sequences below the oldest
+  record the page holds.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in each chip, `<loom-fold>` around a settled
   turn's work, and `<loom-follow>` around the lane, which keeps the newest
-  row in view while the reader is at the bottom. They run in the browser
-  and send the server nothing.
+  row in view while the reader is at the bottom, and keeps the reader's
+  place when a press of "Load older" brings rows in above them. They run
+  in the browser and send the server nothing.
 - An operator's page also receives Lustre's `EventFired` for its two
   handlers: a click on an approval button and the composer form's submit.
 - Outputs leave through the transport only: `Transmit` and `Shut`, in the
@@ -137,11 +166,33 @@ page keys and nonces, and the relay into the session's gateway.
   addendum on event-driven delivery). `component_test` pins the
   reduction; `delivery_test` counts the renders a burst costs on the real
   runtime and watches the timer fire.
+- **The page's rows are bounded.** The page holds at most `live_rows`
+  rows, or `held_rows` once paged, plus at most one block when the newest
+  turn alone is longer than the limit; loading older rows past the limit
+  is refused (`Full`), never allowed to grow the page. Once rows are cut,
+  the history window is trimmed to the oldest record drawn
+  (`history_view.retain_from`), so what a capture projects is in
+  proportion to the page. The page starts at a turn's input whenever it
+  can, so prepending older rows and sliding the window leave every held
+  turn's key, and its lines' memos, as they were (`lane_memo_test`). The
+  undrawn end of a turn whose input is older stays in the window so the
+  next read goes below it, and counts as cut once it alone no longer fits.
+- **One read at a time.** The history read goes out only when the lane has
+  no request out (`session_channel.history` refuses a busy lane); until
+  then the demand stays `Wanted` and every reduction offers it again. While
+  a read is out the history window is frozen, and the reply, a refusal or
+  the lane's failure is what ends it. The button is offered only while
+  there are sequences below the window to read.
 - **One ordered effect.** The lane's outputs are performed in one
   `effect.from`, never split across `effect.batch`, which does not order.
 - **Which application runs is which commands exist.** An observer's page is
   `component.app()`, whose message type holds no command and whose view
-  attaches no handler; its bar is a fixed text node. An operator's page is
+  attaches one handler, the lane's "Load older" click, whose message
+  (`OlderRequested`) is a read; its bar is a fixed text node. The page
+  socket admits from an observer only that click at `component.older_path`
+  (protocol-change/051, the addendum on history paging), and
+  `page_events_test` pins that the observer's view registers that one
+  handler. An operator's page is
   `operator_page.app()`. The daemon's gateway refuses an observer's
   mutation independently, and the engine refuses one on an observer's
   attachment as a third layer.

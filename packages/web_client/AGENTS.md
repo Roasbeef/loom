@@ -15,7 +15,9 @@ renders again just for it:
 - `<loom-fold>` opens and closes a turn's folded work with no round trip.
 - `<loom-follow>` wraps the lane and scrolls the page to a row that lands
   below the viewport while the reader is at the bottom; once the reader
-  scrolls up it stops, and scrolling back to the bottom resumes it.
+  scrolls up it stops, and scrolling back to the bottom resumes it. When
+  the reader presses the lane's "Load older" button, it keeps the row they
+  were looking at in place while the older rows arrive above it.
 
 It is the client package of Lustre's full-stack layout: `core` and
 `session_view` are the shared code, `loomd` with `web_view` is the server,
@@ -46,18 +48,26 @@ time builds anything.
   shadow root holds one button carrying the `summary` slot and, while open,
   the default slot. Each toggle emits `fold.toggled_event`
   (`loom-fold-toggled`, bubbling and composed, no data).
-- `follow.Model(position, watching)`, `follow.Position` (`Following` |
-  `Reading`) and `follow.Msg` (`Connected`, `Disconnected`, `Watched`,
-  `Scrolled(gap)`, `Resized`, `Folded`): a scroll sets the position from the gap
+- `follow.Model(position, watching, anchor)`, `follow.Position`
+  (`Following` | `Reading`) and `follow.Msg` (`Connected`, `Disconnected`,
+  `Watched`, `Scrolled(gap)`, `Resized`, `Folded`, `Paged`,
+  `Held(anchor)`, `Released`): a scroll sets the position from the gap
   between the viewport's bottom and the page's (`follow.position`, within
   `follow.slack` pixels is `Following`); a resize of the lane scrolls to
   the bottom only while `Following`; a fold's toggle event, heard on the
-  slot, sets `Reading`, so opening a fold never scrolls past it. The shadow
-  root holds one default slot.
+  slot, sets `Reading`, so opening a fold never scrolls past it. A click
+  heard on the slot whose target carries the server's fixed
+  `data-loom-older` marker is `Paged`: it sets `Reading` and holds the
+  lane's first row and its place on screen (`anchor`); a scroll by the
+  reader measures it again, and the first resize after which that row is
+  no longer the lane's first scrolls the page to put it back and releases
+  it. The shadow root holds one default slot.
 - `internal/ffi_clock`: `now` (`Date.now`), `every` (`setInterval`) and
   `cancel` (`clearInterval`), in `clock.mjs`.
 - `internal/ffi_follow`: `watch` (a passive `scroll` listener on the window
-  and a `ResizeObserver` on the element), `unwatch` and `to_bottom`, in
+  and a `ResizeObserver` on the element), `unwatch`, `to_bottom`, and for
+  the held row `hold`, `remeasure` and `keep` (`Waiting` | `Restored`),
+  which read the first row's box and scroll the page by a distance, in
   `follow.mjs`. With `ffi_clock`, these are the package's only browser
   APIs.
 
@@ -94,7 +104,9 @@ scroll position and observes its own size; it reads no content.
 - **The follower never touches an approval card.** `<loom-follow>` wraps
   the lane only; the cards and the composer are in the dock outside it.
   It scrolls instantly, never smoothly, because a smooth scroll reports
-  intermediate positions that read as the reader leaving the tail.
+  intermediate positions that read as the reader leaving the tail. The row
+  it holds for "Load older" is found by structure (the lane's first
+  child), and only its box is read.
 - **The committed bundle is generated.** Change this package and run `make
   gen-client`; `make client-check` (part of `make check`) fails on drift,
   by digests, without Node, Bun or a network.

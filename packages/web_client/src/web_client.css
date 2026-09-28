@@ -117,6 +117,13 @@
   .ring.ring-idle{border-color:var(--color-fg-quiet);}
   .ring.ring-elapsed{border:2px dashed var(--color-fg-quiet);}
   loom-follow.follow{display:flex;flex-direction:column;flex:1 0 auto;min-width:0;}
+  /* The line above the lane's oldest row: the "Load older" button, or
+     words saying why there is none. Each fits the same minimum height, so
+     the change from one to the other does not move the rows below. */
+  .lane-top{display:flex;align-items:center;min-height:32px;margin:0 0 10px 0;min-width:0;}
+  .lane-boundary{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
+  button.load-older{padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px; background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);cursor:pointer;}
+  button.load-older:hover{border-color:var(--color-current);}
   .transcript.lane{display:flex;flex-direction:column;gap:10px;min-width:0;flex:1 0 auto;}
   .block{min-width:0;}
   .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}

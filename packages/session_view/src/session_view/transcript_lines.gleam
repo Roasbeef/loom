@@ -784,6 +784,24 @@ pub type Block {
   )
 }
 
+/// The durable sequence a block was drawn at: the digits its key starts
+/// with (`Block.key`, `seq.occurrence`, or a spacer's key followed by `~`).
+///
+/// A host that holds only the newest blocks of a lane reads it from the
+/// oldest block it keeps, to drop the records older than that from its
+/// history window (`history_view.retain_from`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.block_seq(transcript_lines.Block("7.0", transcript_lines.FromSpacer, []))
+///   == Ok(7)
+/// ```
+pub fn block_seq(block: Block) -> Result(Int, Nil) {
+  use #(seq, _) <- result.try(string.split_once(block.key, "."))
+  int.parse(seq)
+}
+
 /// The same rows as `keyed_record_lines`, grouped by the block that drew
 /// them and tagged with its source.
 ///

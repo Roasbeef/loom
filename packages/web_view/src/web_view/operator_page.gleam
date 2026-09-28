@@ -17,6 +17,10 @@
 //// about the session. It turns a browser event into one of those two
 //// calls, and draws the composer and the approval cards.
 ////
+//// The lane's "Load older" button is the observer's own
+//// (`component.OlderRequested`), a read, and reaches this page as an
+//// `Observed` message like the rest.
+////
 //// The browser can reach only the handlers the rendered tree holds, and a
 //// handler's message is fixed when the tree is drawn. So each approval
 //// button carries the escalation's identity and the sequence it was drawn
@@ -127,7 +131,11 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
     strip.view(component.strip(model)),
-    lane.view(component.pieces(model)),
+    lane.view(
+      component.pieces(model),
+      component.top(model),
+      Observed(component.OlderRequested),
+    ),
     html.footer([attribute.class("dock")], [
       approvals(component.pending(model)),
       composer(model),
