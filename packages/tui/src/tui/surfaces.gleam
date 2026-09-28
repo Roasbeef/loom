@@ -203,7 +203,7 @@ pub fn service_queue_read(model: Model) -> Model {
     Some(channel), Some(fetch) ->
       case session_channel.ready_for_read(channel) {
         True ->
-          case tui_model.queue_owner(model) == fetch.owner {
+          case session_model.queue_owner(model.shared) == fetch.owner {
             True ->
               outbound.send_frame(
                 Model(
@@ -315,7 +315,7 @@ pub fn service_jobs_read(model: Model) -> Model {
                 ..model.shared,
                 jobs_refresh: worktree_view.Settled,
                 jobs_awaiting: Some(#(
-                  tui_model.queue_owner(model),
+                  session_model.queue_owner(model.shared),
                   model.shared.active_strand,
                 )),
                 jobs_notice: "Refreshing live jobs; previous observation may be stale",
@@ -452,7 +452,7 @@ pub fn service_advisor_nudges_read(model: Model) -> Model {
               shared: Shared(
                 ..model.shared,
                 nudges_refresh: worktree_view.Settled,
-                nudges_awaiting: Some(tui_model.queue_owner(model)),
+                nudges_awaiting: Some(session_model.queue_owner(model.shared)),
               ),
             ),
             protocol.advisor_pending(model.shared.next_id),
@@ -557,7 +557,7 @@ pub fn receive_advisor_nudges(
   model: Model,
   board: advisor_pending.Board,
 ) -> Model {
-  let current = tui_model.queue_owner(model)
+  let current = session_model.queue_owner(model.shared)
   case model.shared.nudges_awaiting {
     Some(owner) ->
       case owner == current {
@@ -799,7 +799,9 @@ fn unreachable_goal(model: Model) -> Model {
 /// an attachment, so the owner is what tells a fresh board from a stale one.
 @internal
 pub fn receive_goal(model: Model, board: goal_view.Board) -> Model {
-  case model.shared.goal_awaiting == Some(tui_model.queue_owner(model)) {
+  case
+    model.shared.goal_awaiting == Some(session_model.queue_owner(model.shared))
+  {
     False -> model
 
     True ->
@@ -903,7 +905,7 @@ pub fn refuse_goal(
 pub fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
   case model.shared.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
-      case owner == tui_model.queue_owner(model) {
+      case owner == session_model.queue_owner(model.shared) {
         True -> {
           let old = case model.shared.jobs {
             Some(previous) if previous.strand == board.strand ->
@@ -950,7 +952,7 @@ pub fn sync_context(before: Model, after: Model) -> Model {
   let selected =
     context_view.select(
       after.shared.context,
-      tui_model.queue_owner(after),
+      session_model.queue_owner(after.shared),
       after.shared.active_strand,
     )
   let changed = context_refresh_due(before, after)
@@ -1002,7 +1004,8 @@ pub fn context_refresh_due(before: Model, after: Model) -> Bool {
 // operation, when the server reports `done`. Reading on that edge gives one
 // observation per turn instead of one per committed entry.
 fn operation_settled(before: Model, after: Model) -> Bool {
-  tui_model.active_strand_live(before) && !tui_model.active_strand_live(after)
+  session_model.active_strand_live(before.shared)
+  && !session_model.active_strand_live(after.shared)
 }
 
 /// Sends a requested context read once the channel is ready and no

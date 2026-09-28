@@ -575,6 +575,7 @@ pub fn new_model_with_clock(
       connection_backlog: session_model.MailboxDrained,
       recorder: None,
       record_cache_epoch: 0,
+      outbox: [],
     ),
     view: tui_model.View(
       width: 80,

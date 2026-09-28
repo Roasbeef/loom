@@ -11,10 +11,13 @@
 //// moves it into `session_view` as `session_view/model`.
 
 import core/entry
+import core/json
 import core/message
 import core/todo_list
 import gleam/dict.{type Dict}
-import gleam/option.{type Option}
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/set
 import host/build_identity
 import session_view/advisor_history
@@ -42,12 +45,15 @@ import session_view/snapshot_view
 import session_view/tool_activity
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Stream, type Submission, type ToolTail,
+  Failure, Line, System,
 }
+import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agent_messages
 import tui/attempt_replay
 import tui/completion_summary
 import tui/msg
+import tui/step_effect
 import tui/workspace
 
 /// The session state: what a second host showing the same session would need
@@ -338,6 +344,13 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// Bumped by a reducer that empties the transcript (`/clear`, a new
     /// session), so the view drops its record rows at the next projection.
     record_cache_epoch: Int,
+    /// Effects the functions over this record decided, newest first: the
+    /// adopted lane's outputs and the recording line of a channelless
+    /// arrival. A host takes them after each call into those functions and
+    /// appends them to its own queue at that point, so they keep their
+    /// order with the effects the host decides itself; the terminal does
+    /// this in `tui_model.hold_shared`. Between two such calls it is empty.
+    outbox: List(step_effect.Effect(socket, recorder)),
   )
 }
 
@@ -454,4 +467,356 @@ pub type GoalReport {
 
   /// An automatic refresh. The row is updated and nothing is printed.
   HoldGoalReport
+}
+
+// --- the operations over the shared record -----------------------------------
+//
+// Every function below takes and returns `Shared` alone and reads no terminal
+// state, so a second host can call it with its own handle bindings. The
+// terminal calls the writers through `tui_model.hold_shared`, which moves
+// what they queued into the step's outbox and carries the activity mark to
+// the terminal's idle timer.
+
+/// Appends a system line to the transcript and shows it as the notice.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = session_model.append_system(shared, "attached")
+/// ```
+@internal
+pub fn append_system(
+  shared: Shared(socket, recorder, source, replay_source),
+  text: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(
+    ..shared,
+    transcript: list.append(shared.transcript, [Line(System, text)]),
+    record_cache_valid: False,
+    notice: text,
+  )
+  |> invalidate_transcript
+  |> invalidate_frame
+}
+
+/// Appends a failure line to the transcript and shows it as the notice.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = session_model.append_error(shared, "network: closed")
+/// ```
+@internal
+pub fn append_error(
+  shared: Shared(socket, recorder, source, replay_source),
+  text: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(
+    ..shared,
+    transcript: list.append(shared.transcript, [Line(Failure, text)]),
+    record_cache_valid: False,
+    notice: text,
+  )
+  |> invalidate_transcript
+  |> invalidate_frame
+}
+
+/// Appends a line that informs without alarm, in the System speaker, and
+/// shows it as the notice. A build mismatch is reported this way: the attach
+/// has already succeeded when it is called, and the line explains the pair
+/// rather than reporting a refusal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = session_model.append_notice(shared, "daemon build differs")
+/// ```
+@internal
+pub fn append_notice(
+  shared: Shared(socket, recorder, source, replay_source),
+  text: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(
+    ..shared,
+    transcript: list.append(shared.transcript, [Line(System, text)]),
+    record_cache_valid: False,
+    notice: text,
+  )
+  |> invalidate_transcript
+  |> invalidate_frame
+}
+
+/// Marks the transcript's rows stale, for a change to the data they are
+/// built from.
+///
+/// The revision advances only beside a change to the projection's source
+/// data. Keeping it apart from the terminal's ticks is what stops a long
+/// session's history from costing CPU while nothing happens.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = session_model.invalidate_transcript(shared)
+/// ```
+@internal
+pub fn invalidate_transcript(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(..shared, render_revision: shared.render_revision + 1)
+}
+
+/// Marks the painted frame stale, for a change the cached frame does not
+/// show.
+///
+/// A host compares the revision with the one its last frame was painted at
+/// and repaints when they differ, so what matters is that it moved, not by
+/// how much.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = session_model.invalidate_frame(shared)
+/// ```
+@internal
+pub fn invalidate_frame(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(..shared, frame_revision: shared.frame_revision + 1)
+}
+
+/// Records operator or traffic activity by bumping `activity_revision`.
+///
+/// The session only says that activity happened. What a host does about it
+/// is its own: the terminal resets the quiet time its idle pacing reads,
+/// which `tui_model.hold_shared` does when it sees the revision move.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = session_model.mark_activity(shared)
+/// ```
+@internal
+pub fn mark_activity(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(..shared, activity_revision: shared.activity_revision + 1)
+}
+
+/// Stores `channel` as the adopted lane, moving what it queued into the
+/// shared outbox.
+///
+/// Every function that transitions the adopted lane stores the result
+/// through this, so the lane's writes, closes and recording notes are
+/// queued at the point they were decided. The stored lane therefore holds
+/// no outputs between two calls, and replacing or dropping it can lose
+/// nothing it decided.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(channel, updates) = session_channel.receive(channel, message, now:)
+/// let shared = session_model.hold_channel(shared, channel)
+/// ```
+@internal
+pub fn hold_channel(
+  shared: Shared(socket, recorder, source, replay_source),
+  channel: session_channel.Channel(socket, recorder),
+) -> Shared(socket, recorder, source, replay_source) {
+  let #(channel, outputs) = session_channel.take_outputs(channel)
+  let outbox =
+    list.fold(outputs, shared.outbox, fn(outbox, output) {
+      [step_effect.Lane(output), ..outbox]
+    })
+  Shared(..shared, channel: Some(channel), outbox:)
+}
+
+/// Queues the recording line for a message that arrived while the record
+/// held no lane, if the host is recording.
+///
+/// A message with no lane has no attempt to note it under, so it is
+/// recorded as the untagged arrival the preview peer has always written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = session_model.record_arrival(shared, connection_event.Connected)
+/// ```
+@internal
+pub fn record_arrival(
+  shared: Shared(socket, recorder, source, replay_source),
+  message: connection_event.Message,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.recorder {
+    Some(recorder) ->
+      Shared(..shared, outbox: [
+        step_effect.Recorded(recorder, message),
+        ..shared.outbox
+      ])
+    None -> shared
+  }
+}
+
+/// The identity of the current attachment, used to reject a queue, job or
+/// goal reply that arrives after the attachment changed. Empty when nothing
+/// is captured.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let owner = session_model.queue_owner(model.shared)
+/// ```
+@internal
+pub fn queue_owner(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> String {
+  case shared.captured {
+    Some(#(cut, _)) -> {
+      let expected = cut.attachment.expected
+      expected.session
+      <> ":"
+      <> expected.epoch
+      <> ":"
+      <> expected.incarnation
+      <> ":"
+      <> cut.attachment.connection_id
+    }
+    None -> ""
+  }
+}
+
+/// The captured attachment's session, epoch and incarnation as a JSON
+/// array, or an empty string when nothing is captured.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let namespace = session_model.queue_namespace(model.shared)
+/// ```
+@internal
+pub fn queue_namespace(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> String {
+  case shared.captured {
+    Some(#(cut, _)) ->
+      json.to_string(
+        json.Array([
+          json.String(cut.attachment.expected.session),
+          json.String(cut.attachment.expected.epoch),
+          json.String(cut.attachment.expected.incarnation),
+        ]),
+      )
+    None -> ""
+  }
+}
+
+/// Reports whether the active strand is submitting or running.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let live = session_model.active_strand_live(model.shared)
+/// ```
+@internal
+pub fn active_strand_live(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Bool {
+  case active_strand_phase(shared) {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+/// The active strand's live phase, or `submitting` while its prompt is on
+/// the way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let phase = session_model.active_strand_phase(model.shared)
+/// ```
+@internal
+pub fn active_strand_phase(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Option(String) {
+  case shared.submitting {
+    Some(strand) if strand == shared.active_strand -> Some("submitting")
+    _ ->
+      shared.strands
+      |> list.find_map(fn(strand) {
+        let protocol.Strand(id:, live_phase:, ..) = strand
+        case id == shared.active_strand, live_phase {
+          True, Some(phase) -> Ok(phase)
+          _, _ -> Error(Nil)
+        }
+      })
+      |> result.map(Some)
+      |> result.unwrap(None)
+  }
+}
+
+/// The active strand, if an interrupt for it is outstanding.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let held = session_model.active_interrupt(model.shared)
+/// ```
+@internal
+pub fn active_interrupt(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Option(String) {
+  case shared.interrupt {
+    Some(Interrupt(strand:, ..)) ->
+      case strand == shared.active_strand {
+        True -> Some(strand)
+        False -> None
+      }
+    None -> None
+  }
+}
+
+/// Reports whether `name` is one of the listed strands.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let known = session_model.is_known_strand(model.shared.strands, "main")
+/// ```
+@internal
+pub fn is_known_strand(strands: List(protocol.Strand), name: String) -> Bool {
+  list.any(strands, fn(strand) {
+    let protocol.Strand(id:, ..) = strand
+    id == name
+  })
+}
+
+/// What the transcript's line builders read of the shared record.
+///
+/// The builders take this record rather than a host's model, so that they
+/// need nothing of any host; this is the one place that knows which fields
+/// they read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.display_streams(session_model.presentation(model.shared))
+/// ```
+pub fn presentation(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> transcript_lines.Presentation {
+  transcript_lines.Presentation(
+    active_strand: shared.active_strand,
+    extent: transcript_lines.details_extent(shared.details_expanded),
+    captured: shared.captured,
+    records: shared.records,
+    streams: shared.streams,
+    tool_tails: shared.tool_tails,
+    queued: shared.queued,
+    awaiting_outcome: shared.awaiting_outcome,
+    cache_notices: shared.cache_notices,
+    summaries: shared.summaries,
+    compact_entry_cache: shared.compact_entry_cache,
+    compact_call_cache: shared.compact_call_cache,
+    worktree: shared.worktree,
+  )
 }

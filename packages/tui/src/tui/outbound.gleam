@@ -53,7 +53,7 @@ pub fn mutation_refusal(
   use <- bool.guard(
     mutates
       && model.shared.captured != None
-      && !tui_model.is_known_strand(
+      && !session_model.is_known_strand(
       model.shared.strands,
       model.shared.active_strand,
     ),
@@ -274,7 +274,7 @@ pub fn apply_submission(
             shared: Shared(
               ..model.shared,
               goal_request: Some(request_id),
-              goal_awaiting: Some(tui_model.queue_owner(model)),
+              goal_awaiting: Some(session_model.queue_owner(model.shared)),
             ),
           )
         "worktree_diff" ->

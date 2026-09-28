@@ -556,7 +556,7 @@ pub fn commentary_between_calls_splits_the_group_and_keeps_a_gap_test() {
   let #(lines, _, _) =
     transcript_lines.record_lines(
       records,
-      tui_model.presentation(model),
+      session_model.presentation(model.shared),
       [],
       advisor_history.Board([commentary], None),
     )

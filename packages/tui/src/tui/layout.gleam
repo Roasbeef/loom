@@ -602,7 +602,7 @@ pub fn activity_glyph(frame: Int) -> String {
 /// it as a completed response would make a steerable turn look stuck.
 @internal
 pub fn active_status_label(model: Model) -> Option(String) {
-  case tui_model.active_strand_phase(model) {
+  case session_model.active_strand_phase(model.shared) {
     None -> None
     Some("assistant") ->
       Some(case active_stream_kind(model) {
@@ -650,7 +650,7 @@ fn running_tool_label(model: Model) -> String {
 }
 
 fn active_stream_kind(model: Model) -> Option(String) {
-  transcript_lines.display_streams(tui_model.presentation(model))
+  transcript_lines.display_streams(session_model.presentation(model.shared))
   |> list.reverse
   |> list.find(fn(stream) {
     let Stream(strand:, ..) = stream

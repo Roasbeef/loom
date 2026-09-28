@@ -34,28 +34,32 @@
 //// recorder, and names none of them with a terminal type: it is
 //// `Shared(socket, recorder, source, replay_source)`. The terminal binds
 //// the parameters to its connection, its recording and the two subjects it
-//// reads in `TerminalShared`, which is the type of `Model.shared`. Every
-//// reducer still takes the whole `Model` and reads a field through the half
-//// that holds it, so every reducer sees the handles with the terminal's
-//// types. A later slice cuts the reducers that touch only session state
-//// down to `Shared` and moves them into `session_view`, where the web view
+//// reads in `TerminalShared`, which is the type of `Model.shared`. Most
+//// reducers still take the whole `Model` and read a field through the half
+//// that holds it. The reducer cut (issue #569, S3) moves them one layer at a
+//// time, from the helpers they call upward, to functions over `Shared`
+//// alone, which a later slice moves into `session_view`, where the web view
 //// can drive them with its own bindings.
 ////
-//// The step's effect queue is `View.outbox`, not a `Shared` field. It
-//// holds the terminal's effects, jobs and the attachment among them, in
-//// one order with the session reducers' `effect.Step` effects, and it stays
-//// the one queue until the reducer cut gives the session reducers a queue
-//// of their own.
+//// The step's effect queue is `View.outbox`. It holds the terminal's
+//// effects, jobs and the attachment among them, in one order with the
+//// session effects wrapped as `effect.Step`. A function over `Shared` alone
+//// queues its session effects on `Shared.outbox` instead, and the terminal
+//// stores its result through `hold_shared`, which moves them into
+//// `View.outbox` at the point of the call. So the step still has one order
+//// of effects, and `Shared.outbox` is empty whenever the terminal holds the
+//// model.
 ////
 //// Besides the types, the module holds the small operations that nearly
-//// every reducer needs and that read or bump only the record itself:
-//// appending a system or error line, the transcript and frame revision
-//// counters, the activity mark idle pacing reads, the attachment identity
-//// that replies are checked against, and the active strand's live phase.
-//// Keeping them here stops every module above from depending on whichever
-//// sibling first defined them.
+//// every reducer needs. Those that change only session state (appending a
+//// system or error line, the transcript and frame revisions, the activity
+//// mark, storing the lane, recording a channelless arrival) are defined
+//// over `Shared` in `tui/session_model`; the functions of the same names
+//// here are their forms over the whole model, each a `hold_shared` of the
+//// shared call, for the reducers that still take the whole model. The
+//// terminal's own operations, queuing a terminal effect, starting a job and
+//// opening a step, are defined here alone.
 
-import core/json
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/span
@@ -65,15 +69,11 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import session_view/attempt
 import session_view/composer
 import session_view/connection_event
 import session_view/history_view
-import session_view/protocol.{Strand}
-import session_view/session_channel
-import session_view/transcript_line.{type Line, Failure, Line, System}
-import session_view/transcript_lines
+import session_view/transcript_line.{type Line}
 import session_view/worktree_view
 import tui/agent_strip
 import tui/agents
@@ -96,9 +96,8 @@ import tui/peer_links
 import tui/queue_editor
 import tui/recording
 import tui/selection
-import tui/session_model.{type Shared, Interrupt, Shared}
+import tui/session_model.{type Shared, Shared}
 import tui/session_selector
-import tui/step_effect
 import tui/summary_panel
 import tui/terminal_lane
 import tui/transcript_anchor
@@ -654,26 +653,61 @@ pub fn viewport_backlog(model: Model) -> Int {
 
 /// Records operator or traffic activity, which resets the quiet-time
 /// counter that idle pacing reads.
+///
+/// The terminal's form of `session_model.mark_activity`, for a reducer
+/// that still takes the whole model.
 @internal
 pub fn mark_activity(model: Model) -> Model {
-  Model(
-    shared: Shared(
-      ..model.shared,
-      activity_revision: model.shared.activity_revision + 1,
-    ),
-    view: View(..model.view, quiet_for_ms: 0),
-  )
+  hold_shared(model, session_model.mark_activity(model.shared))
+}
+
+/// Stores the result of a function over the shared record, moving what it
+/// queued into the step's outbox.
+///
+/// Every call from a terminal reducer into a function over `Shared` stores
+/// its result through this. The shared outbox is moved into `View.outbox`
+/// at the point of the call, so a lane close the shared function decided, a
+/// terminal `Discard` queued after it and a lane write decided after that
+/// are still performed in that order. `Shared.outbox` is empty again when
+/// this returns, so no effect can be queued twice or wait past the call
+/// that decided it.
+///
+/// The one terminal consequence of a session fact that has to follow every
+/// call rather than wait for the end of the step is the idle timer: a
+/// shared function records activity by bumping `activity_revision`, and
+/// this resets `View.quiet_for_ms` when the revision moved, as the
+/// terminal's `mark_activity` always did.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.hold_shared(model, session_model.append_error(model.shared, text))
+/// ```
+@internal
+pub fn hold_shared(model: Model, shared: TerminalShared) -> Model {
+  let view = case shared.activity_revision == model.shared.activity_revision {
+    True -> model.view
+    False -> View(..model.view, quiet_for_ms: 0)
+  }
+  case shared.outbox {
+    [] -> Model(shared:, view:)
+    decided ->
+      Model(
+        shared: Shared(..shared, outbox: []),
+        view: View(
+          ..view,
+          outbox: list.append(list.map(decided, effect.Step), view.outbox),
+        ),
+      )
+  }
 }
 
 /// Stores `channel` as the adopted lane, moving what it queued into the
 /// outbox.
 ///
-/// Every reducer that transitions the adopted lane stores the result
-/// through this, so the lane's writes, closes and recording notes join the
-/// step's one queue at the point they were decided, in order with every
-/// other effect the step queues. The model's lane therefore holds no
-/// outputs between two reducer calls, and replacing or dropping it can lose
-/// nothing it decided.
+/// The terminal's form of `session_model.hold_channel`, for a reducer that
+/// still takes the whole model. The lane's outputs reach `View.outbox`
+/// through `hold_shared`, at the point the lane decided them.
 ///
 /// ## Examples
 ///
@@ -683,15 +717,7 @@ pub fn mark_activity(model: Model) -> Model {
 /// ```
 @internal
 pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
-  let #(channel, outputs) = session_channel.take_outputs(channel)
-  let outbox =
-    list.fold(outputs, model.view.outbox, fn(outbox, output) {
-      [effect.Step(step_effect.Lane(output)), ..outbox]
-    })
-  Model(
-    shared: Shared(..model.shared, channel: Some(channel)),
-    view: View(..model.view, outbox:),
-  )
+  hold_shared(model, session_model.hold_channel(model.shared, channel))
 }
 
 /// Queues the release of what a job reply holds, when nobody will take it.
@@ -804,27 +830,14 @@ pub fn record(model: Model, event: recording.Recorded) -> Model {
 /// Queues the recording line for a message that arrived while the model
 /// held no lane, if the terminal is recording.
 ///
-/// The line is a session reducer's decision, so it is queued as the step
-/// effect `Recorded` rather than as a terminal `Record`. The runtime writes
-/// it as `recording.Arrived(message)`, the untagged arrival the preview
-/// peer has always written, so the recording's bytes do not depend on
-/// which of the two effects carried the line.
-///
-/// ## Examples
-///
-/// ```gleam
-/// tui_model.record_arrival(model, connection_event.Connected)
-/// ```
+/// The terminal's form of `session_model.record_arrival`, for a reducer
+/// that still takes the whole model.
 @internal
 pub fn record_arrival(
   model: Model,
   message: connection_event.Message,
 ) -> Model {
-  case model.shared.recorder {
-    Some(recorder) ->
-      emit(model, effect.Step(step_effect.Recorded(recorder, message)))
-    None -> model
-  }
+  hold_shared(model, session_model.record_arrival(model.shared, message))
 }
 
 /// Opens a step for one input: stores the instant it is applied at and
@@ -915,15 +928,12 @@ pub fn start_job(model: Model, spec: job.Spec) -> #(Model, job.Key) {
 }
 
 /// Marks the cached frame stale so the next paint redraws it.
+///
+/// The terminal's form of `session_model.invalidate_frame`, for a reducer
+/// that still takes the whole model.
 @internal
 pub fn invalidate_frame(model: Model) -> Model {
-  Model(
-    ..model,
-    shared: Shared(
-      ..model.shared,
-      frame_revision: model.shared.frame_revision + 1,
-    ),
-  )
+  hold_shared(model, session_model.invalidate_frame(model.shared))
 }
 
 /// Reading mode owns the endpoint even at offset zero, so a frozen viewport at
@@ -937,186 +947,39 @@ pub fn reading_history(model: Model) -> Bool {
   || model.view.scroll_offset > 0
 }
 
-/// The active strand, if an interrupt for it is outstanding.
-@internal
-pub fn active_interrupt(model: Model) -> Option(String) {
-  case model.shared.interrupt {
-    Some(Interrupt(strand:, ..)) ->
-      case strand == model.shared.active_strand {
-        True -> Some(strand)
-        False -> None
-      }
-    None -> None
-  }
-}
-
-/// Reports whether the active strand is submitting or running.
-@internal
-pub fn active_strand_live(model: Model) -> Bool {
-  case active_strand_phase(model) {
-    Some(_) -> True
-    None -> False
-  }
-}
-
-/// The active strand's live phase, or `submitting` while its prompt is on
-/// the way.
-@internal
-pub fn active_strand_phase(model: Model) -> Option(String) {
-  case model.shared.submitting {
-    Some(strand) if strand == model.shared.active_strand -> Some("submitting")
-    _ ->
-      model.shared.strands
-      |> list.find_map(fn(strand) {
-        let Strand(id:, live_phase:, ..) = strand
-        case id == model.shared.active_strand, live_phase {
-          True, Some(phase) -> Ok(phase)
-          _, _ -> Error(Nil)
-        }
-      })
-      |> result.map(Some)
-      |> result.unwrap(None)
-  }
-}
-
-/// Reports whether `name` is one of the listed strands.
-@internal
-pub fn is_known_strand(strands: List(protocol.Strand), name: String) -> Bool {
-  list.any(strands, fn(strand) {
-    let Strand(id:, ..) = strand
-    id == name
-  })
-}
-
 /// Appends a system line to the transcript and shows it as the notice.
+///
+/// The terminal's form of `session_model.append_system`, for a reducer
+/// that still takes the whole model.
 @internal
 pub fn append_system(model: Model, text: String) -> Model {
-  Model(
-    ..model,
-    shared: Shared(
-      ..model.shared,
-      transcript: list.append(model.shared.transcript, [Line(System, text)]),
-      record_cache_valid: False,
-      notice: text,
-    ),
-  )
-  |> invalidate_transcript
-  |> invalidate_frame
+  hold_shared(model, session_model.append_system(model.shared, text))
 }
 
 /// Appends a failure line to the transcript and shows it as the notice.
+///
+/// The terminal's form of `session_model.append_error`, for a reducer
+/// that still takes the whole model.
 @internal
 pub fn append_error(model: Model, text: String) -> Model {
-  Model(
-    ..model,
-    shared: Shared(
-      ..model.shared,
-      transcript: list.append(model.shared.transcript, [Line(Failure, text)]),
-      record_cache_valid: False,
-      notice: text,
-    ),
-  )
-  |> invalidate_transcript
-  |> invalidate_frame
+  hold_shared(model, session_model.append_error(model.shared, text))
 }
 
-/// A transcript line that informs without alarm, in the System speaker, so
-/// a build mismatch reads as a notice rather than a failure. The attach has
-/// already succeeded when this is called; the line explains the pair, it
-/// does not report a refusal.
+/// Appends an informing line in the System speaker and shows it as the
+/// notice.
+///
+/// The terminal's form of `session_model.append_notice`, for a reducer
+/// that still takes the whole model.
 @internal
 pub fn append_notice(model: Model, text: String) -> Model {
-  Model(
-    ..model,
-    shared: Shared(
-      ..model.shared,
-      transcript: list.append(model.shared.transcript, [Line(System, text)]),
-      record_cache_valid: False,
-      notice: text,
-    ),
-  )
-  |> invalidate_transcript
-  |> invalidate_frame
+  hold_shared(model, session_model.append_notice(model.shared, text))
 }
 
-/// Transcript revisions advance only beside mutations of the projection's
-/// source data. Keeping the invalidation token separate from terminal ticks
-/// prevents session history from becoming an idle-time CPU cost.
+/// Marks the transcript's rows stale.
+///
+/// The terminal's form of `session_model.invalidate_transcript`, for a reducer
+/// that still takes the whole model.
 @internal
 pub fn invalidate_transcript(model: Model) -> Model {
-  Model(
-    ..model,
-    shared: Shared(
-      ..model.shared,
-      render_revision: model.shared.render_revision + 1,
-    ),
-  )
-}
-
-/// The identity of the current attachment, used to reject a queue, job or
-/// goal reply that arrives after the attachment changed. Empty when nothing
-/// is captured.
-@internal
-pub fn queue_owner(model: Model) -> String {
-  case model.shared.captured {
-    Some(#(cut, _)) -> {
-      let expected = cut.attachment.expected
-      expected.session
-      <> ":"
-      <> expected.epoch
-      <> ":"
-      <> expected.incarnation
-      <> ":"
-      <> cut.attachment.connection_id
-    }
-    None -> ""
-  }
-}
-
-// --- the session goal -------------------------------------------------------
-
-/// The captured attachment's session, epoch and incarnation as a JSON
-/// array, or an empty string when nothing is captured.
-@internal
-pub fn queue_namespace(model: Model) -> String {
-  case model.shared.captured {
-    Some(#(cut, _)) ->
-      json.to_string(
-        json.Array([
-          json.String(cut.attachment.expected.session),
-          json.String(cut.attachment.expected.epoch),
-          json.String(cut.attachment.expected.incarnation),
-        ]),
-      )
-    None -> ""
-  }
-}
-
-/// What the transcript's line builders read of this model.
-///
-/// The builders take this record rather than the model, so that they need
-/// nothing of the terminal; this is the one place that knows which model
-/// fields they read.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // transcript_lines.display_streams(tui_model.presentation(model))
-/// ```
-pub fn presentation(model: Model) -> transcript_lines.Presentation {
-  transcript_lines.Presentation(
-    active_strand: model.shared.active_strand,
-    extent: transcript_lines.details_extent(model.shared.details_expanded),
-    captured: model.shared.captured,
-    records: model.shared.records,
-    streams: model.shared.streams,
-    tool_tails: model.shared.tool_tails,
-    queued: model.shared.queued,
-    awaiting_outcome: model.shared.awaiting_outcome,
-    cache_notices: model.shared.cache_notices,
-    summaries: model.shared.summaries,
-    compact_entry_cache: model.shared.compact_entry_cache,
-    compact_call_cache: model.shared.compact_call_cache,
-    worktree: model.shared.worktree,
-  )
+  hold_shared(model, session_model.invalidate_transcript(model.shared))
 }

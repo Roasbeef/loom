@@ -322,7 +322,7 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
 // activity starts from zero rather than from wherever the last one stopped.
 fn advance_activity_indicator(model: Model) -> Model {
   let model = advance_generation_clock(model)
-  case tui_model.active_strand_live(model) {
+  case session_model.active_strand_live(model.shared) {
     False ->
       Model(
         ..model,
@@ -402,7 +402,7 @@ fn advance_generation_clock(model: Model) -> Model {
 // The reading is suppressed while the active strand is running
 // (`cache_watch.shown` says why), which the web view's rings follow too.
 fn advance_cache_outlook(model: Model) -> Model {
-  let activity = case tui_model.active_strand_live(model) {
+  let activity = case session_model.active_strand_live(model.shared) {
     True -> cache_watch.Running
     False -> cache_watch.Resting
   }
@@ -528,7 +528,7 @@ pub fn viewport_pacing(model: Model) -> pacing.ViewportPacing {
 // replayed or scripted run settles on the complete frame rather than on
 // however far a fixed number of ticks happened to walk.
 fn advance_viewport(model: Model) -> Model {
-  case tui_model.active_strand_live(model) {
+  case session_model.active_strand_live(model.shared) {
     False ->
       Model(
         ..model,
@@ -694,7 +694,7 @@ fn lane_wait(model: Model) -> Int {
 @internal
 pub fn wakes_itself(model: Model) -> Bool {
   list.any(model.shared.strands, fn(strand) { strand.live_phase != None })
-  || tui_model.active_strand_live(model)
+  || session_model.active_strand_live(model.shared)
   || model.view.frame_debt == pacing.FrameDeferred
   || job_runner.size(model.view.running) > 0
   || buffered.held(model.shared.inbox) > 0

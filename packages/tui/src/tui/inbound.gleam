@@ -444,7 +444,7 @@ pub fn apply_channel_update(
                 Some(id) ->
                   worktree_view.receive(
                     model.shared.worktree,
-                    tui_model.queue_owner(model),
+                    session_model.queue_owner(model.shared),
                     worktree_view.Failed(id, "conversation disconnected"),
                   )
                 None -> model.shared.worktree
@@ -1410,7 +1410,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ..model.shared,
           context: context_view.receive(
             model.shared.context,
-            tui_model.queue_owner(model),
+            session_model.queue_owner(model.shared),
             observation,
           ),
         ),
@@ -1422,7 +1422,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ..model.shared,
           worktree: worktree_view.receive(
             model.shared.worktree,
-            tui_model.queue_owner(model),
+            session_model.queue_owner(model.shared),
             observation,
           ),
         ),
@@ -1435,8 +1435,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ..model.view,
           queue_editor: queue_editor.receive(
             model.view.queue_editor,
-            tui_model.queue_owner(model),
-            tui_model.queue_namespace(model),
+            session_model.queue_owner(model.shared),
+            session_model.queue_namespace(model.shared),
             document,
           ),
         ),
@@ -2777,7 +2777,7 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
 /// once and the recording's own entry retires it.
 @internal
 pub fn expect_own_turn(model: Model, submission: Submission) -> Model {
-  case model.shared.peer, tui_model.active_strand_live(model) {
+  case model.shared.peer, session_model.active_strand_live(model.shared) {
     Attached, True ->
       Model(
         ..model,
@@ -3001,7 +3001,7 @@ fn retains_history(
   session: String,
   strands: List(protocol.Strand),
 ) -> Bool {
-  owner.0 == session && tui_model.is_known_strand(strands, owner.1)
+  owner.0 == session && session_model.is_known_strand(strands, owner.1)
 }
 
 // New destinations begin with their own editor and an empty history window.
@@ -3182,7 +3182,7 @@ pub fn refresh_worktree(model: Model) -> Model {
             ..model.shared,
             worktree: worktree_view.request(
               model.shared.worktree,
-              tui_model.queue_owner(model),
+              session_model.queue_owner(model.shared),
             ),
           ),
         ),
@@ -3206,11 +3206,8 @@ fn observe_completion(
   active: String,
 ) -> Model {
   let owner =
-    tui_model.queue_owner(
-      Model(
-        ..model,
-        shared: Shared(..model.shared, captured: Some(#(cut, view))),
-      ),
+    session_model.queue_owner(
+      Shared(..model.shared, captured: Some(#(cut, view))),
     )
   let previous = case model.shared.completion_owner == owner {
     True -> model.shared.completion
@@ -3422,7 +3419,7 @@ fn apply_request_refused(
           ..model.shared,
           worktree: worktree_view.receive(
             model.shared.worktree,
-            tui_model.queue_owner(model),
+            session_model.queue_owner(model.shared),
             worktree_view.Failed(request_id, reason),
           ),
         ),

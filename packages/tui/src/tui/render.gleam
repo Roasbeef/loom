@@ -1780,7 +1780,7 @@ fn recipient_label(model: Model) -> String {
 fn input_behavior(model: Model) -> String {
   use <- bool.guard(
     model.shared.captured != None
-      && !tui_model.is_known_strand(
+      && !session_model.is_known_strand(
       model.shared.strands,
       model.shared.active_strand,
     ),
@@ -1795,7 +1795,7 @@ fn input_behavior(model: Model) -> String {
     },
   )
   case
-    tui_model.active_interrupt(model),
+    session_model.active_interrupt(model.shared),
     layout.active_status_label(model),
     model.view.submission_mode
   {

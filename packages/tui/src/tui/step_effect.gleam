@@ -12,11 +12,14 @@
 //// handles, as the lane is, and a host binds them to its own socket and
 //// recorder.
 ////
-//// The terminal wraps each value in `effect.Step` and performs it in
-//// `runtime.perform_io` after the step, as it performs every other effect;
-//// the wrapper is what keeps the step's single queue, so a lane write, a
-//// terminal `Discard` and another lane write still come out in the order
-//// the step decided them. A web host would perform the same values against
+//// A function over the shared record queues these values on
+//// `Shared.outbox`. The terminal stores each such result through
+//// `tui_model.hold_shared`, which wraps the values in `effect.Step` and
+//// moves them into the step's single queue at the point of the call, and
+//// performs them in `runtime.perform_io` after the step, as it performs
+//// every other effect. That is what keeps one order across both kinds, so
+//// a lane write, a terminal `Discard` and another lane write still come out
+//// in the order the step decided them. A web host would perform the same values against
 //// its own relay and a `Nil` recorder.
 ////
 //// The module imports only `session_view`, so it moves into
