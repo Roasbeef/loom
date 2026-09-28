@@ -30,6 +30,7 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(selection.signoff, [])
         self.assertEqual(affected.lanes(selection),
                          [("static", ["make", *affected.STATIC_GATES])])
+        self.assertEqual(affected.prep(selection), [])
 
     def test_tui_selects_its_dev_dependents_and_stops(self):
         selection = affected.select(["packages/tui/src/tui.gleam"], GRAPH)
@@ -43,6 +44,11 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(affected.lanes(selection)[1:],
                          [("client", ["bash", "scripts/check.sh", "client", "tui"])])
 
+        # client's code-mode fixtures need the seed, and both packages'
+        # shipped fixtures need bin/loomd.
+        self.assertEqual(affected.prep(selection),
+                         ["codemode-seed", "binaries", "server-shipment"])
+
     def test_session_view_reaches_both_hosts(self):
         self.assertEqual(packages(["packages/session_view/src/session_view/inbox.gleam"]),
                          {"session_view", "tui", "web_view", "client", "conformance"})
@@ -51,6 +57,7 @@ class SelectTest(unittest.TestCase):
         selection = affected.select(["packages/lint/src/lint/rule.gleam"], GRAPH)
         self.assertEqual(selection.mode, "affected")
         self.assertEqual(set(selection.packages), {"lint"})
+        self.assertEqual(affected.prep(selection), ["binaries"])
         self.assertEqual(affected.lanes(selection)[1:],
                          [("fast", ["bash", "scripts/check.sh", "lint"])])
 
@@ -78,13 +85,41 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(selection.mode, "affected")
         self.assertTrue({"sandbox", "broker", "tools", "codemode", "client"}
                         <= set(selection.packages))
-        self.assertIn("selftest", [gate for gate, _ in selection.gates])
         self.assertIn("touches the sandbox helper", selection.signoff)
+
+        # The self-test runs the helper `binaries` built rather than
+        # rebuilding it beside the package lanes.
+        self.assertIn(("selftest", ["./packages/sandbox/loom-exec", "--self-test"]),
+                      affected.lanes(selection))
 
     def test_daemon_change_keeps_the_signoff(self):
         selection = affected.select(["packages/client/src/client.gleam"], GRAPH)
         self.assertEqual(set(selection.packages), {"client", "conformance"})
-        self.assertIn("touches the daemon and its gateway", selection.signoff)
+        self.assertEqual(selection.signoff,
+                         ["touches the daemon (packages/client, which loomd is built from)"])
+
+    def test_daemon_is_what_loomd_is_built_from(self):
+        # client's [dependencies] closure, less the two view packages the
+        # owner exempted.
+        self.assertEqual(affected.daemon_packages(GRAPH), {
+            "client", "host", "core", "storage", "session", "machine", "prompt",
+            "events", "runtime", "broker", "provider", "tools", "codemode", "mcp",
+            "telemetry"})
+        for package in ("runtime", "session", "storage", "events", "broker",
+                        "provider", "mcp", "host", "tools"):
+            with self.subTest(package=package):
+                selection = affected.select([f"packages/{package}/src/x.gleam"], GRAPH)
+                self.assertTrue(any("touches the daemon" in note for note in selection.signoff))
+        for path in ("packages/tui/src/x.gleam", "packages/session_view/src/session_view/x.gleam",
+                     "packages/web_view/src/x.gleam", "packages/web_client/src/x.gleam",
+                     "packages/lint/src/x.gleam", "packages/runtime/CLAUDE.md", "docs/next.md"):
+            with self.subTest(path=path):
+                self.assertEqual(affected.select([path], GRAPH).signoff, [])
+
+    def test_session_view_wire_files_keep_the_signoff(self):
+        selection = affected.select(
+            ["packages/session_view/src/session_view/session_wire.gleam"], GRAPH)
+        self.assertEqual(selection.signoff, ["touches the client wire codec"])
 
     def test_example_read_by_a_test_selects_its_reader(self):
         self.assertEqual(packages(["docs/examples/stale_symbol_sweep.gleam"]), {"codemode"})
@@ -93,6 +128,7 @@ class SelectTest(unittest.TestCase):
         selection = affected.select(["protocol/models/terminal-attachment/PSrc/Channel.p"], GRAPH)
         self.assertEqual(selection.packages, {})
         self.assertEqual([gate for gate, _ in selection.gates], ["model-check"])
+        self.assertEqual(affected.prep(selection), [])
 
 
 class ClosureTest(unittest.TestCase):
