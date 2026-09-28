@@ -15,7 +15,7 @@ owns the list and byte bounds; the terminal adds no diagnostic authority.
 ## Agent workspace
 
 `Ctrl+O`, `F2` and `/agents` open `agents.Inspector`, whose selection is a strand ID.
-Arrows inspect without changing `Model.active_strand`; Enter explicitly opens
+Arrows inspect without changing `Model.shared.active_strand`; Enter explicitly opens
 the selected transcript and recipient. Missing selections stay visible as
 unavailable until navigation chooses another row. `n` visits the next attention
 state, `a` opens the existing exact-request approval panel, and PgUp/PgDn scroll
@@ -50,7 +50,7 @@ update and transcript because the protocol has no separate pending-question fact
 The inspector keeps Activity, Messages, Notes and Collaboration under
 `agents.Detail`, switched with 1/2/3/4. `agent_messages` admits sends only after the sending strand's
 accepted operation prompt. It joins results within that branch and before a
-later reuse of the call ID. `Model.agent_messages` retains the latest twenty
+later reuse of the call ID. `Model.shared.agent_messages` retains the latest twenty
 verified sends across operation completion, with message bodies bounded to 4096
 characters plus an excerpt marker; changing sessions releases this cache.
 Acceptance means the tool accepted the send, not that the recipient read it.
@@ -151,11 +151,11 @@ is marked `❯` and the viewed row `›`, so both read without color.
 `todo_panel` draws the active strand's todo board between the conversation
 and the composer. The board is the `details.todo` of the newest successful
 `todo` result, decoded with `core/todo_list.decode`, so the panel and the tool
-cannot disagree about a stored board. `Model.todo_boards` keeps each strand's
+cannot disagree about a stored board. `Model.shared.todo_boards` keeps each strand's
 newest board across cuts, because a capture window that has moved past the
 last `todo` call would otherwise blank the panel; session replacement releases
 it. A strand whose capture reaches no board gets one ordinary `notes` read per
-session (`Model.todo_seed`, `todo_asked`, sent by `surfaces.service_todo_seed`
+session (`Model.shared.todo_seed`, `todo_asked`, sent by `surfaces.service_todo_seed`
 from the tick once the read lane is free). Any `notes` reply seeds a missing
 board from its complete `todo` row, and never replaces a transcript board or
 parses an excerpt. The "notes refreshed" notice appears only while a notes
@@ -345,12 +345,28 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   modules whose handles its variants carry (`attachment`, `connection`,
   `daemon`, `herdr`, `job`, `recording`, `terminal_lane`) and nothing that
   imports the model.
-- `tui/model`: the `Model` record (`State(view)` with the terminal's etui
-  render caches, `View`, as its `view`: the rendered, record and diff rows,
-  their line caches, the frame cache and the selection's frame; a reducer
-  that empties the transcript bumps `record_cache_epoch` and the projection
-  drops the record rows), the types it names, and the helpers every
-  reducer shares (`append_system`, `append_error`, `invalidate_frame`,
+- `tui/model`: the `Model` record, `Model(shared: Shared, view: View)`.
+  `Shared` is the session state a second host would need (what the daemon
+  said, what was sent and not yet committed, the reads in flight, the
+  presentation revisions, and for now the four host handles `inbox`,
+  `channel`, `replay_inbox` and `recorder` with their terminal types).
+  `View` is the terminal's own state (screen size, composer, panels,
+  overlays, the row projection's outputs, pacing, clocks, the
+  daemon-control and attachment job slots, the job table) and holds the
+  etui render caches, `Caches`, as `View.caches`: the rendered, record and
+  diff rows, their line caches, the frame cache and the selection's frame;
+  a reducer that empties the transcript bumps `Shared.record_cache_epoch`
+  and the projection drops the record rows. This is slice S1 of
+  `docs/design-notes/step-extraction.md`: a reducer reads
+  `model.shared.x` or `model.view.x` and writes by updating that half, both
+  halves in one expression from the same `model` when it writes both. The
+  agent strip is split into `Shared.roster` and `View.strip_focus`
+  (`tui_model.strip` and `store_strip` rebuild and store an
+  `agent_strip.State`), a parked strand's history window is
+  `Shared.parked_scrollback` beside its editor in `View.strand_workspaces`,
+  and the queue editor stays whole in `View`. The module also holds the
+  types the record names, and the helpers every reducer shares
+  (`append_system`, `append_error`, `invalidate_frame`,
   `invalidate_transcript`, `mark_activity`, `queue_owner`,
   `active_strand_phase`). Importers alias it as `tui_model`, because `model`
   is the local variable in nearly every function and would shadow the module
@@ -360,7 +376,7 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   stamp and queues its recording line before the reducer runs, and
   `hold_channel` stores a transitioned adopted lane and moves what it
   queued into the outbox. `start_job` allocates a job key from
-  `Model.next_job` and queues its `StartJob`; `allocate_job` only
+  `Model.view.next_job` and queues its `StartJob`; `allocate_job` only
   allocates, for a test that stands a slot in for a running job.
   `presentation` builds the `transcript_lines.Presentation` the line
   builders read, so this is the one place that knows which model fields
@@ -396,7 +412,7 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   is dropped with its resource released through `tui_model.release`.
   It never drops a frame for capacity.
 - `tui/job`: background jobs as data, and pure. `Key` is allocated from
-  `Model.next_job` and never reused; `Awaiting(reply)` is a slot's key and
+  `Model.view.next_job` and never reused; `Awaiting(reply)` is a slot's key and
   the replies received for it, and `admit` accepts a reply only under that
   key; `Spec` is `Control(control, ControlJob)`, `Reconnect(options)`,
   `Activity(control, ids)`, `Attach(route, within_ms)` or
@@ -404,7 +420,7 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   the local launch options; `Arrival(control)` is one
   job message tagged with its key. A daemon control connection is named by
   a `ControlKey` the runtime allocates, and the step holds it as `Daemon`,
-  the key with the build the daemon's `hello` named (`Model.daemon_host`);
+  the key with the build the daemon's `hello` named (`Model.view.daemon_host`);
   a relaunch's reply arrives as `Arrival(daemon_selection.Host)` and is
   filed as `Arrival(Daemon)`. An attachment job's messages are
   `Published(Prepared)`, the worker's socket together with the frames
@@ -413,7 +429,7 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   whether the socket the attempt would adopt is alive.
   `ControlOutcome` and `Removal` live here.
 - `tui/job_runner`: the impure half of jobs, called only by the runtime.
-  `Running`, the opaque table on `Model.running`, maps each key to its
+  `Running`, the opaque table on `Model.view.running`, maps each key to its
   cancel signal and a selector over its reply subject, and each
   `ControlKey` to its control connection: `adopt_control` adds one,
   `file` adds a relaunch's as it files the reply, `close_control` closes
@@ -458,7 +474,7 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/projection`: `refresh_render_cache`, `refresh_diff_cache` and the
   record row cache.
 - `tui/live_tail`: the rows of a streaming answer, rebuilt each frame from
-  what changed. `Cache` lives on the render caches as `View.live_tail`,
+  what changed. `Cache` lives on the render caches as `Caches.live_tail`,
   written only by the projection; a projection brackets
   its live lines with `begin` and `finish` and draws each through `rows`,
   which gives exactly `render.render_line`'s rows. Closed Markdown blocks
@@ -538,7 +554,7 @@ boundaries and the split's measurements under Invariants.
   cache, with entry-and-block anchors. The live primary tail stays last, and
   stream deltas do not rewrap settled advisor Markdown.
 
-- `Model.reading_lines` retains one bounded transient projection when scrolling
+- `Model.view.reading_lines` retains one bounded transient projection when scrolling
   above the live tail. Incoming streams continue collecting without changing
   that projection; returning to the bottom releases it. Durable history keeps
   its existing frozen ancestry and row anchors. The composer border provides
@@ -586,9 +602,10 @@ boundaries and the split's measurements under Invariants.
   between the two was never read and `before_seq` would sit beneath it. The
   same rule covers a parked strand's window and a reconnect's.
 - A strand switch parks its editing and reading endpoint in
-  `Model.strand_workspaces`, keyed by `(session, strand)`. It restores the
-  incoming owner's complete editor and bounded ancestry before applying the
-  current capture. `render_cut` releases parked reading buffers for retired
+  `Model.view.strand_workspaces` and its history window in
+  `Model.shared.parked_scrollback`, both keyed by `(session, strand)`. It
+  restores the incoming owner's complete editor and bounded ancestry before
+  applying the current capture. `render_cut` releases parked reading buffers for retired
   strands and other sessions without evicting unsent drafts. The selected
   source anchor survives returning at a different terminal width.
 
@@ -632,7 +649,7 @@ boundaries and the split's measurements under Invariants.
   terminal's local receipt clock.
 
 - `session_view/skills.Page` decodes the attached daemon's paged skill commands.
-  `Model.skills` is presentation metadata, cleared with attachment replacement.
+  `Model.shared.skills` is presentation metadata, cleared with attachment replacement.
   `command.suggestions_with_skills` keeps built-ins authoritative and completes
   loaded names; `parse_with_skills` classifies them as prompts before mutation
   admission, including draft retention on observer or unavailable attachments.
@@ -641,7 +658,7 @@ boundaries and the split's measurements under Invariants.
   The bounded `ControlRequest` worker sends the mutation once and applies the
   acknowledged `SessionRenamed` row to the header and any open picker. It does
   not open the picker or reload its page. The owner and epoch checks remain
-  server-side; a lost reply is not retried. `Model.session_label` pairs one
+  server-side; a lost reply is not retried. `Model.shared.session_label` pairs one
   name with its identity, so legacy switches cannot carry an old title.
   The name travels through `daemon_selection.Target`, the job's `Prepared`
   and `Adopted` with the selected
@@ -888,7 +905,7 @@ boundaries and the split's measurements under Invariants.
   collection. At an inner width of 96 or more a details pane shows the
   highlighted row's status and reason, last message, agent glances,
   workspace, model and identity; narrower pickers put status and short
-  identity on a second row line instead. `Model.activity_poll` fills
+  identity on a second row line instead. `Model.view.activity_poll` fills
   `State.activity`: while the picker is open on the active collection with
   resident rows, `session_control.service_activity` (from the tick) asks
   `sessions.activity` for at most `protocol.activity_limit` of them, on a
@@ -930,7 +947,7 @@ boundaries and the split's measurements under Invariants.
   `Transmit(socket, frame)` or `Shut(socket)`; `attachment.Out` is a
   candidate channel output, `Acknowledge(to)` or `Abandon(status)`, and
   `tui_model.emit_attachment` queues an `Abandon` behind a `CancelJob` for
-  the attempt's key. `Model.outbox` holds
+  the attempt's key. `Model.shared.outbox` holds
   pending effects newest first and is empty between steps. ADR-013 records
   the design (issue #530, phase 1).
 - `tui/attachment.Status` owns one provisional replacement: the key of its
@@ -951,17 +968,17 @@ boundaries and the split's measurements under Invariants.
   sleeps until. It holds no clock: `tick`, `receive`,
   `submit`, `lookup`, `history`, `replay_issued` and the `start`
   constructors take `now`, which the terminal takes from
-  `Model.stamp.transport_ms` and a replay lane holds at zero. `Update.Captured` carries a `Capture` saying
+  `Model.shared.stamp.transport_ms` and a replay lane holds at zero. `Update.Captured` carries a `Capture` saying
   what asked for the cut — `Notified`, `Refreshed` or `Requested` — which
   names the path a particular cut took. Which of them wins is a race with the
   idle refresh, so a fixture that must know whether pushes arrived counts
   `Update.Noticed` instead: the lane emits one per `committed` frame before
-  deciding whether to capture, and `Model.notices` accumulates them. Its existing outgoing slot can retain one
+  deciding whether to capture, and `Model.shared.notices` accumulates them. Its existing outgoing slot can retain one
   immutable unsent mutation behind a capture of an already adopted session.
   `Disposition` distinguishes `Waiting`, `Sent`, and `DefinitelyNotSent`;
   waiting allocates no mutation ID or response deadline. A valid completed cut
   refreshes authority before the retained command is sent exactly once.
-  `Model.pending_submission` stores only composer-versus-overlay ownership:
+  `Model.shared.pending_submission` stores only composer-versus-overlay ownership:
   the visible text, attachments and mode stay in their original fields and
   remain locked until sending or cancellation. Escape cancels unsent work
   before abort handling; replacement cancels it on the original attachment.
@@ -1047,9 +1064,11 @@ boundaries and the split's measurements under Invariants.
   per-agent strip under the footer (see "Agent strip"). `State` holds
   keyboard focus beside an `agent_roster.Roster` (decoded glances,
   per-operation clocks and pushed context sizes); `Line` is
-  `agent_roster.Line`. `Model.strip` owns it and session replacement resets
-  it.
-- The prompt cache: `Model.cache` is a `session_view/cache_watch.Ledger`
+  `agent_roster.Line`. The model holds the two halves apart, the roster in
+  `Model.shared.roster` and the focus in `Model.view.strip_focus`;
+  `tui_model.strip` rebuilds the `State` and `tui_model.store_strip` stores
+  one back. Session replacement resets both.
+- The prompt cache: `Model.shared.cache` is a `session_view/cache_watch.Ledger`
   (each strand's watch, the pushed-row cursor, held rows and model-switch
   fences), which the reducer feeds through `admit`, `settle`, `capture`,
   `observe` and `forget`; `session_view/cache_miss` detects a miss and
@@ -1071,7 +1090,7 @@ boundaries and the split's measurements under Invariants.
 - `session_view/block_summary.{Key, Subject, Reads, Labels, floor_bytes, max_blocks,
   new, stored, live, carried, receive, receive_board, want,
   next_read, refused, retain_live, decode_board}` — summarizer labels for
-  long blocks (protocol 050), held per attachment in `Model.summaries`:
+  long blocks (protocol 050), held per attachment in `Model.shared.summaries`:
   stored labels by `Key(entry, block)`, live labels by stream
   `generation` (with the response entry `stream_identity.response_entry`
   names, so `carried` can lend a live label to the committed block until
@@ -1512,7 +1531,7 @@ untouched.
   lines, so it stays parallel and the reading view relocates the reader
   (`a_summarized_block_keeps_anchors_parallel_to_rows_test`,
   `a_summary_off_screen_leaves_the_reader_in_place_test`). The live
-  row's elapsed time is `Model.generation_elapsed_s`, read from
+  row's elapsed time is `Model.shared.generation_elapsed_s`, read from
   `generation_started_ms` on the tick (`tick.advance_generation_clock`); a
   change repaints only while a reasoning row is on screen and leaves the
   record cache valid.
@@ -1623,7 +1642,7 @@ untouched.
   nothing is a `FlushPoint`, because a deferred frame has no other event
   waiting to pay it off. A resize always flushes.
 - **The viewport is paced, not teleported.** A provider chunk lands as two to
-  five rows at once. `Model.revealed_rows` is how many of `rendered_rows` the
+  five rows at once. `Model.view.revealed_rows` is how many of `rendered_rows` the
   bottom-anchored viewport has shown, and `pacing.pace` advances it toward
   the tail one row per rendered frame, in proportion to the backlog once
   that passes the catch-up threshold `pacing.policy` fixes. Three growths bypass the walk
@@ -1698,16 +1717,16 @@ untouched.
 - **Presentation uses one caller-owned clock, read once per event.**
   `new_model` supplies the host's monotonic clock; `new_model_with_clock`
   lets a test supply its own. `tui.update` calls `runtime.message`, which
-  reads `Model.monotonic_time_ms`, `Model.transport_time_ms` and the wall
+  reads `Model.view.monotonic_time_ms`, `Model.view.transport_time_ms` and the wall
   clock once each into the input's `msg.Stamp`; the step stores it as
-  `Model.stamp` before any reducer runs (`tui_model.start_step`) and
+  `Model.shared.stamp` before any reducer runs (`tui_model.start_step`) and
   reads no clock: frame pacing, generation throughput, activity elapsed time, the
   cache outlook, the jobs and activity-poll ages and the strip all read
   `stamp.now_ms`, the session lanes read `stamp.transport_ms`, and the
-  creation key reads `stamp.wall_ms` with `Model.terminal`, the OS and BEAM
+  creation key reads `stamp.wall_ms` with `Model.view.terminal`, the OS and BEAM
   process identity read once when the model is created. The build the
   mismatch notice compares with the daemon's is read once too, into
-  `Model.client_build`. The message is a cross-module call on `update`'s
+  `Model.shared.client_build`. The message is a cross-module call on `update`'s
   parameter, never a local step in `tui.gleam`, for the inliner reason
   above. The two monotonic readings are
   separate because a test may fix the presentation clock to pin frames
@@ -1731,8 +1750,8 @@ untouched.
   `runtime.receive` hands every job message over first (`hold`), so a
   `Prepared` admitted in that receive has its first frames read with it,
   then reads each inbox's mailbox up to the room its buffer has left
-  (`arrivals`): `Model.inbox` to `connection_batch` (64),
-  `Model.replay_inbox` to one event, and only while the peer is
+  (`arrivals`): `Model.shared.inbox` to `connection_batch` (64),
+  `Model.shared.replay_inbox` to one event, and only while the peer is
   `Replaying`, and the candidate's frames to forty until capture
   (`attachment.frame_room`). `tui/admission` files what it
   read, the same function the step runs for `msg.Arrived`, and reduces
@@ -1766,10 +1785,10 @@ untouched.
 - **Jobs start after the step and answer by key.** A reducer allocates a
   key and queues `StartJob(key, spec)` through `tui_model.start_job`; the
   slot that waits for the job (`ControlRequest.job`,
-  `ReconnectAttempting`, `ActivityAsking`, `Model.candidate`,
-  `Model.configuring`) holds the key
+  `ReconnectAttempting`, `ActivityAsking`, `Model.view.candidate`,
+  `Model.view.configuring`) holds the key
   and the messages received for it. The step creates no subject, no cancel
-  signal and no process. `runtime.perform` starts and cancels jobs in `Model.running`,
+  signal and no process. `runtime.perform` starts and cancels jobs in `Model.view.running`,
   which no reducer reads, and `runtime.settle` stores the table back, so
   `tui.update` is `settle(step(message(event, model), receive(model)))`.
   `runtime.receive` reads every running job's messages, at most two per
@@ -1824,7 +1843,7 @@ untouched.
   terminal without local launch options has nothing to resolve and creates
   in the step. A test that needs a paste's read builds the input with
   `runtime.message`, or a `msg.Pasted` itself; a test that presses `n` with
-  local options ticks until `Model.configuring` is `None` before it looks
+  local options ticks until `Model.view.configuring` is `None` before it looks
   for the creation key. `test/file_reads_test.gleam` pins both moves
   (ADR-013, S6 addendum).
 - **Auxiliary panels draw borders, not interiors.** The ordinary conversation
@@ -2013,13 +2032,13 @@ untouched.
   in its third, the control, reconnect and activity jobs in its fourth, the
   attachment job in its fifth, and file reads in its sixth; phase 3 took
   the adopted socket's liveness read into `runtime.hold` and the client
-  build identity to model creation (`Model.client_build`). The step now
+  build identity to model creation (`Model.shared.client_build`). The step now
   reads no clock, file, mailbox, process or environment variable: see the
   clock, traffic, job and file invariants above and the recording
   invariant below.
 - **An attached peer always has its lane.** `Peer.Attached` carries no
   socket. The adoption in `interaction.candidate_outcome` is its only
-  constructor and sets `Model.channel` in the same update, and nothing
+  constructor and sets `Model.shared.channel` in the same update, and nothing
   clears the channel again, so every write and close goes through the
   lane. The arms that closed or wrote to a peer's socket with no lane were
   unreachable and are gone with `effect.Send` (ADR-013, phase 3 addendum).
@@ -2031,7 +2050,7 @@ untouched.
   same queue as the lane's writes: a request's `Issued` before its frame, a
   frame's `Received` before anything it made the lane send. Event N's lines
   therefore all precede event N+1's (ADR-009). Offsets are read when the
-  runtime appends, not from `Model.stamp`. An attempt's failure note is
+  runtime appends, not from `Model.shared.stamp`. An attempt's failure note is
   queued ahead of its `Abandon`, and the `Closed` that `attachment.cancel`
   decides is written when the runtime performs the `Abandon`, at its place
   in the queue. An advance that fails part way through a poll keeps its

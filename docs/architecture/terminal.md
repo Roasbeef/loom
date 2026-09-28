@@ -15,7 +15,14 @@ The package has about 80 modules. `tui.gleam` holds the entry points and the
 `update` dispatch that etui (the terminal UI library) drives; the immutable
 `Model` lives in `tui/model`, `view` in `tui/render`, and the rest of what
 used to share that one file is split by responsibility into the modules the
-table at the end names. The other modules are the parts that glue calls into: the launcher and
+table at the end names. The model is two records, `Model(shared: Shared,
+view: View)`: `Shared` is the session state a second host showing the same
+session would need, and `View` is the terminal's own state, including its
+etui render caches as `View.caches`. Every reducer still takes the whole
+model and reads a field through the half that holds it; the split is the
+first slice of moving the step into `session_view` so that the web view
+runs the same reducers
+([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
 daemon bootstrap, two connections (a daemon control connection and a
 per-session conversation channel), pure projections that turn a captured
 snapshot into rows, one module per panel, Markdown rendering, Herdr
@@ -75,7 +82,7 @@ split. The step takes a `msg.Msg`: an `Input(at, event)`, which it reduces,
 or `Arrived(arrivals)`, traffic it only files (`tui/admission`) and never
 reduces. An input's step has three stages:
 
-1. `tui_model.start_step` stores the input's stamp as `Model.stamp` and
+1. `tui_model.start_step` stores the input's stamp as `Model.shared.stamp` and
    queues the event's recording line, if a `--record` file is open, before
    anything interprets it, so it is the step's first effect.
 2. `apply_input` dispatches on the event: a key, a paste, a resize, a mouse
@@ -91,7 +98,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:1699`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:1738`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid
@@ -160,7 +167,7 @@ before the frames, so a `Prepared` and the first frames it names arrive in
 the same step.
 
 Because an inbox's buffer lives inside the inbox value, an adoption that
-replaces `Model.inbox` drops what the old socket's inbox had received along
+replaces `Model.shared.inbox` drops what the old socket's inbox had received along
 with the inbox itself, and no later drain can reduce a message from it. Code
 outside the step that waits on an inbox, such as a test driver or the
 attachment cancel that runs as an effect, reads it through
@@ -229,7 +236,7 @@ The step reads no clock, file, mailbox, process or environment variable.
 Whether the replacement socket's actor is alive is read by the host when it
 hands the attachment job's end over (`runtime.hold`, which delivers
 `job.Finished` with the answer), and this client's build identity is read
-once when the model is created (`Model.client_build`). Clock reads, the
+once when the model is created (`Model.shared.client_build`). Clock reads, the
 connection, replay and attachment drains, every job start, and every file
 read have moved out of the step, as described above and below. Recording
 appends are effects: each line's offset is read
@@ -259,15 +266,15 @@ socket, and resolving a new session's configuration reads the file system,
 so each runs as a one-task weft run. The step does not start them.
 A reducer describes the job as a `tui/job.Spec` (`Control(host, request)`,
 `Reconnect(options)`, `Activity(host, ids)`, `Attach(route, within_ms)` or
-`Configure(options)`), allocates a key from `Model.next_job`, and queues
+`Configure(options)`), allocates a key from `Model.view.next_job`, and queues
 `effect.StartJob(key, spec)`; the slot that waits for the job
 (`ControlRequest`, `ReconnectAttempting`, `ActivityAsking`,
-`Model.candidate`, `Model.configuring`) holds the key and the messages
+`Model.view.candidate`, `Model.view.configuring`) holds the key and the messages
 received for it. Keys are never reused.
 
 After the step, `tui/job_runner` starts the run in the terminal's process
 and records its cancel signal and reply subject under the key in
-`Model.running`, a table no reducer reads. `CancelJob(key)` cancels by the
+`Model.view.running`, a table no reducer reads. `CancelJob(key)` cancels by the
 same key. Before the next step, `runtime.receive` reads every running job's
 messages, at most two per job, and `runtime.hold` has admission file each
 into the slot of its kind only when that slot holds the reply's key. A reply for any
@@ -328,7 +335,7 @@ which reads the model:
   the burst flushes it, and the poll timeout drops to 8 ms while debt is
   outstanding.
 - **Viewport pacing.** A provider chunk lands as several rows at once.
-  `Model.revealed_rows` counts how many of the projected rows the
+  `Model.view.revealed_rows` counts how many of the projected rows the
   bottom-anchored viewport has shown, and `pacing.pace` advances it about one
   row per frame, faster once the backlog passes a threshold. An event that
   addresses the transcript (a wheel notch, a page key, Enter, a resize) reveals
@@ -357,7 +364,7 @@ the socket to the screen.
 The transcript mixes three kinds of content with different lifetimes, and the
 model keeps them in separate fields so they never alias.
 
-**Durable records.** `Model.records` holds the entries of the active strand's
+**Durable records.** `Model.shared.records` holds the entries of the active strand's
 branch, taken from the last captured snapshot. `refresh_record_cache` projects
 them into `Line` values (a speaker and text), then into wrapped rows cached in
 `record_rows`. The row cache is keyed by the complete `Line` and the width, and
@@ -370,7 +377,7 @@ a new result regroups (`tool_activity.regroups`), which forces a rebuild.
 
 **Transient fragments.** `transient_lines` builds, on every projection, the
 rows that have no durable identity yet: live stream fragments
-(`Model.streams`), running tool-output tails (`Model.tool_tails`), queued
+(`Model.shared.streams`), running tool-output tails (`Model.shared.tool_tails`), queued
 inputs the daemon is holding, and pending advisor nudges. These rows are drawn
 below the durable rows and never enter the record cache. A stream fragment
 therefore cannot force the settled transcript to be re-parsed, and a settled
@@ -408,7 +415,7 @@ answer is list work over its rows, a few reductions per row per frame, and
 the parse of an open paragraph after its first Markdown delimiter.
 
 **Local presentation.** Everything the terminal says on its own behalf lives
-in `Model.transcript`, `Model.notice` and the overlay fields. `render_cut`
+in `Model.shared.transcript`, `Model.shared.notice` and the overlay fields. `render_cut`
 rebuilds the transcript header from each cut: a "beginning of conversation" or
 "scroll up to load older" line, the attachment banner, a daemon build-mismatch
 notice, the strand's configuration, the last unconfirmed submission, and
@@ -418,13 +425,13 @@ the transcript, but they are never mistaken for entries. Overlays and panels
 are painted over the frame after the transcript.
 
 Scrolling above the live tail freezes a copy of the transient rows in
-`Model.reading_lines`, so a stream that keeps arriving does not move the text
+`Model.view.reading_lines`, so a stream that keeps arriving does not move the text
 being read. Older history is fetched in bounded pages by `session_view/history_view`,
 which keeps its own window separate from the live cut. The reading position is
 held by `transcript_anchor.Row` values (an entry identity plus an offset within
 its rows) rather than by row counts, so it survives new output, older pages,
 width changes and a detail toggle. A strand switch parks the editor and the
-reading position in `Model.strand_workspaces`, keyed by session and strand,
+reading position in `Model.view.strand_workspaces`, and its history window in `Model.shared.parked_scrollback`, keyed by session and strand,
 and restores them on return.
 
 ## Two connections
@@ -698,7 +705,7 @@ A few rules apply to every surface. An open overlay owns focus, so ordinary
 prompt editing is inert while it is up, and `Ctrl+C` stays global. Overlay
 rows are cut to width rather than wrapped, so a long entry cannot push the
 selection off screen. A missing observation is shown as unavailable, never as
-zero or empty: `Model.nudges` and `Model.goal` are `None` for "not observed",
+zero or empty: `Model.shared.nudges` and `Model.shared.goal` are `None` for "not observed",
 and only a server board can say "no goal is pinned".
 
 Three of the automatic reads are driven by transitions rather than timers.
@@ -765,7 +772,7 @@ indented and wrapped to at most three rows, cut with `…` beyond that. The
 header carries the attribution, so the summary has no prefix and is never
 read as the agent's own words. A block without a summary keeps the single
 `ReasoningDigest` row: its first line once settled, `3 lines · 1m 04s so
-far` while streaming. The time is `Model.generation_elapsed_s`, a
+far` while streaming. The time is `Model.shared.generation_elapsed_s`, a
 whole-second reading of the generation clock (`generation_started_ms`)
 taken on the tick; a change repaints only while a reasoning row is on
 screen, and the repaint rebuilds the transient rows while the durable row
@@ -954,7 +961,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/effect` | The closed vocabulary of effects a step decides on. |
 | `tui/terminal_lane` | The session lane with the terminal's socket and recorder filled in, and `perform`, the one place a lane's outputs touch the websocket or the recording. |
 | `tui/view_link` | Printing the `loom ui` link and handing it to the platform's opener. |
-| `tui/model` | `Model`, the frame cache, the `Reconnect` state, the effect outbox (`emit`, `record`, `hold_channel`) and the other types every reducer shares. |
+| `tui/model` | `Model` and its two halves, `Shared` (session state) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox (`emit`, `record`, `hold_channel`) and the other types every reducer shares. |
 | `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
 | `tui/msg` | What the step is given: `Input(at, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`. |
 | `tui/keymap` | `translate`, etui's input event to a `msg.Event`; parsing only. |

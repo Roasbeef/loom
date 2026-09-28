@@ -368,16 +368,16 @@ The survey of mailbox reads, at the commit this slice started from:
   which read through `connection.receive`, and the four places that call it:
   the wheel and drag arms of `apply_input`
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
-  key drain (`tui/interaction.gleam:1228` (`drain_connection`)) and the tick
+  key drain (`tui/interaction.gleam:1452` (`drain_connection`)) and the tick
   (`tui/tick.gleam:131` (`drain_connection`)). The attachment's reads:
   `tui/attachment.gleam:492` (`prepare`),
   `tui/attachment.gleam:537` (`drain`) and
   `tui/attachment.gleam:597` (`settle`). The replay drain:
-  `tui/tick.gleam:200` (`drain_replay`).
+  `tui/tick.gleam:208` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:129` (`drain_reconnect`)), the control reply
   (`tui/tick.gleam:127` (`drain_control`)), the picker's activity reply
-  (`tui/session_control.gleam:990` (`drain_activity`)), and the session
+  (`tui/session_control.gleam:1106` (`drain_activity`)), and the session
   switch, which read through `sessions.receive` and `weft.pull` in
   `tui/sessions`, a module S5 deleted with the unreachable local switch.
   Each answers a job the step started, and they move when job starts
@@ -668,7 +668,7 @@ that waits for a real reply selects on `job_runner.selector`.
 and pulls the switch's run, which S5 moves. Adoption calls
 `connection.adopt` (in the local switch's adoption, which S5 deleted, and
 in the attachment's; phase 3 moved the call to
-`tui/runtime.gleam:293` (`connection.adopt`)), which creates nothing but
+`tui/runtime.gleam:303` (`connection.adopt`)), which creates nothing but
 reads whether the replacement socket's actor is alive. That read
 stays in the step until phase 3, which replaces etui's events with a
 domain message type; the runtime can then read the liveness when it
@@ -815,7 +815,7 @@ attempt and a quit both cancel the job before the cleanup.
 
 **What the step still does itself.** It reads files, which a later slice
 moves, and adoption still calls `connection.adopt` (phase 3 moved the
-call to `tui/runtime.gleam:293` (`connection.adopt`)), which creates
+call to `tui/runtime.gleam:303` (`connection.adopt`)), which creates
 nothing but reads whether the socket's actor is alive. That read stays until phase 3,
 when the runtime can read the liveness as it delivers the message that
 carries the socket and hand the answer to the reducer.
@@ -906,10 +906,10 @@ around it, at the commit this slice started from:
 | Read | Site | Where it ran | After S6 |
 |---|---|---|---|
 | a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:137` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:199` |
-| a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:458` | in the step | a job, `Configure` at `tui/job_runner.gleam:302` |
+| a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:508` | in the step | a job, `Configure` at `tui/job_runner.gleam:302` |
 | the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:515` | the attachment worker, since S5 | unchanged |
 | the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
-| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:646`, `discover_from` at `tui.gleam:675`, `read` at `tui.gleam:1132`, `read_private_bounded` at `tui.gleam:1651`, `start` at `tui.gleam:773`, `decode_file` at `tui.gleam:1468`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
+| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:653`, `discover_from` at `tui.gleam:675`, `read` at `tui.gleam:1156`, `read_private_bounded` at `tui.gleam:1687`, `start` at `tui.gleam:792`, `decode_file` at `tui.gleam:1492`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
 | the record-based session discovery that fed the local switch | `tui/sessions` and `tui/bootstrap` | deleted in S5 | gone; no definition or caller remains |
 
 Recording appends are writes, and have been effects since S3. Two reads in
@@ -1068,7 +1068,7 @@ jobs. Each has moved:
 
 Two reads remain in the step, and neither touches the file system. Adoption
 asks whether the replacement socket's actor is alive (phase 3 moved the
-read to `tui/runtime.gleam:293` (`connection.adopt`)). And the
+read to `tui/runtime.gleam:303` (`connection.adopt`)). And the
 build-mismatch notice reads this client's build identity from two environment variables on
 every coherent cut (`tui/inbound.gleam:103` (`build_identity`)). Phase 3
 takes both: once etui's events are replaced by a domain message type, the
