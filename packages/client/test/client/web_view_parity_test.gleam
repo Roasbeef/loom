@@ -382,19 +382,25 @@ fn transfer() -> List(connection_event.Message) {
 // no socket, so nothing it decides is written anywhere and what it keeps is
 // exactly the engine's state. Its clock reads zero, as the page's does.
 fn terminal() -> tui_model.Model {
-  tui_model.Model(
-    ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
-    peer: tui_model.Attached,
-    transport_time_ms: fn() { 0 },
-    stamp: msg.Stamp(now_ms: 0, transport_ms: 0, wall_ms: 0),
-    channel: Some(
-      session_channel.replay(snapshot.Expected(
-        "session",
-        "epoch",
-        "incarnation",
-      )),
-    ),
-  )
+  {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("test", None))
+    tui_model.Model(
+      shared: tui_model.Shared(
+        ..base.shared,
+        peer: tui_model.Attached,
+        stamp: msg.Stamp(now_ms: 0, transport_ms: 0, wall_ms: 0),
+        channel: Some(
+          session_channel.replay(snapshot.Expected(
+            "session",
+            "epoch",
+            "incarnation",
+          )),
+        ),
+      ),
+      view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),
+    )
+  }
 }
 
 // One step of the shared script, as each host receives it.
@@ -476,7 +482,7 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
       let page = on_page(hosts.1, step)
       let assert Some(web_lane) = component.lane(page)
         as "the page holds a lane"
-      let assert Some(terminal_lane) = terminal.channel
+      let assert Some(terminal_lane) = terminal.shared.channel
         as "the terminal holds a lane"
       assert session_channel.state(web_lane)
         == session_channel.state(terminal_lane)
@@ -485,7 +491,7 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
 
   // The two hosts offer the same approvals and draw the same lines.
   assert pending(component.pending(page)) != []
-  assert pending(component.pending(page)) == pending(terminal.approvals)
+  assert pending(component.pending(page)) == pending(terminal.shared.approvals)
   assert component.lines(page) == projection.record_projection(terminal).0
 
   // What the page wrote is the prompt, then the decision the lane queued

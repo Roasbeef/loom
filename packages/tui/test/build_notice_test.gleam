@@ -34,7 +34,10 @@ pub fn the_notice_compares_with_the_build_read_at_creation_test() {
   let differing =
     tui_model.Model(
       ..base,
-      client_build: build_identity.Identity("1.0.0", "abc123"),
+      shared: tui_model.Shared(
+        ..base.shared,
+        client_build: build_identity.Identity("1.0.0", "abc123"),
+      ),
     )
   assert has_notice(captured(differing))
     as "a daemon on another build is reported"
@@ -42,7 +45,10 @@ pub fn the_notice_compares_with_the_build_read_at_creation_test() {
   let matching =
     tui_model.Model(
       ..base,
-      client_build: build_identity.Identity("9.9.9", "feedface"),
+      shared: tui_model.Shared(
+        ..base.shared,
+        client_build: build_identity.Identity("9.9.9", "feedface"),
+      ),
     )
   assert !has_notice(captured(matching))
     as "a daemon on the model's own build is not reported"
@@ -79,7 +85,7 @@ fn is_captured(update: session_channel.Update) -> Bool {
 }
 
 fn has_notice(model: tui_model.Model) -> Bool {
-  list.any(model.transcript, fn(line) {
+  list.any(model.shared.transcript, fn(line) {
     string.contains(line.text, "differs from this client's")
   })
 }

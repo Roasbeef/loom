@@ -80,59 +80,84 @@ fn acknowledge(
   let waiting =
     tui_model.Model(
       ..model,
-      control_request: Some(tui_model.ControlRequest(
-        job.awaiting(key),
-        Some(Ok(job.SessionRenamed(renamed))),
-      )),
+      view: tui_model.View(
+        ..model.view,
+        control_request: Some(tui_model.ControlRequest(
+          job.awaiting(key),
+          Some(Ok(job.SessionRenamed(renamed))),
+        )),
+      ),
     )
   runtime.hold(waiting, job.ControlArrived(key, weft.AllDelivered))
   |> session_control.drain_control
 }
 
 pub fn acknowledged_rename_updates_header_and_picker_without_switching_test() {
-  let model =
+  let model = {
+    let base = blank()
     tui_model.Model(
-      ..blank(),
-      session: "a",
-      session_label: Some(#("a", "Original")),
-      overlay: tui_model.DaemonSelector(picker()),
+      shared: tui_model.Shared(
+        ..base.shared,
+        session: "a",
+        session_label: Some(#("a", "Original")),
+      ),
+      view: tui_model.View(
+        ..base.view,
+        overlay: tui_model.DaemonSelector(picker()),
+      ),
     )
+  }
   let renamed = acknowledge(model, row("a", "Readable title"))
-  assert renamed.session == "a"
-  assert renamed.session_label == Some(#("a", "Readable title"))
-  let assert tui_model.DaemonSelector(selector) = renamed.overlay
+  assert renamed.shared.session == "a"
+  assert renamed.shared.session_label == Some(#("a", "Readable title"))
+  let assert tui_model.DaemonSelector(selector) = renamed.view.overlay
     as "acknowledgement preserves the picker"
   assert selector.selected == 0
   assert selector.page.sessions
     == [row("a", "Readable title"), row("b", "Second")]
   assert selector.prompt == session_selector.Browsing
   assert string.contains(
-    header(tui_model.Model(..renamed, overlay: tui_model.NoOverlay)),
+    header(
+      tui_model.Model(
+        ..renamed,
+        view: tui_model.View(..renamed.view, overlay: tui_model.NoOverlay),
+      ),
+    ),
     "Readable title",
   )
 }
 
 pub fn renaming_another_session_keeps_the_attached_title_test() {
-  let model =
+  let model = {
+    let base = blank()
     tui_model.Model(
-      ..blank(),
-      session: "a",
-      session_label: Some(#("a", "Current")),
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        session: "a",
+        session_label: Some(#("a", "Current")),
+      ),
     )
+  }
   let renamed = acknowledge(model, row("b", "Other"))
-  assert renamed.session_label == model.session_label
-  assert renamed.session == "a"
+  assert renamed.shared.session_label == model.shared.session_label
+  assert renamed.shared.session == "a"
   assert string.contains(header(renamed), "Current")
   assert !string.contains(header(renamed), "Other")
 }
 
 pub fn a_title_cannot_follow_a_legacy_identity_switch_test() {
-  let model =
+  let model = {
+    let base = blank()
     tui_model.Model(
-      ..blank(),
-      session: "new-identity",
-      session_label: Some(#("old-identity", "Old title")),
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        session: "new-identity",
+        session_label: Some(#("old-identity", "Old title")),
+      ),
     )
+  }
   assert string.contains(header(model), "new-identity")
   assert !string.contains(header(model), "Old title")
 }
@@ -142,10 +167,16 @@ fn header(model: tui_model.Model) -> String {
     virtual_backend.script(
       backend.TerminalSize(width: 100, height: 12),
       [],
-      buffered.sender(model.inbox),
+      buffered.sender(model.shared.inbox),
     )
   let assert Ok(run) =
-    tui.run_script(tui_model.Model(..model, peer: tui_model.Replaying), script)
+    tui.run_script(
+      tui_model.Model(
+        ..model,
+        shared: tui_model.Shared(..model.shared, peer: tui_model.Replaying),
+      ),
+      script,
+    )
     as "the virtual terminal starts"
   let assert Ok(last) = list.last(run.frames)
     as "the terminal renders the header"
@@ -161,18 +192,27 @@ pub fn paste_is_owned_by_the_rename_editor_not_the_chat_draft_test() {
       ..picker(),
       prompt: session_selector.Renaming("a", ""),
     )
-  let model =
-    tui_model.Model(..blank(), overlay: tui_model.DaemonSelector(editing))
+  let model = {
+    let base = blank()
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(
+        ..base.view,
+        overlay: tui_model.DaemonSelector(editing),
+      ),
+    )
+  }
   let pasted = tui.update(backend.Paste("Pasted title"), model)
-  let assert tui_model.DaemonSelector(selector) = pasted.overlay
+  let assert tui_model.DaemonSelector(selector) = pasted.view.overlay
     as "paste stays in the rename editor"
   assert selector.prompt == session_selector.Renaming("a", "Pasted title")
-  assert text_area.value(pasted.input) == text_area.value(model.input)
-  assert pasted.control_request == None
+  assert text_area.value(pasted.view.input) == text_area.value(model.view.input)
+  assert pasted.view.control_request == None
 
   let oversized = tui.update(backend.Paste(string.repeat("x", 257)), pasted)
-  let assert tui_model.DaemonSelector(unchanged) = oversized.overlay
+  let assert tui_model.DaemonSelector(unchanged) = oversized.view.overlay
     as "oversized paste preserves the draft"
   assert unchanged.prompt == selector.prompt
-  assert text_area.value(oversized.input) == text_area.value(model.input)
+  assert text_area.value(oversized.view.input)
+    == text_area.value(model.view.input)
 }

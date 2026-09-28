@@ -44,7 +44,7 @@ import tui/buffered
 import tui/job
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, ControlRequest,
-  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
+  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Shared, View,
 } as tui_model
 import tui/msg.{type Arrival}
 
@@ -65,7 +65,13 @@ fn admit_one(model: Model, arrival: Arrival) -> Model {
   case arrival {
     msg.Frame(source:, message:) -> admit_frame(model, source, message)
     msg.Replayed(event:) ->
-      Model(..model, replay_inbox: buffered.push(model.replay_inbox, event))
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          replay_inbox: buffered.push(model.shared.replay_inbox, event),
+        ),
+      )
     msg.JobReplied(arrival:) -> admit_reply(model, arrival)
   }
 }
@@ -78,11 +84,18 @@ fn admit_frame(
   source: Subject(connection_event.Message),
   message: connection_event.Message,
 ) -> Model {
-  case source == buffered.sender(model.inbox) {
-    True -> Model(..model, inbox: buffered.push(model.inbox, message))
+  case source == buffered.sender(model.shared.inbox) {
+    True ->
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          inbox: buffered.push(model.shared.inbox, message),
+        ),
+      )
     False ->
-      case attachment.push_frame(model.candidate, source, message) {
-        Ok(candidate) -> Model(..model, candidate:)
+      case attachment.push_frame(model.view.candidate, source, message) {
+        Ok(candidate) -> Model(..model, view: View(..model.view, candidate:))
         Error(Nil) -> model
       }
   }
@@ -100,8 +113,10 @@ fn admit_reply(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
     job.ConfigurationArrived(key:, reply:) ->
       admit_configuration(model, key, reply)
     job.AttachArrived(key:, reply:) ->
-      attachment.admit(model.candidate, key, reply)
-      |> result.map(fn(candidate) { Model(..model, candidate:) })
+      attachment.admit(model.view.candidate, key, reply)
+      |> result.map(fn(candidate) {
+        Model(..model, view: View(..model.view, candidate:))
+      })
   }
   case admitted {
     Ok(model) -> model
@@ -114,14 +129,17 @@ fn admit_control(
   key: job.Key,
   reply: job.ControlReply,
 ) -> Result(Model, Nil) {
-  case model.control_request {
+  case model.view.control_request {
     None -> Error(Nil)
     Some(run) ->
       job.admit(run.job, key, reply)
       |> result.map(fn(awaiting) {
         Model(
           ..model,
-          control_request: Some(ControlRequest(..run, job: awaiting)),
+          view: View(
+            ..model.view,
+            control_request: Some(ControlRequest(..run, job: awaiting)),
+          ),
         )
       })
   }
@@ -132,12 +150,15 @@ fn admit_reconnect(
   key: job.Key,
   reply: job.ReconnectReply(job.Daemon),
 ) -> Result(Model, Nil) {
-  case model.reconnect {
+  case model.view.reconnect {
     ReconnectIdle | ReconnectSpent -> Error(Nil)
     ReconnectAttempting(job: awaiting) ->
       job.admit(awaiting, key, reply)
       |> result.map(fn(awaiting) {
-        Model(..model, reconnect: ReconnectAttempting(awaiting))
+        Model(
+          ..model,
+          view: View(..model.view, reconnect: ReconnectAttempting(awaiting)),
+        )
       })
   }
 }
@@ -147,12 +168,18 @@ fn admit_activity(
   key: job.Key,
   reply: job.ActivityReply,
 ) -> Result(Model, Nil) {
-  case model.activity_poll {
+  case model.view.activity_poll {
     ActivityDue | ActivityResting(..) -> Error(Nil)
     ActivityAsking(job: awaiting, asked:) ->
       job.admit(awaiting, key, reply)
       |> result.map(fn(awaiting) {
-        Model(..model, activity_poll: ActivityAsking(awaiting, asked))
+        Model(
+          ..model,
+          view: View(
+            ..model.view,
+            activity_poll: ActivityAsking(awaiting, asked),
+          ),
+        )
       })
   }
 }
@@ -162,10 +189,12 @@ fn admit_configuration(
   key: job.Key,
   reply: job.ConfigurationReply,
 ) -> Result(Model, Nil) {
-  case model.configuring {
+  case model.view.configuring {
     None -> Error(Nil)
     Some(awaiting) ->
       job.admit(awaiting, key, reply)
-      |> result.map(fn(awaiting) { Model(..model, configuring: Some(awaiting)) })
+      |> result.map(fn(awaiting) {
+        Model(..model, view: View(..model.view, configuring: Some(awaiting)))
+      })
   }
 }

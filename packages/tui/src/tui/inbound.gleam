@@ -74,8 +74,8 @@ import tui/model.{
   type UnconfirmedSubmission, AgentInspector, ApprovalInspector, Attached,
   DaemonSelector, Disconnected, GoalInspector, HoldGoalReport, Interrupt, Model,
   ModelSelector, NoOverlay, PeerLinkManager, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, StrandWorkspace,
-  UnconfirmedSubmission,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, Shared,
+  StrandWorkspace, UnconfirmedSubmission, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -143,16 +143,16 @@ fn build_mismatch_lines(
 /// no launch to re-run, and an attempt already spent means the operator is
 /// owed an error rather than a loop.
 fn reconnect_decision(model: Model) -> ReconnectDecision {
-  case model.quit {
+  case model.shared.quit {
     True -> ReconnectRefused("the terminal is closing")
     False ->
-      case model.session {
+      case model.shared.session {
         "" -> ReconnectRefused("no session is attached")
         session ->
-          case model.local_options {
+          case model.view.local_options {
             None -> ReconnectRefused("this attachment was not launched locally")
             Some(options) ->
-              reconnect_state_decision(model.reconnect, session, options)
+              reconnect_state_decision(model.view.reconnect, session, options)
           }
       }
   }
@@ -201,9 +201,14 @@ fn begin_reconnect(model: Model) -> Model {
       // spec carries the launch options and nothing else of the model.
       let #(model, key) = tui_model.start_job(model, job.Reconnect(options))
       Model(
-        ..model,
-        reconnect: ReconnectAttempting(job.awaiting(key)),
-        notice: "reconnecting to session " <> session,
+        shared: Shared(
+          ..model.shared,
+          notice: "reconnecting to session " <> session,
+        ),
+        view: View(
+          ..model.view,
+          reconnect: ReconnectAttempting(job.awaiting(key)),
+        ),
       )
       |> tui_model.invalidate_frame
     }
@@ -214,11 +219,11 @@ fn begin_reconnect(model: Model) -> Model {
 /// produce, then services a pending history read.
 @internal
 pub fn tick_channel(model: Model) -> Model {
-  case model.channel {
+  case model.shared.channel {
     None -> model
     Some(channel) -> {
       let #(channel, updates) =
-        session_channel.tick(channel, now: model.stamp.transport_ms)
+        session_channel.tick(channel, now: model.shared.stamp.transport_ms)
       list.fold(
         updates,
         tui_model.hold_channel(model, channel),
@@ -250,15 +255,22 @@ pub fn apply_channel_update(
       let updated =
         Model(
           ..inspected,
-          approvals: approval.decisions(model.approvals, records, missing),
+          shared: Shared(
+            ..inspected.shared,
+            approvals: approval.decisions(
+              model.shared.approvals,
+              records,
+              missing,
+            ),
+          ),
         )
 
       // A lookup can be the first to report the open question resolved, for
       // instance when another client answered it, so the reply settles the
       // dialog the same way a cut does rather than waiting for the next one.
-      let updated = case updated.captured {
+      let updated = case updated.shared.captured {
         Some(#(cut, view)) ->
-          render_cut(updated, cut, view, updated.approvals)
+          render_cut(updated, cut, view, updated.shared.approvals)
           |> close_settled_approval
           |> present_pending_approval
         None -> updated
@@ -275,7 +287,13 @@ pub fn apply_channel_update(
     session_channel.Auxiliary(event) -> apply_event(model, event)
     session_channel.RequestRefused("history", _, code, message) ->
       tui_model.append_error(
-        Model(..model, scrollback: history_view.cancel(model.scrollback)),
+        Model(
+          ..model,
+          shared: Shared(
+            ..model.shared,
+            scrollback: history_view.cancel(model.shared.scrollback),
+          ),
+        ),
         "Older history: " <> code <> ": " <> message,
       )
     session_channel.RequestRefused(command, request_id, code, message) ->
@@ -285,7 +303,11 @@ pub fn apply_channel_update(
     // every notice the daemon pushed, including the ones a held sequence or
     // an in-flight refresh made redundant. The rendered frame is untouched,
     // so this cannot invalidate it.
-    session_channel.Noticed(_) -> Model(..model, notices: model.notices + 1)
+    session_channel.Noticed(_) ->
+      Model(
+        ..model,
+        shared: Shared(..model.shared, notices: model.shared.notices + 1),
+      )
 
     // A pushed fragment is the same thing the directly attached client
     // receives as a stream delta, so it lands in the same live-stream region
@@ -329,17 +351,22 @@ pub fn apply_channel_update(
     // than writing a second copy of the same news.
     session_channel.Acknowledged("edit_queued_input", "queued") ->
       Model(
-        ..model,
-        queue_editor: queue_editor.new(),
-        notice: "queued input updated",
+        shared: Shared(..model.shared, notice: "queued input updated"),
+        view: View(..model.view, queue_editor: queue_editor.new()),
       )
       |> tui_model.invalidate_frame
     session_channel.Acknowledged("prompt", "queued") ->
-      Model(
-        ..settle_own_turn(model),
-        submitting: None,
-        notice: "prompt queued for the next turn",
-      )
+      {
+        let settled = settle_own_turn(model)
+        Model(
+          ..settled,
+          shared: Shared(
+            ..settled.shared,
+            submitting: None,
+            notice: "prompt queued for the next turn",
+          ),
+        )
+      }
       |> tui_model.invalidate_frame
 
     // An abort ends the run, and with it every steer and follow-up the run
@@ -349,7 +376,13 @@ pub fn apply_channel_update(
     // once the strand is idle — so the abort drops the interjections and
     // leaves the prompt echoes standing.
     session_channel.Acknowledged("abort", status) ->
-      Model(..abandon_interjections(model), notice: "abort " <> status)
+      {
+        let abandoned = abandon_interjections(model)
+        Model(
+          ..abandoned,
+          shared: Shared(..abandoned.shared, notice: "abort " <> status),
+        )
+      }
       |> tui_model.invalidate_frame
 
     // Every other acknowledgement settles its submission the same way: a
@@ -357,62 +390,78 @@ pub fn apply_channel_update(
     // waiting for. Commands that record nothing leave `awaiting_outcome`
     // empty and pass through untouched.
     session_channel.Acknowledged(command, status) ->
-      Model(..settle_own_turn(model), notice: command <> " " <> status)
+      {
+        let settled = settle_own_turn(model)
+        Model(
+          ..settled,
+          shared: Shared(..settled.shared, notice: command <> " " <> status),
+        )
+      }
       |> tui_model.invalidate_frame
     session_channel.UnknownOutcome(command, request_id) ->
       tui_model.append_error(
         Model(
-          ..model,
-          queue_editor: case command {
-            "edit_queued_input" -> queue_editor.unknown(model.queue_editor)
-            _ -> model.queue_editor
-          },
-          unconfirmed: Some(UnconfirmedSubmission(
-            model.session,
-            command,
-            request_id,
-          )),
+          shared: Shared(
+            ..model.shared,
+            unconfirmed: Some(UnconfirmedSubmission(
+              model.shared.session,
+              command,
+              request_id,
+            )),
+          ),
+          view: View(..model.view, queue_editor: case command {
+            "edit_queued_input" -> queue_editor.unknown(model.view.queue_editor)
+            _ -> model.view.queue_editor
+          }),
         ),
         "Last unconfirmed submission: " <> command <> "; not retried",
       )
     session_channel.Failed(reason) ->
       tui_model.append_error(
-        Model(
-          ..outbound.discard_own_turn(model),
-          peer: after_close(model.peer),
-          scrollback: history_view.cancel(model.scrollback),
-          streams: [],
-          tool_tails: [],
-          queue_editor: queue_editor.refused(
-            model.queue_editor,
-            "Disconnected; draft retained",
-          ),
-          jobs_refresh: worktree_view.Settled,
-          jobs_awaiting: None,
-          jobs_notice: "Live jobs unavailable: conversation disconnected",
-          nudges: None,
-          nudges_refresh: worktree_view.Settled,
-          nudges_awaiting: None,
-          nudges_request: None,
-          goal: None,
-          goal_refresh: worktree_view.Settled,
-          goal_awaiting: None,
-          goal_request: None,
-          goal_report: HoldGoalReport,
-          overlay: case model.overlay {
-            GoalInspector(_) -> NoOverlay
-            other -> other
-          },
-          worktree: case model.worktree.awaiting {
-            Some(id) ->
-              worktree_view.receive(
-                model.worktree,
-                tui_model.queue_owner(model),
-                worktree_view.Failed(id, "conversation disconnected"),
-              )
-            None -> model.worktree
-          },
-        ),
+        {
+          let discarded = outbound.discard_own_turn(model)
+          Model(
+            shared: Shared(
+              ..discarded.shared,
+              peer: after_close(model.shared.peer),
+              scrollback: history_view.cancel(model.shared.scrollback),
+              streams: [],
+              tool_tails: [],
+              jobs_refresh: worktree_view.Settled,
+              jobs_awaiting: None,
+              jobs_notice: "Live jobs unavailable: conversation disconnected",
+              nudges: None,
+              nudges_refresh: worktree_view.Settled,
+              nudges_awaiting: None,
+              nudges_request: None,
+              goal: None,
+              goal_refresh: worktree_view.Settled,
+              goal_awaiting: None,
+              goal_request: None,
+              goal_report: HoldGoalReport,
+              worktree: case model.shared.worktree.awaiting {
+                Some(id) ->
+                  worktree_view.receive(
+                    model.shared.worktree,
+                    tui_model.queue_owner(model),
+                    worktree_view.Failed(id, "conversation disconnected"),
+                  )
+                None -> model.shared.worktree
+              },
+            ),
+            view: View(
+              ..discarded.view,
+              queue_editor: queue_editor.refused(
+                model.view.queue_editor,
+                "Disconnected; draft retained",
+              ),
+              overlay: case model.view.overlay {
+                GoalInspector(_) -> NoOverlay
+                other -> other
+              },
+            ),
+          )
+        },
         "conversation: " <> reason,
       )
       |> begin_reconnect
@@ -430,24 +479,32 @@ fn reconcile_cut(
   // provenance is recorded only on the arm that paints: a notice-driven
   // catch-up that finds nothing new must not claim the answer a refresh
   // already painted, or a fixture reading it would call polling "push".
-  case model.captured {
+  case model.shared.captured {
     Some(#(previous, _))
       if previous.next_seq == cut.next_seq && previous.metadata == cut.metadata
     ->
-      Model(..model, captured: Some(#(cut, view)))
+      Model(
+        ..model,
+        shared: Shared(..model.shared, captured: Some(#(cut, view))),
+      )
       |> close_settled_approval
       |> present_pending_approval
     Some(_) | None -> {
-      let updated = apply_cut(Model(..model, last_capture: trigger), cut, view)
-      let updated = case model.captured {
+      let updated =
+        apply_cut(
+          Model(..model, shared: Shared(..model.shared, last_capture: trigger)),
+          cut,
+          view,
+        )
+      let updated = case model.shared.captured {
         Some(#(previous, _)) if previous.next_seq == cut.next_seq -> updated
         Some(_) | None -> request_visible_worktree(updated)
       }
       let disappeared =
-        model.approvals
+        model.shared.approvals
         |> list.filter(fn(old) {
           old.status == approval.Pending
-          && !list.any(updated.approvals, fn(new) { new.id == old.id })
+          && !list.any(updated.shared.approvals, fn(new) { new.id == old.id })
         })
         |> list.map(fn(record) { record.id })
       let updated = case list.take(disappeared, 8) {
@@ -470,7 +527,7 @@ fn reconcile_cut(
 /// `ids`. A replay performs no lookup.
 @internal
 pub fn request_decisions(model: Model, ids: List(String)) -> Model {
-  case model.peer {
+  case model.shared.peer {
     // A replay performs no outbound effect and invents no line the live
     // client was not shown. Whatever the live client learned about these
     // decisions is already in the recording; a "conversation is not
@@ -478,11 +535,15 @@ pub fn request_decisions(model: Model, ids: List(String)) -> Model {
     Replaying -> model
 
     Attached | Disconnected | Preview ->
-      case model.channel {
+      case model.shared.channel {
         None -> tui_model.append_error(model, "conversation is not attached")
         Some(channel) ->
           case
-            session_channel.lookup(channel, ids, now: model.stamp.transport_ms)
+            session_channel.lookup(
+              channel,
+              ids,
+              now: model.shared.stamp.transport_ms,
+            )
           {
             Ok(channel) -> tui_model.hold_channel(model, channel)
             Error(reason) ->
@@ -504,7 +565,7 @@ pub fn apply_cut(
   view: snapshot_view.View,
 ) -> Model {
   let reviews = case approval.records(view.cells) {
-    Ok(current) -> approval.project(model.approvals, current)
+    Ok(current) -> approval.project(model.shared.approvals, current)
     Error(_) -> []
   }
   render_cut(model, cut, view, reviews)
@@ -523,14 +584,14 @@ pub fn apply_cut(
 // through /approvals, and it stays open whatever the cut says. Closing runs
 // before presentation so that the next unseen question opens in the same step.
 fn close_settled_approval(model: Model) -> Model {
-  case model.overlay {
+  case model.view.overlay {
     ApprovalInspector(panel) -> {
       let asked = approval_panel.review(panel)
 
       // Both projections keep one record per escalation ID, so the first
       // match is the only one.
       let current =
-        list.find(model.approvals, fn(record) { record.id == asked.id })
+        list.find(model.shared.approvals, fn(record) { record.id == asked.id })
       case asked.status, current {
         approval.Pending, Ok(approval.Review(status: approval.Pending, ..))
         | approval.Approved, _
@@ -563,7 +624,7 @@ fn settle_elsewhere(
   decider: String,
 ) -> Model {
   tui_model.append_system(
-    Model(..model, overlay: NoOverlay),
+    Model(..model, view: View(..model.view, overlay: NoOverlay)),
     "Approval "
       <> asked.id
       <> " ("
@@ -577,26 +638,30 @@ fn settle_elsewhere(
 // A question is offered once per exact sequence. Deferring one leaves it in
 // /approvals, while a reopened request with the same ID is a new question.
 fn present_pending_approval(model: Model) -> Model {
-  case model.overlay, model.captured {
+  case model.view.overlay, model.shared.captured {
     NoOverlay, Some(#(cut, _)) if cut.attachment.role != snapshot.Observer -> {
       let seen =
-        list.filter(model.prompted_approvals, fn(identity) {
-          list.any(model.approvals, fn(record) {
+        list.filter(model.view.prompted_approvals, fn(identity) {
+          list.any(model.shared.approvals, fn(record) {
             #(record.id, record.seq) == identity
           })
         })
       let unseen =
-        list.find(model.approvals, fn(record) {
+        list.find(model.shared.approvals, fn(record) {
           record.status == approval.Pending
           && !list.contains(seen, #(record.id, record.seq))
         })
       case unseen {
-        Error(Nil) -> Model(..model, prompted_approvals: seen)
+        Error(Nil) ->
+          Model(..model, view: View(..model.view, prompted_approvals: seen))
         Ok(record) ->
           Model(
             ..model,
-            prompted_approvals: [#(record.id, record.seq), ..seen],
-            overlay: ApprovalInspector(captured_approval_panel(model, record)),
+            view: View(
+              ..model.view,
+              prompted_approvals: [#(record.id, record.seq), ..seen],
+              overlay: ApprovalInspector(captured_approval_panel(model, record)),
+            ),
           )
       }
     }
@@ -612,17 +677,18 @@ fn render_cut(
 ) -> Model {
   // A disappearing strand never retargets a draft. The composer keeps its
   // identity and submission is refused until that target is available again.
-  let active = model.active_strand
+  let active = model.shared.active_strand
   let model = observe_completion(model, cut, view, active)
   let model = retain_queue_selection(model, view, active)
-  let same_operation = case model.captured {
+  let same_operation = case model.shared.captured {
     Some(#(_, previous)) ->
-      model.active_strand == active
-      && dict.get(previous.operations, model.active_strand)
+      model.shared.active_strand == active
+      && dict.get(previous.operations, model.shared.active_strand)
       == dict.get(view.operations, active)
     None -> False
   }
-  let history = history_view.capture(model.scrollback, cut.window, view, active)
+  let history =
+    history_view.capture(model.shared.scrollback, cut.window, view, active)
   let branch = history_view.branch(history, view)
   let current_model = case dict.get(view.configurations, active) {
     Ok(config) -> config.configuration.model.model_id
@@ -630,12 +696,12 @@ fn render_cut(
   }
   let cache =
     cache_watch.capture(
-      model.cache,
-      option.map(model.captured, fn(shown) { shown.1 }),
+      model.shared.cache,
+      option.map(model.shared.captured, fn(shown) { shown.1 }),
       view,
     )
   let cache_outlook = case dict.get(cache.watches, active) {
-    Ok(_) -> model.cache_outlook
+    Ok(_) -> model.view.cache_outlook
     Error(Nil) -> ""
   }
   let role = case cut.attachment.role {
@@ -675,11 +741,11 @@ fn render_cut(
     Line(System, boundary),
     Line(System, attachment_banner),
     ..list.append(
-      daemon_build_lines(model.daemon_host, model.client_build),
+      daemon_build_lines(model.view.daemon_host, model.shared.client_build),
       list.append(
         configuration_lines(view, active),
         list.append(
-          unconfirmed_lines(model.unconfirmed),
+          unconfirmed_lines(model.shared.unconfirmed),
           approval_lines(reviews),
         ),
       ),
@@ -692,12 +758,12 @@ fn render_cut(
   // of them made each a full re-projection of the whole session.
   let advisor_history = advisor_history.project(view, cut.window)
   let record_cache_valid =
-    model.record_cache_valid
-    && model.active_strand == active
-    && model.records == branch.records
-    && model.advisor_history == advisor_history
-    && model.transcript == transcript
-    && transcript_lines.solo_owner(model.captured)
+    model.shared.record_cache_valid
+    && model.shared.active_strand == active
+    && model.shared.records == branch.records
+    && model.shared.advisor_history == advisor_history
+    && model.shared.transcript == transcript
+    && transcript_lines.solo_owner(model.shared.captured)
     == transcript_lines.solo_owner(Some(#(cut, view)))
 
   // Request-scoped pushes outrun captures: a cut may have started before
@@ -708,7 +774,7 @@ fn render_cut(
   // Legacy recordings retain their operation-based law.
   let operation = dict.get(view.operations, active)
   let live =
-    list.filter(model.streams, fn(stream) {
+    list.filter(model.shared.streams, fn(stream) {
       stream.strand == active
       && { stream.generation != "" || operation == Ok(stream.operation) }
       && !snapshot_view.has_result(view, active, stream.operation)
@@ -720,7 +786,7 @@ fn render_cut(
   // last-result register remains the fallback when the bounded history window
   // no longer retains that entry.
   let live_tails =
-    list.filter(model.tool_tails, fn(tail) {
+    list.filter(model.shared.tool_tails, fn(tail) {
       !snapshot_view.has_tool_result(
         view,
         cut.window,
@@ -735,17 +801,19 @@ fn render_cut(
   // when the lane is free; a cut whose records did not move asks nothing.
   // Live labels are kept while their stream is held, on any strand, or
   // while the committed response they would lend to is in the window.
-  let summaries = case model.records == branch.records {
-    True -> model.summaries
+  let summaries = case model.shared.records == branch.records {
+    True -> model.shared.summaries
     False ->
       block_summary.want(
-        model.summaries,
+        model.shared.summaries,
         transcript_lines.summary_keys(branch.records, active),
       )
   }
   let summaries =
     block_summary.retain_live(summaries, fn(generation) {
-      list.any(model.streams, fn(stream) { stream.generation == generation })
+      list.any(model.shared.streams, fn(stream) {
+        stream.generation == generation
+      })
       || transcript_lines.response_recorded(branch.records, generation)
     })
 
@@ -753,72 +821,90 @@ fn render_cut(
   // windows. A future appearance must rebuild history from its own capture.
   let workspaces =
     prune_workspace_history(
-      model.strand_workspaces,
-      model.session,
+      model.view.strand_workspaces,
+      model.shared.session,
       view.strands,
     )
-  let reviewers = reviewer_status.observe(model.reviewer_rows, cut.window, view)
-  let rows = agent_view.observe(model.agent_rows, cut.window, view, reviewers)
+  let parked_scrollback =
+    prune_parked_scrollback(
+      model.shared.parked_scrollback,
+      model.shared.session,
+      view.strands,
+    )
+  let reviewers =
+    reviewer_status.observe(model.shared.reviewer_rows, cut.window, view)
+  let rows =
+    agent_view.observe(model.shared.agent_rows, cut.window, view, reviewers)
   let captured_messages =
-    agent_messages.capture(model.agent_messages, view, cut.window)
+    agent_messages.capture(model.shared.agent_messages, view, cut.window)
 
   // A strand whose capture reaches no `todo` call may still have a board
   // in its notes, the usual case after reattaching to a long session, so
   // its first capture asks for one notes read to seed the panel.
-  let boards = todo_board.remember(model.todo_boards, branch.records)
+  let boards = todo_board.remember(model.shared.todo_boards, branch.records)
   let #(todo_seed, todo_asked) = case
-    todo_board.needs_seed(boards, model.todo_asked, active)
+    todo_board.needs_seed(boards, model.shared.todo_asked, active)
   {
-    True -> #(Some(active), set.insert(model.todo_asked, active))
-    False -> #(model.todo_seed, model.todo_asked)
+    True -> #(Some(active), set.insert(model.shared.todo_asked, active))
+    False -> #(model.shared.todo_seed, model.shared.todo_asked)
   }
   Model(
-    ..model,
-    captured: Some(#(cut, view)),
-    approvals: reviews,
-    active_strand: active,
-    strands: view.strands,
-    agent_summary: agents.summary_rows(rows),
-    reviewer_rows: reviewers,
-    agent_rows: rows,
-    strip: agent_strip.observe(model.strip, view, model.stamp.now_ms),
-    agent_messages: captured_messages,
-    advisor_history:,
-    todo_boards: boards,
-    todo_seed:,
-    todo_asked:,
-    summaries:,
-    records: branch.records,
-    scrollback: history,
-    strand_workspaces: workspaces,
-    activity_started_ms: case same_operation {
-      True -> model.activity_started_ms
-      False -> None
-    },
-    activity_elapsed_s: case same_operation {
-      True -> model.activity_elapsed_s
-      False -> 0
-    },
-    usage: view.usage,
-    current_model: current_model,
-    cache:,
-    cache_outlook:,
-    streams: live,
-    tool_tails: live_tails,
-    interrupt: reconcile_interrupt(model.interrupt, view.operations),
-    queued: case view.pending_inputs {
-      Some(_) -> []
-      None -> model.queued
-    },
-    submitting: None,
-    record_cache_valid:,
-    // Presence already has its own banner. Repeated metadata captures must
-    // not alternate that banner with streaming or operator feedback below.
-    notice: case model.captured {
-      None -> notice
-      Some(_) -> model.notice
-    },
-    transcript:,
+    shared: Shared(
+      ..model.shared,
+      captured: Some(#(cut, view)),
+      approvals: reviews,
+      active_strand: active,
+      strands: view.strands,
+      reviewer_rows: reviewers,
+      agent_rows: rows,
+      roster: agent_roster.observe(
+        model.shared.roster,
+        view,
+        model.shared.stamp.now_ms,
+      ),
+      agent_messages: captured_messages,
+      advisor_history:,
+      todo_boards: boards,
+      todo_seed:,
+      todo_asked:,
+      summaries:,
+      records: branch.records,
+      scrollback: history,
+      parked_scrollback:,
+      activity_started_ms: case same_operation {
+        True -> model.shared.activity_started_ms
+        False -> None
+      },
+      activity_elapsed_s: case same_operation {
+        True -> model.shared.activity_elapsed_s
+        False -> 0
+      },
+      usage: view.usage,
+      current_model: current_model,
+      cache:,
+      streams: live,
+      tool_tails: live_tails,
+      interrupt: reconcile_interrupt(model.shared.interrupt, view.operations),
+      queued: case view.pending_inputs {
+        Some(_) -> []
+        None -> model.shared.queued
+      },
+      submitting: None,
+      record_cache_valid:,
+      // Presence already has its own banner. Repeated metadata captures must
+      // not alternate that banner with streaming or operator feedback below.
+      notice: case model.shared.captured {
+        None -> notice
+        Some(_) -> model.shared.notice
+      },
+      transcript:,
+    ),
+    view: View(
+      ..model.view,
+      agent_summary: agents.summary_rows(rows),
+      strand_workspaces: workspaces,
+      cache_outlook:,
+    ),
   )
   |> settle_pending_cache(cut.next_seq)
   |> reconcile_agent_message_selection
@@ -926,19 +1012,27 @@ fn inspect_looked_up(model: Model, records, missing) {
   // A lookup started before automatic presentation may finish while the
   // operator is reviewing another question. The visible record owns consent
   // until that dialog closes, including its selection and scroll position.
-  case model.overlay, model.inspecting_approval {
-    ApprovalInspector(_), _ -> Model(..model, inspecting_approval: None)
+  case model.view.overlay, model.view.inspecting_approval {
+    ApprovalInspector(_), _ ->
+      Model(..model, view: View(..model.view, inspecting_approval: None))
     _, Some(id) ->
       case list.find(records, fn(record: approval.Review) { record.id == id }) {
         Ok(record) ->
           Model(
             ..model,
-            overlay: ApprovalInspector(captured_approval_panel(model, record)),
-            inspecting_approval: None,
+            view: View(
+              ..model.view,
+              overlay: ApprovalInspector(captured_approval_panel(model, record)),
+              inspecting_approval: None,
+            ),
           )
         Error(Nil) ->
           case list.contains(missing, id) {
-            True -> Model(..model, inspecting_approval: None)
+            True ->
+              Model(
+                ..model,
+                view: View(..model.view, inspecting_approval: None),
+              )
             False -> model
           }
       }
@@ -1003,10 +1097,13 @@ pub fn decide_captured_approval(
         approval_panel.AllowSession -> operator.AllowForSession
         approval_panel.Deny -> operator.Deny
       }
-      case operator.decision(model.next_id, record, choice) {
+      case operator.decision(model.shared.next_id, record, choice) {
         Error(reason) -> tui_model.append_error(model, reason)
         Ok(frame) ->
-          outbound.send_frame(Model(..model, overlay: NoOverlay), frame)
+          outbound.send_frame(
+            Model(..model, view: View(..model.view, overlay: NoOverlay)),
+            frame,
+          )
       }
     }
   }
@@ -1017,14 +1114,14 @@ pub fn decide_captured_approval(
 /// have seen.
 @internal
 pub fn decide(model: Model, id: String, choice: operator.Choice) -> Model {
-  case list.find(model.approvals, fn(record) { record.id == id }) {
+  case list.find(model.shared.approvals, fn(record) { record.id == id }) {
     Error(Nil) ->
       tui_model.append_error(
         model,
         "decision is not displayed; load /approvals " <> id <> " first",
       )
     Ok(record) ->
-      case operator.decision(model.next_id, record, choice) {
+      case operator.decision(model.shared.next_id, record, choice) {
         Error(reason) -> tui_model.append_error(model, reason)
         Ok(frame) -> outbound.send_frame(model, frame)
       }
@@ -1048,7 +1145,7 @@ pub fn drain_connection(model: Model, remaining: Int) -> Model {
   // The runtime tops the buffer up to one batch before the step, so a buffer
   // holding at least what this drain may take is one whose read filled its
   // room and may have left frames in the mailbox.
-  let connection_backlog = case buffered.held(model.inbox) >= remaining {
+  let connection_backlog = case buffered.held(model.shared.inbox) >= remaining {
     True -> tui_model.MailboxMayHoldMore
     False -> tui_model.MailboxDrained
   }
@@ -1057,9 +1154,10 @@ pub fn drain_connection(model: Model, remaining: Int) -> Model {
 
   // The model is a wide record, so it is copied only when the answer moved,
   // which keeps an idle tick's allocation where it was.
-  case drained.connection_backlog == connection_backlog {
+  case drained.shared.connection_backlog == connection_backlog {
     True -> drained
-    False -> Model(..drained, connection_backlog:)
+    False ->
+      Model(..drained, shared: Shared(..drained.shared, connection_backlog:))
   }
 }
 
@@ -1068,8 +1166,8 @@ pub fn drain_connection(model: Model, remaining: Int) -> Model {
 fn take_connection(
   model: Model,
 ) -> #(Model, Result(connection_event.Message, Nil)) {
-  let #(inbox, next) = buffered.take(model.inbox)
-  #(Model(..model, inbox:), next)
+  let #(inbox, next) = buffered.take(model.shared.inbox)
+  #(Model(..model, shared: Shared(..model.shared, inbox:)), next)
 }
 
 /// Applies an already selected socket message through the shipped reducer.
@@ -1094,13 +1192,13 @@ fn handle_connection_message(
   model: Model,
   incoming: connection_event.Message,
 ) -> Model {
-  case model.channel {
+  case model.shared.channel {
     Some(channel) -> {
       let #(channel, updates) =
         session_channel.receive(
           channel,
           incoming,
-          now: model.stamp.transport_ms,
+          now: model.shared.stamp.transport_ms,
         )
       list.fold(
         updates,
@@ -1123,16 +1221,19 @@ fn handle_presentation_message(
 ) -> Model {
   case incoming {
     connection_event.Connected ->
-      Model(..model, notice: "connected")
+      Model(..model, shared: Shared(..model.shared, notice: "connected"))
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
     connection_event.Closed(reason) ->
       tui_model.append_error(
         Model(
           ..model,
-          peer: after_close(model.peer),
-          streams: [],
-          tool_tails: [],
+          shared: Shared(
+            ..model.shared,
+            peer: after_close(model.shared.peer),
+            streams: [],
+            tool_tails: [],
+          ),
         ),
         "connection closed: " <> reason,
       )
@@ -1154,49 +1255,57 @@ fn handle_presentation_message(
 fn apply_event(model: Model, event: protocol.Event) -> Model {
   let updated = case event {
     protocol.FullSnapshot(session:, strands:, entries:, usage:) -> {
-      let target = case model.session == session {
-        True -> model.active_strand
+      let target = case model.shared.session == session {
+        True -> model.shared.active_strand
         False -> "main"
       }
       let model = select_workspace(model, session, target)
       Model(
-        ..model,
-        session:,
-        active_strand: target,
-        strands:,
-        agent_summary: agents.summary(strands),
-        usage:,
-        records: list.reverse(entries),
-        streams: [],
-        tool_tails: [],
-        record_gutters: [],
-        record_cache_epoch: model.record_cache_epoch + 1,
-        compact_call_cache: dict.new(),
-        compact_entry_cache: dict.new(),
-        // The snapshot is the server's own account of the strand, so it
-        // already carries every submission the daemon committed while this
-        // client was away — the gateway holds its queue across a disconnect
-        // and drains it regardless. An echo kept across the rebuild would sit
-        // under the committed copy of itself.
-        queued: [],
-        awaiting_outcome: None,
-        pending_records: [],
-        record_cache_valid: False,
-        submitting: None,
-        scroll_offset: 0,
-        notice: "session synchronized",
-        transcript: [Line(System, "attached to session " <> session)],
+        shared: Shared(
+          ..model.shared,
+          session:,
+          active_strand: target,
+          strands:,
+          usage:,
+          records: list.reverse(entries),
+          streams: [],
+          tool_tails: [],
+          record_cache_epoch: model.shared.record_cache_epoch + 1,
+          compact_call_cache: dict.new(),
+          compact_entry_cache: dict.new(),
+          // The snapshot is the server's own account of the strand, so it
+          // already carries every submission the daemon committed while this
+          // client was away — the gateway holds its queue across a disconnect
+          // and drains it regardless. An echo kept across the rebuild would sit
+          // under the committed copy of itself.
+          queued: [],
+          awaiting_outcome: None,
+          pending_records: [],
+          record_cache_valid: False,
+          submitting: None,
+          notice: "session synchronized",
+          transcript: [Line(System, "attached to session " <> session)],
+        ),
+        view: View(
+          ..model.view,
+          agent_summary: agents.summary(strands),
+          record_gutters: [],
+          scroll_offset: 0,
+        ),
       )
       |> tui_model.invalidate_transcript
     }
     protocol.StrandsSnapshot(strands:) -> {
       let summary = agents.summary(strands)
-      Model(..model, strands:, agent_summary: summary)
+      Model(
+        shared: Shared(..model.shared, strands:),
+        view: View(..model.view, agent_summary: summary),
+      )
     }
     protocol.SkillsSnapshot(page:) -> {
       let previous = case page.offset {
         0 -> []
-        _ -> model.skills
+        _ -> model.shared.skills
       }
       case page.offset == list.length(previous) {
         False ->
@@ -1206,25 +1315,31 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           )
         True -> {
           let loaded =
-            Model(..model, skills: list.append(previous, page.commands))
+            Model(
+              ..model,
+              shared: Shared(
+                ..model.shared,
+                skills: list.append(previous, page.commands),
+              ),
+            )
           case page.next {
             None -> loaded
             Some(offset) ->
               outbound.send_frame(
                 loaded,
-                protocol.skills(loaded.next_id, offset),
+                protocol.skills(loaded.shared.next_id, offset),
               )
           }
         }
       }
     }
     protocol.ModelsSnapshot(models:) -> {
-      let overlay = case model.overlay {
+      let overlay = case model.view.overlay {
         ModelSelector(selector) ->
           ModelSelector(model_selector.replace_models(
             selector,
             models,
-            model.current_model,
+            model.shared.current_model,
           ))
         NoOverlay -> NoOverlay
         AgentInspector(selected) -> AgentInspector(selected)
@@ -1234,19 +1349,24 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ApprovalInspector(panel) -> ApprovalInspector(panel)
       }
       Model(
-        ..model,
-        models:,
-        overlay:,
-        notice: int.to_string(list.length(models)) <> " models loaded",
+        shared: Shared(
+          ..model.shared,
+          models:,
+          notice: int.to_string(list.length(models)) <> " models loaded",
+        ),
+        view: View(..model.view, overlay:),
       )
-      |> outbound.send_frame(protocol.skills(model.next_id, 0))
+      |> outbound.send_frame(protocol.skills(model.shared.next_id, 0))
     }
     protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
     protocol.ConfigSnapshot(model_name:, directories:) -> {
       let model = case model_name {
         Some(name) -> {
           let selected = select_model(model, name)
-          Model(..selected, notice: "model: " <> name)
+          Model(
+            ..selected,
+            shared: Shared(..selected.shared, notice: "model: " <> name),
+          )
         }
         None -> model
       }
@@ -1255,7 +1375,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         Some(value) ->
           Model(
             ..model,
-            notice: "Session directory access: " <> json.to_string(value),
+            shared: Shared(
+              ..model.shared,
+              notice: "Session directory access: " <> json.to_string(value),
+            ),
           )
       }
     }
@@ -1269,8 +1392,11 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.BlockSummariesSnapshot(labels:) ->
       Model(
         ..model,
-        summaries: block_summary.receive_board(model.summaries, labels),
-        record_cache_valid: False,
+        shared: Shared(
+          ..model.shared,
+          summaries: block_summary.receive_board(model.shared.summaries, labels),
+          record_cache_valid: False,
+        ),
       )
       |> tui_model.invalidate_transcript
     protocol.BlockSummarized(subject:, text:) ->
@@ -1279,30 +1405,39 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.ContextSnapshot(observation) ->
       Model(
         ..model,
-        context: context_view.receive(
-          model.context,
-          tui_model.queue_owner(model),
-          observation,
+        shared: Shared(
+          ..model.shared,
+          context: context_view.receive(
+            model.shared.context,
+            tui_model.queue_owner(model),
+            observation,
+          ),
         ),
       )
     protocol.WorktreeSnapshot(observation) ->
       Model(
         ..model,
-        worktree: worktree_view.receive(
-          model.worktree,
-          tui_model.queue_owner(model),
-          observation,
+        shared: Shared(
+          ..model.shared,
+          worktree: worktree_view.receive(
+            model.shared.worktree,
+            tui_model.queue_owner(model),
+            observation,
+          ),
         ),
       )
       |> tui_model.invalidate_transcript
     protocol.QueuedInputSnapshot(document) ->
       Model(
         ..model,
-        queue_editor: queue_editor.receive(
-          model.queue_editor,
-          tui_model.queue_owner(model),
-          tui_model.queue_namespace(model),
-          document,
+        view: View(
+          ..model.view,
+          queue_editor: queue_editor.receive(
+            model.view.queue_editor,
+            tui_model.queue_owner(model),
+            tui_model.queue_namespace(model),
+            document,
+          ),
         ),
       )
     protocol.NotesSnapshot(board) -> {
@@ -1310,44 +1445,56 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       // asked for it, so the panel is seeded before the notes view decides
       // whether this read is its own.
       let model =
-        Model(..model, todo_boards: todo_board.seed(model.todo_boards, board))
+        Model(
+          ..model,
+          shared: Shared(
+            ..model.shared,
+            todo_boards: todo_board.seed(model.shared.todo_boards, board),
+          ),
+        )
       case board.strand == surfaces.notes_target(model) {
         True -> {
-          let previous = case model.note_board {
+          let previous = case model.shared.note_board {
             Some(old) if old.strand == board.strand ->
               render.selected_note(model, old)
-            _ -> model.note_selected
+            _ -> model.view.note_selected
           }
           let selected =
-            render.selected_note(Model(..model, note_selected: previous), board)
-          let scroll = case model.note_board, selected == model.note_selected {
+            render.selected_note(
+              Model(..model, view: View(..model.view, note_selected: previous)),
+              board,
+            )
+          let scroll = case
+            model.shared.note_board,
+            selected == model.view.note_selected
+          {
             Some(old), True if old.strand == board.strand ->
               int.min(
-                model.note_scroll,
-                note_max_scroll(
-                  Model(
-                    ..model,
-                    note_board: Some(board),
-                    note_selected: selected,
-                  ),
-                ),
+                model.view.note_scroll,
+                note_max_scroll(Model(
+                  shared: Shared(..model.shared, note_board: Some(board)),
+                  view: View(..model.view, note_selected: selected),
+                )),
               )
             None, True | Some(_), True | None, False | Some(_), False -> 0
           }
-          tui_model.invalidate_transcript(
-            Model(
-              ..model,
+          tui_model.invalidate_transcript(Model(
+            shared: Shared(
+              ..model.shared,
               note_board: Some(board),
-              note_selected: selected,
-              note_scroll: scroll,
               // A read the terminal sent to seed the todo panel is not
               // news to an operator who has no notes surface open.
               notice: case surfaces.notes_surface(model) {
                 True -> "notes refreshed for " <> board.strand
-                False -> model.notice
+                False -> model.shared.notice
               },
             ),
-          )
+            view: View(
+              ..model.view,
+              note_selected: selected,
+              note_scroll: scroll,
+            ),
+          ))
         }
         False -> model
       }
@@ -1357,24 +1504,30 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       let updated =
         Model(
           ..model,
-          records: [record, ..model.records],
-          todo_boards: todo_board.remember(model.todo_boards, [record]),
-          streams: transcript_lines.clear_streams(model.streams, strand),
-          tool_tails: retire_recorded_tail(model.tool_tails, record),
-          pending_records: case strand == model.active_strand {
-            True -> [record, ..model.pending_records]
-            False -> model.pending_records
-          },
-          // A committed user turn on this strand is the daemon draining the
-          // head of its queue, so the echo standing in for it goes away.
-          queued: case strand == model.active_strand {
-            True -> drained_echoes(model.queued, record)
-            False -> model.queued
-          },
+          shared: Shared(
+            ..model.shared,
+            records: [record, ..model.shared.records],
+            todo_boards: todo_board.remember(model.shared.todo_boards, [record]),
+            streams: transcript_lines.clear_streams(
+              model.shared.streams,
+              strand,
+            ),
+            tool_tails: retire_recorded_tail(model.shared.tool_tails, record),
+            pending_records: case strand == model.shared.active_strand {
+              True -> [record, ..model.shared.pending_records]
+              False -> model.shared.pending_records
+            },
+            // A committed user turn on this strand is the daemon draining the
+            // head of its queue, so the echo standing in for it goes away.
+            queued: case strand == model.shared.active_strand {
+              True -> drained_echoes(model.shared.queued, record)
+              False -> model.shared.queued
+            },
+          ),
         )
       let updated = surfaces.retire_delivered_nudges(updated, record)
 
-      case strand == model.active_strand {
+      case strand == model.shared.active_strand {
         True -> tui_model.invalidate_transcript(updated)
         False -> updated
       }
@@ -1396,21 +1549,29 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         )
 
       let updated =
-        Model(..model, streams:, generation_started_ms:, notice: case kind {
-          "end" -> "request finished"
-          _ -> "streaming " <> kind
-        })
-      case strand == model.active_strand {
+        Model(
+          ..model,
+          shared: Shared(
+            ..model.shared,
+            streams:,
+            generation_started_ms:,
+            notice: case kind {
+              "end" -> "request finished"
+              _ -> "streaming " <> kind
+            },
+          ),
+        )
+      case strand == model.shared.active_strand {
         True -> tui_model.invalidate_transcript(updated)
         False -> updated
       }
     }
     protocol.OperationChanged(strand:, phase:) -> {
-      let submitting = case model.submitting {
+      let submitting = case model.shared.submitting {
         Some(target) if target == strand -> None
         other -> other
       }
-      let strands = set_strand_phase(model.strands, strand, phase)
+      let strands = set_strand_phase(model.shared.strands, strand, phase)
 
       // The rate's clock starts when the request goes out, not when the
       // first fragment lands. A provider that streams whole parts —
@@ -1419,28 +1580,31 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       // millisecond and reported six-figure tokens per second.
       let generation_started_ms = case phase {
         "assistant" -> generation_clock(model, strand)
-        _other -> model.generation_started_ms
+        _other -> model.shared.generation_started_ms
       }
 
       let updated =
         Model(
-          ..model,
-          submitting:,
-          strands:,
-          generation_started_ms:,
-          agent_summary: agents.summary(strands),
-          streams: case phase == "done" {
-            True -> transcript_lines.clear_streams(model.streams, strand)
-            False -> model.streams
-          },
-          tool_tails: case phase == "done" {
-            True -> clear_tails(model.tool_tails, strand)
-            False -> model.tool_tails
-          },
-          notice: strand <> ": " <> phase,
+          shared: Shared(
+            ..model.shared,
+            submitting:,
+            strands:,
+            generation_started_ms:,
+            streams: case phase == "done" {
+              True ->
+                transcript_lines.clear_streams(model.shared.streams, strand)
+              False -> model.shared.streams
+            },
+            tool_tails: case phase == "done" {
+              True -> clear_tails(model.shared.tool_tails, strand)
+              False -> model.shared.tool_tails
+            },
+            notice: strand <> ": " <> phase,
+          ),
+          view: View(..model.view, agent_summary: agents.summary(strands)),
         )
       let settled = settle_interrupt(updated, strand, phase)
-      case phase == "done" && strand == model.active_strand {
+      case phase == "done" && strand == model.shared.active_strand {
         True -> tui_model.invalidate_transcript(settled)
         False -> settled
       }
@@ -1462,21 +1626,24 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       let updated =
         Model(
           ..model,
-          tool_tails: receive_tail(
-            model.tool_tails,
-            ToolTail(
-              strand:,
-              operation:,
-              step:,
-              source_index:,
-              call_id:,
-              stream:,
-              text:,
-              total_bytes:,
+          shared: Shared(
+            ..model.shared,
+            tool_tails: receive_tail(
+              model.shared.tool_tails,
+              ToolTail(
+                strand:,
+                operation:,
+                step:,
+                source_index:,
+                call_id:,
+                stream:,
+                text:,
+                total_bytes:,
+              ),
             ),
           ),
         )
-      case strand == model.active_strand {
+      case strand == model.shared.active_strand {
         True -> tui_model.invalidate_transcript(updated)
         False -> updated
       }
@@ -1500,7 +1667,13 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     // never.
     protocol.ServerError(code:, message:) ->
       tui_model.append_error(
-        Model(..outbound.discard_own_turn(model), submitting: None),
+        {
+          let discarded = outbound.discard_own_turn(model)
+          Model(
+            ..discarded,
+            shared: Shared(..discarded.shared, submitting: None),
+          )
+        },
         code <> ": " <> message,
       )
 
@@ -1569,14 +1742,17 @@ fn receive_block_summary(
   subject: block_summary.Subject,
   text: String,
 ) -> Model {
-  let summaries = block_summary.receive(model.summaries, subject, text)
+  let summaries = block_summary.receive(model.shared.summaries, subject, text)
   let recorded = case subject {
     block_summary.SettledBlock(..) -> True
     block_summary.LiveStream(generation:, ..) ->
-      transcript_lines.response_recorded(model.records, generation)
+      transcript_lines.response_recorded(model.shared.records, generation)
   }
-  let valid = model.record_cache_valid && !recorded
-  Model(..model, summaries:, record_cache_valid: valid)
+  let valid = model.shared.record_cache_valid && !recorded
+  Model(
+    ..model,
+    shared: Shared(..model.shared, summaries:, record_cache_valid: valid),
+  )
   |> tui_model.invalidate_transcript
 }
 
@@ -1599,18 +1775,32 @@ fn restore_returned_draft(
   // A return follows the prompt's original recipient even if the operator
   // has opened another strand since submitting it. Only that owner's draft
   // can accept the returned text.
-  let model = case strand == model.active_strand {
-    True -> Model(..model, input: append_returned_text(model.input, text))
+  let model = case strand == model.shared.active_strand {
+    True ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          input: append_returned_text(model.view.input, text),
+        ),
+      )
     False -> {
-      let owner = #(model.session, strand)
+      let owner = #(model.shared.session, strand)
       let saved =
-        dict.get(model.strand_workspaces, owner)
+        dict.get(model.view.strand_workspaces, owner)
         |> result.unwrap(empty_workspace())
       let saved =
         StrandWorkspace(..saved, input: append_returned_text(saved.input, text))
       Model(
         ..model,
-        strand_workspaces: dict.insert(model.strand_workspaces, owner, saved),
+        view: View(
+          ..model.view,
+          strand_workspaces: dict.insert(
+            model.view.strand_workspaces,
+            owner,
+            saved,
+          ),
+        ),
       )
     }
   }
@@ -1657,7 +1847,13 @@ fn append_schedules(model: Model, rows: List(protocol.ScheduleRow)) -> Model {
         list.fold(rows, model, fn(model, row) {
           tui_model.append_system(model, schedule_line(row))
         })
-      Model(..listed, notice: int.to_string(list.length(rows)) <> " schedules")
+      Model(
+        ..listed,
+        shared: Shared(
+          ..listed.shared,
+          notice: int.to_string(list.length(rows)) <> " schedules",
+        ),
+      )
     }
   }
 }
@@ -1707,22 +1903,25 @@ fn streams_before_end(
   use <- bool.guard(
     kind != "end"
       || stream_identity.response_entry(generation) == None
-      || list.any(model.streams, fn(stream) { stream.strand == strand }),
-    model.streams,
+      || list.any(model.shared.streams, fn(stream) { stream.strand == strand }),
+    model.shared.streams,
   )
-  let preview = option.then(model.captured, fn(captured) { captured.1.preview })
+  let preview =
+    option.then(model.shared.captured, fn(captured) { captured.1.preview })
   case preview {
     Some(sample)
       if sample.operation == operation && sample.generation == generation
     ->
-      case transcript_lines.response_recorded(model.records, generation) {
-        True -> model.streams
+      case
+        transcript_lines.response_recorded(model.shared.records, generation)
+      {
+        True -> model.shared.streams
         False -> [
           transcript_lines.preview_stream(strand, sample),
-          ..model.streams
+          ..model.shared.streams
         ]
       }
-    _ -> model.streams
+    _ -> model.shared.streams
   }
 }
 
@@ -2001,7 +2200,7 @@ fn receive_usage(
   strand: String,
   settled: message.Usage,
 ) -> Model {
-  let usage = add_usage(model.usage, settled)
+  let usage = add_usage(model.shared.usage, settled)
   let updated =
     settle_usage(
       model,
@@ -2009,7 +2208,11 @@ fn receive_usage(
       settled,
       transcript_lines.tokens(usage.total_tokens) <> " tokens",
     )
-  watch_cache(Model(..updated, usage:), strand, settled)
+  watch_cache(
+    Model(..updated, shared: Shared(..updated.shared, usage:)),
+    strand,
+    settled,
+  )
 }
 
 // A network push is an observation of one durable row, not a second owner of
@@ -2027,15 +2230,16 @@ fn receive_usage_observation(
   operation: Option(String),
   settled: message.Usage,
 ) -> Model {
-  let covered = option.map(model.captured, fn(shown) { { shown.0 }.next_seq })
+  let covered =
+    option.map(model.shared.captured, fn(shown) { { shown.0 }.next_seq })
   case
     cache_watch.admit(
-      model.cache,
+      model.shared.cache,
       strand,
       seq,
       operation,
       settled,
-      model.stamp.now_ms,
+      model.shared.stamp.now_ms,
       covered,
     )
   {
@@ -2047,12 +2251,15 @@ fn receive_usage_observation(
       let observed =
         Model(
           ..model,
-          cache:,
-          strip: agent_strip.observe_usage(
-            model.strip,
-            strand,
-            operation,
-            agent_roster.context(settled),
+          shared: Shared(
+            ..model.shared,
+            cache:,
+            roster: agent_roster.observe_usage(
+              model.shared.roster,
+              strand,
+              operation,
+              agent_roster.context(settled),
+            ),
           ),
         )
         |> settle_usage(
@@ -2074,10 +2281,12 @@ fn receive_usage_observation(
 // ledger reports them.
 fn settle_pending_cache(model: Model, next_seq: Int) -> Model {
   let #(cache, missed) =
-    cache_watch.settle(model.cache, next_seq, cache_timing(model))
-  list.fold(missed, Model(..model, cache:), fn(current, found) {
-    note_cache_miss(current, found.strand, found.miss)
-  })
+    cache_watch.settle(model.shared.cache, next_seq, cache_timing(model))
+  list.fold(
+    missed,
+    Model(..model, shared: Shared(..model.shared, cache:)),
+    fn(current, found) { note_cache_miss(current, found.strand, found.miss) },
+  )
 }
 
 // The output rate and generation clock are per-row readings in both legacy
@@ -2097,11 +2306,14 @@ fn settle_usage(
   // not report its own output over the primary's window, and must not stop
   // the primary's clock out from under it.
   let #(output_rate_tps, generation_started_ms) = case
-    strand == model.active_strand,
-    model.peer,
-    model.generation_started_ms
+    strand == model.shared.active_strand,
+    model.shared.peer,
+    model.shared.generation_started_ms
   {
-    False, _, _ -> #(model.output_rate_tps, model.generation_started_ms)
+    False, _, _ -> #(
+      model.shared.output_rate_tps,
+      model.shared.generation_started_ms,
+    )
 
     // The window is this client's own clock from the request going out to
     // the settlement, and a replay spends that window playing a file rather
@@ -2109,15 +2321,32 @@ fn settle_usage(
     // short ones, so a brief replay would report nothing anyway; a long one
     // would report how fast the replay ran. Declining outright is the same
     // rule that stops a replay echoing a prompt.
-    True, Replaying, _ | True, Disconnected, _ -> #(model.output_rate_tps, None)
-
-    True, Attached, Some(started) | True, Preview, Some(started) -> #(
-      transcript_lines.output_rate(settled.output, model.stamp.now_ms - started),
+    True, Replaying, _ | True, Disconnected, _ -> #(
+      model.shared.output_rate_tps,
       None,
     )
-    True, Attached, None | True, Preview, None -> #(model.output_rate_tps, None)
+
+    True, Attached, Some(started) | True, Preview, Some(started) -> #(
+      transcript_lines.output_rate(
+        settled.output,
+        model.shared.stamp.now_ms - started,
+      ),
+      None,
+    )
+    True, Attached, None | True, Preview, None -> #(
+      model.shared.output_rate_tps,
+      None,
+    )
   }
-  Model(..model, generation_started_ms:, output_rate_tps:, notice:)
+  Model(
+    ..model,
+    shared: Shared(
+      ..model.shared,
+      generation_started_ms:,
+      output_rate_tps:,
+      notice:,
+    ),
+  )
 }
 
 // Folds one row into its strand's cache watch and raises any notice it
@@ -2131,13 +2360,13 @@ fn settle_usage(
 fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
   let #(cache, missed) =
     cache_watch.observe(
-      model.cache,
+      model.shared.cache,
       strand,
       settled,
-      model.stamp.now_ms,
+      model.shared.stamp.now_ms,
       cache_timing(model),
     )
-  let watched = Model(..model, cache:)
+  let watched = Model(..model, shared: Shared(..model.shared, cache:))
   case missed {
     None -> watched
     Some(found) -> note_cache_miss(watched, found.strand, found.miss)
@@ -2150,12 +2379,17 @@ fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
 // and other strands' watches in place.
 fn forget_cache(model: Model, strand: String) -> Model {
   Model(
-    ..model,
-    cache: cache_watch.forget(model.cache, strand),
-    cache_outlook: case strand == model.active_strand {
-      True -> ""
-      False -> model.cache_outlook
-    },
+    shared: Shared(
+      ..model.shared,
+      cache: cache_watch.forget(model.shared.cache, strand),
+    ),
+    view: View(
+      ..model.view,
+      cache_outlook: case strand == model.shared.active_strand {
+        True -> ""
+        False -> model.view.cache_outlook
+      },
+    ),
   )
 }
 
@@ -2163,11 +2397,11 @@ fn forget_cache(model: Model, strand: String) -> Model {
 /// model changed, since a cache written by one model does not serve another.
 @internal
 pub fn select_model(model: Model, name: String) -> Model {
-  let model = case name == model.current_model {
+  let model = case name == model.shared.current_model {
     True -> model
-    False -> forget_cache(model, model.active_strand)
+    False -> forget_cache(model, model.shared.active_strand)
   }
-  Model(..model, current_model: name)
+  Model(..model, shared: Shared(..model.shared, current_model: name))
 }
 
 // Whether the instants this terminal hands the ledger are wall time: a
@@ -2181,7 +2415,7 @@ fn cache_timing(model: Model) -> cache_watch.Timing {
 
 // A replay has no idle time of its own to report.
 fn replaying(model: Model) -> Bool {
-  case model.peer {
+  case model.shared.peer {
     Replaying -> True
     Attached | Preview | Disconnected -> False
   }
@@ -2203,19 +2437,22 @@ fn note_cache_miss(
   // retained nothing, or a strand whose history this connection never
   // fetched. A notice anchored to no entry would never be drawn, so it is
   // not raised at all.
-  case transcript_lines.newest_entry(model.records, strand) {
+  case transcript_lines.newest_entry(model.shared.records, strand) {
     None -> model
     Some(after_entry) ->
       Model(
         ..model,
-        cache_notices: list.append(model.cache_notices, [
-          CacheNotice(
-            strand:,
-            after_entry:,
-            text: cache_watch.notice_text(miss),
-          ),
-        ]),
-        record_cache_valid: False,
+        shared: Shared(
+          ..model.shared,
+          cache_notices: list.append(model.shared.cache_notices, [
+            CacheNotice(
+              strand:,
+              after_entry:,
+              text: cache_watch.notice_text(miss),
+            ),
+          ]),
+          record_cache_valid: False,
+        ),
       )
       |> tui_model.invalidate_transcript
       |> tui_model.invalidate_frame
@@ -2269,8 +2506,11 @@ fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
 /// left as it was. Two events may start it — the `assistant` phase, and
 /// the first fragment as a fallback — and whichever comes first wins.
 fn generation_clock(model: Model, strand: String) -> Option(Int) {
-  case model.generation_started_ms, strand == model.active_strand {
-    None, True -> Some(model.stamp.now_ms)
+  case
+    model.shared.generation_started_ms,
+    strand == model.shared.active_strand
+  {
+    None, True -> Some(model.shared.stamp.now_ms)
     started, _ -> started
   }
 }
@@ -2308,14 +2548,17 @@ pub fn select_inspector_message(
 /// ```
 @internal
 pub fn reconcile_agent_message_selection(model: Model) -> Model {
-  case model.overlay {
+  case model.view.overlay {
     AgentInspector(inspector) if inspector.detail == agents.Messages ->
       Model(
         ..model,
-        overlay: AgentInspector(select_inspector_message(
-          inspector,
-          model.agent_messages,
-        )),
+        view: View(
+          ..model.view,
+          overlay: AgentInspector(select_inspector_message(
+            inspector,
+            model.shared.agent_messages,
+          )),
+        ),
       )
     _ -> model
   }
@@ -2324,12 +2567,12 @@ pub fn reconcile_agent_message_selection(model: Model) -> Model {
 /// The furthest the notes panel can scroll for the current selection.
 @internal
 pub fn note_max_scroll(model: Model) -> Int {
-  let area = case model.overlay {
+  let area = case model.view.overlay {
     AgentInspector(_) -> layout.message_detail_area(model)
     _ -> layout.note_detail_area(model)
   }
   render.prepared_notes(model, surfaces.notes_target(model), area)
-  |> note_panel.max_scroll(model.note_selected)
+  |> note_panel.max_scroll(model.view.note_selected)
 }
 
 /// Owner context is read from the same exact escalation revision. A newer
@@ -2337,7 +2580,7 @@ pub fn note_max_scroll(model: Model) -> Int {
 @internal
 pub fn captured_approval_panel(model: Model, review: approval.Review) {
   let context = {
-    use captured <- result.try(option.to_result(model.captured, Nil))
+    use captured <- result.try(option.to_result(model.shared.captured, Nil))
     use cell <- result.try(
       list.find(captured.1.cells, fn(cell) {
         cell.namespace == register.FactCustom
@@ -2379,8 +2622,9 @@ pub fn captured_approval_panel(model: Model, review: approval.Review) {
 /// changes target, so a queued frame cannot reach the wrong session or strand.
 @internal
 pub fn cancel_pending(model: Model, reason: String) -> Model {
-  case model.channel {
-    None -> Model(..model, pending_submission: None)
+  case model.shared.channel {
+    None ->
+      Model(..model, shared: Shared(..model.shared, pending_submission: None))
     Some(channel) -> {
       let #(channel, updates) = session_channel.cancel_unsent(channel, reason)
       list.fold(
@@ -2396,22 +2640,27 @@ pub fn cancel_pending(model: Model, reason: String) -> Model {
 /// demand pending without blocking input, spawning a worker, or opening a socket.
 @internal
 pub fn service_history(model: Model) -> Model {
-  case history_view.range(model.scrollback), model.channel {
+  case history_view.range(model.shared.scrollback), model.shared.channel {
     Some(#(after, before)), Some(channel) -> {
       case
         session_channel.history(
           channel,
           after,
           before,
-          now: model.stamp.transport_ms,
+          now: model.shared.stamp.transport_ms,
         )
       {
         Error(_) -> model
-        Ok(channel) ->
+        Ok(channel) -> {
+          let held = tui_model.hold_channel(model, channel)
           Model(
-            ..tui_model.hold_channel(model, channel),
-            scrollback: history_view.sent(model.scrollback, before),
+            ..held,
+            shared: Shared(
+              ..held.shared,
+              scrollback: history_view.sent(model.shared.scrollback, before),
+            ),
           )
+        }
       }
     }
     _, _ -> model
@@ -2424,13 +2673,30 @@ fn receive_history(
   before: Int,
   after: Int,
 ) -> Model {
-  case model.captured {
+  case model.shared.captured {
     None -> model
     Some(#(cut, view)) -> {
       let history =
-        history_view.accept(model.scrollback, window, before, after, view)
-      let model = apply_cut(Model(..model, scrollback: history), cut, view)
-      Model(..model, render_revision: model.render_revision + 1)
+        history_view.accept(
+          model.shared.scrollback,
+          window,
+          before,
+          after,
+          view,
+        )
+      let model =
+        apply_cut(
+          Model(..model, shared: Shared(..model.shared, scrollback: history)),
+          cut,
+          view,
+        )
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          render_revision: model.shared.render_revision + 1,
+        ),
+      )
     }
   }
 }
@@ -2441,16 +2707,28 @@ fn receive_history(
 /// even though the server's live phase has not reached the view yet.
 @internal
 pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
-  let sent =
+  let sent = {
+    let expected = expect_own_turn(model, HeldPrompt(text))
     Model(
-      ..expect_own_turn(model, HeldPrompt(text)),
-      submitting: Some(strand),
-      notice: "prompt sent to " <> strand,
+      ..expected,
+      shared: Shared(
+        ..expected.shared,
+        submitting: Some(strand),
+        notice: "prompt sent to " <> strand,
+      ),
     )
-  case model.peer {
+  }
+  case model.shared.peer {
     Attached ->
       outbound.send_via(sent, fn(lane, now) {
-        operator.submit(lane, model.next_id, strand, text, operator.Prompt, now)
+        operator.submit(
+          lane,
+          model.shared.next_id,
+          strand,
+          text,
+          operator.Prompt,
+          now,
+        )
       })
 
     // The server echoed this turn back as an entry, and the recording has
@@ -2460,12 +2738,18 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
     Preview ->
       Model(
         ..model,
-        transcript: list.append(model.transcript, [
-          Line(User, composer.transcript_text(text, model.details_expanded)),
-          Line(Assistant, "Design-preview echo received."),
-        ]),
-        record_cache_valid: False,
-        notice: "prompt accepted",
+        shared: Shared(
+          ..model.shared,
+          transcript: list.append(model.shared.transcript, [
+            Line(
+              User,
+              composer.transcript_text(text, model.shared.details_expanded),
+            ),
+            Line(Assistant, "Design-preview echo received."),
+          ]),
+          record_cache_valid: False,
+          notice: "prompt accepted",
+        ),
       )
       |> tui_model.invalidate_transcript
   }
@@ -2492,12 +2776,21 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
 /// once and the recording's own entry retires it.
 @internal
 pub fn expect_own_turn(model: Model, submission: Submission) -> Model {
-  case model.peer, tui_model.active_strand_live(model) {
+  case model.shared.peer, tui_model.active_strand_live(model) {
     Attached, True ->
-      Model(..model, awaiting_outcome: Some(submission))
+      Model(
+        ..model,
+        shared: Shared(..model.shared, awaiting_outcome: Some(submission)),
+      )
       |> tui_model.invalidate_transcript
     Replaying, True ->
-      Model(..model, queued: in_commit_order(model.queued, submission))
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          queued: in_commit_order(model.shared.queued, submission),
+        ),
+      )
       |> tui_model.invalidate_transcript
     Attached, False | Replaying, False | Preview, _ | Disconnected, _ -> model
   }
@@ -2506,12 +2799,15 @@ pub fn expect_own_turn(model: Model, submission: Submission) -> Model {
 // The daemon took the submission: it will commit an entry, so the submission
 // joins the list that waits for one.
 fn settle_own_turn(model: Model) -> Model {
-  case model.awaiting_outcome {
+  case model.shared.awaiting_outcome {
     Some(submission) ->
       Model(
         ..model,
-        queued: in_commit_order(model.queued, submission),
-        awaiting_outcome: None,
+        shared: Shared(
+          ..model.shared,
+          queued: in_commit_order(model.shared.queued, submission),
+          awaiting_outcome: None,
+        ),
       )
     None -> model
   }
@@ -2528,7 +2824,7 @@ fn settle_own_turn(model: Model) -> Model {
 // stood for.
 fn abandon_interjections(model: Model) -> Model {
   let held =
-    list.filter(model.queued, fn(submission) {
+    list.filter(model.shared.queued, fn(submission) {
       case submission {
         Interjection -> False
         HeldPrompt(..) -> True
@@ -2538,12 +2834,15 @@ fn abandon_interjections(model: Model) -> Model {
   // A submission still awaiting its outcome was sent to the same run, so an
   // interjection there is cancelled on the same grounds. A prompt keeps
   // waiting for the reply that is still coming for it.
-  let awaiting = case model.awaiting_outcome {
+  let awaiting = case model.shared.awaiting_outcome {
     Some(Interjection) -> None
-    Some(HeldPrompt(..)) | None -> model.awaiting_outcome
+    Some(HeldPrompt(..)) | None -> model.shared.awaiting_outcome
   }
 
-  Model(..model, queued: held, awaiting_outcome: awaiting)
+  Model(
+    ..model,
+    shared: Shared(..model.shared, queued: held, awaiting_outcome: awaiting),
+  )
   |> tui_model.invalidate_transcript
 }
 
@@ -2605,13 +2904,24 @@ fn drained_echoes(
 }
 
 fn settle_interrupt(model: Model, strand: String, phase: String) -> Model {
-  case phase == "done", model.interrupt {
+  case phase == "done", model.shared.interrupt {
     True, Some(Interrupt(strand: target, pending:, ..)) ->
       case target == strand, pending {
         True, Some(text) ->
-          send_prompt_to(Model(..model, interrupt: None), target, text)
+          send_prompt_to(
+            Model(..model, shared: Shared(..model.shared, interrupt: None)),
+            target,
+            text,
+          )
         True, None ->
-          Model(..model, interrupt: None, notice: target <> ": interrupted")
+          Model(
+            ..model,
+            shared: Shared(
+              ..model.shared,
+              interrupt: None,
+              notice: target <> ": interrupted",
+            ),
+          )
         False, _ -> model
       }
     _, _ -> model
@@ -2653,12 +2963,11 @@ fn prune_workspace_history(
   strands: List(protocol.Strand),
 ) -> Dict(#(String, String), StrandWorkspace) {
   dict.map_values(workspaces, fn(owner, saved) {
-    case owner.0 == session && tui_model.is_known_strand(strands, owner.1) {
+    case retains_history(owner, session, strands) {
       True -> saved
       False ->
         StrandWorkspace(
           ..saved,
-          scrollback: history_view.empty(),
           reading_lines: None,
           offset: 0,
           anchors: [],
@@ -2666,6 +2975,32 @@ fn prune_workspace_history(
         )
     }
   })
+}
+
+// The shared half of the same pruning: a parked history window is emptied on
+// the same condition that resets its workspace's reading position, so the two
+// halves of a parked strand are released together.
+fn prune_parked_scrollback(
+  parked: Dict(#(String, String), history_view.State),
+  session: String,
+  strands: List(protocol.Strand),
+) -> Dict(#(String, String), history_view.State) {
+  dict.map_values(parked, fn(owner, scrollback) {
+    case retains_history(owner, session, strands) {
+      True -> scrollback
+      False -> history_view.empty()
+    }
+  })
+}
+
+// A parked strand keeps its history window while it belongs to the current
+// session and the capture still lists it.
+fn retains_history(
+  owner: #(String, String),
+  session: String,
+  strands: List(protocol.Strand),
+) -> Bool {
+  owner.0 == session && tui_model.is_known_strand(strands, owner.1)
 }
 
 // New destinations begin with their own editor and an empty history window.
@@ -2677,7 +3012,6 @@ fn empty_workspace() -> StrandWorkspace {
     0,
     "",
     PromptNext,
-    history_view.empty(),
     None,
     0,
     [],
@@ -2695,108 +3029,133 @@ pub fn select_workspace(
   strand: String,
 ) -> Model {
   use <- bool.guard(
-    model.session == session && model.active_strand == strand,
+    model.shared.session == session && model.shared.active_strand == strand,
     model,
   )
 
   // Session observations belong to the attachment that read them. Reusing
   // the common strand name "main" cannot transfer advice or a goal.
-  let model = case model.session == session {
+  let model = case model.shared.session == session {
     True -> model
     False ->
       Model(
-        ..model,
-        nudges: None,
-        nudges_refresh: worktree_view.Settled,
-        nudges_awaiting: None,
-        nudges_request: None,
-        summaries: block_summary.new(),
-        goal: None,
-        goal_refresh: worktree_view.Settled,
-        goal_awaiting: None,
-        goal_request: None,
-        goal_report: HoldGoalReport,
-        overlay: case model.overlay {
+        shared: Shared(
+          ..model.shared,
+          nudges: None,
+          nudges_refresh: worktree_view.Settled,
+          nudges_awaiting: None,
+          nudges_request: None,
+          summaries: block_summary.new(),
+          goal: None,
+          goal_refresh: worktree_view.Settled,
+          goal_awaiting: None,
+          goal_request: None,
+          goal_report: HoldGoalReport,
+        ),
+        view: View(..model.view, overlay: case model.view.overlay {
           GoalInspector(_) -> NoOverlay
           other -> other
-        },
+        }),
       )
   }
 
   // Before the first attachment there is no previous session to park in.
   // Bind that unassigned editor to the explicitly chosen session once;
   // later switches keep their existing session identities and own drafts.
-  let draft_session = case model.session {
+  let draft_session = case model.shared.session {
     "" -> session
     previous -> previous
   }
+  let departing = #(draft_session, model.shared.active_strand)
   let parked =
     dict.insert(
-      model.strand_workspaces,
-      #(draft_session, model.active_strand),
+      model.view.strand_workspaces,
+      departing,
       StrandWorkspace(
-        model.input,
-        model.attachments,
-        model.history,
-        model.history_index,
-        model.history_draft,
-        model.submission_mode,
-        model.scrollback,
-        model.reading_lines,
-        model.scroll_offset,
-        model.rendered_anchors,
-        model.rendered_row_count - list.length(model.rendered_anchors),
+        model.view.input,
+        model.shared.attachments,
+        model.view.history,
+        model.view.history_index,
+        model.view.history_draft,
+        model.view.submission_mode,
+        model.view.reading_lines,
+        model.view.scroll_offset,
+        model.view.rendered_anchors,
+        model.view.rendered_row_count - list.length(model.view.rendered_anchors),
         layout.transcript_viewport_height(model),
       ),
     )
   let saved = dict.get(parked, #(session, strand)) |> option.from_result
   let restored = option.unwrap(saved, empty_workspace())
+
+  // The history window parks under the same key as the editor, in the shared
+  // record. A strand with no parked window restores an empty one, which is
+  // what a parked workspace without one held before the two were split.
+  let parked_scrollback =
+    dict.insert(
+      model.shared.parked_scrollback,
+      departing,
+      model.shared.scrollback,
+    )
+  let restored_scrollback =
+    dict.get(parked_scrollback, #(session, strand))
+    |> result.lazy_unwrap(history_view.empty)
   Model(
-    ..model,
-    strand_workspaces: dict.delete(parked, #(session, strand)),
-    agent_rows: case model.session == session {
-      True -> model.agent_rows
-      False -> []
-    },
-    strip: case model.session == session {
-      True -> model.strip
-      False -> agent_strip.new()
-    },
-    agent_messages: case model.session == session {
-      True -> model.agent_messages
-      False -> []
-    },
-    advisor_history: case model.session == session {
-      True -> model.advisor_history
-      False -> advisor_history.Board(items: [], unloaded: None)
-    },
-    todo_boards: case model.session == session {
-      True -> model.todo_boards
-      False -> dict.new()
-    },
-    todo_seed: case model.session == session {
-      True -> model.todo_seed
-      False -> None
-    },
-    todo_asked: case model.session == session {
-      True -> model.todo_asked
-      False -> set.new()
-    },
-    reviewer_rows: case model.session == session {
-      True -> model.reviewer_rows
-      False -> []
-    },
-    restored_workspace: saved,
-    input: restored.input,
-    attachments: restored.attachments,
-    history: restored.history,
-    history_index: restored.history_index,
-    history_draft: restored.history_draft,
-    command_selected: 0,
-    submission_mode: restored.submission_mode,
-    scrollback: history_view.cancel(restored.scrollback),
-    reading_lines: restored.reading_lines,
-    scroll_offset: restored.offset,
+    shared: Shared(
+      ..model.shared,
+      agent_rows: case model.shared.session == session {
+        True -> model.shared.agent_rows
+        False -> []
+      },
+      agent_messages: case model.shared.session == session {
+        True -> model.shared.agent_messages
+        False -> []
+      },
+      advisor_history: case model.shared.session == session {
+        True -> model.shared.advisor_history
+        False -> advisor_history.Board(items: [], unloaded: None)
+      },
+      todo_boards: case model.shared.session == session {
+        True -> model.shared.todo_boards
+        False -> dict.new()
+      },
+      todo_seed: case model.shared.session == session {
+        True -> model.shared.todo_seed
+        False -> None
+      },
+      todo_asked: case model.shared.session == session {
+        True -> model.shared.todo_asked
+        False -> set.new()
+      },
+      reviewer_rows: case model.shared.session == session {
+        True -> model.shared.reviewer_rows
+        False -> []
+      },
+      attachments: restored.attachments,
+      scrollback: history_view.cancel(restored_scrollback),
+      parked_scrollback: dict.delete(parked_scrollback, #(session, strand)),
+      roster: case model.shared.session == session {
+        True -> model.shared.roster
+        False -> agent_roster.new()
+      },
+    ),
+    view: View(
+      ..model.view,
+      strand_workspaces: dict.delete(parked, #(session, strand)),
+      restored_workspace: saved,
+      input: restored.input,
+      history: restored.history,
+      history_index: restored.history_index,
+      history_draft: restored.history_draft,
+      command_selected: 0,
+      submission_mode: restored.submission_mode,
+      reading_lines: restored.reading_lines,
+      scroll_offset: restored.offset,
+      strip_focus: case model.shared.session == session {
+        True -> model.view.strip_focus
+        False -> agent_strip.Composing
+      },
+    ),
   )
 }
 
@@ -2804,7 +3163,7 @@ pub fn select_workspace(
 /// background Git loop is needed when the workspace and conversation are idle.
 @internal
 pub fn request_visible_worktree(model: Model) -> Model {
-  case model.peer, layout.diff_shown(model) {
+  case model.shared.peer, layout.diff_shown(model) {
     Attached, True -> refresh_worktree(model)
     Attached, False | Preview, _ | Replaying, _ | Disconnected, _ -> model
   }
@@ -2813,22 +3172,28 @@ pub fn request_visible_worktree(model: Model) -> Model {
 /// Asks for a fresh worktree diff when a live conversation is attached.
 @internal
 pub fn refresh_worktree(model: Model) -> Model {
-  case model.peer, model.channel {
+  case model.shared.peer, model.shared.channel {
     Attached, Some(_) ->
       surfaces.service_worktree_read(
         Model(
           ..model,
-          worktree: worktree_view.request(
-            model.worktree,
-            tui_model.queue_owner(model),
+          shared: Shared(
+            ..model.shared,
+            worktree: worktree_view.request(
+              model.shared.worktree,
+              tui_model.queue_owner(model),
+            ),
           ),
         ),
       )
     _, _ ->
       Model(
         ..model,
-        worktree: worktree_view.new(),
-        notice: "Captured edits · live worktree observation unavailable",
+        shared: Shared(
+          ..model.shared,
+          worktree: worktree_view.new(),
+          notice: "Captured edits · live worktree observation unavailable",
+        ),
       )
   }
 }
@@ -2840,9 +3205,14 @@ fn observe_completion(
   active: String,
 ) -> Model {
   let owner =
-    tui_model.queue_owner(Model(..model, captured: Some(#(cut, view))))
-  let previous = case model.completion_owner == owner {
-    True -> model.completion
+    tui_model.queue_owner(
+      Model(
+        ..model,
+        shared: Shared(..model.shared, captured: Some(#(cut, view))),
+      ),
+    )
+  let previous = case model.shared.completion_owner == owner {
+    True -> model.shared.completion
     False -> completion_summary.new()
   }
   let entries =
@@ -2858,24 +3228,27 @@ fn observe_completion(
     != completion_summary.latest(completion, active)
   Model(
     ..model,
-    completion:,
-    completion_owner: owner,
-    worktree: case model.worktree.owner == owner {
-      True -> model.worktree
-      False -> worktree_view.new()
-    },
-    jobs: case model.completion_owner == owner {
-      True -> model.jobs
-      False -> None
-    },
-    jobs_awaiting: case model.completion_owner == owner {
-      True -> model.jobs_awaiting
-      False -> None
-    },
-    jobs_refresh: case changed {
-      True -> worktree_view.Requested
-      False -> model.jobs_refresh
-    },
+    shared: Shared(
+      ..model.shared,
+      completion:,
+      completion_owner: owner,
+      worktree: case model.shared.worktree.owner == owner {
+        True -> model.shared.worktree
+        False -> worktree_view.new()
+      },
+      jobs: case model.shared.completion_owner == owner {
+        True -> model.shared.jobs
+        False -> None
+      },
+      jobs_awaiting: case model.shared.completion_owner == owner {
+        True -> model.shared.jobs_awaiting
+        False -> None
+      },
+      jobs_refresh: case changed {
+        True -> worktree_view.Requested
+        False -> model.shared.jobs_refresh
+      },
+    ),
   )
 }
 
@@ -2886,7 +3259,7 @@ fn retain_queue_selection(
 ) -> Model {
   let old =
     layout.queue_rows(model)
-    |> list.drop(model.queue_editor.selected)
+    |> list.drop(model.view.queue_editor.selected)
     |> list.first
   let rows =
     option.unwrap(view.pending_inputs, [])
@@ -2904,16 +3277,19 @@ fn retain_queue_selection(
       case list.first(list.drop(rows, selected)) {
         Ok(current) if current.id == row.id ->
           int.min(
-            model.queue_editor.preview_scroll,
+            model.view.queue_editor.preview_scroll,
             queue_panel.max_scroll(
               rows,
               selected,
               layout.queue_preview_area_for(
                 Model(
                   ..model,
-                  queue_editor: queue_editor.State(
-                    ..model.queue_editor,
-                    selected:,
+                  view: View(
+                    ..model.view,
+                    queue_editor: queue_editor.State(
+                      ..model.view.queue_editor,
+                      selected:,
+                    ),
                   ),
                 ),
                 rows,
@@ -2926,10 +3302,13 @@ fn retain_queue_selection(
   }
   Model(
     ..model,
-    queue_editor: queue_editor.State(
-      ..model.queue_editor,
-      selected:,
-      preview_scroll:,
+    view: View(
+      ..model.view,
+      queue_editor: queue_editor.State(
+        ..model.view.queue_editor,
+        selected:,
+        preview_scroll:,
+      ),
     ),
   )
 }
@@ -2944,7 +3323,15 @@ fn apply_request_refused(
   use <- bool.lazy_guard(command == "context", fn() {
     Model(
       ..model,
-      context: context_view.refused(model.context, request_id, code, message),
+      shared: Shared(
+        ..model.shared,
+        context: context_view.refused(
+          model.shared.context,
+          request_id,
+          code,
+          message,
+        ),
+      ),
     )
     |> tui_model.invalidate_frame
   })
@@ -2961,7 +3348,13 @@ fn apply_request_refused(
   // be the one visible trace of a feature the operator never asked for, so
   // the terminal stops asking for this attachment and says nothing.
   use <- bool.lazy_guard(command == "block_summaries", fn() {
-    Model(..model, summaries: block_summary.refused(model.summaries))
+    Model(
+      ..model,
+      shared: Shared(
+        ..model.shared,
+        summaries: block_summary.refused(model.shared.summaries),
+      ),
+    )
   })
 
   // A notes read refused while no notes surface is open was the todo
@@ -2974,22 +3367,31 @@ fn apply_request_refused(
   let reason = code <> ": " <> message
   let updated = case command {
     "queued_input" | "edit_queued_input" ->
-      case model.queue_editor.request_id == Some(request_id) {
+      case model.view.queue_editor.request_id == Some(request_id) {
         True ->
           Model(
             ..model,
-            queue_editor: queue_editor.refused(model.queue_editor, reason),
+            view: View(
+              ..model.view,
+              queue_editor: queue_editor.refused(
+                model.view.queue_editor,
+                reason,
+              ),
+            ),
           )
         False -> model
       }
     "live_jobs" ->
-      case model.jobs_request == Some(request_id) {
+      case model.shared.jobs_request == Some(request_id) {
         True ->
           Model(
             ..model,
-            jobs_request: None,
-            jobs_awaiting: None,
-            jobs_notice: "Live jobs unavailable: " <> reason,
+            shared: Shared(
+              ..model.shared,
+              jobs_request: None,
+              jobs_awaiting: None,
+              jobs_notice: "Live jobs unavailable: " <> reason,
+            ),
           )
         False -> model
       }
@@ -2999,23 +3401,29 @@ fn apply_request_refused(
     // conversation to report a read the operator never asked for; an older
     // daemon that does not know the command refuses every one of them.
     "advisor_pending" ->
-      case model.nudges_request == Some(request_id) {
+      case model.shared.nudges_request == Some(request_id) {
         True ->
           Model(
             ..model,
-            nudges: None,
-            nudges_request: None,
-            nudges_awaiting: None,
+            shared: Shared(
+              ..model.shared,
+              nudges: None,
+              nudges_request: None,
+              nudges_awaiting: None,
+            ),
           )
         False -> model
       }
     "worktree_diff" ->
       Model(
         ..model,
-        worktree: worktree_view.receive(
-          model.worktree,
-          tui_model.queue_owner(model),
-          worktree_view.Failed(request_id, reason),
+        shared: Shared(
+          ..model.shared,
+          worktree: worktree_view.receive(
+            model.shared.worktree,
+            tui_model.queue_owner(model),
+            worktree_view.Failed(request_id, reason),
+          ),
         ),
       )
     _ -> model
@@ -3042,11 +3450,12 @@ pub fn tick_strip(model: Model) -> Model {
   case layout.strip_height(model) > 0 {
     False -> model
     True -> {
-      let #(strip, repaint) = agent_strip.tick(model.strip, model.stamp.now_ms)
+      let #(roster, repaint) =
+        agent_roster.tick(model.shared.roster, model.shared.stamp.now_ms)
+      let model = Model(..model, shared: Shared(..model.shared, roster:))
       case repaint {
-        agent_roster.Changed ->
-          tui_model.invalidate_frame(Model(..model, strip:))
-        agent_roster.Unchanged -> Model(..model, strip:)
+        agent_roster.Changed -> tui_model.invalidate_frame(model)
+        agent_roster.Unchanged -> model
       }
     }
   }

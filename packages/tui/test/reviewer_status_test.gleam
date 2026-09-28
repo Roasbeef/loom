@@ -67,7 +67,7 @@ fn fixture() {
       dict.new(),
       dict.new(),
       dict.from_list([#("sub:queue", current)]),
-      model().usage,
+      model().shared.usage,
       snapshot_view.RunSettings("one_at_a_time", "parallel", None),
       [],
       [
@@ -127,20 +127,27 @@ pub fn reviewer_task_survives_eviction_without_inventing_delivery_test() {
 
 pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
   let #(window, view) = fixture()
-  let initial =
+  let initial = {
+    let base = model()
     tui_model.Model(
-      ..model(),
-      strands: [],
-      reviewer_rows: reviewer_status.observe([], window, view),
-      input: textarea.state_from_string("follow-up draft"),
+      shared: tui_model.Shared(
+        ..base.shared,
+        strands: [],
+        reviewer_rows: reviewer_status.observe([], window, view),
+      ),
+      view: tui_model.View(
+        ..base.view,
+        input: textarea.state_from_string("follow-up draft"),
+      ),
     )
+  }
   let painted = tui.update(backend.Resize(160, 35), initial)
   let #(buffer, _) = render.view(painted, geometry.rect_new(0, 0, 160, 35))
   let text = frame.buffer_to_text(buffer)
   assert string.contains(text, "Reviewer sub:queue")
   assert string.contains(text, "Task: Review queue delivery")
   assert string.contains(text, "1 received, awaiting delivery")
-  assert painted.diff_view == tui_model.DiffAutomatic
+  assert painted.view.diff_view == tui_model.DiffAutomatic
   assert string.contains(text, "follow-up draft")
 }
 
@@ -149,19 +156,26 @@ pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
 // is still on screen beside the automatic diff, one row in the strip.
 pub fn the_agent_strip_supersedes_the_reviewer_band_test() {
   let #(window, view) = fixture()
-  let initial =
+  let initial = {
+    let base = model()
     tui_model.Model(
-      ..model(),
-      strands: [protocol.Strand("main", Some("main"), None), ..view.strands],
-      reviewer_rows: reviewer_status.observe([], window, view),
-      input: textarea.state_from_string("follow-up draft"),
+      shared: tui_model.Shared(
+        ..base.shared,
+        strands: [protocol.Strand("main", Some("main"), None), ..view.strands],
+        reviewer_rows: reviewer_status.observe([], window, view),
+      ),
+      view: tui_model.View(
+        ..base.view,
+        input: textarea.state_from_string("follow-up draft"),
+      ),
     )
+  }
   let painted = tui.update(backend.Resize(160, 35), initial)
   let #(buffer, _) = render.view(painted, geometry.rect_new(0, 0, 160, 35))
   let text = frame.buffer_to_text(buffer)
   assert !string.contains(text, "Reviewer sub:queue")
   assert string.contains(text, "sub:queue")
-  assert painted.diff_view == tui_model.DiffAutomatic
+  assert painted.view.diff_view == tui_model.DiffAutomatic
   assert string.contains(text, "follow-up draft")
 }
 
@@ -174,19 +188,34 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
     reviewer_status.observe([], window, view)
     |> list.map(fn(row) { reviewer_status.Row(..row, strand: "advisor") })
   let live =
-    tui_model.Model(
-      ..model(),
-      strands: [protocol.Strand("advisor", Some("advisor"), Some("assistant"))],
-      reviewer_rows: live_rows,
-      input: textarea.state_from_string("follow-up draft"),
-    )
+    {
+      let base = model()
+      tui_model.Model(
+        shared: tui_model.Shared(
+          ..base.shared,
+          strands: [
+            protocol.Strand("advisor", Some("advisor"), Some("assistant")),
+          ],
+          reviewer_rows: live_rows,
+        ),
+        view: tui_model.View(
+          ..base.view,
+          input: textarea.state_from_string("follow-up draft"),
+        ),
+      )
+    }
     |> tui.update(backend.Resize(80, 24), _)
   let idle =
     tui_model.Model(
-      ..live,
-      strands: [protocol.Strand("advisor", Some("advisor"), None)],
-      reviewer_rows: [],
-      view: tui_model.View(..live.view, frame_cache: None),
+      shared: tui_model.Shared(
+        ..live.shared,
+        strands: [protocol.Strand("advisor", Some("advisor"), None)],
+        reviewer_rows: [],
+      ),
+      view: tui_model.View(
+        ..live.view,
+        caches: tui_model.Caches(..live.view.caches, frame_cache: None),
+      ),
     )
     |> tui.update(backend.Resize(80, 24), _)
   let #(live_buffer, live_cursor) =

@@ -64,7 +64,7 @@ pub fn a_new_request_replaces_every_kind_of_the_previous_answer_test() {
       "text",
       "new answer",
     ))
-  assert list.map(first.streams, fn(stream) { stream.fragments })
+  assert list.map(first.shared.streams, fn(stream) { stream.fragments })
     == [["new answer"]]
     as "a tool round or retry starts a new answer within the same operation"
 }
@@ -83,12 +83,12 @@ pub fn a_late_terminal_cannot_remove_a_newer_answer_test() {
       "new answer",
     ))
     |> inbound.accept_connection_message(delta("request-1", "end", ""))
-  assert list.map(first.streams, fn(stream) { stream.fragments })
+  assert list.map(first.shared.streams, fn(stream) { stream.fragments })
     == [["new answer"]]
     as "completion owns only its original request"
   let ended =
     first |> inbound.accept_connection_message(delta("request-2", "end", ""))
-  assert list.map(ended.streams, fn(stream) { stream.fragments }) == [[]]
+  assert list.map(ended.shared.streams, fn(stream) { stream.fragments }) == [[]]
     as "completion retains only an empty identity marker against late previews"
 }
 
@@ -114,7 +114,7 @@ pub fn a_late_credited_idle_cut_preserves_a_new_request_test() {
         #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )
-  assert list.map(after.streams, fn(stream) { stream.fragments })
+  assert list.map(after.shared.streams, fn(stream) { stream.fragments })
     == [["new answer"]]
     as "snapshot credit and end validation must not erase a later request"
 }
@@ -255,13 +255,13 @@ pub fn exact_durable_retirement_clears_a_request_without_an_end_push_test() {
       "live-fragment",
     ))
   let absent = captured(first, metadata(None, None, json.Null))
-  assert list.length(absent.streams) == 1
+  assert list.length(absent.shared.streams) == 1
     as "idle alone could be a cut from before this request"
   let unrelated = captured(first, metadata(None, Some(other), json.Null))
-  assert list.length(unrelated.streams) == 1
+  assert list.length(unrelated.shared.streams) == 1
     as "another operation's result cannot retire this request"
   let retired = captured(first, metadata(None, Some(op), json.Null))
-  assert retired.streams == []
+  assert retired.shared.streams == []
     as "the exact result closes a relay failure which omitted its end push"
   assert !string.contains(rendered(retired), "live-fragment")
 }
@@ -310,10 +310,10 @@ pub fn exact_response_record_replaces_ended_stream_once_test() {
     ))
     |> inbound.accept_connection_message(delta(generation, "end", ""))
   let unrelated = capture_answer(started, 992)
-  assert list.length(unrelated.streams) == 2
+  assert list.length(unrelated.shared.streams) == 2
     as "equal text in a different entry cannot retire the response"
   let recorded = capture_answer(started, 991)
-  assert recorded.streams == []
+  assert recorded.shared.streams == []
     as "the exact response entry retires both fragments and marker"
   assert list.length(string.split(rendered(recorded), "completed-answer")) == 2
     as "the durable answer is rendered exactly once"
@@ -336,7 +336,7 @@ pub fn ended_response_rejects_late_fragments_and_preserves_idle_cut_test() {
       "text",
       "obsolete-fragment",
     ))
-  assert late.streams == ended.streams
+  assert late.shared.streams == ended.shared.streams
     as "a late fragment cannot reopen a completed response"
   let stale = captured(late, metadata(None, None, json.Null))
   assert string.contains(rendered(stale), "completed-answer")
@@ -405,15 +405,15 @@ pub fn provider_end_does_not_replay_a_screenful_of_completed_text_test() {
     pushed.attached()
     |> inbound.accept_connection_message(delta(generation, "text", text))
     |> tui.update(backend.Resize(84, 24), _)
-  assert painted.rendered_row_count > 24
+  assert painted.view.rendered_row_count > 24
     as "the completed answer actually exceeds one viewport"
   let ended =
     painted
     |> inbound.accept_connection_message(delta(generation, "end", ""))
     |> tui.update(backend.Tick, _)
-  assert ended.view.rendered_rows == painted.view.rendered_rows
+  assert ended.view.caches.rendered_rows == painted.view.caches.rendered_rows
     as "the terminal marker cannot replace the answer with older history"
-  assert ended.revealed_rows == painted.revealed_rows
+  assert ended.view.revealed_rows == painted.view.revealed_rows
     as "the terminal marker cannot restart the viewport animation"
 }
 
@@ -438,6 +438,6 @@ pub fn preview_only_answer_survives_its_matching_end_test() {
     |> inbound.accept_connection_message(delta_for(id, generation, "end", ""))
   assert string.contains(rendered(ended), "sampled-answer")
     as "end cannot erase a preview without a subsequent text delta"
-  assert list.length(ended.streams) == 2
+  assert list.length(ended.shared.streams) == 2
     as "one sample and one empty marker retain bounded presentation custody"
 }

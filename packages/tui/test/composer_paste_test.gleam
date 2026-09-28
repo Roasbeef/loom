@@ -17,8 +17,11 @@ fn model(draft: String) -> tui_model.Model {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    input: textarea.state_from_string(draft),
-    history_draft: draft,
+    view: tui_model.View(
+      ..base.view,
+      input: textarea.state_from_string(draft),
+      history_draft: draft,
+    ),
   )
 }
 
@@ -41,39 +44,53 @@ pub fn inline_paste_inserts_without_replacing_a_draft_test() {
     |> textarea.move_cursor_left
     |> textarea.move_cursor_left
   let pasted =
-    tui.update(
-      backend.Paste(" middle "),
-      tui_model.Model(..model(""), input: cursor),
-    )
-  assert textarea.value(pasted.input) == "before middle after"
-  assert pasted.history_draft == "before middle after"
-  assert pasted.input.cursor_y == 0
-  assert pasted.input.cursor_x == 14
+    tui.update(backend.Paste(" middle "), {
+      let base = model("")
+      tui_model.Model(..base, view: tui_model.View(..base.view, input: cursor))
+    })
+  assert textarea.value(pasted.view.input) == "before middle after"
+  assert pasted.view.history_draft == "before middle after"
+  assert pasted.view.input.cursor_y == 0
+  assert pasted.view.input.cursor_x == 14
 }
 
 pub fn multiline_paste_keeps_the_suffix_and_existing_image_attachment_test() {
   let cursor =
     textarea.state_from_string("first\nlast") |> textarea.move_to_line_start
-  let initial =
-    tui_model.Model(..model(""), input: cursor, attachments: [image()])
+  let initial = {
+    let base = model("")
+    tui_model.Model(
+      shared: tui_model.Shared(..base.shared, attachments: [image()]),
+      view: tui_model.View(..base.view, input: cursor),
+    )
+  }
   let pasted = tui.update(backend.Paste("middle\n"), initial)
-  assert textarea.value(pasted.input) == "first\nmiddle\nlast"
-  assert pasted.history_draft == "first\nmiddle\nlast"
-  assert pasted.input.cursor_y == 2
-  assert pasted.input.cursor_x == 0
-  assert pasted.attachments == initial.attachments
+  assert textarea.value(pasted.view.input) == "first\nmiddle\nlast"
+  assert pasted.view.history_draft == "first\nmiddle\nlast"
+  assert pasted.view.input.cursor_y == 2
+  assert pasted.view.input.cursor_x == 0
+  assert pasted.shared.attachments == initial.shared.attachments
 }
 
 pub fn compact_paste_keeps_the_draft_and_existing_attachments_test() {
   let source = string.repeat("x ", 1000)
-  let initial = tui_model.Model(..model("review this"), attachments: [image()])
+  let initial = {
+    let base = model("review this")
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, attachments: [image()]),
+    )
+  }
   let pasted = tui.update(backend.Paste(source), initial)
-  assert textarea.value(pasted.input) == "review this"
-  assert pasted.attachments
+  assert textarea.value(pasted.view.input) == "review this"
+  assert pasted.shared.attachments
     == [
       image(),
       composer.Attachment(source, 500),
     ]
-  assert composer.expand(textarea.value(pasted.input), pasted.attachments)
+  assert composer.expand(
+      textarea.value(pasted.view.input),
+      pasted.shared.attachments,
+    )
     == "review this\n\n" <> source
 }

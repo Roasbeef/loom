@@ -1310,8 +1310,8 @@ fn settled_within(
     fn(sample) {
       writable(sample)
       && assistant_texts(sample) == answers
-      && sample.model.streams == []
-      && list.any(sample.model.strands, fn(strand) {
+      && sample.model.shared.streams == []
+      && list.any(sample.model.shared.strands, fn(strand) {
         strand.id == "main" && strand.live_phase == None
       })
     },
@@ -1352,7 +1352,7 @@ fn latest_details(sample: tui_driver.Sample, name: String) -> json.JsonValue {
 }
 
 fn messages(sample: tui_driver.Sample) -> List(message.AgentMessage) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(message:, ..) -> Ok(message)
       _ -> Error(Nil)
@@ -1369,7 +1369,7 @@ fn field(value: json.JsonValue, key: String) -> json.JsonValue {
 }
 
 fn writable(sample: tui_driver.Sample) -> Bool {
-  case sample.model.channel {
+  case sample.model.shared.channel {
     Some(channel) -> session_channel.mutation_available(channel)
     None -> False
   }

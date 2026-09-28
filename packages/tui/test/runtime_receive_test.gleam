@@ -70,19 +70,19 @@ pub fn a_top_up_holds_at_most_its_bound_in_arrival_order_test() {
 pub fn a_reader_outside_the_step_gets_held_traffic_first_test() {
   let model = waiting(fresh())
   process.send(
-    buffered.sender(model.inbox),
+    buffered.sender(model.shared.inbox),
     connection_event.NetworkFault("older"),
   )
   let escaped = tui.update(backend.KeyPress("esc"), model)
-  assert escaped.pending_submission == None
+  assert escaped.shared.pending_submission == None
   assert faults(escaped) == []
     as "Escape cancels before it reduces any queued traffic"
 
   process.send(
-    buffered.sender(escaped.inbox),
+    buffered.sender(escaped.shared.inbox),
     connection_event.NetworkFault("newer"),
   )
-  let #(inbox, first) = buffered.receive(escaped.inbox, 0)
+  let #(inbox, first) = buffered.receive(escaped.shared.inbox, 0)
   assert first == Ok(connection_event.NetworkFault("older"))
     as "the held message is older than anything in the mailbox"
   let #(_, second) = buffered.receive(inbox, 0)
@@ -96,17 +96,17 @@ pub fn escape_holds_one_batch_and_ticks_drain_it_in_order_test() {
   let model = waiting(fresh())
   int.range(from: 0, to: 100, with: Nil, run: fn(_, n) {
     process.send(
-      buffered.sender(model.inbox),
+      buffered.sender(model.shared.inbox),
       connection_event.NetworkFault(int.to_string(n)),
     )
   })
 
   let escaped = tui.update(backend.KeyPress("esc"), model)
-  assert buffered.held(escaped.inbox) == tui_model.connection_batch
+  assert buffered.held(escaped.shared.inbox) == tui_model.connection_batch
   assert faults(escaped) == []
 
   let first = tui.update(backend.Tick, escaped)
-  assert buffered.held(first.inbox) == 0
+  assert buffered.held(first.shared.inbox) == 0
   assert faults(first) == numbered(0, tui_model.connection_batch)
 
   let second = tui.update(backend.Tick, first)
@@ -125,22 +125,22 @@ pub fn a_wake_behind_an_escape_reduces_traffic_only_after_the_cancel_test() {
   let model = waiting(fresh())
   list.each(["0", "1", "2"], fn(label) {
     process.send(
-      buffered.sender(model.inbox),
+      buffered.sender(model.shared.inbox),
       connection_event.NetworkFault(label),
     )
   })
 
   let escaped = tui.update(backend.KeyPress("esc"), model)
-  assert escaped.pending_submission == None
+  assert escaped.shared.pending_submission == None
     as "the Escape cancelled the waiting command"
   assert faults(escaped) == [] as "no traffic was reduced before the cancel"
-  assert buffered.held(escaped.inbox) == 3
+  assert buffered.held(escaped.shared.inbox) == 3
   assert tick.terminal_poll_timeout(escaped) < tick.idle_poll_ceiling_ms
     as "held frames keep the loop polling even if the wake is swallowed"
 
   let woken = tui.update(backend.Tick, escaped)
   assert faults(woken) == ["0", "1", "2"]
-  assert buffered.held(woken.inbox) == 0
+  assert buffered.held(woken.shared.inbox) == 0
 }
 
 // The swap in `candidate_outcome` replaces the whole inbox value. Commit
@@ -149,11 +149,11 @@ pub fn a_wake_behind_an_escape_reduces_traffic_only_after_the_cancel_test() {
 // follows in the same step, and a later tick finds nothing more.
 pub fn adoption_leaves_the_old_inbox_buffer_behind_test() {
   let model = pushed.attached()
-  process.send(buffered.sender(model.inbox), pushed.notice("main", 11))
-  process.send(buffered.sender(model.inbox), pushed.notice("main", 12))
+  process.send(buffered.sender(model.shared.inbox), pushed.notice("main", 11))
+  process.send(buffered.sender(model.shared.inbox), pushed.notice("main", 12))
   let model = runtime.receive(model)
-  assert buffered.held(model.inbox) == 2
-  let before = model.notices
+  assert buffered.held(model.shared.inbox) == 2
+  let before = model.shared.notices
 
   let #(replacement, cut, view) = captured_replacement()
   let adopted_inbox = buffered.new(connection.new_inbox())
@@ -177,24 +177,24 @@ pub fn adoption_leaves_the_old_inbox_buffer_behind_test() {
         [],
       ),
     )
-  assert buffered.sender(adopted.inbox) == buffered.sender(adopted_inbox)
+  assert buffered.sender(adopted.shared.inbox) == buffered.sender(adopted_inbox)
 
   let drained = inbound.drain_connection(adopted, tui_model.connection_batch)
-  assert drained.notices == before + 1
+  assert drained.shared.notices == before + 1
     as "only the adopted inbox's notice reaches the adopted lane"
 
   let ticked = tui.update(backend.Tick, drained)
-  assert ticked.notices == before + 1
+  assert ticked.shared.notices == before + 1
     as "no notice from the replaced inbox is reduced after the swap"
 
   // The host reads the adopted inbox's subject from then on, never the
   // replaced one's: a notice the old socket sends after the swap is not
   // read, and one delivered as if it had been is not filed.
-  let replaced = buffered.sender(model.inbox)
+  let replaced = buffered.sender(model.shared.inbox)
   process.send(replaced, pushed.notice("main", 14))
   assert list.all(runtime.arrivals(ticked), fn(arrival) {
     case arrival {
-      msg.Frame(source:, ..) -> source == buffered.sender(ticked.inbox)
+      msg.Frame(source:, ..) -> source == buffered.sender(ticked.shared.inbox)
       msg.Replayed(..) | msg.JobReplied(..) -> True
     }
   })
@@ -204,9 +204,9 @@ pub fn adoption_leaves_the_old_inbox_buffer_behind_test() {
       msg.Arrived([msg.Frame(replaced, pushed.notice("main", 15))]),
       ticked,
     )
-  assert buffered.held(stale.inbox) == buffered.held(ticked.inbox)
+  assert buffered.held(stale.shared.inbox) == buffered.held(ticked.shared.inbox)
   let after = tui.update(backend.Tick, stale)
-  assert after.notices == before + 1
+  assert after.shared.notices == before + 1
     as "no notice from the replaced socket is reduced, however it arrives"
 }
 
@@ -225,19 +225,25 @@ pub fn adoption_hands_frames_held_after_capture_to_the_adopted_lane_test() {
   process.send(frames, pushed.notice("main", 11))
   process.send(frames, pushed.notice("main", 12))
   let model =
-    tui_model.Model(..model, candidate: attachment.opening(key, None))
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        candidate: attachment.opening(key, None),
+      ),
+    )
     |> runtime.hold(job.AttachArrived(
       key,
       job.Published(prepared(frames, acknowledgement)),
     ))
-  let before = model.notices
+  let before = model.shared.notices
 
   // One tick creates the candidate and captures its cut; the drain stops
   // there, so both notices stay held and the worker is acknowledged.
   let captured = tui.update(backend.Tick, model)
-  assert attachment.busy(captured.candidate)
+  assert attachment.busy(captured.view.candidate)
   assert process.receive(acknowledgement, 0) == Ok(Nil)
-  assert captured.notices == before
+  assert captured.shared.notices == before
 
   let captured =
     runtime.hold(
@@ -245,9 +251,9 @@ pub fn adoption_hands_frames_held_after_capture_to_the_adopted_lane_test() {
       job.AttachArrived(key, job.Settled(weft.AllDelivered)),
     )
   let adopted = tui.update(backend.Tick, captured)
-  assert !attachment.busy(adopted.candidate)
-  assert adopted.session == "A"
-  assert adopted.notices == before + 2
+  assert !attachment.busy(adopted.view.candidate)
+  assert adopted.shared.session == "A"
+  assert adopted.shared.notices == before + 2
     as "both notices held after the capture reach the adopted lane"
 }
 
@@ -259,13 +265,16 @@ pub fn a_tick_settles_the_candidate_before_it_drains_the_connection_test() {
   let model =
     tui_model.Model(
       ..model,
-      running: job_runner.start_attach(
-        model.running,
-        key,
-        fn() { Error("refused") },
-        5000,
+      view: tui_model.View(
+        ..model.view,
+        running: job_runner.start_attach(
+          model.view.running,
+          key,
+          fn() { Error("refused") },
+          5000,
+        ),
+        candidate: attachment.opening(key, None),
       ),
-      candidate: attachment.opening(key, None),
     )
   let settled = tick_until_settled(model, 0, 400)
   let lines = failures(settled)
@@ -285,11 +294,11 @@ fn tick_until_settled(
   budget: Int,
 ) -> tui_model.Model {
   process.send(
-    buffered.sender(model.inbox),
+    buffered.sender(model.shared.inbox),
     connection_event.NetworkFault(int.to_string(tick)),
   )
   let model = tui.update(backend.Tick, model)
-  case attachment.busy(model.candidate), budget {
+  case attachment.busy(model.view.candidate), budget {
     False, _ -> model
     True, 0 -> panic as "the failing attempt settled within its budget"
     True, _ -> {
@@ -308,12 +317,15 @@ fn fresh() -> tui_model.Model {
 fn waiting(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    pending_submission: Some(tui_model.ComposerSubmission),
+    shared: tui_model.Shared(
+      ..model.shared,
+      pending_submission: Some(tui_model.ComposerSubmission),
+    ),
   )
 }
 
 fn failures(model: tui_model.Model) -> List(String) {
-  list.filter_map(model.transcript, fn(line) {
+  list.filter_map(model.shared.transcript, fn(line) {
     case line {
       transcript_line.Line(transcript_line.Failure, text) -> Ok(text)
       transcript_line.Line(..) -> Error(Nil)

@@ -117,7 +117,11 @@ pub fn start_recorded(
       |> tui.with_recording(path)
 
     // Refuse a failed handshake instead of exercising preview-mode echoes.
-    case attachment.busy(model.candidate), model.peer, model.control_request {
+    case
+      attachment.busy(model.view.candidate),
+      model.shared.peer,
+      model.view.control_request
+    {
       True, _, _ | False, tui_model.Attached, _ | _, _, Some(_) ->
         actor.initialised(Driver(model, subject))
         |> actor.selecting(selector(Driver(model, subject)))
@@ -126,7 +130,7 @@ pub fn start_recorded(
       False, tui_model.Preview, None
       | False, tui_model.Replaying, None
       | False, tui_model.Disconnected, None
-      -> Error(model.notice)
+      -> Error(model.shared.notice)
     }
   })
   |> actor.on_message(handle)
@@ -213,12 +217,12 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
 fn selector(driver: Driver) {
   process.new_selector()
   |> process.select(driver.commands)
-  |> process.select_map(buffered.sender(driver.model.inbox), Inbound)
+  |> process.select_map(buffered.sender(driver.model.shared.inbox), Inbound)
   |> fn(selector) {
-    attachment.select(driver.model.candidate, selector, Candidate)
+    attachment.select(driver.model.view.candidate, selector, Candidate)
   }
   |> process.merge_selector(process.map_selector(
-    job_runner.selector(driver.model.running),
+    job_runner.selector(driver.model.view.running),
     Job,
   ))
   |> process.select_record(atom.create("etui_wake"), 0, fn(_) { Woken })
@@ -229,10 +233,10 @@ fn selector(driver: Driver) {
 // message the actor just selected is newer than all of them and older than
 // everything still queued, so it must go between the two.
 fn reduce_held(model: tui_model.Model) -> tui_model.Model {
-  case buffered.take(model.inbox) {
+  case buffered.take(model.shared.inbox) {
     #(_, Error(Nil)) -> model
     #(inbox, Ok(held)) ->
-      tui_model.Model(..model, inbox:)
+      tui_model.Model(..model, shared: tui_model.Shared(..model.shared, inbox:))
       |> inbound.accept_connection_message(held)
       |> reduce_held
   }
@@ -248,9 +252,9 @@ fn run(
 ) -> virtual_backend.Run(tui_model.Model) {
   let script =
     virtual_backend.script(
-      backend.TerminalSize(width: model.width, height: model.height),
+      backend.TerminalSize(width: model.view.width, height: model.view.height),
       steps,
-      buffered.sender(model.inbox),
+      buffered.sender(model.shared.inbox),
     )
   let assert Ok(run) = tui.run_script(model, script)
     as "the real virtual terminal loop must complete its input script"
@@ -261,9 +265,9 @@ fn disconnect(model: tui_model.Model) -> Nil {
   let _ =
     runtime.flush(tui_model.emit_attachment(
       model,
-      attachment.Abandon(model.candidate),
+      attachment.Abandon(model.view.candidate),
     ))
-  case model.channel {
+  case model.shared.channel {
     Some(channel) -> {
       let #(_, outputs) =
         session_channel.take_outputs(session_channel.close(channel))

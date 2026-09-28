@@ -32,15 +32,22 @@ pub fn disconnected_skill_submission_retains_its_draft_test() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("test", None))
   let model =
-    tui_model.Model(..base, peer: tui_model.Disconnected, skills: [
-      command.Suggestion("/review-code", "Inspect code", True),
-    ])
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        peer: tui_model.Disconnected,
+        skills: [
+          command.Suggestion("/review-code", "Inspect code", True),
+        ],
+      ),
+    )
   let updated =
     model
     |> tui.update(backend.Paste("/review-code the queue"), _)
     |> tui.update(backend.KeyPress("enter"), _)
-  assert textarea.value(updated.input) == "/review-code the queue"
-  assert updated.notice == "no conversation is attached; draft retained"
+  assert textarea.value(updated.view.input) == "/review-code the queue"
+  assert updated.shared.notice == "no conversation is attached; draft retained"
 }
 
 pub fn skill_page_cannot_loop_or_exceed_its_catalogue_bound_test() {

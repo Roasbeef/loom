@@ -104,7 +104,11 @@ pub fn the_main_transcript_paints_all_delivered_advice_in_compact_mode_test() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let shown =
-    tui_model.Model(..base, records: [record]) |> tui.update(backend.Tick, _)
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, records: [record]),
+    )
+    |> tui.update(backend.Tick, _)
   let #(buffer, _) = render.view(shown, geometry.rect_new(0, 0, 120, 30))
   let painted = frame.buffer_to_text(buffer)
 
@@ -113,7 +117,7 @@ pub fn the_main_transcript_paints_all_delivered_advice_in_compact_mode_test() {
   assert string.contains(painted, "verifier.")
   assert !string.contains(painted, transcript_lines.advice_header)
   assert !string.contains(painted, "Ctrl+G to expand")
-  assert tui.update(backend.KeyPress("ctrl+g"), shown).details_expanded
+  assert tui.update(backend.KeyPress("ctrl+g"), shown).shared.details_expanded
     as "the compact assertion is independent of the detail toggle"
 }
 
@@ -139,7 +143,10 @@ pub fn the_main_surface_shows_full_advisor_only_commentary_without_delivery_clai
   let shown =
     tui_model.Model(
       ..base,
-      advisor_history: advisor_history.Board([quiet, block], None),
+      shared: tui_model.Shared(
+        ..base.shared,
+        advisor_history: advisor_history.Board([quiet, block], None),
+      ),
     )
     |> tui.update(backend.Tick, _)
   let #(buffer, _) = render.view(shown, geometry.rect_new(0, 0, 120, 30))
@@ -176,25 +183,34 @@ pub fn long_advisor_history_does_not_hide_the_live_primary_tail_test() {
   let model =
     tui_model.Model(
       ..base,
-      transcript: [],
-      records: [],
-      advisor_history: advisor_history.Board(items, None),
-      streams: [
-        transcript_line.Stream(
-          "main",
-          "op",
-          "generation",
-          "text",
-          [
-            "ACTIVE PRIMARY OUTPUT",
-          ],
-          21,
-        ),
-      ],
+      shared: tui_model.Shared(
+        ..base.shared,
+        transcript: [],
+        records: [],
+        advisor_history: advisor_history.Board(items, None),
+        streams: [
+          transcript_line.Stream(
+            "main",
+            "op",
+            "generation",
+            "text",
+            [
+              "ACTIVE PRIMARY OUTPUT",
+            ],
+            21,
+          ),
+        ],
+      ),
     )
     |> tui.update(backend.Resize(80, 24), _)
   let visible =
-    tui_model.Model(..model, revealed_rows: model.rendered_row_count)
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        revealed_rows: model.view.rendered_row_count,
+      ),
+    )
   let #(buffer, _) = render.view(visible, geometry.rect_new(0, 0, 80, 24))
   let painted = frame.buffer_to_text(buffer)
 
@@ -202,7 +218,7 @@ pub fn long_advisor_history_does_not_hide_the_live_primary_tail_test() {
     as "captured advisor rows precede the live primary tail"
   assert !string.contains(painted, "Captured review 1")
     as "old advisor rows belong in scrollback on a short viewport"
-  assert list.any(dict.keys(model.view.record_line_cache), fn(line) {
+  assert list.any(dict.keys(model.view.caches.record_line_cache), fn(line) {
     string.contains(line.text, "Captured review 1")
   })
     as "the full advisor body is cached with settled history"
@@ -216,31 +232,34 @@ pub fn advisor_and_primary_rows_follow_durable_sequence_test() {
   let shown =
     tui_model.Model(
       ..base,
-      transcript: [],
-      records: [second, first],
-      advisor_history: advisor_history.Board(
-        [
-          advisor_history.Item(
-            "advisor-mid",
-            4,
-            0,
-            "advisor middle",
-            advisor_history.RequestedQuiet,
-          ),
-          advisor_history.Item(
-            "advisor-last",
-            8,
-            0,
-            "advisor last",
-            advisor_history.RequestedBlock,
-          ),
-        ],
-        None,
+      shared: tui_model.Shared(
+        ..base.shared,
+        transcript: [],
+        records: [second, first],
+        advisor_history: advisor_history.Board(
+          [
+            advisor_history.Item(
+              "advisor-mid",
+              4,
+              0,
+              "advisor middle",
+              advisor_history.RequestedQuiet,
+            ),
+            advisor_history.Item(
+              "advisor-last",
+              8,
+              0,
+              "advisor last",
+              advisor_history.RequestedBlock,
+            ),
+          ],
+          None,
+        ),
       ),
     )
     |> tui.update(backend.Resize(120, 40), _)
   let ordered =
-    shown.view.record_rows
+    shown.view.caches.record_rows
     |> list.reverse
     |> list.map(row_text)
     |> string.join("\n")
@@ -262,19 +281,22 @@ pub fn stream_deltas_reuse_the_wrapped_advisor_history_test() {
   let settled =
     tui_model.Model(
       ..base,
-      transcript: [],
-      records: [],
-      advisor_history: advisor_history.Board(
-        [
-          advisor_history.Item(
-            "advisor-long",
-            1,
-            0,
-            long_body,
-            advisor_history.AdvisorUpdate,
-          ),
-        ],
-        None,
+      shared: tui_model.Shared(
+        ..base.shared,
+        transcript: [],
+        records: [],
+        advisor_history: advisor_history.Board(
+          [
+            advisor_history.Item(
+              "advisor-long",
+              1,
+              0,
+              long_body,
+              advisor_history.AdvisorUpdate,
+            ),
+          ],
+          None,
+        ),
       ),
     )
     |> tui.update(backend.Resize(80, 24), _)
@@ -282,30 +304,34 @@ pub fn stream_deltas_reuse_the_wrapped_advisor_history_test() {
     int.range(1, 21, settled, fn(model, count) {
       tui_model.Model(
         ..model,
-        streams: [
-          transcript_line.Stream(
-            "main",
-            "op",
-            "generation",
-            "text",
-            [
-              "delta " <> int.to_string(count),
-            ],
-            8,
-          ),
-        ],
-        render_revision: model.render_revision + 1,
+        shared: tui_model.Shared(
+          ..model.shared,
+          streams: [
+            transcript_line.Stream(
+              "main",
+              "op",
+              "generation",
+              "text",
+              [
+                "delta " <> int.to_string(count),
+              ],
+              8,
+            ),
+          ],
+          render_revision: model.shared.render_revision + 1,
+        ),
       )
       |> tui.update(backend.Tick, _)
     })
 
-  assert after.record_cache_valid
-  assert after.view.record_rows == settled.view.record_rows
+  assert after.shared.record_cache_valid
+  assert after.view.caches.record_rows == settled.view.caches.record_rows
     as "stream changes only the disposable tail, not settled wrapping"
-  assert after.view.record_line_cache == settled.view.record_line_cache
+  assert after.view.caches.record_line_cache
+    == settled.view.caches.record_line_cache
     as "the advisor markdown stays in the reusable line cache"
-  assert dict.size(after.view.record_line_cache) > 0
-  assert list.any(dict.keys(after.view.record_line_cache), fn(line) {
+  assert dict.size(after.view.caches.record_line_cache) > 0
+  assert list.any(dict.keys(after.view.caches.record_line_cache), fn(line) {
     line.text == long_body
   })
 }
@@ -521,7 +547,8 @@ pub fn commentary_between_calls_splits_the_group_and_keeps_a_gap_test() {
     )
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  let model = tui_model.Model(..base, records:)
+  let model =
+    tui_model.Model(..base, shared: tui_model.Shared(..base.shared, records:))
   let #(lines, _, _) =
     transcript_lines.record_lines(
       records,
@@ -593,14 +620,17 @@ pub fn commentary_between_calls_keeps_anchors_parallel_to_rows_test() {
   let reading =
     tui_model.Model(
       ..base,
-      records: calls,
-      advisor_history: advisor_history.Board([commentary], None),
+      shared: tui_model.Shared(
+        ..base.shared,
+        records: calls,
+        advisor_history: advisor_history.Board([commentary], None),
+      ),
     )
     |> tui.update(backend.Resize(100, 20), _)
     |> tui.update(backend.MouseScroll(5, 5, True), _)
-  assert !list.is_empty(reading.rendered_anchors)
+  assert !list.is_empty(reading.view.rendered_anchors)
     as "scrolling back must freeze anchors"
 
-  let rows = list.length(reading.view.record_rows)
-  assert list.length(reading.rendered_anchors) == rows
+  let rows = list.length(reading.view.caches.record_rows)
+  assert list.length(reading.view.rendered_anchors) == rows
 }

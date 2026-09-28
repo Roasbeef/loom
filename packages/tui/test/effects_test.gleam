@@ -38,7 +38,7 @@ import tui_test/stepping
 // is what shows the copy path ran in both cases.
 pub fn a_mouse_copy_queues_one_clipboard_write_test() {
   let #(copied, effects) = drag_and_release(tui_model.TerminalClipboard)
-  assert string.contains(copied.notice, "copied")
+  assert string.contains(copied.shared.notice, "copied")
   let assert [effect.WriteClipboard(sequence)] =
     list.filter(effects, is_clipboard_write)
     as "a release over a selection queues one clipboard write"
@@ -46,7 +46,7 @@ pub fn a_mouse_copy_queues_one_clipboard_write_test() {
     as "the queued write is an OSC 52 sequence"
 
   let #(copied, effects) = drag_and_release(tui_model.NoClipboard)
-  assert string.contains(copied.notice, "copied")
+  assert string.contains(copied.shared.notice, "copied")
   assert list.filter(effects, is_clipboard_write) == []
     as "a terminal with no clipboard is sent no sequence"
 }
@@ -78,23 +78,28 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   let attempt = attachment.opening(replacement, None)
   let model =
     tui_model.Model(
-      ..model,
-      peer: tui_model.Attached,
-      channel: Some(channel),
-      candidate: attempt,
-      control_request: Some(tui_model.ControlRequest(
-        job: job.awaiting(request),
-        result: None,
-      )),
-      reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
-      activity_poll: tui_model.ActivityAsking(job.awaiting(poll), ["A"]),
+      shared: tui_model.Shared(
+        ..model.shared,
+        peer: tui_model.Attached,
+        channel: Some(channel),
+      ),
+      view: tui_model.View(
+        ..model.view,
+        candidate: attempt,
+        control_request: Some(tui_model.ControlRequest(
+          job: job.awaiting(request),
+          result: None,
+        )),
+        reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
+        activity_poll: tui_model.ActivityAsking(job.awaiting(poll), ["A"]),
+      ),
     )
     |> runtime.adopt_control(host)
-  let assert Some(daemon) = model.daemon_host
+  let assert Some(daemon) = model.view.daemon_host
 
   let #(quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), model)
-  assert quit.quit
-  assert quit.outbox == []
+  assert quit.shared.quit
+  assert quit.shared.outbox == []
   assert effects
     == [
       effect.Channel(session_channel.Shut(socket)),
@@ -105,16 +110,16 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
       effect.CancelJob(poll),
       effect.CloseControl(daemon.control),
     ]
-  assert quit.control_request == None
-  assert quit.reconnect == tui_model.ReconnectSpent
-  assert quit.activity_poll == tui_model.ActivityDue
-  assert !attachment.busy(quit.candidate)
+  assert quit.view.control_request == None
+  assert quit.view.reconnect == tui_model.ReconnectSpent
+  assert quit.view.activity_poll == tui_model.ActivityDue
+  assert !attachment.busy(quit.view.candidate)
   assert process.receive(owner, 0) == Error(Nil)
     as "the step closed nothing itself"
 
   // Performing them is what reaches the handles: one socket close and one
   // control close, both addressed to the handles the step was given.
-  let _running = runtime.perform(effects, quit.running)
+  let _running = runtime.perform(effects, quit.view.running)
   let assert Ok(_) = process.receive(owner, 100)
   let assert Ok(_) = process.receive(owner, 100)
   assert process.receive(owner, 0) == Error(Nil)
@@ -123,21 +128,25 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
 // A replay has no socket, so a prompt submitted during one does the local
 // half of the live path and asks for no write of any kind.
 pub fn a_replayed_prompt_queues_no_write_test() {
-  let model =
+  let model = {
+    let base = pushed.attached()
     tui_model.Model(
-      ..pushed.attached(),
-      active_strand: "main",
-      input: text_area.state_from_string("hello"),
+      shared: tui_model.Shared(..base.shared, active_strand: "main"),
+      view: tui_model.View(
+        ..base.view,
+        input: text_area.state_from_string("hello"),
+      ),
     )
+  }
 
   let #(submitted, effects) = stepping.step(backend.KeyPress("enter"), model)
-  assert string.contains(submitted.notice, "prompt sent")
+  assert string.contains(submitted.shared.notice, "prompt sent")
     as "premise: the submission took the live path's local half"
 
   // The notice alone would also be set on a path that went on to refuse the
   // prompt. A replaying peer marks the strand submitting and stops there,
   // the local half of the live path, while a refusal leaves it unset.
-  assert submitted.submitting == Some("main")
+  assert submitted.shared.submitting == Some("main")
     as "premise: the prompt took the replay path rather than a refusal"
   assert list.filter(effects, is_write) == []
 }
@@ -145,11 +154,16 @@ pub fn a_replayed_prompt_queues_no_write_test() {
 fn drag_and_release(
   clipboard: tui_model.Clipboard,
 ) -> #(tui_model.Model, List(Effect)) {
-  let model =
-    tui_model.Model(..quiet_model(), clipboard:, transcript: [
-      transcript_line.Line(transcript_line.System, "alpha beta"),
-      transcript_line.Line(transcript_line.System, "gamma delta"),
-    ])
+  let model = {
+    let base = quiet_model()
+    tui_model.Model(
+      shared: tui_model.Shared(..base.shared, transcript: [
+        transcript_line.Line(transcript_line.System, "alpha beta"),
+        transcript_line.Line(transcript_line.System, "gamma delta"),
+      ]),
+      view: tui_model.View(..base.view, clipboard:),
+    )
+  }
 
   // The transcript's text starts at row 2, column 1 on a 60x12 screen: one
   // header row, then the panel border.
@@ -162,16 +176,22 @@ fn drag_and_release(
 }
 
 fn quiet_model() -> tui_model.Model {
-  tui_model.Model(
-    ..tui.new_model(
-      connection.new_inbox(),
-      workspace.Context(path: "/w/demo", branch: None),
-    ),
-    transcript: [],
-    strands: [],
-    agent_summary: agents.summary([]),
-    notice: "ready",
-  )
+  {
+    let base =
+      tui.new_model(
+        connection.new_inbox(),
+        workspace.Context(path: "/w/demo", branch: None),
+      )
+    tui_model.Model(
+      shared: tui_model.Shared(
+        ..base.shared,
+        transcript: [],
+        strands: [],
+        notice: "ready",
+      ),
+      view: tui_model.View(..base.view, agent_summary: agents.summary([])),
+    )
+  }
 }
 
 // A closed lane is `Closed`, so nothing the rest of the step does to it can

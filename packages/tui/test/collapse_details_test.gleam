@@ -59,7 +59,7 @@ pub fn collapsing_details_repaints_the_rows_the_taller_view_used_test() {
     pane(
       list.flatten([traffic(), toggle_details(), scrollback(), toggle_details()]),
     )
-  assert !collapsed.model.details_expanded
+  assert !collapsed.model.shared.details_expanded
     as "the second toggle put detail back"
 
   // The transcript draws its visible rows from the top of the pane, so the
@@ -136,7 +136,10 @@ fn scrollback() -> List(virtual_backend.Step) {
 // the model that performed it.
 fn drawn_rows(pane: Pane) -> Int {
   let Pane(model:, rows:) = pane
-  int.min(model.rendered_row_count - model.scroll_offset, list.length(rows))
+  int.min(
+    model.view.rendered_row_count - model.view.scroll_offset,
+    list.length(rows),
+  )
 }
 
 fn shows_detail(row: String) -> Bool {
@@ -209,11 +212,17 @@ fn deliver(payload: String) -> virtual_backend.Step {
 // The demo scaffolding removed, so the pane holds only what this module
 // delivered and a leftover row can only have come from the expanded view.
 fn quiet_model(inbox: Subject(connection_event.Message)) -> tui_model.Model {
-  tui_model.Model(
-    ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
-    transcript: [],
-    strands: [],
-    agent_summary: agents.summary([]),
-    notice: "ready",
-  )
+  {
+    let base =
+      tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
+    tui_model.Model(
+      shared: tui_model.Shared(
+        ..base.shared,
+        transcript: [],
+        strands: [],
+        notice: "ready",
+      ),
+      view: tui_model.View(..base.view, agent_summary: agents.summary([])),
+    )
+  }
 }

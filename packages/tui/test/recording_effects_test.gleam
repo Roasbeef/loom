@@ -107,7 +107,8 @@ pub fn an_adoption_queues_the_retired_lanes_close_before_the_adoption_test() {
   let sink = process.new_subject()
   let recorder = recording.observed(sink)
   let model = captured_session(recorder)
-  let assert Some(retired) = model.channel as "premise: a lane is adopted"
+  let assert Some(retired) = model.shared.channel
+    as "premise: a lane is adopted"
   let assert Some(old_socket) = session_channel.socket(retired)
     as "premise: the adopted lane has a socket"
 
@@ -125,7 +126,7 @@ pub fn an_adoption_queues_the_retired_lanes_close_before_the_adoption_test() {
 
   let #(adopted, effects) =
     stepping.step(backend.Tick, runtime.receive(runtime.stamp(captured)))
-  assert !attachment.busy(adopted.candidate) as "premise: the step adopted"
+  assert !attachment.busy(adopted.view.candidate) as "premise: the step adopted"
   assert list.filter_map(effects, lifecycle(_, old_socket))
     == ["closed 1", "shut old socket", "adopted 2"]
     as "the retired lane's close is queued before the adoption and kept"
@@ -144,7 +145,13 @@ fn playing_the_worker(
   let frames = connection.new_inbox()
   list.each(pushed.transfer(1, "1:1", "recent", 10), process.send(frames, _))
   let model =
-    tui_model.Model(..model, candidate: attachment.opening(key, trace))
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        candidate: attachment.opening(key, trace),
+      ),
+    )
     |> runtime.hold(job.AttachArrived(key, job.Published(prepared_on(frames))))
   #(model, key)
 }
@@ -182,16 +189,20 @@ pub fn a_failing_replacement_keeps_its_notes_and_drops_its_writes_test() {
   let model =
     tui_model.Model(
       ..model,
-      candidate: attachment.opening(
-        key,
-        recording.trace(Some(recorder), attempt.Id(2)),
+      view: tui_model.View(
+        ..model.view,
+        candidate: attachment.opening(
+          key,
+          recording.trace(Some(recorder), attempt.Id(2)),
+        ),
       ),
     )
     |> runtime.hold(job.AttachArrived(key, job.Published(prepared_on(frames))))
 
   let #(failed, effects) =
     stepping.step(backend.Tick, runtime.receive(runtime.stamp(model)))
-  assert !attachment.busy(failed.candidate) as "premise: the attempt failed"
+  assert !attachment.busy(failed.view.candidate)
+    as "premise: the attempt failed"
 
   // The lane's own close here and the abandon's second one below are a
   // known wart that predates recording as effects; fixing it changes this.
@@ -261,15 +272,21 @@ fn lifecycle(
 pub fn replaying_a_recording_queues_no_recording_effect_test() {
   let assert Ok(moments) = recording.decode_file(golden)
     as "the golden recording decodes"
-  let model =
-    tui_model.Model(
-      ..tui.new_model(
+  let model = {
+    let base =
+      tui.new_model(
         connection.new_inbox(),
         workspace.Context(path: "replay", branch: None),
+      )
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        peer: tui_model.Replaying,
+        session: "replay",
       ),
-      peer: tui_model.Replaying,
-      session: "replay",
     )
+  }
   let steps = recording.to_steps(moments)
   let #(replayed, effects) =
     list.fold(steps, #(model, []), fn(acc, step) {
@@ -282,9 +299,9 @@ pub fn replaying_a_recording_queues_no_recording_effect_test() {
   // recorded line was stepped without a replay error, the recorded quit was
   // reached, and the steps did decide effects, just none that record.
   assert list.length(steps) == list.length(moments) && steps != []
-  assert replayed.replay_error == None
+  assert replayed.shared.replay_error == None
     as "premise: the replay applied every attempt event"
-  assert replayed.quit as "premise: the replay reached the recorded quit"
+  assert replayed.shared.quit as "premise: the replay reached the recorded quit"
   assert effects != [] as "premise: the replayed steps decided effects"
   assert list.filter(effects, records) == []
     as "a replay queues no recording line and no attempt note"
@@ -308,16 +325,24 @@ fn scripted_session(path: String) -> String {
     )
     |> session_channel.take_outputs
   list.each(opened, terminal_lane.perform)
-  let model =
+  let model = {
+    let base =
+      tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
-      ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
-      recorder: Some(recorder),
-      peer: tui_model.Attached,
-      channel: Some(channel),
-      session: "A",
-      next_attempt: 2,
-      transport_time_ms: fn() { 0 },
+      shared: tui_model.Shared(
+        ..base.shared,
+        recorder: Some(recorder),
+        peer: tui_model.Attached,
+        channel: Some(channel),
+        session: "A",
+      ),
+      view: tui_model.View(
+        ..base.view,
+        next_attempt: 2,
+        transport_time_ms: fn() { 0 },
+      ),
     )
+  }
 
   // The initial capture: three credited frames, received on one tick.
   list.each(
@@ -350,16 +375,19 @@ fn scripted_session(path: String) -> String {
   let model =
     tui_model.Model(
       ..model,
-      next_attempt: 3,
-      running: job_runner.start_attach(
-        model.running,
-        key,
-        fn() { Error("no route to the selected session") },
-        5000,
-      ),
-      candidate: attachment.opening(
-        key,
-        recording.trace(Some(recorder), attempt.Id(2)),
+      view: tui_model.View(
+        ..model.view,
+        next_attempt: 3,
+        running: job_runner.start_attach(
+          model.view.running,
+          key,
+          fn() { Error("no route to the selected session") },
+          5000,
+        ),
+        candidate: attachment.opening(
+          key,
+          recording.trace(Some(recorder), attempt.Id(2)),
+        ),
       ),
     )
   let model = tick_until_settled(model)
@@ -388,22 +416,28 @@ fn captured_session(recorder: recording.Recorder) {
       now: 0,
     )
   let model =
-    tui_model.Model(
-      ..tui.new_model(
-        connection.new_inbox(),
-        workspace.Context(path: "/w/demo", branch: None),
-      ),
-      recorder: Some(recorder),
-      peer: tui_model.Attached,
-      session: "A",
-      transport_time_ms: fn() { 0 },
-    )
+    {
+      let base =
+        tui.new_model(
+          connection.new_inbox(),
+          workspace.Context(path: "/w/demo", branch: None),
+        )
+      tui_model.Model(
+        shared: tui_model.Shared(
+          ..base.shared,
+          recorder: Some(recorder),
+          peer: tui_model.Attached,
+          session: "A",
+        ),
+        view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),
+      )
+    }
     |> tui_model.hold_channel(channel)
   let model =
     pushed.transfer_with_metadata(1, "1:1", "recent", 10, main_strand())
     |> list.fold(model, inbound.accept_connection_message)
     |> runtime.flush
-  let assert Some(lane) = model.channel as "the lane is still attached"
+  let assert Some(lane) = model.shared.channel as "the lane is still attached"
   assert session_channel.mutation_available(lane)
     && !session_channel.in_flight(lane)
     as "premise: the lane is synchronized with its request slot free"
@@ -416,12 +450,12 @@ fn captured_session(recorder: recording.Recorder) {
 fn replay_step(model: tui_model.Model, step: virtual_backend.Step) {
   case step {
     virtual_backend.Attempt(event) -> {
-      process.send(buffered.sender(model.replay_inbox), event)
+      process.send(buffered.sender(model.shared.replay_inbox), event)
       stepping.step(backend.Tick, runtime.receive(model))
     }
     virtual_backend.Input(event) -> stepping.step(event, runtime.receive(model))
     virtual_backend.Deliver(message) -> {
-      process.send(buffered.sender(model.inbox), message)
+      process.send(buffered.sender(model.shared.inbox), message)
       stepping.step(backend.Tick, runtime.receive(model))
     }
   }
@@ -529,7 +563,7 @@ fn tick_until_settled(model: tui_model.Model) -> tui_model.Model {
       from: model,
       attempt: fn(model) {
         let model = tui.update(backend.Tick, model)
-        case attachment.busy(model.candidate) {
+        case attachment.busy(model.view.candidate) {
           True -> poll.Pending(model)
           False -> poll.Settled(model)
         }

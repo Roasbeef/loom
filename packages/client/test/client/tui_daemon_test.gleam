@@ -46,17 +46,24 @@ fn address(port) {
 fn retired_control_model(control, port) {
   let assert Ok(host) = selection.host(control, address(port), "token")
     as "retired control retains the replacement route"
-  tui_model.Model(
-    ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-    // Creation now canonicalizes explicit configuration before it retains the
-    // durable key. The package manifest is a real, stable file; this controlled
-    // peer never parses it, but the local boundary can prove the path exists.
-    local_options: Some(bootstrap.Options("/work", "", "", "", "gleam.toml")),
-    overlay: tui_model.DaemonSelector(session_selector.new(
-      protocol.Page(1, [], None),
-      "",
-    )),
-  )
+  {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(
+        ..base.view,
+        // Creation now canonicalizes explicit configuration before it retains the
+        // durable key. The package manifest is a real, stable file; this controlled
+        // peer never parses it, but the local boundary can prove the path exists.
+        local_options: Some(bootstrap.Options("/work", "", "", "", "gleam.toml")),
+        overlay: tui_model.DaemonSelector(session_selector.new(
+          protocol.Page(1, [], None),
+          "",
+        )),
+      ),
+    )
+  }
   |> runtime.adopt_control(host)
 }
 
@@ -66,7 +73,7 @@ pub fn tui_daemon_catalogue_recovery_keeps_frames_live_and_cancels_hello_test() 
     peer_listener(None, fn(port, peers, incoming, closed) {
       let model = retired_control_model(control, port)
       let loading = tui.update(backend.KeyPress("left"), model)
-      let assert Some(run) = loading.control_request
+      let assert Some(run) = loading.view.control_request
         as "the frame loop starts the worker without waiting for hello"
       let assert Ok(peer) = process.receive(peers, 1000)
         as "replacement reached the peer but hello is still withheld"
@@ -75,12 +82,15 @@ pub fn tui_daemon_catalogue_recovery_keeps_frames_live_and_cancels_hello_test() 
       // frame-loop reconnect no catalogue worker existed at this point.
       let resized = tui.update(backend.Resize(103, 37), loading)
       let advanced = tui.update(backend.Tick, resized)
-      assert advanced.width == 103
-      assert advanced.height == 37
-      assert advanced.daemon_host == model.daemon_host
+      assert advanced.view.width == 103
+      assert advanced.view.height == 37
+      assert advanced.view.daemon_host == model.view.daemon_host
       assert process.receive(incoming, 0) == Error(Nil)
       let _running =
-        runtime.perform([effect.CancelJob(job.key(run.job))], advanced.running)
+        runtime.perform(
+          [effect.CancelJob(job.key(run.job))],
+          advanced.view.running,
+        )
       assert process.receive(closed, 1000) == Ok(Nil)
         as "worker cancellation closes the socket even before hello"
 
@@ -97,13 +107,13 @@ pub fn tui_daemon_creation_recovery_keeps_unknown_key_without_replay_test() {
     peer_listener(None, fn(port, peers, incoming, closed) {
       let model = retired_control_model(control, port)
       let creating = configured(tui.update(backend.KeyPress("n"), model))
-      let assert Some(key) = creating.creation_key
+      let assert Some(key) = creating.view.creation_key
         as "explicit creation retains its identity before the worker starts"
-      assert attachment.busy(creating.candidate)
+      assert attachment.busy(creating.view.candidate)
       let assert Ok(peer) = process.receive(peers, 1000)
         as "creation waits for hello outside the frame loop"
       let resized = tui.update(backend.Resize(103, 37), creating)
-      assert resized.width == 103
+      assert resized.view.width == 103
       assert process.receive(incoming, 0) == Error(Nil)
       process.send(peer, Send(greeting))
       let request = received(incoming)
@@ -123,7 +133,7 @@ pub fn tui_daemon_creation_recovery_keeps_unknown_key_without_replay_test() {
           from: resized,
           attempt: fn(current) {
             let next = tui.update(backend.Tick, current)
-            case attachment.busy(next.candidate) {
+            case attachment.busy(next.view.candidate) {
               True -> poll.Pending(next)
               False -> poll.Settled(next)
             }
@@ -133,11 +143,14 @@ pub fn tui_daemon_creation_recovery_keeps_unknown_key_without_replay_test() {
       let retry =
         configured(tui.update(
           backend.KeyPress("n"),
-          tui_model.Model(..settled, overlay: model.overlay),
+          tui_model.Model(
+            ..settled,
+            view: tui_model.View(..settled.view, overlay: model.view.overlay),
+          ),
         ))
-      assert retry.creation_key == Some(key)
-      assert retry.next_attempt == creating.next_attempt
-      assert retry.daemon_host == model.daemon_host
+      assert retry.view.creation_key == Some(key)
+      assert retry.view.next_attempt == creating.view.next_attempt
+      assert retry.view.daemon_host == model.view.daemon_host
       assert process.receive(peers, 0) == Error(Nil)
       assert process.receive(incoming, 0) == Error(Nil)
     })
@@ -155,7 +168,7 @@ fn configured(model: tui_model.Model) -> tui_model.Model {
       every: poll.Fixed(5),
       from: model,
       attempt: fn(current: tui_model.Model) {
-        case current.configuring {
+        case current.view.configuring {
           None -> poll.Settled(current)
           Some(_) -> poll.Pending(tui.update(backend.Tick, current))
         }

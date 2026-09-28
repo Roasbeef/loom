@@ -43,24 +43,28 @@ pub fn run(path: String, expected_records: Int) -> Nil {
   let assert Ok(moments) = recording.decode_file(path)
     as "the private recording must decode"
   let inbox = connection.new_inbox()
-  let model =
+  let model = {
+    let base = tui.new_model(inbox, workspace.Context("replay", None))
     tui_model.Model(
-      ..tui.new_model(inbox, workspace.Context("replay", None)),
-      peer: tui_model.Replaying,
-      transcript: [],
-      models: [],
-      session: "replay",
-      strands: [],
-      agent_summary: agents.summary([]),
-      notice: "replaying",
+      shared: tui_model.Shared(
+        ..base.shared,
+        peer: tui_model.Replaying,
+        transcript: [],
+        models: [],
+        session: "replay",
+        strands: [],
+        notice: "replaying",
+      ),
+      view: tui_model.View(..base.view, agent_summary: agents.summary([])),
     )
+  }
   let script =
     virtual_backend.script(
       backend.TerminalSize(160, 48),
       recording.to_steps(moments),
       inbox,
     )
-    |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox))
+    |> virtual_backend.with_attempts(buffered.sender(model.shared.replay_inbox))
   let start = now(Microsecond)
   let assert Ok(completed) = tui.run_script(model, script)
     as "the virtual terminal must finish"
@@ -69,18 +73,19 @@ pub fn run(path: String, expected_records: Int) -> Nil {
   // The run's final model is the admission witness. Frame count or successful
   // recording decoding alone also succeeds when every wire event is refused.
   let final = completed.final
-  assert final.replay_error == None as "the replay must not report an error"
-  assert list.length(final.records) == expected_records
+  assert final.shared.replay_error == None
+    as "the replay must not report an error"
+  assert list.length(final.shared.records) == expected_records
     as "the reducer must retain the expected durable history"
-  assert !list.any(final.transcript, fn(line) {
+  assert !list.any(final.shared.transcript, fn(line) {
     line.speaker == transcript_line.Failure
   })
     as "the replay must not render protocol failures"
   io.println(
     "replay records="
-    <> int.to_string(list.length(final.records))
+    <> int.to_string(list.length(final.shared.records))
     <> " rows="
-    <> int.to_string(final.rendered_row_count)
+    <> int.to_string(final.view.rendered_row_count)
     <> " frames="
     <> int.to_string(list.length(completed.frames))
     <> " elapsed_us="
