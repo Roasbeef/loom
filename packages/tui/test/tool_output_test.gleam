@@ -23,6 +23,7 @@ import session_view/transcript_line
 import session_view/transcript_lines
 import tui/inbound
 import tui/model as tui_model
+import tui/session_model
 import tui_test/pushed
 
 // Details open, which is where a running command's output window is
@@ -30,7 +31,7 @@ import tui_test/pushed
 fn expanded(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: tui_model.Shared(..model.shared, details_expanded: True),
+    shared: session_model.Shared(..model.shared, details_expanded: True),
   )
 }
 
@@ -145,16 +146,19 @@ pub fn the_tail_is_drawn_as_one_result_line_under_the_running_call_test() {
       "compiling core\ncompiling tools\n",
       31,
     ))
-  assert transcript_lines.tool_tail_lines(
-      tui_model.presentation(expanded(model)),
-    )
+  assert transcript_lines.tool_tail_lines(session_model.presentation(
+      expanded(model).shared,
+    ))
     == [
       transcript_line.Line(
         transcript_line.ToolResult,
         "stdout · 31 B so far\ncompiling core\ncompiling tools",
       ),
     ]
-  assert transcript_lines.tool_tail_lines(tui_model.presentation(model)) == []
+  assert transcript_lines.tool_tail_lines(session_model.presentation(
+      model.shared,
+    ))
+    == []
     as "a collapsed transcript holds one height across the call's settle"
 }
 
@@ -172,7 +176,9 @@ pub fn only_the_last_lines_of_a_long_tail_are_drawn_test() {
       2048,
     ))
   let assert [transcript_line.Line(transcript_line.ToolResult, drawn)] =
-    transcript_lines.tool_tail_lines(tui_model.presentation(expanded(model)))
+    transcript_lines.tool_tail_lines(session_model.presentation(
+      expanded(model).shared,
+    ))
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(drawn, "\n")
   assert first == "line 13"
@@ -189,9 +195,9 @@ pub fn a_binary_tail_draws_its_heading_alone_test() {
       "",
       300,
     ))
-  assert transcript_lines.tool_tail_lines(
-      tui_model.presentation(expanded(model)),
-    )
+  assert transcript_lines.tool_tail_lines(session_model.presentation(
+      expanded(model).shared,
+    ))
     == [
       transcript_line.Line(transcript_line.ToolResult, "stdout · 300 B so far"),
     ]
@@ -219,9 +225,9 @@ pub fn another_strands_tail_is_not_drawn_here_test() {
       ]),
     )
   assert list.length(model.shared.tool_tails) == 1
-  assert transcript_lines.tool_tail_lines(
-      tui_model.presentation(expanded(model)),
-    )
+  assert transcript_lines.tool_tail_lines(session_model.presentation(
+      expanded(model).shared,
+    ))
     == []
     as "an expanded transcript still draws only the active strand's window"
 }

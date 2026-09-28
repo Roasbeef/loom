@@ -16,6 +16,7 @@ import session_view/snapshot_view
 import session_view/transcript_line
 import tui/inbound
 import tui/model as tui_model
+import tui/session_model
 import tui_test/pushed
 
 fn cell(namespace, key, value) {
@@ -105,9 +106,9 @@ pub fn a_successor_cut_retires_the_old_interrupt_without_an_idle_event_test() {
   let stopped =
     tui_model.Model(
       ..before,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..before.shared,
-        interrupt: Some(tui_model.Interrupt(
+        interrupt: Some(session_model.Interrupt(
           "main",
           Some(ids.op_id_to_string(first)),
           None,
@@ -127,9 +128,9 @@ pub fn a_credited_idle_cut_retires_the_interrupt_test() {
     let base = pushed.attached()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
-        interrupt: Some(tui_model.Interrupt("main", Some("previous"), None)),
+        interrupt: Some(session_model.Interrupt("main", Some("previous"), None)),
       ),
     )
   }
@@ -143,7 +144,7 @@ pub fn host_queue_identity_survives_equal_text_and_clears_after_drain_test() {
     let base = pushed.attached()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, queued: [
+      shared: session_model.Shared(..base.shared, queued: [
         transcript_line.HeldPrompt("obsolete local guess"),
       ]),
     )

@@ -39,6 +39,7 @@ import tui/inbound
 import tui/interaction
 import tui/model as tui_model
 import tui/recording
+import tui/session_model
 import tui/surfaces
 import tui/virtual_backend
 import tui/workspace
@@ -385,7 +386,7 @@ pub fn attempt_replay_last_unconfirmed_submission_survives_adopting_another_sess
     let base = tui.new_model(inbox, workspace.Context("replay", None))
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, peer: tui_model.Replaying),
+      shared: session_model.Shared(..base.shared, peer: session_model.Replaying),
     )
   }
   let script =
@@ -400,7 +401,7 @@ pub fn attempt_replay_last_unconfirmed_submission_survives_adopting_another_sess
   assert run.final.shared.session == "B"
   assert run.final.shared.channel == None
   assert run.final.shared.unconfirmed
-    == Some(tui_model.UnconfirmedSubmission("A", "prompt", 4))
+    == Some(session_model.UnconfirmedSubmission("A", "prompt", 4))
   assert list.any(run.final.shared.transcript, fn(line) {
     string.contains(line.text, "Last unconfirmed submission: session A")
   })
@@ -459,7 +460,7 @@ pub fn credited_idle_cut_repaints_settled_answer_without_keyboard_input_test() {
       })
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, peer: tui_model.Replaying),
+      shared: session_model.Shared(..base.shared, peer: session_model.Replaying),
     )
   }
   let script =
@@ -570,7 +571,7 @@ fn replay_run(source: List(attempt.Event)) {
       })
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, peer: tui_model.Replaying),
+      shared: session_model.Shared(..base.shared, peer: session_model.Replaying),
     )
   }
   let script =
@@ -989,9 +990,9 @@ fn waiting_model(source) {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("test", None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
-        peer: tui_model.Replaying,
+        peer: session_model.Replaying,
         channel: Some(channel),
         pending_submission: Some(source),
         attachments: [composer.Attachment("unchanged attachment", 5)],
@@ -1021,7 +1022,7 @@ fn finish_model(model, remaining) {
 }
 
 pub fn unsent_composer_locks_then_cancels_without_abort_or_draft_copy_test() {
-  let #(model, remaining) = waiting_model(tui_model.ComposerSubmission)
+  let #(model, remaining) = waiting_model(session_model.ComposerSubmission)
   let unchanged =
     list.fold(
       [
@@ -1056,19 +1057,19 @@ pub fn unsent_composer_locks_then_cancels_without_abort_or_draft_copy_test() {
 }
 
 pub fn unsent_composer_clears_only_on_send_and_overlay_preserves_unrelated_text_test() {
-  let #(model, remaining) = waiting_model(tui_model.ComposerSubmission)
+  let #(model, remaining) = waiting_model(session_model.ComposerSubmission)
   let sent = finish_model(model, remaining)
   assert sent.shared.pending_submission == None
   assert textarea.value(sent.view.input) == ""
   assert sent.shared.attachments == []
   assert sent.shared.next_id == model.shared.next_id + 1
-  let #(overlay, remaining) = waiting_model(tui_model.OverlaySubmission)
+  let #(overlay, remaining) = waiting_model(session_model.OverlaySubmission)
   let sent = finish_model(overlay, remaining)
   assert textarea.value(sent.view.input) == "visible draft"
   assert sent.view.submission_mode == tui_model.SteerNow
   assert sent.shared.attachments == overlay.shared.attachments
   assert sent.shared.pending_submission == None
-  let #(model, _) = waiting_model(tui_model.ComposerSubmission)
+  let #(model, _) = waiting_model(session_model.ComposerSubmission)
   let failed =
     inbound.accept_connection_message(
       model,
@@ -1081,11 +1082,11 @@ pub fn unsent_composer_clears_only_on_send_and_overlay_preserves_unrelated_text_
 }
 
 pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() {
-  let #(model, _) = waiting_model(tui_model.ComposerSubmission)
+  let #(model, _) = waiting_model(session_model.ComposerSubmission)
   let model =
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..model.shared,
         session: "A",
         nudges: Some(advisor_pending.Board("main", 1, ["Advice for A"], 1)),
@@ -1212,10 +1213,10 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("A", None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         session: "A",
-        peer: tui_model.Replaying,
+        peer: session_model.Replaying,
         channel: Some(sent),
       ),
       view: tui_model.View(
@@ -1249,7 +1250,7 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
     )
   assert adopted.shared.session == "B"
   assert adopted.shared.unconfirmed
-    == Some(tui_model.UnconfirmedSubmission("A", "prompt", 4))
+    == Some(session_model.UnconfirmedSubmission("A", "prompt", 4))
 
   // Existing Closed records carry the same outcome. Candidate-only closure
   // remains invisible, and a preceding Received close must not report twice.
@@ -1723,7 +1724,7 @@ pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
       backend.Tick,
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..base.shared,
           channel: Some(busy),
           scrollback: history,
@@ -1738,7 +1739,7 @@ pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
       backend.Tick,
       tui_model.Model(
         ..waiting,
-        shared: tui_model.Shared(..waiting.shared, channel: Some(ready)),
+        shared: session_model.Shared(..waiting.shared, channel: Some(ready)),
       ),
     )
   assert sent.shared.scrollback.request == history_view.Pending(10)
@@ -1755,7 +1756,7 @@ pub fn first_session_binds_the_unassigned_draft_once_test() {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, session: "", attachments: [
+      shared: session_model.Shared(..base.shared, session: "", attachments: [
         composer.Attachment("initial context", 7),
       ]),
       view: tui_model.View(

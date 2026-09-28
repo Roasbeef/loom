@@ -29,6 +29,7 @@ import tui/keymap
 import tui/model as tui_model
 import tui/pacing
 import tui/render
+import tui/session_model
 import tui/tick
 import tui/virtual_backend
 import tui/workspace
@@ -146,7 +147,7 @@ fn streamed_shifts() -> List(Int) {
   let model =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, transcript: [], records: []),
+      shared: session_model.Shared(..base.shared, transcript: [], records: []),
     )
   let script =
     virtual_backend.Script(
@@ -312,7 +313,11 @@ fn build_backlog() -> tui_model.Model {
     |> fn(model) {
       tui_model.Model(
         ..model,
-        shared: tui_model.Shared(..model.shared, transcript: [], records: []),
+        shared: session_model.Shared(
+          ..model.shared,
+          transcript: [],
+          records: [],
+        ),
       )
     }
     |> fn(model) { tui.update(backend.Resize(84, 24), model) }
@@ -429,7 +434,7 @@ pub fn the_idle_strand_snap_reveals_the_trailing_frame_test() {
   let idled =
     tui_model.Model(
       ..backlogged,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..backlogged.shared,
         strands: ended_strands,
         submitting: None,
@@ -463,7 +468,11 @@ pub fn a_backlog_past_the_catch_up_threshold_accelerates_test() {
     |> fn(model) {
       tui_model.Model(
         ..model,
-        shared: tui_model.Shared(..model.shared, transcript: [], records: []),
+        shared: session_model.Shared(
+          ..model.shared,
+          transcript: [],
+          records: [],
+        ),
       )
     }
     |> fn(model) { tui.update(backend.Resize(84, 60), at(model, 0)) }

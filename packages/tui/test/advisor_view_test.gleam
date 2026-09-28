@@ -43,6 +43,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 import tui_test/gateway
 
@@ -106,7 +107,7 @@ pub fn the_main_transcript_paints_all_delivered_advice_in_compact_mode_test() {
   let shown =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, records: [record]),
+      shared: session_model.Shared(..base.shared, records: [record]),
     )
     |> tui.update(backend.Tick, _)
   let #(buffer, _) = render.view(shown, geometry.rect_new(0, 0, 120, 30))
@@ -143,7 +144,7 @@ pub fn the_main_surface_shows_full_advisor_only_commentary_without_delivery_clai
   let shown =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         advisor_history: advisor_history.Board([quiet, block], None),
       ),
@@ -183,7 +184,7 @@ pub fn long_advisor_history_does_not_hide_the_live_primary_tail_test() {
   let model =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         transcript: [],
         records: [],
@@ -232,7 +233,7 @@ pub fn advisor_and_primary_rows_follow_durable_sequence_test() {
   let shown =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         transcript: [],
         records: [second, first],
@@ -281,7 +282,7 @@ pub fn stream_deltas_reuse_the_wrapped_advisor_history_test() {
   let settled =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         transcript: [],
         records: [],
@@ -304,7 +305,7 @@ pub fn stream_deltas_reuse_the_wrapped_advisor_history_test() {
     int.range(1, 21, settled, fn(model, count) {
       tui_model.Model(
         ..model,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..model.shared,
           streams: [
             transcript_line.Stream(
@@ -548,11 +549,14 @@ pub fn commentary_between_calls_splits_the_group_and_keeps_a_gap_test() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let model =
-    tui_model.Model(..base, shared: tui_model.Shared(..base.shared, records:))
+    tui_model.Model(
+      ..base,
+      shared: session_model.Shared(..base.shared, records:),
+    )
   let #(lines, _, _) =
     transcript_lines.record_lines(
       records,
-      tui_model.presentation(model),
+      session_model.presentation(model.shared),
       [],
       advisor_history.Board([commentary], None),
     )
@@ -620,7 +624,7 @@ pub fn commentary_between_calls_keeps_anchors_parallel_to_rows_test() {
   let reading =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         records: calls,
         advisor_history: advisor_history.Board([commentary], None),

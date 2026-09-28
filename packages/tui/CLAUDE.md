@@ -352,20 +352,44 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   Recorder))`. It imports the modules whose handles its variants carry
   (`attachment`, `connection`, `herdr`, `job`, `recording`,
   `step_effect`) and nothing that imports the model.
-- `tui/model`: the `Model` record, `Model(shared: TerminalShared, view:
-  View)`. `Shared(socket, recorder, source, replay_source)` is the session
-  state a second host would need (what the daemon said, what was sent and
-  not yet committed, the reads in flight, the presentation revisions) and
-  the four host handles, typed by its parameters: `channel` is
+- `tui/session_model`: the session state, `Shared(socket, recorder,
+  source, replay_source)`, the types it names (`Peer`, `Interrupt`,
+  `SubmissionSource`, `UnconfirmedSubmission`, `ConnectionBacklog`,
+  `GoalReport`), and the functions over `Shared` alone. `Shared` is what a
+  second host would need (what the daemon said, what was sent and not yet
+  committed, the reads in flight, the presentation revisions) and the four
+  host handles, typed by its parameters: `channel` is
   `Option(session_channel.Channel(socket, recorder))`, `replay_state` is
   `attempt_replay.State(socket, recorder)`, `inbox` and `replay_inbox` are
   `session_view/inbox` values keyed by `source` and `replay_source`, and
   `recorder` is `Option(recorder)`. The inboxes have separate source
   parameters because the terminal reads them from differently typed
-  subjects. `TerminalShared` binds the four to `connection.Connection`,
-  `recording.Recorder`, `Subject(connection_event.Message)` and
-  `Subject(attempt.Event)`; every reducer still takes `Model`, so it sees
-  the terminal's types (slice S2 of the step extraction).
+  subjects. `Shared.outbox` holds the `step_effect.Effect` values a
+  function over `Shared` decided, newest first, and is empty between calls.
+  The functions are the writers `append_system`, `append_error`,
+  `append_notice`, `invalidate_transcript`, `invalidate_frame`,
+  `mark_activity` (bumps `activity_revision` only), `hold_channel` (stores
+  the lane, queues its outputs as `Lane(..)`) and `record_arrival` (queues
+  `Recorded(..)`), and the readers `queue_owner`, `queue_namespace`,
+  `active_strand_live`, `active_strand_phase`, `active_interrupt`,
+  `is_known_strand` and `presentation`, which builds the
+  `transcript_lines.Presentation` the line builders read. The module
+  imports nothing of the terminal and sits below `tui/model`; slice S4 of
+  the step extraction renames it to `session_view/model`.
+- `tui/model`: the `Model` record, `Model(shared: TerminalShared, view:
+  View)`. `TerminalShared` binds `Shared`'s four parameters to
+  `connection.Connection`, `recording.Recorder`,
+  `Subject(connection_event.Message)` and `Subject(attempt.Event)`. Most
+  reducers still take `Model`; the reducer cut (slice S3, landed from the
+  helpers upward) moves them to `Shared` one layer at a time.
+  `hold_shared(model, shared)` is how a terminal reducer stores the result
+  of any function over `Shared`: it moves `Shared.outbox` into
+  `View.outbox`, wrapped as `effect.Step`, at the point of the call, so
+  lane effects keep their order with the terminal's own, and it resets
+  `View.quiet_for_ms` when `activity_revision` moved. The writers above
+  keep terminal forms here of the same names, each a `hold_shared` of the
+  shared call; the readers have none, so a caller passes `model.shared` to
+  the `session_model` function.
   `View` is the terminal's own state (screen size, composer, panels,
   overlays, the row projection's outputs, pacing, clocks and
   `View.wall_ms`, the daemon-control and attachment job slots, the step's
@@ -382,24 +406,19 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `agent_strip.State`), a parked strand's history window is
   `Shared.parked_scrollback` beside its editor in `View.strand_workspaces`,
   and the queue editor stays whole in `View`. The module also holds the
-  types the record names, and the helpers every reducer shares
-  (`append_system`, `append_error`, `invalidate_frame`,
-  `invalidate_transcript`, `mark_activity`, `queue_owner`,
-  `active_strand_phase`). Importers alias it as `tui_model`, because `model`
-  is the local variable in nearly every function and would shadow the module
-  name. Constructors stay unqualified. It also owns the effect outbox,
-  `View.outbox`, the step's one queue: `emit` queues an effect, `record`
-  queues an input's recording line when the terminal is recording,
-  `record_arrival` queues a channelless arrival's line as
-  `Step(Recorded(..))`, `start_step` stores an input's stamp and wall clock
-  reading and queues its recording line before the reducer runs, and
-  `hold_channel` stores a transitioned adopted lane and moves what it
-  queued into the outbox as `Step(Lane(..))`. `start_job` allocates a job key from
+  terminal's types the record names. Importers alias it as `tui_model`,
+  because `model` is the local variable in nearly every function and would
+  shadow the module name. Constructors stay unqualified. It also owns the
+  effect outbox, `View.outbox`, the step's one queue: `emit` queues an
+  effect, `record` queues an input's recording line when the terminal is
+  recording, `start_step` stores an input's stamp and wall clock reading
+  and queues its recording line before the reducer runs, and
+  `hold_shared` moves in what a function over `Shared` queued, such as the
+  `Step(Lane(..))` outputs `hold_channel` takes from a transitioned lane
+  and the `Step(Recorded(..))` line `record_arrival` queues for a
+  channelless arrival. `start_job` allocates a job key from
   `Model.view.next_job` and queues its `StartJob`; `allocate_job` only
   allocates, for a test that stands a slot in for a running job.
-  `presentation` builds the `transcript_lines.Presentation` the line
-  builders read, so this is the one place that knows which model fields
-  they depend on.
 - `tui/runtime`: `take`, `perform`, `settle` and `flush`, which empty a
   step's outbox and perform what it held, in the order it was decided,
   threading the job table through and storing it back on the model;
@@ -430,7 +449,11 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   the adopted inbox or the waiting attempt whose subject it names and is
   otherwise not filed; a job reply goes to the slot that holds its key or
   is dropped with its resource released through `tui_model.release`.
-  It never drops a frame for capacity.
+  It never drops a frame for capacity. The session half is over `Shared`
+  alone: `file_frame` files a frame into the adopted inbox when its source
+  matches and refuses it otherwise, and `file_replayed` files a replayed
+  event. A refused frame is then offered to the attempt, which is terminal
+  state, over the whole model.
 - `tui/job`: background jobs as data, and pure. `Key` is allocated from
   `Model.view.next_job` and never reused; `Awaiting(reply)` is a slot's key and
   the replies received for it, and `admit` accepts a reply only under that
@@ -2039,8 +2062,11 @@ untouched.
   the clipboard sequence, reports to Herdr or appends to the recording.
   `session_channel` queues its writes, closes and recording notes as
   outputs; every reducer that transitions the adopted lane stores it through
-  `tui_model.hold_channel`, which moves those outputs into the outbox at
-  that point, and `attachment.poll` and `accept` return everything the
+  `hold_channel`, whose outputs reach the outbox at that point: the shared
+  form queues them on `Shared.outbox`, and `tui_model.hold_shared`, which
+  stores the result of every call into a function over `Shared`, moves them
+  into `View.outbox` before anything else is queued. `attachment.poll` and
+  `accept` return everything the
   candidate's lane queued with the rest of what they decided. The outbox is
   therefore the step's one queue, in the order the step decided things, and
   a lane stored any other way keeps outputs nothing collects: a later

@@ -22,6 +22,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 import tui_test/gateway
 
@@ -66,7 +67,7 @@ pub fn inspected_worker_notes_keep_the_main_draft_and_target_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, strands: roster()),
+      shared: session_model.Shared(..base.shared, strands: roster()),
       view: tui_model.View(
         ..base.view,
         input: textarea.state_from_string("draft for main"),
@@ -97,7 +98,7 @@ pub fn late_reply_for_another_inspected_strand_cannot_replace_notes_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     })
   let worker =
@@ -128,7 +129,7 @@ pub fn notebook_selection_follows_key_when_rows_reorder_or_disappear_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     })
   let first =
@@ -174,7 +175,7 @@ pub fn notes_own_the_surface_after_diff_at_wide_and_narrow_sizes_test() {
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, strands: roster()),
+      shared: session_model.Shared(..base.shared, strands: roster()),
       view: tui_model.View(
         ..base.view,
         diff_view: tui_model.DiffVisible,
@@ -213,7 +214,7 @@ pub fn raw_note_expansion_preserves_the_original_json_document_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     })
   let loaded =
@@ -235,7 +236,7 @@ pub fn changing_detail_or_closing_inspection_never_retargets_the_composer_test()
   let initial = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, strands: roster()),
+      shared: session_model.Shared(..base.shared, strands: roster()),
       view: tui_model.View(
         ..base.view,
         input: textarea.state_from_string("keep main draft"),
@@ -265,7 +266,7 @@ pub fn missing_notes_board_reports_unavailability_for_the_inspected_target_test(
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     })
   let rendered = shown(inspected, 80, 24)
@@ -290,7 +291,7 @@ pub fn changing_inspected_note_preserves_underlying_transcript_position_test() {
     inspect_worker_notes(
       tui_model.Model(
         ..reading,
-        shared: tui_model.Shared(..reading.shared, strands: roster()),
+        shared: session_model.Shared(..reading.shared, strands: roster()),
       ),
     )
   let loaded =
@@ -319,7 +320,7 @@ pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
         view: tui_model.View(..base.view, notes_open: True),
       )
     }
@@ -365,7 +366,7 @@ pub fn inspected_worker_todo_cell_reads_as_a_checklist_test() {
       let base = model()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, strands: roster()),
+        shared: session_model.Shared(..base.shared, strands: roster()),
       )
     })
   let value =

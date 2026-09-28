@@ -50,11 +50,10 @@ import tui/inbound
 import tui/job
 import tui/layout
 import tui/model.{
-  type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Attached,
-  Caches, DaemonSelector, DiffHidden, DiffVisible, FrameCache, GoalInspector,
-  Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older, OverlaySubmission,
-  PeerLinkManager, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Shared,
-  TerminalClipboard, View,
+  type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Caches,
+  DaemonSelector, DiffHidden, DiffVisible, FrameCache, GoalInspector, Model,
+  ModelSelector, Newer, NoClipboard, NoOverlay, Older, PeerLinkManager,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -66,6 +65,7 @@ import tui/queue_panel
 import tui/render
 import tui/selection
 import tui/session_control
+import tui/session_model.{Attached, OverlaySubmission, Shared}
 import tui/session_selector
 import tui/submit
 import tui/summary_panel
@@ -815,7 +815,9 @@ fn update_agent_inspector(
     keys.Char("o") if inspector.detail == agents.Messages ->
       open_agent_message_sender(model, inspector)
     keys.Enter ->
-      case tui_model.is_known_strand(model.shared.strands, inspector.selected) {
+      case
+        session_model.is_known_strand(model.shared.strands, inspector.selected)
+      {
         True -> submit.switch_active_strand(model, inspector.selected)
         False ->
           Model(
@@ -954,7 +956,7 @@ fn open_agent_message_sender(
         ),
       )
     Some(item) ->
-      case tui_model.is_known_strand(model.shared.strands, item.source) {
+      case session_model.is_known_strand(model.shared.strands, item.source) {
         True -> submit.switch_active_strand(model, item.source)
         False ->
           Model(
@@ -2153,7 +2155,11 @@ fn select_queue_input(model: Model) -> Model {
   case list.first(list.drop(layout.queue_rows(model), state.selected)) {
     Ok(row) ->
       case
-        retained_other_draft(state.draft, row, tui_model.queue_namespace(model)),
+        retained_other_draft(
+          state.draft,
+          row,
+          session_model.queue_namespace(model.shared),
+        ),
         row.editing
       {
         True, _ ->
@@ -2170,8 +2176,8 @@ fn select_queue_input(model: Model) -> Model {
         False, snapshot_view.Editable -> {
           let fetch =
             queue_editor.Fetch(
-              tui_model.queue_owner(model),
-              tui_model.queue_namespace(model),
+              session_model.queue_owner(model.shared),
+              session_model.queue_namespace(model.shared),
               row.strand,
               row.id,
             )
@@ -2233,7 +2239,7 @@ fn reconcile_queue_draft(model: Model) -> Model {
   case state.draft {
     Some(draft) if draft.delivery != queue_editor.Saving -> {
       use <- bool.guard(
-        draft.namespace != tui_model.queue_namespace(model),
+        draft.namespace != session_model.queue_namespace(model.shared),
         Model(
           ..model,
           view: View(
@@ -2247,8 +2253,8 @@ fn reconcile_queue_draft(model: Model) -> Model {
       )
       let fetch =
         queue_editor.Fetch(
-          tui_model.queue_owner(model),
-          tui_model.queue_namespace(model),
+          session_model.queue_owner(model.shared),
+          session_model.queue_namespace(model.shared),
           draft.document.strand,
           draft.document.id,
         )
@@ -2275,8 +2281,8 @@ fn save_queue_draft(model: Model) -> Model {
     Some(draft), Some(channel) if draft.delivery == queue_editor.Editable -> {
       let available =
         session_channel.mutation_available(channel)
-        && tui_model.queue_owner(model) == draft.owner
-        && tui_model.queue_namespace(model) == draft.namespace
+        && session_model.queue_owner(model.shared) == draft.owner
+        && session_model.queue_namespace(model.shared) == draft.namespace
       case available {
         True ->
           outbound.send_frame(

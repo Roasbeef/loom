@@ -29,6 +29,7 @@ import tui/inbound
 import tui/layout
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 import tui_test/gateway
 
@@ -210,7 +211,7 @@ fn model() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..base.shared,
       transcript: [],
       records: [],

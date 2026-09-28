@@ -63,9 +63,9 @@ import tui/layout
 import tui/live_tail
 import tui/markdown
 import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, DaemonSelector, Disconnected,
-  FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
-  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
+  type Model, AgentInspector, ApprovalInspector, DaemonSelector, FrameCache,
+  GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager, PromptNext,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -73,6 +73,7 @@ import tui/peer_links
 import tui/queue_editor
 import tui/queue_panel
 import tui/selection
+import tui/session_model.{Disconnected}
 import tui/session_selector
 import tui/summary_panel
 import tui/theme
@@ -1779,7 +1780,7 @@ fn recipient_label(model: Model) -> String {
 fn input_behavior(model: Model) -> String {
   use <- bool.guard(
     model.shared.captured != None
-      && !tui_model.is_known_strand(
+      && !session_model.is_known_strand(
       model.shared.strands,
       model.shared.active_strand,
     ),
@@ -1794,7 +1795,7 @@ fn input_behavior(model: Model) -> String {
     },
   )
   case
-    tui_model.active_interrupt(model),
+    session_model.active_interrupt(model.shared),
     layout.active_status_label(model),
     model.view.submission_mode
   {

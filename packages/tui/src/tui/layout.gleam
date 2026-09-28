@@ -39,12 +39,12 @@ import tui/agent_strip
 import tui/agents
 import tui/diff_panel
 import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, Attached, DaemonSelector,
-  DiffHidden, DiffVisible, Disconnected, GoalInspector, ModelSelector, NoOverlay,
-  PeerLinkManager, Preview, Replaying,
+  type Model, AgentInspector, ApprovalInspector, DaemonSelector, DiffHidden,
+  DiffVisible, GoalInspector, ModelSelector, NoOverlay, PeerLinkManager,
 } as tui_model
 import tui/queue_editor
 import tui/queue_panel
+import tui/session_model.{Attached, Disconnected, Preview, Replaying}
 import tui/todo_panel
 
 /// The area inside a one-cell rounded border.
@@ -602,7 +602,7 @@ pub fn activity_glyph(frame: Int) -> String {
 /// it as a completed response would make a steerable turn look stuck.
 @internal
 pub fn active_status_label(model: Model) -> Option(String) {
-  case tui_model.active_strand_phase(model) {
+  case session_model.active_strand_phase(model.shared) {
     None -> None
     Some("assistant") ->
       Some(case active_stream_kind(model) {
@@ -650,7 +650,7 @@ fn running_tool_label(model: Model) -> String {
 }
 
 fn active_stream_kind(model: Model) -> Option(String) {
-  transcript_lines.display_streams(tui_model.presentation(model))
+  transcript_lines.display_streams(session_model.presentation(model.shared))
   |> list.reverse
   |> list.find(fn(stream) {
     let Stream(strand:, ..) = stream

@@ -35,16 +35,18 @@ import tui/job
 import tui/layout
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
-  Attached, ComposerSubmission, DiffHidden, DiffVisible, Disconnected, Interrupt,
-  Model, ModelSelector, NoOverlay, OverlaySubmission, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, Shared,
-  SteerNow, View,
+  DiffHidden, DiffVisible, Model, ModelSelector, NoOverlay, PromptNext,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
 import tui/queue_editor
 import tui/session_control
+import tui/session_model.{
+  Attached, ComposerSubmission, Disconnected, Interrupt, OverlaySubmission,
+  Preview, Replaying, Shared,
+}
 import tui/surfaces
 
 /// Opens the agent workspace on the active strand.
@@ -300,7 +302,7 @@ fn submit_text(model: Model) -> Model {
     command.Diff -> open_diff(cleared)
     command.Details -> toggle_details(cleared)
     command.Strand(name) ->
-      case tui_model.is_known_strand(cleared.shared.strands, name) {
+      case session_model.is_known_strand(cleared.shared.strands, name) {
         True ->
           tui_model.append_system(
             switch_active_strand(cleared, name),
@@ -670,10 +672,13 @@ fn history_item(history: List(String), index: Int) -> Option(String) {
 }
 
 fn send_user_text(cleared: Model, text: String, before: Model) -> Model {
-  case tui_model.active_interrupt(before) {
+  case session_model.active_interrupt(before.shared) {
     Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
     None ->
-      case tui_model.active_strand_live(before), before.view.submission_mode {
+      case
+        session_model.active_strand_live(before.shared),
+        before.view.submission_mode
+      {
         False, _ -> send_prompt(cleared, text)
 
         // A prompt aimed at a running strand is held by the daemon and run
@@ -694,7 +699,7 @@ fn send_explicit_steer(cleared: Model, text: String, before: Model) -> Model {
   use <- bool.lazy_guard(before.shared.channel != None, fn() {
     send_steer(cleared, text)
   })
-  case tui_model.active_interrupt(before) {
+  case session_model.active_interrupt(before.shared) {
     Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
     None -> send_steer(cleared, text)
   }
@@ -715,7 +720,7 @@ fn hold_or_send_interrupt(
   use <- bool.lazy_guard(before.shared.channel != None, fn() {
     inbound.send_prompt_to(cleared, strand, text)
   })
-  case tui_model.active_strand_live(before) {
+  case session_model.active_strand_live(before.shared) {
     False ->
       inbound.send_prompt_to(
         Model(..cleared, shared: Shared(..cleared.shared, interrupt: None)),
@@ -802,8 +807,8 @@ fn steering_submission(model: Model, text: String) -> Submission {
 @internal
 pub fn toggle_submission_mode(model: Model) -> Model {
   case
-    tui_model.active_interrupt(model),
-    tui_model.active_strand_live(model),
+    session_model.active_interrupt(model.shared),
+    session_model.active_strand_live(model.shared),
     model.view.submission_mode
   {
     Some(_), _, _ ->
@@ -838,7 +843,10 @@ pub fn toggle_submission_mode(model: Model) -> Model {
 /// Sends an interrupt for the active strand's running operation, once.
 @internal
 pub fn interrupt_active(model: Model) -> Model {
-  case tui_model.active_strand_phase(model), tui_model.active_interrupt(model) {
+  case
+    session_model.active_strand_phase(model.shared),
+    session_model.active_interrupt(model.shared)
+  {
     None, _ ->
       Model(
         ..model,

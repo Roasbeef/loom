@@ -20,6 +20,7 @@ import tui/daemon/selection as daemon_selection
 import tui/inbound
 import tui/model as tui_model
 import tui/runtime
+import tui/session_model
 import tui_test/pushed
 
 // A daemon whose build differs from the one the model was created with is
@@ -34,7 +35,7 @@ pub fn the_notice_compares_with_the_build_read_at_creation_test() {
   let differing =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         client_build: build_identity.Identity("1.0.0", "abc123"),
       ),
@@ -45,7 +46,7 @@ pub fn the_notice_compares_with_the_build_read_at_creation_test() {
   let matching =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         client_build: build_identity.Identity("9.9.9", "feedface"),
       ),

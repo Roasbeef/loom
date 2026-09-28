@@ -20,6 +20,7 @@ import tui/inbound
 import tui/layout
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/submit
 import tui/workspace
 import tui_test/pushed
@@ -190,7 +191,7 @@ fn model_with_patch() {
       fn() { 0 },
     )
   tui_model.Model(
-    shared: tui_model.Shared(..base.shared, strands: [], worktree: state),
+    shared: session_model.Shared(..base.shared, strands: [], worktree: state),
     view: tui_model.View(
       ..base.view,
       diff_view: tui_model.DiffVisible,
@@ -259,7 +260,7 @@ pub fn diff_navigation_labels_status_and_selected_extent_test() {
   let model =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, worktree: observed),
+      shared: session_model.Shared(..base.shared, worktree: observed),
     )
     |> key("ctrl+d")
     |> fn(model) { tui.update(backend.Tick, model) }
@@ -322,7 +323,7 @@ pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() 
   let focused =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         worktree: worktree_view.State(
           ..state,
@@ -429,7 +430,7 @@ pub fn ready_observation_replaces_cached_patch_without_resize_test() {
   let waiting =
     tui_model.Model(
       ..previous,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..previous.shared,
         worktree: worktree_view.State(
           ..previous.shared.worktree,
@@ -585,7 +586,7 @@ fn apply_incoming(
     updates,
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(..model.shared, channel: Some(channel)),
+      shared: session_model.Shared(..model.shared, channel: Some(channel)),
     ),
     inbound.apply_channel_update,
   )
@@ -600,7 +601,7 @@ fn issue(model: tui_model.Model, command: String) -> #(tui_model.Model, Int) {
     inbound.apply_channel_update(
       tui_model.Model(
         ..model,
-        shared: tui_model.Shared(..model.shared, channel: Some(channel)),
+        shared: session_model.Shared(..model.shared, channel: Some(channel)),
       ),
       session_channel.Submission(disposition),
     ),
@@ -613,7 +614,7 @@ pub fn unrelated_correlated_and_pushed_errors_do_not_cancel_a_worktree_observati
   let model =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         worktree: worktree_view.request(worktree_view.new(), ""),
       ),

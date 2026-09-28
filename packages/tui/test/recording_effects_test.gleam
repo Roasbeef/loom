@@ -36,6 +36,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/recording
 import tui/runtime
+import tui/session_model
 import tui/step_effect
 import tui/terminal_lane
 import tui/virtual_backend
@@ -286,9 +287,9 @@ pub fn replaying_a_recording_queues_no_recording_effect_test() {
       )
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
-        peer: tui_model.Replaying,
+        peer: session_model.Replaying,
         session: "replay",
       ),
     )
@@ -335,10 +336,10 @@ fn scripted_session(path: String) -> String {
     let base =
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         recorder: Some(recorder),
-        peer: tui_model.Attached,
+        peer: session_model.Attached,
         channel: Some(channel),
         session: "A",
       ),
@@ -429,10 +430,10 @@ fn captured_session(recorder: recording.Recorder) {
           workspace.Context(path: "/w/demo", branch: None),
         )
       tui_model.Model(
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..base.shared,
           recorder: Some(recorder),
-          peer: tui_model.Attached,
+          peer: session_model.Attached,
           session: "A",
         ),
         view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),

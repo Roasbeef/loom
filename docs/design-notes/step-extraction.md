@@ -10,6 +10,10 @@ S1, and where S1 renamed a cited type the citation names its successor
 The field table still describes the record as it stood before the split.
 S2 has since made the shared record's host handles type parameters; where
 it departed from this note, the S2 entry in section 5 says how and why.
+S3 was re-sliced on 2026-09-28, with the owner's approval, after a census
+found that section 3's lists miss much of what the lane and event folds
+reach; section 5's S3 entry gives the census and the new landings, and
+S3a′ has landed.
 
 Issue #530 left the terminal and the web view sharing the session lane and
 the transcript projection but not the step. The terminal reduces with
@@ -33,17 +37,17 @@ template, the web shell reads `now()` once at the top of its `update`, and
 ## Where the step is today
 
 The terminal's whole update is `runtime.settle(step(runtime.message(event,
-model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1742`
+model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1745`
 (`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:48` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
-(`packages/tui/src/tui.gleam:1833` (`apply_input`),
-`packages/tui/src/tui.gleam:1913` (`settle_update`)), or an `Arrived`
-that `admission.admit` only files (`tui/admission.gleam:60` (`admit`)).
+(`packages/tui/src/tui.gleam:1836` (`apply_input`),
+`packages/tui/src/tui.gleam:1916` (`settle_update`)), or an `Arrived`
+that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
-(`tui/model.gleam:448` (`Model`)), whose `view` field already holds the
-terminal's etui render caches (`tui/model.gleam:380` (`Caches`)). The lane's
+(`tui/model.gleam:346` (`Model`)), whose `view` field already holds the
+terminal's etui render caches (`tui/model.gleam:278` (`Caches`)). The lane's
 outputs join the step's one outbox through `hold_channel`
-(`tui/model.gleam:1096` (`hold_channel`)), and `runtime.take` returns
+(`tui/model.gleam:725` (`hold_channel`)), and `runtime.take` returns
 them with the model (`tui/runtime.gleam:355` (`take`)).
 
 The web view holds the lane, an inbox and what it derived from the last
@@ -112,8 +116,8 @@ and its interleavings are the attachment worker's and the gateway's
 ### The terminal's `Model`
 
 152 fields, in the record's own order as it stood before S1, which split
-it into `Shared` (`tui/model.gleam:493`) and `View`
-(`tui/model.gleam:772`). The counts: 80 shared, 65
+it into `Shared` (`tui/session_model.gleam:94`) and `View`
+(`tui/model.gleam:379`). The counts: 80 shared, 65
 terminal, 4 handles, 3 split.
 
 | Field | Group | Reason |
@@ -122,7 +126,7 @@ terminal, 4 handles, 3 split.
 | `width`, `height` | b | The terminal's size. |
 | `palette` | b | Launch-time colour capability. |
 | `input` | b | An etui `TextAreaState`; the web's editor is the browser's. |
-| `strand_workspaces` | split | The parked `scrollback` per strand is the session's history window and moves to a shared `Dict(#(session, strand), history_view.State)`; the editor, its history, the offset, anchors and height stay terminal; the record is `StrandWorkspace` (`tui/model.gleam:341`). |
+| `strand_workspaces` | split | The parked `scrollback` per strand is the session's history window and moves to a shared `Dict(#(session, strand), history_view.State)`; the editor, its history, the offset, anchors and height stay terminal; the record is `StrandWorkspace` (`tui/model.gleam:239`). |
 | `restored_workspace` | b | A viewport endpoint the next projection restores. |
 | `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`tui/submit.gleam:448` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
 | `history`, `history_index`, `history_draft` | b | The composer's command history. |
@@ -168,7 +172,7 @@ terminal, 4 handles, 3 split.
 | `session`, `session_label` | a | Identity and catalogue name. |
 | `local_options` | b | The launch's options, read by session creation. |
 | `inbox` | c | `Inbox(source, Message)`; the source is the terminal's subject and the web's `Nil`. |
-| `peer` | a | `Attached`, `Disconnected`, `Preview`, `Replaying`; reducers branch on it, and the type is `Peer` (`tui/model.gleam:222`). The web is always `Attached`. |
+| `peer` | a | `Attached`, `Disconnected`, `Preview`, `Replaying`; reducers branch on it, and the type is `Peer` (`tui/session_model.gleam:372`). The web is always `Attached`. |
 | `candidate` | b | The provisional attachment: a lane, a `Subject(Nil)` and an inbox inside a job slot, `attachment.Status` (`tui/attachment.gleam:92`). |
 | `channel` | c | `Option(Channel(socket, recorder))`. |
 | `captured` | a | The last cut and its view. |
@@ -186,26 +190,26 @@ terminal, 4 handles, 3 split.
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
 | `agent_rail_visible` | b | A pane toggle. |
-| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/model.gleam:1539`), and `advance_generation_clock` checks it (`tui/tick.gleam:328`); a page will toggle it too. |
+| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/session_model.gleam:804`), and `advance_generation_clock` checks it (`tui/tick.gleam:357`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
 | `streams`, `tool_tails` | a | The live answer and tool tails. |
 | `reading_lines` | b | Frozen transient rows while reading above the tail. |
 | `scroll_offset` | b | The viewport. |
-| `render_revision` | a | A presentation revision shared reducers bump (`tui/model.gleam:1457` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
+| `render_revision` | a | A presentation revision shared reducers bump (`tui/session_model.gleam:562` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
 | `rendered_revision`, `rendered_row_count`, `revealed_rows`, `rendered_anchors`, `rendered_gutters`, `record_gutters` | b | The row projection's outputs. |
 | `compact_call_cache`, `compact_entry_cache` | a | Line caches keyed by `transcript_line.Line`, read by the shared line builders through `Presentation`. |
 | `pending_records` | a | Legacy entries awaiting append. |
 | `record_cache_valid` | a | Today a flag cleared at twelve write sites; it becomes a counter the terminal compares, in the shape of `record_cache_epoch`. |
 | `record_cache_width`, `record_cache_strand`, `record_cache_details` | b | What the record rows were built for. |
-| `frame_revision` | a | A presentation revision (`tui/model.gleam:1330` (`invalidate_frame`)); every `append_system` bumps it. |
+| `frame_revision` | a | A presentation revision (`tui/session_model.gleam:581` (`invalidate_frame`)); every `append_system` bumps it. |
 | `frame_debt` | b | Frame pacing. |
 | `monotonic_time_ms`, `transport_time_ms` | b | The host's clocks; the shell reads them into the stamp. |
 | `stamp` | a | The readings the step applies at. |
 | `terminal` | b | This terminal's identity in a creation key. |
 | `client_build` | a | The build the mismatch line compares; data, read once. |
 | `last_frame_ms` | b | Frame pacing. |
-| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/model.gleam:1069` (`mark_activity`)); the terminal's quiet timer reads it. |
+| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/session_model.gleam:599` (`mark_activity`)); the terminal's quiet timer reads it. |
 | `quiet_for_ms` | b | Idle pacing. |
 | `connection_backlog` | a | Set by the shared drain from the inbox it holds (`tui/inbound.gleam:1140` (`drain_connection`)); the terminal's poll reads it. |
 | `recorder` | c | `Option(recorder)`. |
@@ -213,7 +217,7 @@ terminal, 4 handles, 3 split.
 | `herdr_reporter`, `herdr_published` | b | The pane reporter, a host handle the terminal alone performs against; it stays in the terminal's record rather than becoming a type parameter because no shared reducer names it. |
 | `outbox` | a | `List(Effect(socket, recorder))`; the terminal moves it into its own outbox at each call boundary, as `hold_channel` does for the lane. |
 | `next_job`, `running` | b | Job keys and the runtime's table. |
-| `record_cache_epoch` | a | Already the counter shape (`tui/model.gleam:745` (`record_cache_epoch`)). |
+| `record_cache_epoch` | a | Already the counter shape (`tui/session_model.gleam:346` (`record_cache_epoch`)). |
 | `view` | b | The etui caches themselves. |
 
 The shared record therefore holds no etui type, no `Subject`, no weft
@@ -393,12 +397,12 @@ entry points above gain the parameter with it.
 
 `Effect` is two variants because those are the two effects the shared
 reducers decide. Every `Channel` effect comes through `hold_channel`
-(`tui/model.gleam:1096` (`hold_channel`)), and the one `Record` a shared
+(`tui/session_model.gleam:621` (`hold_channel`)), and the one `Record` a shared
 reducer queues is the channelless arrival
 (`tui/inbound.gleam:1187` (`handle_connection_message`), its `None`
 arm). The input's own recording line is queued by `start_step` before
 the reducer runs
-(`tui/model.gleam:1257` (`start_step`)); the terminal's shell keeps
+(`tui/model.gleam:871` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
 terminal maps `Recorded(recorder, message)` to
 `recording.append(recorder, recording.Arrived(message))`, which writes the
@@ -417,7 +421,7 @@ fields the adoption arm resets today (`tui/interaction.gleam:236`
 `Attached`. `next_due` is
 `option.then(model.channel, session_channel.next_due)`; a host that has
 other reasons to wake, as the terminal does, combines it with its own
-(`tui/tick.gleam:656` (`lane_wait`)).
+(`tui/tick.gleam:647` (`lane_wait`)).
 
 ### The shells
 
@@ -498,7 +502,9 @@ the same points.
 ### Reducers that move whole
 
 These read and write shared fields only, or read a terminal field that
-the split turns into a shared one:
+the split turns into a shared one. The list is incomplete for the lane and
+event folds and the tick; section 5's S3 entry lists the terminal state
+they reach that it misses.
 
 - The lane fold: `tick_channel`, `apply_channel_update`, `reconcile_cut`,
   `request_decisions`, `apply_cut` and `render_cut`
@@ -516,7 +522,7 @@ the split turns into a shared one:
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
 - The command arms: `interrupt_active` (`tui/submit.gleam:840`),
-  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:1038`),
+  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:1046`),
   `select_model`, `decide` (`tui/inbound.gleam:1112`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from
@@ -624,7 +630,7 @@ The worst cases in the code, and the cut for each:
    `Acted(Decide(id, seq, choice))`, with `AllowForSession` mapped through
    `operator.Choice`, which already has it.
 
-7. **`settle_update`** (`packages/tui/src/tui.gleam:1913`
+7. **`settle_update`** (`packages/tui/src/tui.gleam:1916`
    (`settle_update`)) runs nine calls after every event. Three are
    shared and move into `step.update`'s own settle: `sync_context`,
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
@@ -639,7 +645,7 @@ The worst cases in the code, and the cut for each:
    `apply_input` describes keeps its shape: the shared `update` applies
    its settle to a parameter, and the terminal's `settle_update` applies
    its remaining steps to `updated` as it does now
-   (`packages/tui/src/tui.gleam:1833` (`apply_input`)).
+   (`packages/tui/src/tui.gleam:1836` (`apply_input`)).
 
 8. **The tick** (`tui/tick.gleam:126` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
@@ -648,7 +654,7 @@ The worst cases in the code, and the cut for each:
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
    (`tui/inbound.gleam:3445` (`tick_strip`)) reads the strip's focus and
-   stays; `advance_cache_outlook` (`tui/tick.gleam:403`
+   stays; `advance_cache_outlook` (`tui/tick.gleam:419`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
    bookkeeping stays terminal (`tui/tick.gleam:146` (`settle_tick`)).
@@ -750,23 +756,193 @@ effects comes back in S3, with `hold_shared`, when a reducer first runs
 over `Shared` alone. `Stamp` lost `wall_ms` as planned: `msg.Input`
 carries it beside the stamp and the step stores it as `View.wall_ms`.
 
-**S3: the shared `Msg` and the reducer cut.** The largest semantic slice,
-in three landings. *S3a:* `session_view`-shaped `Msg`, `Event` and
-`Command` types in `tui/msg`; the frame and replay arms of admission take
-`Shared`; the lane fold, event fold and tick clocks take and return
-`Shared`, with the terminal writes in `render_cut`, the `Failed` arm and
-`select_workspace` pulled out into `settle_update` edges. *S3b:* the
-command arms and `apply_submission` take `Shared`; `submit_text` splits
-into the shell's parse and the shared dispatch; the approval inspector's
-open and close become edges. *S3c:* the `service_*` reads and the
-`sync_*` edges take `Shared`, and `step.update`'s own settle is formed.
+**S3: the reducer cut.** The largest semantic slice. It was planned as
+three landings, S3a to S3c, and re-sliced into five, S3a′ to S3e′, before
+any code landed. The owner approved the re-slice on 2026-09-28.
+
+*Why it was re-sliced.* The plan had S3a cut the lane fold and the event
+fold down to `Shared`, with three terminal writes pulled out as edges
+(`render_cut`, the `Failed` arm and `select_workspace`), and left the
+submission bookkeeping to S3b and the auxiliary reads to S3c. The fold
+cannot be cut first. `tick_channel`, `apply_channel_update` and
+`apply_event` call each other, so everything they reach must take
+`Shared` in the same landing, and a function over `Shared` cannot call a
+function over the whole model. A census of what the fold reaches, taken
+on `main` at `7e0e8be7c`, found two kinds of problem.
+
+The first kind is calls into reducers the plan gave to later landings:
+
+- `outbound.apply_submission`, `send_frame`, `send_via`,
+  `discard_own_turn` and `mutation_refusal`, planned for S3b;
+- `surfaces.receive_jobs`, `receive_goal`, `receive_advisor_nudges`,
+  `retire_delivered_nudges`, `refuse_goal` and `service_worktree_read`,
+  planned for S3c;
+- `reconcile_cut` calls `request_visible_worktree`, which reads
+  `layout.diff_shown`, and which the plan turned into an edge only in
+  `settle_update`;
+- `reconcile_cut`, `apply_cut` and the `LookedUp` arm call
+  `close_settled_approval` and `present_pending_approval`, which the plan
+  made edges in S3b.
+
+The second kind is terminal state the fold reads or writes that section 3
+does not list:
+
+- the queue editor, written in `apply_channel_update` (the
+  `edit_queued_input` acknowledgement, `UnknownOutcome` and `Failed`), in
+  `apply_event`'s `QueuedInputSnapshot` arm, in `retain_queue_selection`,
+  in `apply_request_refused` and in `apply_submission`. S1 was to split
+  `queue_editor` and kept it whole in `View` instead;
+- `agent_summary`, written in `render_cut` and in the `FullSnapshot`,
+  `StrandsSnapshot` and `OperationChanged` arms. S1 was to derive it at
+  paint time and kept it as a `View` field instead;
+- overlay and panel state: the notes selection and scroll in the
+  `NotesSnapshot` arm, through `render.selected_note`,
+  `surfaces.notes_target` and `surfaces.notes_surface`; the model
+  selector's list in `ModelsSnapshot`; `reconcile_agent_message_selection`;
+  `inspect_looked_up`'s `inspecting_approval`; the goal inspector in
+  `receive_goal` and `refuse_goal`; and `summary_job_selected` in
+  `receive_jobs`;
+- `View.daemon_host`, read by `render_cut` for the build-mismatch lines;
+- the composer and `strand_workspaces`, written by
+  `restore_returned_draft` (section 3 plans a shared `returned_drafts`);
+- `local_options` and `reconnect`, read by `begin_reconnect`, which also
+  starts a job (section 3 plans an edge);
+- `quiet_for_ms`, written by `mark_activity` at six sites in the fold;
+- `record_gutters` and `scroll_offset`, written by the `FullSnapshot` arm;
+- in the tick, `drain_replay` calls `select_workspace`, `apply_cut` and
+  `apply_channel_update` and writes `note_selected`, `prompted_approvals`,
+  `inspecting_approval` and `scroll_offset`; and
+  `advance_activity_indicator` writes `activity_frame`, which section 3
+  says it does not.
+
+So cutting the fold first would have brought most of S3b and S3c, and the
+two record splits S1 left, into one pull request. The re-slice orders the
+landings by what calls what, from the functions the fold calls up to the
+fold and then the commands above it. It also picks up the S1 debt: the
+`queue_editor` split and the `agent_summary` derivation land in S3b′.
+
+*S3a′: `hold_shared` and the helpers over `Shared`.* The shared record
+gets an outbox of step effects and `hold_shared`, the discipline that
+drains it; the model helpers that touch only session state take
+`Shared`; admission's frame and replay arms take `Shared`; and the tick's
+session clocks take `Shared`.
+
+*S3b′: the record shapes S1 left.* `queue_editor` splits into its lane
+correlation (`fetch`, `awaiting`, `request_id`), which moves to `Shared`,
+and its editor, which stays in `View`. `agent_summary` is derived at paint
+time. `returned_drafts` becomes a shared field, and the daemon's build
+becomes shared data rather than a read of `View.daemon_host`. These are
+field-shape changes; no reducer changes its signature.
+
+*S3c′: what the fold calls.* The submission bookkeeping (`send_frame`,
+`send_via`, `apply_submission`, `discard_own_turn` and
+`mutation_refusal`) takes `Shared`, with the composer clear as the edge
+section 3 describes. The `surfaces` receivers (`receive_jobs`,
+`receive_goal`, `receive_advisor_nudges`, `retire_delivered_nudges` and
+`refuse_goal`) and the `service_*` reads take `Shared`, with the goal
+inspector and the summary's job cursor as edges.
+
+*S3d′: the fold.* The lane fold, the event fold and `drain_replay` take
+and return `Shared`. Every terminal write listed in the census becomes an
+edge in `settle_update`: the approval inspector's open and close and
+`inspect_looked_up`; the notes, agent, model-selector and goal overlays;
+`cache_outlook`; the workspace park and prune (`select_workspace`); the
+reconnect on `Failed` and `Closed`; the visible-worktree refresh; and the
+returned drafts.
+
+*S3e′: the commands.* The `session_view`-shaped `Msg`, `Event` and
+`Command` types land in `tui/msg`. The command arms (`interrupt_active`,
+`stop_strand`, `switch_active_strand`, `select_model`, `decide`,
+`send_prompt_to`, `cancel_pending` and `service_history`) take `Shared`.
+`submit_text` splits into the shell's parse and the shared dispatch, with
+`command.Command` split into surface and session variants (question 7).
+`step.update`'s own settle is formed from `sync_context`,
+`sync_advisor_nudges` and `sync_goal`.
+
 *Proves:* after each landing, the `tui` suite, `admission_test`'s
 generated runs, `poll_timeout_test`, `runtime_receive_test`,
-`session_pushed_test`, the two replay checks, and `erlc +time` on
-`tui`, `tui@inbound`, `tui@interaction` and `tui@submit` against the
-figures in the phase 3 addendum. *Size:* `inbound`, `outbound`, `submit`,
-`surfaces`, `tick`, `interaction`, `tui.gleam`; two to three thousand
-lines moved between functions, few added.
+`session_pushed_test`, the two replay checks, and `erlc +time` on `tui`,
+`tui@inbound`, `tui@interaction` and `tui@submit` against the figures in
+the phase 3 addendum. *Size:* S3a′ is a new module and a few hundred
+changed lines. The later landings move two to three thousand lines
+between functions in `inbound`, `outbound`, `submit`, `surfaces`, `tick`,
+`interaction` and `tui.gleam`, and add few.
+
+*S3a′ as landed.* `Shared` and the six types it names (`Peer`,
+`Interrupt`, `SubmissionSource`, `UnconfirmedSubmission`,
+`ConnectionBacklog` and `GoalReport`) moved from `tui/model` into a new
+module, `tui/session_model`. The move was needed because a function over
+`Shared` and the terminal's function of the same name over the whole
+model cannot both live in `tui/model`, and the terminal's form cannot call
+into a module that imports `tui/model`. `tui/session_model` imports
+nothing of the terminal, and it is the module S4 renames to
+`session_view/model`. `TerminalShared`, the terminal's binding of the four
+handle parameters, stays in `tui/model`.
+
+`Shared.outbox` holds the `step_effect.Effect` values a function over
+`Shared` decides, newest first. `tui_model.hold_shared(model, shared)`
+stores the result of every such call: it moves the queued effects into
+`View.outbox`, wrapped as `effect.Step`, at the point of the call, and
+empties `Shared.outbox`. A lane close, a terminal `Discard` and a lane
+write therefore keep the order they were decided in. `hold_shared` also
+resets `View.quiet_for_ms` when `activity_revision` moved, because the
+shared `mark_activity` only bumps the revision.
+
+The writers `append_system`, `append_error`, `append_notice`,
+`invalidate_transcript`, `invalidate_frame`, `mark_activity`,
+`hold_channel` and `record_arrival` are defined over `Shared` in
+`tui/session_model`. Their forms in `tui/model` remain, each a
+`hold_shared` of the shared call, because most reducers still take the
+whole model. The readers `queue_owner`, `queue_namespace`,
+`active_strand_live`, `active_strand_phase`, `active_interrupt`,
+`is_known_strand` and `presentation` have no terminal form; their callers
+pass `model.shared`. Admission's shared half is `admission.file_frame`
+and `admission.file_replayed`; a frame the adopted inbox refuses is then
+offered to the attempt, as before. The tick's shared half is
+`advance_activity_clocks` and `advance_generation_clock`; the glyph's
+animation frame stays in the terminal's `advance_activity_indicator`.
+
+Two things the plan had in S3a are not in S3a′: the `session_view`-shaped
+message types, which land with their first user in S3e′, and every
+`settle_update` edge, which lands with S3d′.
+
+One effect is visible in the counters and not on screen. Before, a tick
+that moved both the glyph and the elapsed seconds bumped `frame_revision`
+once; each half now bumps it for its own change, so such a tick bumps it
+twice. The revision's only reader in the running client is
+`tick.refresh_frame_cache`, which runs in `settle_update` after the whole
+event and compares the revision for equality with the one it last
+painted. The two tests that read it compare with `>` across a reducer
+call, or with `==` across admission, which touches no clock. No reader
+runs between the two bumps, so none can tell them from one. `main` already
+bumped it twice in a tick that moved the generation clock under a shown
+reasoning row and the indicator, so the count per tick was never fixed.
+
+Nothing in the types stops a terminal reducer from storing a shared result
+without `hold_shared`. The test driver `tui_test/stepping.step` therefore
+asserts that `Shared.outbox` is empty after every step it drives, which
+catches a result stored without `hold_shared` when it is the last shared
+call of the step. When a later `hold_shared` in the same step follows it,
+that call flushes the stranded effects, which are then performed late
+rather than lost, and the check sees an empty outbox; the
+effect-order tests in `effects_test` and `recording_effects_test` are what
+cover that.
+
+Measured against `main` at `7e0e8be7c`. The `tui` suite passes 960 tests
+on both. Both committed recordings replay byte-identical with `--all
+--plain`, and the three synthesized `tui_perf` replays end on identical
+frames. The phase 3 admission mutation, "admission files a frame from any
+subject", fails the same eight tests on `main`, when applied to
+`file_frame`, and when applied to the terminal's routing of a refused
+frame (question 9). `scripts/tui_perf.sh`, median of three alternating
+runs: an idle tick costs 7,509 reductions and 9,411 words against 7,492
+and 9,359 (+0.2% and +0.6%), a 64-frame tick 224,668 reductions against
+223,884 (+0.35%), and a 500-frame burst 5,530 reductions per frame
+against 5,502 (+0.5%). With `TUI_PERF_MIN_HEAP=4000000` the reductions
+and words are the same to within 0.4%. `erlc +time` on `tui`,
+`tui@inbound`, `tui@interaction` and `tui@submit` is unchanged at 0.41 s,
+2.2 s, 2.5 s and 0.95 s, and `tui@model` fell from 0.25 s to 0.17 s; a
+clean build of the `tui` package takes 2.7 to 3.0 s on both.
 
 **S4: the move.** `tui/model`'s shared record and helpers,
 `tui/msg`, the frame and replay admission, `tui/inbound`, `tui/outbound`,
@@ -844,11 +1020,13 @@ them.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
-   `packages/tui/src/tui.gleam:1833` (`apply_input`)). S3 creates a third
+   `packages/tui/src/tui.gleam:1836` (`apply_input`)). S3 creates a third
    chain, the shell's edges. *Recommendation:* every S3 landing measures
    `erlc +time` on the generated modules and keeps the parameter boundary
    in each of the three chains; the `beam-compile-review` skill has the
-   procedure.
+   procedure. *Measured in S3a′:* unchanged; section 5's S3a′ entry has
+   the figures. S3a′ adds no settle chain, so the third one is S3d′'s to
+   measure.
 
 5. **Allocation per event.** Today one event copies one 152-field record
    per field write. After S1 a shared write copies an 80-field record and
@@ -888,7 +1066,10 @@ them.
    is wrong, and the phase 3 mutation "admission files a frame from any
    subject", which failed eight tests, must fail as many when applied to
    either. *Recommendation:* re-run the phase 3 mutation table's admission
-   rows in S3a and record the result in the ADR-014 addendum.
+   rows in S3a and record the result in the ADR-014 addendum. *Measured in
+   S3a′:* the mutation fails the same eight tests on `main`, applied to
+   `admission.file_frame`, and applied to the terminal's routing of a
+   refused frame; S6 carries the result into the addendum.
 
 10. **`details_expanded` as shared state.** It is a terminal toggle
     today, placed in the shared record because the shared projection and

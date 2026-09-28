@@ -28,6 +28,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
+import tui/session_model
 import tui/session_selector
 import tui/terminal_lane
 import tui/workspace
@@ -427,7 +428,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     tui.new_model(connection.new_inbox(), workspace.discover_from(workspace))
   let model =
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..model.shared,
         // Local startup clears the demonstration identity before selection.
         // This draft is unassigned until the first session is adopted.

@@ -31,10 +31,11 @@ import tui/inbound
 import tui/interaction
 import tui/job_runner
 import tui/layout
-import tui/model.{type Model, Caches, FrameCache, Model, Replaying, Shared, View} as tui_model
+import tui/model.{type Model, Caches, FrameCache, Model, View} as tui_model
 import tui/pacing
 import tui/render
 import tui/session_control
+import tui/session_model.{type Shared, Replaying, Shared}
 import tui/surfaces
 
 /// Starts the Herdr pane reporter when the launch environment carries a
@@ -191,12 +192,12 @@ fn settle_tick(model: Model, drained: Model) -> Model {
 pub fn adopted_backlog(
   before: Model,
   after: Model,
-) -> tui_model.ConnectionBacklog {
+) -> session_model.ConnectionBacklog {
   case
     buffered.sender(after.shared.inbox) == buffered.sender(before.shared.inbox)
   {
     True -> after.shared.connection_backlog
-    False -> tui_model.MailboxMayHoldMore
+    False -> session_model.MailboxMayHoldMore
   }
 }
 
@@ -315,43 +316,60 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
   }
 }
 
-// The tick is the one place the elapsed count moves, so it and the glyph
-// advance together and rendering stays a pure function of the model. The
-// time is the event's stamp. Going idle clears the start, so the next
-// activity starts from zero rather than from wherever the last one stopped.
+// The activity indicator has a session half and a terminal half. The
+// elapsed readings are session state a second host shows too, so
+// `advance_activity_clocks` moves them over the shared record alone; the
+// glyph's animation frame is the terminal's, so it advances here, after the
+// shared call. Each half marks the frame stale for its own change. When both
+// change in one tick the frame revision moves twice, which nothing can see:
+// its one reader, `refresh_frame_cache`, runs after the whole event and asks
+// only whether the revision differs from the one it last painted.
 fn advance_activity_indicator(model: Model) -> Model {
-  let model = advance_generation_clock(model)
-  case tui_model.active_strand_live(model) {
-    False ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          activity_started_ms: None,
-          activity_elapsed_s: 0,
-        ),
-      )
+  let model =
+    tui_model.hold_shared(model, advance_activity_clocks(model.shared))
+  case session_model.active_strand_live(model.shared) {
+    False -> model
     True -> {
-      let now = model.shared.stamp.now_ms
-      let started = option.unwrap(model.shared.activity_started_ms, now)
-      let activity_elapsed_s = { now - started } / 1000
       let activity_frame = model.view.activity_frame + 1
-      let advanced =
-        Model(
-          shared: Shared(
-            ..model.shared,
-            activity_started_ms: Some(started),
-            activity_elapsed_s:,
-          ),
-          view: View(..model.view, activity_frame:),
-        )
+      let advanced = Model(..model, view: View(..model.view, activity_frame:))
       case
         layout.activity_glyph(model.view.activity_frame)
         == layout.activity_glyph(activity_frame)
-        && activity_elapsed_s == model.shared.activity_elapsed_s
       {
         True -> advanced
         False -> tui_model.invalidate_frame(advanced)
+      }
+    }
+  }
+}
+
+// Advances the active strand's activity clock and the generation clock to
+// the stamp, over the shared record alone.
+//
+// The tick is the one place the elapsed counts move, so rendering stays a
+// pure function of the record. The time is the event's stamp. Going idle
+// clears the start, so the next activity counts from zero rather than from
+// wherever the last one stopped. The frame is marked stale when the count a
+// host shows has moved; the terminal's glyph is advanced by its own half.
+fn advance_activity_clocks(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  let shared = advance_generation_clock(shared)
+  case session_model.active_strand_live(shared) {
+    False -> Shared(..shared, activity_started_ms: None, activity_elapsed_s: 0)
+    True -> {
+      let now = shared.stamp.now_ms
+      let started = option.unwrap(shared.activity_started_ms, now)
+      let activity_elapsed_s = { now - started } / 1000
+      let advanced =
+        Shared(
+          ..shared,
+          activity_started_ms: Some(started),
+          activity_elapsed_s:,
+        )
+      case activity_elapsed_s == shared.activity_elapsed_s {
+        True -> advanced
+        False -> session_model.invalidate_frame(advanced)
       }
     }
   }
@@ -364,32 +382,30 @@ fn advance_activity_indicator(model: Model) -> Model {
 // every durable one, because the record cache's inputs have not moved. A
 // generation with no reasoning row on screen is read but not repainted,
 // since nothing drawn depends on the figure.
-fn advance_generation_clock(model: Model) -> Model {
-  let elapsed = case model.shared.generation_started_ms {
+fn advance_generation_clock(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  let elapsed = case shared.generation_started_ms {
     None -> 0
-    Some(started) -> int.max({ model.shared.stamp.now_ms - started } / 1000, 0)
+    Some(started) -> int.max({ shared.stamp.now_ms - started } / 1000, 0)
   }
   use <- bool.guard(
-    when: elapsed == model.shared.generation_elapsed_s,
-    return: model,
+    when: elapsed == shared.generation_elapsed_s,
+    return: shared,
   )
 
-  let advanced =
-    Model(
-      ..model,
-      shared: Shared(..model.shared, generation_elapsed_s: elapsed),
-    )
+  let advanced = Shared(..shared, generation_elapsed_s: elapsed)
   let reasoning_shown =
-    !model.shared.details_expanded
-    && list.any(model.shared.streams, fn(stream) {
-      stream.strand == model.shared.active_strand && stream.kind == "thinking"
+    !shared.details_expanded
+    && list.any(shared.streams, fn(stream) {
+      stream.strand == shared.active_strand && stream.kind == "thinking"
     })
   case reasoning_shown {
     False -> advanced
     True ->
       advanced
-      |> tui_model.invalidate_transcript
-      |> tui_model.invalidate_frame
+      |> session_model.invalidate_transcript
+      |> session_model.invalidate_frame
   }
 }
 
@@ -401,7 +417,7 @@ fn advance_generation_clock(model: Model) -> Model {
 // The reading is suppressed while the active strand is running
 // (`cache_watch.shown` says why), which the web view's rings follow too.
 fn advance_cache_outlook(model: Model) -> Model {
-  let activity = case tui_model.active_strand_live(model) {
+  let activity = case session_model.active_strand_live(model.shared) {
     True -> cache_watch.Running
     False -> cache_watch.Resting
   }
@@ -527,7 +543,7 @@ pub fn viewport_pacing(model: Model) -> pacing.ViewportPacing {
 // replayed or scripted run settles on the complete frame rather than on
 // however far a fixed number of ticks happened to walk.
 fn advance_viewport(model: Model) -> Model {
-  case tui_model.active_strand_live(model) {
+  case session_model.active_strand_live(model.shared) {
     False ->
       Model(
         ..model,
@@ -616,7 +632,7 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
   // once. The ticks this costs are the batches the burst needs anyway, and
   // frame pacing still paints at most one frame per interval.
   use <- bool.guard(
-    model.shared.connection_backlog == tui_model.MailboxMayHoldMore,
+    model.shared.connection_backlog == session_model.MailboxMayHoldMore,
     0,
   )
   case viewport_pacing(model) {
@@ -693,11 +709,11 @@ fn lane_wait(model: Model) -> Int {
 @internal
 pub fn wakes_itself(model: Model) -> Bool {
   list.any(model.shared.strands, fn(strand) { strand.live_phase != None })
-  || tui_model.active_strand_live(model)
+  || session_model.active_strand_live(model.shared)
   || model.view.frame_debt == pacing.FrameDeferred
   || job_runner.size(model.view.running) > 0
   || buffered.held(model.shared.inbox) > 0
-  || model.shared.connection_backlog == tui_model.MailboxMayHoldMore
+  || model.shared.connection_backlog == session_model.MailboxMayHoldMore
 }
 
 fn drain_candidate(model: Model) -> Model {

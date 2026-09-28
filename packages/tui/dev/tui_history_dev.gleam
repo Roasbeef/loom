@@ -18,6 +18,7 @@ import simplifile
 import tui
 import tui/connection
 import tui/model as tui_model
+import tui/session_model
 import tui/workspace
 
 type ClockUnit {
@@ -58,7 +59,7 @@ pub fn run(path: String) {
   let base =
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         records: records,
         transcript: [],

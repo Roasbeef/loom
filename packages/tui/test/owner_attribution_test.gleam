@@ -18,6 +18,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 
 fn owner() {
@@ -64,7 +65,7 @@ fn model(role, peers) {
     )
   tui_model.Model(
     ..base,
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..base.shared,
       captured: Some(#(cut, view)),
       transcript: [],
@@ -111,7 +112,7 @@ pub fn owner_attribution_solo_owner_hides_only_current_local_identity_test() {
       let historical =
         tui_model.Model(
           ..solo,
-          shared: tui_model.Shared(..solo.shared, records: [
+          shared: session_model.Shared(..solo.shared, records: [
             record(author, "historical prompt"),
           ]),
         )
@@ -151,7 +152,7 @@ pub fn owner_attribution_multiplayer_and_uncertain_presence_keep_labels_test() {
     paint(
       tui_model.Model(
         ..solo,
-        shared: tui_model.Shared(..solo.shared, captured: None),
+        shared: session_model.Shared(..solo.shared, captured: None),
       ),
     ),
     "Owner:",
@@ -174,7 +175,7 @@ pub fn owner_attribution_presence_change_rebuilds_cached_rows_test() {
   let joined =
     tui_model.Model(
       ..cached,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..cached.shared,
         captured: multiplayer.shared.captured,
         record_cache_valid: False,
@@ -185,7 +186,7 @@ pub fn owner_attribution_presence_change_rebuilds_cached_rows_test() {
   let left =
     tui_model.Model(
       ..joined,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..joined.shared,
         captured: solo.shared.captured,
         record_cache_valid: False,

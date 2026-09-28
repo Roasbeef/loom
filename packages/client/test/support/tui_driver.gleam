@@ -48,6 +48,7 @@ import tui/job
 import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
+import tui/session_model
 import tui/terminal_lane
 import tui/virtual_backend
 import tui/workspace
@@ -122,14 +123,14 @@ pub fn start_recorded(
       model.shared.peer,
       model.view.control_request
     {
-      True, _, _ | False, tui_model.Attached, _ | _, _, Some(_) ->
+      True, _, _ | False, session_model.Attached, _ | _, _, Some(_) ->
         actor.initialised(Driver(model, subject))
         |> actor.selecting(selector(Driver(model, subject)))
         |> actor.returning(subject)
         |> Ok
-      False, tui_model.Preview, None
-      | False, tui_model.Replaying, None
-      | False, tui_model.Disconnected, None
+      False, session_model.Preview, None
+      | False, session_model.Replaying, None
+      | False, session_model.Disconnected, None
       -> Error(model.shared.notice)
     }
   })
@@ -236,7 +237,10 @@ fn reduce_held(model: tui_model.Model) -> tui_model.Model {
   case buffered.take(model.shared.inbox) {
     #(_, Error(Nil)) -> model
     #(inbox, Ok(held)) ->
-      tui_model.Model(..model, shared: tui_model.Shared(..model.shared, inbox:))
+      tui_model.Model(
+        ..model,
+        shared: session_model.Shared(..model.shared, inbox:),
+      )
       |> inbound.accept_connection_message(held)
       |> reduce_held
   }

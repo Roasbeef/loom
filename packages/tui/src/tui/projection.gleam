@@ -35,8 +35,9 @@ import session_view/transcript_lines.{
 import tui/layout
 import tui/live_tail
 import tui/markdown
-import tui/model.{type Model, Caches, Model, Shared, View} as tui_model
+import tui/model.{type Model, Caches, Model, View} as tui_model
 import tui/render
+import tui/session_model.{Shared}
 import tui/surfaces
 import tui/transcript_anchor
 
@@ -234,7 +235,9 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
         True -> after
         False -> {
           let #(rows, line_cache, _) =
-            transcript_lines.diff_content(tui_model.presentation(after))
+            transcript_lines.diff_content(session_model.presentation(
+              after.shared,
+            ))
             |> cached_record_lines(
               layout.diff_width(after),
               previous_diff_layout(before, after),
@@ -381,7 +384,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(lines, calls, narratives) =
         transcript_lines.record_lines(
           pending,
-          tui_model.presentation(model),
+          session_model.presentation(model.shared),
           [],
           advisor_history.Board([], None),
         )
@@ -488,7 +491,8 @@ fn record_anchors_for(
       model.shared.active_strand,
     )
   let sequences = transcript_lines.entry_sequences(entries)
-  let notices = transcript_lines.active_notices(tui_model.presentation(model))
+  let notices =
+    transcript_lines.active_notices(session_model.presentation(model.shared))
   let blocks = case model.shared.details_expanded {
     True -> {
       // The compact projection owns call/result association, including reused
@@ -784,7 +788,7 @@ fn line_rows(
 // is its name, neither of which grows into many rows.
 fn live_sources(model: Model) -> List(#(Speaker, Stream)) {
   let extent = transcript_lines.details_extent(model.shared.details_expanded)
-  tui_model.presentation(model)
+  session_model.presentation(model.shared)
   |> transcript_lines.display_streams
   |> list.filter_map(fn(stream) {
     case stream.strand == model.shared.active_strand, stream.kind, extent {
@@ -828,7 +832,7 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
 // The live tail is a bounded, disposable observation. Scrollback retains one
 // immutable projection so later fragments cannot reflow text under the reader.
 fn transient_lines(model: Model) -> List(Line) {
-  let presentation = tui_model.presentation(model)
+  let presentation = session_model.presentation(model.shared)
   transcript_lines.stream_lines(
     transcript_lines.display_streams(presentation),
     model.shared.active_strand,
@@ -950,7 +954,7 @@ pub fn record_projection(
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
 ) {
-  let presentation = tui_model.presentation(model)
+  let presentation = session_model.presentation(model.shared)
   transcript_lines.record_lines(
     model.shared.records,
     presentation,

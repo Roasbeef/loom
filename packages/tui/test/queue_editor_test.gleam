@@ -31,6 +31,7 @@ import tui/queue_editor
 import tui/recording
 import tui/render
 import tui/runtime
+import tui/session_model
 import tui/submit
 import tui/workspace
 import tui_test/pushed
@@ -124,9 +125,9 @@ fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
-        peer: tui_model.Replaying,
+        peer: session_model.Replaying,
         channel: Some(channel),
         attachments: [composer.Attachment("retained pasted context", 10)],
       ),
@@ -433,7 +434,7 @@ pub fn two_row_queue_title_pages_beside_an_active_status_test() {
   let compact =
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(..model.shared, submitting: Some("main")),
+      shared: session_model.Shared(..model.shared, submitting: Some("main")),
     )
     |> tui.update(backend.Resize(40, 12), _)
     |> submit.open_queue
@@ -654,11 +655,11 @@ pub fn uncertain_save_locks_text_and_cannot_reissue_until_reconciled_test() {
   let retry =
     tui_model.Model(
       ..locked,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..locked.shared,
         channel: reconnected.shared.channel,
         captured: reconnected.shared.captured,
-        peer: tui_model.Replaying,
+        peer: session_model.Replaying,
       ),
     )
   let fetching = key(retry, "ctrl+r")
@@ -681,7 +682,7 @@ pub fn attachment_change_cannot_save_an_old_editor_test() {
   let changed =
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..model.shared,
         captured: Some(#(snapshot.Captured(..cut, attachment:), view)),
       ),
@@ -703,11 +704,11 @@ pub fn selecting_another_item_does_not_discard_an_uncertain_draft_test() {
   let switched =
     tui_model.Model(
       ..uncertain,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..uncertain.shared,
         channel: reconnected.shared.channel,
         captured: reconnected.shared.captured,
-        peer: tui_model.Replaying,
+        peer: session_model.Replaying,
       ),
     )
     |> key("esc")
@@ -796,11 +797,11 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
     let switched =
       tui_model.Model(
         ..edited,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..edited.shared,
           channel: other.shared.channel,
           captured: other.shared.captured,
-          peer: tui_model.Replaying,
+          peer: session_model.Replaying,
         ),
       )
     let refreshed = key(switched, "ctrl+r")

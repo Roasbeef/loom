@@ -34,6 +34,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/msg
 import tui/runtime
+import tui/session_model
 import tui/tick
 import tui/workspace
 import tui_test/pushed
@@ -317,9 +318,9 @@ fn fresh() -> tui_model.Model {
 fn waiting(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..model.shared,
-      pending_submission: Some(tui_model.ComposerSubmission),
+      pending_submission: Some(session_model.ComposerSubmission),
     ),
   )
 }

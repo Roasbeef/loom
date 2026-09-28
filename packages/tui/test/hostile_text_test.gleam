@@ -45,6 +45,7 @@ import tui/buffered
 import tui/connection
 import tui/frame
 import tui/model as tui_model
+import tui/session_model
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -91,7 +92,7 @@ pub fn hostile_tool_calls_render_inert_test() {
     let base = quiet_model(connection.new_inbox())
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, details_expanded: True),
+      shared: session_model.Shared(..base.shared, details_expanded: True),
     )
   }
   let expanded = last_rows(detailed, 96, 30, calls())
@@ -181,7 +182,7 @@ pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
   let model = {
     let base = quiet_model(connection.new_inbox())
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, approvals: [review]),
+      shared: session_model.Shared(..base.shared, approvals: [review]),
       view: tui_model.View(
         ..base.view,
         overlay: tui_model.ApprovalInspector(panel),
@@ -358,7 +359,7 @@ fn quiet_model(inbox: Subject(connection_event.Message)) -> tui_model.Model {
     let base =
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         transcript: [],
         strands: [],

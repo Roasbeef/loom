@@ -26,6 +26,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/msg
 import tui/pacing
+import tui/session_model
 import tui/tick
 import tui/workspace
 import tui_test/pushed
@@ -49,7 +50,7 @@ fn attached(channel, now: Int) -> tui_model.Model {
     let base = unattached()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         channel: Some(channel),
         stamp: msg.Stamp(now_ms: 0, transport_ms: now),
@@ -64,7 +65,7 @@ fn unattached() -> tui_model.Model {
       tui.new_model(connection.new_inbox(), workspace.Context("test", None))
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, strands: []),
+      shared: session_model.Shared(..base.shared, strands: []),
     )
   }
 }
@@ -122,7 +123,7 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   let running =
     tui_model.Model(
       ..quiet,
-      shared: tui_model.Shared(..quiet.shared, strands: [
+      shared: session_model.Shared(..quiet.shared, strands: [
         protocol.Strand("side", None, Some("assistant")),
       ]),
     )
@@ -143,9 +144,9 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   let backlogged =
     tui_model.Model(
       ..quiet,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..quiet.shared,
-        connection_backlog: tui_model.MailboxMayHoldMore,
+        connection_backlog: session_model.MailboxMayHoldMore,
       ),
     )
   assert tick.wakes_itself(backlogged)
@@ -179,7 +180,7 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   let held =
     tui_model.Model(
       ..quiet,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..quiet.shared,
         inbox: buffered.top_up(inbox, up_to: 64),
       ),
@@ -197,9 +198,9 @@ pub fn a_drain_records_whether_it_stopped_at_its_batch_test() {
     process.send(sender, connection_event.NetworkFault("x"))
   })
   let full = drain(model)
-  assert full.shared.connection_backlog == tui_model.MailboxMayHoldMore
+  assert full.shared.connection_backlog == session_model.MailboxMayHoldMore
   let rest = drain(full)
-  assert rest.shared.connection_backlog == tui_model.MailboxDrained
+  assert rest.shared.connection_backlog == session_model.MailboxDrained
 }
 
 // One step's receive and drain of the connection, as a tick runs them.
@@ -207,7 +208,7 @@ fn drain(model: tui_model.Model) -> tui_model.Model {
   let topped =
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..model.shared,
         inbox: buffered.top_up(
           model.shared.inbox,
@@ -223,20 +224,21 @@ fn drain(model: tui_model.Model) -> tui_model.Model {
 // ticks that could not read them, so the adopting tick owes one more batch.
 pub fn an_adopting_tick_owes_one_more_batch_test() {
   let before = attached(lane([]), 0)
-  assert tick.adopted_backlog(before, before) == tui_model.MailboxDrained
+  assert tick.adopted_backlog(before, before) == session_model.MailboxDrained
   let adopted =
     tui_model.Model(
       ..before,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..before.shared,
         inbox: buffered.new(connection.new_inbox()),
       ),
     )
-  assert tick.adopted_backlog(before, adopted) == tui_model.MailboxMayHoldMore
+  assert tick.adopted_backlog(before, adopted)
+    == session_model.MailboxMayHoldMore
   assert tick.terminal_poll_timeout(
       tui_model.Model(
         ..adopted,
-        shared: tui_model.Shared(
+        shared: session_model.Shared(
           ..adopted.shared,
           connection_backlog: tick.adopted_backlog(before, adopted),
         ),

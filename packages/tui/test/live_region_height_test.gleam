@@ -36,6 +36,7 @@ import tui
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
+import tui/session_model
 import tui/workspace
 import tui_test/gateway
 
@@ -53,7 +54,7 @@ fn model() -> tui_model.Model {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..base.shared,
       transcript: [],
       records: [],
@@ -82,7 +83,7 @@ fn rows_at(model: tui_model.Model, columns: Int) -> Int {
 
 fn expanded(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
-    shared: tui_model.Shared(..model.shared, details_expanded: True),
+    shared: session_model.Shared(..model.shared, details_expanded: True),
     view: tui_model.View(..model.view, rendered_revision: -1),
   )
 }
@@ -135,11 +136,16 @@ fn settled(model: tui_model.Model) -> tui_model.Model {
 
 pub fn a_running_tools_output_costs_no_rows_until_details_open_test() {
   let live = running()
-  assert transcript_lines.tool_tail_lines(tui_model.presentation(live)) == []
+  assert transcript_lines.tool_tail_lines(session_model.presentation(
+      live.shared,
+    ))
+    == []
     as "a collapsed transcript draws none of the running command's window"
 
   let assert [transcript_line.Line(transcript_line.ToolResult, window)] =
-    transcript_lines.tool_tail_lines(tui_model.presentation(expanded(live)))
+    transcript_lines.tool_tail_lines(session_model.presentation(
+      expanded(live).shared,
+    ))
     as "an expanded transcript still draws the window it collected"
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(window, "\n")

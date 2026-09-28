@@ -22,12 +22,12 @@ import session_view/command
 import session_view/context_view
 import session_view/session_channel
 import session_view/worktree_view
-import tui/model.{
-  type Model, Attached, ComposerSubmission, ConfirmGoal, Disconnected,
-  HoldGoalReport, Model, OverlaySubmission, Preview, PromptNext, Replaying,
-  ReportGoal, Shared, View,
-} as tui_model
+import tui/model.{type Model, Model, PromptNext, View} as tui_model
 import tui/queue_editor
+import tui/session_model.{
+  Attached, ComposerSubmission, ConfirmGoal, Disconnected, HoldGoalReport,
+  OverlaySubmission, Preview, Replaying, ReportGoal, Shared,
+}
 import tui/terminal_lane
 
 /// Sets the notice shown while a submission waits for the channel.
@@ -53,7 +53,7 @@ pub fn mutation_refusal(
   use <- bool.guard(
     mutates
       && model.shared.captured != None
-      && !tui_model.is_known_strand(
+      && !session_model.is_known_strand(
       model.shared.strands,
       model.shared.active_strand,
     ),
@@ -274,7 +274,7 @@ pub fn apply_submission(
             shared: Shared(
               ..model.shared,
               goal_request: Some(request_id),
-              goal_awaiting: Some(tui_model.queue_owner(model)),
+              goal_awaiting: Some(session_model.queue_owner(model.shared)),
             ),
           )
         "worktree_diff" ->

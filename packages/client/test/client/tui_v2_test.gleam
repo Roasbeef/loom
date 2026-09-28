@@ -26,6 +26,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/recording
 import tui/runtime
+import tui/session_model
 import tui/terminal_lane
 import weft/poll
 
@@ -58,9 +59,9 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
         let base = tui.new_model(inbox, target.workspace)
         tui_model.Model(
           ..base,
-          shared: tui_model.Shared(
+          shared: session_model.Shared(
             ..base.shared,
-            peer: tui_model.Attached,
+            peer: session_model.Attached,
             session: session,
           ),
         )
@@ -92,7 +93,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
       hold_snapshot_end(
         tui_model.Model(
           ..initial,
-          shared: tui_model.Shared(..initial.shared, channel: Some(channel)),
+          shared: session_model.Shared(..initial.shared, channel: Some(channel)),
         ),
         32,
       )
@@ -102,7 +103,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
       as "a genuinely incomplete cut retains the draft"
     assert refused.shared.next_id == waiting.shared.next_id
     assert refused.shared.pending_submission
-      == Some(tui_model.ComposerSubmission)
+      == Some(session_model.ComposerSubmission)
     assert prompts(issued) == []
     let refused = tui.update(backend.KeyPress("enter"), refused)
     let refused =
@@ -149,7 +150,10 @@ fn hold_snapshot_end(model: tui_model.Model, remaining: Int) {
   let assert #(inbox, Ok(incoming)) = buffered.receive(model.shared.inbox, 1000)
     as "each credited response arrives within its deadline"
   let model =
-    tui_model.Model(..model, shared: tui_model.Shared(..model.shared, inbox:))
+    tui_model.Model(
+      ..model,
+      shared: session_model.Shared(..model.shared, inbox:),
+    )
   let ended = case incoming {
     connection_event.Incoming(text) -> {
       let assert Ok(json.Object(fields)) = json.parse(text)
@@ -253,7 +257,7 @@ pub fn assert_history_answers(driver, answers: List(String)) -> Nil {
 
 fn synchronized(sample: tui_driver.Sample) {
   case sample.model.shared.peer, sample.model.shared.captured {
-    tui_model.Attached, Some(_) -> True
+    session_model.Attached, Some(_) -> True
     _, _ -> False
   }
 }

@@ -32,6 +32,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
+import tui/session_model
 import tui/session_selector
 import tui/workspace
 import tui_test/pushed
@@ -222,10 +223,10 @@ fn spent_terminal() -> #(tui_model.Model, Int) {
     )
   let model =
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..model.shared,
         session: "s",
-        peer: tui_model.Disconnected,
+        peer: session_model.Disconnected,
       ),
       view: tui_model.View(
         ..model.view,
@@ -276,7 +277,7 @@ pub fn a_tick_drains_the_jobs_in_their_fixed_order_test() {
   let #(model, relaunch) = tui_model.allocate_job(model)
   let model =
     tui_model.Model(
-      shared: tui_model.Shared(..model.shared, transcript: []),
+      shared: session_model.Shared(..model.shared, transcript: []),
       view: tui_model.View(
         ..model.view,
         control_request: Some(tui_model.ControlRequest(
@@ -358,7 +359,10 @@ pub fn a_keypress_admits_every_jobs_reply_into_its_own_slot_test() {
 pub fn only_a_replay_reads_its_replay_inbox_test() {
   let report = process.new_subject()
   process.spawn(fn() {
-    process.send(report, #(replayed_keypress(tui_model.Preview), probe_self()))
+    process.send(report, #(
+      replayed_keypress(session_model.Preview),
+      probe_self(),
+    ))
   })
   let assert Ok(#(#(live, _), live_queue)) = process.receive(report, 5000)
     as "the live terminal process reports back"
@@ -367,7 +371,10 @@ pub fn only_a_replay_reads_its_replay_inbox_test() {
   assert live_queue == 1 as "the unread event is still in the mailbox"
 
   process.spawn(fn() {
-    process.send(report, #(replayed_keypress(tui_model.Replaying), probe_self()))
+    process.send(report, #(
+      replayed_keypress(session_model.Replaying),
+      probe_self(),
+    ))
   })
   let assert Ok(#(#(replay, applied), replay_queue)) =
     process.receive(report, 5000)
@@ -438,7 +445,7 @@ fn answered_keypress() -> #(tui_model.Model, Int) {
 // recorded attempt event sent to its replay inbox, pressed once and then
 // ticked once. Returns the model after the keypress and after the tick.
 fn replayed_keypress(
-  peer: tui_model.Peer,
+  peer: session_model.Peer,
 ) -> #(tui_model.Model, tui_model.Model) {
   let #(model, control) = tui_model.allocate_job(blank())
   let running =
@@ -451,7 +458,7 @@ fn replayed_keypress(
     )
   let model =
     tui_model.Model(
-      shared: tui_model.Shared(..model.shared, peer:),
+      shared: session_model.Shared(..model.shared, peer:),
       view: tui_model.View(
         ..model.view,
         running:,

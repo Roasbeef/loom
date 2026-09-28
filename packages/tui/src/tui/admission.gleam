@@ -33,20 +33,31 @@
 //// an attachment's `Prepared`, `CloseControl` for a relaunch's `Completed`
 //// (`tui_model.release`). The release stays on the outbox, and the next
 //// input's step returns it with its own effects, as it did in phase 2.
+////
+//// Two hosts own different parts of this filing. The adopted inbox and the
+//// replay inbox are session state, so filing into them is done by
+//// `file_frame` and `file_replayed`, over the shared record alone, which a
+//// second host can call with its own sources. The waiting attachment
+//// attempt and the job slots are the terminal's, so a frame the adopted
+//// inbox refuses and every job reply are filed here, over the whole model.
+//// The frame is offered to the adopted inbox first and to the attempt
+//// second, as before the split.
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import session_view/attempt
 import session_view/connection_event
+import session_view/inbox
 import tui/attachment
-import tui/buffered
 import tui/job
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, ControlRequest,
-  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Shared, View,
+  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent, View,
 } as tui_model
 import tui/msg.{type Arrival}
+import tui/session_model.{type Shared, Shared}
 
 /// Files each arrival, oldest first, into the buffer or slot that waits for
 /// it.
@@ -63,41 +74,76 @@ pub fn admit(model: Model, arrivals: List(Arrival)) -> Model {
 
 fn admit_one(model: Model, arrival: Arrival) -> Model {
   case arrival {
-    msg.Frame(source:, message:) -> admit_frame(model, source, message)
+    msg.Frame(source:, message:) ->
+      case file_frame(model.shared, source, message) {
+        Ok(shared) -> tui_model.hold_shared(model, shared)
+        Error(Nil) -> admit_attempt_frame(model, source, message)
+      }
     msg.Replayed(event:) ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          replay_inbox: buffered.push(model.shared.replay_inbox, event),
-        ),
-      )
+      tui_model.hold_shared(model, file_replayed(model.shared, event))
     msg.JobReplied(arrival:) -> admit_reply(model, arrival)
   }
 }
 
-// The adopted inbox is asked first. A frame from the waiting attempt's
-// socket goes to the attempt, which keeps it for the adopted lane if it
-// arrives after the capture. Anything else came from a replaced socket.
-fn admit_frame(
+/// Files a frame into the adopted connection inbox when it was read from
+/// that inbox's source, and refuses it otherwise.
+///
+/// This is the session half of filing a frame, over the shared record
+/// alone. A refusal is not a drop: the terminal then offers the frame to
+/// its waiting attachment attempt (`admit_attempt_frame`), and only a frame
+/// neither of them reads is dropped. A host with no provisional attempt
+/// drops a refused frame, because it came from a socket the record no
+/// longer reads (the protocol model's S2).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(shared) = admission.file_frame(shared, source, message)
+/// ```
+@internal
+pub fn file_frame(
+  shared: Shared(socket, recorder, source, replay_source),
+  source: source,
+  message: connection_event.Message,
+) -> Result(Shared(socket, recorder, source, replay_source), Nil) {
+  case source == inbox.source(shared.inbox) {
+    True -> Ok(Shared(..shared, inbox: inbox.push(shared.inbox, message)))
+    False -> Error(Nil)
+  }
+}
+
+/// Files one recorded attempt event into the replay inbox, over the shared
+/// record alone.
+///
+/// Every replayed event is filed, whatever the peer: the replay drain takes
+/// one per tick and drops what arrives outside a replay, so filing needs no
+/// check of its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = admission.file_replayed(shared, event)
+/// ```
+@internal
+pub fn file_replayed(
+  shared: Shared(socket, recorder, source, replay_source),
+  event: attempt.Event,
+) -> Shared(socket, recorder, source, replay_source) {
+  Shared(..shared, replay_inbox: inbox.push(shared.replay_inbox, event))
+}
+
+// A frame the adopted inbox refused goes to the waiting attempt when it came
+// from the attempt's socket; the attempt keeps it for the adopted lane if it
+// arrives after the capture. Anything else came from a replaced socket and
+// is dropped here.
+fn admit_attempt_frame(
   model: Model,
   source: Subject(connection_event.Message),
   message: connection_event.Message,
 ) -> Model {
-  case source == buffered.sender(model.shared.inbox) {
-    True ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          inbox: buffered.push(model.shared.inbox, message),
-        ),
-      )
-    False ->
-      case attachment.push_frame(model.view.candidate, source, message) {
-        Ok(candidate) -> Model(..model, view: View(..model.view, candidate:))
-        Error(Nil) -> model
-      }
+  case attachment.push_frame(model.view.candidate, source, message) {
+    Ok(candidate) -> Model(..model, view: View(..model.view, candidate:))
+    Error(Nil) -> model
   }
 }
 

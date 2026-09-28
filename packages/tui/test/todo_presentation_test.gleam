@@ -23,6 +23,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/surfaces
 import tui/workspace
 import tui_test/gateway
@@ -251,7 +252,7 @@ pub fn a_seed_for_a_known_board_is_dropped_test() {
   let waiting =
     tui_model.Model(
       ..known,
-      shared: tui_model.Shared(..known.shared, todo_seed: Some("main")),
+      shared: session_model.Shared(..known.shared, todo_seed: Some("main")),
     )
   assert surfaces.service_todo_seed(waiting).shared.todo_seed == None
 }
@@ -261,7 +262,7 @@ pub fn the_seed_waits_behind_an_operator_notes_read_test() {
     let fresh = base()
     tui_model.Model(
       ..fresh,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..fresh.shared,
         todo_seed: Some("main"),
         notes_requested: Some("main"),

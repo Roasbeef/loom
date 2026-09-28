@@ -10,7 +10,7 @@
 //// so no value of either type ever exists here; the parameters are what let
 //// a host other than the terminal hold the same state beside its own lane.
 //// The terminal binds them to its connection and recording types in
-//// `tui_model.Shared.replay_state`.
+//// `session_model.Shared.replay_state`.
 
 import gleam/bool
 import gleam/int

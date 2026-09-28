@@ -28,6 +28,7 @@ import tui/effect.{type Effect}
 import tui/job
 import tui/model as tui_model
 import tui/runtime
+import tui/session_model
 import tui/step_effect
 import tui/terminal_lane
 import tui/workspace
@@ -79,9 +80,9 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   let attempt = attachment.opening(replacement, None)
   let model =
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..model.shared,
-        peer: tui_model.Attached,
+        peer: session_model.Attached,
         channel: Some(channel),
       ),
       view: tui_model.View(
@@ -132,7 +133,7 @@ pub fn a_replayed_prompt_queues_no_write_test() {
   let model = {
     let base = pushed.attached()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, active_strand: "main"),
+      shared: session_model.Shared(..base.shared, active_strand: "main"),
       view: tui_model.View(
         ..base.view,
         input: text_area.state_from_string("hello"),
@@ -158,7 +159,7 @@ fn drag_and_release(
   let model = {
     let base = quiet_model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, transcript: [
+      shared: session_model.Shared(..base.shared, transcript: [
         transcript_line.Line(transcript_line.System, "alpha beta"),
         transcript_line.Line(transcript_line.System, "gamma delta"),
       ]),
@@ -184,7 +185,7 @@ fn quiet_model() -> tui_model.Model {
         workspace.Context(path: "/w/demo", branch: None),
       )
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         transcript: [],
         strands: [],

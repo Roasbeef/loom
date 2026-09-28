@@ -26,6 +26,7 @@ import tui/connection
 import tui/model as tui_model
 import tui/msg
 import tui/runtime
+import tui/session_model
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -101,7 +102,7 @@ pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
   let model =
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..model.shared,
         inbox: int.range(
           from: 0,
@@ -140,7 +141,7 @@ pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
   let full =
     tui_model.Model(
       ..model,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..model.shared,
         inbox: buffered.top_up(
           model.shared.inbox,
@@ -195,7 +196,7 @@ pub fn generated_runs_reduce_as_they_did_before_admission_test() {
 fn phase_two_receive(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..model.shared,
       inbox: buffered.top_up(
         model.shared.inbox,

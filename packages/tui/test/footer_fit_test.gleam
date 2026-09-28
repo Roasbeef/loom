@@ -15,6 +15,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
+import tui/session_model
 import tui/workspace
 
 fn usage() -> message.Usage {
@@ -38,7 +39,7 @@ fn model() {
   )
   |> fn(base) {
     tui_model.Model(
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         usage: usage(),
         output_rate_tps: Some(45),
@@ -88,7 +89,7 @@ pub fn the_detailed_footer_never_cuts_a_figure_test() {
     let base = model()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(..base.shared, details_expanded: True),
+      shared: session_model.Shared(..base.shared, details_expanded: True),
     )
   }
   list.each([240, 180, 120, 90, 60], fn(width) {
@@ -111,7 +112,7 @@ pub fn the_rate_shows_when_the_outlook_leaves_room_test() {
   let quiet = {
     let base = model()
     tui_model.Model(
-      shared: tui_model.Shared(..base.shared, details_expanded: True),
+      shared: session_model.Shared(..base.shared, details_expanded: True),
       view: tui_model.View(..base.view, cache_outlook: ""),
     )
   }
@@ -135,7 +136,7 @@ pub fn the_compact_footer_drops_whole_pieces_test() {
     let base = model()
     tui_model.Model(
       ..base,
-      shared: tui_model.Shared(
+      shared: session_model.Shared(
         ..base.shared,
         notice: "steer captured; waiting for the running operation to stop",
       ),

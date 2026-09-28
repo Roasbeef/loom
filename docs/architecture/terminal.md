@@ -24,10 +24,14 @@ effect outbox. `Shared` names its host handles only by type parameter,
 replay state take the socket and recorder types, and the connection and
 replay inboxes are keyed by their sources. `TerminalShared` binds them to
 the terminal's connection, its recording and the two subjects it reads.
-Every reducer still takes the whole model and reads a field through the
-half that holds it; the split and the parameters are the first two slices
-of moving the step into `session_view` so that the web view runs the same
-reducers ([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
+`Shared` and the functions over it alone live in `tui/session_model`,
+which imports nothing of the terminal. Most reducers still take the whole
+model and read a field through the half that holds it; the reducer cut
+moves them to `Shared` from the helpers upward, and a terminal reducer
+stores the result of any function over `Shared` through
+`tui_model.hold_shared`. The split, the parameters and the cut are the
+slices of moving the step into `session_view` so that the web view runs
+the same reducers ([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
 daemon bootstrap, two connections (a daemon control connection and a
 per-session conversation channel), pure projections that turn a captured
 snapshot into rows, one module per panel, Markdown rendering, Herdr
@@ -211,8 +215,11 @@ modules divide the work:
   itself, a `Note` being one attempt event for the recording, and
   `terminal_lane.perform` is the only place the channel touches its socket
   or its recorder. Every reducer that transitions the adopted lane stores it
-  through `tui_model.hold_channel`, which moves those outputs into the model
-  outbox at that point. `tui/attachment` returns its candidate channel's
+  through `hold_channel`, whose outputs reach the model outbox at that point:
+  the shared form queues them on `Shared.outbox`, and
+  `tui_model.hold_shared`, which stores the result of every call into a
+  function over `Shared`, moves them into `View.outbox` before anything
+  else is queued. `tui/attachment` returns its candidate channel's
   outputs from `poll` and `accept` with the rest of what they decided: the
   `Acknowledge` that releases its worker, the attempt's failure note, and
   its cleanup.
@@ -971,7 +978,8 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/effect` | The closed vocabulary of effects a step decides on, with the session reducers' effects wrapped as `Step`. |
 | `tui/terminal_lane` | The session lane with the terminal's socket and recorder filled in, and `perform`, the one place a lane's outputs touch the websocket or the recording. |
 | `tui/view_link` | Printing the `loom ui` link and handing it to the platform's opener. |
-| `tui/model` | `Model` and its two halves, `Shared` (session state, generic over the host handles and bound by `TerminalShared`) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox in `View` (`emit`, `record`, `record_arrival`, `hold_channel`) and the other types every reducer shares. |
+| `tui/model` | `Model` and its two halves, `TerminalShared` (the terminal's binding of `Shared`) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox in `View` (`emit`, `record`, `hold_shared`, and the terminal forms of `record_arrival` and `hold_channel`) and the other terminal types every reducer shares. |
+| `tui/session_model` | `Shared`, the session state, generic over the host handles, with the types it names, its step-effect outbox, and the functions over it alone: appending lines, the revisions, the activity mark, storing the lane, recording a channelless arrival, and the readers such as `queue_owner` and `presentation`. |
 | `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
 | `tui/msg` | What the step is given: `Input(at, wall_ms, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`. |
 | `tui/keymap` | `translate`, etui's input event to a `msg.Event`; parsing only. |

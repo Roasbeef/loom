@@ -25,6 +25,7 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
+import tui/session_model
 import tui/workspace
 import weft
 
@@ -53,10 +54,10 @@ fn disconnected() -> tui_model.Model {
   // terminal was attached and its transport has gone. A fresh model starts
   // in `Preview`, which is not a state a daemon death can reach.
   tui_model.Model(
-    shared: tui_model.Shared(
+    shared: session_model.Shared(
       ..base.shared,
       session: "s",
-      peer: tui_model.Disconnected,
+      peer: session_model.Disconnected,
     ),
     view: tui_model.View(..base.view, local_options: Some(options())),
   )
@@ -98,7 +99,7 @@ pub fn an_operator_quit_and_a_remote_attachment_do_not_reconnect_test() {
       let base = disconnected()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, quit: True),
+        shared: session_model.Shared(..base.shared, quit: True),
       )
     })
   assert quitting.view.reconnect == tui_model.ReconnectIdle
@@ -118,7 +119,7 @@ pub fn an_operator_quit_and_a_remote_attachment_do_not_reconnect_test() {
       let base = disconnected()
       tui_model.Model(
         ..base,
-        shared: tui_model.Shared(..base.shared, session: ""),
+        shared: session_model.Shared(..base.shared, session: ""),
       )
     })
   assert unattached.view.reconnect == tui_model.ReconnectIdle
@@ -138,7 +139,7 @@ pub fn a_failed_reconnect_is_reported_once_and_stays_disconnected_test() {
     )
     |> session_control.drain_reconnect
   assert failed.view.reconnect == tui_model.ReconnectSpent
-  assert failed.shared.peer == tui_model.Disconnected
+  assert failed.shared.peer == session_model.Disconnected
   assert list.any(failed.shared.transcript, fn(line) {
     case line {
       transcript_line.Line(speaker: transcript_line.Failure, text:) ->
