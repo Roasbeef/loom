@@ -82,6 +82,7 @@ import tui/interaction
 import tui/internal/ffi_terminal
 import tui/job
 import tui/job_runner
+import tui/lane_fold
 import tui/layout
 import tui/model.{
   type Model, DiffAutomatic, Model, Newer, NoClipboard, NoOverlay, Older,
@@ -1714,7 +1715,7 @@ fn attach_daemon(
           ..model,
           shared: Shared(
             ..model.shared,
-            transcript: inbound.daemon_build_lines(
+            transcript: lane_fold.daemon_build_lines(
               model.shared.daemon_build,
               base.shared.client_build,
             ),

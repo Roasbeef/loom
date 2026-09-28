@@ -20,7 +20,6 @@ import gleam/option.{None, Some}
 import host/bootstrap as host_bootstrap
 import session_view/cache_miss
 import session_view/cache_watch
-import session_view/history_view
 import session_view/session_channel
 import tui/attachment
 import tui/attempt_replay
@@ -30,6 +29,7 @@ import tui/herdr
 import tui/inbound
 import tui/interaction
 import tui/job_runner
+import tui/lane_fold
 import tui/layout
 import tui/model.{
   type Model, type TerminalShared, Caches, FrameCache, Model, View,
@@ -37,7 +37,7 @@ import tui/model.{
 import tui/pacing
 import tui/render
 import tui/session_control
-import tui/session_model.{type Shared, Replaying, Shared}
+import tui/session_model.{type Shared, Shared}
 import tui/surfaces
 
 /// Starts the Herdr pane reporter when the launch environment carries a
@@ -219,118 +219,20 @@ pub fn adopted_backlog(
 }
 
 // One recorded attempt event per tick, taken from what the runtime received
-// before the step. The runtime reads the replay inbox only while the peer
-// is `Replaying`, but a host that delivers `msg.Arrived` itself can still
-// admit an event outside replay, and that event is taken and dropped, as it
-// always was, so it cannot wait in the inbox for a later replay to apply.
+// before the step by the shared `lane_fold.take_replayed`. Its changes are
+// applied one at a time, each as the host's unit of the lane fold: the
+// terminal reads what it shows before each change and settles the surface
+// facts the change recorded after it, as `inbound.apply_channel_update` does
+// for a live update.
 fn drain_replay(model: Model) -> Model {
-  let #(replay_inbox, next) = buffered.take(model.shared.replay_inbox)
-  let model = Model(..model, shared: Shared(..model.shared, replay_inbox:))
-  case model.shared.peer, next {
-    Replaying, Ok(event) ->
-      case attempt_replay.apply(model.shared.replay_state, event) {
-        Error(reason) ->
-          tui_model.append_error(
-            Model(
-              ..model,
-              shared: Shared(
-                ..model.shared,
-                replay_error: Some(reason),
-                quit: True,
-              ),
-            ),
-            reason,
-          )
-        Ok(#(state, changes)) ->
-          list.fold(
-            changes,
-            Model(..model, shared: Shared(..model.shared, replay_state: state)),
-            apply_replay_change,
-          )
-      }
-    _, _ -> model
-  }
+  let #(shared, changes) = lane_fold.take_replayed(model.shared)
+  list.fold(changes, tui_model.hold_shared(model, shared), apply_replay_change)
 }
 
 fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
-  case change {
-    attempt_replay.RequestedHistory(before) ->
-      Model(
-        ..model,
-        shared: Shared(
-          ..model.shared,
-          scrollback: history_view.sent(
-            history_view.freeze(model.shared.scrollback),
-            before,
-          ),
-        ),
-      )
-    attempt_replay.Rejected(reason) ->
-      tui_model.append_error(model, "open session: " <> reason)
-    attempt_replay.Adopt(cut, view) -> {
-      let model =
-        inbound.select_workspace(
-          model,
-          cut.attachment.expected.session,
-          case model.shared.session == cut.attachment.expected.session {
-            True -> model.shared.active_strand
-            False -> "main"
-          },
-        )
-      Model(
-        shared: Shared(
-          ..model.shared,
-          session: cut.attachment.expected.session,
-          captured: None,
-          scrollback: case
-            model.shared.session == cut.attachment.expected.session
-          {
-            True -> history_view.cancel(model.shared.scrollback)
-            False -> model.shared.scrollback
-          },
-          note_board: None,
-          notes_requested: None,
-          approvals: [],
-          records: [],
-          streams: [],
-          tool_tails: [],
-          models: [],
-          skills: [],
-          current_model: "loading…",
-          active_strand: case
-            model.shared.session == cut.attachment.expected.session
-          {
-            True -> model.shared.active_strand
-            False -> "main"
-          },
-          record_cache_valid: False,
-          submitting: None,
-          interrupt: None,
-        ),
-        view: View(
-          ..model.view,
-          note_selected: None,
-          prompted_approvals: [],
-          inspecting_approval: None,
-          scroll_offset: case
-            model.shared.session == cut.attachment.expected.session
-          {
-            True -> model.view.scroll_offset
-            False -> 0
-          },
-        ),
-      )
-      |> inbound.apply_cut(cut, view)
-      // Every update, cuts included, goes through the live reducer. A cut used
-      // to be special-cased into `apply_cut`, which always invalidates the
-      // transcript and restarts the activity indicator; `reconcile_cut`'s
-      // equal-cut fast path is what the live client does instead, and a replay
-      // that rendered frames the live client did not is not a replay. The
-      // outbound half of that path is made inert by `request_decisions`, which
-      // sends nothing while the peer is `Replaying`.
-    }
-    attempt_replay.Update(update) -> inbound.apply_channel_update(model, update)
-  }
+  let around = inbound.surroundings(model)
+  tui_model.run_shared(model, lane_fold.apply_replay_change(_, change, around))
+  |> inbound.settle_surfaces(model, _)
 }
 
 // The activity indicator has a session half and a terminal half. The
@@ -341,6 +243,12 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
 // change in one tick the frame revision moves twice, which nothing can see:
 // its one reader, `refresh_frame_cache`, runs after the whole event and asks
 // only whether the revision differs from the one it last painted.
+//
+// The glyph reads `active_strand_live` after the hold rather than a surface
+// fact the clocks record. A fact would be recorded and cleared on every tick
+// of a live strand, two copies of the shared record, which measured as 190
+// more words on the idle tick; the read gives the same answer because the
+// clocks change nothing it reads.
 fn advance_activity_indicator(model: Model) -> Model {
   let model =
     tui_model.hold_shared(model, advance_activity_clocks(model.shared))

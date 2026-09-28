@@ -696,10 +696,10 @@ pub fn mark_activity(model: Model) -> Model {
 /// - The goal inspector. Each `GoalObservation` the call recorded is applied
 ///   to the inspector when it is open, oldest first, and dropped otherwise.
 ///
-/// It does not apply `Shared.surface_facts`, which only the event fold
-/// records. The workspace switch and the notes board need layout and the
-/// panels, which this module cannot import, so the terminal forms of the
-/// event fold in `tui/inbound` apply every fact after their hold, in
+/// It does not apply `Shared.surface_facts`, which the event fold and the
+/// lane fold record. Some facts need layout and
+/// the panels, which this module cannot import, so the terminal's calls into
+/// those functions apply every fact after their hold, in
 /// `inbound.settle_surfaces`.
 ///
 /// ## Examples

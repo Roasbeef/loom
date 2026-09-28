@@ -33,6 +33,7 @@ import tui/effect
 import tui/event_fold
 import tui/inbound
 import tui/job
+import tui/lane_fold
 import tui/layout
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
@@ -256,7 +257,7 @@ fn submit_text(model: Model) -> Model {
       }
     command.Approvals(None) ->
       list.fold(
-        inbound.approval_lines(cleared.shared.approvals),
+        lane_fold.approval_lines(cleared.shared.approvals),
         cleared,
         fn(model, line) { tui_model.append_system(model, line.text) },
       )
