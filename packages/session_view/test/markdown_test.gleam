@@ -12,9 +12,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/markdown.{
-  Break, BulletList, Cell, Center, Code, CodeBlock, Emphasis, H1, H2, H3,
-  Heading, Image, Left, Link, OrderedList, Paragraph, Quote, Right, Rule,
-  Strikethrough, Strong, Table, Text, Unaligned,
+  Alert, Break, BulletList, Cell, Center, Code, CodeBlock, Done, Emphasis,
+  Footnote, FootnoteRef, H1, H2, H3, Heading, Image, Left, Link, Note, Open,
+  OrderedList, Paragraph, Quote, Right, Rule, Strikethrough, Strong, Table, Task,
+  Text, Unaligned, Warning,
 }
 
 pub fn a_paragraph_is_its_text_test() {
@@ -158,13 +159,20 @@ pub fn a_number_inside_a_paragraph_is_text_test() {
 }
 
 pub fn task_items_test() {
-  assert markdown.parse("- [ ] todo\n- [x] done")
+  assert markdown.parse("- [ ] todo\n- [x] done\n- [X] also\n- [ ]\n  - n")
     == [
       BulletList([
-        [Paragraph([Text("☐ todo")])],
-        [Paragraph([Text("☑ done")])],
+        [Paragraph([Task(Open), Text("todo")])],
+        [Paragraph([Task(Done), Text("done")])],
+        [Paragraph([Task(Done), Text("also")])],
+        [Paragraph([Text("[ ]")]), BulletList([[Paragraph([Text("n")])]])],
       ]),
     ]
+}
+
+pub fn a_task_box_before_a_block_stands_alone_test() {
+  assert markdown.parse("- [ ] # heading")
+    == [BulletList([[Paragraph([Task(Open)]), Heading(H1, [Text("heading")])]])]
 }
 
 pub fn a_fence_inside_a_list_item_test() {
@@ -296,6 +304,138 @@ pub fn crlf_is_a_line_ending_test() {
     == [Heading(H1, [Text("a")]), Paragraph([Text("b")])]
 }
 
+pub fn a_heading_anchor_is_dropped_test() {
+  assert markdown.parse("# Title {#title}\n\n## Keep {#not an anchor}")
+    == [
+      Heading(H1, [Text("Title")]),
+      Heading(H2, [Text("Keep {#not an anchor}")]),
+    ]
+}
+
+pub fn alerts_test() {
+  assert markdown.parse("> [!NOTE]\n> body\n\n> [!warning] inline\n> more")
+    == [
+      Alert(Note, [Paragraph([Text("body")])]),
+      Alert(Warning, [Paragraph([Text("inline more")])]),
+    ]
+}
+
+pub fn an_unknown_alert_is_a_quote_test() {
+  assert markdown.parse("> [!NOPE]\n> body")
+    == [Quote([Paragraph([Text("[!NOPE] body")])])]
+}
+
+pub fn a_quote_continues_lazily_test() {
+  assert markdown.parse("> quoted\nlazy\n\nafter")
+    == [
+      Quote([Paragraph([Text("quoted lazy")])]),
+      Paragraph([Text("after")]),
+    ]
+  assert markdown.parse("> quoted\n- item")
+    == [
+      Quote([Paragraph([Text("quoted")])]),
+      BulletList([[Paragraph([Text("item")])]]),
+    ]
+}
+
+pub fn a_link_may_carry_a_title_test() {
+  assert markdown.parse("[a](https://x.test \"T\") [b](y 'u') [c](z (v))")
+    == [
+      Paragraph([
+        Link([Text("a")], "https://x.test"),
+        Text(" "),
+        Link([Text("b")], "y"),
+        Text(" "),
+        Link([Text("c")], "z"),
+      ]),
+    ]
+}
+
+pub fn reference_links_test() {
+  let source =
+    "[full][Ref] and [ref][] and [Ref] and ![pic][img] and [none][nope]\n\n"
+    <> "[ref]: https://x.test \"Title\"\n"
+    <> "[img]: <https://x.test/i.png>\n"
+    <> "[ref]: https://ignored.test"
+  assert markdown.parse(source)
+    == [
+      Paragraph([
+        Link([Text("full")], "https://x.test"),
+        Text(" and "),
+        Link([Text("ref")], "https://x.test"),
+        Text(" and "),
+        Link([Text("Ref")], "https://x.test"),
+        Text(" and "),
+        Image("pic", "https://x.test/i.png"),
+        Text(" and [none][nope]"),
+      ]),
+    ]
+}
+
+pub fn a_reference_follows_a_failed_destination_test() {
+  assert markdown.parse("[foo](not a link)\n\n[foo]: /url")
+    == [Paragraph([Link([Text("foo")], "/url"), Text("(not a link)")])]
+}
+
+pub fn a_definition_in_a_fence_defines_nothing_test() {
+  assert markdown.parse("[a]\n\n```\n[a]: /x\n```")
+    == [Paragraph([Text("[a]")]), CodeBlock(None, "[a]: /x")]
+}
+
+pub fn an_undefined_definition_shape_is_text_test() {
+  assert markdown.parse("[a]: /x trailing words")
+    == [Paragraph([Text("[a]: /x trailing words")])]
+}
+
+pub fn footnotes_test() {
+  let source =
+    "One[^1] and two[^note] and [^none].\n\n[^1]: First.\n[^note]: Second\n    goes on."
+  assert markdown.parse(source)
+    == [
+      Paragraph([
+        Text("One"),
+        FootnoteRef("1"),
+        Text(" and two"),
+        FootnoteRef("note"),
+        Text(" and [^none]."),
+      ]),
+      Footnote("1", [Paragraph([Text("First.")])]),
+      Footnote("note", [Paragraph([Text("Second goes on.")])]),
+    ]
+}
+
+pub fn bare_links_test() {
+  assert markdown.parse(
+      "see https://x.test/path. and www.x.test, (https://x.test/a_(b)) "
+      <> "http://x.test/a) https://x.test?q=1&amp; mid-www.x.test http://nodot",
+    )
+    == [
+      Paragraph([
+        Text("see "),
+        Link([Text("https://x.test/path")], "https://x.test/path"),
+        Text(". and "),
+        Link([Text("www.x.test")], "http://www.x.test"),
+        Text(", ("),
+        Link([Text("https://x.test/a_(b)")], "https://x.test/a_(b)"),
+        Text(") "),
+        Link([Text("http://x.test/a")], "http://x.test/a"),
+        Text(") "),
+        Link([Text("https://x.test?q=1")], "https://x.test?q=1"),
+        Text("&amp; mid-www.x.test http://nodot"),
+      ]),
+    ]
+}
+
+pub fn email_autolinks_test() {
+  assert markdown.parse("<me@x.test> and me@x.test")
+    == [
+      Paragraph([
+        Link([Text("me@x.test")], "mailto:me@x.test"),
+        Text(" and me@x.test"),
+      ]),
+    ]
+}
+
 // --------------------------------------------------------- hostile input
 
 // Depth of the deepest block container, counting a list item's blocks one
@@ -303,7 +443,8 @@ pub fn crlf_is_a_line_ending_test() {
 fn block_depth(blocks: List(markdown.Block)) -> Int {
   list.fold(blocks, 0, fn(deepest, block) {
     int.max(deepest, case block {
-      Quote(blocks:) -> 1 + block_depth(blocks)
+      Quote(blocks:) | Alert(blocks:, ..) | Footnote(blocks:, ..) ->
+        1 + block_depth(blocks)
       BulletList(items:) | OrderedList(items:, ..) ->
         1 + list.fold(items, 0, fn(d, item) { int.max(d, block_depth(item)) })
       Paragraph(..) | Heading(..) | CodeBlock(..) | Table(..) | Rule -> 0
@@ -317,7 +458,7 @@ fn inline_depth(inlines: List(markdown.Inline)) -> Int {
       Emphasis(children:) | Strong(children:) | Strikethrough(children:) ->
         1 + inline_depth(children)
       Link(label:, ..) -> 1 + inline_depth(label)
-      Text(..) | Code(..) | Image(..) | Break -> 0
+      Text(..) | Code(..) | Image(..) | Task(..) | FootnoteRef(..) | Break -> 0
     })
   })
 }
@@ -326,7 +467,8 @@ fn deepest_inline(blocks: List(markdown.Block)) -> Int {
   list.fold(blocks, 0, fn(deepest, block) {
     int.max(deepest, case block {
       Paragraph(inlines:) | Heading(inlines:, ..) -> inline_depth(inlines)
-      Quote(blocks:) -> deepest_inline(blocks)
+      Quote(blocks:) | Alert(blocks:, ..) | Footnote(blocks:, ..) ->
+        deepest_inline(blocks)
       BulletList(items:) | OrderedList(items:, ..) ->
         list.fold(items, 0, fn(d, item) { int.max(d, deepest_inline(item)) })
       Table(header:, rows:) ->
@@ -348,6 +490,54 @@ pub fn a_run_of_brackets_is_text_test() {
 pub fn a_run_of_bracket_parens_is_text_test() {
   let source = string.repeat("[a](", 20_000)
   assert markdown.parse(source) == [Paragraph([Text(source)])]
+}
+
+// The inputs that hung the terminal under mork, at 50,000 characters each:
+// a run of `[`, of `![` and of `[a](`. Each must be text, and each must be
+// text with every definition form in play too, since references, footnotes
+// and titles add scans a bracket can start.
+pub fn the_inputs_that_hung_mork_are_text_test() {
+  let definitions = "\n\n[a]: /x\n[^a]: note"
+  [
+    string.repeat("[", 50_000),
+    string.repeat("![", 25_000),
+    string.repeat("[a](", 12_500),
+  ]
+  |> list.each(fn(source) {
+    assert markdown.parse(source) == [Paragraph([Text(source)])]
+    let assert [Paragraph(_), Footnote(..)] =
+      markdown.parse(source <> definitions)
+      as "the run is one paragraph beside its definitions"
+  })
+}
+
+// Runs aimed at the scans the definitions add: shortcut and full references,
+// footnote labels, titles, bare links and their trailing punctuation. Each is
+// 50,000 characters or more, far past where a quadratic scan would run out
+// of time.
+pub fn runs_against_the_added_scans_are_bounded_test() {
+  let definitions = "\n\n[a]: /x\n[^a]: note"
+  [
+    string.repeat("[a]", 20_000),
+    string.repeat("[a][", 20_000),
+    string.repeat("[a][a", 12_500),
+    string.repeat("[[a]", 15_000),
+    string.repeat("[^a", 20_000),
+    string.repeat("[^", 25_000),
+    string.repeat("[a](b \"", 10_000),
+    string.repeat("[a](b (", 10_000),
+    string.repeat("www.", 15_000),
+    string.repeat("www.a", 12_000),
+    string.repeat("http://a.b)", 6000),
+    string.repeat("https://a", 7000),
+    "www.a.b" <> string.repeat(")", 50_000),
+    "www.a.b" <> string.repeat(".", 50_000),
+    "www.a.b" <> string.repeat("&amp", 12_500),
+  ]
+  |> list.each(fn(source) {
+    let assert [_, ..] = markdown.parse(source <> definitions)
+      as "a hostile run parses"
+  })
 }
 
 pub fn a_run_of_closing_parens_links_once_each_test() {

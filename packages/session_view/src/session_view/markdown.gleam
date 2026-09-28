@@ -1,45 +1,59 @@
-//// Markdown as a closed tree, for a host that draws an answer as elements
-//// rather than as terminal rows.
+//// Markdown as a closed tree, which both hosts draw: the terminal as styled
+//// rows (`tui/markdown`) and the web view as elements
+//// (`web_view/markdown_view`).
 ////
-//// The web view has to show an assistant's bold text, lists and code fences
-//// the way the terminal does, and it may only put session text into the page
-//// as text nodes (protocol-change/051, "Nothing from the session becomes
-//// markup"). So the model's Markdown is parsed here, into `Block` and
-//// `Inline` values whose every string is text to be shown, and the view maps
-//// each variant to an element. No variant carries HTML: a tag in the source
-//// is ordinary text, and a link keeps its destination as a string the view
-//// prints rather than a URL it follows.
+//// The web view may only put session text into the page as text nodes
+//// (protocol-change/051, "Nothing from the session becomes markup"). So the
+//// model's Markdown is parsed here, into `Block` and `Inline` values whose
+//// every string is text to be shown, and each host maps each variant to its
+//// own output. No variant carries HTML: a tag in the source is ordinary
+//// text, and a link keeps its destination as a string. The terminal hands
+//// that string to the terminal as a hyperlink; the web view prints it.
 ////
-//// The parser is Loom's own and deliberately small. The terminal renders
-//// through mork, a full CommonMark parser, but mork's link parsing
+//// The parser is Loom's own and deliberately small. Both hosts used to be
+//// able to reach mork, a full CommonMark parser, but mork's link parsing
 //// backtracks: a run of unclosed `[` takes time exponential in its length
-//// (twenty of them took most of a second when this module was written), and
-//// a model can emit that run. A page must not stall on its own transcript,
-//// so this parser is written to a budget instead of to the whole
-//// specification. Every step consumes input or finishes a construct; the
-//// two scans that look ahead (a code span's closing run and a link's
-//// destination) are arranged so that no character is scanned more than a
-//// fixed number of times. The work is linear in the length of the text.
+//// (twenty of them took most of a second, thirty would take minutes), and a
+//// model can emit that run. The terminal re-renders a live answer on every
+//// delta, so such an answer hung it. Neither a page nor a terminal may stall
+//// on its own transcript, so this parser is written to a budget instead of
+//// to the whole specification. Every step consumes input or finishes a
+//// construct, and every scan that looks ahead is arranged so that no
+//// character is scanned more than a fixed number of times. The work is
+//// linear in the length of the text.
 ////
-//// Nesting is bounded as well. Block containers, quotes and list items,
-//// stop being recognised `max_depth` levels down, where their markers become
-//// paragraph text, so a thousand `>` produce eight quotes and the text of the
-//// rest. Emphasis stops opening at `max_emphasis` open delimiters, and a link
-//// cannot contain a link, so the inline tree is shallow too. A view that
-//// recurses over the result recurses a bounded number of levels.
+//// Nesting is bounded as well. Block containers, quotes, list items and
+//// footnote definitions, stop being recognised `max_depth` levels down,
+//// where their markers become paragraph text, so a thousand `>` produce
+//// eight quotes and the text of the rest. Emphasis stops opening at
+//// `max_emphasis` open delimiters, and a link cannot contain a link, so the
+//// inline tree is shallow too. A host that recurses over the result recurses
+//// a bounded number of levels.
 ////
 //// What it recognises: ATX and setext headings, paragraphs, fenced and
-//// indented code, block quotes, bullet and ordered lists with task boxes,
-//// thematic breaks, GitHub pipe tables, code spans, emphasis, strong
-//// emphasis, strikethrough, links, images, autolinks, backslash escapes and
-//// hard breaks. What it leaves as text: HTML, entity references, link
-//// reference definitions, footnotes and emoji shortcodes.
+//// indented code, block quotes and GitHub alerts, bullet and ordered lists
+//// with task boxes, thematic breaks, GitHub pipe tables, code spans,
+//// emphasis, strong emphasis, strikethrough, links with or without a title,
+//// reference links and their definitions, footnote references and their
+//// definitions, images, autolinks in angle brackets and bare `http://`,
+//// `https://` and `www.` links, backslash escapes and hard breaks. What it
+//// leaves as text: HTML, entity references, emoji shortcodes and inline
+//// footnotes (`^[...]`).
+////
+//// Reference links are the one construct whose meaning crosses blocks: a
+//// label used in the first paragraph may be defined in the last. The
+//// definitions are therefore collected first, in one pass over the lines
+//// that builds a map from label to destination, and every later lookup is
+//// one map access. A definition line whose label is in that map is dropped
+//// from the output wherever it stands; any other line that merely looks
+//// like one is paragraph text.
 
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 
 /// One block of a Markdown document.
@@ -47,7 +61,8 @@ pub type Block {
   /// Running text.
   Paragraph(inlines: List(Inline))
 
-  /// A heading, from `#` lines or from a setext underline.
+  /// A heading, from `#` lines or from a setext underline. A trailing
+  /// `{#id}` on a `#` heading is dropped, as the heading-id extension has it.
   Heading(level: Level, inlines: List(Inline))
 
   /// Preformatted source. `language` is the first word of a fence's info
@@ -56,6 +71,12 @@ pub type Block {
 
   /// A block quote and the blocks inside it.
   Quote(blocks: List(Block))
+
+  /// A GitHub alert: a block quote whose first line is one of the five
+  /// markers `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` and
+  /// `[!CAUTION]`, in any case. The marker is removed and `blocks` is the
+  /// rest of the quote.
+  Alert(kind: AlertKind, blocks: List(Block))
 
   /// An unordered list; each item is the blocks inside it.
   BulletList(items: List(List(Block)))
@@ -67,8 +88,31 @@ pub type Block {
   /// A pipe table. Every row has exactly as many cells as the header.
   Table(header: List(Cell), rows: List(List(Cell)))
 
+  /// A footnote's definition, `[^label]: text`, drawn where it was written.
+  /// `label` is the text between `[^` and `]`, and `blocks` is the text
+  /// after the colon with the lines indented under it.
+  Footnote(label: String, blocks: List(Block))
+
   /// A thematic break.
   Rule
+}
+
+/// Which of GitHub's five alerts a quote is.
+pub type AlertKind {
+  /// `[!NOTE]`.
+  Note
+
+  /// `[!TIP]`.
+  Tip
+
+  /// `[!IMPORTANT]`.
+  Important
+
+  /// `[!WARNING]`.
+  Warning
+
+  /// `[!CAUTION]`.
+  Caution
 }
 
 /// A heading's level. A closed type rather than an `Int`, so a view maps
@@ -137,8 +181,26 @@ pub type Inline {
   /// An image's alternative text and its destination, both as text.
   Image(alt: String, destination: String)
 
+  /// A task list item's box. It opens the first paragraph of the item whose
+  /// first line began with `[ ] `, `[x] ` or `[X] `.
+  Task(state: TaskState)
+
+  /// A reference to a footnote, `[^label]`, whose definition appears
+  /// somewhere in the same text. A reference to a label nothing defines is
+  /// text.
+  FootnoteRef(label: String)
+
   /// A hard line break.
   Break
+}
+
+/// Whether a task item's box is ticked.
+pub type TaskState {
+  /// `[ ]`.
+  Open
+
+  /// `[x]` or `[X]`.
+  Done
 }
 
 /// How many levels of quotes and list items are recognised. A container
@@ -163,12 +225,13 @@ pub const max_emphasis = 8
 ///   == [markdown.Paragraph([markdown.Strong([markdown.Text("bold")])])]
 /// ```
 pub fn parse(text: String) -> List(Block) {
-  text
-  |> string.replace("\r\n", "\n")
-  |> string.replace("\r", "\n")
-  |> string.split("\n")
-  |> list.map(expand_leading_tabs)
-  |> blocks(0)
+  let lines =
+    text
+    |> string.replace("\r\n", "\n")
+    |> string.replace("\r", "\n")
+    |> string.split("\n")
+    |> list.map(expand_leading_tabs)
+  blocks(lines, Context(depth: 0, refs: definitions(lines)))
 }
 
 /// The text of inlines with their markup removed, as an image's alternative
@@ -193,6 +256,8 @@ fn plain_one(inline: Inline) -> String {
       plain(children)
     Link(label:, ..) -> plain(label)
     Image(alt:, ..) -> alt
+    Task(..) -> ""
+    FootnoteRef(label:) -> "[" <> label <> "]"
     Break -> " "
   }
 }
@@ -218,6 +283,24 @@ fn indentation(line: String, width: Int) -> #(Int, String) {
 
 // ---------------------------------------------------------------- blocks
 
+// What block parsing carries into every container: how many containers deep
+// it is, and the definitions the first pass collected, which inline parsing
+// resolves references against.
+type Context {
+  Context(depth: Int, refs: Refs)
+}
+
+// The labels the text defines. `links` maps a normalized link label to its
+// destination, the first definition of a label winning, and `notes` holds
+// every footnote label.
+type Refs {
+  Refs(links: Dict(String, String), notes: Set(String))
+}
+
+fn deeper(context: Context) -> Context {
+  Context(..context, depth: context.depth + 1)
+}
+
 // What one line can start, decided from the line alone. The block loop reads
 // a line's kind and then consumes as many following lines as that block owns.
 type Line {
@@ -227,6 +310,15 @@ type Line {
   RuleLine
   QuoteLine(content: String)
   ItemLine(item: Item)
+
+  // A link reference definition for a label the first pass collected. It
+  // draws nothing.
+  DefinitionLine
+
+  // The first line of a footnote definition: its label and the text after
+  // the colon.
+  NoteLine(label: String, content: String)
+
   TextLine(indent: Int, text: String)
 }
 
@@ -249,18 +341,23 @@ type Continuation {
   Interrupts
 }
 
-fn blocks(lines: List(String), depth: Int) -> List(Block) {
-  collect(lines, depth, [])
+fn blocks(lines: List(String), context: Context) -> List(Block) {
+  collect(lines, context, [])
 }
 
-fn collect(lines: List(String), depth: Int, done: List(Block)) -> List(Block) {
+fn collect(
+  lines: List(String),
+  context: Context,
+  done: List(Block),
+) -> List(Block) {
   case lines {
     [] -> list.reverse(done)
     [line, ..rest] -> {
-      let #(block, rest) = next_block(classify(line, depth), line, rest, depth)
+      let #(block, rest) =
+        next_block(classify(line, context), line, rest, context)
       case block {
-        Some(block) -> collect(rest, depth, [block, ..done])
-        None -> collect(rest, depth, done)
+        Some(block) -> collect(rest, context, [block, ..done])
+        None -> collect(rest, context, done)
       }
     }
   }
@@ -272,10 +369,10 @@ fn next_block(
   kind: Line,
   line: String,
   rest: List(String),
-  depth: Int,
+  context: Context,
 ) -> #(Option(Block), List(String)) {
   case kind {
-    BlankLine -> #(None, rest)
+    BlankLine | DefinitionLine -> #(None, rest)
 
     // An unclosed fence runs to the end of the lines it was given, which
     // for a quote or a list item is the end of that container and for a
@@ -285,43 +382,81 @@ fn next_block(
       #(Some(CodeBlock(language(info), string.join(body, "\n"))), rest)
     }
 
-    HeadingLine(level:, text:) -> #(Some(Heading(level, inlines(text))), rest)
+    HeadingLine(level:, text:) -> #(
+      Some(Heading(level, inlines(text, context.refs))),
+      rest,
+    )
     RuleLine -> #(Some(Rule), rest)
 
     // A container's lines are gathered with their markers removed and
     // parsed again one level down, where `classify` stops recognising
     // containers once `max_depth` is reached.
     QuoteLine(content:) -> {
-      let #(inner, rest) = quoted(rest, [content])
-      #(Some(Quote(blocks(inner, depth + 1))), rest)
+      let #(inner, rest) = quoted(rest, [content], context)
+      #(Some(quote_block(inner, deeper(context))), rest)
     }
 
     ItemLine(item:) -> {
-      let #(items, rest) = list_items(item, rest, depth, [])
+      let #(items, rest) = list_items(item, rest, context, [])
       #(Some(list_block(item.marker, items)), rest)
     }
 
+    // A footnote definition owns the lines indented under it, as a list
+    // item four columns wide would.
+    NoteLine(label:, content:) -> {
+      let #(body, rest) = item_body(rest, 4, context, [content])
+      #(Some(Footnote(label, blocks(body, deeper(context)))), rest)
+    }
+
     TextLine(indent:, ..) if indent >= 4 -> indented_code([line, ..rest], [])
-    TextLine(..) -> paragraph(line, rest, depth)
+    TextLine(..) -> paragraph(line, rest, context)
   }
 }
 
-fn classify(line: String, depth: Int) -> Line {
+fn classify(line: String, context: Context) -> Line {
   let #(indent, rest) = indentation(line, 0)
   case string.trim_end(rest) {
     "" -> BlankLine
     _ if indent >= 4 -> TextLine(indent:, text: rest)
-    _ -> block_line(indent, rest, depth)
+    _ -> block_line(indent, rest, context)
   }
 }
 
-fn block_line(indent: Int, rest: String, depth: Int) -> Line {
+fn block_line(indent: Int, rest: String, context: Context) -> Line {
   fence_line(indent, rest)
   |> result.lazy_or(fn() { heading_line(rest) })
   |> result.lazy_or(fn() { rule_line(rest) })
-  |> result.lazy_or(fn() { quote_line(rest, depth) })
-  |> result.lazy_or(fn() { item_line(indent, rest, depth) })
+  |> result.lazy_or(fn() { quote_line(rest, context.depth) })
+  |> result.lazy_or(fn() { item_line(indent, rest, context.depth) })
+  |> result.lazy_or(fn() { definition_line(rest, context) })
   |> result.lazy_unwrap(fn() { TextLine(indent:, text: rest) })
+}
+
+// A definition is recognised only for a label the first pass collected, so
+// the two passes agree on which lines are definitions. A line that looks
+// like one but defines nothing, because it sits where the first pass does
+// not read, stays text rather than vanishing. A footnote definition is a
+// container, so past `max_depth` it is text as well.
+fn definition_line(rest: String, context: Context) -> Result(Line, Nil) {
+  case rest {
+    "[^" <> _ -> {
+      use #(label, content) <- result.try(note_definition(rest))
+      case
+        context.depth < max_depth && set.contains(context.refs.notes, label)
+      {
+        True -> Ok(NoteLine(label:, content:))
+        False -> Error(Nil)
+      }
+    }
+    "[" <> _ -> {
+      use #(label, _) <- result.try(link_definition(rest))
+      case dict.has_key(context.refs.links, label) {
+        True -> Ok(DefinitionLine)
+        False -> Error(Nil)
+      }
+    }
+    _ -> Error(Nil)
+  }
 }
 
 fn fence_line(indent: Int, rest: String) -> Result(Line, Nil) {
@@ -427,6 +562,25 @@ fn heading_text(text: String) -> String {
   case closing > 0 && { without == "" || string.ends_with(without, " ") } {
     True -> string.trim_end(without)
     False -> trimmed
+  }
+  |> without_anchor
+}
+
+// `# Title {#anchor}` is "Title": the heading-id extension's anchor names
+// the heading for a link and is not part of its text. An anchor holding
+// whitespace is not one, and stays.
+fn without_anchor(text: String) -> String {
+  case string.ends_with(text, "}") {
+    False -> text
+    True ->
+      case string.split_once(string.reverse(text), "#{") {
+        Ok(#("}" <> anchor, before)) ->
+          case anchor != "" && !string.contains(anchor, " ") {
+            True -> string.trim_end(string.reverse(before))
+            False -> text
+          }
+        Ok(_) | Error(Nil) -> text
+      }
   }
 }
 
@@ -553,38 +707,100 @@ fn is_digit(grapheme: String) -> Bool {
   string.contains("0123456789", grapheme)
 }
 
-// The lines of a quote after its first. Each must carry its own `>`: a line
-// without one ends the quote, where CommonMark would sometimes continue it
-// lazily. Models write the marker on every line.
+// The lines of a quote after its first. A line carrying its own `>` stays
+// in the quote. A line without one continues the quote lazily, as CommonMark
+// has it, when it is paragraph text and so was the quote's last line: that
+// line can only be the quoted paragraph going on. Anything else ends the
+// quote. The test reads the quote's last line alone, so a paragraph line
+// after a quoted fence's body joins the fence, where CommonMark would end
+// the quote; models close their fences, and the cost is where one line is
+// drawn.
 fn quoted(
   lines: List(String),
   inner: List(String),
+  context: Context,
 ) -> #(List(String), List(String)) {
   case lines {
     [] -> #(list.reverse(inner), [])
     [line, ..rest] -> {
       let #(indent, text) = indentation(line, 0)
       case indent < 4, quote_content(text) {
-        True, Ok(content) -> quoted(rest, [content, ..inner])
-        _, _ -> #(list.reverse(inner), lines)
+        True, Ok(content) -> quoted(rest, [content, ..inner], context)
+        _, _ ->
+          case lazy_quote(line, inner, context) {
+            Continues -> quoted(rest, [line, ..inner], context)
+            Interrupts -> #(list.reverse(inner), lines)
+          }
       }
     }
+  }
+}
+
+fn lazy_quote(
+  line: String,
+  inner: List(String),
+  context: Context,
+) -> Continuation {
+  case inner, classify(line, context) {
+    [previous, ..], TextLine(..) ->
+      case classify(previous, deeper(context)) {
+        TextLine(indent:, ..) if indent < 4 -> Continues
+        _ -> Interrupts
+      }
+    _, _ -> Interrupts
+  }
+}
+
+// A quote whose first line is an alert marker is that alert. Text after the
+// marker on the same line opens the alert's body, and a marker alone on its
+// line is dropped with its line.
+fn quote_block(inner: List(String), context: Context) -> Block {
+  case inner {
+    [first, ..rest] ->
+      case alert_marker(first) {
+        Ok(#(kind, "")) -> Alert(kind, blocks(rest, context))
+        Ok(#(kind, after)) -> Alert(kind, blocks([after, ..rest], context))
+        Error(Nil) -> Quote(blocks(inner, context))
+      }
+    [] -> Quote([])
+  }
+}
+
+fn alert_marker(line: String) -> Result(#(AlertKind, String), Nil) {
+  let #(indent, rest) = indentation(line, 0)
+  use #(marker, after) <- result.try(case indent < 4, rest {
+    True, "[!" <> tail -> string.split_once(tail, "]")
+    _, _ -> Error(Nil)
+  })
+  use kind <- result.try(alert_kind(marker))
+  Ok(#(kind, string.trim(after)))
+}
+
+fn alert_kind(marker: String) -> Result(AlertKind, Nil) {
+  case string.lowercase(marker) {
+    "note" -> Ok(Note)
+    "tip" -> Ok(Tip)
+    "important" -> Ok(Important)
+    "warning" -> Ok(Warning)
+    "caution" -> Ok(Caution)
+    _ -> Error(Nil)
   }
 }
 
 fn list_items(
   item: Item,
   lines: List(String),
-  depth: Int,
+  context: Context,
   items: List(List(Block)),
 ) -> #(List(List(Block)), List(String)) {
-  let #(body, rest) = item_body(lines, item.width, depth, [task(item.content)])
-  let items = [blocks(body, depth + 1), ..items]
+  let #(state, content) = task(item.content)
+  let #(body, rest) = item_body(lines, item.width, context, [content])
+  let items = [ticked(blocks(body, deeper(context)), state), ..items]
   case rest {
     [] -> #(list.reverse(items), [])
     [line, ..more] ->
-      case sibling(classify(line, depth), item.marker) {
-        Ok(next) -> list_items(next, more, depth, items)
+      case sibling(classify(line, context), item.marker) {
+        Ok(next) -> list_items(next, more, context, items)
         Error(Nil) -> #(list.reverse(items), rest)
       }
   }
@@ -603,12 +819,27 @@ fn sibling(kind: Line, marker: Marker) -> Result(Item, Nil) {
   }
 }
 
-// A task item's box is drawn as a glyph, as the terminal draws it.
-fn task(content: String) -> String {
+// A task item's box, taken off the item's first line so that the line
+// parses as the text after it. The spaces after the box go with it: left on,
+// four of them would make the rest an indented code block.
+fn task(content: String) -> #(Option(TaskState), String) {
   case content {
-    "[ ] " <> rest -> "☐ " <> rest
-    "[x] " <> rest | "[X] " <> rest -> "☑ " <> rest
-    _ -> content
+    "[ ] " <> rest -> #(Some(Open), string.trim_start(rest))
+    "[x] " <> rest | "[X] " <> rest -> #(Some(Done), string.trim_start(rest))
+    _ -> #(None, content)
+  }
+}
+
+// The box opens the item's first paragraph, or stands as a paragraph of its
+// own when the item opens with something else.
+fn ticked(blocks: List(Block), state: Option(TaskState)) -> List(Block) {
+  case state, blocks {
+    None, _ -> blocks
+    Some(state), [Paragraph(inlines:), ..rest] -> [
+      Paragraph([Task(state), ..inlines]),
+      ..rest
+    ]
+    Some(state), _ -> [Paragraph([Task(state)]), ..blocks]
   }
 }
 
@@ -626,7 +857,7 @@ fn list_block(marker: Marker, items: List(List(Block))) -> Block {
 fn item_body(
   lines: List(String),
   width: Int,
-  depth: Int,
+  context: Context,
   body: List(String),
 ) -> #(List(String), List(String)) {
   case lines {
@@ -634,10 +865,10 @@ fn item_body(
     [line, ..rest] -> {
       let #(indent, text) = indentation(line, 0)
       case string.trim_end(text), indent >= width {
-        "", _ -> after_blank(lines, width, depth, body)
+        "", _ -> after_blank(lines, width, context, body)
         _, True ->
-          item_body(rest, width, depth, [drop_spaces(line, width), ..body])
-        _, False -> lazy_line(line, rest, width, depth, body)
+          item_body(rest, width, context, [drop_spaces(line, width), ..body])
+        _, False -> lazy_line(line, rest, width, context, body)
       }
     }
   }
@@ -649,7 +880,7 @@ fn item_body(
 fn after_blank(
   lines: List(String),
   width: Int,
-  depth: Int,
+  context: Context,
   body: List(String),
 ) -> #(List(String), List(String)) {
   let #(blanks, rest) = list.split_while(lines, is_blank)
@@ -660,7 +891,7 @@ fn after_blank(
           item_body(
             rest,
             width,
-            depth,
+            context,
             list.append(list.map(blanks, fn(_) { "" }), body),
           )
         False -> #(list.reverse(body), rest)
@@ -673,15 +904,15 @@ fn lazy_line(
   line: String,
   rest: List(String),
   width: Int,
-  depth: Int,
+  context: Context,
   body: List(String),
 ) -> #(List(String), List(String)) {
-  let continues = case body, classify(line, depth) {
+  let continues = case body, classify(line, context) {
     [previous, ..], TextLine(..) -> !is_blank(previous)
     _, _ -> False
   }
   case continues {
-    True -> item_body(rest, width, depth, [string.trim_start(line), ..body])
+    True -> item_body(rest, width, context, [string.trim_start(line), ..body])
     False -> #(list.reverse(body), [line, ..rest])
   }
 }
@@ -721,25 +952,28 @@ fn code_from(
 fn paragraph(
   line: String,
   rest: List(String),
-  depth: Int,
+  context: Context,
 ) -> #(Option(Block), List(String)) {
-  case table(line, rest) {
+  case table(line, rest, context.refs) {
     Ok(#(block, rest)) -> #(Some(block), rest)
-    Error(Nil) -> prose(rest, depth, [string.trim_start(line)])
+    Error(Nil) -> prose(rest, context, [string.trim_start(line)])
   }
 }
 
 fn prose(
   lines: List(String),
-  depth: Int,
+  context: Context,
   text: List(String),
 ) -> #(Option(Block), List(String)) {
   case lines {
-    [] -> #(Some(Paragraph(inlines(joined(text)))), [])
+    [] -> #(Some(Paragraph(inlines(joined(text), context.refs))), [])
     [line, ..rest] ->
       case setext(line) {
-        Ok(level) -> #(Some(Heading(level, inlines(joined(text)))), rest)
-        Error(Nil) -> prose_line(line, rest, depth, text)
+        Ok(level) -> #(
+          Some(Heading(level, inlines(joined(text), context.refs))),
+          rest,
+        )
+        Error(Nil) -> prose_line(line, rest, context, text)
       }
   }
 }
@@ -747,7 +981,7 @@ fn prose(
 fn prose_line(
   line: String,
   rest: List(String),
-  depth: Int,
+  context: Context,
   text: List(String),
 ) -> #(Option(Block), List(String)) {
   case text, heads_table(text, line) {
@@ -758,13 +992,16 @@ fn prose_line(
     // since `paragraph` tried that first, and handing its only line back
     // would parse it again forever; the guard on `earlier` rules that out.
     [header, ..earlier], Ok(Nil) if earlier != [] -> #(
-      Some(Paragraph(inlines(joined(earlier)))),
+      Some(Paragraph(inlines(joined(earlier), context.refs))),
       [header, line, ..rest],
     )
     _, _ ->
-      case continuation(classify(line, depth)) {
-        Continues -> prose(rest, depth, [string.trim_start(line), ..text])
-        Interrupts -> #(Some(Paragraph(inlines(joined(text)))), [line, ..rest])
+      case continuation(classify(line, context)) {
+        Continues -> prose(rest, context, [string.trim_start(line), ..text])
+        Interrupts -> #(Some(Paragraph(inlines(joined(text), context.refs))), [
+          line,
+          ..rest
+        ])
       }
   }
 }
@@ -799,7 +1036,9 @@ fn continuation(kind: Line) -> Continuation {
     | HeadingLine(..)
     | RuleLine
     | QuoteLine(..)
-    | ItemLine(..) -> Interrupts
+    | ItemLine(..)
+    | DefinitionLine
+    | NoteLine(..) -> Interrupts
   }
 }
 
@@ -834,6 +1073,7 @@ fn underline(rest: String, mark: String, level: Level) -> Result(Level, Nil) {
 fn table(
   line: String,
   rest: List(String),
+  refs: Refs,
 ) -> Result(#(Block, List(String)), Nil) {
   case string.contains(line, "|"), rest {
     True, [delimiter, ..body] -> {
@@ -841,8 +1081,8 @@ fn table(
       use aligns <- result.try(alignments(delimiter))
       case list.length(aligns) == list.length(header) {
         True -> {
-          let #(rows, rest) = table_rows(body, aligns, [])
-          Ok(#(Table(header: row(aligns, header), rows:), rest))
+          let #(rows, rest) = table_rows(body, aligns, refs, [])
+          Ok(#(Table(header: row(aligns, header, refs), rows:), rest))
         }
         False -> Error(Nil)
       }
@@ -854,12 +1094,17 @@ fn table(
 fn table_rows(
   lines: List(String),
   aligns: List(Align),
+  refs: Refs,
   rows: List(List(Cell)),
 ) -> #(List(List(Cell)), List(String)) {
   case lines {
     [line, ..rest] ->
       case !is_blank(line) && string.contains(line, "|") {
-        True -> table_rows(rest, aligns, [row(aligns, cells(line)), ..rows])
+        True ->
+          table_rows(rest, aligns, refs, [
+            row(aligns, cells(line), refs),
+            ..rows
+          ])
         False -> #(list.reverse(rows), lines)
       }
     [] -> #(list.reverse(rows), [])
@@ -867,14 +1112,17 @@ fn table_rows(
 }
 
 // A row is cut or padded to the header's width, as GitHub does.
-fn row(aligns: List(Align), texts: List(String)) -> List(Cell) {
+fn row(aligns: List(Align), texts: List(String), refs: Refs) -> List(Cell) {
   case aligns, texts {
     [], _ -> []
     [align, ..aligns], [text, ..texts] -> [
-      Cell(align:, inlines: inlines(text)),
-      ..row(aligns, texts)
+      Cell(align:, inlines: inlines(text, refs)),
+      ..row(aligns, texts, refs)
     ]
-    [align, ..aligns], [] -> [Cell(align:, inlines: []), ..row(aligns, [])]
+    [align, ..aligns], [] -> [
+      Cell(align:, inlines: []),
+      ..row(aligns, [], refs)
+    ]
   }
 }
 
@@ -935,6 +1183,228 @@ fn finish_cell(cell: List(String)) -> String {
   cell |> list.reverse |> string.concat |> string.trim
 }
 
+// ----------------------------------------------------------- definitions
+
+// The longest label a reference or a definition may have, in graphemes, as
+// CommonMark bounds it. A label scan stops here whatever follows.
+const max_label = 999
+
+// Whether a label may hold whitespace: a link label may, a footnote label
+// may not.
+type Spacing {
+  SpacesAllowed
+  NoSpaces
+}
+
+// Whether the first pass is inside a fenced code block, and which fence
+// closes it.
+type Fencing {
+  Unfenced
+  Fenced(mark: String, length: Int)
+}
+
+// The first pass: every link reference definition and footnote definition
+// in the text, read one line at a time. A quote's markers are stripped from
+// a line before it is read, since a definition inside a quote defines its
+// label for the whole text. Fenced code is skipped, since a definition
+// written inside a fence is an example rather than a definition, and so is
+// a line indented four or more columns, which is code. Each line is read
+// once, so the pass is linear.
+fn definitions(lines: List(String)) -> Refs {
+  collect_definitions(
+    lines,
+    Unfenced,
+    Refs(links: dict.new(), notes: set.new()),
+  )
+}
+
+fn collect_definitions(
+  lines: List(String),
+  fencing: Fencing,
+  refs: Refs,
+) -> Refs {
+  case lines {
+    [] -> refs
+    [line, ..rest] -> {
+      let #(fencing, refs) = definition_step(unquoted(line), fencing, refs)
+      collect_definitions(rest, fencing, refs)
+    }
+  }
+}
+
+fn definition_step(
+  line: String,
+  fencing: Fencing,
+  refs: Refs,
+) -> #(Fencing, Refs) {
+  let #(indent, rest) = indentation(line, 0)
+  case fencing {
+    Fenced(mark:, length:) ->
+      case closes_fence(line, mark, length) {
+        True -> #(Unfenced, refs)
+        False -> #(fencing, refs)
+      }
+    Unfenced if indent >= 4 -> #(Unfenced, refs)
+    Unfenced ->
+      case fence_line(indent, rest) {
+        Ok(FenceLine(mark:, length:, ..)) -> #(Fenced(mark:, length:), refs)
+        _ -> #(Unfenced, define(rest, refs))
+      }
+  }
+}
+
+// A line with every leading quote marker removed.
+fn unquoted(line: String) -> String {
+  let #(indent, rest) = indentation(line, 0)
+  case indent < 4, quote_content(rest) {
+    True, Ok(content) -> unquoted(content)
+    _, _ -> line
+  }
+}
+
+fn define(rest: String, refs: Refs) -> Refs {
+  case rest {
+    "[^" <> _ ->
+      case note_definition(rest) {
+        Ok(#(label, _)) -> Refs(..refs, notes: set.insert(refs.notes, label))
+        Error(Nil) -> refs
+      }
+    "[" <> _ ->
+      case link_definition(rest) {
+        Ok(#(label, destination)) ->
+          case dict.has_key(refs.links, label) {
+            True -> refs
+            False ->
+              Refs(..refs, links: dict.insert(refs.links, label, destination))
+          }
+        Error(Nil) -> refs
+      }
+    _ -> refs
+  }
+}
+
+// `[^label]: text`: the label and the text after the colon.
+fn note_definition(rest: String) -> Result(#(String, String), Nil) {
+  case string.to_graphemes(rest) {
+    ["[", "^", ..tail] -> {
+      use #(label, after, _) <- result.try(label_text(tail, NoSpaces, [], 0))
+      case after {
+        [":", ..content] ->
+          Ok(#(label, string.trim_start(string.concat(content))))
+        _ -> Error(Nil)
+      }
+    }
+    _ -> Error(Nil)
+  }
+}
+
+// `[label]: destination "title"`, on one line: the normalized label and the
+// destination. The destination is a run with no whitespace, or anything but
+// `<` and `>` between angle brackets. The title, in double quotes, single
+// quotes or parentheses, is optional and is dropped; anything else after
+// the destination means the line is not a definition.
+fn link_definition(rest: String) -> Result(#(String, String), Nil) {
+  case string.to_graphemes(rest) {
+    ["[", ..tail] -> {
+      use #(raw, after, _) <- result.try(label_text(tail, SpacesAllowed, [], 0))
+      use label <- result.try(normalized(raw))
+      case after {
+        [":", ..after] -> {
+          use destination <- result.try(definition_target(after))
+          Ok(#(label, destination))
+        }
+        _ -> Error(Nil)
+      }
+    }
+    _ -> Error(Nil)
+  }
+}
+
+fn definition_target(input: List(String)) -> Result(String, Nil) {
+  let #(_, input) = list.split_while(input, is_space)
+  let #(destination, after) = case input {
+    ["<", ..rest] -> angled(rest, [])
+    _ -> {
+      let #(run, after) = list.split_while(input, fn(g) { !is_space(g) })
+      #(Ok(string.concat(run)), after)
+    }
+  }
+  use destination <- result.try(destination)
+  case destination != "" && is_title(string.trim(string.concat(after))) {
+    True -> Ok(destination)
+    False -> Error(Nil)
+  }
+}
+
+fn angled(
+  input: List(String),
+  text: List(String),
+) -> #(Result(String, Nil), List(String)) {
+  case input {
+    [">", ..rest] -> #(Ok(text |> list.reverse |> string.concat), rest)
+    ["<", ..] | [] -> #(Error(Nil), input)
+    [grapheme, ..rest] -> angled(rest, [grapheme, ..text])
+  }
+}
+
+fn is_title(text: String) -> Bool {
+  case text {
+    "" -> True
+    "\"" <> body -> body != "" && string.ends_with(body, "\"")
+    "'" <> body -> body != "" && string.ends_with(body, "'")
+    "(" <> body -> body != "" && string.ends_with(body, ")")
+    _ -> False
+  }
+}
+
+fn is_space(grapheme: String) -> Bool {
+  neighbour(grapheme) == Space
+}
+
+// A label's text: the graphemes before the first unescaped `]`, which must
+// come after at least one grapheme and within `max_label`. A `[` refuses the
+// label, as does whitespace in a footnote label. The result is the label,
+// the input after its `]`, and how many graphemes the label took. The scan
+// stops at the first bracket, so two label scans never read the same text.
+fn label_text(
+  input: List(String),
+  spacing: Spacing,
+  label: List(String),
+  count: Int,
+) -> Result(#(String, List(String), Int), Nil) {
+  case input, spacing {
+    _, _ if count > max_label -> Error(Nil)
+    ["]", ..rest], _ if count > 0 ->
+      Ok(#(label |> list.reverse |> string.concat, rest, count))
+    ["]", ..], _ | ["[", ..], _ | [], _ -> Error(Nil)
+    ["\\", next, ..rest], _ if next == "[" || next == "]" ->
+      label_text(rest, spacing, [next, "\\", ..label], count + 2)
+    [grapheme, ..rest], NoSpaces ->
+      case is_space(grapheme) {
+        True -> Error(Nil)
+        False -> label_text(rest, spacing, [grapheme, ..label], count + 1)
+      }
+    [grapheme, ..rest], SpacesAllowed ->
+      label_text(rest, spacing, [grapheme, ..label], count + 1)
+  }
+}
+
+// Labels match without regard to case or to how whitespace inside them was
+// written. A label of only whitespace names nothing.
+fn normalized(label: String) -> Result(String, Nil) {
+  let words =
+    label
+    |> string.lowercase
+    |> string.replace("\t", " ")
+    |> string.replace("\n", " ")
+    |> string.split(" ")
+    |> list.filter(fn(word) { word != "" })
+  case words {
+    [] -> Error(Nil)
+    _ -> Ok(string.join(words, " "))
+  }
+}
+
 // ---------------------------------------------------------------- inlines
 
 // An emphasis delimiter that is waiting for its closer.
@@ -962,8 +1432,19 @@ type Opener {
 }
 
 // One open construct and what has been read inside it, most recent first.
+// `holds` records whether a bracket's frame has ended inside this one, which
+// decides whether its text may be read as a reference label.
 type Frame {
-  Frame(opener: Opener, pieces: List(Piece))
+  Frame(opener: Opener, pieces: List(Piece), holds: Holds)
+}
+
+// Whether a frame holds a bracket, closed or not. CommonMark does not let a
+// reference label hold one, and reading the text of a frame that holds none
+// is what keeps shortcut references linear: frames with no bracket inside
+// cover text no other such frame covers.
+type Holds {
+  Flat
+  Nested
 }
 
 // A frame's contents. A frame that never closes is spliced into its parent
@@ -1004,6 +1485,7 @@ type Scan {
     epoch: Int,
     ticks: Dict(Int, List(Int)),
     unclosed: Int,
+    refs: Refs,
   )
 }
 
@@ -1012,11 +1494,11 @@ type Scan {
 // run by length, found in a first pass: an opener takes the next run of its
 // length after it, and positions already passed are dropped, so each is
 // looked at once.
-fn inlines(text: String) -> List(Inline) {
+fn inlines(text: String, refs: Refs) -> List(Inline) {
   let graphemes = string.to_graphemes(text)
   let start =
     Scan(
-      frame: Frame(opener: Root, pieces: []),
+      frame: Frame(opener: Root, pieces: [], holds: Flat),
       below: [],
       pending: [],
       open: dict.new(),
@@ -1025,6 +1507,7 @@ fn inlines(text: String) -> List(Inline) {
       epoch: 0,
       ticks: tick_runs(graphemes, 0, dict.new()),
       unclosed: 0,
+      refs:,
     )
   scan(graphemes, 0, "", start)
 }
@@ -1081,23 +1564,63 @@ fn scan(
         "[",
         open_frame(state, Bracket(ToImage, state.epoch)),
       )
-    ["[", ..rest] ->
-      scan(
-        rest,
-        position + 1,
-        "[",
-        open_frame(state, Bracket(ToLink, state.epoch)),
-      )
+    ["[", "^", ..rest] -> footnote_ref(rest, position, state)
+    ["[", ..rest] -> open_link(rest, position, state)
     ["]", ..rest] -> close_bracket(rest, position, state)
     ["<", ..rest] -> autolink(rest, position, state)
     ["\n", ..rest] -> scan(rest, position + 1, "\n", line_break(state))
-    [grapheme, ..rest] ->
+    ["h", ..] | ["w", ..] -> bare_link(input, position, previous, state)
+    [grapheme, ..rest] -> read_text(grapheme, rest, position, state)
+  }
+}
+
+// One grapheme with no meaning of its own, added to the text being read.
+fn read_text(
+  grapheme: String,
+  rest: List(String),
+  position: Int,
+  state: Scan,
+) -> List(Inline) {
+  scan(
+    rest,
+    position + 1,
+    grapheme,
+    Scan(..state, pending: [grapheme, ..state.pending]),
+  )
+}
+
+// A `[` that may become a link, `rest` being what follows it.
+fn open_link(rest: List(String), position: Int, state: Scan) -> List(Inline) {
+  scan(rest, position + 1, "[", open_frame(state, Bracket(ToLink, state.epoch)))
+}
+
+// `[^label]` is a footnote reference when the text defines `label`, and
+// otherwise a `[` like any other. The label scan stops at the first bracket
+// or whitespace, so the text it reads is text no other label scan reads.
+fn footnote_ref(
+  rest: List(String),
+  position: Int,
+  state: Scan,
+) -> List(Inline) {
+  let found = case set.is_empty(state.refs.notes) {
+    True -> Error(Nil)
+    False -> {
+      use found <- result.try(label_text(rest, NoSpaces, [], 0))
+      case set.contains(state.refs.notes, found.0) {
+        True -> Ok(found)
+        False -> Error(Nil)
+      }
+    }
+  }
+  case found {
+    Ok(#(label, after, used)) ->
       scan(
-        rest,
-        position + 1,
-        grapheme,
-        Scan(..state, pending: [grapheme, ..state.pending]),
+        after,
+        position + used + 3,
+        "]",
+        push_node(state, FootnoteRef(label)),
       )
+    Error(Nil) -> open_link(["^", ..rest], position, state)
   }
 }
 
@@ -1321,7 +1844,7 @@ fn wrap(delim: Delim, children: List(Inline)) -> Inline {
 
 fn open_frame(state: Scan, opener: Opener) -> Scan {
   let state = flush(state)
-  Scan(..state, frame: Frame(opener:, pieces: []), below: [
+  Scan(..state, frame: Frame(opener:, pieces: [], holds: Flat), below: [
     state.frame,
     ..state.below
   ])
@@ -1366,15 +1889,25 @@ fn dissolve(state: Scan) -> Scan {
   case state.below {
     [] -> state
     [parent, ..below] -> {
-      let Frame(opener:, pieces:) = state.frame
+      let Frame(opener:, pieces:, holds:) = state.frame
       let pieces = [
         Spliced(pieces),
         Literal(opener_text(opener)),
         ..parent.pieces
       ]
-      Scan(..state, frame: Frame(..parent, pieces:), below:)
+      let holds = adopted(parent.holds, opener, holds)
+      Scan(..state, frame: Frame(..parent, pieces:, holds:), below:)
       |> counted(opener, -1)
     }
+  }
+}
+
+// What a frame holds once a child frame, opened by `opener` and holding
+// `child`, has ended inside it, closed or not.
+fn adopted(parent: Holds, opener: Opener, child: Holds) -> Holds {
+  case parent, opener, child {
+    Nested, _, _ | _, Bracket(..), _ | _, _, Nested -> Nested
+    Flat, Root, Flat | Flat, Delimited(..), Flat -> Flat
   }
 }
 
@@ -1397,13 +1930,15 @@ fn close_frame(state: Scan, build: fn(List(Inline)) -> Inline) -> Scan {
   case state.below {
     [] -> state
     [parent, ..below] -> {
-      let Frame(opener:, pieces:) = state.frame
+      let Frame(opener:, pieces:, holds:) = state.frame
       let node = Node(build(flatten(pieces)))
-      Scan(
-        ..state,
-        frame: Frame(..parent, pieces: [node, ..parent.pieces]),
-        below:,
-      )
+      let frame =
+        Frame(
+          ..parent,
+          pieces: [node, ..parent.pieces],
+          holds: adopted(parent.holds, opener, holds),
+        )
+      Scan(..state, frame:, below:)
       |> counted(opener, -1)
     }
   }
@@ -1428,8 +1963,11 @@ fn close_bracket(
 }
 
 // The top frame is the nearest open bracket. It becomes a link or an image
-// when a destination follows and, for a link, when no link has formed since
-// it opened. Otherwise it is text, and so is the `]`.
+// when a destination or a defined reference follows and, for a link, when no
+// link has formed since it opened. Otherwise it is text, and so is the `]`.
+// A reference is tried after a destination fails, as CommonMark has it: in
+// `[foo](not a link)` with `foo` defined, `[foo]` is a link and the rest is
+// text.
 fn bracket_closes(
   rest: List(String),
   position: Int,
@@ -1447,15 +1985,88 @@ fn bracket_closes(
   case found {
     Ok(#(target, after, next)) -> scan(after, next, ")", linked(state, target))
     Error(unclosed) -> {
-      let state = dissolve(Scan(..state, unclosed:))
-      scan(
-        rest,
-        position + 1,
-        "]",
-        Scan(..state, pending: ["]", ..state.pending]),
-      )
+      let state = Scan(..state, unclosed:)
+      let referenced = case active {
+        True -> reference(rest, state)
+        False -> Error(Nil)
+      }
+      case referenced {
+        Ok(#(target, after, used)) ->
+          scan(after, position + 1 + used, "]", linked(state, target))
+        Error(Nil) -> {
+          let state = dissolve(state)
+          scan(
+            rest,
+            position + 1,
+            "]",
+            Scan(..state, pending: ["]", ..state.pending]),
+          )
+        }
+      }
     }
   }
+}
+
+// The destination a reference link names, when the bracket that just closed
+// is one: `[text][label]`, `[label][]` or `[label]`. The result is the
+// destination, the input after the reference, and how many graphemes after
+// the `]` the reference took.
+//
+// A full reference reads its label from the input, and that scan stops at
+// the first bracket, so no two such scans read the same text. The collapsed
+// and shortcut forms use the bracket's own text as the label, which is read
+// only when the bracket holds no other bracket: two such brackets never
+// overlap, so no text is read for a label twice.
+fn reference(
+  rest: List(String),
+  state: Scan,
+) -> Result(#(String, List(String), Int), Nil) {
+  case dict.is_empty(state.refs.links), rest {
+    True, _ -> Error(Nil)
+    False, ["[", "]", ..after] -> {
+      use target <- result.try(own_reference(state))
+      Ok(#(target, after, 2))
+    }
+    False, ["[", ..tail] ->
+      case label_text(tail, SpacesAllowed, [], 0) {
+        Ok(#(raw, after, used)) -> {
+          use target <- result.try(lookup(state.refs, raw))
+          Ok(#(target, after, used + 2))
+        }
+        Error(Nil) -> shortcut(rest, state)
+      }
+    False, _ -> shortcut(rest, state)
+  }
+}
+
+fn shortcut(
+  rest: List(String),
+  state: Scan,
+) -> Result(#(String, List(String), Int), Nil) {
+  use target <- result.try(own_reference(state))
+  Ok(#(target, rest, 0))
+}
+
+// The destination the top bracket's own text names as a label. The text is
+// the plain text of what the bracket holds, so a label written with markup
+// inside it matches a definition only when the definition's label is
+// written without that markup.
+fn own_reference(state: Scan) -> Result(String, Nil) {
+  case state.frame.holds {
+    Nested -> Error(Nil)
+    Flat -> {
+      let label = plain(flatten(state.frame.pieces))
+      case string.drop_start(label, max_label) == "" {
+        True -> lookup(state.refs, label)
+        False -> Error(Nil)
+      }
+    }
+  }
+}
+
+fn lookup(refs: Refs, label: String) -> Result(String, Nil) {
+  use label <- result.try(normalized(label))
+  dict.get(refs.links, label)
 }
 
 fn linked(state: Scan, target: String) -> Scan {
@@ -1514,6 +2125,7 @@ fn destination_text(
     [], _ -> Error(position)
     [grapheme, ..rest], _ ->
       case neighbour(grapheme) {
+        Space if depth == 0 -> titled(rest, position + 1, text)
         Space -> Error(position)
         Punctuation | Word ->
           destination_text(rest, position + 1, depth, [grapheme, ..text])
@@ -1521,29 +2133,80 @@ fn destination_text(
   }
 }
 
-// `<scheme:rest>` is a link whose label is its destination. The scan stops
-// at the first whitespace, `<` or `>`, so two scans never cover the same
-// text, and anything that is not an absolute URI, an HTML tag above all,
-// stays text.
-fn autolink(rest: List(String), position: Int, state: Scan) -> List(Inline) {
-  case angle(rest, []) {
-    Ok(#(uri, after, used)) ->
-      case is_uri(uri) {
-        True ->
-          scan(
-            after,
-            position + used + 2,
-            ">",
-            push_node(state, Link([Text(uri)], uri)),
-          )
-        False ->
-          scan(
-            rest,
-            position + 1,
-            "<",
-            Scan(..state, pending: ["<", ..state.pending]),
-          )
+// What may stand between a destination and its `)`: whitespace, and a
+// title in double quotes, single quotes or parentheses. Neither host shows
+// a title, so it is read and dropped. A failure reports how far it read, as
+// the destination's own scan does, since the refusal of later scans rests
+// on that.
+fn titled(
+  input: List(String),
+  position: Int,
+  text: List(String),
+) -> Result(#(String, List(String), Int), Int) {
+  let #(input, position) = skip_spaces(input, position)
+  case input {
+    [")", ..rest] ->
+      Ok(#(text |> list.reverse |> string.concat, rest, position + 1))
+    ["\"", ..rest] -> title_end(rest, position + 1, "\"", text)
+    ["'", ..rest] -> title_end(rest, position + 1, "'", text)
+    ["(", ..rest] -> title_end(rest, position + 1, ")", text)
+    _ -> Error(position)
+  }
+}
+
+fn title_end(
+  input: List(String),
+  position: Int,
+  closer: String,
+  text: List(String),
+) -> Result(#(String, List(String), Int), Int) {
+  case input {
+    [] -> Error(position)
+    ["\\", _, ..rest] -> title_end(rest, position + 2, closer, text)
+    [grapheme, ..rest] if grapheme == closer -> {
+      let #(after, position) = skip_spaces(rest, position + 1)
+      case after {
+        [")", ..rest] ->
+          Ok(#(text |> list.reverse |> string.concat, rest, position + 1))
+        _ -> Error(position)
       }
+    }
+    [_, ..rest] -> title_end(rest, position + 1, closer, text)
+  }
+}
+
+fn skip_spaces(input: List(String), position: Int) -> #(List(String), Int) {
+  case input {
+    [grapheme, ..rest] ->
+      case is_space(grapheme) {
+        True -> skip_spaces(rest, position + 1)
+        False -> #(input, position)
+      }
+    [] -> #(input, position)
+  }
+}
+
+// `<scheme:rest>` is a link whose label is its destination, and
+// `<name@domain>` is a link to that address. The scan stops at the first
+// whitespace, `<` or `>`, so two scans never cover the same text, and
+// anything that is neither, an HTML tag above all, stays text.
+fn autolink(rest: List(String), position: Int, state: Scan) -> List(Inline) {
+  let found = {
+    use #(uri, after, used) <- result.try(angle(rest, []))
+    case is_uri(uri), is_email(uri) {
+      True, _ -> Ok(#(uri, uri, after, used))
+      False, True -> Ok(#(uri, "mailto:" <> uri, after, used))
+      False, False -> Error(Nil)
+    }
+  }
+  case found {
+    Ok(#(label, target, after, used)) ->
+      scan(
+        after,
+        position + used + 2,
+        ">",
+        push_node(state, Link([Text(label)], target)),
+      )
     Error(Nil) ->
       scan(
         rest,
@@ -1551,6 +2214,181 @@ fn autolink(rest: List(String), position: Int, state: Scan) -> List(Inline) {
         "<",
         Scan(..state, pending: ["<", ..state.pending]),
       )
+  }
+}
+
+// An address as CommonMark's email autolink allows it: a local part of
+// letters, digits and a fixed set of punctuation, an `@`, and a domain of
+// dot-separated labels of letters, digits and inner hyphens.
+fn is_email(text: String) -> Bool {
+  case string.split_once(text, "@") {
+    Ok(#(local, domain)) ->
+      local != ""
+      && list.all(string.to_graphemes(local), fn(grapheme) {
+        is_alphanumeric(grapheme)
+        || string.contains(".!#$%&'*+/=?^_`{|}~-", grapheme)
+      })
+      && list.all(string.split(domain, "."), is_domain_label)
+    Error(Nil) -> False
+  }
+}
+
+fn is_domain_label(label: String) -> Bool {
+  let length = string.length(label)
+  length >= 1
+  && length <= 63
+  && !string.starts_with(label, "-")
+  && !string.ends_with(label, "-")
+  && list.all(string.to_graphemes(label), fn(grapheme) {
+    is_alphanumeric(grapheme) || grapheme == "-"
+  })
+}
+
+fn is_alphanumeric(grapheme: String) -> Bool {
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+    grapheme,
+  )
+}
+
+// A bare link, as GitHub's autolink extension has it: `http://`, `https://`
+// or `www.`, directly after the start of the text, whitespace, or one of
+// `*`, `_`, `~` and `(`, then a domain holding a dot. The link runs to the
+// next whitespace or `<`, less the trailing punctuation that more likely
+// ends the sentence than the link. A `www.` link's destination is its text
+// behind `http://`.
+//
+// The domain is checked before the rest is read. A check that fails has
+// read a run of letters, digits, `_` and `-` and the character after it,
+// and no other link can start inside such a run, since every prefix holds a
+// `.` or a `:`; so failed checks never read the same text twice, and a
+// check that passes takes the whole link, whose text is not read again.
+fn bare_link(
+  input: List(String),
+  position: Int,
+  previous: String,
+  state: Scan,
+) -> List(Inline) {
+  let found = {
+    use Nil <- result.try(case previous {
+      "" | " " | "\n" | "\t" | "*" | "_" | "~" | "(" -> Ok(Nil)
+      _ -> Error(Nil)
+    })
+    use #(prefix, rest) <- result.try(link_prefix(input))
+    use Nil <- result.try(domain(rest))
+    let #(body, after) =
+      list.split_while(rest, fn(grapheme) {
+        grapheme != "<" && !is_space(grapheme)
+      })
+    let #(kept, dropped) = trimmed_link(list.reverse(body), parens(body), [])
+    Ok(#(prefix, list.reverse(kept), list.append(dropped, after)))
+  }
+  case found, input {
+    Ok(#(prefix, body, after)), _ -> {
+      let label = prefix <> string.concat(body)
+      let target = case prefix {
+        "www." -> "http://" <> label
+        _ -> label
+      }
+      let last = case list.last(body) {
+        Ok(grapheme) -> grapheme
+        Error(Nil) -> "."
+      }
+      scan(
+        after,
+        position + string.length(prefix) + list.length(body),
+        last,
+        push_node(state, Link([Text(label)], target)),
+      )
+    }
+    Error(Nil), [grapheme, ..rest] -> read_text(grapheme, rest, position, state)
+    Error(Nil), [] -> finish(state)
+  }
+}
+
+fn link_prefix(input: List(String)) -> Result(#(String, List(String)), Nil) {
+  case input {
+    ["h", "t", "t", "p", "s", ":", "/", "/", ..rest] -> Ok(#("https://", rest))
+    ["h", "t", "t", "p", ":", "/", "/", ..rest] -> Ok(#("http://", rest))
+    ["w", "w", "w", ".", ..rest] -> Ok(#("www.", rest))
+    _ -> Error(Nil)
+  }
+}
+
+// A domain's start: a run of letters, digits, `_` and `-`, a `.`, and one
+// more letter, digit, `.` or `-`.
+fn domain(input: List(String)) -> Result(Nil, Nil) {
+  let #(label, rest) = list.split_while(input, is_host_character)
+  case label, rest {
+    [_, ..], [".", next, ..] ->
+      case is_alphanumeric(next) || next == "." || next == "-" {
+        True -> Ok(Nil)
+        False -> Error(Nil)
+      }
+    _, _ -> Error(Nil)
+  }
+}
+
+fn is_host_character(grapheme: String) -> Bool {
+  is_alphanumeric(grapheme) || grapheme == "_" || grapheme == "-"
+}
+
+// How many `(` and `)` a link's text holds, counted once so that trimming
+// its closing parentheses costs nothing per parenthesis.
+fn parens(body: List(String)) -> #(Int, Int) {
+  list.fold(body, #(0, 0), fn(counts, grapheme) {
+    case grapheme {
+      "(" -> #(counts.0 + 1, counts.1)
+      ")" -> #(counts.0, counts.1 + 1)
+      _ -> counts
+    }
+  })
+}
+
+// Walks a bare link's text backwards, `reversed` being that text, dropping
+// what GitHub drops: trailing `?`, `!`, `.`, `,`, `:`, `*`, `_` and `~`, a
+// `)` with no `(` left to balance it, and a trailing entity reference such
+// as `&amp;`. It returns the text kept, still reversed, and the text
+// dropped, in order.
+fn trimmed_link(
+  reversed: List(String),
+  counts: #(Int, Int),
+  dropped: List(String),
+) -> #(List(String), List(String)) {
+  case reversed {
+    [")", ..rest] if counts.1 > counts.0 ->
+      trimmed_link(rest, #(counts.0, counts.1 - 1), [")", ..dropped])
+    [";", ..rest] ->
+      case entity_name(rest, []) {
+        Ok(#(name, before)) -> #(
+          before,
+          list.flatten([["&"], name, [";"], dropped]),
+        )
+        Error(Nil) -> trimmed_link(rest, counts, [";", ..dropped])
+      }
+    [grapheme, ..rest] ->
+      case string.contains("?!.,:*_~", grapheme) {
+        True -> trimmed_link(rest, counts, [grapheme, ..dropped])
+        False -> #(reversed, dropped)
+      }
+    [] -> #(reversed, dropped)
+  }
+}
+
+// The letters and digits of an entity reference's name, read backwards from
+// its `;` to its `&`, in order, with the text before the `&`.
+fn entity_name(
+  reversed: List(String),
+  name: List(String),
+) -> Result(#(List(String), List(String)), Nil) {
+  case reversed {
+    ["&", ..before] if name != [] -> Ok(#(name, before))
+    [grapheme, ..rest] ->
+      case is_alphanumeric(grapheme) {
+        True -> entity_name(rest, [grapheme, ..name])
+        False -> Error(Nil)
+      }
+    [] -> Error(Nil)
   }
 }
 
