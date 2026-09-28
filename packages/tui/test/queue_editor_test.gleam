@@ -28,6 +28,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/queue_editor
+import tui/queue_request
 import tui/recording
 import tui/render
 import tui/runtime
@@ -344,7 +345,7 @@ pub fn queue_inspector_labels_priority_access_and_excerpt_provenance_test() {
 
   let locked = opened |> key("down") |> key("enter")
   assert requests(events, []) == []
-  assert locked.view.queue_editor.awaiting == None
+  assert locked.shared.queue_request.awaiting == None
   assert string.contains(painted(locked), "read-only for this attachment")
   assert string.contains(painted(locked), "full text unavailable")
 }
@@ -490,8 +491,8 @@ pub fn duplicate_excerpts_fetch_the_selected_identity_test() {
   )
   let waiting = key(selected, "enter")
   let request = issued(events, "queued_input")
-  let assert Some(queue_editor.Fetch(id: "B", strand: "main", ..)) =
-    waiting.view.queue_editor.awaiting
+  let assert Some(queue_request.Fetch(id: "B", strand: "main", ..)) =
+    waiting.shared.queue_request.awaiting
     as "selection is carried by opaque identity, not its duplicate text"
 
   // Even a correlated document must answer the selected identity before it
@@ -510,8 +511,8 @@ pub fn clean_retained_draft_allows_editing_another_item_test() {
   let clean = full_reply(waiting, request, "A", 3, "same instruction")
   let selected = clean |> key("esc") |> key("down") |> key("enter")
   let _ = issued(events, "queued_input")
-  let assert Some(queue_editor.Fetch(id: "B", ..)) =
-    selected.view.queue_editor.awaiting
+  let assert Some(queue_request.Fetch(id: "B", ..)) =
+    selected.shared.queue_request.awaiting
     as "an unchanged editable draft must not force a save before browsing another item"
 }
 
@@ -523,8 +524,8 @@ pub fn resuming_a_draft_cancels_another_items_late_fetch_test() {
   let waiting_b = clean_a |> key("esc") |> key("down") |> key("enter")
   let request_b = issued(events, "queued_input")
   let resumed = waiting_b |> key("e") |> key("end") |> key("!")
-  assert resumed.view.queue_editor.awaiting == None
-  assert resumed.view.queue_editor.request_id == None
+  assert resumed.shared.queue_request.awaiting == None
+  assert resumed.shared.queue_request.request_id == None
   assert draft(resumed).document.id == "A"
 
   let late = full_reply(resumed, request_b, "B", 9, "late B text")
@@ -715,7 +716,7 @@ pub fn selecting_another_item_does_not_discard_an_uncertain_draft_test() {
     |> key("down")
     |> key("enter")
   assert requests(reads, []) == []
-  assert switched.view.queue_editor.awaiting == None
+  assert switched.shared.queue_request.awaiting == None
   assert draft(switched).document.id == "A"
   assert textarea.value(draft(switched).input) == "A original!"
   assert string.contains(painted(switched), "e resumes it")
@@ -778,8 +779,8 @@ pub fn selected_identity_survives_a_fresh_cut_reordering_duplicate_excerpts_test
   )
   let waiting = key(reordered, "enter")
   let _ = issued(events, "queued_input")
-  let assert Some(queue_editor.Fetch(id: "B", ..)) =
-    waiting.view.queue_editor.awaiting
+  let assert Some(queue_request.Fetch(id: "B", ..)) =
+    waiting.shared.queue_request.awaiting
     as "reordering identical excerpts must not silently retarget the edit"
 }
 
@@ -807,7 +808,7 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
     let refreshed = key(switched, "ctrl+r")
     assert requests(events, []) == []
       as "explicit reconciliation cannot read a reused id in another queue namespace"
-    assert refreshed.view.queue_editor.awaiting == None
+    assert refreshed.shared.queue_request.awaiting == None
     assert draft(refreshed) == retained
     assert painted(refreshed) != painted(switched)
       as "the refused refresh must explain the ownership boundary"
@@ -820,7 +821,7 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
     let browsing = switched |> key("esc") |> key("enter")
     assert requests(events, []) == []
       as "Enter cannot fetch a reused row identity from another queue namespace"
-    assert browsing.view.queue_editor.awaiting == None
+    assert browsing.shared.queue_request.awaiting == None
     assert draft(browsing) == retained
     assert string.contains(painted(browsing), "e resumes it")
   })

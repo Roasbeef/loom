@@ -53,6 +53,7 @@ import tui/agent_messages
 import tui/attempt_replay
 import tui/completion_summary
 import tui/msg
+import tui/queue_request
 import tui/step_effect
 import tui/workspace
 
@@ -190,6 +191,11 @@ pub type Shared(socket, recorder, source, replay_source) {
     note_board: Option(notes_view.Board),
     /// Latest explicit notes target waiting for the existing command lane.
     notes_requested: Option(String),
+    /// The queue editor's reads and saves on the lane: the read waiting for
+    /// a free lane, the read issued, and the request ID a refusal is
+    /// matched against. Shared because the lane's replies, refusals and
+    /// failures settle it; the editor it fills is `View.queue_editor`.
+    queue_request: queue_request.State,
     /// The models the daemon listed.
     models: List(protocol.ModelInfo),
     /// Slash commands loaded by the currently attached daemon.

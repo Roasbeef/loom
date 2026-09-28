@@ -93,6 +93,7 @@ import tui/note_panel
 import tui/pacing
 import tui/projection
 import tui/queue_editor
+import tui/queue_request
 import tui/recording
 import tui/render
 import tui/runtime
@@ -526,6 +527,7 @@ pub fn new_model_with_clock(
       goal_report: HoldGoalReport,
       note_board: None,
       notes_requested: None,
+      queue_request: queue_request.new(),
       models: interaction.demo_models(),
       skills: [],
       current_model: "baseten-kimi-k3",

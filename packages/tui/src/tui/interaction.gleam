@@ -62,6 +62,7 @@ import tui/peer_links
 import tui/projection
 import tui/queue_editor
 import tui/queue_panel
+import tui/queue_request
 import tui/render
 import tui/selection
 import tui/session_control
@@ -2020,27 +2021,37 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
     keys.Ctrl("c"), _ -> submit.quit(model)
     keys.Escape, queue_editor.Editor ->
       Model(
-        ..model,
+        shared: Shared(
+          ..model.shared,
+          queue_request: queue_request.State(
+            ..model.shared.queue_request,
+            fetch: None,
+            awaiting: None,
+          ),
+        ),
         view: View(
           ..model.view,
           queue_editor: queue_editor.State(
             ..state,
             surface: queue_editor.Inspector,
-            fetch: None,
-            awaiting: None,
           ),
         ),
       )
     keys.Escape, queue_editor.Inspector ->
       Model(
-        ..model,
+        shared: Shared(
+          ..model.shared,
+          queue_request: queue_request.State(
+            ..model.shared.queue_request,
+            fetch: None,
+            awaiting: None,
+          ),
+        ),
         view: View(
           ..model.view,
           queue_editor: queue_editor.State(
             ..state,
             surface: queue_editor.Closed,
-            fetch: None,
-            awaiting: None,
           ),
         ),
       )
@@ -2123,15 +2134,12 @@ fn resume_queue_draft(model: Model) -> Model {
   case model.view.queue_editor.draft {
     Some(_) ->
       Model(
-        ..model,
+        shared: Shared(..model.shared, queue_request: queue_request.new()),
         view: View(
           ..model.view,
           queue_editor: queue_editor.State(
             ..model.view.queue_editor,
             surface: queue_editor.Editor,
-            fetch: None,
-            awaiting: None,
-            request_id: None,
             message: "Retained draft resumed · Ctrl+s saves · Esc returns to inspection",
           ),
         ),
@@ -2175,27 +2183,29 @@ fn select_queue_input(model: Model) -> Model {
           )
         False, snapshot_view.Editable -> {
           let fetch =
-            queue_editor.Fetch(
+            queue_request.Fetch(
               session_model.queue_owner(model.shared),
               session_model.queue_namespace(model.shared),
               row.strand,
               row.id,
             )
-          surfaces.service_queue_read(
-            Model(
-              ..model,
-              view: View(
-                ..model.view,
-                queue_editor: queue_editor.State(
-                  ..state,
-                  fetch: Some(fetch),
-                  awaiting: None,
-                  request_id: None,
-                  message: "Waiting for the full queued input…",
-                ),
+          surfaces.service_queue_read(Model(
+            shared: Shared(
+              ..model.shared,
+              queue_request: queue_request.State(
+                fetch: Some(fetch),
+                awaiting: None,
+                request_id: None,
               ),
             ),
-          )
+            view: View(
+              ..model.view,
+              queue_editor: queue_editor.State(
+                ..state,
+                message: "Waiting for the full queued input…",
+              ),
+            ),
+          ))
         }
         False, snapshot_view.ReadOnly ->
           Model(
@@ -2252,25 +2262,28 @@ fn reconcile_queue_draft(model: Model) -> Model {
         ),
       )
       let fetch =
-        queue_editor.Fetch(
+        queue_request.Fetch(
           session_model.queue_owner(model.shared),
           session_model.queue_namespace(model.shared),
           draft.document.strand,
           draft.document.id,
         )
-      surfaces.service_queue_read(
-        Model(
-          ..model,
-          view: View(
-            ..model.view,
-            queue_editor: queue_editor.State(
-              ..state,
-              fetch: Some(fetch),
-              message: "Explicitly reconciling with the current queue…",
-            ),
+      surfaces.service_queue_read(Model(
+        shared: Shared(
+          ..model.shared,
+          queue_request: queue_request.State(
+            ..model.shared.queue_request,
+            fetch: Some(fetch),
           ),
         ),
-      )
+        view: View(
+          ..model.view,
+          queue_editor: queue_editor.State(
+            ..state,
+            message: "Explicitly reconciling with the current queue…",
+          ),
+        ),
+      ))
     }
     Some(_) | None -> model
   }

@@ -80,6 +80,7 @@ import tui/note_panel
 import tui/outbound
 import tui/queue_editor
 import tui/queue_panel
+import tui/queue_request
 import tui/render
 import tui/session_model.{
   type Interrupt, type Peer, type UnconfirmedSubmission, Attached, Disconnected,
@@ -352,7 +353,11 @@ pub fn apply_channel_update(
     // than writing a second copy of the same news.
     session_channel.Acknowledged("edit_queued_input", "queued") ->
       Model(
-        shared: Shared(..model.shared, notice: "queued input updated"),
+        shared: Shared(
+          ..model.shared,
+          notice: "queued input updated",
+          queue_request: queue_request.new(),
+        ),
         view: View(..model.view, queue_editor: queue_editor.new()),
       )
       |> tui_model.invalidate_frame
@@ -449,6 +454,7 @@ pub fn apply_channel_update(
                   )
                 None -> model.shared.worktree
               },
+              queue_request: queue_request.new(),
             ),
             view: View(
               ..discarded.view,
@@ -1428,19 +1434,36 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ),
       )
       |> tui_model.invalidate_transcript
-    protocol.QueuedInputSnapshot(document) ->
-      Model(
-        ..model,
-        view: View(
-          ..model.view,
-          queue_editor: queue_editor.receive(
-            model.view.queue_editor,
-            session_model.queue_owner(model.shared),
-            session_model.queue_namespace(model.shared),
-            document,
-          ),
-        ),
-      )
+    protocol.QueuedInputSnapshot(document) -> {
+      let owner = session_model.queue_owner(model.shared)
+      let namespace = session_model.queue_namespace(model.shared)
+
+      // Only the answer to the read this client issued may fill the
+      // editor; any other document leaves both halves as they were.
+      case
+        queue_request.receive(
+          model.shared.queue_request,
+          owner,
+          namespace,
+          document,
+        )
+      {
+        Ok(queue_request) ->
+          Model(
+            shared: Shared(..model.shared, queue_request:),
+            view: View(
+              ..model.view,
+              queue_editor: queue_editor.receive(
+                model.view.queue_editor,
+                owner,
+                namespace,
+                document,
+              ),
+            ),
+          )
+        Error(Nil) -> model
+      }
+    }
     protocol.NotesSnapshot(board) -> {
       // Every notes read may carry a strand's todo board, whichever surface
       // asked for it, so the panel is seeded before the notes view decides
@@ -3365,10 +3388,10 @@ fn apply_request_refused(
   let reason = code <> ": " <> message
   let updated = case command {
     "queued_input" | "edit_queued_input" ->
-      case model.view.queue_editor.request_id == Some(request_id) {
+      case model.shared.queue_request.request_id == Some(request_id) {
         True ->
           Model(
-            ..model,
+            shared: Shared(..model.shared, queue_request: queue_request.new()),
             view: View(
               ..model.view,
               queue_editor: queue_editor.refused(
