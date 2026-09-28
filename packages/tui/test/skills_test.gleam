@@ -21,12 +21,13 @@ pub fn skill_completion_preserves_builtin_precedence_and_arguments_test() {
   assert command.suggestions_with_skills("/review", rows)
     == [command.Suggestion("/review-code", "Inspect code", True)]
   assert list.length(command.suggestions_with_skills("/help", rows)) == 1
-  assert command.parse_with_skills("/help", rows) == command.Help
+  assert command.parse_with_skills("/help", rows)
+    == command.Surface(command.Help)
   assert command.parse_with_skills("/review-code a file", rows)
-    == command.Prompt("/review-code a file")
+    == command.Session(command.Prompt("/review-code a file"))
   assert command.suggestions_with_skills("/review-code a", rows) == []
   assert command.parse_with_skills("/review-code\n", rows)
-    == command.Prompt("/review-code\n")
+    == command.Session(command.Prompt("/review-code\n"))
 }
 
 pub fn disconnected_skill_submission_retains_its_draft_test() {

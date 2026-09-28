@@ -31,6 +31,7 @@ import snapshot_test
 import tui
 import tui/agents
 import tui/buffered
+import tui/commands
 import tui/connection
 import tui/frame
 import tui/image_drop
@@ -60,7 +61,7 @@ pub fn main() {
 }
 
 pub fn prompt_test() {
-  assert command.parse("hello") == command.Prompt("hello")
+  assert command.parse("hello") == command.Session(command.Prompt("hello"))
 }
 
 pub fn keyboard_socket_drain_retains_message_beyond_its_budget_test() {
@@ -467,23 +468,27 @@ pub fn slash_command_palette_filters_and_completes_test() {
 }
 
 pub fn models_test() {
-  assert command.parse("/models") == command.Models
-  assert command.parse("/model") == command.Models
+  assert command.parse("/models") == command.Surface(command.Models)
+  assert command.parse("/model") == command.Surface(command.Models)
 }
 
 pub fn agents_test() {
-  assert command.parse("/agents") == command.Agents
+  assert command.parse("/agents") == command.Surface(command.Agents)
 }
 
 /// The operator's schedule surface: a listing with no argument, and a
 /// cancellation whose target defaults to the strand being watched.
 pub fn schedule_commands_test() {
-  assert command.parse("/schedules") == command.Schedules
+  assert command.parse("/schedules") == command.Session(command.Schedules)
   assert command.parse("/unschedule poll")
-    == command.Unschedule(name: "poll", target: None)
+    == command.Session(command.Unschedule(name: "poll", target: None))
   assert command.parse("/unschedule poll sub:main/x")
-    == command.Unschedule(name: "poll", target: Some("sub:main/x"))
-  assert command.parse("/unschedule") == command.MissingArgument("unschedule")
+    == command.Session(command.Unschedule(
+      name: "poll",
+      target: Some("sub:main/x"),
+    ))
+  assert command.parse("/unschedule")
+    == command.Session(command.MissingArgument("unschedule"))
   assert command.suggestions("/unsch")
     == [command.Suggestion("/unschedule", "retire one schedule", True)]
 }
@@ -548,7 +553,7 @@ pub fn schedules_snapshot_decodes_the_pinned_fixture_test() {
 }
 
 pub fn sessions_command_parses_and_is_suggested_test() {
-  assert command.parse("/sessions") == command.Sessions
+  assert command.parse("/sessions") == command.Surface(command.Sessions)
   assert command.suggestions("/sess")
     == [command.Suggestion("/sessions", "switch local sessions", False)]
 }
@@ -587,19 +592,19 @@ pub fn agent_inspector_selection_wraps_and_resolves_a_strand_test() {
 }
 
 pub fn notes_test() {
-  assert command.parse("/notes") == command.Notes
+  assert command.parse("/notes") == command.Surface(command.Notes)
 }
 
 pub fn details_test() {
-  assert command.parse("/details") == command.Details
+  assert command.parse("/details") == command.Surface(command.Details)
 }
 
 pub fn steer_and_queue_commands_test() {
   assert command.parse("/steer use the new constraint")
-    == command.Steer("use the new constraint")
+    == command.Session(command.Steer("use the new constraint"))
   assert command.parse("/queue review the result")
-    == command.Queue("review the result")
-  assert command.parse("/queue") == command.QueueInspect
+    == command.Session(command.Queue("review the result"))
+  assert command.parse("/queue") == command.Surface(command.QueueInspect)
 }
 
 pub fn steer_and_follow_up_frames_test() {
@@ -616,18 +621,22 @@ pub fn config_readback_frame_test() {
 
 pub fn model_argument_test() {
   assert command.parse(" /model baseten-kimi-k3 ")
-    == command.Model("baseten-kimi-k3")
+    == command.Session(command.Model("baseten-kimi-k3"))
 }
 
 pub fn missing_argument_test() {
-  assert command.parse("/fork") == command.MissingArgument("fork")
-  assert command.parse("/effort") == command.MissingArgument("effort")
-  assert command.parse("/effort high") == command.Effort("high")
+  assert command.parse("/fork")
+    == command.Session(command.MissingArgument("fork"))
+  assert command.parse("/effort")
+    == command.Session(command.MissingArgument("effort"))
+  assert command.parse("/effort high")
+    == command.Session(command.Effort("high"))
   assert command.help_text() |> string.contains("/effort <level>")
 }
 
 pub fn unknown_command_test() {
-  assert command.parse("/dance now") == command.Unknown("dance")
+  assert command.parse("/dance now")
+    == command.Session(command.Unknown("dance"))
 }
 
 pub fn model_selector_accepts_initials_test() {
@@ -1275,7 +1284,7 @@ pub fn supported_image_paste_keeps_path_out_of_the_wire_block_test() {
   assert filename == "tui-golden-drop.png"
   assert mime_type == "image/png"
   assert byte_size == bit_array.byte_size(bytes)
-  let content = submit.image_prompt_content("inspect this", [image])
+  let content = commands.image_prompt_content("inspect this", [image])
   assert content
     == [
       message.UserText("inspect this", None),
@@ -1411,7 +1420,7 @@ pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
   assert composer.drop_last(attachments) == [composer.ImageAttachment(first)]
   assert composer.summary(attachments)
     == Some("2 images · a.png image/png 1 B · b.jpg image/jpeg 1 B")
-  assert submit.image_prompt_content("", composer.images(attachments))
+  assert commands.image_prompt_content("", composer.images(attachments))
     == [
       message.UserImage("YQ==", "image/png"),
       message.UserImage("Yg==", "image/jpeg"),

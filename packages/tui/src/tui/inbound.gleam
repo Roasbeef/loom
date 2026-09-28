@@ -52,6 +52,7 @@ import tui/model.{
   ReconnectSpent, StrandWorkspace, View,
 } as tui_model
 import tui/model_selector
+import tui/msg
 import tui/note_panel
 import tui/queue_editor
 import tui/queue_panel
@@ -352,7 +353,7 @@ pub fn decide_captured_approval(
     approval_panel.AllowSession -> operator.AllowForSession
     approval_panel.Deny -> operator.Deny
   }
-  run_settled(model, commands.decide_review(_, record, choice))
+  run_settled(model, commands.act(_, msg.Decide(review: record, choice:)))
 }
 
 /// Applies at most `remaining` of the messages the runtime received into
@@ -606,6 +607,30 @@ fn show_surface(
     // The decision is on its way, so the question leaves the screen.
     session_model.ReviewAnswered ->
       Model(..model, view: View(..model.view, overlay: NoOverlay))
+
+    // The dispatch consumed the draft. Its text goes into the input
+    // history either way; a prompt also returns the composer to prompting,
+    // as the session state has already dropped the attachments it carried.
+    session_model.DraftTaken(taking:) -> {
+      let cleared = tui_model.clear_composer_text(model)
+      case taking {
+        session_model.TakenByCommand -> cleared
+        session_model.TakenAsPrompt ->
+          Model(
+            ..cleared,
+            view: View(..cleared.view, submission_mode: PromptNext),
+          )
+      }
+    }
+
+    // The rows the gutters were drawn beside are gone.
+    session_model.TranscriptCleared ->
+      Model(..model, view: View(..model.view, record_gutters: []))
+
+    // The dialog opens on this record when the lookup answers
+    // (`LookupAnswered`).
+    session_model.LookupRequested(id:) ->
+      Model(..model, view: View(..model.view, inspecting_approval: Some(id)))
 
     // A replay's adoption leaves nothing of the previous capture's prompts or
     // note selection, and a new session starts its transcript at the tail.
