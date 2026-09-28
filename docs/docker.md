@@ -11,9 +11,10 @@ it does not, the two ways to run it, and what each one trades away.
 The build stage (`FROM ... AS build` in the root `Dockerfile`) installs
 the same toolchain `scripts/signoff/Dockerfile` installs for the test
 signoff on branch `build/signoff-container`: Ubuntu 24.04, Erlang/OTP
-29.0.5, the [maintained Gleam 1.18.1 compiler](../scripts/toolchain/gleam/README.md),
-Go, and the C toolchain `esqlite3_nif.so` needs. The compiler includes the
-upstream path-dependency fix plus deterministic-cache and native-Git patches. It runs
+29.0.5, the [maintained Gleam 1.19.0-rc2 compiler](../scripts/toolchain/gleam/README.md),
+Go, and the C toolchain `esqlite3_nif.so` needs. The compiler is the release
+tag, which already includes the upstream path-dependency fix, plus the
+deterministic-cache and native-Git patches. It runs
 `make install PREFIX=/opt/loom`, the same command a person building from
 source runs (`docs/distribution.md`, "Installing from a checkout"), which
 in turn builds the code-mode seed, the self-contained server release, and
