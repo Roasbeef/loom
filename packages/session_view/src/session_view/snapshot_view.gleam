@@ -757,3 +757,22 @@ fn decode_extension_refusals(
     Ok(_) -> Error("invalid extension refusals")
   }
 }
+
+/// Whether a known idle strand retains input halted by an abort.
+///
+/// Ordinary queues drain before the gateway exposes the idle cut. Rows left
+/// on an idle strand therefore wait for the operator's next submission,
+/// independently of a terminal's transient interrupt marker (protocol 033).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot_view.queue_halted(view, "main")
+/// ```
+pub fn queue_halted(view: View, strand: String) -> Bool {
+  list.any(view.strands, fn(row) { row.id == strand && row.live_phase == None })
+  && case view.pending_inputs {
+    None -> False
+    Some(rows) -> list.any(rows, fn(row) { row.strand == strand })
+  }
+}
