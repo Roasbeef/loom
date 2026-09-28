@@ -224,14 +224,16 @@ pub type Request {
   )
 }
 
-/// A bounded refusal contains no input frame, credential, or private path.
+/// A bounded refusal contains no input frame or credential. Protocol 055
+/// permits configuration paths in authorized exact-operation startup errors.
 pub type Fault {
   Fault(
     /// A valid request ID when one was available before the failure.
     reply_to: Option(Int),
     /// A stable machine-readable refusal category.
     code: String,
-    /// A fixed diagnostic naming the invalid shape, not its supplied value.
+    /// A fixed invalid-shape diagnostic, or the authorized operation's startup
+    /// reason of at most 2048 UTF-8 bytes (protocol 055).
     message: String,
   )
 }

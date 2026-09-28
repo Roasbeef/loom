@@ -22,6 +22,7 @@ import client/peer_mail
 import client/peers
 import client/serve
 import core/clock
+import core/glance
 import core/ids
 import gleam/erlang/process
 import gleam/http/request.{type Request}
@@ -435,6 +436,7 @@ fn diagnose_domain_start(
     log.error(logger, "daemon.domain_start_failed", [
       field.text("stage", "domain_assembly"),
       field.text("class", class),
+      field.text("reason", glance.clip(reason, 2048)),
     ])
     reason
   })

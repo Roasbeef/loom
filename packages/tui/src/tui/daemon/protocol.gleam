@@ -843,7 +843,7 @@ pub fn decode(text: String) -> Result(Event, String) {
     "error" -> {
       use id <- result.try(optional_id(value))
       use code <- result.try(text_at(body, "code", 64))
-      use message <- result.map(text_at(body, "message", 512))
+      use message <- result.map(text_at(body, "message", 2048))
       Refused(id, code, message)
     }
     event -> {

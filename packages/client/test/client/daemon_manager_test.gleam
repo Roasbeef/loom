@@ -1566,7 +1566,7 @@ pub fn failed_builder_answers_its_own_operation_rather_than_stale_test() {
   // from a request some replacement had overtaken.
   await_status(registry, record.id, manager.Saved)
   assert manager.operation(registry, record.id, operation)
-    == Error(manager.StartFailed)
+    == Error(manager.StartFailed("storage refused"))
 
   // One open is all the memo answers for; anything else is genuinely stale.
   assert manager.operation(registry, record.id, "another-operation")
@@ -1625,4 +1625,97 @@ pub fn delete_refuses_a_registration_outside_the_sessions_directory_test() {
   assert catalogue.close(store) == Ok(Nil)
   let _ = simplifile.delete(root)
   Nil
+}
+
+pub fn failed_opening_reason_precedes_closing_and_clears_on_admission_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let first = saved(store, 946)
+  let second = saved(store, 947)
+  let building = process.new_subject()
+  let draining = process.new_subject()
+  let diagnostic = "/workspace/loom.toml: missing model fixture"
+  let registry =
+    start(store, 1, fn(_, owner) {
+      let assert Ok(Nil) =
+        custody.publish(owner, custody.Storage, fn() {
+          let release = process.new_subject()
+          process.send(draining, release)
+          process.receive_forever(release)
+          Ok(Nil)
+        })
+        as "the existing storage custody seam holds retirement"
+      let outcome = process.new_subject()
+      process.send(building, #(custody.owner(owner), outcome))
+      process.receive_forever(outcome)
+    })
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, first.id)
+    as "the failed opening has an exact identity"
+  let assert Ok(#(owner, outcome)) = process.receive(building, 1000)
+    as "the builder waits for its controlled result"
+  let watch = process.monitor(owner)
+  process.send(outcome, Error(diagnostic))
+  let assert Ok(release) = process.receive(draining, 1000)
+    as "retirement cannot finish before the test releases custody"
+  await_status(registry, first.id, manager.Stopping(operation))
+
+  // Observe the diagnostic while the live slot still says Stopping. These
+  // reads cannot release capacity or authorize a replacement incarnation.
+  let failure = manager.operation(registry, first.id, operation)
+  let stale = manager.operation(registry, first.id, "another-operation")
+  let replacement = manager.open(registry, first.id)
+  let capacity = manager.open(registry, second.id)
+  let resolved = manager.resolve(registry, first.id)
+  let retained = process.is_alive(owner)
+  process.send(release, Nil)
+  let assert process.ProcessDown(reason: process.Normal, ..) = down(watch)
+    as "only the original custody witness permits replacement"
+  await_status(registry, first.id, manager.Saved)
+  assert failure == Error(manager.StartFailed(diagnostic))
+  assert stale == Error(manager.StaleOperation)
+  assert replacement == Error(manager.Unavailable)
+  assert capacity == Error(manager.Capacity)
+  assert resolved == Error(manager.Unavailable)
+  assert retained
+  assert manager.operation(registry, first.id, operation) == failure
+
+  // Park the next builder before it can publish any result. A stale read
+  // here proves admission cleared the memo, rather than a later overwrite.
+  await_domains_retired(registry)
+  let assert Ok(manager.Opening(reopened)) = manager.open(registry, first.id)
+    as "confirmed retirement permits the next admission"
+  let assert Ok(#(_, outcome)) = process.receive(building, 1000)
+    as "replacement waits before publishing"
+  let old = manager.operation(registry, first.id, operation)
+  let current = manager.operation(registry, first.id, reopened)
+  process.send(outcome, Ok(first.id))
+  await_status(registry, first.id, manager.Resident(reopened))
+  let _closing = manager.stop_session(registry, first.id)
+  let assert Ok(release) = process.receive(draining, 1000)
+    as "replacement retains its own cleanup custody"
+  process.send(release, Nil)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+  assert reopened != operation
+  assert old == Error(manager.StaleOperation)
+  assert current == Ok(manager.View(first, manager.Opening(reopened)))
+}
+
+pub fn retired_start_failure_retains_a_bounded_utf8_reason_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = saved(store, 945)
+  let diagnostic =
+    "/workspace/loom.toml: not valid toml\n" <> string.repeat("λ", 2000)
+  let registry = start(store, 1, fn(_, _) { Error(diagnostic) })
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, record.id)
+    as "the exact operation is admitted"
+  await_status(registry, record.id, manager.Saved)
+  let observed = manager.operation(registry, record.id, operation)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Error(manager.StartFailed(reason)) = observed
+    as "the reason survives successful cleanup"
+  assert string.byte_size(reason) <= 2048
+  assert string.starts_with(reason, "/workspace/loom.toml: not valid toml ")
+  assert string.ends_with(reason, "…")
+  assert !string.contains(reason, "\n")
 }
