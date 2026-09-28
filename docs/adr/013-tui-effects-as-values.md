@@ -905,7 +905,7 @@ around it, at the commit this slice started from:
 
 | Read | Site | Where it ran | After S6 |
 |---|---|---|---|
-| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:137` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:199` |
+| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:137` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:207` |
 | a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:508` | in the step | a job, `Configure` at `tui/job_runner.gleam:302` |
 | the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:515` | the attachment worker, since S5 | unchanged |
 | the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
@@ -946,7 +946,7 @@ job.Configure(options))` and holds the key in `Model.configuring`. The
 worker is `bootstrap.session_configuration`, unchanged. The runtime admits
 its reply by key, and `session_control.drain_configuration`, which
 `tick.update_tick` calls after the activity poll's drain and before the
-connection drain (`tui/tick.gleam:127` (`drain_configuration`)), clears the
+connection drain (`tui/tick.gleam:133` (`drain_configuration`)), clears the
 slot at the first outcome and continues where the step used to: a resolved
 path goes to `create_session_configured`, which cancels the pending
 submission, refuses while a creation key is retained, control is
