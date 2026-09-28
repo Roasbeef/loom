@@ -206,6 +206,53 @@ pub fn cancel(state: State) -> State {
   State(..state, request: Quiet)
 }
 
+/// Drops the records older than `seq` from a live window, so the window
+/// holds no more than its host draws.
+///
+/// The terminal keeps the whole bounded window and draws from it as the
+/// reader scrolls. The web view draws only the newest rows of the ancestry
+/// (`web_view/component`, `live_rows` and `held_rows`), and a record it no
+/// longer draws would otherwise stay here, and be projected on every
+/// capture, until this module's own bound of six hundred pushed it out.
+/// Trimming to the oldest sequence the host draws keeps the window, and the
+/// work each capture does, in proportion to the rows on the page.
+///
+/// The records left are still a suffix of the ancestry, so `branch` finds
+/// the oldest one's parent missing and `older` can read the interval below
+/// it; `before_seq` becomes that record's sequence. Only a live window with
+/// no read owed is trimmed. A read in flight was sized from `before_seq`,
+/// and `accept` places its reply against the window as it stood.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert history_view.retain_from(history_view.empty(), 212)
+///   == history_view.empty()
+/// ```
+@internal
+pub fn retain_from(state: State, seq: Int) -> State {
+  case state.mode, state.request {
+    Live, Quiet ->
+      case oldest(state.window) >= seq {
+        True -> state
+        False -> {
+          let items =
+            list.filter(state.window.items, fn(item) {
+              snapshot.sequence(item) >= seq
+            })
+          let window =
+            snapshot.Window(
+              items,
+              list.fold(items, 0, fn(sum, item) { sum + bytes(item) }),
+              None,
+            )
+          State(..state, window:, before_seq: oldest(window))
+        }
+      }
+    Live, Wanted | Live, Pending(_) | Reading, _ -> state
+  }
+}
+
 /// Projects ancestry from the reader's endpoint using current metadata shape.
 ///
 /// ## Examples

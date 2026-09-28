@@ -433,3 +433,22 @@ pub fn a_narrative_wait_draws_each_result_once_test() {
     })
   assert returned == 1
 }
+
+// `grouped` splits a lane where `pieces` splits it into turns: at every
+// input. A window that holds the whole conversation has nothing before its
+// first input; one that starts inside a turn has that turn's end as its
+// lead. Either way the groups, put back together, are the blocks given.
+pub fn grouped_splits_the_lane_at_its_inputs_test() {
+  let whole = transcript.blocks(cut(items()), view(10, []), "main", [])
+  let #(lead, opened) = turns.grouped(whole, strands())
+  assert lead == []
+  assert list.map(opened, list.length) == [list.length(whole) - 2, 1, 1]
+  assert list.flatten(opened) == whole
+
+  let inside =
+    transcript.blocks(cut(list.drop(items(), 2)), view(10, []), "main", [])
+  let #(lead, opened) = turns.grouped(inside, strands())
+  assert lead != []
+  assert list.length(opened) == 2
+  assert list.append(lead, list.flatten(opened)) == inside
+}
