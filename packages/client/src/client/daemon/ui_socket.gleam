@@ -86,17 +86,31 @@ type Phase {
   )
 }
 
-/// The browser messages an observer's page takes: none. Its view attaches
-/// no handler, so nothing a browser sends could reach its `update`, and a
-/// message dropped here costs the component no render.
+/// The browser messages an observer's page takes: exactly one, Lustre's
+/// `EventFired` for a `click` at `component.older_path`, the lane's "Load
+/// older" button. That button's message asks for a read of older history
+/// and nothing else (protocol-change/051, the addendum on history paging).
+/// Every other message is dropped here, a batch included, so it costs the
+/// component no render; the gateway refuses any mutation from an observer's
+/// binding on its own, whatever reaches it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert !ui_socket.observer_accepts("{\"kind\":1,\"name\":\"click\"}")
+/// assert !ui_socket.observer_accepts("{\"kind\":1,\"name\":\"submit\"}")
 /// ```
-pub fn observer_accepts(_frame: String) -> Bool {
-  False
+pub fn observer_accepts(frame: String) -> Bool {
+  case json.parse(frame, older_click()) {
+    Ok(accepted) -> accepted
+    Error(_) -> False
+  }
+}
+
+fn older_click() -> decode.Decoder(Bool) {
+  use kind <- decode.field("kind", decode.int)
+  use name <- decode.field("name", decode.string)
+  use path <- decode.field("path", decode.string)
+  decode.success(kind == 1 && name == "click" && path == component.older_path)
 }
 
 /// The browser messages an operator's page takes: Lustre's `EventFired` for

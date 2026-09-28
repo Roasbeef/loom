@@ -33,8 +33,11 @@ page keys and nonces, and the relay into the session's gateway.
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
   and `now()`. All run in the component's process.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
-  (a batch of up to `arrival_batch` frames, reduced at once) and `Ticked`
-  (the deadline timer fired). It holds no command.
+  (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
+  (the deadline timer fired) and `OlderRequested` (the "Load older"
+  button, a read). It holds no command. `component.older_path` is the
+  button's Lustre event path, the one path the socket admits an
+  observer's click at.
 - `component.Model(socket)` (opaque): the lane, the filed frames
   (`session_view/inbox`), the last capture, the strand's history window
   (`history_view.State`, the terminal's `scrollback`), how much history
@@ -59,9 +62,9 @@ page keys and nonces, and the relay into the session's gateway.
   values from the model and stays the entry point both pages call.
   `strip.view(strip)` draws the agent strip, memoized on the whole strip;
   `lane.view(pieces, top, load)` draws the transcript lane, memoized per
-  line, with the line above its oldest row: a "Load older" button carrying
-  `load` and the fixed `data-loom-older` marker when `load` is a message,
-  and words otherwise.
+  line, with the line above its oldest row: a "Load older" button sending
+  `load` and carrying the fixed `data-loom-older` marker while older rows
+  exist, and words otherwise.
 - `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip
@@ -88,8 +91,8 @@ page keys and nonces, and the relay into the session's gateway.
   arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
   never offers remembering a grant for the session.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
-  delivery)`, `Decided(id, seq, answer)` and `OlderRequested`, the lane's
-  "Load older" button, which reaches `component.older`.
+  delivery)` and `Decided(id, seq, answer)`. The lane's "Load older"
+  button sends `Observed(component.OlderRequested)`.
   `composition(fields)` is the total decoder of the composer form's
   fields.
 - `page`: the shell, the exchange page (`enter(next, nonce)`), the asset
@@ -184,8 +187,12 @@ page keys and nonces, and the relay into the session's gateway.
   `effect.from`, never split across `effect.batch`, which does not order.
 - **Which application runs is which commands exist.** An observer's page is
   `component.app()`, whose message type holds no command and whose view
-  attaches no handler, not even "Load older" (an observer's page says in
-  words that it does not load older rows); its bar is a fixed text node. An operator's page is
+  attaches one handler, the lane's "Load older" click, whose message
+  (`OlderRequested`) is a read; its bar is a fixed text node. The page
+  socket admits from an observer only that click at `component.older_path`
+  (protocol-change/051, the addendum on history paging), and
+  `page_events_test` pins that the observer's view registers that one
+  handler. An operator's page is
   `operator_page.app()`. The daemon's gateway refuses an observer's
   mutation independently, and the engine refuses one on an observer's
   attachment as a third layer.

@@ -136,8 +136,9 @@ pub fn a_refused_open_ends_the_page_test() {
 }
 
 // Protocol-change/051, the operator addendum: an observer's page is a fixed
-// line and attaches no handler, so there is nothing a browser can fire, and
-// a pending escalation draws no card and no button.
+// line with no composer, and a pending escalation draws no card and no
+// button. Its one handler, "Load older", is drawn only when older rows
+// exist, which this empty session has none of (`paging_test` covers it).
 pub fn an_observer_page_has_no_handler_and_no_card_test() {
   let page =
     simulate.message(simulation(), component.Opened(wire(), 0))

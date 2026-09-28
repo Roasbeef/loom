@@ -24,7 +24,6 @@ import page_fixture
 import session_view/session_channel
 import session_view/turns
 import web_view/component
-import web_view/operator_page
 import web_view/view/lane
 
 type Cache
@@ -135,7 +134,7 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
   // The read goes out for the hundred sequences below the oldest record,
   // and its reply lands above what is drawn.
   let page =
-    page_fixture.run(page, operator_page.update, [operator_page.OlderRequested])
+    page_fixture.run(page, component.update, [component.OlderRequested])
   assert component.top(page) == lane.Loading
   let page =
     component.apply(page, [

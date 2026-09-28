@@ -22,7 +22,7 @@
 
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -66,20 +66,20 @@ import web_view/view/strip
 ///
 /// Above the oldest row the lane says what lies before it (`Top`). The page
 /// holds only the newest rows of the strand, so older ones may exist that
-/// it does not draw. When they do and `load` is a message, the lane draws a
-/// "Load older" button that sends it. An observer's page passes `None`: its
-/// view attaches no handler (protocol-change/051), so it says in words that
-/// older rows are not loaded there.
+/// it does not draw. When they do, the lane draws a "Load older" button
+/// that sends `load`. Both pages draw it, and on an observer's page it is
+/// the one handler the view attaches (protocol-change/051, the addendum on
+/// history paging), so `load` must ask for a read and nothing else.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.view(component.pieces(model), component.top(model), None)
+/// // lane.view(component.pieces(model), component.top(model), OlderRequested)
 /// ```
 pub fn view(
   pieces: List(turns.Piece),
   top: Top,
-  load: Option(message),
+  load: message,
 ) -> Element(message) {
   rows(pieces, boundary(top, load), line_element)
 }
@@ -141,36 +141,32 @@ pub fn rows(
 // limit is a number, and it is the component's constant.
 //
 // The button is a real button with its label as its text. It carries the
-// marker `<loom-follow>` listens for, and the handler is the page's own
-// message, so an observer's page, which passes none, draws text instead.
-fn boundary(top: Top, load: Option(message)) -> Element(message) {
+// marker `<loom-follow>` listens for, and its handler is the page's read.
+// It is the first child of the first child of `<loom-follow>`, which is the
+// path the page socket admits an observer's click at
+// (`component.older_path`).
+fn boundary(top: Top, load: message) -> Element(message) {
   html.div([attribute.class("lane-top")], [
-    case top, load {
-      Beginning, _ ->
+    case top {
+      Beginning ->
         html.p([attribute.class("lane-boundary")], [
           html.text("Beginning of this conversation."),
         ])
-      Earlier, Some(message) ->
+      Earlier ->
         html.button(
           [
             attribute.type_("button"),
             attribute.class("load-older"),
             attribute.data(older_marker, "load"),
-            event.on_click(message),
+            event.on_click(load),
           ],
           [html.text("Load older")],
         )
-      Earlier, None ->
-        html.p([attribute.class("lane-boundary")], [
-          html.text(
-            "Older rows are not shown. An observer's page does not load them.",
-          ),
-        ])
-      Loading, _ ->
+      Loading ->
         html.p([attribute.class("lane-boundary")], [
           html.text("Loading older rows…"),
         ])
-      Full(rows:), _ ->
+      Full(rows:) ->
         html.p([attribute.class("lane-boundary")], [
           html.text(
             "This page holds at most "

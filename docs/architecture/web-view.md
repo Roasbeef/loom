@@ -261,24 +261,27 @@ flowchart LR
     link["ui.link ceiling<br/>observer by default"] --> cap
     member["membership role"] --> cap
     cap{"ui_relay.capped<br/>min(membership, ceiling, Operator)"}
-    cap -- "Observer" --> obs["component.app()<br/>no command in Msg<br/>no event handler<br/>socket drops every frame"]
+    cap -- "Observer" --> obs["component.app()<br/>no command in Msg<br/>one handler: Load older<br/>socket admits only that click"]
     cap -- "Operator" --> op["operator_page.app()<br/>Submitted and Decided<br/>composer and approval cards<br/>socket forwards click and submit"]
 ```
 
 - **The observer's page** is `web_view/component`. Its message type is the
-  connection's outcome, the timer's subject, batches of arrivals and the
-  timer's fire, and nothing else,
-  so it has no way to express a command. Its view attaches no event
-  handler. Where an operator's page has its composer, it draws a fixed
-  line saying the page is read-only. The socket drops every browser frame
-  before it reaches the runtime (`observer_accepts`), which also spares
-  the component a render per dropped frame.
+  connection's outcome, the timer's subject, batches of arrivals, the
+  timer's fire and `OlderRequested`, a read of older history, and nothing
+  else, so it has no way to express a command. Its view attaches one event
+  handler, the lane's "Load older" click, drawn only while older rows
+  exist (051, the addendum on history paging). Where an operator's page
+  has its composer, it draws a fixed line saying the page is read-only.
+  The socket admits only that click, at its fixed path
+  (`component.older_path`), and drops every other browser frame before it
+  reaches the runtime (`observer_accepts`), which also spares the
+  component a render per dropped frame.
 - **The operator's page** is `web_view/operator_page`. It wraps the
   observer's messages in `Observed` and adds `Submitted(text, delivery)`
-  and `Decided(id, seq, answer)`, and `OlderRequested` for the lane's
-  "Load older" button, a read. Its model is the observer's model. The
-  commands reach the lane through `component.submit` and
-  `component.decide`, which call the engine's command arms in
+  and `Decided(id, seq, answer)`. The lane's "Load older" button sends
+  the observer's own `OlderRequested`, wrapped. Its model is the
+  observer's model. The commands reach the lane through `component.submit`
+  and `component.decide`, which call the engine's command arms in
   `session_view/operator`, and the read through `component.older`. The
   socket forwards only Lustre's `EventFired` for `click` and `submit`,
   alone or in a batch (`operator_accepts`).
@@ -398,7 +401,7 @@ made).
 **Load older.** Above the oldest row the lane draws `lane.Top`: the
 beginning of the conversation, a "Load older" button, "Loading older
 rows…" while a read is out, or a line saying the page is full. The button
-sends `operator_page.OlderRequested`, which `component.older` turns into
+sends `component.OlderRequested` on both pages, which `component.older` turns into
 `history_view.older`: the history window asks for the interval of at most
 100 sequences below its oldest record. The page sends that as a `history`
 read on its own lane, the read the terminal pages with
@@ -434,12 +437,12 @@ scroll is zero.
 **Observers.** A `history` read is a read. The gateway admits it for an
 observer's binding (`gateway.read_only` lists `History`), and the lane
 sends it on any attachment (`session_channel.history` checks no role).
-But the observer's page cannot send the press: protocol-change/051 keeps
-its view free of every event handler and has the page socket drop every
-browser frame (`ui_socket.observer_accepts`). So only the operator's page
-draws the button; an observer's page says in words that it does not load
-older rows. Paging for observers needs a 051 addendum that admits one
-`click` for this one handler.
+Protocol-change/051's addendum on history paging lets the observer's page
+carry this one handler: the button's message is `component.OlderRequested`
+on both pages, and the page socket admits from an observer only a `click`
+at `component.older_path` and drops every other frame
+(`ui_socket.observer_accepts`). `page_events_test` pins that the
+observer's rendered view registers that one handler at that path.
 
 ## Security layers
 
@@ -465,7 +468,7 @@ keeps a page from acting.
 | `Origin` on upgrade | A page on another origin, including another loopback port, opening the socket. It must equal `http://` and the request's `Host`. | `ui_http.origin_matches` |
 | Credential and membership | A page outliving its authority. Every page request re-authenticates the minting credential and its membership, and the gateway re-checks at every frame. | `page_grant`, `ui_relay.while_open` |
 | Role ceiling | An operator's power by default. A page is an observer's unless minted with `--operate`, and never above Operator. | `ui_relay.capped` |
-| Component type | An observer's page sending a command. Its `Msg` has no command and its view no handler; the socket drops every frame. | `web_view/component`, `ui_socket.observer_accepts` |
+| Component type | An observer's page sending a command. Its `Msg` has no command and its view one handler, the "Load older" read; the socket admits only that click at its fixed path and drops every other frame. | `web_view/component`, `ui_socket.observer_accepts` |
 | Approval card rules | Tricking the person into approving (below). | `web_view/operator_page` |
 | Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is text. | `web_view/view/lane`, `web_view/view/strip`, `web_view/markdown_view`, `web_view/operator_page` |
 | Response headers | Inline script and style, framing, `Referer` leaks of the ticket and key, caching. | `ui_http.secured`, `page.content_security_policy` |
@@ -559,8 +562,6 @@ browser goes away, because a runtime outlives its last client.
   `history_view.State`, the field the shared step will hold for both hosts
   (`docs/design-notes/step-extraction.md`, `scrollback`); the row limit and
   `Paging` stay the page's view state.
-- **Paging on an observer's page.** It needs the 051 addendum described
-  under "Paging older history".
 - **One strand, one session.** The page shows and addresses `main`. The
   routes already carry the session ID, so a later page can mount one
   component per session or agent.
@@ -574,7 +575,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/strip.gleam` | The agent strip and its `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces, folded work, the cards, and each transcript line and card body in its own leaf memo. |
 | `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |
-| `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted`, `Decided` and `OlderRequested`, the uncontrolled composer and its total form decoder, the approval cards. |
+| `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted` and `Decided`, the uncontrolled composer and its total form decoder, the approval cards. |
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |

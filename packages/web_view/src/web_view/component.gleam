@@ -46,8 +46,9 @@
 //// and it never queues a note.
 ////
 //// This module is the observer's application, and its message type carries
-//// no command: a browser has nothing it can send it, since its view attaches
-//// no event handler. An operator's page is `web_view/operator_page`, which
+//// no command. Its view attaches one event handler, the lane's "Load older"
+//// button, whose message asks for a read of older history and nothing else
+//// (protocol-change/051, the addendum on history paging). An operator's page is `web_view/operator_page`, which
 //// wraps these messages with the two commands an operator may send and
 //// reaches the lane through `submit` and `decide` here, which call the
 //// engine's command arms.
@@ -139,6 +140,15 @@ pub const live_rows = 150
 /// rows to make room, keeps the page live without a second mode that
 /// stops following the session.
 pub const held_rows = 300
+
+/// The Lustre event path of the lane's "Load older" button, on both pages:
+/// the lane is the third child of the page's `main`, the line above its
+/// oldest row the lane's first child, and the button that line's first
+/// child. The page socket admits a `click` from an observer at this path and
+/// no other event (`client/daemon/ui_socket.observer_accepts`,
+/// protocol-change/051, the addendum on history paging). `page_events_test`
+/// fails if the view moves the button, so the two cannot drift apart.
+pub const older_path = "0\t2\t0\t0"
 
 /// The most bytes of prompt text the page submits. The page socket's frame
 /// limit bounds a whole message; this bounds the field inside it, so a
@@ -359,6 +369,12 @@ pub type Msg(socket) {
   /// The timer armed for the lane's next due reading fired, at this
   /// monotonic reading.
   Ticked(at: Int)
+
+  /// The lane's "Load older" button was pressed. It asks for a read of
+  /// older history and nothing else (`older`), which is why an observer's
+  /// page may carry it (protocol-change/051, the addendum on history
+  /// paging). It is the one message a browser can send an observer's page.
+  OlderRequested
 }
 
 /// The Lustre application for one session's observer page.
@@ -529,6 +545,8 @@ pub fn update(
       let #(model, effects) = reduce(Model(..model, clock: at), at)
       #(rearm(ticked(model, at), at), effects)
     }
+
+    OlderRequested -> older(model)
   }
 }
 
@@ -1628,9 +1646,10 @@ pub fn session_id(model: Model(socket)) -> String {
 }
 
 /// The observer's page: the heading, the agent strip, the lane, and a fixed
-/// line saying the page is read-only. It attaches no event handler, so the
-/// lane says in words when older rows exist rather than offering a button
-/// to load them.
+/// line saying the page is read-only. Its one event handler is the lane's
+/// "Load older" button, whose message asks for a read and nothing else; the
+/// page socket admits that one event from an observer and drops every other
+/// frame (protocol-change/051, the addendum on history paging).
 ///
 /// Each region is drawn by its own module under `web_view/view`
 /// (`heading`, `strip` and `lane`); this function only lays them out, as
@@ -1645,7 +1664,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session")], [
     heading(model),
     strip.view(model.strip),
-    lane.view(model.pieces, top(model), None),
+    lane.view(model.pieces, top(model), OlderRequested),
     html.p([attribute.class("observer-bar")], [
       html.text(
         "Observer · read-only · you can follow this session; ask the owner for operator access",

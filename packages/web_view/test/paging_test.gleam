@@ -13,6 +13,9 @@ import gleam/int
 import gleam/list
 import gleam/string
 import lane_fixture
+import lustre/dev/query
+import lustre/dev/simulate
+import lustre/effect
 import lustre/element
 import page_fixture
 import session_view/connection_event
@@ -34,7 +37,7 @@ fn catch_ups(wire: page_fixture.Wire) -> List(String) {
 }
 
 fn press(page) {
-  page_fixture.run(page, operator_page.update, [operator_page.OlderRequested])
+  page_fixture.run(page, component.update, [component.OlderRequested])
 }
 
 // The daemon's reply to `read`, the history read the page sent, carrying
@@ -213,21 +216,78 @@ pub fn a_refused_read_can_be_asked_again_test() {
   let assert [_] = reads(wire) as "the read is asked again"
 }
 
-// The operator's lane offers a real button marked for `<loom-follow>`; an
-// observer's page, whose view attaches no handler, says in words that it
-// does not load older rows, and draws no button.
-pub fn only_the_operators_lane_offers_the_button_test() {
+// Both pages draw the same real button, marked for `<loom-follow>`. On the
+// observer's page it is the one handler, and its message asks for a read.
+pub fn both_pages_offer_the_button_test() {
   let page =
     component.new(page_fixture.start())
     |> component.apply([lane_fixture.conversation(301, 450)])
-  let operator = element.to_string(operator_page.view(page))
-  assert string.contains(
-    operator,
-    "<button class=\"load-older\" data-loom-older=\"load\" type=\"button\">Load older</button>",
-  )
-  let observer = element.to_string(component.view(page))
-  assert !string.contains(observer, "<button")
-  assert string.contains(observer, "Older rows are not shown.")
+  let button =
+    "<button class=\"load-older\" data-loom-older=\"load\" type=\"button\">Load older</button>"
+  assert string.contains(element.to_string(operator_page.view(page)), button)
+  assert string.contains(element.to_string(component.view(page)), button)
+}
+
+// A click on the observer's button reaches the observer's own handler,
+// through Lustre's event lookup, as the one message it can send.
+pub fn a_click_on_the_observers_button_asks_for_older_rows_test() {
+  let clicked =
+    simulate.application(
+      init: fn(start) {
+        #(
+          component.new(start)
+            |> component.apply([lane_fixture.conversation(301, 450)]),
+          effect.none(),
+        )
+      },
+      update: component.update,
+      view: component.view,
+    )
+    |> simulate.start(page_fixture.start())
+    |> simulate.click(on: query.element(query.class("load-older")))
+  let assert [simulate.Event(name: "click", ..)] = simulate.history(clicked)
+    as "the click found its handler, with no problem recorded"
+  assert component.top(simulate.model(clicked)) == lane.Loading
+}
+
+// A forged event at the button, a submit carrying a draft, finds no handler:
+// the observer's one handler is the click, and its message is a read.
+pub fn a_forged_event_on_the_observers_button_finds_no_handler_test() {
+  let forged =
+    simulate.application(
+      init: fn(start) {
+        #(
+          component.new(start)
+            |> component.apply([lane_fixture.conversation(301, 450)]),
+          effect.none(),
+        )
+      },
+      update: component.update,
+      view: component.view,
+    )
+    |> simulate.start(page_fixture.start())
+    |> simulate.submit(on: query.element(query.class("load-older")), fields: [
+      #("draft", "run rm -rf"),
+    ])
+  let assert Ok(simulate.Problem(name: "EventHandlerNotFound", ..)) =
+    list.last(simulate.history(forged))
+    as "a submit on the observer's button is not handled"
+  assert component.top(simulate.model(forged)) == lane.Earlier
+}
+
+// An observer's press sends the history read on the observer's own lane,
+// and nothing else: no command leaves the page.
+pub fn an_observers_press_sends_only_a_history_read_test() {
+  let wire = process.new_subject()
+  let page =
+    page_fixture.ready(wire, "observer")
+    |> component.apply([lane_fixture.conversation(301, 450)])
+    |> press
+  let frames = page_fixture.sent(wire)
+  let assert [read] = page_fixture.commands(frames)
+    as "the press writes one frame"
+  assert string.contains(read, "\"cmd\":\"history\"")
+  assert component.top(page) == lane.Loading
 }
 
 // The lane refreshes as soon as a page of history arrives. This answers
