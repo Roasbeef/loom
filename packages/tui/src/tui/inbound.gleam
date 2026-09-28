@@ -185,8 +185,7 @@ pub fn apply_channel_update(
   update: session_channel.Update,
 ) -> Model {
   let around = surroundings(model)
-  tui_model.run_shared(model, lane_fold.apply_channel_update(_, update, around))
-  |> settle_surfaces(model, _)
+  run_settled(model, lane_fold.apply_channel_update(_, update, around))
 }
 
 /// What the terminal shows that a decision inside one update reads: whether
@@ -260,8 +259,7 @@ pub fn apply_cut(
   view: snapshot_view.View,
 ) -> Model {
   let around = surroundings(model)
-  tui_model.run_shared(model, lane_fold.apply_cut(_, cut, view, around))
-  |> settle_surfaces(model, _)
+  run_settled(model, lane_fold.apply_cut(_, cut, view, around))
 }
 
 // A question is offered once per exact sequence. Deferring one leaves it in
@@ -354,8 +352,7 @@ pub fn decide_captured_approval(
     approval_panel.AllowSession -> operator.AllowForSession
     approval_panel.Deny -> operator.Deny
   }
-  tui_model.run_shared(model, commands.decide_review(_, record, choice))
-  |> settle_surfaces(model, _)
+  run_settled(model, commands.decide_review(_, record, choice))
 }
 
 /// Applies at most `remaining` of the messages the runtime received into
@@ -435,9 +432,7 @@ fn handle_connection_message(
         apply_channel_update,
       )
     }
-    None ->
-      tui_model.run_shared(model, lane_fold.receive_unlaned(_, incoming))
-      |> settle_surfaces(model, _)
+    None -> run_settled(model, lane_fold.receive_unlaned(_, incoming))
   }
 }
 
@@ -459,7 +454,8 @@ fn handle_connection_message(
 /// switch parks it.
 ///
 /// A call held without this leaves its facts for the next call that
-/// settles, which would apply them against that call's `before`. The
+/// settles, which would apply them against that call's `before`, so a call
+/// that may record one goes through `run_settled`. The
 /// terminal forms that hold without settling (`request_decisions`,
 /// `service_history`, `request_visible_worktree`, `refresh_worktree`, the
 /// lane's `tick`, `receive` and `cancel_unsent`, `commands.decide`,
@@ -489,6 +485,28 @@ pub fn settle_surfaces(before: Model, held: Model) -> Model {
     [] -> settled
     _ -> restore_returned_drafts(settled)
   }
+}
+
+/// Runs `reducer`, a function over the shared record alone, on this model's
+/// shared record, holds the result, and settles the surface facts it
+/// recorded against `model`.
+///
+/// This is `settle_surfaces(model, tui_model.run_shared(model, reducer))`.
+/// Every call into a fold or a command that may record a fact goes through
+/// it, so no call can hold its result and leave its facts for a later call
+/// to settle against the wrong `before`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = inbound.run_settled(model, commands.interrupt_active)
+/// ```
+@internal
+pub fn run_settled(
+  model: Model,
+  reducer: fn(tui_model.TerminalShared) -> tui_model.TerminalShared,
+) -> Model {
+  settle_surfaces(model, tui_model.run_shared(model, reducer))
 }
 
 // One fact, applied to the terminal state it stands for.
@@ -921,8 +939,7 @@ pub fn select_workspace(
   session: String,
   strand: String,
 ) -> Model {
-  tui_model.run_shared(model, event_fold.select_workspace(_, session, strand))
-  |> settle_surfaces(model, _)
+  run_settled(model, event_fold.select_workspace(_, session, strand))
 }
 
 // The terminal's half of a workspace switch: the editor, the attachments

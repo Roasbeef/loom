@@ -224,8 +224,7 @@ fn submit_text(model: Model) -> Model {
       tui_model.send_frame(opened, protocol.models(opened.shared.next_id))
     }
     command.Model(name) ->
-      tui_model.run_shared(cleared, commands.select_model(_, name))
-      |> inbound.settle_surfaces(cleared, _)
+      inbound.run_settled(cleared, commands.select_model(_, name))
     command.Strands | command.Agents -> open_agents(cleared)
     command.PeerLinks -> session_control.begin_peer_workspace(cleared)
     command.Schedules ->
@@ -880,8 +879,7 @@ pub fn toggle_submission_mode(model: Model) -> Model {
 /// ```
 @internal
 pub fn interrupt_active(model: Model) -> Model {
-  tui_model.run_shared(model, commands.interrupt_active)
-  |> inbound.settle_surfaces(model, _)
+  inbound.run_settled(model, commands.interrupt_active)
 }
 
 /// Stops one strand's running operation from the agent strip.
@@ -897,8 +895,7 @@ pub fn interrupt_active(model: Model) -> Model {
 /// ```
 @internal
 pub fn stop_strand(model: Model, strand: String) -> Model {
-  tui_model.run_shared(model, commands.stop_strand(_, strand))
-  |> inbound.settle_surfaces(model, _)
+  inbound.run_settled(model, commands.stop_strand(_, strand))
 }
 
 /// Terminals encode Alt+character as Escape followed by that character. If a
@@ -1035,9 +1032,7 @@ pub fn quit(model: Model) -> Model {
 pub fn switch_active_strand(model: Model, strand: String) -> Model {
   let model =
     inbound.cancel_pending(model, "target change from " <> model.shared.session)
-  let focused =
-    tui_model.run_shared(model, commands.focus(_, strand))
-    |> inbound.settle_surfaces(model, _)
+  let focused = inbound.run_settled(model, commands.focus(_, strand))
   let selected =
     Model(
       ..focused,
@@ -1049,8 +1044,7 @@ pub fn switch_active_strand(model: Model, strand: String) -> Model {
       ),
     )
   let around = inbound.surroundings(selected)
-  tui_model.run_shared(selected, commands.load_strand(_, strand, around))
-  |> inbound.settle_surfaces(selected, _)
+  inbound.run_settled(selected, commands.load_strand(_, strand, around))
 }
 
 /// Opens held-input inspection without touching composer text or attachments.

@@ -640,8 +640,7 @@ fn update_model_selector(
             repaint_phase: !model.view.repaint_phase,
           ),
         )
-      tui_model.run_shared(closed, commands.select_model(_, name))
-      |> inbound.settle_surfaces(closed, _)
+      inbound.run_settled(closed, commands.select_model(_, name))
     }
   }
 }
