@@ -4,7 +4,7 @@
 //// piece, so a row is drawn, and its Markdown parsed, only when it first
 //// appears or its piece changes. That holds only if Lustre keeps each row's
 //// memo element from one render to the next, which it does not for a memo
-//// nested inside another memo that hit (`component.lane_rows` says why).
+//// nested inside another memo that hit (`lane.rows` says why).
 //// These tests count the rows drawn across the renders a page goes through:
 //// its first render, a render in which nothing in the lane changed, and a
 //// capture that appends a row.
@@ -23,6 +23,7 @@ import lustre/element/html
 import page_fixture
 import session_view/turns
 import web_view/component
+import web_view/view/lane
 
 type Cache
 
@@ -64,25 +65,25 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
   }
 
   // The first render draws the prompt and every answer.
-  let first_view = component.lane_rows(pieces(40), draw)
+  let first_view = lane.rows(pieces(40), draw)
   let cache = first(first_view)
   assert drawn(lines) == 41
 
   // A render in which the lane did not change draws nothing. This is the
   // render in which an enclosing memo would have hit and dropped the line
   // memos inside it.
-  let same_view = component.lane_rows(pieces(40), draw)
+  let same_view = lane.rows(pieces(40), draw)
   let cache = rerender(cache, first_view, same_view)
   assert drawn(lines) == 0
 
   // A capture that appends one answer draws the answer it moved into the
   // work and the new answer, and no other line.
-  let next_view = component.lane_rows(pieces(41), draw)
+  let next_view = lane.rows(pieces(41), draw)
   let cache = rerender(cache, same_view, next_view)
   assert drawn(lines) == 2
 
   // And the lines are still kept on the render after that.
-  let _ = rerender(cache, next_view, component.lane_rows(pieces(41), draw))
+  let _ = rerender(cache, next_view, lane.rows(pieces(41), draw))
   assert drawn(lines) == 0
 }
 
@@ -97,10 +98,10 @@ pub fn a_sliding_window_draws_only_the_new_lines_test() {
     process.send(lines, Nil)
     html.text("line")
   }
-  let first_view = component.lane_rows(pieces(700), draw)
+  let first_view = lane.rows(pieces(700), draw)
   let cache = first(first_view)
   let _ = drawn(lines)
-  let next_view = component.lane_rows(pieces(701), draw)
+  let next_view = lane.rows(pieces(701), draw)
   let _ = rerender(cache, first_view, next_view)
   assert drawn(lines) == 2
 }

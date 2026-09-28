@@ -41,6 +41,7 @@ import session_view/approval
 import session_view/operator
 import session_view/snapshot
 import web_view/component
+import web_view/view/lane
 import web_view/view/strip
 
 /// Everything an operator's page can be told.
@@ -126,7 +127,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
     strip.view(component.strip(model)),
-    component.lane_view(component.pieces(model)),
+    lane.view(component.pieces(model)),
     html.footer([attribute.class("dock")], [
       approvals(component.pending(model)),
       composer(model),
