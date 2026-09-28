@@ -45,7 +45,7 @@ The web view holds the lane, an inbox and what it derived from the last
 capture (`web_view/component.gleam:239` (`Model`)). Its `update`
 (`web_view/component.gleam:446` (`update`)) reduces on `Arrived` and
 `Ticked`, folds the lane's updates in `apply`
-(`web_view/component.gleam:541` (`apply`)), and re-implements the
+(`web_view/component.gleam:534` (`apply`)), and re-implements the
 capture fold (`captured`, `fresh`, `recaptured`), the usage and cache
 fold (`used`, `settle_cache`, `settle_pushed`, `noted`) and the submission
 fold (`settled`) that `tui/inbound` and `tui/outbound` already contain.
@@ -153,7 +153,7 @@ terminal, 4 handles, 3 split.
 | `workspace` | a | The session's path and branch; the page's header wants it. |
 | `strands` | a | The captured strand list. |
 | `agent_summary` | b | A string derived from `strands` by `tui/agents`, which imports etui; the terminal derives it at paint instead. |
-| `reviewer_rows`, `agent_rows` | a | Both hosts observe them, the web in `fresh` (`web_view/component.gleam:616`). |
+| `reviewer_rows`, `agent_rows` | a | Both hosts observe them, the web in `fresh` (`web_view/component.gleam:609`). |
 | `strip` | split | `roster` is `agent_roster.Roster` and moves; `focus` is the strip's keyboard cursor and stays (`tui/agent_strip.gleam:65` (`State`)). |
 | `agent_messages` | a | Provenance-checked sends; the module imports nothing BEAM-only. |
 | `advisor_history` | a | The advisor's captured board. |
@@ -449,19 +449,19 @@ The web's `component.Model(socket)` becomes
 selector mappings that read `transport.now()` today, in `open`
 (`web_view/component.gleam:368`) and `arm`
 (`web_view/component.gleam:406`), stop carrying `at`, and the read in
-`commanded` (`web_view/component.gleam:1015`) goes with them. This is the
+`commanded` (`web_view/component.gleam:976`) goes with them. This is the
 terminal's `runtime.stamp` shape (`tui/runtime.gleam:80` (`stamp`)). An
 `Arrived`
 becomes two shared calls in one Lustre message, `Arrived` then
 `Input(Ticked)`, which is the delivery ADR-014 describes for a host that
 wakes on arrival and still one render per burst. `rearm` stays as it is,
-reading `step.next_due` (`web_view/component.gleam:1145` (`rearm`)).
+reading `step.next_due` (`web_view/component.gleam:1061` (`rearm`)).
 `operator_page` keeps its `Observed` and `effect.map` layering over the
 component (`web_view/operator_page.gleam:88` (`update`)); its
 `Submitted` and `Decided` become `Acted(Submit(..))` and
 `Acted(Decide(..))` after the page's own checks on the draft's length and
 emptiness, which are the page socket's limits and not the session's
-(`web_view/component.gleam:991` (`submit`)).
+(`web_view/component.gleam:928` (`submit`)).
 
 ## 3. Admission and reducers
 
@@ -657,24 +657,24 @@ it.
 
 | Today | After | Where the logic lives |
 |---|---|---|
-| `update`'s `Opened` arm (`web_view/component.gleam:455` (`Opened`)) | `step.attach(shared, session_channel.start(socket, expected, now: at), inbox.new(Nil), stamp)`, then `Ticked` | `session_view/step` |
+| `update`'s `Opened` arm (`web_view/component.gleam:448` (`Opened`)) | `step.attach(shared, session_channel.start(socket, expected, now: at), inbox.new(Nil), stamp)`, then `Ticked` | `session_view/step` |
 | `Refused` | view `status: Ended(reason)` | shell |
-| `Arrived` (`web_view/component.gleam:478` (`Arrived`)) | `step.update(Arrived(frames))` then `step.update(Input(stamp, Ticked))` | `session_view/step` |
+| `Arrived` (`web_view/component.gleam:471` (`Arrived`)) | `step.update(Arrived(frames))` then `step.update(Input(stamp, Ticked))` | `session_view/step` |
 | `Ticked` | `step.update(Input(stamp, Ticked))`, then the strip's label check | `session_view/step`, shell |
-| `reduce` (`web_view/component.gleam:459`), `drained`, `take_filed`, `received` | the shared `Ticked`: `drain_connection` then `tick_channel` | `session_view/inbound` |
-| `apply` (`web_view/component.gleam:541`) | `apply_channel_update` | `session_view/inbound` |
-| `captured` (`web_view/component.gleam:564`), `fresh`, `recaptured` | `reconcile_cut`, `apply_cut`, `render_cut` | `session_view/inbound` |
-| `used` (`web_view/component.gleam:662`), `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`tui/inbound.gleam:1995`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
-| `relaned` (`web_view/component.gleam:736`), `restripped`, `strip_of`, `outlook`, `running_ms`, `strands` | `derive(before, after)`: rebuild blocks, pieces and the strip when `shared.render_revision` moved | shell, view state |
-| `ticked` (`web_view/component.gleam:936` (`ticked`)) | the same per-chip label comparison over `shared.cache` and `shared.stamp` | shell |
-| `settled` (`web_view/component.gleam:891` (`settled`)) | `apply_submission`; `drafts` bumps on the `pending_submission` edge | `session_view/outbound`, shell |
-| `submit` (`web_view/component.gleam:991` (`submit`)) | the page's empty and length checks, then `Acted(Submit(text, [], delivery))` | shell, `session_view/commands` |
-| `decide` (`web_view/component.gleam:1031` (`decide`)) | `Acted(Decide(id, seq, choice))`; the drawn-sequence check is `operator.drawn` inside the shared arm | `session_view/commands` |
-| `commanded` (`web_view/component.gleam:1015`), `flushed` | the shell's `update`: stamp, shared call, `perform`, `rearm` | shell |
-| `perform` (`web_view/component.gleam:1062` (`perform`)) | unchanged, over `step.Effect(socket, Nil)`: `Lane(Transmit)`, `Lane(Shut)`; `Note` and `Recorded` are `Nil` | shell |
-| `rearm` (`web_view/component.gleam:1101` (`rearm`)) | unchanged, reading `step.next_due(shared)` | shell |
+| `reduce` (`web_view/component.gleam:452`), `drained`, `take_filed`, `received` | the shared `Ticked`: `drain_connection` then `tick_channel` | `session_view/inbound` |
+| `apply` (`web_view/component.gleam:534`) | `apply_channel_update` | `session_view/inbound` |
+| `captured` (`web_view/component.gleam:557`), `fresh`, `recaptured` | `reconcile_cut`, `apply_cut`, `render_cut` | `session_view/inbound` |
+| `used` (`web_view/component.gleam:655`), `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`tui/inbound.gleam:1995`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
+| `relaned` (`web_view/component.gleam:729`), `restripped`, `strip_of`, `outlook`, `running_ms`, `strands` | `derive(before, after)`: rebuild blocks, pieces and the strip when `shared.render_revision` moved | shell, view state |
+| `ticked` (`web_view/component.gleam:848` (`ticked`)) | the same per-chip label comparison over `shared.cache` and `shared.stamp` | shell |
+| `settled` (`web_view/component.gleam:875` (`settled`)) | `apply_submission`; `drafts` bumps on the `pending_submission` edge | `session_view/outbound`, shell |
+| `submit` (`web_view/component.gleam:928` (`submit`)) | the page's empty and length checks, then `Acted(Submit(text, [], delivery))` | shell, `session_view/commands` |
+| `decide` (`web_view/component.gleam:967` (`decide`)) | `Acted(Decide(id, seq, choice))`; the drawn-sequence check is `operator.drawn` inside the shared arm | `session_view/commands` |
+| `commanded` (`web_view/component.gleam:976`), `flushed` | the shell's `update`: stamp, shared call, `perform`, `rearm` | shell |
+| `perform` (`web_view/component.gleam:1023` (`perform`)) | unchanged, over `step.Effect(socket, Nil)`: `Lane(Transmit)`, `Lane(Shut)`; `Note` and `Recorded` are `Nil` | shell |
+| `rearm` (`web_view/component.gleam:1059` (`rearm`)) | unchanged, reading `step.next_due(shared)` | shell |
 | `open`, `arm`, `waiting`, `init`, `new` | unchanged, less the clock reads in the mappings | shell |
-| `activity` (`web_view/component.gleam:1285` (`activity`)) | `model.active_strand_live(shared)` | `session_view/model` |
+| `activity` (`web_view/component.gleam:1187` (`activity`)) | `model.active_strand_live(shared)` | `session_view/model` |
 | `lines`, `rows`, `pieces`, `strip`, `addressed`, `status`, `pending`, `notice`, `drafts`, `attachment`, `lane`, `session_id` | accessors over `{shared, view}` | shell |
 | `view`, `heading`, `strip_view`, `lane_view`, the element functions | unchanged | view |
 
