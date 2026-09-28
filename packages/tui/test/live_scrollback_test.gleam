@@ -20,7 +20,7 @@ import tui_test/gateway
 
 fn deliver(model: tui_model.Model, text: String) -> tui_model.Model {
   process.send(
-    buffered.sender(model.inbox),
+    buffered.sender(model.shared.inbox),
     connection_event.Incoming(gateway.stream_delta("main", "text", text)),
   )
   tui.update(backend.Tick, model)
@@ -39,20 +39,20 @@ fn streaming() -> tui_model.Model {
 pub fn scrolling_inside_a_live_answer_freezes_until_end_test() {
   let live = streaming()
   let reading = tui.update(backend.MouseScroll(5, 5, True), live)
-  assert reading.scroll_offset > 0
-  let assert Some(_) = reading.reading_lines
+  assert reading.view.scroll_offset > 0
+  let assert Some(_) = reading.view.reading_lines
     as "scrolling captures the unfinished answer"
   let arrived = deliver(reading, "\n\nNew output below.\n\nMore output.")
-  assert arrived.streams != reading.streams
+  assert arrived.shared.streams != reading.shared.streams
     as "the actual live stream keeps collecting"
-  assert arrived.view.rendered_rows == reading.view.rendered_rows
+  assert arrived.view.caches.rendered_rows == reading.view.caches.rendered_rows
     as "incoming fragments cannot reflow the reader's text"
-  assert arrived.scroll_offset == reading.scroll_offset
+  assert arrived.view.scroll_offset == reading.view.scroll_offset
 
   let resumed = tui.update(backend.KeyPress("end"), arrived)
-  assert resumed.scroll_offset == 0
-  assert resumed.reading_lines == None
-  assert resumed.view.rendered_rows != reading.view.rendered_rows
+  assert resumed.view.scroll_offset == 0
+  assert resumed.view.reading_lines == None
+  assert resumed.view.caches.rendered_rows != reading.view.caches.rendered_rows
     as "returning to the bottom reveals the accumulated output"
 }
 
@@ -64,7 +64,7 @@ pub fn scrolling_inside_a_live_answer_freezes_until_end_test() {
 pub fn a_wheel_notch_drains_the_socket_without_waiting_for_a_tick_test() {
   let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
   process.send(
-    buffered.sender(reading.inbox),
+    buffered.sender(reading.shared.inbox),
     connection_event.Incoming(gateway.stream_delta(
       "main",
       "text",
@@ -73,9 +73,9 @@ pub fn a_wheel_notch_drains_the_socket_without_waiting_for_a_tick_test() {
   )
 
   let scrolled = tui.update(backend.MouseScroll(5, 5, True), reading)
-  assert scrolled.streams != reading.streams
+  assert scrolled.shared.streams != reading.shared.streams
     as "a notch applies the traffic already queued behind it"
-  assert scrolled.reading_lines == reading.reading_lines
+  assert scrolled.view.reading_lines == reading.view.reading_lines
     as "and the drained fragment cannot reflow the text being read"
 }
 
@@ -83,7 +83,7 @@ pub fn a_held_drag_drains_the_socket_too_test() {
   let pressed =
     tui.update(backend.MousePress(5, 5, backend.MouseLeft), streaming())
   process.send(
-    buffered.sender(pressed.inbox),
+    buffered.sender(pressed.shared.inbox),
     connection_event.Incoming(gateway.stream_delta(
       "main",
       "text",
@@ -92,9 +92,9 @@ pub fn a_held_drag_drains_the_socket_too_test() {
   )
 
   let dragged = tui.update(backend.MouseDrag(9, 6, backend.MouseLeft), pressed)
-  assert dragged.streams != pressed.streams
+  assert dragged.shared.streams != pressed.shared.streams
     as "a drag applies the traffic queued while the button is held"
-  assert dragged.selection != None
+  assert dragged.view.selection != None
     as "and the selection it extends survives the drain"
 }
 
@@ -102,8 +102,8 @@ pub fn frozen_text_reflows_on_resize_without_adopting_new_output_test() {
   let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
   let arrived = deliver(reading, "\n\nHidden until returning to the bottom.")
   let resized = tui.update(backend.Resize(70, 24), arrived)
-  assert resized.reading_lines == reading.reading_lines
-  assert resized.scroll_offset > 0
+  assert resized.view.reading_lines == reading.view.reading_lines
+  assert resized.view.scroll_offset > 0
 }
 
 pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
@@ -114,9 +114,12 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
     render.view(
       tui_model.Model(
         ..drafting,
-        view: tui_model.Caches(..drafting.view, frame_cache: None),
+        view: tui_model.View(
+          ..drafting.view,
+          caches: tui_model.Caches(..drafting.view.caches, frame_cache: None),
+        ),
       ),
-      geometry.rect_new(0, 0, drafting.width, drafting.height),
+      geometry.rect_new(0, 0, drafting.view.width, drafting.view.height),
     ).0
   let assert Ok(#(_, y)) =
     frame.buffer_to_lines(shown)
@@ -125,11 +128,11 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
     as "the user has a visible jump action while reading above the tail"
   let resumed =
     tui.update(backend.MousePress(5, y, backend.MouseLeft), drafting)
-  assert resumed.scroll_offset == 0
-  assert resumed.reading_lines == None
-  assert resumed.input == drafting.input
+  assert resumed.view.scroll_offset == 0
+  assert resumed.view.reading_lines == None
+  assert resumed.view.input == drafting.view.input
     as "jumping to the bottom does not submit or discard the draft"
-  assert resumed.selection == None
+  assert resumed.view.selection == None
 }
 
 // The frame cache is keyed on the screen rectangle alone, so a model edited
@@ -152,7 +155,11 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
       workspace.Context("/work", None),
       fn() { 0 },
     )
-  let offline = tui_model.Model(..base, peer: tui_model.Disconnected)
+  let offline =
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, peer: tui_model.Disconnected),
+    )
   assert string.contains(
     border_text(offline),
     "Disconnected · /sessions to reconnect · draft retained",
@@ -161,7 +168,14 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
   let interrupting =
     tui_model.Model(
       ..offline,
-      interrupt: Some(tui_model.Interrupt(base.active_strand, None, None)),
+      shared: tui_model.Shared(
+        ..offline.shared,
+        interrupt: Some(tui_model.Interrupt(
+          base.shared.active_strand,
+          None,
+          None,
+        )),
+      ),
     )
   assert string.contains(
     border_text(interrupting),
@@ -175,31 +189,38 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
 
   // The same pending interrupt on a live terminal still names itself, so the
   // guard rather than the fixture produced the two assertions above.
-  let live = tui_model.Model(..interrupting, peer: tui_model.Preview)
+  let live =
+    tui_model.Model(
+      ..interrupting,
+      shared: tui_model.Shared(..interrupting.shared, peer: tui_model.Preview),
+    )
   assert string.contains(border_text(live), "stopped · enter sends held input")
 }
 
 pub fn switching_agents_restores_the_frozen_reader_without_crossing_streams_test() {
   let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
   let reading =
-    tui_model.Model(..reading, strands: [
-      protocol.Strand("main", Some("main"), Some("assistant")),
-      protocol.Strand("worker", Some("worker"), Some("assistant")),
-    ])
+    tui_model.Model(
+      ..reading,
+      shared: tui_model.Shared(..reading.shared, strands: [
+        protocol.Strand("main", Some("main"), Some("assistant")),
+        protocol.Strand("worker", Some("worker"), Some("assistant")),
+      ]),
+    )
   let worker =
     reading
     |> tui.update(backend.KeyPress("f2"), _)
     |> tui.update(backend.KeyPress("down"), _)
     |> tui.update(backend.KeyPress("enter"), _)
-  assert worker.reading_lines == None
-  assert worker.scroll_offset == 0
+  assert worker.view.reading_lines == None
+  assert worker.view.scroll_offset == 0
   let returned =
     worker
     |> tui.update(backend.KeyPress("f2"), _)
     |> tui.update(backend.KeyPress("up"), _)
     |> tui.update(backend.KeyPress("enter"), _)
-  assert returned.active_strand == "main"
-  assert returned.reading_lines == reading.reading_lines
-  assert returned.scroll_offset == reading.scroll_offset
-  assert returned.view.rendered_rows == reading.view.rendered_rows
+  assert returned.shared.active_strand == "main"
+  assert returned.view.reading_lines == reading.view.reading_lines
+  assert returned.view.scroll_offset == reading.view.scroll_offset
+  assert returned.view.caches.rendered_rows == reading.view.caches.rendered_rows
 }

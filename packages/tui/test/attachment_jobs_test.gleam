@@ -38,11 +38,11 @@ pub fn opening_a_session_queues_one_attach_job_and_starts_nothing_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let host = host_on(owner)
   let model = runtime.adopt_control(blank(), host)
-  let assert Some(daemon) = model.daemon_host
+  let assert Some(daemon) = model.view.daemon_host
 
   let #(opening, effects) =
     runtime.take(session_control.begin_open(model, "target"))
-  let assert Some(key) = attachment.job_key(opening.candidate)
+  let assert Some(key) = attachment.job_key(opening.view.candidate)
     as "the attempt holds its job's key"
   assert list.filter(effects, is_job)
     == [
@@ -51,7 +51,7 @@ pub fn opening_a_session_queues_one_attach_job_and_starts_nothing_test() {
         job.Attach(job.OpenSession(daemon.control, "target"), 90_000),
       ),
     ]
-  assert job_runner.size(opening.running) == 0
+  assert job_runner.size(opening.view.running) == 0
     as "the step starts no job itself"
   assert process.receive(owner, 0) == Error(Nil)
     as "the step sent nothing to daemon control"
@@ -63,13 +63,20 @@ pub fn opening_a_session_queues_one_attach_job_and_starts_nothing_test() {
 // and captures the cut from those frames, and acknowledges the worker.
 pub fn the_frames_inbox_comes_only_from_the_prepared_test() {
   let #(model, key) = tui_model.allocate_job(blank())
-  let model = tui_model.Model(..model, candidate: attachment.opening(key, None))
+  let model =
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        candidate: attachment.opening(key, None),
+      ),
+    )
   let frames = connection.new_inbox()
   list.each(pushed.transfer(1, "1:1", "recent", 10), process.send(frames, _))
 
   let #(waiting, effects) =
     stepping.step(backend.Tick, runtime.receive(runtime.stamp(model)))
-  assert attachment.busy(waiting.candidate)
+  assert attachment.busy(waiting.view.candidate)
   assert list.filter(effects, is_attachment) == []
     as "no tick reduced the frames before the Prepared named them"
 
@@ -99,7 +106,13 @@ pub fn a_stale_prepared_has_its_socket_closed_test() {
   let #(model, stale) = tui_model.allocate_job(blank())
   let #(model, current) = tui_model.allocate_job(model)
   let waiting =
-    tui_model.Model(..model, candidate: attachment.opening(current, None))
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        candidate: attachment.opening(current, None),
+      ),
+    )
 
   let owner: Subject(Dynamic) = process.new_subject()
   let frames = connection.new_inbox()
@@ -112,7 +125,7 @@ pub fn a_stale_prepared_has_its_socket_closed_test() {
         job.Published(prepared_on(owner, frames, process.new_subject())),
       ),
     )
-  assert held.candidate == waiting.candidate
+  assert held.view.candidate == waiting.view.candidate
     as "the stale Prepared reached no attempt"
   assert process.receive(owner, 0) == Error(Nil)
     as "holding the Prepared closed nothing itself"
@@ -145,7 +158,13 @@ pub fn a_stale_prepared_has_its_socket_closed_test() {
 pub fn a_second_prepared_for_the_same_attempt_is_closed_test() {
   let #(model, key) = tui_model.allocate_job(blank())
   let model =
-    tui_model.Model(..model, candidate: attachment.opening(key, None))
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        candidate: attachment.opening(key, None),
+      ),
+    )
     |> runtime.hold(job.AttachArrived(
       key,
       job.Published(prepared_on(
@@ -167,7 +186,7 @@ pub fn a_second_prepared_for_the_same_attempt_is_closed_test() {
         )),
       ),
     )
-  assert again.candidate == model.candidate
+  assert again.view.candidate == model.view.candidate
   let _ = runtime.flush(again)
   let assert Ok(_) = process.receive(owner, 0)
     as "the second Prepared's socket was closed"
@@ -178,10 +197,17 @@ pub fn a_second_prepared_for_the_same_attempt_is_closed_test() {
 // nothing, and a late `Prepared` is closed rather than started.
 pub fn an_arrival_for_a_cancelled_attach_key_is_never_delivered_test() {
   let #(model, key) = tui_model.allocate_job(blank())
-  let model = tui_model.Model(..model, candidate: attachment.opening(key, None))
+  let model =
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        candidate: attachment.opening(key, None),
+      ),
+    )
   let #(quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), model)
   assert list.contains(effects, effect.CancelJob(key))
-  assert !attachment.busy(quit.candidate)
+  assert !attachment.busy(quit.view.candidate)
 
   let owner: Subject(Dynamic) = process.new_subject()
   let late =
@@ -198,7 +224,7 @@ pub fn an_arrival_for_a_cancelled_attach_key_is_never_delivered_test() {
         process.new_subject(),
       )),
     ))
-  assert late.candidate == quit.candidate
+  assert late.view.candidate == quit.view.candidate
     as "no arrival for the cancelled key reached an attempt"
   let _ = runtime.flush(late)
   let assert Ok(_) = process.receive(owner, 0)
@@ -211,13 +237,19 @@ pub fn an_arrival_for_a_cancelled_attach_key_is_never_delivered_test() {
 pub fn a_failed_attempt_cancels_its_job_ahead_of_its_cleanup_test() {
   let #(model, key) = tui_model.allocate_job(blank())
   let model =
-    tui_model.Model(..model, candidate: attachment.opening(key, None))
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        candidate: attachment.opening(key, None),
+      ),
+    )
     |> runtime.hold(job.AttachArrived(
       key,
       job.Settled(weft.PulledOutcome(weft.Failed(0, "refused"))),
     ))
   let #(failed, effects) = stepping.step(backend.Tick, model)
-  assert !attachment.busy(failed.candidate)
+  assert !attachment.busy(failed.view.candidate)
   let lifecycle =
     list.filter_map(effects, fn(decided) {
       case decided {

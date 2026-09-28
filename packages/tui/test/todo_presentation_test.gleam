@@ -224,7 +224,7 @@ pub fn a_notes_read_seeds_the_panel_quietly_test() {
   let seeded = seed_reply(before, "main", board())
   let #(_, frame) = seeded |> text
   assert string.contains(frame, "TODO  Judge 1/3")
-  assert seeded.notice == before.notice
+  assert seeded.shared.notice == before.shared.notice
 }
 
 pub fn a_seed_never_replaces_the_transcript_board_test() {
@@ -248,17 +248,26 @@ pub fn a_seed_for_a_known_board_is_dropped_test() {
     base()
     |> received(call("t1", 1))
     |> received(outcome("t1", 2, False, board()))
-  let waiting = tui_model.Model(..known, todo_seed: Some("main"))
-  assert surfaces.service_todo_seed(waiting).todo_seed == None
+  let waiting =
+    tui_model.Model(
+      ..known,
+      shared: tui_model.Shared(..known.shared, todo_seed: Some("main")),
+    )
+  assert surfaces.service_todo_seed(waiting).shared.todo_seed == None
 }
 
 pub fn the_seed_waits_behind_an_operator_notes_read_test() {
-  let waiting =
+  let waiting = {
+    let fresh = base()
     tui_model.Model(
-      ..base(),
-      todo_seed: Some("main"),
-      notes_requested: Some("main"),
+      ..fresh,
+      shared: tui_model.Shared(
+        ..fresh.shared,
+        todo_seed: Some("main"),
+        notes_requested: Some("main"),
+      ),
     )
+  }
   assert surfaces.service_todo_seed(waiting) == waiting
 }
 

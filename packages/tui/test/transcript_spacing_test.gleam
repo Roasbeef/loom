@@ -407,10 +407,15 @@ fn expanded_calls() -> Pane {
 // shortest path to the prefixing this file is about: no provider, no
 // grouping, one durable line.
 fn said(text: String) -> Pane {
-  let model =
-    tui_model.Model(..quiet_model(connection.new_inbox(), Compact), transcript: [
-      transcript_line.Line(transcript_line.Assistant, text),
-    ])
+  let model = {
+    let base = quiet_model(connection.new_inbox(), Compact)
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, transcript: [
+        transcript_line.Line(transcript_line.Assistant, text),
+      ]),
+    )
+  }
   run(model, [])
 }
 
@@ -493,7 +498,7 @@ fn run(model: tui_model.Model, steps: List(virtual_backend.Step)) -> Pane {
     virtual_backend.script(
       backend.TerminalSize(width: 60, height: 30),
       steps,
-      buffered.sender(model.inbox),
+      buffered.sender(model.shared.inbox),
     )
   let assert Ok(finished) = tui.run_script(model, script)
     as "the scripted backend cannot refuse to start"
@@ -533,17 +538,23 @@ fn quiet_model(
   inbox: Subject(connection_event.Message),
   view: TranscriptView,
 ) -> tui_model.Model {
-  tui_model.Model(
-    ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
-    transcript: [],
-    strands: [],
-    agent_summary: agents.summary([]),
-    notice: "ready",
-    details_expanded: case view {
-      Compact -> False
-      Expanded -> True
-    },
-  )
+  {
+    let base =
+      tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
+    tui_model.Model(
+      shared: tui_model.Shared(
+        ..base.shared,
+        transcript: [],
+        strands: [],
+        notice: "ready",
+        details_expanded: case view {
+          Compact -> False
+          Expanded -> True
+        },
+      ),
+      view: tui_model.View(..base.view, agent_summary: agents.summary([])),
+    )
+  }
 }
 
 // Which of the two transcript views a scripted run is drawn in. They place

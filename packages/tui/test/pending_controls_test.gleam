@@ -105,53 +105,66 @@ pub fn a_successor_cut_retires_the_old_interrupt_without_an_idle_event_test() {
   let stopped =
     tui_model.Model(
       ..before,
-      interrupt: Some(tui_model.Interrupt(
-        "main",
-        Some(ids.op_id_to_string(first)),
-        None,
-      )),
+      shared: tui_model.Shared(
+        ..before.shared,
+        interrupt: Some(tui_model.Interrupt(
+          "main",
+          Some(ids.op_id_to_string(first)),
+          None,
+        )),
+      ),
     )
   let same = captured(stopped, metadata(Some(first), []))
-  assert same.interrupt == stopped.interrupt
+  assert same.shared.interrupt == stopped.shared.interrupt
     as "a still-current operation has not completed cancellation"
   let successor = captured(same, metadata(Some(second), []))
-  assert successor.interrupt == None
+  assert successor.shared.interrupt == None
     as "a queued successor must not inherit the old stop indicator"
 }
 
 pub fn a_credited_idle_cut_retires_the_interrupt_test() {
-  let before =
+  let before = {
+    let base = pushed.attached()
     tui_model.Model(
-      ..pushed.attached(),
-      interrupt: Some(tui_model.Interrupt("main", Some("previous"), None)),
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        interrupt: Some(tui_model.Interrupt("main", Some("previous"), None)),
+      ),
     )
+  }
   let after = captured(before, metadata(None, []))
-  assert after.interrupt == None
+  assert after.shared.interrupt == None
     as "v2 snapshots settle cancellation without legacy phase events"
 }
 
 pub fn host_queue_identity_survives_equal_text_and_clears_after_drain_test() {
-  let before =
-    tui_model.Model(..pushed.attached(), queued: [
-      transcript_line.HeldPrompt("obsolete local guess"),
-    ])
+  let before = {
+    let base = pushed.attached()
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, queued: [
+        transcript_line.HeldPrompt("obsolete local guess"),
+      ]),
+    )
+  }
   let after =
     captured(
       before,
       metadata(None, [pending("2:1", "steer"), pending("1:1", "queue")]),
     )
-  let assert Some(#(_, view)) = after.captured
+  let assert Some(#(_, view)) = after.shared.captured
     as "the credited metadata must reach the model"
   let assert Some(rows) = view.pending_inputs
     as "modern metadata carries an authoritative queue"
   assert list.map(rows, fn(row) { #(row.id, row.kind) })
     == [#("2:1", snapshot_view.Steer), #("1:1", snapshot_view.Queue)]
     as "equal text from distinct peers retains host identity and priority"
-  assert after.queued == []
+  assert after.shared.queued == []
     as "a coherent host queue replaces stale local transcript guesses"
 
   let drained = captured(after, metadata(None, []))
-  let assert Some(#(_, view)) = drained.captured
+  let assert Some(#(_, view)) = drained.shared.captured
     as "the queue-only change must reach the model at the same durable cursor"
   assert view.pending_inputs == Some([])
     as "an empty authoritative queue clears both rows"

@@ -494,19 +494,26 @@ pub fn a_projection_keeping_the_cache_matches_one_that_kept_nothing_test() {
     case index % 7 {
       6 -> {
         let painted =
-          tui.update(backend.Resize(model.width, model.height), model)
+          tui.update(backend.Resize(model.view.width, model.view.height), model)
         let fresh =
           projection.refresh_render_cache(
             painted,
             tui_model.Model(
               ..painted,
-              view: tui_model.Caches(..painted.view, live_tail: live_tail.new()),
-              rendered_revision: painted.rendered_revision - 1,
+              view: tui_model.View(
+                ..painted.view,
+                caches: tui_model.Caches(
+                  ..painted.view.caches,
+                  live_tail: live_tail.new(),
+                ),
+                rendered_revision: painted.view.rendered_revision - 1,
+              ),
             ),
           )
-        assert fresh.view.rendered_rows == painted.view.rendered_rows
+        assert fresh.view.caches.rendered_rows
+          == painted.view.caches.rendered_rows
           as "a painted frame's rows are the rows of a projection from nothing"
-        assert fresh.rendered_gutters == painted.rendered_gutters
+        assert fresh.view.rendered_gutters == painted.view.rendered_gutters
           as "and so are its copy gutters"
         painted
       }
@@ -532,17 +539,18 @@ pub fn a_tool_call_delta_keeps_the_answers_cache_test() {
         pushed.delta("main", "op-1", piece),
       )
     })
-  let painted = tui.update(backend.Resize(model.width, model.height), model)
-  let #(settled, _, _) = live_tail.shortcuts(painted.view.live_tail)
+  let painted =
+    tui.update(backend.Resize(model.view.width, model.view.height), model)
+  let #(settled, _, _) = live_tail.shortcuts(painted.view.caches.live_tail)
   assert settled > 0 as "the answer's first paragraphs settled"
   let called =
     list.fold(["{\"pa", "th\":", "\"x\"}"], painted, fn(model, chunk) {
       inbound.accept_connection_message(model, tool_call_delta(chunk))
       |> fn(model) {
-        tui.update(backend.Resize(model.width, model.height), model)
+        tui.update(backend.Resize(model.view.width, model.view.height), model)
       }
     })
-  let #(kept, _, carried) = live_tail.shortcuts(called.view.live_tail)
+  let #(kept, _, carried) = live_tail.shortcuts(called.view.caches.live_tail)
   assert kept == settled as "tool call deltas left the settled rows in place"
 
   // A projection that started the slot over would settle the same rows, so

@@ -99,7 +99,13 @@ pub fn a_refused_delete_leaves_the_page_the_terminal_already_has_test() {
 // whether a control job starts.
 
 fn picker(model: tui_model.Model) -> tui_model.Model {
-  tui_model.Model(..model, overlay: tui_model.DaemonSelector(page()))
+  tui_model.Model(
+    ..model,
+    view: tui_model.View(
+      ..model.view,
+      overlay: tui_model.DaemonSelector(page()),
+    ),
+  )
 }
 
 fn blank() -> tui_model.Model {
@@ -110,8 +116,8 @@ pub fn a_confirmed_delete_reaches_the_control_job_test() {
   // `d` only opens the question, so nothing about the model's control slot
   // may move on that key alone.
   let asking = tui.update(backend.KeyPress("d"), picker(blank()))
-  assert asking.control_request == None
-  let assert tui_model.DaemonSelector(open) = asking.overlay
+  assert asking.view.control_request == None
+  let assert tui_model.DaemonSelector(open) = asking.view.overlay
     as "the picker stays on screen while the question is open"
   assert open.prompt == session_selector.ConfirmingDelete("first")
 
@@ -119,8 +125,8 @@ pub fn a_confirmed_delete_reaches_the_control_job_test() {
   // the job cannot be started and the refusal is the proof the key arrived:
   // the selector alone has no way to write that notice.
   let answered = tui.update(backend.KeyPress("y"), asking)
-  assert answered.notice == "daemon control is disconnected"
-  assert answered.control_request == None
+  assert answered.shared.notice == "daemon control is disconnected"
+  assert answered.view.control_request == None
 }
 
 pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
@@ -131,7 +137,10 @@ pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
   let loading =
     tui_model.Model(
       ..model,
-      control_request: Some(tui_model.ControlRequest(job.awaiting(key), None)),
+      view: tui_model.View(
+        ..model.view,
+        control_request: Some(tui_model.ControlRequest(job.awaiting(key), None)),
+      ),
     )
   let asking = tui.update(backend.KeyPress("d"), loading)
   let refused = tui.update(backend.KeyPress("y"), asking)
@@ -139,16 +148,16 @@ pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
   // The in-flight job keeps the slot it already had, so its key is still
   // the one its replies are admitted under.
   let assert Some(tui_model.ControlRequest(job: kept, ..)) =
-    refused.control_request
+    refused.view.control_request
     as "the page load still owns the control slot"
   assert job.key(kept) == key
-  assert refused.notice == "a catalogue request is already running"
+  assert refused.shared.notice == "a catalogue request is already running"
 
   // A refusal removes no row: only the daemon's confirmation drops one, and
   // none was ever asked for. The question stays open rather than being
   // withdrawn, so answering again once the page load lands costs one key
   // instead of reopening it against a row that may have moved.
-  let assert tui_model.DaemonSelector(shown) = refused.overlay
+  let assert tui_model.DaemonSelector(shown) = refused.view.overlay
     as "the picker survives the refusal"
   assert shown.page == page().page
   assert shown.selected == page().selected

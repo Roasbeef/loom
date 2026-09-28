@@ -143,7 +143,11 @@ fn streamed_shifts() -> List(Int) {
   // The demo transcript is cleared so the run starts from an empty
   // viewport; its live strand is kept, because a strand that has stopped
   // producing holds no rows back and there would be nothing to measure.
-  let model = tui_model.Model(..base, transcript: [], records: [])
+  let model =
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, transcript: [], records: []),
+    )
   let script =
     virtual_backend.Script(
       size: backend.TerminalSize(width: 84, height: 24),
@@ -229,16 +233,17 @@ pub fn a_tick_carrying_a_delta_waits_for_the_frame_interval_test() {
     inbox,
     connection_event.Incoming(gateway.stream_delta("main", "text", "an answer")),
   )
-  let carried = tui.update(backend.Tick, at(drawn, drawn.last_frame_ms + 1))
-  assert carried.render_revision != drawn.render_revision
+  let carried =
+    tui.update(backend.Tick, at(drawn, drawn.view.last_frame_ms + 1))
+  assert carried.shared.render_revision != drawn.shared.render_revision
     as "the fixture must deliver a delta the transcript actually admits"
-  assert carried.frame_debt == pacing.FrameDeferred
+  assert carried.view.frame_debt == pacing.FrameDeferred
     as "a tick that drained a delta is one frame of a stream, not a flush"
 
   // The same instant, with nothing left to drain, still renders: a deferred
   // frame has no other event waiting to pay it off.
   let flushed = tui.update(backend.Tick, carried)
-  assert flushed.frame_debt == pacing.FrameSettled
+  assert flushed.view.frame_debt == pacing.FrameSettled
 }
 
 pub fn frame_boundary_paces_only_the_tick_that_carried_traffic_test() {
@@ -276,14 +281,24 @@ pub fn an_unrevealed_backlog_keeps_the_loop_waking_test() {
   // The quiet timeout would strand the walk for a whole quiet poll a step,
   // with no socket traffic left to wake the loop.
   let catching_up =
-    tui_model.Model(..settled, rendered_row_count: 40, revealed_rows: 10)
+    tui_model.Model(
+      ..settled,
+      view: tui_model.View(
+        ..settled.view,
+        rendered_row_count: 40,
+        revealed_rows: 10,
+      ),
+    )
   assert tick.viewport_pacing(catching_up) == pacing.ViewportCatchingUp
   assert tick.terminal_poll_timeout(catching_up) == 16
   assert tick.terminal_poll_timeout(settled) > 16
 }
 
 fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
-  tui_model.Model(..model, monotonic_time_ms: fn() { now })
+  tui_model.Model(
+    ..model,
+    view: tui_model.View(..model.view, monotonic_time_ms: fn() { now }),
+  )
 }
 
 // A backlog long enough to survive a few frames, built the same way the
@@ -294,7 +309,12 @@ fn build_backlog() -> tui_model.Model {
   let inbox = connection.new_inbox()
   let base =
     tui.new_model_with_clock(inbox, workspace.Context("/work", None), fn() { 0 })
-    |> fn(model) { tui_model.Model(..model, transcript: [], records: []) }
+    |> fn(model) {
+      tui_model.Model(
+        ..model,
+        shared: tui_model.Shared(..model.shared, transcript: [], records: []),
+      )
+    }
     |> fn(model) { tui.update(backend.Resize(84, 24), model) }
   process.send(
     inbox,
@@ -330,14 +350,17 @@ fn numbered_lines(prefix: String, count: Int) -> String {
 
 pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
   let backlogged = build_backlog()
-  assert backlogged.revealed_rows < backlogged.rendered_row_count
+  assert backlogged.view.revealed_rows < backlogged.view.rendered_row_count
     as "the fixture must actually carry a backlog, or the scroll below tests nothing"
 
   let before =
     render.view(
       tui_model.Model(
         ..backlogged,
-        view: tui_model.Caches(..backlogged.view, frame_cache: None),
+        view: tui_model.View(
+          ..backlogged.view,
+          caches: tui_model.Caches(..backlogged.view.caches, frame_cache: None),
+        ),
       ),
       geometry.rect_new(0, 0, 84, 24),
     ).0
@@ -346,7 +369,10 @@ pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
     render.view(
       tui_model.Model(
         ..scrolled,
-        view: tui_model.Caches(..scrolled.view, frame_cache: None),
+        view: tui_model.View(
+          ..scrolled.view,
+          caches: tui_model.Caches(..scrolled.view.caches, frame_cache: None),
+        ),
       ),
       geometry.rect_new(0, 0, 84, 24),
     ).0
@@ -375,42 +401,52 @@ fn older_shift(before: List(String), after: List(String)) -> Int {
 
 pub fn a_resize_mid_backlog_closes_it_test() {
   let backlogged = build_backlog()
-  assert backlogged.revealed_rows < backlogged.rendered_row_count
+  assert backlogged.view.revealed_rows < backlogged.view.rendered_row_count
     as "the fixture must actually carry a backlog, or the resize below tests nothing"
 
   // Height only, so the row count itself does not rewrap and the closing
   // of the backlog is the only thing this resize could have caused.
   let resized = tui.update(backend.Resize(84, 30), backlogged)
-  assert resized.revealed_rows == resized.rendered_row_count
+  assert resized.view.revealed_rows == resized.view.rendered_row_count
     as "a resize addresses the transcript and must close the backlog like any other gesture"
 }
 
 pub fn the_idle_strand_snap_reveals_the_trailing_frame_test() {
   let backlogged = build_backlog()
-  assert backlogged.revealed_rows < backlogged.rendered_row_count
+  assert backlogged.view.revealed_rows < backlogged.view.rendered_row_count
     as "the fixture must actually carry a backlog, or the idle snap below tests nothing"
 
   // The strand stops producing without any gesture from the reader: the
   // walk has nothing left to lag behind, so the next tick must adopt the
   // complete projection at once rather than keep crawling toward it.
   let ended_strands =
-    list.map(backlogged.strands, fn(strand) {
-      case strand.id == backlogged.active_strand {
+    list.map(backlogged.shared.strands, fn(strand) {
+      case strand.id == backlogged.shared.active_strand {
         True -> protocol.Strand(..strand, live_phase: None)
         False -> strand
       }
     })
   let idled =
-    tui_model.Model(..backlogged, strands: ended_strands, submitting: None)
+    tui_model.Model(
+      ..backlogged,
+      shared: tui_model.Shared(
+        ..backlogged.shared,
+        strands: ended_strands,
+        submitting: None,
+      ),
+    )
   let settled = tui.update(backend.Tick, idled)
-  assert settled.revealed_rows == settled.rendered_row_count
+  assert settled.view.revealed_rows == settled.view.rendered_row_count
     as "an idle strand has no tail to walk toward, so the trailing frame must be the complete one"
 
   let #(buffer, _) =
     render.view(
       tui_model.Model(
         ..settled,
-        view: tui_model.Caches(..settled.view, frame_cache: None),
+        view: tui_model.View(
+          ..settled.view,
+          caches: tui_model.Caches(..settled.view.caches, frame_cache: None),
+        ),
       ),
       geometry.rect_new(0, 0, 84, 24),
     )
@@ -424,7 +460,12 @@ pub fn a_backlog_past_the_catch_up_threshold_accelerates_test() {
   let inbox = connection.new_inbox()
   let clocked =
     tui.new_model_with_clock(inbox, workspace.Context("/work", None), fn() { 0 })
-    |> fn(model) { tui_model.Model(..model, transcript: [], records: []) }
+    |> fn(model) {
+      tui_model.Model(
+        ..model,
+        shared: tui_model.Shared(..model.shared, transcript: [], records: []),
+      )
+    }
     |> fn(model) { tui.update(backend.Resize(84, 60), at(model, 0)) }
 
   process.send(
@@ -448,14 +489,14 @@ pub fn a_backlog_past_the_catch_up_threshold_accelerates_test() {
     )),
   )
   let backlogged = tui.update(backend.Tick, at(anchored, 32))
-  assert backlogged.rendered_row_count - backlogged.revealed_rows > 24
+  assert backlogged.view.rendered_row_count - backlogged.view.revealed_rows > 24
     as "the fixture must actually push the backlog past the threshold, or the catch-up arm below is untested"
 
   // A real clock advancing sixteen milliseconds a tick, not a frozen one:
   // the ordinary arm alone would need more than twenty frames to close a
   // backlog this size.
   let stepped = tui.update(backend.Tick, at(backlogged, 48))
-  assert stepped.revealed_rows - backlogged.revealed_rows > 1
+  assert stepped.view.revealed_rows - backlogged.view.revealed_rows > 1
     as "a backlog past the catch-up threshold must accelerate, not crawl one row a frame"
 }
 
@@ -469,10 +510,13 @@ pub fn a_backlog_behind_a_full_width_diff_view_answers_settled_test() {
   let behind_diff =
     tui_model.Model(
       ..base,
-      rendered_row_count: 40,
-      revealed_rows: 10,
-      diff_view: tui_model.DiffVisible,
-      width: 90,
+      view: tui_model.View(
+        ..base.view,
+        rendered_row_count: 40,
+        revealed_rows: 10,
+        diff_view: tui_model.DiffVisible,
+        width: 90,
+      ),
     )
   assert tick.viewport_pacing(behind_diff) == pacing.ViewportSettled
     as "a backlog behind a full-width diff view is not on its way to any screen the loop is painting"
@@ -480,7 +524,7 @@ pub fn a_backlog_behind_a_full_width_diff_view_answers_settled_test() {
 
 pub fn typing_leaves_a_backlog_alone_but_a_page_key_closes_it_test() {
   let backlogged = build_backlog()
-  assert backlogged.revealed_rows < backlogged.rendered_row_count
+  assert backlogged.view.revealed_rows < backlogged.view.rendered_row_count
     as "the fixture must actually carry a backlog, or neither assertion below tests anything"
 
   let typed =
@@ -488,11 +532,11 @@ pub fn typing_leaves_a_backlog_alone_but_a_page_key_closes_it_test() {
     |> list.fold(backlogged, fn(model, key) {
       tui.update(backend.KeyPress(key), model)
     })
-  assert typed.revealed_rows == backlogged.revealed_rows
+  assert typed.view.revealed_rows == backlogged.view.revealed_rows
     as "typing into the composer says nothing about the transcript and must not move it"
-  assert typed.rendered_row_count == backlogged.rendered_row_count
+  assert typed.view.rendered_row_count == backlogged.view.rendered_row_count
 
   let paged = tui.update(backend.KeyPress("pageup"), typed)
-  assert paged.revealed_rows == paged.rendered_row_count
+  assert paged.view.revealed_rows == paged.view.rendered_row_count
     as "a page key addresses the transcript and must close the backlog"
 }

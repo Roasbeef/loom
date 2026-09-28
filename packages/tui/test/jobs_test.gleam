@@ -45,11 +45,11 @@ pub fn a_picker_key_queues_one_job_start_and_starts_nothing_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let host = host_on(owner)
   let model = runtime.adopt_control(blank(), host)
-  let assert Some(daemon) = model.daemon_host
+  let assert Some(daemon) = model.view.daemon_host
 
   let #(loading, effects) = stepping.step(backend.KeyPress("left"), model)
   let assert Some(tui_model.ControlRequest(job: awaiting, result: None)) =
-    loading.control_request
+    loading.view.control_request
     as "the page load holds the control slot"
   assert list.filter(effects, is_job)
     == [
@@ -60,13 +60,13 @@ pub fn a_picker_key_queues_one_job_start_and_starts_nothing_test() {
           job.LoadPage(
             control_protocol.ListSessions("", None),
             session_selector.Active,
-            model.session,
+            model.shared.session,
             "/work",
           ),
         ),
       ),
     ]
-  assert job_runner.size(loading.running) == 0
+  assert job_runner.size(loading.view.running) == 0
     as "the step starts no job itself"
   assert process.receive(owner, 0) == Error(Nil)
     as "the step sent nothing to daemon control"
@@ -80,16 +80,19 @@ pub fn a_reply_for_another_key_is_not_admitted_test() {
   let waiting =
     tui_model.Model(
       ..model,
-      control_request: Some(tui_model.ControlRequest(
-        job.awaiting(current),
-        Some(Error("still waiting")),
-      )),
+      view: tui_model.View(
+        ..model.view,
+        control_request: Some(tui_model.ControlRequest(
+          job.awaiting(current),
+          Some(Error("still waiting")),
+        )),
+      ),
     )
 
   let held = runtime.hold(waiting, job.ControlArrived(other, weft.AllDelivered))
-  assert held.control_request == waiting.control_request
+  assert held.view.control_request == waiting.view.control_request
   let drained = session_control.drain_control(held)
-  assert drained.control_request == waiting.control_request
+  assert drained.view.control_request == waiting.view.control_request
     as "the slot's own job has not finished"
 }
 
@@ -103,7 +106,7 @@ pub fn a_late_reply_from_an_earlier_job_does_not_reach_its_successor_test() {
   let #(first, _) =
     runtime.take(session_control.load_catalogue(model, "", None))
   let assert Some(tui_model.ControlRequest(job: earlier, ..)) =
-    first.control_request
+    first.view.control_request
     as "the first load holds the slot"
 
   // The first load finishes and the second takes the slot.
@@ -113,11 +116,11 @@ pub fn a_late_reply_from_an_earlier_job_does_not_reach_its_successor_test() {
       job.ControlArrived(job.key(earlier), weft.RunLost(process.Normal)),
     )
     |> session_control.drain_control
-  assert finished.control_request == None
+  assert finished.view.control_request == None
   let #(second, _) =
     runtime.take(session_control.load_catalogue(finished, "", None))
   let assert Some(tui_model.ControlRequest(job: later, ..)) =
-    second.control_request
+    second.view.control_request
     as "the second load holds the slot"
   assert job.key(later) != job.key(earlier)
 
@@ -128,7 +131,7 @@ pub fn a_late_reply_from_an_earlier_job_does_not_reach_its_successor_test() {
       job.ControlArrived(job.key(earlier), weft.AllDelivered),
     )
     |> session_control.drain_control
-  assert late.control_request == second.control_request
+  assert late.view.control_request == second.view.control_request
 }
 
 // A quit cancels the running activity poll by its key and clears the slot
@@ -141,7 +144,7 @@ pub fn a_cancelled_job_never_delivers_a_reply_test() {
   let #(model, key) = tui_model.allocate_job(blank())
   let running =
     job_runner.start_task(
-      model.running,
+      model.view.running,
       key,
       fn() {
         process.sleep(300)
@@ -153,14 +156,17 @@ pub fn a_cancelled_job_never_delivers_a_reply_test() {
   let model =
     tui_model.Model(
       ..model,
-      running:,
-      activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["a"]),
+      view: tui_model.View(
+        ..model.view,
+        running:,
+        activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["a"]),
+      ),
     )
 
   let quit = tui.update(backend.KeyPress("ctrl+c"), model)
-  assert quit.activity_poll == tui_model.ActivityDue
+  assert quit.view.activity_poll == tui_model.ActivityDue
 
-  let arrivals = until_finished(quit.running, [], 50)
+  let arrivals = until_finished(quit.view.running, [], 50)
   assert list.any(arrivals, fn(arrival) {
     case arrival {
       job.ActivityArrived(reply: weft.PulledOutcome(weft.Abandoned(..)), ..)
@@ -177,7 +183,7 @@ pub fn a_cancelled_job_never_delivers_a_reply_test() {
   })
     as "the cancel stopped the worker before it answered"
   let settled = list.fold(arrivals, quit, runtime.hold)
-  assert job_runner.size(settled.running) == 0
+  assert job_runner.size(settled.view.running) == 0
     as "the job leaves the table once its last message is read"
 }
 
@@ -195,8 +201,8 @@ pub fn a_spent_reconnect_leaves_nothing_in_the_mailbox_test() {
   process.spawn(fn() { process.send(report, spent_terminal()) })
   let assert Ok(#(spent, queued)) = process.receive(report, 5000)
     as "the terminal process reports back"
-  assert spent.reconnect == tui_model.ReconnectSpent
-  assert job_runner.size(spent.running) == 0
+  assert spent.view.reconnect == tui_model.ReconnectSpent
+  assert job_runner.size(spent.view.running) == 0
     as "the job was read to its last message"
   assert queued == 0 as "the relay's messages did not stay in the mailbox"
 }
@@ -208,7 +214,7 @@ fn spent_terminal() -> #(tui_model.Model, Int) {
   let #(model, key) = tui_model.allocate_job(blank())
   let running =
     job_runner.start_task(
-      model.running,
+      model.view.running,
       key,
       fn() { Error("loomd was not found") },
       5000,
@@ -216,11 +222,16 @@ fn spent_terminal() -> #(tui_model.Model, Int) {
     )
   let model =
     tui_model.Model(
-      ..model,
-      session: "s",
-      peer: tui_model.Disconnected,
-      running:,
-      reconnect: tui_model.ReconnectSpent,
+      shared: tui_model.Shared(
+        ..model.shared,
+        session: "s",
+        peer: tui_model.Disconnected,
+      ),
+      view: tui_model.View(
+        ..model.view,
+        running:,
+        reconnect: tui_model.ReconnectSpent,
+      ),
     )
   let spent = tick_until_idle(model, 50)
   #(spent, probe(process.self()).message_queue_len)
@@ -234,17 +245,21 @@ pub fn a_dropped_relaunch_outcome_closes_its_control_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let host = host_on(owner)
   let #(model, key) = tui_model.allocate_job(blank())
-  let model = tui_model.Model(..model, reconnect: tui_model.ReconnectIdle)
+  let model =
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(..model.view, reconnect: tui_model.ReconnectIdle),
+    )
 
   let held =
     runtime.hold(
       model,
       job.ReconnectArrived(key, weft.PulledOutcome(weft.Completed(0, host))),
     )
-  assert held.reconnect == tui_model.ReconnectIdle
-  let assert [effect.CloseControl(control)] = held.outbox
+  assert held.view.reconnect == tui_model.ReconnectIdle
+  let assert [effect.CloseControl(control)] = held.shared.outbox
     as "the dropped outcome's control is queued for closing"
-  assert job_runner.control(held.running, control) == Ok(host)
+  assert job_runner.control(held.view.running, control) == Ok(host)
     as "the queued close names the relaunch's own connection"
   assert process.receive(owner, 0) == Error(Nil)
     as "holding the outcome closed nothing itself"
@@ -261,13 +276,15 @@ pub fn a_tick_drains_the_jobs_in_their_fixed_order_test() {
   let #(model, relaunch) = tui_model.allocate_job(model)
   let model =
     tui_model.Model(
-      ..model,
-      transcript: [],
-      control_request: Some(tui_model.ControlRequest(
-        job.awaiting(control),
-        Some(Error("control failed first")),
-      )),
-      reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
+      shared: tui_model.Shared(..model.shared, transcript: []),
+      view: tui_model.View(
+        ..model.view,
+        control_request: Some(tui_model.ControlRequest(
+          job.awaiting(control),
+          Some(Error("control failed first")),
+        )),
+        reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
+      ),
     )
     |> runtime.hold(job.ControlArrived(control, weft.AllDelivered))
     |> runtime.hold(job.ReconnectArrived(
@@ -277,7 +294,7 @@ pub fn a_tick_drains_the_jobs_in_their_fixed_order_test() {
 
   let #(ticked, _) = stepping.step(backend.Tick, model)
   let failures =
-    list.filter_map(ticked.transcript, fn(line) {
+    list.filter_map(ticked.shared.transcript, fn(line) {
       case line {
         transcript_line.Line(speaker: transcript_line.Failure, text:) ->
           Ok(text)
@@ -304,30 +321,32 @@ pub fn a_keypress_admits_every_jobs_reply_into_its_own_slot_test() {
     as "the terminal process reports back"
 
   let assert Some(tui_model.ControlRequest(job: control, ..)) =
-    pressed.control_request
+    pressed.view.control_request
     as "the control slot still waits for the tick to take its reply"
   assert list.any(job.held(control), fn(reply) {
     reply == weft.PulledOutcome(weft.Failed(0, "control down"))
   })
     as "the control job's outcome is in the control slot"
 
-  let assert tui_model.ReconnectAttempting(job: relaunch) = pressed.reconnect
+  let assert tui_model.ReconnectAttempting(job: relaunch) =
+    pressed.view.reconnect
     as "the relaunch slot still waits for the tick to take its reply"
   assert list.any(job.held(relaunch), fn(reply) {
     reply == weft.PulledOutcome(weft.Failed(0, "relaunch down"))
   })
     as "the relaunch's outcome is in the relaunch slot"
 
-  let assert tui_model.ActivityAsking(job: activity, ..) = pressed.activity_poll
+  let assert tui_model.ActivityAsking(job: activity, ..) =
+    pressed.view.activity_poll
     as "the activity slot still waits for the tick to take its reply"
   assert list.any(job.held(activity), fn(reply) {
     reply == weft.PulledOutcome(weft.Completed(0, []))
   })
     as "the activity poll's outcome is in the activity slot"
 
-  assert job_runner.size(pressed.running) == 0
+  assert job_runner.size(pressed.view.running) == 0
     as "every relay was read to its last message"
-  assert buffered.held(pressed.replay_inbox) == 0
+  assert buffered.held(pressed.shared.replay_inbox) == 0
   assert queued == 0 as "nothing the jobs sent stayed in the mailbox"
 }
 
@@ -343,7 +362,7 @@ pub fn only_a_replay_reads_its_replay_inbox_test() {
   })
   let assert Ok(#(#(live, _), live_queue)) = process.receive(report, 5000)
     as "the live terminal process reports back"
-  assert buffered.held(live.replay_inbox) == 0
+  assert buffered.held(live.shared.replay_inbox) == 0
     as "a live terminal leaves its replay inbox unread"
   assert live_queue == 1 as "the unread event is still in the mailbox"
 
@@ -353,17 +372,17 @@ pub fn only_a_replay_reads_its_replay_inbox_test() {
   let assert Ok(#(#(replay, applied), replay_queue)) =
     process.receive(report, 5000)
     as "the replaying terminal process reports back"
-  assert buffered.held(replay.replay_inbox) == 1
+  assert buffered.held(replay.shared.replay_inbox) == 1
     as "a replay's keypress admits the recorded event"
   let assert Some(tui_model.ControlRequest(job: control, ..)) =
-    replay.control_request
+    replay.view.control_request
     as "the control slot still waits for the tick to take its reply"
   assert list.any(job.held(control), fn(reply) {
     reply == weft.PulledOutcome(weft.Failed(0, "control down"))
   })
     as "the job's reply is admitted beside the replay event"
   assert replay_queue == 0
-  assert buffered.held(applied.replay_inbox) == 0
+  assert buffered.held(applied.shared.replay_inbox) == 0
     as "the next tick applies the held event"
 }
 
@@ -375,7 +394,7 @@ fn answered_keypress() -> #(tui_model.Model, Int) {
   let #(model, relaunch) = tui_model.allocate_job(model)
   let #(model, activity) = tui_model.allocate_job(model)
   let running =
-    model.running
+    model.view.running
     |> job_runner.start_task(
       control,
       fn() { Error("control down") },
@@ -397,13 +416,16 @@ fn answered_keypress() -> #(tui_model.Model, Int) {
   let model =
     tui_model.Model(
       ..model,
-      running:,
-      control_request: Some(tui_model.ControlRequest(
-        job.awaiting(control),
-        None,
-      )),
-      reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
-      activity_poll: tui_model.ActivityAsking(job.awaiting(activity), ["a"]),
+      view: tui_model.View(
+        ..model.view,
+        running:,
+        control_request: Some(tui_model.ControlRequest(
+          job.awaiting(control),
+          None,
+        )),
+        reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
+        activity_poll: tui_model.ActivityAsking(job.awaiting(activity), ["a"]),
+      ),
     )
 
   // Each one-task relay sends its outcome and then `AllDelivered`.
@@ -421,7 +443,7 @@ fn replayed_keypress(
   let #(model, control) = tui_model.allocate_job(blank())
   let running =
     job_runner.start_task(
-      model.running,
+      model.view.running,
       control,
       fn() { Error("control down") },
       5000,
@@ -429,16 +451,18 @@ fn replayed_keypress(
     )
   let model =
     tui_model.Model(
-      ..model,
-      peer:,
-      running:,
-      control_request: Some(tui_model.ControlRequest(
-        job.awaiting(control),
-        None,
-      )),
+      shared: tui_model.Shared(..model.shared, peer:),
+      view: tui_model.View(
+        ..model.view,
+        running:,
+        control_request: Some(tui_model.ControlRequest(
+          job.awaiting(control),
+          None,
+        )),
+      ),
     )
   process.send(
-    buffered.sender(model.replay_inbox),
+    buffered.sender(model.shared.replay_inbox),
     attempt.Adopted(attempt.Id(1)),
   )
 
@@ -499,7 +523,7 @@ fn until_finished(
 // `attempts` ticks twenty milliseconds apart have passed.
 fn tick_until_idle(model: tui_model.Model, attempts: Int) -> tui_model.Model {
   let model = tui.update(backend.Tick, model)
-  case job_runner.size(model.running), attempts {
+  case job_runner.size(model.view.running), attempts {
     0, _ | _, 0 -> model
     _, _ -> {
       process.sleep(20)
@@ -533,7 +557,10 @@ pub fn an_adoption_cancels_a_relaunch_still_in_flight_test() {
   let model =
     tui_model.Model(
       ..model,
-      reconnect: tui_model.ReconnectAttempting(job.awaiting(key)),
+      view: tui_model.View(
+        ..model.view,
+        reconnect: tui_model.ReconnectAttempting(job.awaiting(key)),
+      ),
     )
   let #(replacement, cut, view) = captured_replacement()
   let adopted =
@@ -554,8 +581,8 @@ pub fn an_adoption_cancels_a_relaunch_still_in_flight_test() {
       ),
     )
 
-  assert adopted.reconnect == tui_model.ReconnectIdle
-  assert list.contains(adopted.outbox, effect.CancelJob(key))
+  assert adopted.view.reconnect == tui_model.ReconnectIdle
+  assert list.contains(adopted.shared.outbox, effect.CancelJob(key))
     as "the relaunch the adoption made unnecessary is cancelled by its key"
 }
 
@@ -571,13 +598,16 @@ pub fn an_adoption_releases_a_relaunch_outcome_it_clears_test() {
   let model =
     tui_model.Model(
       ..model,
-      reconnect: tui_model.ReconnectAttempting(job.awaiting(key)),
+      view: tui_model.View(
+        ..model.view,
+        reconnect: tui_model.ReconnectAttempting(job.awaiting(key)),
+      ),
     )
     |> runtime.hold(job.ReconnectArrived(
       key,
       weft.PulledOutcome(weft.Completed(0, host)),
     ))
-  let assert tui_model.ReconnectAttempting(held) = model.reconnect
+  let assert tui_model.ReconnectAttempting(held) = model.view.reconnect
     as "premise: the outcome is admitted and not yet taken"
   assert job.held(held) != []
   let #(replacement, cut, view) = captured_replacement()
@@ -599,9 +629,9 @@ pub fn an_adoption_releases_a_relaunch_outcome_it_clears_test() {
       ),
     )
 
-  assert adopted.reconnect == tui_model.ReconnectIdle
+  assert adopted.view.reconnect == tui_model.ReconnectIdle
   let lifecycle =
-    list.filter_map(list.reverse(adopted.outbox), fn(decided) {
+    list.filter_map(list.reverse(adopted.shared.outbox), fn(decided) {
       case decided {
         effect.CloseControl(_) -> Ok("close control")
         effect.CancelJob(cancelled) if cancelled == key -> Ok("cancel relaunch")
@@ -610,10 +640,10 @@ pub fn an_adoption_releases_a_relaunch_outcome_it_clears_test() {
     })
   assert lifecycle == ["close control", "cancel relaunch"]
     as "the cleared slot's outcome is released ahead of the cancel"
-  assert list.any(adopted.outbox, fn(decided) {
+  assert list.any(adopted.shared.outbox, fn(decided) {
     case decided {
       effect.CloseControl(control) ->
-        job_runner.control(adopted.running, control) == Ok(host)
+        job_runner.control(adopted.view.running, control) == Ok(host)
       _ -> False
     }
   })

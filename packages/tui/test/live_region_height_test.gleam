@@ -51,7 +51,15 @@ const narrow_width = 40
 fn model() -> tui_model.Model {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  tui_model.Model(..base, transcript: [], records: [], notice: "fixture")
+  tui_model.Model(
+    ..base,
+    shared: tui_model.Shared(
+      ..base.shared,
+      transcript: [],
+      records: [],
+      notice: "fixture",
+    ),
+  )
 }
 
 fn received(model: tui_model.Model, wire: String) -> tui_model.Model {
@@ -65,15 +73,18 @@ fn laid_out(model: tui_model.Model) -> tui_model.Model {
 }
 
 fn rows(model: tui_model.Model) -> Int {
-  laid_out(model).rendered_row_count
+  laid_out(model).view.rendered_row_count
 }
 
 fn rows_at(model: tui_model.Model, columns: Int) -> Int {
-  tui.update(backend.Resize(columns, 40), model).rendered_row_count
+  tui.update(backend.Resize(columns, 40), model).view.rendered_row_count
 }
 
 fn expanded(model: tui_model.Model) -> tui_model.Model {
-  tui_model.Model(..model, details_expanded: True, rendered_revision: -1)
+  tui_model.Model(
+    shared: tui_model.Shared(..model.shared, details_expanded: True),
+    view: tui_model.View(..model.view, rendered_revision: -1),
+  )
 }
 
 // One frame of a running command's output window. The v1 envelope is what
@@ -144,13 +155,13 @@ pub fn settling_a_tool_call_leaves_the_transcript_the_same_height_test() {
   // well on a fixture with nothing in it: this model really is a running
   // call with a window of output behind it, so a transcript which drew the
   // window would have `tail_lines_shown` rows and a heading to give back.
-  assert list.length(live.tool_tails) == 1
+  assert list.length(live.shared.tool_tails) == 1
     as "premise: the running call has collected a window of output"
 
   assert rows(live) == rows(settled(live))
     as "a collapsed transcript changed height when a running tool settled"
-  assert laid_out(live).view.rendered_rows
-    != laid_out(settled(live)).view.rendered_rows
+  assert laid_out(live).view.caches.rendered_rows
+    != laid_out(settled(live)).view.caches.rendered_rows
     as "the settle must still replace the awaiting row with its result"
 }
 
@@ -184,8 +195,8 @@ pub fn settling_a_reasoning_block_leaves_the_transcript_the_same_height_test() {
   let durable = thinking_settled(live)
   assert rows(live) == rows(durable)
     as "a collapsed transcript changed height when reasoning settled"
-  assert laid_out(live).view.rendered_rows
-    != laid_out(durable).view.rendered_rows
+  assert laid_out(live).view.caches.rendered_rows
+    != laid_out(durable).view.caches.rendered_rows
     as "the settle must still replace the line counter with the opening words"
 }
 

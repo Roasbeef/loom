@@ -53,10 +53,12 @@ fn disconnected() -> tui_model.Model {
   // terminal was attached and its transport has gone. A fresh model starts
   // in `Preview`, which is not a state a daemon death can reach.
   tui_model.Model(
-    ..base,
-    session: "s",
-    local_options: Some(options()),
-    peer: tui_model.Disconnected,
+    shared: tui_model.Shared(
+      ..base.shared,
+      session: "s",
+      peer: tui_model.Disconnected,
+    ),
+    view: tui_model.View(..base.view, local_options: Some(options())),
   )
 }
 
@@ -71,10 +73,10 @@ fn lose_the_channel(model: tui_model.Model) -> tui_model.Model {
 
 pub fn an_unexpected_daemon_death_earns_one_attempt_test() {
   let idle = disconnected()
-  assert idle.reconnect == tui_model.ReconnectIdle
+  assert idle.view.reconnect == tui_model.ReconnectIdle
 
   let attempted = lose_the_channel(idle)
-  case attempted.reconnect {
+  case attempted.view.reconnect {
     tui_model.ReconnectAttempting(..) -> Nil
     tui_model.ReconnectIdle | tui_model.ReconnectSpent ->
       panic as "a local attachment with a session earns one attempt"
@@ -83,7 +85,7 @@ pub fn an_unexpected_daemon_death_earns_one_attempt_test() {
   // A second loss while the first attempt runs does not start another: the
   // attempt in flight is the same one.
   let again = lose_the_channel(attempted)
-  case again.reconnect {
+  case again.view.reconnect {
     tui_model.ReconnectAttempting(..) -> Nil
     tui_model.ReconnectIdle | tui_model.ReconnectSpent ->
       panic as "a reconnect already running is not restarted beside itself"
@@ -91,21 +93,40 @@ pub fn an_unexpected_daemon_death_earns_one_attempt_test() {
 }
 
 pub fn an_operator_quit_and_a_remote_attachment_do_not_reconnect_test() {
-  let quitting = lose_the_channel(tui_model.Model(..disconnected(), quit: True))
-  assert quitting.reconnect == tui_model.ReconnectIdle
+  let quitting =
+    lose_the_channel({
+      let base = disconnected()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, quit: True),
+      )
+    })
+  assert quitting.view.reconnect == tui_model.ReconnectIdle
 
   let remote =
-    lose_the_channel(tui_model.Model(..disconnected(), local_options: None))
-  assert remote.reconnect == tui_model.ReconnectIdle
+    lose_the_channel({
+      let base = disconnected()
+      tui_model.Model(
+        ..base,
+        view: tui_model.View(..base.view, local_options: None),
+      )
+    })
+  assert remote.view.reconnect == tui_model.ReconnectIdle
 
   let unattached =
-    lose_the_channel(tui_model.Model(..disconnected(), session: ""))
-  assert unattached.reconnect == tui_model.ReconnectIdle
+    lose_the_channel({
+      let base = disconnected()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, session: ""),
+      )
+    })
+  assert unattached.view.reconnect == tui_model.ReconnectIdle
 }
 
 pub fn a_failed_reconnect_is_reported_once_and_stays_disconnected_test() {
   let attempted = lose_the_channel(disconnected())
-  let assert tui_model.ReconnectAttempting(awaiting) = attempted.reconnect
+  let assert tui_model.ReconnectAttempting(awaiting) = attempted.view.reconnect
 
   let failed =
     runtime.hold(
@@ -116,9 +137,9 @@ pub fn a_failed_reconnect_is_reported_once_and_stays_disconnected_test() {
       ),
     )
     |> session_control.drain_reconnect
-  assert failed.reconnect == tui_model.ReconnectSpent
-  assert failed.peer == tui_model.Disconnected
-  assert list.any(failed.transcript, fn(line) {
+  assert failed.view.reconnect == tui_model.ReconnectSpent
+  assert failed.shared.peer == tui_model.Disconnected
+  assert list.any(failed.shared.transcript, fn(line) {
     case line {
       transcript_line.Line(speaker: transcript_line.Failure, text:) ->
         string.contains(text, "reconnect failed")
@@ -130,7 +151,7 @@ pub fn a_failed_reconnect_is_reported_once_and_stays_disconnected_test() {
   // A spent attempt is what stops a relaunch that cannot succeed from
   // becoming a loop: the same death cannot start another.
   let again = lose_the_channel(failed)
-  assert again.reconnect == tui_model.ReconnectSpent
+  assert again.view.reconnect == tui_model.ReconnectSpent
 }
 
 pub fn a_reply_for_another_attempt_is_not_admitted_test() {
@@ -147,8 +168,9 @@ pub fn a_reply_for_another_attempt_is_not_admitted_test() {
         weft.PulledOutcome(weft.Failed(index: 0, error: "some other run")),
       ),
     )
-  assert held.reconnect == attempted.reconnect
-  assert session_control.drain_reconnect(held).reconnect == attempted.reconnect
+  assert held.view.reconnect == attempted.view.reconnect
+  assert session_control.drain_reconnect(held).view.reconnect
+    == attempted.view.reconnect
 }
 
 // The loss starts the relaunch by queuing it, not by running it: the step
@@ -156,7 +178,7 @@ pub fn a_reply_for_another_attempt_is_not_admitted_test() {
 // that same key.
 pub fn a_reconnect_is_queued_as_a_job_under_the_slots_key_test() {
   let #(attempted, effects) = runtime.take(lose_the_channel(disconnected()))
-  let assert tui_model.ReconnectAttempting(awaiting) = attempted.reconnect
+  let assert tui_model.ReconnectAttempting(awaiting) = attempted.view.reconnect
   assert effects
     == [effect.StartJob(job.key(awaiting), job.Reconnect(options()))]
 }
@@ -199,10 +221,10 @@ pub fn an_attempt_announces_itself_and_a_spent_one_does_not_test() {
   // signal that a relaunch is under way; once it is spent the failure line
   // replaces it, and the two must not be confusable.
   let attempted = lose_the_channel(disconnected())
-  assert string.contains(attempted.notice, "reconnecting")
+  assert string.contains(attempted.shared.notice, "reconnecting")
 
   let spent = lose_the_channel(attempted)
-  case spent.reconnect {
+  case spent.view.reconnect {
     tui_model.ReconnectAttempting(..) -> Nil
     tui_model.ReconnectIdle | tui_model.ReconnectSpent ->
       panic as "the one attempt stays the one attempt"
@@ -247,7 +269,7 @@ pub fn a_custody_return_restores_the_draft_in_the_composer_test() {
       )),
     )
   assert textarea_value(returned) == "held for the update"
-  assert string.contains(returned.notice, "restored as a draft")
+  assert string.contains(returned.shared.notice, "restored as a draft")
 }
 
 pub fn a_custody_return_never_overwrites_a_draft_in_progress_test() {
@@ -256,7 +278,13 @@ pub fn a_custody_return_never_overwrites_a_draft_in_progress_test() {
   // moved out from under the cursor.
   let model = disconnected()
   let typing =
-    tui_model.Model(..model, input: text_area.state_from_string("half typed"))
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        input: text_area.state_from_string("half typed"),
+      ),
+    )
   let returned =
     inbound.apply_channel_update(
       typing,
@@ -271,9 +299,9 @@ pub fn a_custody_return_never_overwrites_a_draft_in_progress_test() {
   assert textarea_value(returned) == "half typed\n\nheld for the update"
 
   // The count explains what the restored text cannot carry.
-  assert string.contains(returned.notice, "1 attachment")
+  assert string.contains(returned.shared.notice, "1 attachment")
 }
 
 fn textarea_value(model: tui_model.Model) -> String {
-  text_area.value(model.input)
+  text_area.value(model.view.input)
 }

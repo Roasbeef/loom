@@ -67,7 +67,10 @@ fn roster(main: Option(String), advisor: Option(String)) -> List(Strand) {
 }
 
 fn with_roster(strands: List(Strand)) -> tui_model.Model {
-  tui_model.Model(..model(), strands:)
+  {
+    let base = model()
+    tui_model.Model(..base, shared: tui_model.Shared(..base.shared, strands:))
+  }
 }
 
 // --- the decoder is total ---------------------------------------------------
@@ -148,11 +151,16 @@ pub fn nudge_text_is_sanitized_before_it_is_drawn_test() {
 /// The panel draws beside the composer, in the advisor's voice, without
 /// becoming a transcript row that would claim the model had read it.
 pub fn an_observed_queue_is_drawn_beside_the_composer_test() {
-  let observed =
+  let observed = {
+    let base = with_roster(roster(None, None))
     tui_model.Model(
-      ..with_roster(roster(None, None)),
-      nudges: Some(board(["the migration has no down step"], 1)),
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        nudges: Some(board(["the migration has no down step"], 1)),
+      ),
     )
+  }
   let text = painted(observed)
   assert string.contains(text, "advisor nudges pending (1)")
   assert string.contains(text, "the migration has no down step")
@@ -161,13 +169,18 @@ pub fn an_observed_queue_is_drawn_beside_the_composer_test() {
 /// A nudge observed after a review settles during an open primary run remains
 /// visible until a new run starts or another authoritative read replaces it.
 pub fn a_running_primary_keeps_newly_observed_advice_visible_test() {
-  let running =
+  let running = {
+    let base = with_roster(roster(Some("assistant"), None))
     tui_model.Model(
-      ..with_roster(roster(Some("assistant"), None)),
-      nudges: Some(board(["no down step"], 1)),
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        nudges: Some(board(["no down step"], 1)),
+      ),
     )
+  }
   let resized = tui.update(backend.Resize(120, 30), running)
-  assert resized.nudges == running.nudges
+  assert resized.shared.nudges == running.shared.nudges
   assert string.contains(painted(resized), "advisor nudges pending")
   assert string.contains(painted(resized), "no down step")
 }
@@ -236,7 +249,11 @@ pub fn unrelated_movement_asks_for_nothing_test() {
 /// the operator sees that submission before the server reports a phase for it.
 pub fn a_local_submission_counts_as_the_primary_running_test() {
   let idle = with_roster(roster(None, None))
-  let submitting = tui_model.Model(..idle, submitting: Some("main"))
+  let submitting =
+    tui_model.Model(
+      ..idle,
+      shared: tui_model.Shared(..idle.shared, submitting: Some("main")),
+    )
   assert surfaces.advisor_nudges_action(idle, submitting) == surfaces.DropNudges
 }
 
@@ -251,7 +268,7 @@ pub fn a_local_submission_counts_as_the_primary_running_test() {
 /// an answer to no command. The real terminal drive found both.
 pub fn the_observation_takes_the_read_lane_and_its_reply_settles_it_test() {
   let model = pushed.attached()
-  let assert Some(channel) = model.channel
+  let assert Some(channel) = model.shared.channel
     as "fixture has a synchronized channel"
   let #(channel, disposition) =
     session_channel.submit(channel, protocol.advisor_pending(999), now: 0)
@@ -281,17 +298,22 @@ pub fn the_observation_takes_the_read_lane_and_its_reply_settles_it_test() {
 /// phase, so the delivered frame is what retires the board. Without this the
 /// panel showed the same advice as pending beside the entry delivering it.
 pub fn a_delivered_nudges_entry_retires_the_board_test() {
-  let observed =
+  let observed = {
+    let base = with_roster(roster(Some("assistant"), None))
     tui_model.Model(
-      ..with_roster(roster(Some("assistant"), None)),
-      nudges: Some(board(["no down step"], 1)),
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        nudges: Some(board(["no down step"], 1)),
+      ),
     )
+  }
   let delivered = nudges_record("main", "no down step")
   let retired = surfaces.retire_delivered_nudges(observed, delivered)
-  assert retired.nudges == None
+  assert retired.shared.nudges == None
 
   // The fresh read is what keeps advice queued after the drain visible.
-  assert retired.nudges_refresh == worktree_view.Requested
+  assert retired.shared.nudges_refresh == worktree_view.Requested
 
   // The same frame on another strand, or an ordinary turn on the primary,
   // is not the primary's queue draining.
@@ -300,13 +322,13 @@ pub fn a_delivered_nudges_entry_retires_the_board_test() {
       observed,
       nudges_record("advisor", "no down step"),
     )
-  assert elsewhere.nudges == observed.nudges
+  assert elsewhere.shared.nudges == observed.shared.nudges
   let ordinary =
     surfaces.retire_delivered_nudges(
       observed,
       record("main", "please look at the migration"),
     )
-  assert ordinary.nudges == observed.nudges
+  assert ordinary.shared.nudges == observed.shared.nudges
 }
 
 fn nudges_record(strand: String, text: String) -> protocol.EntryRecord {
@@ -344,11 +366,16 @@ fn record(strand: String, text: String) -> protocol.EntryRecord {
 /// The same retire, reached the way the daemon reaches it: a pushed entry
 /// through the connection handler, which pins the call in `inbound`.
 pub fn a_pushed_delivery_retires_the_board_test() {
-  let observed =
+  let observed = {
+    let base = with_roster(roster(Some("assistant"), None))
     tui_model.Model(
-      ..with_roster(roster(Some("assistant"), None)),
-      nudges: Some(board(["no down step"], 1)),
+      ..base,
+      shared: tui_model.Shared(
+        ..base.shared,
+        nudges: Some(board(["no down step"], 1)),
+      ),
     )
+  }
   let frame =
     gateway.user_entry(
       "main",
@@ -363,8 +390,8 @@ pub fn a_pushed_delivery_retires_the_board_test() {
       observed,
       connection_event.Incoming(frame),
     )
-  assert delivered.nudges == None
-  assert delivered.nudges_refresh == worktree_view.Requested
+  assert delivered.shared.nudges == None
+  assert delivered.shared.nudges_refresh == worktree_view.Requested
 }
 
 // --- the tail collapses to previews -----------------------------------------
@@ -375,17 +402,25 @@ pub fn a_pushed_delivery_retires_the_board_test() {
 pub fn pending_bodies_collapse_until_details_are_expanded_test() {
   let tail = " and the ending that only detail mode shows"
   let body = "check the dedup section " <> string.repeat("x", 150) <> tail
-  let observed =
+  let observed = {
+    let base = with_roster(roster(Some("assistant"), None))
     tui_model.Model(
-      ..with_roster(roster(Some("assistant"), None)),
-      nudges: Some(board([body], 1)),
+      ..base,
+      shared: tui_model.Shared(..base.shared, nudges: Some(board([body], 1))),
     )
+  }
 
   let collapsed = painted(observed)
   assert string.contains(collapsed, "- check the dedup")
   assert string.contains(collapsed, "Ctrl+G to expand")
   assert !string.contains(collapsed, "only detail mode shows")
 
-  let expanded = painted(tui_model.Model(..observed, details_expanded: True))
+  let expanded =
+    painted(
+      tui_model.Model(
+        ..observed,
+        shared: tui_model.Shared(..observed.shared, details_expanded: True),
+      ),
+    )
   assert string.contains(expanded, "only detail mode shows")
 }

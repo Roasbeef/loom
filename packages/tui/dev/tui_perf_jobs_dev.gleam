@@ -13,7 +13,7 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import tui/job
 import tui/job_runner
-import tui/model.{type Model, Model} as tui_model
+import tui/model.{type Model, Model, View} as tui_model
 
 const forever_ms = 100_000_000
 
@@ -29,21 +29,24 @@ pub fn with_jobs(model: Model) -> Model {
   let #(model, relaunch) = tui_model.allocate_job(model)
   let #(model, activity) = tui_model.allocate_job(model)
   let running =
-    model.running
+    model.view.running
     |> job_runner.start_task(control, sleep, forever_ms, job.ControlArrived)
     |> job_runner.start_task(relaunch, sleep, forever_ms, job.ReconnectArrived)
     |> job_runner.start_task(activity, sleep, forever_ms, job.ActivityArrived)
   Model(
     ..model,
-    running:,
-    control_request: Some(tui_model.ControlRequest(
-      job: job.awaiting(control),
-      result: None,
-    )),
-    reconnect: tui_model.ReconnectAttempting(job: job.awaiting(relaunch)),
-    activity_poll: tui_model.ActivityAsking(
-      job: job.awaiting(activity),
-      asked: [],
+    view: View(
+      ..model.view,
+      running:,
+      control_request: Some(tui_model.ControlRequest(
+        job: job.awaiting(control),
+        result: None,
+      )),
+      reconnect: tui_model.ReconnectAttempting(job: job.awaiting(relaunch)),
+      activity_poll: tui_model.ActivityAsking(
+        job: job.awaiting(activity),
+        asked: [],
+      ),
     ),
   )
 }

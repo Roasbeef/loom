@@ -208,7 +208,15 @@ fn painted(model) {
 fn model() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  tui_model.Model(..base, transcript: [], records: [], notice: "fixture")
+  tui_model.Model(
+    ..base,
+    shared: tui_model.Shared(
+      ..base.shared,
+      transcript: [],
+      records: [],
+      notice: "fixture",
+    ),
+  )
 }
 
 pub fn a_result_replaces_the_cached_pending_group_row_test() {
@@ -239,17 +247,23 @@ pub fn the_diff_panel_shows_only_successful_captured_edits_test() {
   let opened =
     tui.update(
       backend.KeyPress("enter"),
-      tui_model.Model(..model, input: textarea.state_from_string("/diff")),
+      tui_model.Model(
+        ..model,
+        view: tui_model.View(
+          ..model.view,
+          input: textarea.state_from_string("/diff"),
+        ),
+      ),
     )
   let #(opened, text) = painted(opened)
-  assert opened.diff_view == tui_model.DiffVisible
+  assert opened.view.diff_view == tui_model.DiffVisible
   assert string.contains(text, "captured changes")
   assert string.contains(text, "-old")
   assert string.contains(text, "+new")
   assert !string.contains(text, "awaiting result")
   let closed = tui.update(backend.KeyPress("esc"), opened)
-  assert closed.diff_view == tui_model.DiffHidden
-  assert closed.interrupt == None
+  assert closed.view.diff_view == tui_model.DiffHidden
+  assert closed.shared.interrupt == None
 }
 
 fn changes_model(diff) {
@@ -273,7 +287,13 @@ fn changes_model(diff) {
 fn toggle_diff(model) {
   tui.update(
     backend.KeyPress("enter"),
-    tui_model.Model(..model, input: textarea.state_from_string("/diff")),
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        input: textarea.state_from_string("/diff"),
+      ),
+    ),
   )
 }
 
@@ -321,7 +341,7 @@ pub fn diff_resize_uses_one_panel_below_the_readable_split_width_test() {
   let #(restored, split) = painted_buffer(narrow, 160)
   assert string.contains(columns(split, 0, 88), "CONVERSATION_MARKER")
   assert string.contains(columns(split, 88, 72), "+new")
-  assert restored.diff_view == tui_model.DiffVisible
+  assert restored.view.diff_view == tui_model.DiffVisible
 }
 
 pub fn diff_and_conversation_scroll_independently_test() {
@@ -344,26 +364,26 @@ pub fn diff_and_conversation_scroll_independently_test() {
     })
     |> toggle_diff
     |> painted_buffer(160)
-  assert opened.rendered_row_count > 40
+  assert opened.view.rendered_row_count > 40
     as "both panes must contain enough rows to exercise independent scrolling"
   let right = tui.update(backend.MouseScroll(100, 10, True), opened)
-  assert right.diff_scroll_offset == 3
-  assert right.scroll_offset == opened.scroll_offset
+  assert right.view.diff_scroll_offset == 3
+  assert right.view.scroll_offset == opened.view.scroll_offset
   let left = tui.update(backend.MouseScroll(10, 10, True), right)
-  assert left.scroll_offset == 3
-  assert left.diff_scroll_offset == right.diff_scroll_offset
+  assert left.view.scroll_offset == 3
+  assert left.view.diff_scroll_offset == right.view.diff_scroll_offset
   let paged = tui.update(backend.KeyPress("pageup"), left)
-  assert paged.diff_scroll_offset == left.diff_scroll_offset
-  assert paged.scroll_offset > left.scroll_offset
+  assert paged.view.diff_scroll_offset == left.view.diff_scroll_offset
+  assert paged.view.scroll_offset > left.view.scroll_offset
   let focused = tui.update(backend.KeyPress("ctrl+d"), paged)
   let patch_paged = tui.update(backend.KeyPress("pageup"), focused)
-  assert patch_paged.diff_scroll_offset > focused.diff_scroll_offset
-  assert patch_paged.scroll_offset == paged.scroll_offset
+  assert patch_paged.view.diff_scroll_offset > focused.view.diff_scroll_offset
+  assert patch_paged.view.scroll_offset == paged.view.scroll_offset
   let closed = tui.update(backend.KeyPress("esc"), patch_paged)
-  assert closed.diff_view == tui_model.DiffHidden
-  assert closed.scroll_offset == paged.scroll_offset
-  assert closed.view.diff_rows == []
-  assert dict.is_empty(closed.view.diff_line_cache)
+  assert closed.view.diff_view == tui_model.DiffHidden
+  assert closed.view.scroll_offset == paged.view.scroll_offset
+  assert closed.view.caches.diff_rows == []
+  assert dict.is_empty(closed.view.caches.diff_line_cache)
 }
 
 pub fn replacement_history_releases_the_open_diffs_old_layout_test() {
@@ -378,7 +398,7 @@ pub fn replacement_history_releases_the_open_diffs_old_layout_test() {
     )
     |> painted_buffer(160)
   assert !string.contains(frame.buffer_to_text(drawn), "DISCARDED_DIFF_MARKER")
-  assert !list.any(dict.keys(replaced.view.diff_line_cache), fn(line) {
+  assert !list.any(dict.keys(replaced.view.caches.diff_line_cache), fn(line) {
     string.contains(line.text, "DISCARDED_DIFF_MARKER")
   })
     as "replacement history cannot keep the old diff reachable through layout hints"
@@ -397,20 +417,25 @@ pub fn an_open_diff_keeps_up_with_new_captured_edits_test() {
     |> received(call(4, "second", "fs_edit", args()))
     |> received(outcome(5, "second", False, Some(details)))
     |> painted_buffer(160)
-  assert updated.diff_view == tui_model.DiffVisible
+  assert updated.view.diff_view == tui_model.DiffVisible
   assert string.contains(columns(drawn, 88, 72), "SECOND_EDIT_MARKER")
   assert string.contains(columns(drawn, 0, 88), "CONVERSATION_MARKER")
 }
 
 pub fn diff_toggle_restores_the_agent_rail_preference_test() {
-  let base =
-    tui_model.Model(..changes_model("-old\n+new"), agent_rail_visible: True)
+  let base = {
+    let base = changes_model("-old\n+new")
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(..base.view, agent_rail_visible: True),
+    )
+  }
   let #(opened, _) = base |> toggle_diff |> painted_buffer(160)
-  assert opened.agent_rail_visible
+  assert opened.view.agent_rail_visible
   assert layout.hit_area(opened, geometry.Position(100, 10)).position.x == 89
   let #(closed, _) = opened |> toggle_diff |> painted_buffer(160)
-  assert closed.diff_view == tui_model.DiffHidden
-  assert closed.agent_rail_visible
+  assert closed.view.diff_view == tui_model.DiffHidden
+  assert closed.view.agent_rail_visible
   assert layout.hit_area(closed, geometry.Position(140, 10)).position.x == 127
 }
 
@@ -440,7 +465,7 @@ pub fn compact_history_keeps_reasoning_between_tool_batches_test() {
     }
   })
   let #(rendered, text) = list.fold(records, model(), received) |> painted
-  assert !rendered.details_expanded
+  assert !rendered.shared.details_expanded
   assert string.contains(text, "REASONING_BETWEEN_BATCHES")
 }
 
@@ -467,13 +492,13 @@ pub fn calls_in_one_response_keep_distinct_anchors_in_both_detail_modes_test() {
       message: message.AssistantMessage(..body, content:),
     )
   let #(live, _) = model() |> received(entry) |> painted
-  assert live.rendered_anchors == []
+  assert live.view.rendered_anchors == []
     as "Following live output does no scroll-anchor projection."
   let compact = tui.update(backend.KeyPress("pageup"), live)
-  assert compact.scroll_offset > 0
+  assert compact.view.scroll_offset > 0
     as "The first history gesture captures the source anchors."
   let keys = fn(model: tui_model.Model) {
-    model.rendered_anchors
+    model.view.rendered_anchors
     |> list.filter_map(fn(row) {
       case row {
         Some(row) -> Ok(row.entry)
@@ -498,8 +523,8 @@ pub fn replacement_history_releases_compact_presentation_caches_test() {
     |> received(outcome(2, "old-call", False, None))
     |> received(outcome(3, "orphan", True, None))
     |> painted
-  assert !dict.is_empty(loaded.compact_call_cache)
-  assert !dict.is_empty(loaded.compact_entry_cache)
+  assert !dict.is_empty(loaded.shared.compact_call_cache)
+  assert !dict.is_empty(loaded.shared.compact_entry_cache)
 
   // The new capture supplies no old entries. Neither presentation cache may
   // keep their tool output reachable after the authoritative replacement.
@@ -509,8 +534,8 @@ pub fn replacement_history_releases_compact_presentation_caches_test() {
       connection_event.Incoming(gateway.full_snapshot("replacement")),
     )
     |> painted
-  assert dict.is_empty(replaced.compact_call_cache)
-  assert dict.is_empty(replaced.compact_entry_cache)
+  assert dict.is_empty(replaced.shared.compact_call_cache)
+  assert dict.is_empty(replaced.shared.compact_entry_cache)
 }
 
 // Receiving the successful result must replace the cached pending row with a
@@ -524,8 +549,8 @@ pub fn successful_edits_show_inline_patches_in_compact_history_test() {
     pending
     |> received(outcome(2, "edit", False, details))
     |> painted
-  assert !completed.details_expanded
-  assert completed.diff_view == tui_model.DiffAutomatic
+  assert !completed.shared.details_expanded
+  assert completed.view.diff_view == tui_model.DiffAutomatic
   assert string.contains(visible, "✓ fs_edit · src/file.gleam")
   assert string.contains(visible, "-    old")
   assert string.contains(visible, "+    new")
@@ -646,9 +671,10 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
     |> tui.update(backend.MouseScroll(5, 5, True), _)
   let height = layout.hit_area(expanded, geometry.Position(5, 5)).size.height
   let prefix =
-    expanded.rendered_row_count - list.length(expanded.rendered_anchors)
+    expanded.view.rendered_row_count
+    - list.length(expanded.view.rendered_anchors)
   let assert Ok(#(_, index)) =
-    expanded.rendered_anchors
+    expanded.view.rendered_anchors
     |> list.index_map(fn(row, index) { #(row, index) })
     |> list.find(fn(pair) {
       case pair.0 {
@@ -659,15 +685,22 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
     })
     as "expanded output shares the compact invocation's durable identity"
   let reading =
-    tui_model.Model(..expanded, scroll_offset: prefix + index - height + 1)
+    tui_model.Model(
+      ..expanded,
+      view: tui_model.View(
+        ..expanded.view,
+        scroll_offset: prefix + index - height + 1,
+      ),
+    )
   let compact = tui.update(backend.KeyPress("ctrl+g"), reading)
   let offset =
-    compact.rendered_row_count - list.length(compact.rendered_anchors)
+    compact.view.rendered_row_count - list.length(compact.view.rendered_anchors)
   let visible =
-    compact.rendered_anchors
+    compact.view.rendered_anchors
     |> list.index_map(fn(row, index) { #(row, offset + index) })
     |> list.filter(fn(pair) {
-      pair.1 >= compact.scroll_offset && pair.1 < compact.scroll_offset + height
+      pair.1 >= compact.view.scroll_offset
+      && pair.1 < compact.view.scroll_offset + height
     })
   assert list.any(visible, fn(pair) {
     case pair.0 {
@@ -755,7 +788,7 @@ pub fn compact_code_mode_summarizes_success_and_keeps_exact_expansion_test() {
   assert !string.contains(before, "{\"program\"")
   let #(completed, after) =
     pending |> received(code_outcome(2, "code", False)) |> painted
-  assert !completed.details_expanded
+  assert !completed.shared.details_expanded
   assert string.contains(after, "✓ code_mode")
   assert !string.contains(after, "import cap/report")
   assert !string.contains(after, "report.text(\"hello\")")
@@ -768,8 +801,8 @@ pub fn compact_code_mode_summarizes_success_and_keeps_exact_expansion_test() {
 
   // The compact result replaces source bulk; the durable program is still
   // available above through the ordinary expanded-history path.
-  assert list.length(pending.view.rendered_rows)
-    > list.length(completed.view.rendered_rows)
+  assert list.length(pending.view.caches.rendered_rows)
+    > list.length(completed.view.caches.rendered_rows)
   let #(_, failed) =
     pending |> received(code_outcome(2, "code", True)) |> painted
   assert string.contains(failed, "import cap/report")

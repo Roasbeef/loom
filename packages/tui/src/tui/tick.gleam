@@ -31,7 +31,7 @@ import tui/inbound
 import tui/interaction
 import tui/job_runner
 import tui/layout
-import tui/model.{type Model, Caches, FrameCache, Model, Replaying} as tui_model
+import tui/model.{type Model, Caches, FrameCache, Model, Replaying, Shared, View} as tui_model
 import tui/pacing
 import tui/render
 import tui/session_control
@@ -57,7 +57,11 @@ pub fn start_herdr_reporter(model: Model) -> Model {
     None -> model
     Some(config) ->
       case herdr.start(config) {
-        Ok(reporter) -> Model(..model, herdr_reporter: Some(reporter))
+        Ok(reporter) ->
+          Model(
+            ..model,
+            view: View(..model.view, herdr_reporter: Some(reporter)),
+          )
         Error(_) -> model
       }
   }
@@ -82,26 +86,26 @@ pub fn start_herdr_reporter(model: Model) -> Model {
 /// message to a local process.
 @internal
 pub fn publish_herdr(model: Model) -> Model {
-  case model.herdr_reporter, model.session {
+  case model.view.herdr_reporter, model.shared.session {
     None, _ -> model
     Some(_), "" -> model
     Some(reporter), session -> {
       let next =
         herdr.Publication(
-          state: herdr.state_for(model.strands, model.approvals),
+          state: herdr.state_for(model.shared.strands, model.shared.approvals),
           session:,
         )
-      case herdr.changed(model.herdr_published, next) {
+      case herdr.changed(model.view.herdr_published, next) {
         False -> model
         True -> {
           // The announcement is queued ahead of the report, so Herdr knows
           // which session a state belongs to before it hears the state.
-          let model = case herdr.announces(model.herdr_published, next) {
+          let model = case herdr.announces(model.view.herdr_published, next) {
             True ->
               tui_model.emit(model, effect.AnnounceHerdr(reporter, session))
             False -> model
           }
-          Model(..model, herdr_published: Some(next))
+          Model(..model, view: View(..model.view, herdr_published: Some(next)))
           |> tui_model.emit(effect.ReportHerdr(
             reporter,
             next.state,
@@ -156,14 +160,16 @@ fn settle_tick(model: Model, drained: Model) -> Model {
     |> advance_cache_outlook
   let quiet_for_ms =
     pacing.next_quiet_for(
-      model.quiet_for_ms,
+      model.view.quiet_for_ms,
       terminal_poll_timeout(model),
-      drained.activity_revision != model.activity_revision,
+      drained.shared.activity_revision != model.shared.activity_revision,
     )
   Model(
-    ..drained,
-    quiet_for_ms:,
-    connection_backlog: adopted_backlog(model, drained),
+    shared: Shared(
+      ..drained.shared,
+      connection_backlog: adopted_backlog(model, drained),
+    ),
+    view: View(..drained.view, quiet_for_ms:),
   )
 }
 
@@ -186,8 +192,10 @@ pub fn adopted_backlog(
   before: Model,
   after: Model,
 ) -> tui_model.ConnectionBacklog {
-  case buffered.sender(after.inbox) == buffered.sender(before.inbox) {
-    True -> after.connection_backlog
+  case
+    buffered.sender(after.shared.inbox) == buffered.sender(before.shared.inbox)
+  {
+    True -> after.shared.connection_backlog
     False -> tui_model.MailboxMayHoldMore
   }
 }
@@ -198,20 +206,27 @@ pub fn adopted_backlog(
 // admit an event outside replay, and that event is taken and dropped, as it
 // always was, so it cannot wait in the inbox for a later replay to apply.
 fn drain_replay(model: Model) -> Model {
-  let #(replay_inbox, next) = buffered.take(model.replay_inbox)
-  let model = Model(..model, replay_inbox:)
-  case model.peer, next {
+  let #(replay_inbox, next) = buffered.take(model.shared.replay_inbox)
+  let model = Model(..model, shared: Shared(..model.shared, replay_inbox:))
+  case model.shared.peer, next {
     Replaying, Ok(event) ->
-      case attempt_replay.apply(model.replay_state, event) {
+      case attempt_replay.apply(model.shared.replay_state, event) {
         Error(reason) ->
           tui_model.append_error(
-            Model(..model, replay_error: Some(reason), quit: True),
+            Model(
+              ..model,
+              shared: Shared(
+                ..model.shared,
+                replay_error: Some(reason),
+                quit: True,
+              ),
+            ),
             reason,
           )
         Ok(#(state, changes)) ->
           list.fold(
             changes,
-            Model(..model, replay_state: state),
+            Model(..model, shared: Shared(..model.shared, replay_state: state)),
             apply_replay_change,
           )
       }
@@ -224,9 +239,12 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
     attempt_replay.RequestedHistory(before) ->
       Model(
         ..model,
-        scrollback: history_view.sent(
-          history_view.freeze(model.scrollback),
-          before,
+        shared: Shared(
+          ..model.shared,
+          scrollback: history_view.sent(
+            history_view.freeze(model.shared.scrollback),
+            before,
+          ),
         ),
       )
     attempt_replay.Rejected(reason) ->
@@ -236,42 +254,53 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         inbound.select_workspace(
           model,
           cut.attachment.expected.session,
-          case model.session == cut.attachment.expected.session {
-            True -> model.active_strand
+          case model.shared.session == cut.attachment.expected.session {
+            True -> model.shared.active_strand
             False -> "main"
           },
         )
       Model(
-        ..model,
-        session: cut.attachment.expected.session,
-        captured: None,
-        scrollback: case model.session == cut.attachment.expected.session {
-          True -> history_view.cancel(model.scrollback)
-          False -> model.scrollback
-        },
-        note_board: None,
-        note_selected: None,
-        notes_requested: None,
-        approvals: [],
-        prompted_approvals: [],
-        inspecting_approval: None,
-        records: [],
-        streams: [],
-        tool_tails: [],
-        models: [],
-        skills: [],
-        current_model: "loading…",
-        active_strand: case model.session == cut.attachment.expected.session {
-          True -> model.active_strand
-          False -> "main"
-        },
-        scroll_offset: case model.session == cut.attachment.expected.session {
-          True -> model.scroll_offset
-          False -> 0
-        },
-        record_cache_valid: False,
-        submitting: None,
-        interrupt: None,
+        shared: Shared(
+          ..model.shared,
+          session: cut.attachment.expected.session,
+          captured: None,
+          scrollback: case
+            model.shared.session == cut.attachment.expected.session
+          {
+            True -> history_view.cancel(model.shared.scrollback)
+            False -> model.shared.scrollback
+          },
+          note_board: None,
+          notes_requested: None,
+          approvals: [],
+          records: [],
+          streams: [],
+          tool_tails: [],
+          models: [],
+          skills: [],
+          current_model: "loading…",
+          active_strand: case
+            model.shared.session == cut.attachment.expected.session
+          {
+            True -> model.shared.active_strand
+            False -> "main"
+          },
+          record_cache_valid: False,
+          submitting: None,
+          interrupt: None,
+        ),
+        view: View(
+          ..model.view,
+          note_selected: None,
+          prompted_approvals: [],
+          inspecting_approval: None,
+          scroll_offset: case
+            model.shared.session == cut.attachment.expected.session
+          {
+            True -> model.view.scroll_offset
+            False -> 0
+          },
+        ),
       )
       |> inbound.apply_cut(cut, view)
       // Every update, cuts included, goes through the live reducer. A cut used
@@ -293,23 +322,33 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
 fn advance_activity_indicator(model: Model) -> Model {
   let model = advance_generation_clock(model)
   case tui_model.active_strand_live(model) {
-    False -> Model(..model, activity_started_ms: None, activity_elapsed_s: 0)
+    False ->
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          activity_started_ms: None,
+          activity_elapsed_s: 0,
+        ),
+      )
     True -> {
-      let now = model.stamp.now_ms
-      let started = option.unwrap(model.activity_started_ms, now)
+      let now = model.shared.stamp.now_ms
+      let started = option.unwrap(model.shared.activity_started_ms, now)
       let activity_elapsed_s = { now - started } / 1000
-      let activity_frame = model.activity_frame + 1
+      let activity_frame = model.view.activity_frame + 1
       let advanced =
         Model(
-          ..model,
-          activity_frame:,
-          activity_started_ms: Some(started),
-          activity_elapsed_s:,
+          shared: Shared(
+            ..model.shared,
+            activity_started_ms: Some(started),
+            activity_elapsed_s:,
+          ),
+          view: View(..model.view, activity_frame:),
         )
       case
-        layout.activity_glyph(model.activity_frame)
+        layout.activity_glyph(model.view.activity_frame)
         == layout.activity_glyph(activity_frame)
-        && activity_elapsed_s == model.activity_elapsed_s
+        && activity_elapsed_s == model.shared.activity_elapsed_s
       {
         True -> advanced
         False -> tui_model.invalidate_frame(advanced)
@@ -326,17 +365,24 @@ fn advance_activity_indicator(model: Model) -> Model {
 // generation with no reasoning row on screen is read but not repainted,
 // since nothing drawn depends on the figure.
 fn advance_generation_clock(model: Model) -> Model {
-  let elapsed = case model.generation_started_ms {
+  let elapsed = case model.shared.generation_started_ms {
     None -> 0
-    Some(started) -> int.max({ model.stamp.now_ms - started } / 1000, 0)
+    Some(started) -> int.max({ model.shared.stamp.now_ms - started } / 1000, 0)
   }
-  use <- bool.guard(when: elapsed == model.generation_elapsed_s, return: model)
+  use <- bool.guard(
+    when: elapsed == model.shared.generation_elapsed_s,
+    return: model,
+  )
 
-  let advanced = Model(..model, generation_elapsed_s: elapsed)
+  let advanced =
+    Model(
+      ..model,
+      shared: Shared(..model.shared, generation_elapsed_s: elapsed),
+    )
   let reasoning_shown =
-    !model.details_expanded
-    && list.any(model.streams, fn(stream) {
-      stream.strand == model.active_strand && stream.kind == "thinking"
+    !model.shared.details_expanded
+    && list.any(model.shared.streams, fn(stream) {
+      stream.strand == model.shared.active_strand && stream.kind == "thinking"
     })
   case reasoning_shown {
     False -> advanced
@@ -361,16 +407,19 @@ fn advance_cache_outlook(model: Model) -> Model {
   }
   let label =
     cache_watch.shown(
-      model.cache,
-      model.active_strand,
+      model.shared.cache,
+      model.shared.active_strand,
       activity,
-      model.stamp.now_ms,
+      model.shared.stamp.now_ms,
     )
     |> option.map(cache_miss.outlook_label)
     |> option.unwrap("")
-  case label == model.cache_outlook {
+  case label == model.view.cache_outlook {
     True -> model
-    False -> tui_model.invalidate_frame(Model(..model, cache_outlook: label))
+    False ->
+      tui_model.invalidate_frame(
+        Model(..model, view: View(..model.view, cache_outlook: label)),
+      )
   }
 }
 
@@ -389,7 +438,7 @@ pub fn refresh_frame_cache(
   model: Model,
   boundary: pacing.FrameBoundary,
 ) -> Model {
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let freshness = case viewport_pacing(model) {
     // Rows the model holds but the viewport has not shown make the painted
     // frame stale by definition, whatever the revision says. Without this
@@ -397,9 +446,9 @@ pub fn refresh_frame_cache(
     // without changing any of the inputs the revision counts.
     pacing.ViewportCatchingUp -> pacing.FrameStale
     pacing.ViewportSettled ->
-      case model.view.frame_cache {
+      case model.view.caches.frame_cache {
         Some(FrameCache(screen: cached_screen, revision:, ..))
-          if cached_screen == screen && revision == model.frame_revision
+          if cached_screen == screen && revision == model.shared.frame_revision
         -> pacing.FrameCurrent
         None | Some(_) -> pacing.FrameStale
       }
@@ -408,26 +457,32 @@ pub fn refresh_frame_cache(
   // The event's stamp is compared only against earlier stamps of the same
   // monotonic clock, so a wall-clock step cannot stretch or collapse the
   // interval.
-  let now = model.stamp.now_ms
-  case pacing.frame_decision(boundary, freshness, now - model.last_frame_ms) {
+  let now = model.shared.stamp.now_ms
+  case
+    pacing.frame_decision(boundary, freshness, now - model.view.last_frame_ms)
+  {
     pacing.KeepCachedFrame -> model
-    pacing.DeferFrame -> Model(..model, frame_debt: pacing.FrameDeferred)
+    pacing.DeferFrame ->
+      Model(..model, view: View(..model.view, frame_debt: pacing.FrameDeferred))
     pacing.RenderFrame -> {
       // The step is taken before the frame is built, so the frame that is
       // cached and the position it was built from are the same moment.
       let paced = advance_viewport(model)
       Model(
         ..paced,
-        frame_debt: pacing.FrameSettled,
-        last_frame_ms: now,
-        view: Caches(
+        view: View(
           ..paced.view,
-          frame_cache: Some(FrameCache(
-            screen:,
-            revision: paced.frame_revision,
-            rendered: render.render_frame(paced, screen),
-            selection_gutters: interaction.selection_gutters_on_display(paced),
-          )),
+          frame_debt: pacing.FrameSettled,
+          last_frame_ms: now,
+          caches: Caches(
+            ..paced.view.caches,
+            frame_cache: Some(FrameCache(
+              screen:,
+              revision: paced.shared.frame_revision,
+              rendered: render.render_frame(paced, screen),
+              selection_gutters: interaction.selection_gutters_on_display(paced),
+            )),
+          ),
         ),
       )
     }
@@ -473,14 +528,21 @@ pub fn viewport_pacing(model: Model) -> pacing.ViewportPacing {
 // however far a fixed number of ticks happened to walk.
 fn advance_viewport(model: Model) -> Model {
   case tui_model.active_strand_live(model) {
-    False -> Model(..model, revealed_rows: model.rendered_row_count)
+    False ->
+      Model(
+        ..model,
+        view: View(..model.view, revealed_rows: model.view.rendered_row_count),
+      )
     True ->
       Model(
         ..model,
-        revealed_rows: pacing.pace(
-          model.revealed_rows,
-          model.rendered_row_count,
-          pace_policy(model),
+        view: View(
+          ..model.view,
+          revealed_rows: pacing.pace(
+            model.view.revealed_rows,
+            model.view.rendered_row_count,
+            pace_policy(model),
+          ),
         ),
       )
   }
@@ -538,12 +600,13 @@ pub const self_wake_ceiling_ms = 250
 /// ```
 @internal
 pub fn terminal_poll_timeout(model: Model) -> Int {
-  let ordinary = pacing.paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
+  let ordinary =
+    pacing.paced_poll_timeout(model.view.frame_debt, model.view.quiet_for_ms)
 
   // A loading session candidate is read from disk rather than from the
   // socket, so its short wait survives a backlog: nothing it drains can
   // lengthen the walk.
-  let ordinary = case attachment.busy(model.candidate) {
+  let ordinary = case attachment.busy(model.view.candidate) {
     True -> int.min(ordinary, 8)
     False -> ordinary
   }
@@ -552,7 +615,10 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
   // wakes were spent on the ticks before, so the next batch is taken at
   // once. The ticks this costs are the batches the burst needs anyway, and
   // frame pacing still paints at most one frame per interval.
-  use <- bool.guard(model.connection_backlog == tui_model.MailboxMayHoldMore, 0)
+  use <- bool.guard(
+    model.shared.connection_backlog == tui_model.MailboxMayHoldMore,
+    0,
+  )
   case viewport_pacing(model) {
     // A backlog is work the loop owes the screen with nothing left to wake
     // it: the deltas that produced those rows are already drained. One row
@@ -567,7 +633,7 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
         True, _ -> int.min(ordinary, 8)
         False, True -> int.min(ordinary, int.min(lane, self_wake_ceiling_ms))
         False, False ->
-          case attachment.busy(model.candidate) {
+          case attachment.busy(model.view.candidate) {
             True -> int.min(ordinary, lane)
             False -> lane
           }
@@ -577,7 +643,7 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
 }
 
 fn in_flight(model: Model) -> Bool {
-  case model.channel {
+  case model.shared.channel {
     Some(channel) -> session_channel.in_flight(channel)
     None -> False
   }
@@ -588,14 +654,14 @@ fn in_flight(model: Model) -> Bool {
 // deadlines are set on. A lane already due answers zero, and one with
 // nothing due, or no lane at all, answers the ceiling.
 fn lane_wait(model: Model) -> Int {
-  let due = case model.channel {
+  let due = case model.shared.channel {
     Some(channel) -> session_channel.next_due(channel)
     None -> None
   }
   case due {
     Some(due) ->
       int.clamp(
-        due - model.stamp.transport_ms,
+        due - model.shared.stamp.transport_ms,
         min: 0,
         max: idle_poll_ceiling_ms,
       )
@@ -626,17 +692,17 @@ fn lane_wait(model: Model) -> Int {
 /// ```
 @internal
 pub fn wakes_itself(model: Model) -> Bool {
-  list.any(model.strands, fn(strand) { strand.live_phase != None })
+  list.any(model.shared.strands, fn(strand) { strand.live_phase != None })
   || tui_model.active_strand_live(model)
-  || model.frame_debt == pacing.FrameDeferred
-  || job_runner.size(model.running) > 0
-  || buffered.held(model.inbox) > 0
-  || model.connection_backlog == tui_model.MailboxMayHoldMore
+  || model.view.frame_debt == pacing.FrameDeferred
+  || job_runner.size(model.view.running) > 0
+  || buffered.held(model.shared.inbox) > 0
+  || model.shared.connection_backlog == tui_model.MailboxMayHoldMore
 }
 
 fn drain_candidate(model: Model) -> Model {
   interaction.advance_candidate(
     model,
-    attachment.poll(model.candidate, now: model.stamp.transport_ms),
+    attachment.poll(model.view.candidate, now: model.shared.stamp.transport_ms),
   )
 }

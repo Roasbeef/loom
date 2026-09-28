@@ -63,12 +63,16 @@ fn inspect_worker_notes(initial) {
 }
 
 pub fn inspected_worker_notes_keep_the_main_draft_and_target_test() {
-  let initial =
+  let initial = {
+    let base = model()
     tui_model.Model(
-      ..model(),
-      strands: roster(),
-      input: textarea.state_from_string("draft for main"),
+      shared: tui_model.Shared(..base.shared, strands: roster()),
+      view: tui_model.View(
+        ..base.view,
+        input: textarea.state_from_string("draft for main"),
+      ),
     )
+  }
   let inspected = inspect_worker_notes(initial)
   let loaded =
     inbound.apply_channel_update(
@@ -80,8 +84,8 @@ pub fn inspected_worker_notes_keep_the_main_draft_and_target_test() {
       ),
     )
   let rendered = shown(loaded, 100, 30)
-  assert loaded.active_strand == "main"
-  assert textarea.value(loaded.input) == "draft for main"
+  assert loaded.shared.active_strand == "main"
+  assert textarea.value(loaded.view.input) == "draft for main"
   assert string.contains(rendered, "Review the scheduler")
   assert string.contains(rendered, "[3 Notes]")
   assert string.contains(rendered, "worker")
@@ -89,7 +93,13 @@ pub fn inspected_worker_notes_keep_the_main_draft_and_target_test() {
 
 pub fn late_reply_for_another_inspected_strand_cannot_replace_notes_test() {
   let inspected =
-    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
+    inspect_worker_notes({
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    })
   let worker =
     inbound.apply_channel_update(
       inspected,
@@ -109,12 +119,18 @@ pub fn late_reply_for_another_inspected_strand_cannot_replace_notes_test() {
   let rendered = shown(main, 100, 30)
   assert string.contains(rendered, "worker value")
   assert !string.contains(rendered, "main value")
-  assert main.active_strand == "main"
+  assert main.shared.active_strand == "main"
 }
 
 pub fn notebook_selection_follows_key_when_rows_reorder_or_disappear_test() {
   let inspected =
-    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
+    inspect_worker_notes({
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    })
   let first =
     inbound.apply_channel_update(
       inspected,
@@ -141,7 +157,7 @@ pub fn notebook_selection_follows_key_when_rows_reorder_or_disappear_test() {
         ),
       ),
     )
-  assert reordered.note_selected == Some("status")
+  assert reordered.view.note_selected == Some("status")
   assert string.contains(shown(reordered, 100, 30), "status value")
   let deleted =
     inbound.apply_channel_update(
@@ -150,18 +166,22 @@ pub fn notebook_selection_follows_key_when_rows_reorder_or_disappear_test() {
         protocol.NotesSnapshot(board("worker", [note("plan", "plan value")])),
       ),
     )
-  assert deleted.note_selected == Some("plan")
+  assert deleted.view.note_selected == Some("plan")
   assert string.contains(shown(deleted, 100, 30), "plan value")
 }
 
 pub fn notes_own_the_surface_after_diff_at_wide_and_narrow_sizes_test() {
-  let initial =
+  let initial = {
+    let base = model()
     tui_model.Model(
-      ..model(),
-      strands: roster(),
-      diff_view: tui_model.DiffVisible,
-      input: textarea.state_from_string("/notes"),
+      shared: tui_model.Shared(..base.shared, strands: roster()),
+      view: tui_model.View(
+        ..base.view,
+        diff_view: tui_model.DiffVisible,
+        input: textarea.state_from_string("/notes"),
+      ),
     )
+  }
   let opened = press(initial, "enter")
   let loaded =
     inbound.apply_channel_update(
@@ -189,7 +209,13 @@ pub fn raw_note_expansion_preserves_the_original_json_document_test() {
       ]),
     )
   let inspected =
-    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
+    inspect_worker_notes({
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    })
   let loaded =
     inbound.apply_channel_update(
       inspected,
@@ -202,16 +228,20 @@ pub fn raw_note_expansion_preserves_the_original_json_document_test() {
   assert string.contains(compact, "Status")
   assert string.contains(compact, "ready")
   assert string.contains(shown(expanded, 100, 30), "\"status\": \"ready\"")
-  assert expanded.note_board == loaded.note_board
+  assert expanded.shared.note_board == loaded.shared.note_board
 }
 
 pub fn changing_detail_or_closing_inspection_never_retargets_the_composer_test() {
-  let initial =
+  let initial = {
+    let base = model()
     tui_model.Model(
-      ..model(),
-      strands: roster(),
-      input: textarea.state_from_string("keep main draft"),
+      shared: tui_model.Shared(..base.shared, strands: roster()),
+      view: tui_model.View(
+        ..base.view,
+        input: textarea.state_from_string("keep main draft"),
+      ),
     )
+  }
   let notes =
     inbound.apply_channel_update(
       inspect_worker_notes(initial),
@@ -222,16 +252,22 @@ pub fn changing_detail_or_closing_inspection_never_retargets_the_composer_test()
   let activity = press(notes, "1")
   let messages = press(activity, "2")
   let closed = press(messages, "esc")
-  assert activity.active_strand == "main"
-  assert messages.active_strand == "main"
-  assert closed.active_strand == "main"
-  assert textarea.value(closed.input) == "keep main draft"
-  assert closed.overlay == tui_model.NoOverlay
+  assert activity.shared.active_strand == "main"
+  assert messages.shared.active_strand == "main"
+  assert closed.shared.active_strand == "main"
+  assert textarea.value(closed.view.input) == "keep main draft"
+  assert closed.view.overlay == tui_model.NoOverlay
 }
 
 pub fn missing_notes_board_reports_unavailability_for_the_inspected_target_test() {
   let inspected =
-    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
+    inspect_worker_notes({
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    })
   let rendered = shown(inspected, 80, 24)
   assert string.contains(rendered, "no agent notes are available for worker")
   assert !string.contains(rendered, "notes for main")
@@ -240,7 +276,7 @@ pub fn missing_notes_board_reports_unavailability_for_the_inspected_target_test(
 pub fn changing_inspected_note_preserves_underlying_transcript_position_test() {
   let initial = tui.update(backend.Resize(90, 24), model())
   process.send(
-    buffered.sender(initial.inbox),
+    buffered.sender(initial.shared.inbox),
     connection_event.Incoming(gateway.stream_delta(
       "main",
       "text",
@@ -249,9 +285,14 @@ pub fn changing_inspected_note_preserves_underlying_transcript_position_test() {
   )
   let streaming = tui.update(backend.Tick, initial)
   let reading = tui.update(backend.MouseScroll(5, 5, True), streaming)
-  assert reading.scroll_offset > 0
+  assert reading.view.scroll_offset > 0
   let inspected =
-    inspect_worker_notes(tui_model.Model(..reading, strands: roster()))
+    inspect_worker_notes(
+      tui_model.Model(
+        ..reading,
+        shared: tui_model.Shared(..reading.shared, strands: roster()),
+      ),
+    )
   let loaded =
     inbound.apply_channel_update(
       inspected,
@@ -266,16 +307,22 @@ pub fn changing_inspected_note_preserves_underlying_transcript_position_test() {
     )
   let settled = tui.update(backend.Tick, loaded)
   let selected = press(settled, "]")
-  assert selected.note_selected == Some("status")
-  assert selected.scroll_offset == settled.scroll_offset
+  assert selected.view.note_selected == Some("status")
+  assert selected.view.scroll_offset == settled.view.scroll_offset
   let closed = press(selected, "esc")
-  assert closed.scroll_offset > 0
-  assert closed.reading_lines == reading.reading_lines
+  assert closed.view.scroll_offset > 0
+  assert closed.view.reading_lines == reading.view.reading_lines
 }
 
 pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
   let initial =
-    tui_model.Model(..model(), strands: roster(), notes_open: True)
+    {
+      let base = model()
+      tui_model.Model(
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+        view: tui_model.View(..base.view, notes_open: True),
+      )
+    }
     |> tui.update(backend.Resize(100, 30), _)
   let inspected = inspect_worker_notes(initial)
   let loaded =
@@ -297,12 +344,15 @@ pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
     render.view(
       tui_model.Model(
         ..closed,
-        view: tui_model.Caches(..closed.view, frame_cache: None),
+        view: tui_model.View(
+          ..closed.view,
+          caches: tui_model.Caches(..closed.view.caches, frame_cache: None),
+        ),
       ),
       geometry.rect_new(0, 0, 100, 30),
     ).0
     |> frame.buffer_to_text
-  assert closed.active_strand == "main"
+  assert closed.shared.active_strand == "main"
   assert !string.contains(rendered, "WORKER ONLY BODY")
   assert string.contains(rendered, "No observed notes for main")
 }
@@ -311,7 +361,13 @@ pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
 // cell reads as the same checklist there, not as nested JSON bullets.
 pub fn inspected_worker_todo_cell_reads_as_a_checklist_test() {
   let inspected =
-    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
+    inspect_worker_notes({
+      let base = model()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: roster()),
+      )
+    })
   let value =
     todo_list.Board([
       Phase("Module", [

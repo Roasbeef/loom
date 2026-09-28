@@ -332,17 +332,25 @@ pub fn tool_result_lookup_and_tail_retirement_match_strand_and_call_test() {
     )
   }
   let model =
-    tui_model.Model(..pushed.attached(), tool_tails: [
-      tail("main", "call-main", 0),
-      tail("main", "call-running", 1),
-      tail("sub:1", "call-peer", 0),
-    ])
+    {
+      let base = pushed.attached()
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, tool_tails: [
+          tail("main", "call-main", 0),
+          tail("main", "call-running", 1),
+          tail("sub:1", "call-peer", 0),
+        ]),
+      )
+    }
     |> inbound.apply_channel_update(session_channel.Captured(
       cut(metadata(cells), window),
       view,
       session_channel.Refreshed,
     ))
-  assert list.map(model.tool_tails, fn(tail) { #(tail.strand, tail.call_id) })
+  assert list.map(model.shared.tool_tails, fn(tail) {
+      #(tail.strand, tail.call_id)
+    })
     == [#("main", "call-running")]
     as "capture retirement is exact and applies beyond the active strand"
 }
@@ -406,13 +414,14 @@ fn capture_permission(
 pub fn pending_permission_automatically_opens_a_dialog_with_captured_consent_test() {
   let first = pending_permission_cut(11)
   let opened = capture_permission(pushed.attached(), first)
-  let assert tui_model.ApprovalInspector(panel) = opened.overlay
+  let assert tui_model.ApprovalInspector(panel) = opened.view.overlay
     as "a new pending request must present decision options automatically"
   let assert approval_panel.Continue(_) =
     approval_panel.update(keys.Enter, panel)
     as "an Enter queued before the dialog appeared cannot approve anything"
   let refreshed = capture_permission(opened, pending_permission_cut(12))
-  let assert tui_model.ApprovalInspector(still_captured) = refreshed.overlay
+  let assert tui_model.ApprovalInspector(still_captured) =
+    refreshed.view.overlay
     as "a metadata refresh must not replace the visible question"
   let assert approval_panel.Continue(selected) =
     approval_panel.update(keys.Right, still_captured)
@@ -433,11 +442,15 @@ pub fn pending_permission_automatically_opens_a_dialog_with_captured_consent_tes
 pub fn deferred_question_is_not_reopened_until_its_sequence_changes_test() {
   let first = pending_permission_cut(21)
   let opened = capture_permission(pushed.attached(), first)
-  let deferred = tui_model.Model(..opened, overlay: tui_model.NoOverlay)
+  let deferred =
+    tui_model.Model(
+      ..opened,
+      view: tui_model.View(..opened.view, overlay: tui_model.NoOverlay),
+    )
   let same = capture_permission(deferred, first)
-  assert same.overlay == tui_model.NoOverlay
+  assert same.view.overlay == tui_model.NoOverlay
   let reopened = capture_permission(same, pending_permission_cut(22))
-  let assert tui_model.ApprovalInspector(_) = reopened.overlay
+  let assert tui_model.ApprovalInspector(_) = reopened.view.overlay
     as "the same request ID at a new sequence is a new question"
   let observer_cut =
     snapshot.Captured(
@@ -447,14 +460,14 @@ pub fn deferred_question_is_not_reopened_until_its_sequence_changes_test() {
         role: snapshot.Observer,
       ),
     )
-  assert capture_permission(pushed.attached(), observer_cut).overlay
+  assert capture_permission(pushed.attached(), observer_cut).view.overlay
     == tui_model.NoOverlay
     as "read-only observers do not receive decision controls automatically"
 }
 
 pub fn late_lookup_preserves_the_open_question_and_selection_test() {
   let opened = capture_permission(pushed.attached(), pending_permission_cut(31))
-  let assert tui_model.ApprovalInspector(panel) = opened.overlay
+  let assert tui_model.ApprovalInspector(panel) = opened.view.overlay
     as "the captured question must be visible"
   let assert approval_panel.Continue(selected) =
     approval_panel.update(keys.Right, panel)
@@ -462,18 +475,21 @@ pub fn late_lookup_preserves_the_open_question_and_selection_test() {
   let looking_up =
     tui_model.Model(
       ..opened,
-      overlay: tui_model.ApprovalInspector(selected),
-      inspecting_approval: Some("permission"),
+      view: tui_model.View(
+        ..opened.view,
+        overlay: tui_model.ApprovalInspector(selected),
+        inspecting_approval: Some("permission"),
+      ),
     )
   let newer = capture_permission(pushed.attached(), pending_permission_cut(32))
   let updated =
     inbound.apply_channel_update(
       looking_up,
-      session_channel.LookedUp(newer.approvals, []),
+      session_channel.LookedUp(newer.shared.approvals, []),
     )
-  assert updated.overlay == looking_up.overlay
-  assert updated.inspecting_approval == None
-  let assert tui_model.ApprovalInspector(preserved) = updated.overlay
+  assert updated.view.overlay == looking_up.view.overlay
+  assert updated.view.inspecting_approval == None
+  let assert tui_model.ApprovalInspector(preserved) = updated.view.overlay
     as "the lookup cannot replace the question under review"
   let assert approval_panel.Decide(review, approval_panel.AllowOnce) =
     approval_panel.update(keys.Enter, preserved)
@@ -483,31 +499,31 @@ pub fn late_lookup_preserves_the_open_question_and_selection_test() {
 
 pub fn question_settled_by_another_client_closes_its_dialog_test() {
   let opened = capture_permission(pushed.attached(), pending_permission_cut(51))
-  let assert tui_model.ApprovalInspector(_) = opened.overlay
+  let assert tui_model.ApprovalInspector(_) = opened.view.overlay
     as "the pending question must be on screen first"
 
   // The web view answered the question, so the next cut carries the
   // register resolved and signed by the operator who decided it.
   let settled =
     capture_permission(opened, permission_cut(52, "approved", author("Alice")))
-  assert settled.overlay == tui_model.NoOverlay
+  assert settled.view.overlay == tui_model.NoOverlay
     as "a question answered elsewhere must not keep offering decisions"
-  assert settled.notice
+  assert settled.shared.notice
     == "Approval permission (fs_write) was settled elsewhere by Alice; its dialog is closed."
 }
 
 pub fn question_whose_register_disappears_closes_its_dialog_test() {
   let opened = capture_permission(pushed.attached(), pending_permission_cut(61))
-  let assert tui_model.ApprovalInspector(_) = opened.overlay
+  let assert tui_model.ApprovalInspector(_) = opened.view.overlay
     as "the pending question must be on screen first"
   let gone = capture_permission(opened, cut(metadata([]), snapshot.empty()))
-  assert gone.overlay == tui_model.NoOverlay
+  assert gone.view.overlay == tui_model.NoOverlay
     as "a request that is no longer pending anywhere cannot stay on screen"
 }
 
 pub fn lookup_reporting_the_question_resolved_closes_its_dialog_test() {
   let opened = capture_permission(pushed.attached(), pending_permission_cut(81))
-  let assert tui_model.ApprovalInspector(_) = opened.overlay
+  let assert tui_model.ApprovalInspector(_) = opened.view.overlay
     as "the pending question must be on screen first"
 
   // The lookup reply is the first thing to report the decision; no cut
@@ -520,37 +536,43 @@ pub fn lookup_reporting_the_question_resolved_closes_its_dialog_test() {
   let settled =
     inbound.apply_channel_update(
       opened,
-      session_channel.LookedUp(resolved.approvals, []),
+      session_channel.LookedUp(resolved.shared.approvals, []),
     )
-  assert settled.overlay == tui_model.NoOverlay
+  assert settled.view.overlay == tui_model.NoOverlay
     as "a lookup that shows the question resolved must close its dialog"
-  assert settled.notice
+  assert settled.shared.notice
     == "Approval permission (fs_write) was settled elsewhere by Bob; its dialog is closed."
 }
 
 pub fn deliberate_inspection_of_a_resolved_decision_stays_open_test() {
   let resolved = permission_cut(71, "approved", author("Alice"))
   let captured = capture_permission(pushed.attached(), resolved)
-  assert captured.overlay == tui_model.NoOverlay
+  assert captured.view.overlay == tui_model.NoOverlay
     as "a resolved decision is never presented automatically"
 
   // This is the `/approvals permission` path: the lookup answers with the
   // resolved record and the panel opens on it.
   let inspecting =
     inbound.apply_channel_update(
-      tui_model.Model(..captured, inspecting_approval: Some("permission")),
-      session_channel.LookedUp(captured.approvals, []),
+      tui_model.Model(
+        ..captured,
+        view: tui_model.View(
+          ..captured.view,
+          inspecting_approval: Some("permission"),
+        ),
+      ),
+      session_channel.LookedUp(captured.shared.approvals, []),
     )
-  let assert tui_model.ApprovalInspector(panel) = inspecting.overlay
+  let assert tui_model.ApprovalInspector(panel) = inspecting.view.overlay
     as "the lookup opens the requested decision"
   assert approval_panel.review(panel).status == approval.Approved
 
   // Neither a repeated cut nor one that no longer carries the register may
   // close a decision the operator asked to read.
   let repeated = capture_permission(inspecting, resolved)
-  assert repeated.overlay == inspecting.overlay
+  assert repeated.view.overlay == inspecting.view.overlay
   let moved = capture_permission(repeated, cut(metadata([]), snapshot.empty()))
-  assert moved.overlay == inspecting.overlay
+  assert moved.view.overlay == inspecting.view.overlay
     as "a deliberate inspection closes only when the operator closes it"
 }
 
@@ -564,13 +586,17 @@ pub fn metadata_refresh_preserves_the_footer_notice_test() {
       pushed.attached(),
       session_channel.Captured(captured, view, session_channel.Refreshed),
     )
-  let prior = tui_model.Model(..initial, notice: "streaming thinking")
+  let prior =
+    tui_model.Model(
+      ..initial,
+      shared: tui_model.Shared(..initial.shared, notice: "streaming thinking"),
+    )
   let refreshed =
     inbound.apply_channel_update(
       prior,
       session_channel.Captured(captured, view, session_channel.Refreshed),
     )
-  assert refreshed.notice == prior.notice
+  assert refreshed.shared.notice == prior.shared.notice
     as "a metadata refresh replaced current feedback with presence"
-  assert refreshed.captured == Some(#(captured, view))
+  assert refreshed.shared.captured == Some(#(captured, view))
 }

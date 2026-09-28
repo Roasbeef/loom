@@ -98,7 +98,8 @@ fn receive(
   model: tui_model.Model,
   incoming: connection_event.Message,
 ) -> tui_model.Model {
-  let assert Some(channel) = model.channel as "the fixture has an attached lane"
+  let assert Some(channel) = model.shared.channel
+    as "the fixture has an attached lane"
   let #(channel, updates) = session_channel.receive(channel, incoming, now: 0)
 
   // Driven outside the loop, so what the lane noted is performed here, as
@@ -119,17 +120,25 @@ fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
   let events = process.new_subject()
   let trace = attempt.Trace(recording.observed(events), attempt.Id(1))
   let channel = session_channel.replay_traced(expected, trace)
-  let initial =
+  let initial = {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
-      ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-      peer: tui_model.Replaying,
-      // A socketless replay lane keeps the frozen transport clock its
-      // timers were written against, whatever the host's monotonic origin.
-      transport_time_ms: fn() { 0 },
-      channel: Some(channel),
-      input: textarea.state_from_string("ordinary composer draft"),
-      attachments: [composer.Attachment("retained pasted context", 10)],
+      shared: tui_model.Shared(
+        ..base.shared,
+        peer: tui_model.Replaying,
+        channel: Some(channel),
+        attachments: [composer.Attachment("retained pasted context", 10)],
+      ),
+      view: tui_model.View(
+        ..base.view,
+        // A socketless replay lane keeps the frozen transport clock its
+        // timers were written against, whatever the host's monotonic origin.
+        transport_time_ms: fn() { 0 },
+        input: textarea.state_from_string("ordinary composer draft"),
+      ),
     )
+  }
   let assert [begin, ..rest] =
     pushed.transfer_with_metadata(1, "1:1", "recent", 10, metadata(rows))
     as "the transfer starts with its attachment-bearing begin frame"
@@ -230,7 +239,7 @@ fn full_reply(model, request, id, revision, text) {
 }
 
 fn draft(model: tui_model.Model) -> queue_editor.Draft {
-  let assert Some(draft) = model.queue_editor.draft
+  let assert Some(draft) = model.view.queue_editor.draft
     as "a credited complete fetch has opened the queue draft"
   draft
 }
@@ -262,9 +271,9 @@ fn refused(model, request, code) {
 pub fn queue_inspector_preserves_composer_and_attachments_test() {
   let #(model, _) = ready([pending("A"), pending("B")])
   let opened = submit.open_queue(model)
-  assert opened.queue_editor.surface == queue_editor.Inspector
-  assert opened.input == model.input
-  assert opened.attachments == model.attachments
+  assert opened.view.queue_editor.surface == queue_editor.Inspector
+  assert opened.view.input == model.view.input
+  assert opened.shared.attachments == model.shared.attachments
   assert string.contains(painted(opened), "queued inputs")
   assert string.contains(painted(opened), "▸ same instruction · [QUEUE] [EDIT]")
   assert string.contains(painted(opened), "same instruction · [QUEUE] [EDIT]")
@@ -277,12 +286,18 @@ pub fn queue_inspector_preserves_composer_and_attachments_test() {
   assert command.parse("/queue") == command.QueueInspect
   let slash =
     key(
-      tui_model.Model(..model, input: textarea.state_from_string("/queue")),
+      tui_model.Model(
+        ..model,
+        view: tui_model.View(
+          ..model.view,
+          input: textarea.state_from_string("/queue"),
+        ),
+      ),
       "enter",
     )
-  assert slash.queue_editor.surface == queue_editor.Inspector
-  assert slash.attachments == model.attachments
-  assert slash.queued == model.queued
+  assert slash.view.queue_editor.surface == queue_editor.Inspector
+  assert slash.shared.attachments == model.shared.attachments
+  assert slash.shared.queued == model.shared.queued
 }
 
 pub fn passive_queue_is_message_first_and_alt_q_focuses_without_mutation_test() {
@@ -293,9 +308,9 @@ pub fn passive_queue_is_message_first_and_alt_q_focuses_without_mutation_test() 
   assert !string.contains(frame, "Received · queued after this turn")
 
   let opened = key(model, "alt+q")
-  assert opened.queue_editor.surface == queue_editor.Inspector
-  assert textarea.value(opened.input) == "ordinary composer draft"
-  assert opened.attachments == model.attachments
+  assert opened.view.queue_editor.surface == queue_editor.Inspector
+  assert textarea.value(opened.view.input) == "ordinary composer draft"
+  assert opened.shared.attachments == model.shared.attachments
   assert requests(events, []) == []
 }
 
@@ -328,7 +343,7 @@ pub fn queue_inspector_labels_priority_access_and_excerpt_provenance_test() {
 
   let locked = opened |> key("down") |> key("enter")
   assert requests(events, []) == []
-  assert locked.queue_editor.awaiting == None
+  assert locked.view.queue_editor.awaiting == None
   assert string.contains(painted(locked), "read-only for this attachment")
   assert string.contains(painted(locked), "full text unavailable")
 }
@@ -350,7 +365,7 @@ pub fn compact_excerpt_paging_reaches_tail_and_resize_clamps_render_test() {
     list.fold(list.repeat(Nil, 20), compact, fn(current, _) {
       key(current, "pagedown")
     })
-  assert paged.queue_editor.preview_scroll > 0
+  assert paged.view.queue_editor.preview_scroll > 0
   let tail = painted_at(paged, 40, 12)
   assert string.contains(tail, "line-12-tail")
   assert !string.contains(tail, "line-01")
@@ -387,7 +402,10 @@ pub fn two_row_queue_title_pages_beside_a_multiline_composer_test() {
   let compact =
     tui_model.Model(
       ..model,
-      input: textarea.state_from_string("ordinary draft\nsecond draft line"),
+      view: tui_model.View(
+        ..model.view,
+        input: textarea.state_from_string("ordinary draft\nsecond draft line"),
+      ),
     )
     |> tui.update(backend.Resize(40, 12), _)
     |> submit.open_queue
@@ -413,7 +431,10 @@ pub fn two_row_queue_title_pages_beside_an_active_status_test() {
   let #(model, _) =
     ready([pending_as("A", "queue", excerpt, 3, snapshot_view.Editable)])
   let compact =
-    tui_model.Model(..model, submitting: Some("main"))
+    tui_model.Model(
+      ..model,
+      shared: tui_model.Shared(..model.shared, submitting: Some("main")),
+    )
     |> tui.update(backend.Resize(40, 12), _)
     |> submit.open_queue
   let first = painted_at(compact, 40, 12)
@@ -445,8 +466,8 @@ pub fn compact_capture_refresh_uses_the_reserved_queue_viewport_test() {
     list.fold(list.repeat(Nil, 20), compact, fn(current, _) {
       key(current, "pagedown")
     })
-  assert paged.queue_editor.preview_scroll == 11
-  let assert Some(#(previous, _)) = paged.captured
+  assert paged.view.queue_editor.preview_scroll == 11
+  let assert Some(#(previous, _)) = paged.shared.captured
   let assert Ok(data) = json.parse(metadata([row]))
   let cut = snapshot.Captured(..previous, metadata: data, next_seq: 11)
   let assert Ok(view) = snapshot_view.decode(cut)
@@ -455,7 +476,7 @@ pub fn compact_capture_refresh_uses_the_reserved_queue_viewport_test() {
       paged,
       session_channel.Captured(cut, view, session_channel.Notified),
     )
-  assert refreshed.queue_editor.preview_scroll == 11
+  assert refreshed.view.queue_editor.preview_scroll == 11
   assert string.contains(painted_at(refreshed, 40, 12), "line-12-tail")
 }
 
@@ -469,13 +490,13 @@ pub fn duplicate_excerpts_fetch_the_selected_identity_test() {
   let waiting = key(selected, "enter")
   let request = issued(events, "queued_input")
   let assert Some(queue_editor.Fetch(id: "B", strand: "main", ..)) =
-    waiting.queue_editor.awaiting
+    waiting.view.queue_editor.awaiting
     as "selection is carried by opaque identity, not its duplicate text"
 
   // Even a correlated document must answer the selected identity before it
   // can take custody of the independent editor.
   let foreign = full_reply(waiting, request, "A", 3, "wrong item")
-  assert foreign.queue_editor.draft == None
+  assert foreign.view.queue_editor.draft == None
   let answered = full_reply(waiting, request, "B", 3, "the second item")
   assert draft(answered).document.id == "B"
   assert textarea.value(draft(answered).input) == "the second item"
@@ -489,7 +510,7 @@ pub fn clean_retained_draft_allows_editing_another_item_test() {
   let selected = clean |> key("esc") |> key("down") |> key("enter")
   let _ = issued(events, "queued_input")
   let assert Some(queue_editor.Fetch(id: "B", ..)) =
-    selected.queue_editor.awaiting
+    selected.view.queue_editor.awaiting
     as "an unchanged editable draft must not force a save before browsing another item"
 }
 
@@ -501,8 +522,8 @@ pub fn resuming_a_draft_cancels_another_items_late_fetch_test() {
   let waiting_b = clean_a |> key("esc") |> key("down") |> key("enter")
   let request_b = issued(events, "queued_input")
   let resumed = waiting_b |> key("e") |> key("end") |> key("!")
-  assert resumed.queue_editor.awaiting == None
-  assert resumed.queue_editor.request_id == None
+  assert resumed.view.queue_editor.awaiting == None
+  assert resumed.view.queue_editor.request_id == None
   assert draft(resumed).document.id == "A"
 
   let late = full_reply(resumed, request_b, "B", 9, "late B text")
@@ -523,29 +544,29 @@ pub fn queue_mouse_hit_excludes_controls_and_scrolled_heading_test() {
     list.fold(list.repeat(Nil, 11), opened, fn(current, _) {
       key(current, "down")
     })
-  assert selected.queue_editor.selected == 11
+  assert selected.view.queue_editor.selected == 11
 
   let controls =
     tui.update(backend.MousePress(2, 14, backend.MouseLeft), selected)
   let heading =
     tui.update(backend.MousePress(2, 17, backend.MouseLeft), selected)
-  assert controls.queue_editor.selected == 11
-  assert heading.queue_editor.selected == 11
+  assert controls.view.queue_editor.selected == 11
+  assert heading.view.queue_editor.selected == 11
 
   let row = tui.update(backend.MousePress(2, 18, backend.MouseLeft), selected)
-  assert row.queue_editor.selected == 6
+  assert row.view.queue_editor.selected == 6
 }
 
 pub fn reopening_queue_browses_before_resuming_a_retained_draft_test() {
   let #(editor, _) = opened("original complete text")
   let closed = editor |> key("esc") |> key("esc")
   let browsing = submit.open_queue(closed)
-  assert browsing.queue_editor.surface == queue_editor.Inspector
-  assert textarea.value(browsing.input) == "ordinary composer draft"
+  assert browsing.view.queue_editor.surface == queue_editor.Inspector
+  assert textarea.value(browsing.view.input) == "ordinary composer draft"
   assert string.contains(painted(browsing), "e resumes editing")
 
   let resumed = key(browsing, "e")
-  assert resumed.queue_editor.surface == queue_editor.Editor
+  assert resumed.view.queue_editor.surface == queue_editor.Editor
   assert textarea.value(draft(resumed).input) == "original complete text"
   assert string.contains(painted(resumed), "ordinary composer draft")
   assert string.contains(painted(resumed), "same instruction")
@@ -565,9 +586,9 @@ pub fn complete_fetch_and_save_preserve_text_beyond_the_excerpt_test() {
   let saved = key(edited, "ctrl+s")
   let request = issued(events, "edit_queued_input")
   assert draft(saved).delivery == queue_editor.Saving
-  assert saved.input == model.input
-  assert saved.attachments == model.attachments
-  assert saved.notice == "edit_queued_input sent"
+  assert saved.view.input == model.view.input
+  assert saved.shared.attachments == model.shared.attachments
+  assert saved.shared.notice == "edit_queued_input sent"
   assert string.contains(painted(saved), "Saving this revision")
 
   // The lane deliberately records no sensitive body. Check the encoder used
@@ -601,7 +622,7 @@ pub fn stale_or_drained_refusal_keeps_the_unsaved_draft_test() {
     assert draft(failed).delivery == queue_editor.Editable
     assert string.contains(painted(failed), code)
     assert requests(events, []) == []
-    assert failed.queued == model.queued
+    assert failed.shared.queued == model.shared.queued
   })
 }
 
@@ -613,7 +634,7 @@ pub fn uncertain_save_locks_text_and_cannot_reissue_until_reconciled_test() {
   let request = issued(events, "edit_queued_input")
   let uncertain = receive(saving, connection_event.NetworkFault("reply lost"))
   assert draft(uncertain).delivery == queue_editor.Unknown
-  let assert Some(unconfirmed) = uncertain.unconfirmed
+  let assert Some(unconfirmed) = uncertain.shared.unconfirmed
     as "the lost mutation reply keeps its exact request identity"
   assert unconfirmed.command == "edit_queued_input"
   assert unconfirmed.request_id == request
@@ -633,9 +654,12 @@ pub fn uncertain_save_locks_text_and_cannot_reissue_until_reconciled_test() {
   let retry =
     tui_model.Model(
       ..locked,
-      channel: reconnected.channel,
-      captured: reconnected.captured,
-      peer: tui_model.Replaying,
+      shared: tui_model.Shared(
+        ..locked.shared,
+        channel: reconnected.shared.channel,
+        captured: reconnected.shared.captured,
+        peer: tui_model.Replaying,
+      ),
     )
   let fetching = key(retry, "ctrl+r")
   let read = issued(reads, "queued_input")
@@ -650,14 +674,17 @@ pub fn uncertain_save_locks_text_and_cannot_reissue_until_reconciled_test() {
 
 pub fn attachment_change_cannot_save_an_old_editor_test() {
   let #(model, events) = opened("original")
-  let assert Some(#(cut, view)) = model.captured
+  let assert Some(#(cut, view)) = model.shared.captured
     as "the editor belongs to the captured attachment"
   let attachment =
     snapshot.Attachment(..cut.attachment, connection_id: "replacement")
   let changed =
     tui_model.Model(
       ..model,
-      captured: Some(#(snapshot.Captured(..cut, attachment:), view)),
+      shared: tui_model.Shared(
+        ..model.shared,
+        captured: Some(#(snapshot.Captured(..cut, attachment:), view)),
+      ),
     )
   let saved = key(changed, "ctrl+s")
   assert requests(events, []) == []
@@ -676,21 +703,24 @@ pub fn selecting_another_item_does_not_discard_an_uncertain_draft_test() {
   let switched =
     tui_model.Model(
       ..uncertain,
-      channel: reconnected.channel,
-      captured: reconnected.captured,
-      peer: tui_model.Replaying,
+      shared: tui_model.Shared(
+        ..uncertain.shared,
+        channel: reconnected.shared.channel,
+        captured: reconnected.shared.captured,
+        peer: tui_model.Replaying,
+      ),
     )
     |> key("esc")
     |> key("down")
     |> key("enter")
   assert requests(reads, []) == []
-  assert switched.queue_editor.awaiting == None
+  assert switched.view.queue_editor.awaiting == None
   assert draft(switched).document.id == "A"
   assert textarea.value(draft(switched).input) == "A original!"
   assert string.contains(painted(switched), "e resumes it")
 
   let resumed = key(switched, "e")
-  assert resumed.queue_editor.surface == queue_editor.Editor
+  assert resumed.view.queue_editor.surface == queue_editor.Editor
   assert textarea.value(draft(resumed).input) == "A original!"
 }
 
@@ -729,7 +759,7 @@ pub fn full_document_decoder_bounds_encoded_bytes_and_image_counts_test() {
 pub fn selected_identity_survives_a_fresh_cut_reordering_duplicate_excerpts_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
   let selected = model |> submit.open_queue |> key("down")
-  let assert Some(#(previous, _)) = selected.captured
+  let assert Some(#(previous, _)) = selected.shared.captured
     as "selection is tied to a completed metadata cut"
   let assert Ok(data) = json.parse(metadata([pending("B"), pending("A")]))
     as "the reordered queue is valid metadata"
@@ -748,7 +778,7 @@ pub fn selected_identity_survives_a_fresh_cut_reordering_duplicate_excerpts_test
   let waiting = key(reordered, "enter")
   let _ = issued(events, "queued_input")
   let assert Some(queue_editor.Fetch(id: "B", ..)) =
-    waiting.queue_editor.awaiting
+    waiting.view.queue_editor.awaiting
     as "reordering identical excerpts must not silently retarget the edit"
 }
 
@@ -766,14 +796,17 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
     let switched =
       tui_model.Model(
         ..edited,
-        channel: other.channel,
-        captured: other.captured,
-        peer: tui_model.Replaying,
+        shared: tui_model.Shared(
+          ..edited.shared,
+          channel: other.shared.channel,
+          captured: other.shared.captured,
+          peer: tui_model.Replaying,
+        ),
       )
     let refreshed = key(switched, "ctrl+r")
     assert requests(events, []) == []
       as "explicit reconciliation cannot read a reused id in another queue namespace"
-    assert refreshed.queue_editor.awaiting == None
+    assert refreshed.view.queue_editor.awaiting == None
     assert draft(refreshed) == retained
     assert painted(refreshed) != painted(switched)
       as "the refused refresh must explain the ownership boundary"
@@ -786,7 +819,7 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
     let browsing = switched |> key("esc") |> key("enter")
     assert requests(events, []) == []
       as "Enter cannot fetch a reused row identity from another queue namespace"
-    assert browsing.queue_editor.awaiting == None
+    assert browsing.view.queue_editor.awaiting == None
     assert draft(browsing) == retained
     assert string.contains(painted(browsing), "e resumes it")
   })
