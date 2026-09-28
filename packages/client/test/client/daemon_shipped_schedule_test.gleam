@@ -33,6 +33,7 @@ import simplifile
 import sqlight
 import storage/internal/snapshot_sqlite
 import storage/snapshot
+import support/daemon_observation
 import support/provider_http as provider
 import support/tui_driver
 import tui/bootstrap
@@ -343,14 +344,13 @@ fn stop_saved(control: daemon.Connection, session: String) -> Nil {
     daemon.request(control, protocol.StopSession(session), 5000)
     as "the owner receives the exact stop acknowledgement"
   let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon.request(control, protocol.GetSession(session), 2000) {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-          poll.Done(Nil)
-        Ok(_) -> poll.Retry
-        Error(reason) -> poll.Fail(reason)
-      }
-    })
+    daemon_observation.session_until(
+      control,
+      session,
+      within: 15_000,
+      every: 25,
+      inspect: daemon_observation.saved,
+    )
     as "original retirement reaches Saved before offline observation"
 
   Nil

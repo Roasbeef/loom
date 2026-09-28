@@ -100,3 +100,34 @@ pub fn delete_does_not_repeat_a_stop_or_delete_with_an_unknown_outcome_test() {
       }
   })
 }
+
+/// The retirement wait gives each `GetSession` read what is left of its own
+/// deadline rather than a fixed two seconds, so one reply slower than that
+/// cannot end a wait that still has most of its minute left. The seam records
+/// the budget each read was handed; the first read of a fresh wait must be
+/// offered far more than the old flat budget.
+///
+/// ## Examples
+///
+/// `scripts/test.sh tui --match retirement_reads_spend_the_wait` runs this.
+pub fn retirement_reads_spend_the_wait_not_a_fixed_budget_test() {
+  let budgets = process.new_subject()
+  let result =
+    selection.delete_using("selected", fn(command, within) {
+      case command {
+        protocol.StopSession("selected") ->
+          Ok(protocol.LifecycleReply(protocol.Stopping("incarnation")))
+        protocol.GetSession("selected") -> {
+          process.send(budgets, within)
+          Ok(protocol.SessionReply(row(protocol.Saved)))
+        }
+        protocol.DeleteSession("selected") ->
+          Ok(protocol.DeletedReply("selected"))
+        _ -> Error("unexpected command")
+      }
+    })
+  assert result == Ok("selected")
+  let assert Ok(within) = process.receive(budgets, 0)
+    as "retirement was read once"
+  assert within > 50_000 && within <= 60_000
+}

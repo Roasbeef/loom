@@ -5,6 +5,7 @@
 //// Losing admission's reply is reported as an unknown outcome, never retried.
 
 import gleam/bit_array
+import gleam/bool
 import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -424,13 +425,33 @@ fn remove_using(
   }
 }
 
+// How long a stop may take to retire before the removal is abandoned.
+const retirement_wait_ms = 60_000
+
+// The answer when the retirement wait runs out, between reads or during one.
+const still_stopping = "session is still stopping; delete was not sent"
+
+// Each read is given what is left of the retirement wait, as `await` does for
+// an open and for the same reason: one slow reply from a loaded daemon must
+// not end a wait that still has most of its time left.
 fn await_retirement(session, operation, request) {
+  let deadline = host_bootstrap.monotonic_time_ms() + retirement_wait_ms
+
   // GetOperation retires with its slot. GetSession's Saved status is the
   // daemon's positive proof that ordered cleanup released that slot.
   case
-    poll.until(within: 60_000, every: 50, attempt: fn() {
-      case request(protocol.GetSession(session), 2000) {
-        Error(reason) -> poll.Fail(reason)
+    poll.until(within: retirement_wait_ms, every: 50, attempt: fn() {
+      let remaining = deadline - host_bootstrap.monotonic_time_ms()
+      use <- bool.guard(remaining <= 0, poll.Retry)
+      case request(protocol.GetSession(session), remaining) {
+        // The seam's errors are already worded, so a read that failed because
+        // it used up the wait is told apart by the clock: past the deadline,
+        // the failure is the wait running out.
+        Error(reason) ->
+          case deadline - host_bootstrap.monotonic_time_ms() <= 0 {
+            True -> poll.Fail(still_stopping)
+            False -> poll.Fail(reason)
+          }
         Ok(protocol.SessionReply(row)) if row.session_id == session -> {
           case row.status {
             protocol.Saved | protocol.Reserved -> poll.Done(Nil)
@@ -461,7 +482,7 @@ fn await_retirement(session, operation, request) {
   {
     poll.Answered(Nil) -> Ok(Nil)
     poll.Failed(reason) -> Error(reason)
-    poll.Expired -> Error("session is still stopping; delete was not sent")
+    poll.Expired -> Error(still_stopping)
   }
 }
 
@@ -539,17 +560,43 @@ fn selected_row(reply) {
   }
 }
 
+// How long an open may take to become attachable. It bounds the whole wait,
+// every `GetOperation` read inside it included.
+const startup_wait_ms = 60_000
+
+// The answer when the startup wait runs out, whether between reads or during
+// one. A read that outlives the wait is the wait running out, not a fault of
+// the control connection, so it is reported as this rather than as a timeout
+// that asks the operator to reconnect.
+const startup_incomplete = "session startup remains incomplete; no open was retried"
+
+// Each read is given what is left of the startup wait rather than a fixed
+// budget of its own. A daemon under load can take longer than a couple of
+// seconds to answer one read while the open itself is progressing: a
+// catalogue read on the registry once took 2.6 s in the containerised
+// signoff. With a fixed two-second budget that one slow reply ended the whole
+// open, and because a timed-out request retires its control connection, the
+// wait could not continue even though most of its minute was left. Tying the
+// read to the wait's own deadline means the only timeout that can end the
+// open is the one the operator was promised.
 fn await(host: Host, session, operation) {
   let epoch = daemon.hello(host.control).epoch
+  let deadline = host_bootstrap.monotonic_time_ms() + startup_wait_ms
   case
-    poll.until(within: 60_000, every: 50, attempt: fn() {
+    poll.until(within: startup_wait_ms, every: 50, attempt: fn() {
+      let remaining = deadline - host_bootstrap.monotonic_time_ms()
+
+      // The poll makes one last attempt at the deadline itself. There is no
+      // time left to give a read, so that attempt ends the wait as expired.
+      use <- bool.guard(remaining <= 0, poll.Retry)
       case
         daemon.request(
           host.control,
           protocol.GetOperation(session, operation, epoch),
-          2000,
+          remaining,
         )
       {
+        Error(daemon.TimedOut) -> poll.Fail(startup_incomplete)
         Error(reason) -> poll.Fail(failure(reason))
         Ok(protocol.SessionReply(row)) ->
           case row.status {
@@ -578,8 +625,7 @@ fn await(host: Host, session, operation) {
   {
     poll.Answered(incarnation) -> Ok(incarnation)
     poll.Failed(reason) -> Error(reason)
-    poll.Expired ->
-      Error("session startup remains incomplete; no open was retried")
+    poll.Expired -> Error(startup_incomplete)
   }
 }
 

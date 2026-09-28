@@ -771,6 +771,92 @@ pub fn tui_daemon_observation_uses_one_deadline_test() {
   })
 }
 
+// A catalogue row for the controlled peer's `sessions.get` and
+// `operations.get` replies, in the daemon's own wire shape.
+fn session_row(id: String, status: json.JsonValue) -> json.JsonValue {
+  json.Object([
+    #("session_id", json.String(id)),
+    #("workspace", json.String("/work")),
+    #("name", json.String("opened")),
+    #("created_at", json.Int(0)),
+    #("status", status),
+  ])
+}
+
+/// An open's startup wait gives each `GetOperation` read what is left of the
+/// wait. A daemon under load once took 2.6 s to answer one such read, and the
+/// former flat two-second budget ended the whole open with "reconnect
+/// explicitly" while the session was still starting. Here the peer withholds
+/// the only `GetOperation` reply past that old budget, then answers
+/// `resident`, and the open must return the incarnation.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match tui_daemon_open_survives_a_slow_operation_read`.
+pub fn tui_daemon_open_survives_a_slow_operation_read_test() {
+  // Session identities are validated on the wire, so the fixture mints one.
+  let #(id, _) = ids.mint_session(ids.generator(clock.fixed(0), 1))
+  let id = ids.session_id_to_string(id)
+  controlled_peer(fn(control, peer, incoming) {
+    let assert Ok(host) = selection.host(control, address(1), "test-token")
+      as "the controlled control has a selection host"
+    let outcomes = process.new_subject()
+    let worker =
+      process.spawn(fn() { process.send(outcomes, selection.open(host, id)) })
+
+    // The session is saved, so the open is admitted and returns an operation.
+    let read = received(incoming)
+    assert read.command == server_protocol.GetSession(id)
+    process.send(
+      peer,
+      Send(reply(
+        read.id,
+        "sessions.get",
+        session_row(id, json.Object([#("state", json.String("saved"))])),
+      )),
+    )
+    let open = received(incoming)
+    assert open.command == server_protocol.OpenSession(id, "controlled")
+    process.send(
+      peer,
+      Send(reply(
+        open.id,
+        "sessions.open",
+        json.Object([
+          #("state", json.String("opening")),
+          #("operation", json.String("operation-1")),
+        ]),
+      )),
+    )
+
+    // The one operation read is held past the old two-second budget. The
+    // worker must still be waiting, not failed, when the reply is released.
+    let poll_read = received(incoming)
+    assert poll_read.command
+      == server_protocol.GetOperation(id, "operation-1", "controlled")
+    assert process.receive(outcomes, 2500) == Error(Nil)
+    assert process.is_alive(worker)
+    process.send(
+      peer,
+      Send(reply(
+        poll_read.id,
+        "operations.get",
+        session_row(
+          id,
+          json.Object([
+            #("state", json.String("resident")),
+            #("incarnation", json.String("incarnation-1")),
+          ]),
+        ),
+      )),
+    )
+    let assert Ok(Ok(target)) = process.receive(outcomes, 2000)
+      as "the open returns once the late read answers"
+    assert target.expected.incarnation == "incarnation-1"
+    assert process.receive(incoming, 0) == Error(Nil)
+  })
+}
+
 pub fn tui_daemon_missing_hello_closes_the_socket_on_deadline_test() {
   peer_listener(None, fn(port, _, _, closed) {
     assert daemon.connect(address(port), "token", process.self(), 100)
