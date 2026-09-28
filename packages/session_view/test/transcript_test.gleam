@@ -12,10 +12,12 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/history_view
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript
 import session_view/transcript_line
+import session_view/transcript_lines
 
 fn id(seq: Int) -> ids.EntryId {
   ids.mint_entry(ids.generator(clock.fixed(1000), seq)).0
@@ -230,4 +232,105 @@ pub fn a_key_holds_no_path_separator_test() {
     && !string.contains(key, "\n")
     && !string.contains(key, "\r")
   })
+}
+
+// A host that keeps a history window draws the same blocks from it as from
+// the capture that filled it, each with the same key, and reads a block's
+// sequence back from its key.
+pub fn branch_blocks_are_the_capture_blocks_test() {
+  let captured =
+    cut([
+      said(3, Some(2), "third"),
+      said(2, Some(1), "second"),
+      said(1, None, "first"),
+    ])
+  let shown = view([#("main", 3)])
+  let history =
+    history_view.empty()
+    |> history_view.capture(captured.window, shown, "main")
+  let kept =
+    transcript.branch_blocks(
+      history_view.branch(history, shown),
+      captured,
+      shown,
+      "main",
+      [],
+    )
+  assert kept == transcript.blocks(captured, shown, "main", [])
+  let assert [first, ..] = kept as "the window draws its entries"
+  assert transcript_lines.block_seq(first) == Ok(1)
+}
+
+// Trimming a live window drops the records older than the sequence given,
+// and the next read asks for the interval below what is left. A window
+// with a read owed is left alone, since the read was sized from it.
+pub fn a_live_window_is_trimmed_to_what_is_drawn_test() {
+  let captured =
+    cut([
+      said(3, Some(2), "third"),
+      said(2, Some(1), "second"),
+      said(1, None, "first"),
+    ])
+  let shown = view([#("main", 3)])
+  let history =
+    history_view.empty()
+    |> history_view.capture(captured.window, shown, "main")
+  let trimmed = history_view.retain_from(history, 2)
+  assert trimmed.before_seq == 2
+  assert list.length(trimmed.window.items) == 2
+  assert history_view.branch(trimmed, shown).unloaded != None
+  assert spoken(
+      list.flat_map(
+        transcript.branch_blocks(
+          history_view.branch(trimmed, shown),
+          captured,
+          shown,
+          "main",
+          [],
+        ),
+        fn(block) { list.map(block.rows, fn(row) { row.1 }) },
+      ),
+    )
+    == ["second", "third"]
+
+  let owed = history_view.older(trimmed, Some("parent"))
+  assert history_view.retain_from(owed, 3) == owed
+}
+
+// A page read below the window can hold none of the strand's ancestry,
+// when another strand wrote every sequence in it. The next capture keeps
+// the progress `accept` made past that interval, so the next read asks for
+// the sequences below it and not the same ones again.
+pub fn a_capture_keeps_the_progress_of_an_empty_read_test() {
+  // Main's record at 200 names 2 as its parent; 100 to 199 are elsewhere.
+  let captured =
+    cut([said(201, Some(200), "later"), said(200, Some(2), "resumed")])
+  let shown = view([#("main", 201)])
+  let history =
+    history_view.empty()
+    |> history_view.capture(captured.window, shown, "main")
+  assert history.before_seq == 200
+
+  let wanted =
+    history_view.older(history, history_view.branch(history, shown).unloaded)
+  let assert Some(#(after, before)) = history_view.range(wanted)
+    as "a read is owed"
+  let page =
+    snapshot.Window(
+      [said(199, Some(198), "elsewhere"), said(150, Some(149), "elsewhere")],
+      200,
+      None,
+    )
+  let read =
+    history_view.accept(
+      history_view.sent(wanted, before),
+      page,
+      before,
+      after,
+      shown,
+    )
+    |> history_view.resume
+    |> history_view.capture(captured.window, shown, "main")
+  assert read.before_seq == after + 1
+  assert read.before_seq < 200
 }

@@ -87,22 +87,32 @@ const expected_row = "Cache miss after 10m idle: 250k tokens re-billed (~$1.00)"
 // `adopt_session` puts a socketless replay lane on this model, so the
 // transport clock is frozen with it rather than left on the host's.
 fn initial(now: Int) -> tui_model.Model {
-  tui_model.Model(
-    ..tui.new_model_with_clock(
-      connection.new_inbox(),
-      workspace.Context(path: "/work", branch: None),
-      fn() { now },
-    ),
-    transport_time_ms: fn() { 0 },
-  )
+  {
+    let base =
+      tui.new_model_with_clock(
+        connection.new_inbox(),
+        workspace.Context(path: "/work", branch: None),
+        fn() { now },
+      )
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),
+    )
+  }
 }
 
 fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
-  tui_model.Model(..model, monotonic_time_ms: fn() { now })
+  tui_model.Model(
+    ..model,
+    view: tui_model.View(..model.view, monotonic_time_ms: fn() { now }),
+  )
 }
 
 fn deliver(model: tui_model.Model, wire: String) -> tui_model.Model {
-  process.send(buffered.sender(model.inbox), connection_event.Incoming(wire))
+  process.send(
+    buffered.sender(model.shared.inbox),
+    connection_event.Incoming(wire),
+  )
   tui.update(backend.Tick, model)
 }
 
@@ -184,13 +194,17 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
   let quiet = after_the_first_turn() |> clear_strands
 
   let idle = tui.update(backend.Tick, at(quiet, 600_000))
-  assert idle.cache_outlook == "cache idle 10m"
+  assert idle.view.cache_outlook == "cache idle 10m"
     as "an idle cache with no proven horizon reads as its growing pause"
   assert string.contains(text(idle), "cache idle 10m")
     as "the compact footer actually displays the warning"
   assert string.contains(render_text(idle, 40, 12), "cache idle 10m")
     as "a narrow terminal retains the warning before lower-priority figures"
-  let expanded = tui_model.Model(..idle, details_expanded: True)
+  let expanded =
+    tui_model.Model(
+      ..idle,
+      shared: tui_model.Shared(..idle.shared, details_expanded: True),
+    )
   assert string.contains(text(expanded), ", idle 10m ·")
     as "the detailed footer also displays the warning, on the cache figure"
 
@@ -198,24 +212,27 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
   // stays empty rather than counting toward an expiry nothing
   // established.
   let fresh = tui.update(backend.Tick, at(quiet, 30_000))
-  assert fresh.cache_outlook == ""
+  assert fresh.view.cache_outlook == ""
     as "a short pause has no reading worth a label"
 
   // A live operation suppresses the label: the request in flight is
   // rewriting the prefix, so an expiry countdown would name a rollover
   // the request itself is about to reset.
   let live =
-    tui.update(
-      backend.Tick,
-      tui_model.Model(..at(quiet, 600_000), strands: [
-        protocol.Strand(
-          id: "main",
-          name: Some("main"),
-          live_phase: Some("assistant"),
-        ),
-      ]),
-    )
-  assert live.cache_outlook == ""
+    tui.update(backend.Tick, {
+      let base = at(quiet, 600_000)
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(..base.shared, strands: [
+          protocol.Strand(
+            id: "main",
+            name: Some("main"),
+            live_phase: Some("assistant"),
+          ),
+        ]),
+      )
+    })
+  assert live.view.cache_outlook == ""
     as "a running strand hides the countdown until it settles"
 
   // A proven split counts down instead: the same watch carried a
@@ -226,15 +243,18 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
     |> fn(base) {
       tui_model.Model(
         ..base,
-        cache: cache_watch.Ledger(
-          ..base.cache,
-          watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+        shared: tui_model.Shared(
+          ..base.shared,
+          cache: cache_watch.Ledger(
+            ..base.shared.cache,
+            watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+          ),
         ),
       )
     }
     |> at(180_000)
     |> fn(base) { tui.update(backend.Tick, base) }
-  assert split.cache_outlook == "cache tail ≤2m"
+  assert split.view.cache_outlook == "cache tail ≤2m"
     as "a proven tail counts down to its expiry"
 }
 
@@ -244,23 +264,29 @@ pub fn changing_the_model_discards_the_old_watch_before_the_next_row_test() {
   let watched =
     tui_model.Model(
       ..base,
-      cache: cache_watch.Ledger(
-        ..base.cache,
-        watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+      shared: tui_model.Shared(
+        ..base.shared,
+        cache: cache_watch.Ledger(
+          ..base.shared.cache,
+          watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+        ),
       ),
     )
   let shown = tui.update(backend.Tick, at(watched, 180_000))
-  assert shown.cache_outlook == "cache tail ≤2m"
+  assert shown.view.cache_outlook == "cache tail ≤2m"
 
   let requested =
     tui_model.Model(
       ..shown,
-      input: textarea.state_from_string("/model another-provider"),
+      view: tui_model.View(
+        ..shown.view,
+        input: textarea.state_from_string("/model another-provider"),
+      ),
     )
   let switched = tui.update(backend.KeyPress("enter"), requested)
-  assert dict.get(switched.cache.watches, "main") == Error(Nil)
+  assert dict.get(switched.shared.cache.watches, "main") == Error(Nil)
     as "a new provider has no prior cache baseline or proven horizon"
-  assert switched.cache_outlook == ""
+  assert switched.view.cache_outlook == ""
     as "the old provider's countdown disappears with the switch"
 
   let next =
@@ -268,7 +294,7 @@ pub fn changing_the_model_discards_the_old_watch_before_the_next_row_test() {
     |> at(600_000)
     |> deliver(gateway.assistant_entry("main", "new provider answer", 3))
     |> deliver(gateway.usage_row("main", re_read_prefix()))
-  assert next.cache_notices == []
+  assert next.shared.cache_notices == []
     as "the new provider's first row cannot be compared to the old prefix"
 }
 
@@ -293,7 +319,7 @@ fn captured_view(provider: String, reasoning: strand.ThinkingLevel) {
       ),
     ]),
     dict.new(),
-    initial(0).usage,
+    initial(0).shared.usage,
     snapshot_view.RunSettings("one_at_a_time", "parallel", None),
     [],
     [],
@@ -308,15 +334,18 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
   let initial =
     tui_model.Model(
       ..base,
-      cache: cache_watch.Ledger(
-        ..base.cache,
-        watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+      shared: tui_model.Shared(
+        ..base.shared,
+        cache: cache_watch.Ledger(
+          ..base.shared.cache,
+          watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
+        ),
       ),
     )
   let cut =
     snapshot.Captured(
       snapshot.Attachment(
-        snapshot.Expected(initial.session, "epoch", "instance"),
+        snapshot.Expected(initial.shared.session, "epoch", "instance"),
         "peer",
         message.Origin("operator", "Operator"),
         snapshot.Owner,
@@ -347,7 +376,7 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
         session_channel.Notified,
       ),
     )
-  assert dict.get(same_provider.cache.watches, "main") != Error(Nil)
+  assert dict.get(same_provider.shared.cache.watches, "main") != Error(Nil)
     as "changing reasoning effort does not erase the provider's watch"
 
   let switched =
@@ -362,15 +391,18 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
         session_channel.Notified,
       ),
     )
-  assert dict.get(switched.cache.watches, "main") == Error(Nil)
+  assert dict.get(switched.shared.cache.watches, "main") == Error(Nil)
     as "same model ID under another provider is a different cache"
-  assert switched.cache_outlook == ""
+  assert switched.view.cache_outlook == ""
 }
 
 // The preview model's strand roster, emptied: an idle session has no live
 // operation, and the outlook's suppression is keyed on one.
 fn clear_strands(model: tui_model.Model) -> tui_model.Model {
-  tui_model.Model(..model, strands: [])
+  tui_model.Model(
+    ..model,
+    shared: tui_model.Shared(..model.shared, strands: []),
+  )
 }
 
 // A watch holding the priced prefix at time zero under the stated horizon.
@@ -579,8 +611,8 @@ pub fn a_session_switch_resets_the_watch_and_its_notices_test() {
   // Seed a watch and a drawn notice on session A's "main" strand.
   let seeded = after_the_second_turn(after_the_first_turn())
   assert string.contains(text(seeded), expected_row)
-  assert seeded.cache.watches != dict.new()
-  assert seeded.cache_notices != []
+  assert seeded.shared.cache.watches != dict.new()
+  assert seeded.shared.cache_notices != []
 
   // Adopt session B through the real `candidate_outcome` path the terminal
   // takes on every session switch. Every session's primary strand is also
@@ -592,9 +624,9 @@ pub fn a_session_switch_resets_the_watch_and_its_notices_test() {
   // can check directly is the state the switch itself must clear.
   let switched = adopt_session(seeded, "B")
 
-  assert switched.cache.watches == dict.new()
+  assert switched.shared.cache.watches == dict.new()
     as "a session switch must drop the previous session's cache watch"
-  assert switched.cache_notices == []
+  assert switched.shared.cache_notices == []
     as "a session switch must drop the previous session's cache notices"
 
   // The transcript itself is also replaced, so the drawn notice from A does

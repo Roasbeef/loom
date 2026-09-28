@@ -254,6 +254,60 @@ pub fn pieces(
   |> list.flatten
 }
 
+/// The blocks of a lane split at its inputs, as `pieces` splits it into
+/// turns: first the blocks before the first input, which belong to a turn
+/// the window opens inside and may be empty, then each turn that opens at
+/// an input, oldest first, with its blocks in lane order.
+///
+/// A host that holds only the newest part of a lane (the web view, which
+/// pages older rows in on request) cuts it here, between turns. The turn at
+/// the top of what it holds then starts at its input, so its work keeps the
+/// key the input gives it whether older rows are added above it or the
+/// oldest turn leaves. A cut inside a turn would key that turn's work by
+/// the window's start and change the key the moment the input arrived,
+/// which makes a keyed view draw the whole turn again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.grouped([], []) == #([], [])
+/// ```
+pub fn grouped(
+  blocks: List(Block),
+  strands: List(protocol.Strand),
+) -> #(List(Block), List(List(Block))) {
+  // Whether a block is an input does not depend on the calls the lane
+  // joins to their results, so no join is built for the test.
+  let unjoined = Joined(dict.new(), dict.new())
+  let #(lead, done, current) =
+    list.fold(blocks, #([], [], None), fn(acc, block) {
+      let #(lead, done, current) = acc
+      case classify(block, strands, unjoined), current {
+        [Input(..), ..], None -> #(lead, done, Some([block]))
+        [Input(..), ..], Some(turn) -> #(
+          lead,
+          [list.reverse(turn), ..done],
+          Some([block]),
+        )
+        [Answer(..), ..], Some(turn)
+        | [Doing(..), ..], Some(turn)
+        | [Outside(..), ..], Some(turn)
+        | [], Some(turn)
+        -> #(lead, done, Some([block, ..turn]))
+        [Answer(..), ..], None
+        | [Doing(..), ..], None
+        | [Outside(..), ..], None
+        | [], None
+        -> #([block, ..lead], done, None)
+      }
+    })
+  let done = case current {
+    None -> done
+    Some(turn) -> [list.reverse(turn), ..done]
+  }
+  #(list.reverse(lead), list.reverse(done))
+}
+
 // What one block, or one call of a tool group, is to a turn.
 type Classified {
   // Starts a turn: a person's message, another session's, a delivered

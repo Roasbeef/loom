@@ -122,7 +122,7 @@ fn body(board) {
 
 pub fn ready_push_before_pending_reply_survives_channel_correlation_test() {
   let model = pushed.attached()
-  let assert Some(channel) = model.channel
+  let assert Some(channel) = model.shared.channel
     as "fixture has a synchronized channel"
   let #(channel, disposition) =
     session_channel.submit(channel, protocol.worktree_diff(999), now: 0)
@@ -190,11 +190,12 @@ fn model_with_patch() {
       fn() { 0 },
     )
   tui_model.Model(
-    ..base,
-    diff_view: tui_model.DiffVisible,
-    strands: [],
-    worktree: state,
-    input: textarea.state_from_string("draft"),
+    shared: tui_model.Shared(..base.shared, strands: [], worktree: state),
+    view: tui_model.View(
+      ..base.view,
+      diff_view: tui_model.DiffVisible,
+      input: textarea.state_from_string("draft"),
+    ),
   )
   |> fn(model) { tui.update(backend.Resize(120, 30), model) }
 }
@@ -206,24 +207,27 @@ fn key(model, key) {
 fn painted(model: tui_model.Model) {
   let model = tui.update(backend.Tick, model)
   let #(buf, _) =
-    render.view(model, geometry.rect_new(0, 0, model.width, model.height))
+    render.view(
+      model,
+      geometry.rect_new(0, 0, model.view.width, model.view.height),
+    )
   frame.buffer_to_text(buf)
 }
 
 pub fn file_focus_keeps_composer_text_and_patch_scroll_independent_test() {
   let model = model_with_patch() |> key("r")
-  assert textarea.value(model.input) == "draftr"
+  assert textarea.value(model.view.input) == "draftr"
   let selected = model |> key("ctrl+d") |> key("down") |> key("down")
-  assert selected.worktree.selected == 2
-  assert textarea.value(selected.input) == "draftr"
+  assert selected.shared.worktree.selected == 2
+  assert textarea.value(selected.view.input) == "draftr"
   let visible = painted(selected)
   assert string.contains(visible, "second patch")
   assert !string.contains(visible, "patch-row-")
     as "selection replaces all-file rows without a resize or server event"
   let resumed = selected |> key("enter") |> key("x")
-  assert textarea.value(resumed.input) == "draftrx"
+  assert textarea.value(resumed.view.input) == "draftrx"
   let resized = tui.update(backend.Resize(160, 35), resumed)
-  assert resized.worktree.selected == 2
+  assert resized.shared.worktree.selected == 2
 }
 
 pub fn diff_navigation_labels_status_and_selected_extent_test() {
@@ -253,7 +257,10 @@ pub fn diff_navigation_labels_status_and_selected_extent_test() {
     |> worktree_view.request("owner")
   let base = model_with_patch()
   let model =
-    tui_model.Model(..base, worktree: observed)
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, worktree: observed),
+    )
     |> key("ctrl+d")
     |> fn(model) { tui.update(backend.Tick, model) }
   let labels =
@@ -287,16 +294,16 @@ pub fn compact_focused_diff_borrows_status_space_but_keeps_editor_test() {
   let visible = painted(compact)
   assert string.contains(visible, "NAV ↑↓ r Enter PgUp/Dn")
   assert string.contains(visible, "first.gleam")
-  assert compact.diff_row_count > patch.size.height
+  assert compact.view.diff_row_count > patch.size.height
   let paged = key(compact, "pageup")
-  assert paged.diff_scroll_offset > compact.diff_scroll_offset
+  assert paged.view.diff_scroll_offset > compact.view.diff_scroll_offset
   assert painted(paged) != visible
-  assert textarea.value(compact.input) == "draft"
+  assert textarea.value(compact.view.input) == "draft"
 
   let composing = compact |> key("enter") |> key("x")
-  assert composing.worktree.focus == worktree_view.Composer
-  assert composing.worktree.selected == compact.worktree.selected
-  assert textarea.value(composing.input) == "draftx"
+  assert composing.shared.worktree.focus == worktree_view.Composer
+  assert composing.shared.worktree.selected == compact.shared.worktree.selected
+  assert textarea.value(composing.view.input) == "draftx"
 }
 
 pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() {
@@ -315,10 +322,13 @@ pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() 
   let focused =
     tui_model.Model(
       ..base,
-      worktree: worktree_view.State(
-        ..state,
-        selected: 6,
-        focus: worktree_view.Navigator,
+      shared: tui_model.Shared(
+        ..base.shared,
+        worktree: worktree_view.State(
+          ..state,
+          selected: 6,
+          focus: worktree_view.Navigator,
+        ),
       ),
     )
     |> fn(model) { tui.update(backend.Resize(80, 24), model) }
@@ -332,10 +342,14 @@ pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() 
       ),
       focused,
     )
-  assert clicked.worktree.selected == 1
+  assert clicked.shared.worktree.selected == 1
     as "the top visible row maps through the shared navigation offset"
 
-  let covered = tui_model.Model(..focused, notes_open: True)
+  let covered =
+    tui_model.Model(
+      ..focused,
+      view: tui_model.View(..focused.view, notes_open: True),
+    )
   let ignored =
     tui.update(
       backend.MousePress(
@@ -345,7 +359,7 @@ pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() 
       ),
       covered,
     )
-  assert ignored.worktree.selected == 6
+  assert ignored.shared.worktree.selected == 6
 }
 
 pub fn patch_page_uses_actual_height_and_preclamps_after_resize_test() {
@@ -355,22 +369,33 @@ pub fn patch_page_uses_actual_height_and_preclamps_after_resize_test() {
     |> key("down")
     |> fn(model) { tui.update(backend.Resize(40, 12), model) }
   let height = layout.diff_patch_area(resized).size.height
-  let trapped = tui_model.Model(..resized, diff_scroll_offset: 10_000)
+  let trapped =
+    tui_model.Model(
+      ..resized,
+      view: tui_model.View(..resized.view, diff_scroll_offset: 10_000),
+    )
   let paged = key(trapped, "pageup")
-  let maximum = int.max(0, paged.diff_row_count - height)
-  assert paged.diff_scroll_offset == maximum
+  let maximum = int.max(0, paged.view.diff_row_count - height)
+  assert paged.view.diff_scroll_offset == maximum
   let newer = key(paged, "pagedown")
-  assert newer.diff_scroll_offset == int.max(0, maximum - height)
+  assert newer.view.diff_scroll_offset == int.max(0, maximum - height)
 
   let composing = key(resized, "enter")
   let refocused =
-    key(tui_model.Model(..composing, diff_scroll_offset: 10_000), "ctrl+d")
+    key(
+      tui_model.Model(
+        ..composing,
+        view: tui_model.View(..composing.view, diff_scroll_offset: 10_000),
+      ),
+      "ctrl+d",
+    )
   let focused_maximum =
     int.max(
       0,
-      refocused.diff_row_count - layout.diff_patch_area(refocused).size.height,
+      refocused.view.diff_row_count
+        - layout.diff_patch_area(refocused).size.height,
     )
-  assert refocused.diff_scroll_offset == focused_maximum
+  assert refocused.view.diff_scroll_offset == focused_maximum
 }
 
 pub fn borrowed_side_patch_routes_wheel_without_moving_transcript_test() {
@@ -385,14 +410,14 @@ pub fn borrowed_side_patch_routes_wheel_without_moving_transcript_test() {
       backend.MouseScroll(patch.position.x, patch.position.y, True),
       focused,
     )
-  assert moved.scroll_offset == focused.scroll_offset
-  assert moved.diff_scroll_offset > focused.diff_scroll_offset
+  assert moved.view.scroll_offset == focused.view.scroll_offset
+  assert moved.view.diff_scroll_offset > focused.view.diff_scroll_offset
 }
 
 pub fn mouse_selection_replaces_cached_patch_without_resize_test() {
   let selected =
     tui.update(backend.MousePress(2, 6, backend.MouseLeft), model_with_patch())
-  assert selected.worktree.selected == 2
+  assert selected.shared.worktree.selected == 2
   let visible = painted(selected)
   assert string.contains(visible, "second patch")
   assert !string.contains(visible, "patch-row-")
@@ -404,10 +429,13 @@ pub fn ready_observation_replaces_cached_patch_without_resize_test() {
   let waiting =
     tui_model.Model(
       ..previous,
-      worktree: worktree_view.State(
-        ..previous.worktree,
-        owner: "",
-        awaiting: Some(9),
+      shared: tui_model.Shared(
+        ..previous.shared,
+        worktree: worktree_view.State(
+          ..previous.shared.worktree,
+          owner: "",
+          awaiting: Some(9),
+        ),
       ),
     )
   let observed =
@@ -433,7 +461,7 @@ pub fn patch_scroll_can_reach_the_first_row_before_and_after_resize_test() {
   let oldest =
     list.fold(range(20), model, fn(model, _) { key(model, "pageup") })
   assert string.contains(painted(oldest), "patch-row-0")
-  assert oldest.scroll_offset == 0
+  assert oldest.view.scroll_offset == 0
   let resized = tui.update(backend.Resize(160, 35), oldest)
   let oldest =
     list.fold(range(20), resized, fn(model, _) { key(model, "pageup") })
@@ -463,17 +491,23 @@ fn range(stop: Int) -> List(Int) {
 }
 
 pub fn automatic_wide_diff_preserves_composer_and_explicit_dismissal_test() {
-  let base =
+  let base = {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
-      ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-      input: textarea.state_from_string("draft"),
+      ..base,
+      view: tui_model.View(
+        ..base.view,
+        input: textarea.state_from_string("draft"),
+      ),
     )
+  }
   let wide = tui.update(backend.Resize(160, 35), base)
-  assert wide.diff_view == tui_model.DiffAutomatic
+  assert wide.view.diff_view == tui_model.DiffAutomatic
   assert string.contains(painted(wide), "captured changes")
   assert string.contains(painted(wide), "transcript / main")
-  assert textarea.value(key(wide, "x").input) == "draftx"
-  assert key(wide, "esc").diff_view == tui_model.DiffAutomatic
+  assert textarea.value(key(wide, "x").view.input) == "draftx"
+  assert key(wide, "esc").view.diff_view == tui_model.DiffAutomatic
     as "the default pane must not intercept the operation stop key"
 
   let narrow = tui.update(backend.Resize(100, 35), wide)
@@ -481,13 +515,13 @@ pub fn automatic_wide_diff_preserves_composer_and_explicit_dismissal_test() {
   let wide_again = tui.update(backend.Resize(160, 35), narrow)
   assert string.contains(painted(wide_again), "captured changes")
   let dismissed = submit.open_diff(wide_again)
-  assert dismissed.diff_view == tui_model.DiffHidden
+  assert dismissed.view.diff_view == tui_model.DiffHidden
   let resized = tui.update(backend.Resize(170, 35), dismissed)
   assert !string.contains(painted(resized), "captured changes")
-  assert textarea.value(resized.input) == "draft"
+  assert textarea.value(resized.view.input) == "draft"
 
   let manual = submit.open_diff(narrow)
-  assert manual.diff_view == tui_model.DiffVisible
+  assert manual.view.diff_view == tui_model.DiffVisible
   assert string.contains(painted(manual), "captured changes")
 }
 
@@ -508,7 +542,7 @@ pub fn changes_during_observation_schedule_exactly_one_followup_test() {
 
 pub fn live_jobs_is_a_read_and_its_correlated_roster_keeps_channel_ready_test() {
   let model = pushed.attached()
-  let assert Some(channel) = model.channel
+  let assert Some(channel) = model.shared.channel
     as "fixture has a synchronized channel"
   let #(channel, disposition) =
     session_channel.submit(channel, protocol.live_jobs(999, "main"), now: 0)
@@ -545,23 +579,29 @@ fn apply_incoming(
   model: tui_model.Model,
   message: connection_event.Message,
 ) -> tui_model.Model {
-  let assert Some(channel) = model.channel as "fixture has a channel"
+  let assert Some(channel) = model.shared.channel as "fixture has a channel"
   let #(channel, updates) = session_channel.receive(channel, message, now: 0)
   list.fold(
     updates,
-    tui_model.Model(..model, channel: Some(channel)),
+    tui_model.Model(
+      ..model,
+      shared: tui_model.Shared(..model.shared, channel: Some(channel)),
+    ),
     inbound.apply_channel_update,
   )
 }
 
 fn issue(model: tui_model.Model, command: String) -> #(tui_model.Model, Int) {
-  let assert Some(channel) = model.channel as "fixture has a channel"
+  let assert Some(channel) = model.shared.channel as "fixture has a channel"
   let #(channel, disposition) = session_channel.submit(channel, command, now: 0)
   let assert session_channel.Sent(_, request_id) = disposition
     as "fixture command is sent immediately"
   #(
     inbound.apply_channel_update(
-      tui_model.Model(..model, channel: Some(channel)),
+      tui_model.Model(
+        ..model,
+        shared: tui_model.Shared(..model.shared, channel: Some(channel)),
+      ),
       session_channel.Submission(disposition),
     ),
     request_id,
@@ -573,7 +613,10 @@ pub fn unrelated_correlated_and_pushed_errors_do_not_cancel_a_worktree_observati
   let model =
     tui_model.Model(
       ..base,
-      worktree: worktree_view.request(worktree_view.new(), ""),
+      shared: tui_model.Shared(
+        ..base.shared,
+        worktree: worktree_view.request(worktree_view.new(), ""),
+      ),
     )
   let #(model, observation_id) = issue(model, protocol.worktree_diff(999))
   let model =
@@ -597,7 +640,7 @@ pub fn unrelated_correlated_and_pushed_errors_do_not_cancel_a_worktree_observati
       #("message", json.String("models unavailable")),
     ])
   let model = apply_incoming(model, pushed.reply(models_id, "error", error))
-  assert model.worktree.awaiting == Some(observation_id)
+  assert model.shared.worktree.awaiting == Some(observation_id)
   let model =
     apply_incoming(
       model,
@@ -606,7 +649,7 @@ pub fn unrelated_correlated_and_pushed_errors_do_not_cancel_a_worktree_observati
         #("body", error),
       ]),
     )
-  assert model.worktree.awaiting == Some(observation_id)
+  assert model.shared.worktree.awaiting == Some(observation_id)
   let model =
     apply_incoming(
       model,
@@ -615,10 +658,10 @@ pub fn unrelated_correlated_and_pushed_errors_do_not_cancel_a_worktree_observati
         #("body", body(raw_ready(observation_id))),
       ]),
     )
-  let assert Some(observation) = model.worktree.board
+  let assert Some(observation) = model.shared.worktree.board
     as "the independent capture still adopts its final response"
   assert observation.request_id == observation_id
-  assert model.worktree.awaiting == None
+  assert model.shared.worktree.awaiting == None
 }
 
 // Commit navigation remains selected even when current file status changes.

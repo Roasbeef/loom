@@ -188,7 +188,13 @@ pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
       fn() { -1000 },
     )
   let initial =
-    tui_model.Model(..initial, overlay: tui_model.DaemonSelector(selector(0)))
+    tui_model.Model(
+      ..initial,
+      view: tui_model.View(
+        ..initial.view,
+        overlay: tui_model.DaemonSelector(selector(0)),
+      ),
+    )
   let initial = tui.update(backend.Resize(96, 24), initial)
   let screen = geometry.rect_new(0, 0, 96, 24)
   let #(first, _) = render.view(initial, screen)

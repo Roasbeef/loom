@@ -12,6 +12,11 @@
 //// `transcript_lines.record_lines`), starting each time from an empty
 //// history and empty caches, so its lines are what a terminal that had just
 //// attached would draw for the same records.
+////
+//// A host that pages older history keeps one thing across captures: the
+//// strand's `history_view.State`. `branch_blocks` draws from the branch
+//// that state gives, with the same fresh presentation, so the blocks are
+//// keyed as `blocks` keys them.
 
 import core/ids
 import gleam/dict
@@ -113,6 +118,33 @@ pub fn blocks(
   transcript_lines.keyed_record_blocks(records, presentation, notices, advisor)
 }
 
+/// The same blocks as `blocks`, drawn from a strand's branch that the host
+/// keeps across captures (`history_view`) rather than from one capture's
+/// window.
+///
+/// A host that pages older history holds a `history_view.State`, folds
+/// each capture and each older page it reads into it, and draws the branch
+/// that state gives. The rows are built exactly as `blocks` builds them, so
+/// a row has the same key whichever of the two drew it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript.branch_blocks(history_view.branch(history, view), cut, view, "main", [])
+/// ```
+pub fn branch_blocks(
+  branch: snapshot_view.Branch,
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+  strand: String,
+  notices: List(CacheNotice),
+) -> List(transcript_lines.Block) {
+  let #(records, presentation, advisor) =
+    presented(branch.records, cut, view, strand)
+  let notices = list.filter(notices, fn(notice) { notice.strand == strand })
+  transcript_lines.keyed_record_blocks(records, presentation, notices, advisor)
+}
+
 /// The newest entry `strand` holds on its own ancestry in a capture: where a
 /// transient notice raised for it now is anchored, as the terminal anchors
 /// one (`transcript_lines.newest_entry`).
@@ -147,7 +179,21 @@ fn projected(
     history_view.empty()
     |> history_view.capture(cut.window, view, strand)
     |> history_view.branch(view)
+  presented(branch.records, cut, view, strand)
+}
 
+// The presentation and the advisor's board for one strand's records, which
+// came either from one capture's window or from a branch the host kept.
+fn presented(
+  records: List(protocol.EntryRecord),
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+  strand: String,
+) -> #(
+  List(protocol.EntryRecord),
+  transcript_lines.Presentation,
+  advisor_history.Board,
+) {
   // An attached terminal starts from these same defaults: no labels, empty
   // row caches and no worktree board, so the rows depend on the records
   // alone.
@@ -156,7 +202,7 @@ fn projected(
       active_strand: strand,
       extent: notes_view.Excerpt,
       captured: Some(#(cut, view)),
-      records: branch.records,
+      records:,
       streams: [],
       tool_tails: [],
       queued: [],
@@ -168,7 +214,7 @@ fn projected(
       worktree: worktree_view.new(),
     )
   #(
-    branch.records,
+    records,
     presentation,
     advisor_history.project(view, cut.window)
       |> advisor_history.visible(strand),

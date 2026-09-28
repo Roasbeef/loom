@@ -46,25 +46,37 @@
 //// and it never queues a note.
 ////
 //// This module is the observer's application, and its message type carries
-//// no command: a browser has nothing it can send it, since its view attaches
-//// no event handler. An operator's page is `web_view/operator_page`, which
+//// no command. Its view attaches one event handler, the lane's "Load older"
+//// button, whose message asks for a read of older history and nothing else
+//// (protocol-change/051, the addendum on history paging). An operator's page is `web_view/operator_page`, which
 //// wraps these messages with the two commands an operator may send and
 //// reaches the lane through `submit` and `decide` here, which call the
 //// engine's command arms.
+////
+//// The page holds a bounded number of transcript rows: the newest
+//// `live_rows` of its strand, or `held_rows` once the reader has loaded
+//// older ones. It keeps the strand's history window across captures
+//// (`history_view`, the terminal's `scrollback`), projects the newest turns
+//// that fit, and trims the window to what it draws. `older` pages further
+//// back through the lane's `history` read, the read the terminal pages
+//// with. The window is session state the shared step will hold for both
+//// hosts; the limit and `Paging` are this page's view state.
+////
+//// The page's regions are drawn by the modules under `web_view/view`: the
+//// heading, the agent strip and the transcript lane. This module derives
+//// what they draw, when a message changes it, and `view` lays them out.
 
 import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
-import lustre/element/keyed
 import lustre/server_component
 import session_view/agent_roster
 import session_view/agent_view
@@ -72,8 +84,8 @@ import session_view/approval
 import session_view/cache_miss
 import session_view/cache_watch
 import session_view/connection_event
+import session_view/history_view
 import session_view/inbox.{type Inbox}
-import session_view/markdown
 import session_view/operator
 import session_view/protocol
 import session_view/reviewer_status
@@ -84,7 +96,9 @@ import session_view/transcript
 import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/turns
-import web_view/markdown_view
+import web_view/view/heading
+import web_view/view/lane
+import web_view/view/strip
 
 /// The most frames one `Arrived` carries: the frame the selector matched
 /// and up to this many less one already waiting behind it.
@@ -95,8 +109,46 @@ import web_view/markdown_view
 /// soon as the one before it is reduced.
 pub const arrival_batch = 64
 
-/// The strand the page shows and addresses.
-pub const strand = "main"
+/// The strand the page shows and addresses, which the agent strip marks
+/// as the one the page follows (`strip.followed`).
+pub const strand = strip.followed
+
+/// How many transcript rows the page holds while it follows the session:
+/// the newest rows of the strand, cut between turns
+/// (`turns.grouped`). Older rows leave the page as new ones arrive.
+///
+/// The number bounds what the page retains. Lustre's server runtime keeps
+/// every element it rendered, to diff the next render against, and a row
+/// of rendered Markdown retains several times what a plain row does (#587).
+/// Measured with #587's page of short Markdown answers, 150 rows retain
+/// less than 600 plain rows did before Markdown was drawn, which is the
+/// footprint the page had to stay within, and `held_rows` retains about a
+/// fifth more. It is also several screens of reading before the reader
+/// needs "Load older". A cut holds at most a hundred records of the whole
+/// session, so on a session of one-row answers the page gathers its rows
+/// over several captures; records that draw several rows each fill it from
+/// one.
+pub const live_rows = 150
+
+/// The most transcript rows the page holds once its reader has loaded
+/// older ones: twice `live_rows`.
+///
+/// Loading older rows raises the page's limit from `live_rows` to this.
+/// The page still holds the newest rows, so new ones keep arriving at the
+/// bottom, and once the page is at this limit it loads no more
+/// (`lane.Full`). Refusing at the limit, rather than dropping the newest
+/// rows to make room, keeps the page live without a second mode that
+/// stops following the session.
+pub const held_rows = 300
+
+/// The Lustre event path of the lane's "Load older" button, on both pages:
+/// the lane is the third child of the page's `main`, the line above its
+/// oldest row the lane's first child, and the button that line's first
+/// child. The page socket admits a `click` from an observer at this path and
+/// no other event (`client/daemon/ui_socket.observer_accepts`,
+/// protocol-change/051, the addendum on history paging). `page_events_test`
+/// fails if the view moves the button, so the two cannot drift apart.
+pub const older_path = "0\t2\t0\t0"
 
 /// The most bytes of prompt text the page submits. The page socket's frame
 /// limit bounds a whole message; this bounds the field inside it, so a
@@ -205,35 +257,29 @@ pub type Answer {
   Deny
 }
 
-/// One agent chip: the roster's line for a strand, the hue its position
-/// gives it, and what may be said about its prompt cache.
-pub type Chip {
-  Chip(
-    /// The roster's line: name, status, activity, elapsed time, context.
-    line: agent_roster.Line,
-    /// The strand's hue, from its position among the captured strands.
-    hue: turns.Hue,
-    /// The cache outlook `cache_watch.shown` allows for the strand, with
-    /// its label, or `None` when nothing honest can be said.
-    cache: Option(#(cache_miss.Outlook, String)),
-    /// How long the strand's current operation had run when the strip was
-    /// built, in milliseconds (`agent_roster.running_ms`), or `None` when
-    /// it has no operation.
-    running_ms: Option(Int),
-  )
+/// How much of the strand's history the page holds. It only moves forward:
+/// a page that has loaded older rows keeps the larger limit, and a page
+/// that reached it stays full.
+pub type Paging {
+  /// The newest `live_rows` rows; the reader has not asked for older ones.
+  Tail
+
+  /// The newest `held_rows` rows, since the reader asked for older ones.
+  Paged
+
+  /// The page held more than `held_rows` rows while paged, so it keeps the
+  /// newest `held_rows` and loads no more.
+  Full
 }
 
-/// The agent strip: the listed agents in the terminal's order, the advisor
-/// in its own place, and how many strands settled out of it.
-pub type Strip {
-  Strip(
-    /// `main`, then every other strand whose state needs watching.
-    chips: List(Chip),
-    /// The advisor, when the capture holds its strand.
-    advisor: Option(Chip),
-    /// How many strands settled and left the strip.
-    settled: Int,
-  )
+// Whether rows older than the oldest one the page holds exist.
+type Earlier {
+  // The page holds the strand's first row.
+  Reached
+
+  // Older rows exist: the page cut them to its limit, or its history window
+  // never held them.
+  Unheld
 }
 
 /// The component's state: the lane, the frames filed since the last tick,
@@ -251,9 +297,19 @@ pub opaque type Model(socket) {
     filed: Inbox(Nil, connection_event.Message),
     /// The last `Captured` update.
     shown: Option(#(snapshot.Captured, snapshot_view.View)),
-    /// The page strand's transcript blocks, projected once when a capture
-    /// or a cache notice arrived, so a message which changed neither costs
-    /// the view no projection.
+    /// The page strand's history window: each capture folded in, and each
+    /// older page the reader loaded. It is the terminal's `scrollback`,
+    /// session state the shared step will hold for both hosts, and it is
+    /// trimmed to the oldest row the page draws (`history_view.retain_from`).
+    scrollback: history_view.State,
+    /// How many rows the page holds. This is the page's own view state.
+    paging: Paging,
+    /// Whether older rows than the page holds exist, derived with `blocks`.
+    earlier: Earlier,
+    /// The page strand's transcript blocks that the page holds, the newest
+    /// turns within its row limit, projected once when a capture, a page
+    /// of history or a cache notice arrived, so a message which changed
+    /// none of them costs the view no projection.
     blocks: List(transcript_lines.Block),
     /// The same blocks laid out as turns (`session_view/turns`), derived
     /// with them.
@@ -271,7 +327,7 @@ pub opaque type Model(socket) {
     notices: List(CacheNotice),
     /// The agent strip, derived when a capture, a usage push or a tick
     /// changed something it draws.
-    strip: Strip,
+    strip: strip.Strip,
     /// The escalations of `shown`, and the settled ones kept beside them.
     approvals: List(approval.Review),
     status: Status,
@@ -313,6 +369,12 @@ pub type Msg(socket) {
   /// The timer armed for the lane's next due reading fired, at this
   /// monotonic reading.
   Ticked(at: Int)
+
+  /// The lane's "Load older" button was pressed. It asks for a read of
+  /// older history and nothing else (`older`), which is why an observer's
+  /// page may carry it (protocol-change/051, the addendum on history
+  /// paging). It is the one message a browser can send an observer's page.
+  OlderRequested
 }
 
 /// The Lustre application for one session's observer page.
@@ -343,6 +405,9 @@ pub fn new(start: Start(socket)) -> Model(socket) {
     lane: None,
     filed: inbox.new(Nil),
     shown: None,
+    scrollback: history_view.empty(),
+    paging: Tail,
+    earlier: Reached,
     blocks: [],
     pieces: [],
     agents: [],
@@ -350,7 +415,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
     roster: agent_roster.new(),
     cache: cache_watch.new(),
     notices: [],
-    strip: Strip(chips: [], advisor: None, settled: 0),
+    strip: strip.Strip(chips: [], advisor: None, settled: 0),
     approvals: [],
     status: Connecting,
     clock: 0,
@@ -480,13 +545,20 @@ pub fn update(
       let #(model, effects) = reduce(Model(..model, clock: at), at)
       #(rearm(ticked(model, at), at), effects)
     }
+
+    OlderRequested -> older(model)
   }
 }
 
 // Every filed frame goes to the lane in arrival order, then the lane's own
 // tick runs, which is where its idle refresh and deadlines are checked. A
 // reduction before the transport opens keeps what was filed for the next
-// one. The lane's outputs are one ordered effect.
+// one.
+//
+// A read for older rows the lane was too busy to take is offered again
+// last, once the lane has done everything the frames asked of it, as the
+// terminal offers it after each of its drains. The lane's outputs are then
+// one ordered effect.
 fn reduce(
   model: Model(socket),
   at: Int,
@@ -499,11 +571,47 @@ fn reduce(
         None -> #(model, effect.none())
         Some(lane) -> {
           let #(lane, ticked) = session_channel.tick(lane, now: at)
-          let #(lane, outputs) = session_channel.take_outputs(lane)
-          let model = apply(Model(..model, lane: Some(lane)), ticked)
-          #(model, perform(model.transport, outputs))
+          apply(Model(..model, lane: Some(lane)), ticked)
+          |> serviced
+          |> taken
         }
       }
+    }
+  }
+}
+
+// Sends the read `history_view` says is owed, when the lane can take it.
+//
+// The lane has one request out at a time. A busy lane refuses the read, and
+// the demand stays `Wanted` in the history window until the next reduction
+// offers it again; nothing else is needed to retry it, because every
+// transition that frees the lane is a reduction. Only a read the lane
+// accepted becomes `Pending`, which is what `accept` matches the reply
+// against.
+fn serviced(model: Model(socket)) -> Model(socket) {
+  case history_view.range(model.scrollback), model.lane {
+    Some(#(after, before)), Some(lane) ->
+      case session_channel.history(lane, after, before, now: model.clock) {
+        Error(_) -> model
+        Ok(lane) ->
+          Model(
+            ..model,
+            lane: Some(lane),
+            scrollback: history_view.sent(model.scrollback, before),
+          )
+      }
+    Some(_), None | None, _ -> model
+  }
+}
+
+// Takes everything the lane queued, keeping the emptied lane so no output
+// is performed twice, and performs it as one ordered effect.
+fn taken(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.lane {
+    None -> #(model, effect.none())
+    Some(lane) -> {
+      let #(lane, outputs) = session_channel.take_outputs(lane)
+      #(Model(..model, lane: Some(lane)), perform(model.transport, outputs))
     }
   }
 }
@@ -555,7 +663,15 @@ pub fn apply(
   list.fold(updates, model, fn(model, update) {
     case update {
       session_channel.Captured(cut:, view:, ..) -> captured(model, cut, view)
-      session_channel.Failed(reason:) -> Model(..model, status: Ended(reason))
+
+      // A lane that failed answers no read it had out or still owed, so the
+      // demand is retired with it and the lane stops saying it is loading.
+      session_channel.Failed(reason:) ->
+        Model(
+          ..model,
+          status: Ended(reason),
+          scrollback: history_view.resume(history_view.cancel(model.scrollback)),
+        )
       session_channel.Submission(disposition:) -> settled(model, disposition)
       session_channel.UnknownOutcome(..) ->
         Model(
@@ -565,14 +681,30 @@ pub fn apply(
           ),
         )
 
+      // An older page of the strand's history, answering the read the page
+      // sent for it.
+      session_channel.HistoryPage(window:, before_seq:, after_seq:) ->
+        paged(model, window, before_seq, after_seq)
+
+      // The daemon refused the read for older rows. The demand is retired
+      // and the page follows the session again, with the rows it held, so
+      // the reader can ask once more.
+      session_channel.RequestRefused(command: "history", code:, ..) ->
+        Model(
+          ..model,
+          scrollback: history_view.cancel(model.scrollback),
+          notice: Warned("Loading older rows was refused: " <> code),
+        )
+        |> resumed
+
       // The daemon's answer to the page's own command replaces whatever
       // the page said before, as the terminal's footer does, so the notice
       // always states the outcome of the latest command rather than an
-      // earlier refusal or a "sent" the daemon has since answered. The
-      // page's lane sends no read that expects a reply, so every
-      // acknowledgement and every refusal it sees answers a command this
-      // page issued. A refusal names its code, which the daemon chooses,
-      // and not its message.
+      // earlier refusal or a "sent" the daemon has since answered. The only
+      // read the page's lane sends that expects a reply is the history read
+      // above, which is never acknowledged, so every other acknowledgement
+      // and refusal it sees answers a command this page issued. A refusal
+      // names its code, which the daemon chooses, and not its message.
       session_channel.Acknowledged(command:, status:) ->
         Model(..model, notice: Said(command <> " " <> status))
       session_channel.RequestRefused(command:, code:, ..) ->
@@ -584,8 +716,10 @@ pub fn apply(
         operation:,
         usage:,
       )) -> used(model, strand, seq, operation, usage)
-      session_channel.HistoryPage(..)
-      | session_channel.LookedUp(..)
+
+      // The page sends no escalation lookup, so a `LookedUp` never answers
+      // it, and it draws no live stream.
+      session_channel.LookedUp(..)
       | session_channel.Auxiliary(..)
       | session_channel.Streamed(..)
       | session_channel.ToolStreamed(..)
@@ -634,6 +768,7 @@ fn fresh(
   Model(
     ..model,
     shown: Some(#(cut, view)),
+    scrollback: history_view.capture(model.scrollback, cut.window, view, strand),
     cache: cache_watch.capture(model.cache, previous, view),
     reviewers:,
     agents: agent_view.observe(model.agents, cut.window, view, reviewers),
@@ -754,29 +889,238 @@ fn noted(model: Model(socket), found: cache_watch.Missed) -> Model(socket) {
   }
 }
 
-// Projects the page strand's blocks and pieces from the shown capture and
+// An older page arrived for the read the page has out. It joins the history
+// window, and the page follows the session again from the newest capture,
+// which `capture` folds in on top of the pages read. A reply for any other
+// read, which the lane's one reply slot should never deliver, is dropped.
+fn paged(
+  model: Model(socket),
+  window: snapshot.Window,
+  before: Int,
+  after: Int,
+) -> Model(socket) {
+  case model.shown, model.scrollback.request == history_view.Pending(before) {
+    Some(#(_, view)), True ->
+      Model(
+        ..model,
+        scrollback: history_view.accept(
+          model.scrollback,
+          window,
+          before,
+          after,
+          view,
+        ),
+      )
+      |> resumed
+    Some(_), False | None, _ -> model
+  }
+}
+
+// Asking for older rows freezes the history window (`history_view.older`),
+// so a capture that lands while the read is out cannot move the endpoint
+// the reply will be placed against. Once the read is answered or refused,
+// the window follows the session again and takes in the newest capture,
+// which `shown` kept while the window was frozen.
+fn resumed(model: Model(socket)) -> Model(socket) {
+  case model.shown {
+    None -> model
+    Some(#(cut, view)) ->
+      Model(
+        ..model,
+        scrollback: history_view.resume(model.scrollback)
+          |> history_view.capture(cut.window, view, strand),
+      )
+      |> relaned
+  }
+}
+
+// Projects the page strand's blocks and pieces from the history window and
 // the notices, then the strip. This is the one place a projection runs.
+//
+// The page holds the newest turns whose rows fit its limit, and cuts the
+// rest (`held`). Records older than the oldest row it keeps are then dropped
+// from the history window, so the next capture projects only what the page
+// draws and the records a capture adds. The window is trimmed only when
+// rows were cut: a record at the start of the strand that draws no row
+// would otherwise leave the page offering to load rows it will never draw.
+//
+// The end of a turn whose input is older than the window is not drawn, but
+// its records stay in the window (`AtInput`), so the next read asks for the
+// sequences below them. Trimming them too would make every read ask for
+// the same interval again, and a turn longer than one read could never be
+// loaded whole.
+//
+// Older rows can be loaded only while there are sequences below the window
+// to read (`history_view.older` asks for none below the first). A branch
+// whose oldest parent is missing with nothing below to read offers no
+// button that would do nothing.
 fn relaned(model: Model(socket)) -> Model(socket) {
   case model.shown {
     None -> restripped(model)
     Some(#(cut, view)) -> {
-      let blocks = transcript.blocks(cut, view, strand, model.notices)
+      let branch = history_view.branch(model.scrollback, view)
+      let all =
+        transcript.branch_blocks(branch, cut, view, strand, model.notices)
+      let #(lead, opened) = turns.grouped(all, view.strands)
+      let #(blocks, fit) =
+        held(lead, opened, branch.unloaded, limit(model.paging))
       let latest = turns.latest(view, model.agents, strand)
       let pieces = turns.pieces(blocks, view.strands, latest)
-      Model(..model, blocks:, pieces:)
+      let #(scrollback, earlier) = case fit, branch.unloaded {
+        Whole, None -> #(model.scrollback, Reached)
+        Whole, Some(_) ->
+          case model.scrollback.before_seq > 1 {
+            True -> #(model.scrollback, Unheld)
+            False -> #(model.scrollback, Reached)
+          }
+        AtInput, _ -> #(trimmed(model.scrollback, lead), Unheld)
+        Cut, _ -> #(trimmed(model.scrollback, blocks), Unheld)
+      }
+
+      // A paged page that had to cut a whole turn to stay within its
+      // limit is full: loading more would only cut again.
+      let paging = case fit, model.paging {
+        Cut, Paged -> Full
+        Cut, Tail | Cut, Full | Whole, _ | AtInput, _ -> model.paging
+      }
+      Model(..model, blocks:, pieces:, scrollback:, earlier:, paging:)
       |> restripped
     }
   }
 }
 
-// A card's body, parsed when it is first drawn and kept by its memo while
-// it is unchanged, as a transcript line is (`lane_rows`).
-fn card_body(body: String) -> Element(message) {
-  use <- element.memo([element.ref(body)])
-  html.div(
-    [attribute.class("card-body"), attribute.class("markdown")],
-    markdown_view.blocks(markdown.parse(body)),
-  )
+// How much of what the history window projects the page holds.
+type Fit {
+  // Every block.
+  Whole
+
+  // Every turn that opens at an input. The blocks before the first input
+  // were left out, because they are the end of a turn whose input is older
+  // than the window and older rows can still be loaded; the page starts at
+  // an input instead.
+  AtInput
+
+  // The newest turns that fit the page's limit; an older turn did not.
+  Cut
+}
+
+// The row limit for how much history the page holds.
+fn limit(paging: Paging) -> Int {
+  case paging {
+    Tail -> live_rows
+    Paged | Full -> held_rows
+  }
+}
+
+// The newest turns whose rows, together, fit `limit`, oldest first.
+//
+// The page starts at a turn's input whenever it can, so that no turn it
+// holds is keyed by the window's start (`turns.grouped` says why). The
+// blocks before the first input are held only when nothing older exists,
+// which makes them the start of the strand, or when they are all there is.
+//
+// The newest turn is always held. When it alone is over the limit, which a
+// long run of work can be, the page holds its newest blocks that fit, and
+// at least its newest block, so a page mid-turn still shows the turn's end.
+// That turn is then keyed by the window's start. The window's start moves
+// each time the turn grows by a block, since the window is trimmed to its
+// oldest held block, so the key changes and the turn's held rows, at most
+// the limit, are drawn again on that capture. Only a turn longer than the
+// whole limit pays this.
+fn held(
+  lead: List(transcript_lines.Block),
+  opened: List(List(transcript_lines.Block)),
+  unloaded: Option(String),
+  limit: Int,
+) -> #(List(transcript_lines.Block), Fit) {
+  let #(groups, fit) = case lead, opened, unloaded {
+    [], _, _ -> #(opened, Whole)
+    [_, ..], [], _ | [_, ..], _, None -> #([lead, ..opened], Whole)
+    [_, ..], [_, ..], Some(_) -> #(opened, AtInput)
+  }
+  let #(blocks, fit) = case list.reverse(groups) {
+    [] -> #([], fit)
+    [newest, ..older] -> {
+      let rows = row_count(newest)
+      case rows > limit {
+        True -> #(newest_blocks(list.reverse(newest), limit, 0, []), Cut)
+        False -> older_turns(older, limit, rows, newest, fit)
+      }
+    }
+  }
+
+  // The end of a turn left out above the held turns can only grow as older
+  // pages bring the rest of it. Once it alone no longer fits in the room
+  // left, the whole turn never will, so the page is as full as that turn
+  // lets it be. Calling it cut stops the page reading ever further down a
+  // turn it cannot draw, and keeps the window from filling with its records.
+  case fit {
+    AtInput ->
+      case row_count(blocks) + row_count(lead) > limit {
+        True -> #(blocks, Cut)
+        False -> #(blocks, AtInput)
+      }
+    Whole | Cut -> #(blocks, fit)
+  }
+}
+
+// Adds older turns, newest first, in front of what is held while they fit.
+fn older_turns(
+  older: List(List(transcript_lines.Block)),
+  limit: Int,
+  rows: Int,
+  kept: List(transcript_lines.Block),
+  fit: Fit,
+) -> #(List(transcript_lines.Block), Fit) {
+  case older {
+    [] -> #(kept, fit)
+    [turn, ..rest] -> {
+      let rows = rows + row_count(turn)
+      case rows > limit {
+        True -> #(kept, Cut)
+        False -> older_turns(rest, limit, rows, list.append(turn, kept), fit)
+      }
+    }
+  }
+}
+
+// The newest blocks of one turn, given newest first, that fit `limit`, and
+// at least one.
+fn newest_blocks(
+  newest_first: List(transcript_lines.Block),
+  limit: Int,
+  rows: Int,
+  kept: List(transcript_lines.Block),
+) -> List(transcript_lines.Block) {
+  case newest_first {
+    [] -> kept
+    [block, ..rest] -> {
+      let rows = rows + list.length(block.rows)
+      case rows > limit, kept {
+        True, [_, ..] -> kept
+        True, [] | False, _ -> newest_blocks(rest, limit, rows, [block, ..kept])
+      }
+    }
+  }
+}
+
+fn row_count(blocks: List(transcript_lines.Block)) -> Int {
+  list.fold(blocks, 0, fn(sum, block) { sum + list.length(block.rows) })
+}
+
+// Drops the records older than the oldest block the page holds.
+fn trimmed(
+  scrollback: history_view.State,
+  blocks: List(transcript_lines.Block),
+) -> history_view.State {
+  case blocks {
+    [] -> scrollback
+    [oldest, ..] ->
+      case transcript_lines.block_seq(oldest) {
+        Ok(seq) -> history_view.retain_from(scrollback, seq)
+        Error(Nil) -> scrollback
+      }
+  }
 }
 
 // The agent strip from the roster, the agent rows and the cache ledger, as
@@ -786,18 +1130,18 @@ fn restripped(model: Model(socket)) -> Model(socket) {
   Model(..model, strip: strip_of(model))
 }
 
-fn strip_of(model: Model(socket)) -> Strip {
+fn strip_of(model: Model(socket)) -> strip.Strip {
   let strands = strands(model)
   let chips = agent_roster.chips(model.roster, model.agents, strand)
   let chip = fn(line: agent_roster.Line) {
-    Chip(
+    strip.Chip(
       line:,
       hue: turns.hue(strands, line.id),
       cache: outlook(model, strands, line.id),
       running_ms: running_ms(model, line.id),
     )
   }
-  Strip(
+  strip.Strip(
     chips: list.map(chips.listed, chip),
     advisor: option.map(chips.advisor, chip),
     settled: chips.settled,
@@ -861,7 +1205,7 @@ fn ticked(model: Model(socket), at: Int) -> Model(socket) {
 }
 
 // Every chip of a strip, the advisor's included.
-fn chips(strip: Strip) -> List(Chip) {
+fn chips(strip: strip.Strip) -> List(strip.Chip) {
   case strip.advisor {
     Some(advisor) -> list.append(strip.chips, [advisor])
     None -> strip.chips
@@ -970,6 +1314,78 @@ pub fn decide(
   }
 }
 
+/// Asks for the rows older than the oldest one the page holds, when the
+/// lane lists them as `lane.Earlier`, and does nothing otherwise.
+///
+/// The page's limit rises from `live_rows` to `held_rows`, and the history
+/// window asks for the interval of at most a hundred sequences below its
+/// oldest record (`history_view.older`), which the lane sends as a
+/// `history` read as soon as it has no other request out. That is the
+/// read the terminal pages with, and a read, not a mutation: the gateway
+/// admits it for an observer's attachment as for an operator's. While it
+/// is out the lane draws `lane.Loading`, and a second press asks nothing.
+/// The reply is folded in by `apply`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.older(model)
+/// ```
+pub fn older(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
+  let model = drained(Model(..model, clock: model.transport.now()))
+  case top(model), model.shown, model.status {
+    lane.Earlier, Some(#(_, view)), Following -> {
+      let branch = history_view.branch(model.scrollback, view)
+      Model(
+        ..model,
+        scrollback: history_view.older(model.scrollback, branch.unloaded),
+        paging: Paged,
+      )
+      |> relaned
+      |> serviced
+      |> flushed
+    }
+
+    // Nothing older to load, a read already out, a page at its limit, or
+    // a page that is not following a session.
+    lane.Beginning, _, _
+    | lane.Loading, _, _
+    | lane.Full(_), _, _
+    | lane.Earlier, None, _
+    | lane.Earlier, Some(_), Connecting
+    | lane.Earlier, Some(_), Ended(_)
+    -> flushed(model)
+  }
+}
+
+/// What the lane draws above the oldest row the page holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.top(model) == lane.Earlier
+/// ```
+pub fn top(model: Model(socket)) -> lane.Top {
+  case model.scrollback.request, model.earlier, model.paging {
+    history_view.Wanted, _, _ | history_view.Pending(_), _, _ -> lane.Loading
+    history_view.Quiet, Reached, _ -> lane.Beginning
+    history_view.Quiet, Unheld, Full -> lane.Full(held_rows)
+    history_view.Quiet, Unheld, Tail | history_view.Quiet, Unheld, Paged ->
+      lane.Earlier
+  }
+}
+
+/// How many rows the page holds (`Paging`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.paging(model) == component.Tail
+/// ```
+pub fn paging(model: Model(socket)) -> Paging {
+  model.paging
+}
+
 // One command through the lane: drain what was filed, run the arm, fold its
 // disposition, and perform everything the lane queued in the order it
 // queued it.
@@ -1001,20 +1417,12 @@ fn commanded(
   }
 }
 
-// Takes everything the lane queued and performs it, keeping the emptied
-// lane, so no output is performed twice. A command moves the lane's next
-// due reading, so the timer is armed again here too.
+// Takes and performs everything the lane queued, as `taken` does. A command
+// or a read moves the lane's next due reading, so the timer is armed again
+// here too.
 fn flushed(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
-  case model.lane {
-    None -> #(model, effect.none())
-    Some(lane) -> {
-      let #(lane, outputs) = session_channel.take_outputs(lane)
-      #(
-        rearm(Model(..model, lane: Some(lane)), model.clock),
-        perform(model.transport, outputs),
-      )
-    }
-  }
+  let #(model, effects) = taken(model)
+  #(rearm(model, model.clock), effects)
 }
 
 // The lane's outputs, performed through the host's transport in the order
@@ -1089,7 +1497,7 @@ pub fn lines(model: Model(socket)) -> List(Line) {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.lane_view(component.pieces(model))
+/// // lane.view(component.pieces(model))
 /// ```
 pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
   model.pieces
@@ -1100,9 +1508,9 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.strip_view(component.strip(model))
+/// // strip.view(component.strip(model))
 /// ```
-pub fn strip(model: Model(socket)) -> Strip {
+pub fn strip(model: Model(socket)) -> strip.Strip {
   model.strip
 }
 
@@ -1114,7 +1522,7 @@ pub fn strip(model: Model(socket)) -> Strip {
 /// ```gleam
 /// // component.addressed(model)
 /// ```
-pub fn addressed(model: Model(socket)) -> Option(Chip) {
+pub fn addressed(model: Model(socket)) -> Option(strip.Chip) {
   list.find(model.strip.chips, fn(chip) { chip.line.id == strand })
   |> option.from_result
 }
@@ -1238,7 +1646,14 @@ pub fn session_id(model: Model(socket)) -> String {
 }
 
 /// The observer's page: the heading, the agent strip, the lane, and a fixed
-/// line saying the page is read-only. It attaches no event handler.
+/// line saying the page is read-only. Its one event handler is the lane's
+/// "Load older" button, whose message asks for a read and nothing else; the
+/// page socket admits that one event from an observer and drops every other
+/// frame (protocol-change/051, the addendum on history paging).
+///
+/// Each region is drawn by its own module under `web_view/view`
+/// (`heading`, `strip` and `lane`); this function only lays them out, as
+/// `operator_page.view` does for the operator's page.
 ///
 /// ## Examples
 ///
@@ -1248,8 +1663,8 @@ pub fn session_id(model: Model(socket)) -> String {
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session")], [
     heading(model),
-    strip_view(model.strip),
-    lane_view(model.pieces),
+    strip.view(model.strip),
+    lane.view(model.pieces, top(model), OlderRequested),
     html.p([attribute.class("observer-bar")], [
       html.text(
         "Observer · read-only · you can follow this session; ask the owner for operator access",
@@ -1258,16 +1673,11 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   ])
 }
 
-/// The page's heading: the session's name, the workspace it runs in, and
-/// the connection's status.
+/// The page's heading, drawn by `web_view/view/heading` from the session's
+/// identity, the catalogue's label and the connection's status.
 ///
-/// The name is the catalogue's label, or the session's identity shortened
-/// to its first eight characters when it has none; the whole identity is
-/// the heading's `title`. The workspace is drawn as its last path segment,
-/// with the whole path in a `title`. Both are text nodes and attribute
-/// values that Lustre escapes. The catalogue's fields are written by the
-/// owner and the host, never by the session's agent, and a `title` is
-/// inert, so neither needs the stricter handling transcript text gets.
+/// The heading module takes the label's two fields and the status's words
+/// as plain values, because it cannot import the types this module defines.
 ///
 /// ## Examples
 ///
@@ -1275,585 +1685,19 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 /// // component.heading(model)
 /// ```
 pub fn heading(model: Model(socket)) -> Element(message) {
-  html.header([attribute.class("session-head")], [
-    html.h1([attribute.title(model.session_id)], [
-      html.text(session_name(model.session_id, model.label)),
-    ]),
-    workspace(model.label),
-    html.p([attribute.class("status"), attribute.role("status")], [
-      html.text(status_text(model.status)),
-    ]),
-  ])
-}
-
-// A session with no name, or none the host could read, is named by its
-// identity's first eight characters. The whole identity is in the
-// heading's `title`, so the shortening loses nothing a reader can need.
-fn session_name(session_id: String, label: Option(Label)) -> String {
-  case label {
-    Some(Label(name: "", ..)) | None ->
-      "Session " <> string.slice(session_id, 0, 8)
-    Some(Label(name:, ..)) -> name
-  }
-}
-
-// The workspace's last path segment, or nothing when it is unknown. The
-// heading keeps three children either way, so the status line keeps its
-// place in the tree.
-fn workspace(label: Option(Label)) -> Element(message) {
-  case label {
-    Some(Label(workspace: "", ..)) | None -> element.none()
-    Some(Label(workspace:, ..)) ->
-      html.span([attribute.class("workspace"), attribute.title(workspace)], [
-        html.text(basename(workspace)),
-      ])
-  }
-}
-
-fn basename(path: String) -> String {
-  string.split(path, "/")
-  |> list.filter(fn(segment) { segment != "" })
-  |> list.last
-  |> result.unwrap(path)
-}
-
-/// The agent strip: one chip per listed strand, the advisor's chip last,
-/// and one chip counting the strands that settled.
-///
-/// The chips are drawn and not operated: switching the strand the lane
-/// follows needs the extracted step, so no chip is a control, none takes
-/// focus, and none carries a handler. The list is memoized on the strip,
-/// which the component rebuilds only when something it draws changed.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // component.strip_view(component.strip(model))
-/// ```
-pub fn strip_view(strip: Strip) -> Element(message) {
-  use <- element.memo([element.ref(strip)])
-  case strip.chips, strip.advisor {
-    [], None -> element.none()
-    _, _ -> {
-      let settled = case strip.settled {
-        0 -> []
-        count -> [
-          html.li([attribute.class("chip settled")], [
-            html.span([attribute.class("chip-name")], [
-              html.text("+" <> int.to_string(count) <> " settled"),
-            ]),
-          ]),
-        ]
-      }
-      let advisor = case strip.advisor {
-        Some(chip) -> [chip_element(chip)]
-        None -> []
-      }
-
-      // Chips are listed by position, never keyed by strand name: a child's
-      // name carries words its parent chose.
-      html.nav(
-        [attribute.class("agent-strip"), attribute.aria_label("Agents")],
-        [
-          html.ul(
-            [attribute.class("chips")],
-            list.flatten([list.map(strip.chips, chip_element), settled, advisor]),
-          ),
-        ],
-      )
-    }
-  }
-}
-
-fn chip_element(chip: Chip) -> Element(message) {
-  let line = chip.line
-  let figures =
-    option.map(line.tokens, fn(count) {
-      agent_roster.count_label(count) <> " ctx"
-    })
-    |> option.to_result(Nil)
-    |> result.map(list.wrap)
-    |> result.unwrap([])
-  html.li(chip_attributes(chip), [
-    html.span([attribute.class("swatch"), attribute.aria_hidden(True)], []),
-    html.span([attribute.class("chip-head")], [
-      html.span([attribute.class("chip-name")], [html.text(line.name)]),
-      html.span([attribute.class("state"), status_class(line.status)], [
-        html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
-          html.text(status_glyph(line.status)),
-        ]),
-        html.text(agent_view.label(line.status)),
-      ]),
-    ]),
-    html.span([attribute.class("chip-activity")], [html.text(line.text)]),
-    html.span([attribute.class("chip-figures")], [
-      elapsed(chip),
-      html.text(string.join(figures, " · ")),
-      ring(chip.cache),
-    ]),
-  ])
-}
-
-// The chip of the strand the lane follows is marked as the current one, for
-// a screen reader in words as well as by its ring.
-fn chip_attributes(chip: Chip) -> List(attribute.Attribute(message)) {
-  case chip.line.id == strand {
-    True -> [
-      attribute.class("chip"),
-      attribute.class("following"),
-      attribute.attribute("aria-current", "true"),
-      hue_class(chip.hue),
-    ]
-    False -> [attribute.class("chip"), hue_class(chip.hue)]
-  }
-}
-
-// How long the strand's operation has run. The browser counts it
-// (`<loom-elapsed>`, from `packages/web_client`), so the server never
-// renders again only to move a clock. The attribute is a duration the
-// roster measured on the daemon host's clock, and the element anchors it to
-// the browser's clock when it arrives: an instant from one clock is never
-// subtracted from the other, so a browser whose clock is off by a minute
-// still counts right. A rebuilt strip carries a fresh reading, which
-// re-anchors the count.
-fn elapsed(chip: Chip) -> Element(message) {
-  case chip.running_ms {
-    Some(running) ->
-      element.element(
-        "loom-elapsed",
-        [
-          attribute.class("elapsed"),
-          attribute.attribute("offset", int.to_string(running)),
-        ],
-        [],
-      )
-    None -> element.none()
-  }
-}
-
-// The cache ring: its shape from the outlook, its words from
-// `cache_miss.outlook_label`, which is all the outlook may claim and is
-// never session text. The words are drawn beside the ring rather than kept
-// in a tooltip. A strand whose outlook is shown is resting, so its chip has
-// no elapsed time and usually no context size, and a ring on its own read
-// as a stray glyph; with its words it reads as the cache's state. The ring
-// is then decoration, hidden from a screen reader, which reads the words.
-fn ring(cache: Option(#(cache_miss.Outlook, String))) -> Element(message) {
-  case cache {
-    None -> element.none()
-    Some(#(held, label)) ->
-      html.span([attribute.class("cache")], [
-        html.span(
-          [
-            attribute.class("ring"),
-            ring_class(held),
-            attribute.aria_hidden(True),
-          ],
-          [],
-        ),
-        html.text(label),
-      ])
-  }
-}
-
-/// The class naming how an outlook is drawn: a held head, a held tail, an
-/// idle age, or a boundary that has passed. Each is a whole literal, which
-/// is what lets Tailwind see it.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // component.ring_class(cache_miss.Expired) == attribute.class("ring-elapsed")
-/// ```
-pub fn ring_class(outlook: cache_miss.Outlook) -> attribute.Attribute(message) {
-  case outlook {
-    cache_miss.Head(..) -> attribute.class("ring-head")
-    cache_miss.Held(..) -> attribute.class("ring-tail")
-    cache_miss.Idle(..) -> attribute.class("ring-idle")
-    cache_miss.Expired -> attribute.class("ring-elapsed")
-    cache_miss.Unheld -> attribute.class("ring-none")
-  }
-}
-
-/// The class for a strand's hue, from its position: never from its name.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // component.hue_class(turns.Sub(0)) == attribute.class("hue-2")
-/// ```
-pub fn hue_class(hue: turns.Hue) -> attribute.Attribute(message) {
-  case hue {
-    turns.Primary -> attribute.class("hue-main")
-    turns.Advisor -> attribute.class("hue-advisor")
-    turns.Sub(index: 0) -> attribute.class("hue-2")
-    turns.Sub(index: 1) -> attribute.class("hue-3")
-    turns.Sub(index: 2) -> attribute.class("hue-4")
-    turns.Sub(index: 3) -> attribute.class("hue-5")
-    turns.Sub(..) -> attribute.class("hue-6")
-    turns.Unplaced -> attribute.class("hue-none")
-  }
-}
-
-fn status_class(status: agent_view.Status) -> attribute.Attribute(message) {
-  case status {
-    agent_view.Working -> attribute.class("running")
-    agent_view.Waiting -> attribute.class("waiting")
-    agent_view.NeedsInput -> attribute.class("needs-input")
-    agent_view.Finished -> attribute.class("done")
-    agent_view.Failed -> attribute.class("failed")
-    agent_view.Halted -> attribute.class("halted")
-    agent_view.Idle | agent_view.Unavailable -> attribute.class("idle")
-  }
-}
-
-// The glyph beside every state label; colour never carries state alone.
-fn status_glyph(status: agent_view.Status) -> String {
-  case status {
-    agent_view.Working -> "●"
-    agent_view.Waiting -> "◌"
-    agent_view.NeedsInput -> "◇"
-    agent_view.Finished -> "✓"
-    agent_view.Failed -> "✕"
-    agent_view.Halted -> "⊘"
-    agent_view.Idle | agent_view.Unavailable -> "○"
-  }
-}
-
-/// The lane: the page strand's turns, keyed by the engine's identity for
-/// each piece, with every transcript line and every card body drawn inside
-/// a memo whose one dependency is that line or body. A capture draws only
-/// what is new: a line equal to the one its memo drew from reuses the
-/// element it drew, so its Markdown is not parsed again. The pieces, the
-/// turns' folds and the blocks around the lines are rebuilt on each render,
-/// which costs little. A window that drops its oldest rows removes them
-/// rather than rewriting the rows after them.
-///
-/// The memos are the leaves, with no memo around them, and that is what
-/// makes them hold. Lustre 5.7.1 keeps a render's memo elements in a table
-/// it starts afresh on each render (`lustre/vdom/cache.tick`). A memo whose
-/// dependencies are unchanged carries only its own element into the new
-/// table (`cache.keep_memo`), not the memos nested inside that element. So
-/// a render in which an enclosing memo hit would drop the entries of every
-/// memo inside it, and the next render that changed the enclosing one would
-/// draw and parse every line again. A turn's work is one piece that changes
-/// whenever an answer moves into it, which is why the memos are per line and
-/// not per piece. Every render visits each line's memo and carries each hit
-/// forward, at the cost of comparing each line with the one it was drawn
-/// from; Lustre compares dependencies with `==` on the BEAM.
-///
-/// The lane is drawn inside a `<loom-follow>` (`packages/web_client`),
-/// which scrolls the page to a row that lands below the viewport while the
-/// reader is at the bottom, and stops once they scroll up to read. Where
-/// the reader has scrolled is the browser's to know: the server never
-/// renders it, so scrolling costs no message here.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // component.lane_view(component.pieces(model))
-/// ```
-pub fn lane_view(pieces: List(turns.Piece)) -> Element(message) {
-  lane_rows(pieces, line_element)
-}
-
-/// `lane_view` with the drawing of a transcript line supplied, so a test
-/// can count the lines a render draws. `draw` must depend on nothing but
-/// the line it is given, because the line's memo depends on the line alone.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // component.lane_rows(pieces, fn(line) { html.text(line.text) })
-/// ```
-@internal
-pub fn lane_rows(
-  pieces: List(turns.Piece),
-  draw: fn(Line) -> Element(message),
-) -> Element(message) {
-  element.element("loom-follow", [attribute.class("follow")], [
-    keyed.div(
-      [attribute.class("transcript lane"), attribute.role("log")],
-      list.map(pieces, fn(piece) {
-        #(piece_key(piece), piece_element(piece, draw))
-      }),
-    ),
-  ])
-}
-
-// One transcript line, drawn once and kept while the line is unchanged.
-fn line_row(
-  line: Line,
-  draw: fn(Line) -> Element(message),
-) -> Element(message) {
-  element.memo([element.ref(line)], fn() { draw(line) })
-}
-
-fn piece_key(piece: turns.Piece) -> String {
-  case piece {
-    turns.Plain(block:) | turns.Commentary(block:) -> block.key
-    turns.Work(key:, ..)
-    | turns.Spawned(key:, ..)
-    | turns.Returned(key:, ..)
-    | turns.Nudged(key:, ..)
-    | turns.Peer(key:, ..)
-    | turns.Missed(key:, ..) -> key
-  }
-}
-
-fn piece_element(
-  piece: turns.Piece,
-  draw: fn(Line) -> Element(message),
-) -> Element(message) {
-  case piece {
-    turns.Plain(block:) -> block_element(block, draw)
-
-    // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
-    // collapsed until the reader opens it. The fold opens and closes in the
-    // browser, so it needs no handler here and works on an observer's page,
-    // and the server never renders its state, so a later patch leaves the
-    // reader's choice alone. Every word in it is a child the server renders
-    // and escapes: the divider in the `summary` slot, the work in the
-    // default one.
-    turns.Work(worked:, items:, folding: turns.Folded, ..) ->
-      element.element("loom-fold", [attribute.class("work")], [
-        html.span(
-          [
-            attribute.attribute("slot", "summary"),
-            attribute.class("work-divider"),
-          ],
-          [html.text(turns.divider(worked))],
-        ),
-        keyed.div([attribute.class("work-items")], work_items(items, draw)),
-      ])
-
-    // The turn still running is drawn open, with no divider to fold it.
-    turns.Work(items:, folding: turns.Open, ..) ->
-      keyed.div([attribute.class("work open")], work_items(items, draw))
-
-    turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
-      html.div([attribute.class("spawn"), hue_class(hue)], [
-        html.span([attribute.class("spawn-head")], [
-          html.text(
-            "↳ agent_spawn · "
-            <> case child {
-              Some(child) -> "sub:" <> agent_roster.short_name(child)
-              None -> standing_text(standing)
-            },
-          ),
-        ]),
-        html.span([attribute.class("spawn-purpose")], [html.text(purpose)]),
-      ])
-
-    turns.Returned(child:, outcome:, report:, hue:, ..) ->
-      html.article([attribute.class("result-card"), hue_class(hue)], [
-        html.p([attribute.class("card-head")], [
-          html.text(
-            "from sub:"
-            <> agent_roster.short_name(child)
-            <> " · result · "
-            <> outcome,
-          ),
-        ]),
-        card_body(report),
-      ])
-
-    turns.Nudged(frame:, body:, ..) ->
-      html.article([attribute.class("nudge")], [
-        html.p([attribute.class("card-head")], [
-          html.text(case frame {
-            turns.Nudges -> "advisor · nudge · delivered"
-            turns.Advice -> "advisor · advice · delivered"
-          }),
-        ]),
-        card_body(body),
-      ])
-
-    // Another session's message. The daemon records that it was stored and
-    // nothing about whether anyone read it, so the receipt says `stored`.
-    turns.Peer(session:, strand:, text:, ..) ->
-      html.article([attribute.class("peer-card")], [
-        html.p([attribute.class("card-head")], [
-          html.span([attribute.class("peer-from")], [
-            html.text("peer · " <> session <> " · " <> strand),
-          ]),
-          html.span([attribute.class("receipt")], [html.text("stored")]),
-        ]),
-        card_body(text),
-      ])
-
-    turns.Missed(text:, ..) ->
-      html.p([attribute.class("cache-miss")], [html.text(text)])
-
-    // The advisor's own commentary, captured on its strand and not sent to
-    // the primary: drawn as the transcript draws it, in the advisor's
-    // colour, so it cannot pass for the primary's words.
-    turns.Commentary(block:) ->
-      html.div(
-        [attribute.class("block"), attribute.class("commentary")],
-        list.map(block.rows, fn(row) { line_row(row.1, draw) }),
-      )
-  }
-}
-
-// A turn's items, keyed by their blocks and calls. The window drops its
-// oldest rows as new ones arrive, so a turn's first items leave while the
-// rest stay; keyed, the items that stay are matched to themselves and their
-// line memos hold, where unkeyed every item would be compared with its
-// neighbour and every line drawn again.
-fn work_items(
-  items: List(turns.Item),
-  draw: fn(Line) -> Element(message),
-) -> List(#(String, Element(message))) {
-  list.map(items, fn(item) {
-    let key = case item {
-      turns.Narrated(block:) -> block.key
-      turns.Step(key:, ..) -> key
-    }
-    #(key, item_element(item, draw))
-  })
-}
-
-fn item_element(
-  item: turns.Item,
-  draw: fn(Line) -> Element(message),
-) -> Element(message) {
-  case item {
-    turns.Narrated(block:) -> block_element(block, draw)
-    turns.Step(standing:, summary:, detail:, ..) ->
-      html.div([attribute.class("step"), standing_class(standing)], [
-        html.p([attribute.class("step-head")], [
-          html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
-            html.text(standing_glyph(standing)),
-          ]),
-          html.span([attribute.class("step-summary")], [html.text(summary)]),
-          html.span([attribute.class("step-state")], [
-            html.text(standing_text(standing)),
-          ]),
-        ]),
-        ..list.map(detail, line_row(_, draw))
-      ])
-  }
-}
-
-fn standing_class(standing: turns.Standing) -> attribute.Attribute(message) {
-  case standing {
-    turns.Pending -> attribute.class("pending")
-    turns.Done -> attribute.class("done")
-    turns.Failed -> attribute.class("failed")
-  }
-}
-
-fn standing_glyph(standing: turns.Standing) -> String {
-  case standing {
-    turns.Pending -> "●"
-    turns.Done -> "✓"
-    turns.Failed -> "✕"
-  }
-}
-
-fn standing_text(standing: turns.Standing) -> String {
-  case standing {
-    turns.Pending -> "running"
-    turns.Done -> "done"
-    turns.Failed -> "failed"
-  }
-}
-
-// A block drawn as the transcript draws it, one line per row. The blank a
-// terminal places between tool groups is spacing here, so a spacer block
-// never reaches the lane.
-fn block_element(
-  block: transcript_lines.Block,
-  draw: fn(Line) -> Element(message),
-) -> Element(message) {
-  html.div(
-    [attribute.class("block")],
-    list.map(block.rows, fn(row) { line_row(row.1, draw) }),
+  heading.view(
+    session_id: model.session_id,
+    name: option.map(model.label, fn(label) { label.name }),
+    workspace: option.map(model.label, fn(label) { label.workspace }),
+    status: status_text(model.status),
   )
 }
 
+// The connection's status as the heading words it.
 fn status_text(status: Status) -> String {
   case status {
     Connecting -> "connecting"
     Following -> "following"
     Ended(reason:) -> "disconnected: " <> reason
-  }
-}
-
-fn line_element(line: Line) -> Element(message) {
-  case body_of(line.speaker) {
-    Literal ->
-      html.pre([attribute.class("line"), speaker_class(line.speaker)], [
-        html.text(line.text),
-      ])
-
-    // The line is parsed here, when it is drawn. A line is drawn when it
-    // first appears, and its memo keeps what it drew while it is unchanged
-    // (`lane_rows`), so an answer is parsed about once. Each line is its
-    // own tree, so an unclosed fence ends with its line.
-    Markdown -> {
-      let tree = markdown.parse(line.text)
-      html.div(
-        [
-          attribute.class("line"),
-          speaker_class(line.speaker),
-          attribute.class("markdown"),
-        ],
-        markdown_view.blocks(tree),
-      )
-    }
-  }
-}
-
-// How a line's text is drawn: as Markdown or as it is.
-type Body {
-  Markdown
-  Literal
-}
-
-// The speakers whose text the terminal renders as Markdown
-// (`tui/render.speaker_rows`), so both hosts agree on which rows are
-// formatted. Everything else, tool output above all, stays preformatted.
-fn body_of(speaker: transcript_line.Speaker) -> Body {
-  case speaker {
-    transcript_line.Assistant
-    | transcript_line.Reasoning
-    | transcript_line.ToolDetail -> Markdown
-    transcript_line.System
-    | transcript_line.User
-    | transcript_line.ReasoningDigest
-    | transcript_line.SummarizedReasoning
-    | transcript_line.SummarizedAdvice
-    | transcript_line.ToolCall
-    | transcript_line.ToolResult
-    | transcript_line.ToolPatch
-    | transcript_line.ToolFailure
-    | transcript_line.Failure
-    | transcript_line.Spacer -> Literal
-  }
-}
-
-// A class per speaker, which is the whole of a line's styling here as in the
-// terminal. The stylesheet decides what each looks like.
-fn speaker_class(
-  speaker: transcript_line.Speaker,
-) -> attribute.Attribute(message) {
-  case speaker {
-    transcript_line.System -> attribute.class("system")
-    transcript_line.User -> attribute.class("user")
-    transcript_line.Assistant -> attribute.class("assistant")
-    transcript_line.Reasoning -> attribute.class("reasoning")
-    transcript_line.ReasoningDigest -> attribute.class("reasoning-digest")
-    transcript_line.SummarizedReasoning ->
-      attribute.class("summarized-reasoning")
-    transcript_line.SummarizedAdvice -> attribute.class("summarized-advice")
-    transcript_line.ToolCall -> attribute.class("tool-call")
-    transcript_line.ToolResult -> attribute.class("tool-result")
-    transcript_line.ToolDetail -> attribute.class("tool-detail")
-    transcript_line.ToolPatch -> attribute.class("tool-patch")
-    transcript_line.ToolFailure -> attribute.class("tool-failure")
-    transcript_line.Failure -> attribute.class("failure")
-    transcript_line.Spacer -> attribute.class("spacer")
   }
 }

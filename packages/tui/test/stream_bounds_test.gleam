@@ -137,7 +137,11 @@ fn holder() -> actor.StartResult(Subject(Command)) {
         // before returning, so `stream_lines` and the markdown wrap are inside
         // the measured loop rather than deferred to a `view` nobody calls.
         let model = case seen % render_every {
-          0 -> tui.update(backend.Resize(model.width, model.height), model)
+          0 ->
+            tui.update(
+              backend.Resize(model.view.width, model.view.height),
+              model,
+            )
           _ -> model
         }
         actor.continue(Holder(model:, seen:))
@@ -345,7 +349,8 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
       pushed.attached(),
       inbound.accept_connection_message,
     )
-  let assert [transcript_line.Stream(bytes:, fragments:, ..)] = model.streams
+  let assert [transcript_line.Stream(bytes:, fragments:, ..)] =
+    model.shared.streams
     as "the live answer is on screen as one stream"
 
   // The exact invariant, on the model rather than on the process: the region
@@ -367,10 +372,11 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
       model,
       pushed.delta("main", "op-2", "New"),
     )
-  assert next.streams
+  assert next.shared.streams
     == [transcript_line.Stream("main", "op-2", "", "text", ["New"], 3)]
     as "the previous operation's fragments are dropped, not carried forward"
-  let assert Some(_) = next.channel as "the lane survives the whole answer"
-  assert next.notices == 0 as "no notice was pushed in this fixture"
-  assert None == next.submitting as "nothing was submitted here"
+  let assert Some(_) = next.shared.channel
+    as "the lane survives the whole answer"
+  assert next.shared.notices == 0 as "no notice was pushed in this fixture"
+  assert None == next.shared.submitting as "nothing was submitted here"
 }

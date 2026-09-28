@@ -352,8 +352,8 @@ fn ask(
     tui_v2_test.await(session.data, fn(sample) {
       writable(sample)
       && assistant_texts(sample) == answers
-      && sample.model.streams == []
-      && list.any(sample.model.strands, fn(strand) {
+      && sample.model.shared.streams == []
+      && list.any(sample.model.shared.strands, fn(strand) {
         strand.id == "main" && strand.live_phase == None
       })
     })
@@ -541,7 +541,7 @@ fn assistant_texts(sample: tui_driver.Sample) -> List(String) {
 }
 
 fn messages(sample: tui_driver.Sample) -> List(message.AgentMessage) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(message:, ..) -> Ok(message)
       _ -> Error(Nil)
@@ -550,7 +550,7 @@ fn messages(sample: tui_driver.Sample) -> List(message.AgentMessage) {
 }
 
 fn writable(sample: tui_driver.Sample) -> Bool {
-  case sample.model.channel {
+  case sample.model.shared.channel {
     Some(channel) -> session_channel.mutation_available(channel)
     None -> False
   }

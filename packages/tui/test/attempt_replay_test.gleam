@@ -214,18 +214,18 @@ pub fn owner_banner_tracks_solo_and_multiplayer_presence_test() {
   // These cuts go through the real credited channel and adoption reducer,
   // rather than constructing the banner or its presence predicate in a test.
   let solo = run([peer("connection")])
-  assert solo.final.replay_error == None
-  assert solo.final.notice == "1 present"
-  assert list.any(solo.final.transcript, fn(line) {
+  assert solo.final.shared.replay_error == None
+  assert solo.final.shared.notice == "1 present"
+  assert list.any(solo.final.shared.transcript, fn(line) {
     line.text == "Attached · 1 present"
   })
-  assert !list.any(solo.final.transcript, fn(line) {
+  assert !list.any(solo.final.shared.transcript, fn(line) {
     string.contains(line.text, "Owner")
   })
   let multiplayer = run([peer("connection"), peer("other-tab")])
-  assert multiplayer.final.replay_error == None
-  assert multiplayer.final.notice == "Owner · owner · 2 present"
-  assert list.any(multiplayer.final.transcript, fn(line) {
+  assert multiplayer.final.shared.replay_error == None
+  assert multiplayer.final.shared.notice == "Owner · owner · 2 present"
+  assert list.any(multiplayer.final.shared.transcript, fn(line) {
     line.text == "Attached as: Owner · owner · 2 present"
   })
 }
@@ -381,25 +381,27 @@ pub fn attempt_replay_last_unconfirmed_submission_survives_adopting_another_sess
       [attempt.Adopted(attempt.Id(2))],
     ])
   let inbox = connection.new_inbox()
-  let model =
+  let model = {
+    let base = tui.new_model(inbox, workspace.Context("replay", None))
     tui_model.Model(
-      ..tui.new_model(inbox, workspace.Context("replay", None)),
-      peer: tui_model.Replaying,
+      ..base,
+      shared: tui_model.Shared(..base.shared, peer: tui_model.Replaying),
     )
+  }
   let script =
     virtual_backend.script(
       backend.TerminalSize(110, 30),
       list.map(source, virtual_backend.Attempt),
       inbox,
     )
-    |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox))
+    |> virtual_backend.with_attempts(buffered.sender(model.shared.replay_inbox))
   let assert Ok(run) = tui.run_script(model, script)
     as "the same reducer renders the recorded lost-response path without a socket"
-  assert run.final.session == "B"
-  assert run.final.channel == None
-  assert run.final.unconfirmed
+  assert run.final.shared.session == "B"
+  assert run.final.shared.channel == None
+  assert run.final.shared.unconfirmed
     == Some(tui_model.UnconfirmedSubmission("A", "prompt", 4))
-  assert list.any(run.final.transcript, fn(line) {
+  assert list.any(run.final.shared.transcript, fn(line) {
     string.contains(line.text, "Last unconfirmed submission: session A")
   })
     as "adoption does not imply the earlier mutation was resolved"
@@ -450,24 +452,28 @@ pub fn credited_idle_cut_repaints_settled_answer_without_keyboard_input_test() {
       settled_catch_up(row, 4),
     ])
   let inbox = connection.new_inbox()
-  let model =
-    tui_model.Model(
-      ..tui.new_model_with_clock(inbox, workspace.Context("replay", None), fn() {
+  let model = {
+    let base =
+      tui.new_model_with_clock(inbox, workspace.Context("replay", None), fn() {
         -1000
-      }),
-      peer: tui_model.Replaying,
+      })
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, peer: tui_model.Replaying),
     )
+  }
   let script =
     virtual_backend.script(
       backend.TerminalSize(110, 30),
       list.map(source, virtual_backend.Attempt),
       inbox,
     )
-    |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox))
+    |> virtual_backend.with_attempts(buffered.sender(model.shared.replay_inbox))
   let assert Ok(run) = tui.run_script(model, script)
     as "credited traffic and idle ticks alone drive the real buffered loop"
-  assert run.final.replay_error == None
-  assert list.map(run.final.records, fn(record) { record.entry.id }) == [id]
+  assert run.final.shared.replay_error == None
+  assert list.map(run.final.shared.records, fn(record) { record.entry.id })
+    == [id]
   let assert Ok(last) = list.last(run.frames)
     as "the backend captured its final painted buffer"
   assert string.contains(frame.buffer_to_text(last), answer)
@@ -504,13 +510,13 @@ pub fn a_replay_leaves_an_unchanged_cut_alone_test() {
         idle_catch_up(row, 8),
       ]),
     )
-  assert once.final.replay_error == None
-  assert twice.final.replay_error == None
-  assert twice.final.render_revision == once.final.render_revision
+  assert once.final.shared.replay_error == None
+  assert twice.final.shared.replay_error == None
+  assert twice.final.shared.render_revision == once.final.shared.render_revision
     as "an equal cut must not invalidate the replayed transcript"
-  assert list.map(twice.final.records, fn(record) { record.entry.id })
-    == list.map(once.final.records, fn(record) { record.entry.id })
-  assert !list.any(twice.final.transcript, fn(line) {
+  assert list.map(twice.final.shared.records, fn(record) { record.entry.id })
+    == list.map(once.final.shared.records, fn(record) { record.entry.id })
+  assert !list.any(twice.final.shared.transcript, fn(line) {
     string.contains(line.text, "conversation is not attached")
   })
     as "a replay asks for no decision lookup, so it reports no lost one"
@@ -557,20 +563,23 @@ fn settled_row(answer: String) -> entry.Entry {
 // virtual backend, with nothing attached and nothing sent.
 fn replay_run(source: List(attempt.Event)) {
   let inbox = connection.new_inbox()
-  let model =
-    tui_model.Model(
-      ..tui.new_model_with_clock(inbox, workspace.Context("replay", None), fn() {
+  let model = {
+    let base =
+      tui.new_model_with_clock(inbox, workspace.Context("replay", None), fn() {
         -1000
-      }),
-      peer: tui_model.Replaying,
+      })
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, peer: tui_model.Replaying),
     )
+  }
   let script =
     virtual_backend.script(
       backend.TerminalSize(110, 30),
       list.map(source, virtual_backend.Attempt),
       inbox,
     )
-    |> virtual_backend.with_attempts(buffered.sender(model.replay_inbox))
+    |> virtual_backend.with_attempts(buffered.sender(model.shared.replay_inbox))
   let assert Ok(run) = tui.run_script(model, script)
     as "the shipped reducer replays credited traffic without a socket"
   run
@@ -976,19 +985,27 @@ fn waiting_model(source) {
       protocol.prompt(1, "main", "visible draft"),
       now: 0,
     )
-  let model =
+  let model = {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("test", None))
     tui_model.Model(
-      ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
-      peer: tui_model.Replaying,
-      // A socketless replay lane keeps the frozen transport clock its
-      // timers were written against, whatever the host's monotonic origin.
-      transport_time_ms: fn() { 0 },
-      channel: Some(channel),
-      pending_submission: Some(source),
-      input: textarea.state_from_string("visible draft"),
-      attachments: [composer.Attachment("unchanged attachment", 5)],
-      submission_mode: tui_model.SteerNow,
+      shared: tui_model.Shared(
+        ..base.shared,
+        peer: tui_model.Replaying,
+        channel: Some(channel),
+        pending_submission: Some(source),
+        attachments: [composer.Attachment("unchanged attachment", 5)],
+      ),
+      view: tui_model.View(
+        ..base.view,
+        // A socketless replay lane keeps the frozen transport clock its
+        // timers were written against, whatever the host's monotonic origin.
+        transport_time_ms: fn() { 0 },
+        input: textarea.state_from_string("visible draft"),
+        submission_mode: tui_model.SteerNow,
+      ),
     )
+  }
   #(model, remaining)
 }
 
@@ -1017,49 +1034,50 @@ pub fn unsent_composer_locks_then_cancels_without_abort_or_draft_copy_test() {
       model,
       fn(model, event) { tui.update(event, model) },
     )
-  assert textarea.value(unchanged.input) == "visible draft"
-  assert unchanged.submission_mode == tui_model.SteerNow
-  assert unchanged.attachments == model.attachments
-  assert unchanged.next_id == model.next_id
+  assert textarea.value(unchanged.view.input) == "visible draft"
+  assert unchanged.view.submission_mode == tui_model.SteerNow
+  assert unchanged.shared.attachments == model.shared.attachments
+  assert unchanged.shared.next_id == model.shared.next_id
   let cancelled = tui.update(backend.KeyPress("esc"), unchanged)
-  assert cancelled.pending_submission == None
-  assert textarea.value(cancelled.input) == "visible draft"
-  assert cancelled.submission_mode == tui_model.SteerNow
-  assert cancelled.attachments == model.attachments
-  assert cancelled.next_id == model.next_id
+  assert cancelled.shared.pending_submission == None
+  assert textarea.value(cancelled.view.input) == "visible draft"
+  assert cancelled.view.submission_mode == tui_model.SteerNow
+  assert cancelled.shared.attachments == model.shared.attachments
+  assert cancelled.shared.next_id == model.shared.next_id
     as "Escape cancels unsent intent without emitting abort"
   let ended = finish_model(cancelled, remaining)
-  assert ended.next_id == model.next_id
+  assert ended.shared.next_id == model.shared.next_id
     as "later End cannot resurrect cancelled intent"
-  assert textarea.value(ended.input) == "visible draft"
+  assert textarea.value(ended.view.input) == "visible draft"
   let quit = tui.update(backend.KeyPress("ctrl+c"), model)
-  assert quit.quit as "locking a draft must not disable terminal shutdown"
-  assert quit.next_id == model.next_id
+  assert quit.shared.quit
+    as "locking a draft must not disable terminal shutdown"
+  assert quit.shared.next_id == model.shared.next_id
 }
 
 pub fn unsent_composer_clears_only_on_send_and_overlay_preserves_unrelated_text_test() {
   let #(model, remaining) = waiting_model(tui_model.ComposerSubmission)
   let sent = finish_model(model, remaining)
-  assert sent.pending_submission == None
-  assert textarea.value(sent.input) == ""
-  assert sent.attachments == []
-  assert sent.next_id == model.next_id + 1
+  assert sent.shared.pending_submission == None
+  assert textarea.value(sent.view.input) == ""
+  assert sent.shared.attachments == []
+  assert sent.shared.next_id == model.shared.next_id + 1
   let #(overlay, remaining) = waiting_model(tui_model.OverlaySubmission)
   let sent = finish_model(overlay, remaining)
-  assert textarea.value(sent.input) == "visible draft"
-  assert sent.submission_mode == tui_model.SteerNow
-  assert sent.attachments == overlay.attachments
-  assert sent.pending_submission == None
+  assert textarea.value(sent.view.input) == "visible draft"
+  assert sent.view.submission_mode == tui_model.SteerNow
+  assert sent.shared.attachments == overlay.shared.attachments
+  assert sent.shared.pending_submission == None
   let #(model, _) = waiting_model(tui_model.ComposerSubmission)
   let failed =
     inbound.accept_connection_message(
       model,
       connection_event.NetworkFault("revoked"),
     )
-  assert failed.pending_submission == None
-  assert textarea.value(failed.input) == "visible draft"
-  assert failed.attachments == model.attachments
-  assert failed.unconfirmed == None
+  assert failed.shared.pending_submission == None
+  assert textarea.value(failed.view.input) == "visible draft"
+  assert failed.shared.attachments == model.shared.attachments
+  assert failed.shared.unconfirmed == None
 }
 
 pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() {
@@ -1067,13 +1085,16 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   let model =
     tui_model.Model(
       ..model,
-      session: "A",
-      nudges: Some(advisor_pending.Board("main", 1, ["Advice for A"], 1)),
-      nudges_awaiting: Some("old attachment"),
-      nudges_request: Some(42),
-      goal: Some(goal_view.NoGoal(1)),
-      goal_awaiting: Some("old attachment"),
-      goal_request: Some(43),
+      shared: tui_model.Shared(
+        ..model.shared,
+        session: "A",
+        nudges: Some(advisor_pending.Board("main", 1, ["Advice for A"], 1)),
+        nudges_awaiting: Some("old attachment"),
+        nudges_request: Some(42),
+        goal: Some(goal_view.NoGoal(1)),
+        goal_awaiting: Some("old attachment"),
+        goal_request: Some(43),
+      ),
     )
   let failed =
     interaction.candidate_outcome(
@@ -1081,10 +1102,10 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
       attachment.idle(),
       Some(attachment.Failed("replacement refused")),
     )
-  assert failed.pending_submission == None
-  assert textarea.value(failed.input) == "visible draft"
-  assert failed.session == "A"
-  let assert Some(previous) = failed.channel
+  assert failed.shared.pending_submission == None
+  assert textarea.value(failed.view.input) == "visible draft"
+  assert failed.shared.session == "A"
+  let assert Some(previous) = failed.shared.channel
     as "failed replacement keeps the original channel"
   assert !session_channel.has_unsent(previous)
 
@@ -1109,27 +1130,27 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
         None,
       )),
     )
-  assert adopted.session == "B"
-  assert adopted.nudges == None
-  assert adopted.goal == None
-  assert adopted.nudges_awaiting == None
-  assert adopted.nudges_request == None
-  assert adopted.goal_awaiting == None
-  assert adopted.goal_request == None
+  assert adopted.shared.session == "B"
+  assert adopted.shared.nudges == None
+  assert adopted.shared.goal == None
+  assert adopted.shared.nudges_awaiting == None
+  assert adopted.shared.nudges_request == None
+  assert adopted.shared.goal_awaiting == None
+  assert adopted.shared.goal_request == None
   assert surfaces.advisor_nudges_action(model, adopted) == surfaces.ReadNudges
   assert surfaces.goal_action(model, adopted) == surfaces.ReadGoal
-  assert adopted.pending_submission == None
-  assert textarea.value(adopted.input) == ""
+  assert adopted.shared.pending_submission == None
+  assert textarea.value(adopted.view.input) == ""
     as "a replacement session never inherits the previous recipient's draft"
   let assert Ok(parked) =
-    dict.get(adopted.strand_workspaces, #("A", model.active_strand))
+    dict.get(adopted.view.strand_workspaces, #("A", model.shared.active_strand))
     as "the original draft remains recoverable under its exact owner"
   assert textarea.value(parked.input) == "visible draft"
-  assert parked.attachments == model.attachments
-  let assert Some(channel) = adopted.channel
+  assert parked.attachments == model.shared.attachments
+  let assert Some(channel) = adopted.shared.channel
     as "the terminal adopted B's own channel"
   assert !session_channel.has_unsent(channel)
-  assert adopted.unconfirmed == None
+  assert adopted.shared.unconfirmed == None
     as "cancellation of unsent work is not uncertain delivery"
   // Exactly one notice, and it is the one issued after the cut.
   // `cancel_pending` appends its own "Not sent" line first, but `render_cut`
@@ -1137,7 +1158,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   // line written after adoption reaches the operator. A review read this as
   // a duplicate; it is not, and dropping the later line loses the notice.
   let notices =
-    list.filter(adopted.transcript, fn(line) {
+    list.filter(adopted.shared.transcript, fn(line) {
       string.contains(line.text, "target change")
       && line.speaker == transcript_line.System
     })
@@ -1165,10 +1186,10 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
         None,
       )),
     )
-  assert returned.session == "A"
-  assert textarea.value(returned.input) == "visible draft"
-  assert returned.attachments == model.attachments
-  assert returned.pending_submission == None
+  assert returned.shared.session == "A"
+  assert textarea.value(returned.view.input) == "visible draft"
+  assert returned.shared.attachments == model.shared.attachments
+  assert returned.shared.pending_submission == None
 }
 
 pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_test() {
@@ -1187,16 +1208,24 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
   let #(closed, updates) = session_channel.retire(sent, "attachment replaced")
   assert updates == [session_channel.UnknownOutcome("prompt", 4)]
   assert session_channel.retire(closed, "again") == #(closed, [])
-  let model =
+  let model = {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("A", None))
     tui_model.Model(
-      ..tui.new_model(connection.new_inbox(), workspace.Context("A", None)),
-      session: "A",
-      peer: tui_model.Replaying,
-      // A socketless replay lane keeps the frozen transport clock its
-      // timers were written against, whatever the host's monotonic origin.
-      transport_time_ms: fn() { 0 },
-      channel: Some(sent),
+      shared: tui_model.Shared(
+        ..base.shared,
+        session: "A",
+        peer: tui_model.Replaying,
+        channel: Some(sent),
+      ),
+      view: tui_model.View(
+        ..base.view,
+        // A socketless replay lane keeps the frozen transport clock its
+        // timers were written against, whatever the host's monotonic origin.
+        transport_time_ms: fn() { 0 },
+      ),
     )
+  }
   let #(replacement, updates) =
     read_channel(
       session_channel.replay(snapshot.Expected("B", "epoch", "incarnation")),
@@ -1218,8 +1247,8 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
         None,
       )),
     )
-  assert adopted.session == "B"
-  assert adopted.unconfirmed
+  assert adopted.shared.session == "B"
+  assert adopted.shared.unconfirmed
     == Some(tui_model.UnconfirmedSubmission("A", "prompt", 4))
 
   // Existing Closed records carry the same outcome. Candidate-only closure
@@ -1501,8 +1530,8 @@ pub fn recorded_history_request_reaches_the_same_visible_ancestry_test() {
       ..older_page_events(row, 10)
     ])
   let run = replay_run(source)
-  assert run.final.replay_error == None
-  let assert [record] = run.final.records
+  assert run.final.shared.replay_error == None
+  let assert [record] = run.final.shared.records
     as "the recorded request owns its historical page"
   assert record.entry == row
   let assert Ok(last) = list.last(run.frames) as "the history page was painted"
@@ -1669,15 +1698,18 @@ fn split_history_data(data, collected) {
 
 pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
   let #(busy, remaining) = waiting_capture()
-  let base =
-    tui_model.Model(
-      ..tui.new_model_with_clock(
+  let base = {
+    let base =
+      tui.new_model_with_clock(
         connection.new_inbox(),
         workspace.Context("/work", None),
         fn() { 0 },
-      ),
-      transport_time_ms: fn() { 0 },
+      )
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),
     )
+  }
   let empty = history_view.empty()
   let history =
     history_view.State(
@@ -1689,43 +1721,63 @@ pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
   let waiting =
     tui.update(
       backend.Tick,
-      tui_model.Model(..base, channel: Some(busy), scrollback: history),
+      tui_model.Model(
+        ..base,
+        shared: tui_model.Shared(
+          ..base.shared,
+          channel: Some(busy),
+          scrollback: history,
+        ),
+      ),
     )
-  assert waiting.scrollback.request == history_view.Wanted
+  assert waiting.shared.scrollback.request == history_view.Wanted
   let #(ready, _) = read_channel(busy, remaining)
   assert session_channel.ready_for_read(ready)
   let sent =
-    tui.update(backend.Tick, tui_model.Model(..waiting, channel: Some(ready)))
-  assert sent.scrollback.request == history_view.Pending(10)
+    tui.update(
+      backend.Tick,
+      tui_model.Model(
+        ..waiting,
+        shared: tui_model.Shared(..waiting.shared, channel: Some(ready)),
+      ),
+    )
+  assert sent.shared.scrollback.request == history_view.Pending(10)
     as "the idle tick admits the remembered range without another scroll gesture"
-  let assert Some(channel) = sent.channel as "the read keeps the same channel"
+  let assert Some(channel) = sent.shared.channel
+    as "the read keeps the same channel"
   assert !session_channel.ready_for_read(channel)
 }
 
 // A draft written before choosing the first session has no previous owner.
 // Adoption binds it once; later session changes still restore separate drafts.
 pub fn first_session_binds_the_unassigned_draft_once_test() {
-  let initial =
+  let initial = {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
-      ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-      session: "",
-      input: textarea.state_from_string("retained draft"),
-      attachments: [composer.Attachment("initial context", 7)],
-      submission_mode: tui_model.SteerNow,
+      shared: tui_model.Shared(..base.shared, session: "", attachments: [
+        composer.Attachment("initial context", 7),
+      ]),
+      view: tui_model.View(
+        ..base.view,
+        input: textarea.state_from_string("retained draft"),
+        submission_mode: tui_model.SteerNow,
+      ),
     )
+  }
   let first = receive_session(initial, "first")
-  assert textarea.value(first.input) == "retained draft"
-  assert first.attachments == initial.attachments
-  assert first.submission_mode == tui_model.SteerNow
-  assert !dict.has_key(first.strand_workspaces, #("", "main"))
+  assert textarea.value(first.view.input) == "retained draft"
+  assert first.shared.attachments == initial.shared.attachments
+  assert first.view.submission_mode == tui_model.SteerNow
+  assert !dict.has_key(first.view.strand_workspaces, #("", "main"))
   let second = receive_session(first, "second")
-  assert textarea.value(second.input) == ""
-  assert second.attachments == []
-  assert second.submission_mode == tui_model.PromptNext
+  assert textarea.value(second.view.input) == ""
+  assert second.shared.attachments == []
+  assert second.view.submission_mode == tui_model.PromptNext
   let restored = receive_session(second, "first")
-  assert textarea.value(restored.input) == "retained draft"
-  assert restored.attachments == initial.attachments
-  assert restored.submission_mode == tui_model.SteerNow
+  assert textarea.value(restored.view.input) == "retained draft"
+  assert restored.shared.attachments == initial.shared.attachments
+  assert restored.view.submission_mode == tui_model.SteerNow
 }
 
 fn receive_session(model, session) {

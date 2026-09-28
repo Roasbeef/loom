@@ -76,6 +76,13 @@ read, takes the lane's outputs and performs them.
   records.
 - `history_view.State`: the bounded, pageable window of a strand's
   ancestry; `capture` folds a cut in and `branch` gives its records.
+  `older`, `range`, `sent`, `accept`, `cancel`, `freeze` and `resume` page
+  it through the lane's `history` read, for the terminal and the web view
+  alike. `retain_from(state, seq)` drops the records older than `seq` from
+  a live window with no read owed, for a host that draws only the newest
+  rows (the web view). A `capture` into a window that joins it keeps the
+  lower `before_seq` an earlier `accept` reached, so a read that found none
+  of the strand's records is not asked again.
 - `protocol.Event`, `protocol.EntryRecord` and the board types, and
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
@@ -90,6 +97,10 @@ read, takes the lane's outputs and performs them.
   keyed by the durable sequence it was drawn from
   (`transcript_lines.keyed_record_lines`), so a view that keys its list
   drops the rows a moving window loses instead of rewriting the rest.
+  `transcript.branch_blocks(branch, cut, view, strand, notices)` draws the
+  same blocks from a branch a host keeps across captures, and
+  `transcript_lines.block_seq(block)` reads a block's sequence back from
+  its key.
 - `operator`: what an operator's input becomes on the wire, shared by the
   terminal and the web view. `submit(lane, id, strand, text, Delivery,
   now)` sends a `Prompt` or a `Steer`; `decision` and `decide` encode an
@@ -127,8 +138,11 @@ read, takes the lane's outputs and performs them.
   `Peer` for another session's message, `Missed` for a cache notice and
   `Commentary` for the advisor's board. It reads
   `transcript_lines.keyed_record_blocks` (`transcript.blocks`), which tags
-  each block with its `Source`. `turns.hue` is a strand's colour from its
-  position, never its name.
+  each block with its `Source`. `turns.grouped(blocks, strands)` splits
+  the same blocks at their inputs, the lead before the first input and
+  then each turn, so a host that holds only the newest turns cuts between
+  them. `turns.hue` is a strand's colour from its position, never its
+  name.
 - `agent_view.Row`, `agent_activity` and `reviewer_status`: each strand's
   status, task, activity and approvals from one capture, shared by the
   terminal's agent rail and strip and the web view's chips.

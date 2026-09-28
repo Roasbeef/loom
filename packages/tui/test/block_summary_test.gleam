@@ -229,31 +229,34 @@ pub fn the_tick_times_the_live_row_test() {
   let ticked =
     tui_model.Model(
       ..base,
-      summaries: labels,
-      generation_started_ms: Some(base.monotonic_time_ms() - 64_000),
-      streams: [
-        transcript_line.Stream(
-          "main",
-          "op-1",
-          "g-1",
-          "thinking",
-          ["a\nb\nc"],
-          5,
-        ),
-      ],
+      shared: tui_model.Shared(
+        ..base.shared,
+        summaries: labels,
+        generation_started_ms: Some(base.view.monotonic_time_ms() - 64_000),
+        streams: [
+          transcript_line.Stream(
+            "main",
+            "op-1",
+            "g-1",
+            "thinking",
+            ["a\nb\nc"],
+            5,
+          ),
+        ],
+      ),
     )
     |> tui.update(backend.Tick, _)
 
   // The clock is the real one, so the reading is 64 seconds plus however
   // long the test took to reach its tick.
-  assert ticked.generation_elapsed_s >= 64
+  assert ticked.shared.generation_elapsed_s >= 64
   let assert [transcript_line.Line(transcript_line.SummarizedReasoning, block)] =
     transcript_lines.stream_lines(
-      ticked.streams,
+      ticked.shared.streams,
       "main",
       notes_view.Excerpt,
-      ticked.summaries,
-      ticked.generation_elapsed_s,
+      ticked.shared.summaries,
+      ticked.shared.generation_elapsed_s,
     )
     as "the live stream is one summarized block"
   assert string.starts_with(block, " · 3 lines · 1m ")
@@ -268,7 +271,11 @@ pub fn a_pushed_label_repaints_a_cached_row_test() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let before =
-    tui_model.Model(..base, records: [record]) |> tui.update(backend.Tick, _)
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, records: [record]),
+    )
+    |> tui.update(backend.Tick, _)
   assert string.contains(paint(before), "Opening line.  [Ctrl+G to expand]")
 
   let after =
@@ -289,10 +296,10 @@ pub fn a_pushed_label_repaints_a_cached_row_test() {
 pub fn a_summarized_block_keeps_anchors_parallel_to_rows_test() {
   let records = history_with_thought(30)
   let summarized = summarize(reading(records), thought_of(records))
-  assert !list.is_empty(summarized.rendered_anchors)
+  assert !list.is_empty(summarized.view.rendered_anchors)
     as "scrolling back must freeze anchors"
-  assert list.length(summarized.rendered_anchors)
-    == list.length(summarized.view.record_rows)
+  assert list.length(summarized.view.rendered_anchors)
+    == list.length(summarized.view.caches.record_rows)
 }
 
 // A summary that arrives while the reader is scrolled back adds rows to a
@@ -433,7 +440,7 @@ pub fn a_label_read_back_by_exact_key_labels_the_block_test() {
   let record = thinking_record(long_thinking(), 4)
   let id = id_of(record)
   let model = pushed.attached()
-  let assert Some(channel) = model.channel
+  let assert Some(channel) = model.shared.channel
     as "fixture has a synchronized channel"
   let #(channel, disposition) =
     session_channel.submit(
@@ -477,10 +484,13 @@ pub fn a_label_read_back_by_exact_key_labels_the_block_test() {
 
   let labelled =
     inbound.apply_channel_update(
-      tui_model.Model(..model, records: [record]),
+      tui_model.Model(
+        ..model,
+        shared: tui_model.Shared(..model.shared, records: [record]),
+      ),
       session_channel.Auxiliary(event),
     )
-  assert transcript_lines.labels_for(record.entry, labelled.summaries)
+  assert transcript_lines.labels_for(record.entry, labelled.shared.summaries)
     == [#(0, label)]
 }
 
@@ -499,9 +509,9 @@ pub fn a_refused_read_is_silent_test() {
         "unknown command",
       ),
     )
-  assert refused.transcript == base.transcript
+  assert refused.shared.transcript == base.shared.transcript
   let wanted =
-    block_summary.want(refused.summaries, [Key(entry: "e", block: 0)])
+    block_summary.want(refused.shared.summaries, [Key(entry: "e", block: 0)])
   assert block_summary.next_read(wanted) == None
 }
 
@@ -608,7 +618,7 @@ fn thought_of(records: List(protocol.EntryRecord)) -> protocol.EntryRecord {
 fn reading(records: List(protocol.EntryRecord)) -> tui_model.Model {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  tui_model.Model(..base, records:)
+  tui_model.Model(..base, shared: tui_model.Shared(..base.shared, records:))
   |> tui.update(backend.Resize(100, 20), _)
   |> tui.update(backend.MouseScroll(5, 5, True), _)
   |> tui.update(backend.MouseScroll(5, 5, True), _)

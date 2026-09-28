@@ -419,13 +419,13 @@ fn held_behind_a_running_turn(
 
 // Whether this terminal has captured a live operation on the shared strand.
 fn strand_is_running(sample: tui_driver.Sample) -> Bool {
-  list.any(sample.model.strands, fn(row) {
+  list.any(sample.model.shared.strands, fn(row) {
     row.id == "main" && row.live_phase != None
   })
 }
 
 fn phase_of(sample: tui_driver.Sample) -> String {
-  case list.find(sample.model.strands, fn(row) { row.id == "main" }) {
+  case list.find(sample.model.shared.strands, fn(row) { row.id == "main" }) {
     Ok(row) -> option.unwrap(row.live_phase, "idle")
     Error(Nil) -> "missing"
   }
@@ -500,7 +500,7 @@ fn sample_waiting(
 // failed on a timeout.
 fn stream_note(sample: tui_driver.Sample) -> String {
   let streams =
-    list.map(sample.model.streams, fn(stream) {
+    list.map(sample.model.shared.streams, fn(stream) {
       let transcript_line.Stream(strand:, kind:, fragments:, operation:, ..) =
         stream
       strand
@@ -514,13 +514,13 @@ fn stream_note(sample: tui_driver.Sample) -> String {
       <> string.slice(string.concat(list.reverse(fragments)), 0, 24)
     })
   "active="
-  <> sample.model.active_strand
+  <> sample.model.shared.active_strand
   <> " phase="
   <> phase_of(sample)
   <> " notices="
-  <> int.to_string(sample.model.notices)
+  <> int.to_string(sample.model.shared.notices)
   <> " capture="
-  <> string.inspect(sample.model.last_capture)
+  <> string.inspect(sample.model.shared.last_capture)
   <> " streams="
   <> string.join(streams, ",")
   <> " answers="
@@ -532,10 +532,10 @@ fn stream_note(sample: tui_driver.Sample) -> String {
 // from a credited cut, because the snapshot preview projects as one fragment
 // whatever it holds; they are the pushed `stream_delta` frames themselves.
 fn live_prefix(sample: tui_driver.Sample) -> Bool {
-  list.any(sample.model.streams, fn(stream) {
+  list.any(sample.model.shared.streams, fn(stream) {
     let transcript_line.Stream(strand:, kind:, fragments:, ..) = stream
     let text = string.concat(list.reverse(fragments))
-    strand == sample.model.active_strand
+    strand == sample.model.shared.active_strand
     && kind == "text"
     && accumulated(fragments)
     && string.starts_with(first_answer, text)
@@ -555,7 +555,7 @@ fn notices_of(
   driver: actor.Started(process.Subject(tui_driver.Message)),
 ) -> Int {
   let sample = tui_driver.play(driver.data, [])
-  sample.model.notices
+  sample.model.shared.notices
 }
 
 // Every terminal was pushed the commit notices for the two shared turns.
@@ -573,7 +573,7 @@ fn notices_reached(
   list.each(list.zip(drivers, before), fn(pair) {
     let #(driver, baseline) = pair
     let sample = tui_driver.play(driver.data, [])
-    assert sample.model.notices - baseline >= shared_turn_records
+    assert sample.model.shared.notices - baseline >= shared_turn_records
       as "the two shared turns pushed a commit notice per record to this terminal"
   })
 }
@@ -594,7 +594,8 @@ fn wire_saw_both_answers(bob: Socket, painted: tui_driver.Sample) -> Nil {
     as "the completed sample holds exactly the two shared answers"
   notices_for(bob, wanted, 4096)
   let entries = wire_entries(bob)
-  assert entries == list.reverse(list.map(painted.model.records, entry_of))
+  assert entries
+    == list.reverse(list.map(painted.model.shared.records, entry_of))
     as "the wire client's own catch-up holds the terminals' durable records"
 }
 
@@ -604,7 +605,7 @@ fn entry_of(record: conversation.EntryRecord) -> entry.Entry {
 
 // The durable sequences of the assistant entries a terminal has painted.
 fn answer_sequences(sample: tui_driver.Sample) -> List(Int) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(seq:, message: message.AssistantMessage(..), ..) ->
         Ok(seq)
@@ -750,7 +751,7 @@ fn revoke_mid_answer(
   let assert [alice_done, reader_done] =
     captured_turns([alice, reader], turns, answers)
     as "the two remaining terminals complete the third turn"
-  assert alice_done.model.records == reader_done.model.records
+  assert alice_done.model.shared.records == reader_done.model.shared.records
 }
 
 // Reads forward until the socket carries a nonempty prefix of the answer now
@@ -825,7 +826,7 @@ fn assert_shared_turns(
 ) -> List(tui_driver.Sample) {
   let assert [operator, observer] = captured_turns(drivers, turns, answers)
     as "the operator and the observer each completed their own credited capture"
-  assert operator.model.records == observer.model.records
+  assert operator.model.shared.records == observer.model.shared.records
   assert !writable(observer)
   [operator, observer]
 }
@@ -850,9 +851,9 @@ fn captured_turns(
       tui_v2_test.await(driver.data, fn(sample) {
         user_turns(sample) == expected_users
         && assistant_texts(sample) == expected_answers
-        && sample.model.streams == []
-        && sample.model.submitting == None
-        && list.any(sample.model.strands, fn(strand) {
+        && sample.model.shared.streams == []
+        && sample.model.shared.submitting == None
+        && list.any(sample.model.shared.strands, fn(strand) {
           strand.id == "main" && strand.live_phase == None
         })
       })
@@ -864,7 +865,7 @@ fn captured_turns(
 fn user_turns(
   sample: tui_driver.Sample,
 ) -> List(#(List(message.UserBlock), Option(String))) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(
         message: message.UserMessage(content:, origin: author_source, ..),
@@ -878,7 +879,7 @@ fn user_turns(
 // Answers as plain text, newest first. Every assistant entry in this drive is
 // one text block, so anything else is a script the fixture did not write.
 fn assistant_texts(sample: tui_driver.Sample) -> List(String) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(
         message: message.AssistantMessage(
@@ -908,7 +909,8 @@ fn await_open(
         let sample = tui_driver.play(driver, [])
         case predicate(sample) {
           True -> poll.Settled(sample)
-          False -> poll.Pending(string.slice(sample.model.notice, 0, 512))
+          False ->
+            poll.Pending(string.slice(sample.model.shared.notice, 0, 512))
         }
       },
     )
@@ -923,7 +925,7 @@ fn await_open(
 }
 
 fn attached_observer(sample: tui_driver.Sample) -> Bool {
-  case sample.model.captured {
+  case sample.model.shared.captured {
     Some(#(cut, view)) ->
       cut.attachment.role == snapshot.Observer && peer_count(view) == 3
     None -> False
@@ -970,7 +972,7 @@ fn invite(address, owner, epoch, session, principal, role, name) {
 }
 
 fn writable(sample: tui_driver.Sample) -> Bool {
-  case sample.model.channel {
+  case sample.model.shared.channel {
     Some(channel) -> session_channel.mutation_available(channel)
     None -> False
   }

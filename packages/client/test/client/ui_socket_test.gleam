@@ -1,8 +1,9 @@
 //// The page socket starts the component its admitted role calls for, and
 //// passes on only the browser messages that component attaches handlers for
-//// (protocol-change/051, the operator addendum). An observer's page takes no
-//// browser message and has no composer to take one with; an operator's takes
-//// a click and a submit and nothing else.
+//// (protocol-change/051, the operator addendum and the addendum on history
+//// paging). An observer's page takes one browser message, the "Load older"
+//// click at its fixed path, and has no composer; an operator's takes a
+//// click and a submit and nothing else.
 
 import client/daemon/ui_relay
 import client/daemon/ui_socket
@@ -75,10 +76,39 @@ pub fn an_operator_gets_the_operators_page_test() {
   })
 }
 
-pub fn an_observer_socket_accepts_nothing_test() {
-  assert !ui_socket.observer_accepts("{\"kind\":1,\"name\":\"click\"}")
-  assert !ui_socket.observer_accepts("{\"kind\":1,\"name\":\"submit\"}")
-  assert !ui_socket.observer_accepts("")
+// Protocol-change/051, the addendum on history paging: an observer's socket
+// admits one event, the "Load older" click at its fixed path, and drops
+// every other frame: a submit, a click anywhere else, a forged event name
+// at the button's path, a batch, a frame of another kind and a malformed
+// one.
+pub fn an_observer_socket_accepts_only_the_older_click_test() {
+  let path = json.to_string(json.string(component.older_path))
+  let at = fn(name) {
+    "{\"kind\":1,\"path\":"
+    <> path
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  assert ui_socket.observer_accepts(at("click"))
+  list.each(
+    [
+      at("submit"),
+      at("keydown"),
+      at("clicked"),
+      "{\"kind\":1,\"path\":\"0\\t4\\t0\",\"name\":\"submit\",\"event\":{}}",
+      "{\"kind\":1,\"path\":\"0\\t3\\t1\",\"name\":\"click\",\"event\":{}}",
+      "{\"kind\":1,\"name\":\"click\"}",
+      "{\"kind\":3,\"messages\":[" <> at("click") <> "]}",
+      "{\"kind\":0,\"name\":\"route\",\"value\":\"/elsewhere\"}",
+      "{\"kind\":2,\"name\":\"value\"}",
+      "not json",
+      "",
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
 }
 
 pub fn an_operator_socket_accepts_only_its_two_events_test() {

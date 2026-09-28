@@ -262,12 +262,21 @@ pub fn attached() -> tui_model.Model {
       let #(channel, updates) = session_channel.receive(acc.0, frame, now: 0)
       #(channel, list.append(acc.1, updates))
     })
-  tui_model.Model(
-    ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
-    peer: tui_model.Replaying,
-    // A socketless replay lane keeps the frozen transport clock its
-    // timers were written against, whatever the host's monotonic origin.
-    transport_time_ms: fn() { 0 },
-    channel: Some(ready),
-  )
+  {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("test", None))
+    tui_model.Model(
+      shared: tui_model.Shared(
+        ..base.shared,
+        peer: tui_model.Replaying,
+        channel: Some(ready),
+      ),
+      view: tui_model.View(
+        ..base.view,
+        // A socketless replay lane keeps the frozen transport clock its
+        // timers were written against, whatever the host's monotonic origin.
+        transport_time_ms: fn() { 0 },
+      ),
+    )
+  }
 }

@@ -40,10 +40,10 @@ pub fn a_socket_dead_before_the_end_arrives_fails_the_attempt_test() {
     )
   let settled = tui.update(backend.Tick, ended)
 
-  assert !attachment.busy(settled.candidate)
-  assert settled.session != "A"
+  assert !attachment.busy(settled.view.candidate)
+  assert settled.shared.session != "A"
     as "a socket with no live actor is never adopted"
-  assert list.any(settled.transcript, fn(line) {
+  assert list.any(settled.shared.transcript, fn(line) {
     string.contains(line.text, "the websocket actor exited before adoption")
   })
     as "the attempt fails with the reason the host read"
@@ -61,8 +61,8 @@ pub fn a_socket_that_dies_after_the_end_arrives_is_still_adopted_test() {
   stop(owner)
   let adopted = tui.update(backend.Tick, ended)
 
-  assert !attachment.busy(adopted.candidate)
-  assert adopted.session == "A"
+  assert !attachment.busy(adopted.view.candidate)
+  assert adopted.shared.session == "A"
     as "the step adopts on the answer the host read, and reads no process"
 }
 
@@ -90,10 +90,16 @@ fn captured_attempt(
       frames:,
     )
   let model =
-    tui_model.Model(..model, candidate: attachment.opening(key, None))
+    tui_model.Model(
+      ..model,
+      view: tui_model.View(
+        ..model.view,
+        candidate: attachment.opening(key, None),
+      ),
+    )
     |> runtime.hold(job.AttachArrived(key, job.Published(prepared)))
   let captured = tui.update(backend.Tick, model)
-  assert attachment.busy(captured.candidate)
+  assert attachment.busy(captured.view.candidate)
     as "premise: the attempt captured and waits for its job's end"
   #(captured, key)
 }

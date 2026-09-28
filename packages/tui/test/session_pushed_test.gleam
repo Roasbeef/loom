@@ -533,14 +533,23 @@ pub fn a_queued_prompt_is_an_acknowledged_submission_not_a_conflict_test() {
 // frame can be followed all the way to what a reader would see.
 fn attached() {
   let ready = synchronized()
-  tui_model.Model(
-    ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
-    peer: tui_model.Replaying,
-    // A socketless replay lane keeps the frozen transport clock its
-    // timers were written against, whatever the host's monotonic origin.
-    transport_time_ms: fn() { 0 },
-    channel: Some(ready),
-  )
+  {
+    let base =
+      tui.new_model(connection.new_inbox(), workspace.Context("test", None))
+    tui_model.Model(
+      shared: tui_model.Shared(
+        ..base.shared,
+        peer: tui_model.Replaying,
+        channel: Some(ready),
+      ),
+      view: tui_model.View(
+        ..base.view,
+        // A socketless replay lane keeps the frozen transport clock its
+        // timers were written against, whatever the host's monotonic origin.
+        transport_time_ms: fn() { 0 },
+      ),
+    )
+  }
 }
 
 // A coherent configuration cut covering all durable rows below next_seq.
@@ -557,7 +566,7 @@ fn cache_cut_with_operation(
   let cut =
     snapshot.Captured(
       snapshot.Attachment(
-        snapshot.Expected(model.session, "epoch", "incarnation"),
+        snapshot.Expected(model.shared.session, "epoch", "incarnation"),
         "connection",
         message.Origin("operator", "Operator"),
         snapshot.Owner,
@@ -588,7 +597,7 @@ fn cache_cut_with_operation(
         Some(op) -> dict.from_list([#("main", op)])
         None -> dict.new()
       },
-      model.usage,
+      model.shared.usage,
       snapshot_view.RunSettings("one_at_a_time", "parallel", None),
       [],
       [],
@@ -609,7 +618,7 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
       attached(),
       inbound.accept_connection_message,
     )
-  assert model.streams
+  assert model.shared.streams
     == [transcript_line.Stream("main", "op-1", "", "text", ["lo", "Hel"], 5)]
     as "fragments of one operation accumulate rather than replacing each other"
 
@@ -617,21 +626,22 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
   // instead of appending to the one that has finished.
   let next =
     inbound.accept_connection_message(model, delta("main", "op-2", "New"))
-  assert next.streams
+  assert next.shared.streams
     == [transcript_line.Stream("main", "op-2", "", "text", ["New"], 3)]
 }
 
 pub fn a_notice_the_lane_drops_still_counts_at_the_terminal_test() {
   let model = inbound.accept_connection_message(attached(), notice("main", 9))
-  assert model.notices == 1
+  assert model.shared.notices == 1
     as "the terminal counts the notice the lane had nothing to do with"
-  let assert Some(channel) = model.channel as "the lane survives a stale notice"
+  let assert Some(channel) = model.shared.channel
+    as "the lane survives a stale notice"
   assert !session_channel.in_flight(channel)
     as "counting an arrival issues no request of its own"
 
   // Which is the whole distinction the count exists for: nothing was
   // captured, so nothing painted, so no `Capture` names this frame at all.
-  assert model.last_capture == session_channel.Requested
+  assert model.shared.last_capture == session_channel.Requested
     as "a dropped notice leaves the last capture's provenance untouched"
 }
 
@@ -692,9 +702,9 @@ pub fn a_legacy_usage_push_cannot_double_count_the_captured_total_test() {
       ),
     ])
   let received = inbound.accept_connection_message(model, legacy)
-  assert received.usage == model.usage
+  assert received.shared.usage == model.shared.usage
     as "a pushed ledger name is ignored instead of adding to a captured total"
-  assert received.cache.watches == model.cache.watches
+  assert received.shared.cache.watches == model.shared.cache.watches
 }
 
 pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
@@ -746,7 +756,13 @@ pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
 // both move on the push rather than waiting for a capture that never
 // carries them.
 pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
-  let model = tui_model.Model(..attached(), peer: tui_model.Preview)
+  let model = {
+    let base = attached()
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+    )
+  }
   let reported =
     message.Usage(
       0,
@@ -761,31 +777,38 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
   let settled =
     inbound.accept_connection_message(model, usage_push("main", reported))
 
-  assert settled.usage.total_tokens == model.usage.total_tokens
+  assert settled.shared.usage.total_tokens == model.shared.usage.total_tokens
     as "a pushed observation cannot double-count an authoritative cut"
-  assert settled.notice == "250k tokens this turn"
+  assert settled.shared.notice == "250k tokens this turn"
     as "the settlement label moves off the streaming form"
-  assert dict.get(settled.cache.watches, "main") == Error(Nil)
+  assert dict.get(settled.shared.cache.watches, "main") == Error(Nil)
     as "the usage row waits for a cut that can validate its model"
   let covered = cache_cut(settled, 12, "provider-a")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(covered.cache.watches, "main")
+    dict.get(covered.shared.cache.watches, "main")
   assert previous == reported
     as "the row becomes the detector's baseline on the push"
 
   let duplicate =
     inbound.accept_connection_message(
-      tui_model.Model(..covered, monotonic_time_ms: fn() { 120_000 }),
+      tui_model.Model(
+        ..covered,
+        view: tui_model.View(..covered.view, monotonic_time_ms: fn() { 120_000 }),
+      ),
       usage_push("main", reported),
     )
-  assert duplicate.cache.watches == covered.cache.watches
+  assert duplicate.shared.cache.watches == covered.shared.cache.watches
     as "a delayed duplicate cannot reset the observed cache clock"
-  assert duplicate.usage == settled.usage
+  assert duplicate.shared.usage == settled.shared.usage
 
-  let captured = tui_model.Model(..model, usage: reported)
+  let captured =
+    tui_model.Model(
+      ..model,
+      shared: tui_model.Shared(..model.shared, usage: reported),
+    )
   let after_cut =
     inbound.accept_connection_message(captured, usage_push("main", reported))
-  assert after_cut.usage == reported
+  assert after_cut.shared.usage == reported
     as "a capture that already included the row is never added again"
 }
 
@@ -807,19 +830,24 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
     )
   let assert #(_, Some(watch)) = cache_miss.observe(None, row, 0)
   let selected =
-    tui.update(
-      backend.KeyPress("enter"),
+    tui.update(backend.KeyPress("enter"), {
+      let base = attached()
       tui_model.Model(
-        ..attached(),
-        peer: tui_model.Preview,
-        cache: cache_watch.Ledger(
-          ..attached().cache,
-          watches: dict.from_list([#("main", watch)]),
+        shared: tui_model.Shared(
+          ..base.shared,
+          peer: tui_model.Preview,
+          cache: cache_watch.Ledger(
+            ..attached().shared.cache,
+            watches: dict.from_list([#("main", watch)]),
+          ),
         ),
-        input: textarea.state_from_string("/model new-provider"),
-      ),
-    )
-  assert dict.get(selected.cache.watches, "main") == Error(Nil)
+        view: tui_model.View(
+          ..base.view,
+          input: textarea.state_from_string("/model new-provider"),
+        ),
+      )
+    })
+  assert dict.get(selected.shared.cache.watches, "main") == Error(Nil)
 
   let old_first =
     inbound.accept_connection_message(
@@ -832,7 +860,7 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
       usage_push_with("main", 12, Some("old-op"), row),
     )
   let old_second = cache_cut(old_second, 13, "new-provider")
-  assert dict.get(old_second.cache.watches, "main") == Error(Nil)
+  assert dict.get(old_second.shared.cache.watches, "main") == Error(Nil)
     as "both old-provider rows stay outside the new cache baseline"
 
   let new_first =
@@ -842,9 +870,9 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
     )
   let new_first = cache_cut(new_first, 14, "new-provider")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(new_first.cache.watches, "main")
+    dict.get(new_first.shared.cache.watches, "main")
   assert previous == row
-  assert new_first.cache_notices == []
+  assert new_first.shared.cache_notices == []
     as "the new provider starts a baseline rather than comparing to the old one"
 }
 
@@ -863,7 +891,13 @@ pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test(
     )
   let old =
     cache_cut(
-      tui_model.Model(..attached(), peer: tui_model.Preview),
+      {
+        let base = attached()
+        tui_model.Model(
+          ..base,
+          shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+        )
+      },
       11,
       "old-provider",
     )
@@ -873,20 +907,20 @@ pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test(
       usage_push_with("main", 11, Some("old-op"), row),
     )
   let switched = cache_cut(pending, 12, "new-provider")
-  assert dict.get(switched.cache.watches, "main") == Error(Nil)
+  assert dict.get(switched.shared.cache.watches, "main") == Error(Nil)
     as "the old operation cannot seed a new provider with no prior watch"
-  assert dict.get(switched.cache.fences, "main") == Ok(Some("old-op"))
+  assert dict.get(switched.shared.cache.fences, "main") == Ok(Some("old-op"))
 
   let pushed =
     inbound.accept_connection_message(
       switched,
       usage_push_with("main", 12, Some("new-op"), row),
     )
-  assert dict.get(pushed.cache.pending, "main") != Error(Nil)
+  assert dict.get(pushed.shared.cache.pending, "main") != Error(Nil)
     as "the new row waits for the covering cut"
   let next = cache_cut(pushed, 13, "new-provider")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(next.cache.watches, "main")
+    dict.get(next.shared.cache.watches, "main")
   assert previous == row
 }
 
@@ -917,32 +951,40 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
   let assert #(_, Some(watch)) = cache_miss.observe(None, prior, 0)
   let captured =
     cache_cut(
-      tui_model.Model(..attached(), peer: tui_model.Preview),
+      {
+        let base = attached()
+        tui_model.Model(
+          ..base,
+          shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+        )
+      },
       11,
       "old-provider",
     )
   let old =
     tui_model.Model(
-      ..captured,
-      cache: cache_watch.Ledger(
-        ..captured.cache,
-        watches: dict.from_list([#("main", watch)]),
+      shared: tui_model.Shared(
+        ..captured.shared,
+        cache: cache_watch.Ledger(
+          ..captured.shared.cache,
+          watches: dict.from_list([#("main", watch)]),
+        ),
       ),
-      monotonic_time_ms: fn() { 600_000 },
+      view: tui_model.View(..captured.view, monotonic_time_ms: fn() { 600_000 }),
     )
   let pending =
     inbound.accept_connection_message(
       old,
       usage_push_with("main", 11, Some("old-op"), cold),
     )
-  assert pending.cache_notices == []
+  assert pending.shared.cache_notices == []
     as "a pushed row cannot claim a miss before its configuration cut"
 
   let switched = cache_cut(pending, 12, "new-provider")
-  assert switched.cache_notices == []
+  assert switched.shared.cache_notices == []
     as "the remote switch discards a would-be miss from the old provider"
-  assert dict.get(switched.cache.watches, "main") == Error(Nil)
-  assert dict.get(switched.cache.fences, "main") == Ok(Some("old-op"))
+  assert dict.get(switched.shared.cache.watches, "main") == Error(Nil)
+  assert dict.get(switched.shared.cache.fences, "main") == Ok(Some("old-op"))
 }
 
 /// Initial attachment cannot infer the running operation's accepted model.
@@ -958,10 +1000,16 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
     )
-  let model = tui_model.Model(..attached(), peer: tui_model.Preview)
+  let model = {
+    let base = attached()
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+    )
+  }
   let first =
     cache_cut_with_operation(model, 11, "new-provider", Some("old-op"))
-  assert dict.get(first.cache.fences, "main") == Ok(None)
+  assert dict.get(first.shared.cache.fences, "main") == Ok(None)
     as "a live operation on initial attach has unknown accepted model"
 
   let pending =
@@ -970,8 +1018,8 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
       usage_push_with("main", 11, Some("old-op"), row),
     )
   let old = cache_cut(pending, 12, "new-provider")
-  assert dict.get(old.cache.watches, "main") == Error(Nil)
-  assert dict.get(old.cache.fences, "main") == Ok(Some("old-op"))
+  assert dict.get(old.shared.cache.watches, "main") == Error(Nil)
+  assert dict.get(old.shared.cache.fences, "main") == Ok(Some("old-op"))
 
   let pending =
     inbound.accept_connection_message(
@@ -980,9 +1028,9 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
     )
   let new = cache_cut(pending, 13, "new-provider")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(new.cache.watches, "main")
+    dict.get(new.shared.cache.watches, "main")
   assert previous == row
-  assert new.cache_notices == []
+  assert new.shared.cache_notices == []
 }
 
 /// A row delivered after the initial cut may already belong to that cut.
@@ -998,16 +1046,22 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
     )
-  let model = tui_model.Model(..attached(), peer: tui_model.Preview)
+  let model = {
+    let base = attached()
+    tui_model.Model(
+      ..base,
+      shared: tui_model.Shared(..base.shared, peer: tui_model.Preview),
+    )
+  }
   let first = cache_cut(model, 11, "new-provider")
-  assert dict.get(first.cache.fences, "main") == Error(Nil)
+  assert dict.get(first.shared.cache.fences, "main") == Error(Nil)
     as "the cut shows no operation to fence"
   let late =
     inbound.accept_connection_message(
       first,
       usage_push_with("main", 10, Some("old-op"), row),
     )
-  assert dict.get(late.cache.watches, "main") == Error(Nil)
+  assert dict.get(late.shared.cache.watches, "main") == Error(Nil)
     as "a row from before the first cut cannot seed its current model"
 
   let pending =
@@ -1017,13 +1071,14 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
     )
   let next = cache_cut(pending, 12, "new-provider")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(next.cache.watches, "main")
+    dict.get(next.shared.cache.watches, "main")
   assert previous == row
 }
 
 pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
   let model = attached()
-  let assert Some(channel) = model.channel as "the fixture lane is attached"
+  let assert Some(channel) = model.shared.channel
+    as "the fixture lane is attached"
   let #(sent, disposition) =
     session_channel.submit(
       channel,
@@ -1035,15 +1090,22 @@ pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
 
   let queued =
     inbound.accept_connection_message(
-      tui_model.Model(..model, channel: Some(sent), submitting: Some("main")),
+      tui_model.Model(
+        ..model,
+        shared: tui_model.Shared(
+          ..model.shared,
+          channel: Some(sent),
+          submitting: Some("main"),
+        ),
+      ),
       reply(
         id,
         "mutation_outcome",
         json.Object([#("status", json.String("queued"))]),
       ),
     )
-  assert queued.submitting == None
+  assert queued.shared.submitting == None
     as "nothing is running here yet; the daemon holds the prompt"
-  assert string.contains(queued.notice, "queued")
+  assert string.contains(queued.shared.notice, "queued")
     as "the operator is told the turn is booked, not that it was refused"
 }

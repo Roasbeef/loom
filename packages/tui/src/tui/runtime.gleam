@@ -59,7 +59,7 @@ import tui/image_drop
 import tui/job
 import tui/job_runner
 import tui/keymap
-import tui/model.{type Model, Model} as tui_model
+import tui/model.{type Model, Model, Shared, View} as tui_model
 import tui/msg.{type Msg, type Stamp, Stamp}
 import tui/recording
 import tui/terminal_lane
@@ -80,7 +80,13 @@ import weft
 pub fn stamp(model: Model) -> Model {
   Model(
     ..model,
-    stamp: read_stamp(model.monotonic_time_ms, model.transport_time_ms),
+    shared: Shared(
+      ..model.shared,
+      stamp: read_stamp(
+        model.view.monotonic_time_ms,
+        model.view.transport_time_ms,
+      ),
+    ),
   )
 }
 
@@ -115,7 +121,7 @@ pub fn stamp(model: Model) -> Model {
 /// let model = runtime.receive(model)
 /// ```
 pub fn receive(model: Model) -> Model {
-  let model = list.fold(job_runner.receive(model.running), model, hold)
+  let model = list.fold(job_runner.receive(model.view.running), model, hold)
   admission.admit(model, arrivals(model))
 }
 
@@ -145,23 +151,23 @@ pub fn receive(model: Model) -> Model {
 /// let model = admission.admit(model, runtime.arrivals(model))
 /// ```
 pub fn arrivals(model: Model) -> List(msg.Arrival) {
-  let connection = buffered.sender(model.inbox)
+  let connection = buffered.sender(model.shared.inbox)
   let from_connection =
     buffered.waiting(
       connection,
-      tui_model.connection_batch - buffered.held(model.inbox),
+      tui_model.connection_batch - buffered.held(model.shared.inbox),
     )
     |> list.map(msg.Frame(connection, _))
-  let replayed = case model.peer {
+  let replayed = case model.shared.peer {
     tui_model.Replaying ->
       buffered.waiting(
-        buffered.sender(model.replay_inbox),
-        1 - buffered.held(model.replay_inbox),
+        buffered.sender(model.shared.replay_inbox),
+        1 - buffered.held(model.shared.replay_inbox),
       )
       |> list.map(msg.Replayed)
     tui_model.Attached | tui_model.Disconnected | tui_model.Preview -> []
   }
-  let from_attempt = case attachment.frame_room(model.candidate) {
+  let from_attempt = case attachment.frame_room(model.view.candidate) {
     Error(Nil) -> []
     Ok(#(frames, room)) ->
       buffered.waiting(frames, room) |> list.map(msg.Frame(frames, _))
@@ -209,7 +215,7 @@ pub fn message(event: backend.InputEvent, model: Model) -> Msg {
     | backend.MouseMove(..) -> Ok(None)
   }
   msg.Input(
-    at: read_stamp(model.monotonic_time_ms, model.transport_time_ms),
+    at: read_stamp(model.view.monotonic_time_ms, model.view.transport_time_ms),
     event: keymap.translate(event, pasted),
   )
 }
@@ -236,9 +242,13 @@ pub fn hold(
   model: Model,
   arrival: job.Arrival(daemon_selection.Host),
 ) -> Model {
-  let #(running, arrival) = job_runner.file(model.running, arrival)
+  let #(running, arrival) = job_runner.file(model.view.running, arrival)
   let arrival = checked(model, arrival)
-  let model = Model(..model, running: job_runner.observed(running, arrival))
+  let model =
+    Model(
+      ..model,
+      view: View(..model.view, running: job_runner.observed(running, arrival)),
+    )
   admission.admit(model, [msg.JobReplied(arrival)])
 }
 
@@ -255,8 +265,8 @@ pub fn hold(
 /// let model = runtime.adopt_control(model, host)
 /// ```
 pub fn adopt_control(model: Model, host: daemon_selection.Host) -> Model {
-  let #(running, daemon) = job_runner.adopt_control(model.running, host)
-  Model(..model, running:, daemon_host: Some(daemon))
+  let #(running, daemon) = job_runner.adopt_control(model.view.running, host)
+  Model(..model, view: View(..model.view, running:, daemon_host: Some(daemon)))
 }
 
 // An attachment job's end permits adoption only on a socket that is still
@@ -273,12 +283,12 @@ fn checked(
 ) -> job.Arrival(job.Daemon) {
   case arrival {
     job.AttachArrived(key:, reply: job.Settled(weft.AllDelivered)) ->
-      case attachment.job_key(model.candidate) == Some(key) {
+      case attachment.job_key(model.view.candidate) == Some(key) {
         False -> arrival
         True ->
           job.AttachArrived(
             key:,
-            reply: job.Finished(liveness(model.candidate)),
+            reply: job.Finished(liveness(model.view.candidate)),
           )
       }
     job.AttachArrived(..)
@@ -343,7 +353,10 @@ pub fn terminal_identity() -> String {
 /// let #(model, effects) = runtime.take(model)
 /// ```
 pub fn take(model: Model) -> #(Model, List(Effect)) {
-  #(Model(..model, outbox: []), list.reverse(model.outbox))
+  #(
+    Model(..model, shared: Shared(..model.shared, outbox: [])),
+    list.reverse(model.shared.outbox),
+  )
 }
 
 /// Performs effects in order, starting and cancelling jobs in `running`,
@@ -377,7 +390,10 @@ pub fn perform(
 /// ```
 pub fn settle(stepped: #(Model, List(Effect))) -> Model {
   let #(model, effects) = stepped
-  Model(..model, running: perform(effects, model.running))
+  Model(
+    ..model,
+    view: View(..model.view, running: perform(effects, model.view.running)),
+  )
 }
 
 /// Takes and performs everything a model has queued.

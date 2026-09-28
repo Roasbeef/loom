@@ -369,9 +369,9 @@ fn assert_same_attachment(
   before: tui_driver.Sample,
   after: tui_driver.Sample,
 ) -> Nil {
-  let assert Some(#(before, _)) = before.model.captured
+  let assert Some(#(before, _)) = before.model.shared.captured
     as "B originally has a validated cut"
-  let assert Some(#(after, _)) = after.model.captured
+  let assert Some(#(after, _)) = after.model.shared.captured
     as "B still has a validated cut"
   assert before.attachment == after.attachment
 }
@@ -395,7 +395,7 @@ fn completed(
 ) -> tui_driver.Sample {
   tui_v2_test.await(driver.data, fn(sample) {
     let messages =
-      list.filter_map(sample.model.records, fn(record) {
+      list.filter_map(sample.model.shared.records, fn(record) {
         case record.entry {
           entry.MessageEntry(message:, ..) -> Ok(message)
           _ -> Error(Nil)
@@ -415,15 +415,15 @@ fn completed(
     writable(sample)
     && actual == answers
     && list.length(messages) == count
-    && sample.model.streams == []
-    && list.any(sample.model.strands, fn(strand) {
+    && sample.model.shared.streams == []
+    && list.any(sample.model.shared.strands, fn(strand) {
       strand.id == "main" && strand.live_phase == None
     })
   })
 }
 
 fn writable(sample: tui_driver.Sample) -> Bool {
-  case sample.model.channel {
+  case sample.model.shared.channel {
     Some(channel) -> session_channel.mutation_available(channel)
     None -> False
   }

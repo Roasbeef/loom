@@ -29,7 +29,7 @@ fn empty_view() {
       connection.new_inbox(),
       workspace.Context("/work", None),
       fn() { 0 },
-    ).usage,
+    ).shared.usage,
     snapshot_view.RunSettings("one_at_a_time", "parallel", None),
     [],
     [],

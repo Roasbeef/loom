@@ -3,8 +3,10 @@ import etui/widgets/textarea as text_area
 import filepath
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
@@ -303,6 +305,37 @@ pub fn process_identity_distinguishes_one_process_lifetime_test() {
   let _ = simplifile.delete(root)
 }
 
+// A wrapper leads its own process group from the moment spawn_server returns.
+// The port learns a child's pid as soon as it is forked, but the child calls
+// setsid(2) afterwards, on its own schedule; a group signal sent inside that
+// window reaches nobody, and the wrapper outlives its cleanup. Under load the
+// window was wide enough to fail the lifetime test above. Twenty spawns make an
+// early return near-certain to be caught, since an unsettled child was seen on
+// about one spawn in five even on an idle host. Procfs names the group
+// directly, so the check needs it; Darwin still runs the lifetime tests.
+pub fn spawned_wrapper_leads_its_own_process_group_test() {
+  case host_bootstrap.path_exists("/proc/self/stat") {
+    False -> Nil
+    True -> {
+      let root = test_root("process-group")
+      let log = filepath.join(root, "sleep.log")
+      let _ = simplifile.delete(root)
+      let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
+      int.range(from: 0, to: 20, with: Nil, run: fn(_, _) {
+        let assert Ok(#(process_port, pid)) =
+          host_bootstrap.spawn_server("/bin/sleep", ["30"], root, log)
+        assert process_group(pid) == Ok(pid)
+          as "a spawned wrapper must already lead its own process group"
+        host_bootstrap.terminate_process_group(pid)
+        host_bootstrap.close_server_process(process_port)
+        assert_process_stops(pid, 20)
+      })
+      let _ = simplifile.delete(root)
+      Nil
+    }
+  }
+}
+
 pub fn paused_server_dies_with_launcher_before_release_test() {
   let root = test_root("paused-server-owner-death")
   let marker = filepath.join(root, "started")
@@ -394,13 +427,18 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     tui.new_model(connection.new_inbox(), workspace.discover_from(workspace))
   let model =
     tui_model.Model(
-      ..model,
-      // Local startup clears the demonstration identity before selection.
-      // This draft is unassigned until the first session is adopted.
-      session: "",
-      local_options: Some(options),
-      overlay: tui_model.DaemonSelector(session_selector.new(empty, "")),
-      input: text_area.state_from_string("retained draft"),
+      shared: tui_model.Shared(
+        ..model.shared,
+        // Local startup clears the demonstration identity before selection.
+        // This draft is unassigned until the first session is adopted.
+        session: "",
+      ),
+      view: tui_model.View(
+        ..model.view,
+        local_options: Some(options),
+        overlay: tui_model.DaemonSelector(session_selector.new(empty, "")),
+        input: text_area.state_from_string("retained draft"),
+      ),
     )
     |> runtime.adopt_control(host)
 
@@ -409,21 +447,27 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let invalid =
     tui_model.Model(
       ..model,
-      local_options: Some(
-        bootstrap.Options(
-          ..options,
-          config: filepath.join(root, "absent/loom.toml"),
+      view: tui_model.View(
+        ..model.view,
+        local_options: Some(
+          bootstrap.Options(
+            ..options,
+            config: filepath.join(root, "absent/loom.toml"),
+          ),
         ),
       ),
     )
   let refused = configured(tui.update(backend.KeyPress("n"), invalid))
-  assert refused.creation_key == None
-  assert text_area.value(refused.input) == "retained draft"
-  assert !attachment.busy(refused.candidate)
+  assert refused.view.creation_key == None
+  assert text_area.value(refused.view.input) == "retained draft"
+  assert !attachment.busy(refused.view.candidate)
   let creating =
     configured(tui.update(
       backend.KeyPress("n"),
-      tui_model.Model(..refused, local_options: Some(options)),
+      tui_model.Model(
+        ..refused,
+        view: tui_model.View(..refused.view, local_options: Some(options)),
+      ),
     ))
   let switched = wait_for_attachment(creating, 20_000)
   let assert attachment.Adopted(channel, cut, _, _, _, selected_name, _) =
@@ -431,9 +475,9 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     as "the terminal validates the bounded capture before actual adoption"
   let adopted =
     interaction.candidate_outcome(creating, attachment.idle(), Some(switched))
-  assert adopted.current_model == "fixture"
-  assert text_area.value(adopted.input) == "retained draft"
-  assert adopted.creation_key == None
+  assert adopted.shared.current_model == "fixture"
+  assert text_area.value(adopted.view.input) == "retained draft"
+  assert adopted.view.creation_key == None
   let assert Some(server_build) = daemon.hello(first.control).build
     as "the built daemon launcher exports its own artifact identity"
   assert !build_identity.matches(
@@ -442,7 +486,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   )
     as "the e2e client identity differs from the built daemon"
   assert_build_notice(adopted)
-  let assert Some(#(adopted_cut, adopted_view)) = adopted.captured
+  let assert Some(#(adopted_cut, adopted_view)) = adopted.shared.captured
     as "adoption retained its coherent projection"
   let refreshed =
     inbound.apply_channel_update(
@@ -458,7 +502,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     as "the created session is already resident"
   assert cut.attachment.expected == target.expected
   assert selected_name == target.session_name
-  assert adopted.session_label
+  assert adopted.shared.session_label
     == Some(#(target.expected.session, target.session_name))
   close_channel(channel)
 
@@ -500,10 +544,13 @@ fn run_real_server_lifecycle(server: String) -> Nil {
       session_channel.Failed("daemon exited"),
     )
     |> runtime.flush
-  let assert tui_model.ReconnectAttempting(_) = reconnecting.reconnect
+  let assert tui_model.ReconnectAttempting(_) = reconnecting.view.reconnect
     as "the attached local terminal owns one reconnect attempt"
   let assert Ok(reconnected) =
-    process.selector_receive(job_runner.selector(reconnecting.running), 40_000)
+    process.selector_receive(
+      job_runner.selector(reconnecting.view.running),
+      40_000,
+    )
     as "the bounded relaunch produces an outcome"
   let assert job.ReconnectArrived(
     reply: weft.PulledOutcome(weft.Completed(value: restarted_host, ..)),
@@ -553,8 +600,8 @@ fn run_real_server_lifecycle(server: String) -> Nil {
       attachment.idle(),
       Some(reopened),
     )
-  assert readopted.session == adopted.session
-  assert text_area.value(readopted.input) == "retained draft"
+  assert readopted.shared.session == adopted.shared.session
+  assert text_area.value(readopted.view.input) == "retained draft"
   assert_build_notice(readopted)
   close_channel(reopened_channel)
 
@@ -614,7 +661,7 @@ fn configured(model: tui_model.Model) -> tui_model.Model {
       every: poll.Fixed(5),
       from: model,
       attempt: fn(current: tui_model.Model) {
-        case current.configuring {
+        case current.view.configuring {
           None -> poll.Settled(current)
           Some(_) -> poll.Pending(tui.update(backend.Tick, current))
         }
@@ -635,13 +682,16 @@ fn wait_for_attachment(model: tui_model.Model, within: Int) {
         let model = runtime.receive(model)
         let #(next, outcome, decided) =
           attachment.poll(
-            model.candidate,
+            model.view.candidate,
             now: host_bootstrap.monotonic_time_ms(),
           )
         let model =
           list.fold(
             decided,
-            tui_model.Model(..model, candidate: next),
+            tui_model.Model(
+              ..model,
+              view: tui_model.View(..model.view, candidate: next),
+            ),
             tui_model.emit_attachment,
           )
           |> runtime.flush
@@ -657,7 +707,7 @@ fn wait_for_attachment(model: tui_model.Model, within: Int) {
       let _ =
         runtime.flush(tui_model.emit_attachment(
           pending,
-          attachment.Abandon(pending.candidate),
+          attachment.Abandon(pending.view.candidate),
         ))
       panic as "the bounded credited attachment did not settle"
     }
@@ -696,6 +746,21 @@ fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
     as "the native process must be observed absent before replacement"
 }
 
+// The command name in a stat line is parenthesised and may hold spaces, so
+// the fields are counted from the last closing parenthesis: state, parent,
+// then the process group.
+fn process_group(pid: Int) -> Result(Int, Nil) {
+  use stat <- result.try(
+    simplifile.read("/proc/" <> int.to_string(pid) <> "/stat")
+    |> result.replace_error(Nil),
+  )
+  use fields <- result.try(list.last(string.split(stat, ") ")))
+  case string.split(fields, " ") {
+    [_state, _parent, group, ..] -> int.parse(group)
+    _ -> Error(Nil)
+  }
+}
+
 fn test_root(name: String) -> String {
   "build/bootstrap-test-"
   <> name
@@ -706,7 +771,7 @@ fn test_root(name: String) -> String {
 // The update notice is a projection of retained authenticated identity. Each
 // adoption and refresh must leave exactly one copy in the visible transcript.
 fn assert_build_notice(model: tui_model.Model) {
-  assert list.count(model.transcript, fn(line) {
+  assert list.count(model.shared.transcript, fn(line) {
       string.contains(line.text, "differs from this client's")
     })
     == 1

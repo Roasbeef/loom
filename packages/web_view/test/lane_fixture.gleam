@@ -328,12 +328,185 @@ pub fn answered(texts: List(String)) -> session_channel.Update {
   capture_of([item(1, 10_000, said("go", None)), ..answers], None, [], [])
 }
 
+/// A capture of `main` holding the records `from` to `to` of a
+/// conversation in which every turn is three records: a person's question,
+/// a working note and the answer, so each turn is an input, a work divider
+/// holding the note, and the answer, three rows in all. Turn `n` is the
+/// records `3n - 2` to `3n`. A capture that starts after the first record
+/// names a parent it does not hold, so older history exists below it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.conversation(301, 450)
+/// ```
+pub fn conversation(from: Int, to: Int) -> session_channel.Update {
+  capture_of(exchange(from, to), None, [], [])
+}
+
+/// The records `from` to `to` of the same conversation as `conversation`,
+/// as the window of an older page of history.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.older_page(201, 300)
+/// ```
+pub fn older_page(from: Int, to: Int) -> snapshot.Window {
+  let items = exchange(from, to)
+  snapshot.Window(list.reverse(items), list.length(items) * 100, None)
+}
+
+/// A capture of `main` holding the records `from` to `to` of a
+/// conversation that opens with one long turn: a question at 1 and a
+/// working note at every sequence from 2 to 141, 141 rows in all. From 142
+/// on, every turn is three records, as in `conversation`, so turn `n` of
+/// those is the records `139 + 3n` to `141 + 3n`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.long_turn(142, 291)
+/// ```
+pub fn long_turn(from: Int, to: Int) -> session_channel.Update {
+  capture_of(long_items(from, to), None, [], [])
+}
+
+/// The records `from` to `to` of `long_turn`'s conversation, as the window
+/// of an older page of history.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.long_turn_page(42, 141)
+/// ```
+pub fn long_turn_page(from: Int, to: Int) -> snapshot.Window {
+  let items = long_items(from, to)
+  snapshot.Window(list.reverse(items), list.length(items) * 100, None)
+}
+
+fn long_items(from: Int, to: Int) -> List(snapshot.Item) {
+  int.range(from: to, to: from - 1, with: [], run: fn(items, seq) {
+    let body = case seq, seq < 142 {
+      1, _ -> said("question 0", None)
+      _, True ->
+        assistant([message.AssistantText("step " <> int.to_string(seq), None)])
+      _, False -> {
+        let turn = int.to_string({ seq - 139 } / 3)
+        case { seq - 142 } % 3 {
+          0 -> said("question " <> turn, None)
+          1 -> assistant([message.AssistantText("working on " <> turn, None)])
+          _ ->
+            assistant([message.AssistantText("**answer " <> turn <> "**", None)])
+        }
+      }
+    }
+    [item(seq, 10_000 + seq, body), ..items]
+  })
+}
+
+/// A capture of `main` holding the records `from` to `to` of a
+/// conversation whose first turn, a question at 1 and its answer at 2, is
+/// followed by 150 records another strand wrote, 3 to 152, before `main`
+/// goes on at 153 with three-record turns, as in `conversation`. `main`'s
+/// record at 153 names the answer at 2 as its parent, so a read of the
+/// hundred sequences below 153 finds none of `main`'s ancestry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.gapped(153, 302)
+/// ```
+pub fn gapped(from: Int, to: Int) -> session_channel.Update {
+  capture_of(gapped_items(from, to), None, [], [])
+}
+
+/// The records `from` to `to` of `gapped`'s conversation, as the window of
+/// an older page of history.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.gapped_page(53, 152)
+/// ```
+pub fn gapped_page(from: Int, to: Int) -> snapshot.Window {
+  let items = gapped_items(from, to)
+  snapshot.Window(list.reverse(items), list.length(items) * 100, None)
+}
+
+fn gapped_items(from: Int, to: Int) -> List(snapshot.Item) {
+  int.range(from: to, to: from - 1, with: [], run: fn(items, seq) {
+    let at = 10_000 + seq
+    let made = case seq {
+      1 -> item(1, at, said("question 0", None))
+      2 -> item(2, at, assistant([message.AssistantText("answer 0", None)]))
+
+      // The other strand's records hang off one another, and none of them
+      // is on `main`'s ancestry.
+      _ if seq < 153 ->
+        snapshot.Loaded(
+          entry.MessageEntry(
+            id(seq),
+            Some(id(seq - 1)),
+            seq,
+            at,
+            assistant([message.AssistantText("elsewhere", None)]),
+            False,
+          ),
+          100,
+        )
+      153 ->
+        snapshot.Loaded(
+          entry.MessageEntry(
+            id(153),
+            Some(id(2)),
+            153,
+            at,
+            said("question 1", None),
+            False,
+          ),
+          100,
+        )
+      _ -> {
+        let turn = int.to_string({ seq - 150 } / 3)
+        let body = case { seq - 153 } % 3 {
+          0 -> said("question " <> turn, None)
+          1 -> assistant([message.AssistantText("working on " <> turn, None)])
+          _ ->
+            assistant([message.AssistantText("**answer " <> turn <> "**", None)])
+        }
+        item(seq, at, body)
+      }
+    }
+    [made, ..items]
+  })
+}
+
+// The conversation's records `from` to `to`, oldest first.
+fn exchange(from: Int, to: Int) -> List(snapshot.Item) {
+  int.range(from: to, to: from - 1, with: [], run: fn(items, seq) {
+    let turn = int.to_string({ seq + 2 } / 3)
+    let body = case seq % 3 {
+      1 -> said("question " <> turn, None)
+      2 -> assistant([message.AssistantText("working on " <> turn, None)])
+      _ -> assistant([message.AssistantText("**answer " <> turn <> "**", None)])
+    }
+    [item(seq, 10_000 + seq, body), ..items]
+  })
+}
+
 fn capture_of(
   items: List(snapshot.Item),
   operation: Option(String),
   running: List(#(String, String)),
   extra: List(snapshot_view.Cell),
 ) -> session_channel.Update {
+  // The leaf and the cursor follow the newest record held, which for a
+  // capture from the first record is also the number of records.
+  let newest =
+    list.fold(items, 0, fn(newest, item) {
+      int.max(newest, snapshot.sequence(item))
+    })
   let operations = case operation {
     Some(op) -> [#("main", op), ..running]
     None -> running
@@ -357,7 +530,7 @@ fn capture_of(
   let view =
     snapshot_view.View(
       strands,
-      dict.from_list([#("main", Some(id(list.length(items))))]),
+      dict.from_list([#("main", Some(id(newest)))]),
       dict.new(),
       dict.from_list(operations),
       usage(),
@@ -376,9 +549,9 @@ fn capture_of(
         message.Origin("alice", "Alice"),
         snapshot.Operator,
       ),
-      list.length(items) + 1,
+      newest + 1,
       json.Null,
-      snapshot.Window(items, list.length(items) * 100, None),
+      snapshot.Window(list.reverse(items), list.length(items) * 100, None),
       None,
     )
   session_channel.Captured(cut, view, session_channel.Refreshed)

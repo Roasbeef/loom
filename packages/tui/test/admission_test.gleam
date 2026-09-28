@@ -34,7 +34,7 @@ import tui_test/stepping
 // no line, no notice, no frame, no effect. The tick that follows reduces it.
 pub fn an_arrival_is_filed_and_not_reduced_test() {
   let model = fresh()
-  let source = buffered.sender(model.inbox)
+  let source = buffered.sender(model.shared.inbox)
   let #(admitted, effects) =
     tui.step(
       msg.Arrived([msg.Frame(source, connection_event.NetworkFault("held"))]),
@@ -42,12 +42,12 @@ pub fn an_arrival_is_filed_and_not_reduced_test() {
     )
 
   assert effects == []
-  assert buffered.held(admitted.inbox) == 1
-  assert admitted.transcript == model.transcript
-  assert admitted.notice == model.notice
-  assert admitted.render_revision == model.render_revision
-  assert admitted.frame_revision == model.frame_revision
-  assert admitted.outbox == model.outbox
+  assert buffered.held(admitted.shared.inbox) == 1
+  assert admitted.shared.transcript == model.shared.transcript
+  assert admitted.shared.notice == model.shared.notice
+  assert admitted.shared.render_revision == model.shared.render_revision
+  assert admitted.shared.frame_revision == model.shared.frame_revision
+  assert admitted.shared.outbox == model.shared.outbox
 
   let #(ticked, _) = stepping.step(backend.Tick, admitted)
   assert list.contains(failures(ticked), "network: held")
@@ -73,7 +73,7 @@ pub fn a_frame_from_a_replaced_inbox_is_not_filed_test() {
 // in the lane's sequence. The bound is the host's to keep.
 pub fn admission_never_drops_a_frame_for_capacity_test() {
   let model = fresh()
-  let source = buffered.sender(model.inbox)
+  let source = buffered.sender(model.shared.inbox)
   let beyond = tui_model.connection_batch + 6
   let frames =
     int.range(from: 0, to: beyond, with: [], run: fn(acc, n) {
@@ -85,7 +85,7 @@ pub fn admission_never_drops_a_frame_for_capacity_test() {
     |> list.reverse
   let #(admitted, _) = tui.step(msg.Arrived(frames), model)
 
-  assert buffered.held(admitted.inbox) == beyond
+  assert buffered.held(admitted.shared.inbox) == beyond
 }
 
 // The host reads each mailbox up to the room its buffer has left and no
@@ -93,7 +93,7 @@ pub fn admission_never_drops_a_frame_for_capacity_test() {
 // event.
 pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
   let model = fresh()
-  let inbox = buffered.sender(model.inbox)
+  let inbox = buffered.sender(model.shared.inbox)
   int.range(from: 0, to: 100, with: Nil, run: fn(_, n) {
     process.send(inbox, connection_event.NetworkFault(int.to_string(n)))
   })
@@ -101,16 +101,19 @@ pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
   let model =
     tui_model.Model(
       ..model,
-      inbox: int.range(
-        from: 0,
-        to: already,
-        with: model.inbox,
-        run: fn(held, n) {
-          buffered.push(
-            held,
-            connection_event.NetworkFault("held " <> int.to_string(n)),
-          )
-        },
+      shared: tui_model.Shared(
+        ..model.shared,
+        inbox: int.range(
+          from: 0,
+          to: already,
+          with: model.shared.inbox,
+          run: fn(held, n) {
+            buffered.push(
+              held,
+              connection_event.NetworkFault("held " <> int.to_string(n)),
+            )
+          },
+        ),
       ),
     )
 
@@ -137,7 +140,13 @@ pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
   let full =
     tui_model.Model(
       ..model,
-      inbox: buffered.top_up(model.inbox, up_to: tui_model.connection_batch),
+      shared: tui_model.Shared(
+        ..model.shared,
+        inbox: buffered.top_up(
+          model.shared.inbox,
+          up_to: tui_model.connection_batch,
+        ),
+      ),
     )
   assert list.filter(runtime.arrivals(full), fn(arrival) {
       case arrival {
@@ -160,8 +169,8 @@ pub fn generated_runs_reduce_as_they_did_before_admission_test() {
       list.fold(operations(seed, 30), #(reference, admitted), fn(pair, op) {
         let #(reference, admitted) = pair
         list.each(op.frames, fn(frame) {
-          process.send(buffered.sender(reference.inbox), frame)
-          process.send(buffered.sender(admitted.inbox), frame)
+          process.send(buffered.sender(reference.shared.inbox), frame)
+          process.send(buffered.sender(admitted.shared.inbox), frame)
         })
         let #(reference, _) =
           stepping.step(op.event, phase_two_receive(reference))
@@ -169,12 +178,15 @@ pub fn generated_runs_reduce_as_they_did_before_admission_test() {
         #(reference, admitted)
       })
 
-    assert admitted.transcript == reference.transcript
-    assert admitted.notices == reference.notices
-    assert admitted.notice == reference.notice
-    assert admitted.pending_submission == reference.pending_submission
-    assert textarea.value(admitted.input) == textarea.value(reference.input)
-    assert buffered.held(admitted.inbox) == buffered.held(reference.inbox)
+    assert admitted.shared.transcript == reference.shared.transcript
+    assert admitted.shared.notices == reference.shared.notices
+    assert admitted.shared.notice == reference.shared.notice
+    assert admitted.shared.pending_submission
+      == reference.shared.pending_submission
+    assert textarea.value(admitted.view.input)
+      == textarea.value(reference.view.input)
+    assert buffered.held(admitted.shared.inbox)
+      == buffered.held(reference.shared.inbox)
   })
 }
 
@@ -183,8 +195,14 @@ pub fn generated_runs_reduce_as_they_did_before_admission_test() {
 fn phase_two_receive(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    inbox: buffered.top_up(model.inbox, up_to: tui_model.connection_batch),
-    replay_inbox: buffered.top_up(model.replay_inbox, up_to: 1),
+    shared: tui_model.Shared(
+      ..model.shared,
+      inbox: buffered.top_up(
+        model.shared.inbox,
+        up_to: tui_model.connection_batch,
+      ),
+      replay_inbox: buffered.top_up(model.shared.replay_inbox, up_to: 1),
+    ),
   )
 }
 
@@ -233,7 +251,7 @@ fn fresh() -> tui_model.Model {
 }
 
 fn failures(model: tui_model.Model) -> List(String) {
-  list.filter_map(model.transcript, fn(line) {
+  list.filter_map(model.shared.transcript, fn(line) {
     case line {
       transcript_line.Line(transcript_line.Failure, text) -> Ok(text)
       transcript_line.Line(..) -> Error(Nil)

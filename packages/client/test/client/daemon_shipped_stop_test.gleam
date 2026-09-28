@@ -171,7 +171,7 @@ fn exercise(
   let a_ready = tui_v2_test.await(a_driver.data, writable)
   let b_ready = tui_v2_test.await(b_driver.data, writable)
   let b_attachment = attachment_of(b_ready)
-  let assert Some(b_channel) = b_ready.model.channel
+  let assert Some(b_channel) = b_ready.model.shared.channel
     as "B owns an adopted channel before A starts"
 
   // The actual complete request and streamed start precede A's captured live
@@ -181,7 +181,7 @@ fn exercise(
   let _ =
     tui_v2_test.await(a_driver.data, fn(sample) {
       users(sample) == ["held A prompt"]
-      && list.any(sample.model.strands, fn(strand) {
+      && list.any(sample.model.shared.strands, fn(strand) {
         strand.id == "main" && strand.live_phase != None
       })
     })
@@ -224,7 +224,7 @@ fn exercise(
       "beforeanswer",
     ])
   assert attachment_of(b_done) == b_attachment
-  let assert Some(channel) = b_done.model.channel
+  let assert Some(channel) = b_done.model.shared.channel
     as "B retains its channel after A's retirement"
   assert session_channel.socket(channel) == session_channel.socket(b_channel)
   stop_driver(a_driver)
@@ -244,8 +244,8 @@ fn exercise(
     tui_v2_test.await(replacement.data, fn(sample) {
       replies(sample) == ["recoveredanswer"]
       && list.length(recorded_messages(sample)) == 3
-      && sample.model.streams == []
-      && list.any(sample.model.strands, fn(strand) {
+      && sample.model.shared.streams == []
+      && list.any(sample.model.shared.strands, fn(strand) {
         strand.id == "main" && strand.live_phase == None
       })
     })
@@ -300,8 +300,8 @@ fn complete(
     && replies(sample) == answers
     && list.length(recorded_messages(sample))
     == list.length(prompts) + list.length(answers)
-    && sample.model.streams == []
-    && list.any(sample.model.strands, fn(strand) {
+    && sample.model.shared.streams == []
+    && list.any(sample.model.shared.strands, fn(strand) {
       strand.id == "main" && strand.live_phase == None
     })
   })
@@ -310,7 +310,7 @@ fn complete(
 // Count every message variant before applying the text projections, so an
 // unexpected invocation, result, or malformed content cannot disappear.
 fn recorded_messages(sample: tui_driver.Sample) -> List(message.AgentMessage) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(message:, ..) -> Ok(message)
       _ -> Error(Nil)
@@ -319,7 +319,7 @@ fn recorded_messages(sample: tui_driver.Sample) -> List(message.AgentMessage) {
 }
 
 fn users(sample: tui_driver.Sample) -> List(String) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(
         message: message.UserMessage(
@@ -334,7 +334,7 @@ fn users(sample: tui_driver.Sample) -> List(String) {
 }
 
 fn replies(sample: tui_driver.Sample) -> List(String) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(
         message: message.AssistantMessage(
@@ -349,14 +349,14 @@ fn replies(sample: tui_driver.Sample) -> List(String) {
 }
 
 fn writable(sample: tui_driver.Sample) -> Bool {
-  case sample.model.channel {
+  case sample.model.shared.channel {
     Some(channel) -> session_channel.mutation_available(channel)
     None -> False
   }
 }
 
 fn attachment_of(sample: tui_driver.Sample) -> snapshot.Attachment {
-  let assert Some(#(cut, _)) = sample.model.captured
+  let assert Some(#(cut, _)) = sample.model.shared.captured
     as "identity comes from the accepted snapshot"
   cut.attachment
 }

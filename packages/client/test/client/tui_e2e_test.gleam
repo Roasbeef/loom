@@ -250,8 +250,8 @@ fn virtual_turns(
 ) -> Result(Nil, String) {
   use Nil <- result.try(
     await_pair(alice, bob, "both initial snapshots", fn(a, b) {
-      a.model.session == session_id
-      && b.model.session == session_id
+      a.model.shared.session == session_id
+      && b.model.shared.session == session_id
       && writable(a)
       && writable(b)
     }),
@@ -280,7 +280,7 @@ fn shared_turns(
   count: Int,
 ) -> Bool {
   let users =
-    list.filter_map(a.model.records, fn(record) {
+    list.filter_map(a.model.shared.records, fn(record) {
       case record.entry {
         entry.MessageEntry(message: message.UserMessage(content:, ..), ..) ->
           Ok(content)
@@ -288,7 +288,7 @@ fn shared_turns(
       }
     })
   let answers =
-    list.filter_map(a.model.records, fn(record) {
+    list.filter_map(a.model.shared.records, fn(record) {
       case record.entry {
         entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
           Ok(content)
@@ -307,17 +307,17 @@ fn shared_turns(
     |> list.map(fn(marker) {
       [message.AssistantText("the scripted model answered " <> marker, None)]
     })
-  a.model.records == b.model.records
+  a.model.shared.records == b.model.shared.records
   && users == expected_users
   && answers == expected_answers
-  && a.model.streams == []
-  && b.model.streams == []
-  && a.model.submitting == None
-  && b.model.submitting == None
-  && list.any(a.model.strands, fn(strand) {
+  && a.model.shared.streams == []
+  && b.model.shared.streams == []
+  && a.model.shared.submitting == None
+  && b.model.shared.submitting == None
+  && list.any(a.model.shared.strands, fn(strand) {
     strand.id == "main" && strand.live_phase == None
   })
-  && list.any(b.model.strands, fn(strand) {
+  && list.any(b.model.shared.strands, fn(strand) {
     strand.id == "main" && strand.live_phase == None
   })
   && list.all(list.take([assistant_marker, second_marker], count), fn(marker) {
@@ -326,7 +326,7 @@ fn shared_turns(
 }
 
 fn writable(sample: tui_driver.Sample) {
-  case sample.model.channel {
+  case sample.model.shared.channel {
     Some(channel) -> session_channel.mutation_available(channel)
     None -> False
   }
@@ -360,9 +360,9 @@ fn await_pair(
         <> "\nBob:\n"
         <> b.frame
         <> "\nAlice records: "
-        <> string.inspect(a.model.records)
+        <> string.inspect(a.model.shared.records)
         <> "\nBob records: "
-        <> string.inspect(b.model.records),
+        <> string.inspect(b.model.shared.records),
       )
     }
   }
@@ -1472,9 +1472,9 @@ fn ux_await(
         <> " timed out:\n"
         <> sample.frame
         <> "\nqueue: "
-        <> string.inspect(sample.model.queue_editor)
+        <> string.inspect(sample.model.view.queue_editor)
         <> "\nnotice: "
-        <> sample.model.notice,
+        <> sample.model.shared.notice,
       )
     }
   }
@@ -1518,7 +1518,7 @@ fn ux_turns(
   use _ <- result.try(
     ux_await(driver, "queued second turn", fn(sample) {
       writable(sample)
-      && case sample.model.captured {
+      && case sample.model.shared.captured {
         Some(#(_, view)) ->
           case view.pending_inputs {
             Some(rows) -> list.any(rows, fn(row) { row.strand == "main" })
@@ -1536,7 +1536,7 @@ fn ux_turns(
     ])
   use _ <- result.try(
     ux_await(driver, "complete queue editor", fn(sample) {
-      case sample.model.queue_editor.draft {
+      case sample.model.view.queue_editor.draft {
         Some(draft) ->
           draft.document.text == ux_original()
           && textarea.value(draft.input) == ux_original()
@@ -1556,8 +1556,8 @@ fn ux_turns(
   // editor state; reopening below proves the exact saved text and revision.
   use _ <- result.try(
     ux_await(driver, "confirmed queued replacement", fn(sample) {
-      sample.model.queue_editor.surface == queue_editor.Closed
-      && sample.model.queue_editor.draft == None
+      sample.model.view.queue_editor.surface == queue_editor.Closed
+      && sample.model.view.queue_editor.draft == None
     }),
   )
   let _ =
@@ -1568,7 +1568,7 @@ fn ux_turns(
     ])
   use _ <- result.try(
     ux_await(driver, "authoritative saved queue draft", fn(sample) {
-      case sample.model.queue_editor.draft {
+      case sample.model.view.queue_editor.draft {
         Some(draft) ->
           draft.document.text == ux_original() <> ux_suffix
           && draft.document.revision == 1
@@ -1584,7 +1584,7 @@ fn ux_turns(
     ])
   use _ <- result.try(
     ux_await(driver, "closed queue editor", fn(sample) {
-      sample.model.queue_editor.surface == queue_editor.Closed
+      sample.model.view.queue_editor.surface == queue_editor.Closed
     }),
   )
   process.send(first.1, Nil)
@@ -1604,8 +1604,10 @@ fn ux_turns(
     ])
   use _ <- result.try(
     ux_await(driver, "prior completion during successor", fn(sample) {
-      sample.model.summary_surface == queue_editor.Inspector
-      && case completion_summary.latest(sample.model.completion, "main") {
+      sample.model.view.summary_surface == queue_editor.Inspector
+      && case
+        completion_summary.latest(sample.model.shared.completion, "main")
+      {
         Some(summary) ->
           summary.coverage == completion_summary.Complete
           && summary.edits == ["e.txt"]
@@ -1615,7 +1617,7 @@ fn ux_turns(
             && tool.status == completion_summary.Failed
             && tool.exit_code == Some(7)
           })
-          && case sample.model.jobs {
+          && case sample.model.shared.jobs {
             Some(board) ->
               board.total == 1
               && list.any(board.jobs, fn(job) {
@@ -1624,7 +1626,7 @@ fn ux_turns(
               })
             None -> False
           }
-          && list.any(sample.model.strands, fn(strand) {
+          && list.any(sample.model.shared.strands, fn(strand) {
             strand.id == "main" && strand.live_phase != None
           })
         None -> False
@@ -1639,7 +1641,7 @@ fn ux_turns(
     ])
   use _ <- result.try(
     ux_await(driver, "real worktree navigator", fn(sample) {
-      case sample.model.worktree.board {
+      case sample.model.shared.worktree.board {
         Some(board) ->
           list.any(board.files, fn(file) {
             file.path == "external.txt"
@@ -1661,7 +1663,7 @@ fn ux_turns(
     ])
   use _ <- result.try(
     ux_await(driver, "selected current-file patch", fn(sample) {
-      sample.model.worktree.selected == 1
+      sample.model.shared.worktree.selected == 1
       && string.contains(sample.frame, "TWO")
       && !string.contains(sample.frame, "external current")
       && !string.contains(sample.frame, "untracked current")
@@ -1780,11 +1782,11 @@ fn skill_drive() -> Nil {
 fn skill_turns(driver, explicit_path: String) -> Result(Nil, String) {
   use ready <- result.try(
     ux_await(driver, "loaded skills", fn(sample) {
-      writable(sample) && list.length(sample.model.skills) == 1
+      writable(sample) && list.length(sample.model.shared.skills) == 1
     }),
   )
   use Nil <- result.try(
-    case list.map(ready.model.skills, fn(row) { row.command }) {
+    case list.map(ready.model.shared.skills, fn(row) { row.command }) {
       ["/check-flow"] -> Ok(Nil)
       _ -> Error("the alias duplicated a skill or a hidden command was exposed")
     },
@@ -1795,7 +1797,7 @@ fn skill_turns(driver, explicit_path: String) -> Result(Nil, String) {
   )
   let completed =
     tui_driver.play(driver, [backend.Paste("/check-f"), backend.KeyPress("tab")])
-  use Nil <- result.try(case textarea.value(completed.model.input) {
+  use Nil <- result.try(case textarea.value(completed.model.view.input) {
     "/check-flow " -> Ok(Nil)
     other ->
       Error("Tab did not complete the loaded skill: " <> string.inspect(other))
@@ -2017,13 +2019,13 @@ fn escape_texts(body: String) -> List(String) {
 }
 
 fn escape_main_idle(sample: tui_driver.Sample) -> Bool {
-  list.any(sample.model.strands, fn(strand) {
+  list.any(sample.model.shared.strands, fn(strand) {
     strand.id == "main" && strand.live_phase == None
   })
 }
 
 fn escape_holds_main(sample: tui_driver.Sample) -> Bool {
-  case sample.model.captured {
+  case sample.model.shared.captured {
     Some(#(_, view)) ->
       case view.pending_inputs {
         Some(rows) -> list.any(rows, fn(row) { row.strand == "main" })
@@ -2070,7 +2072,7 @@ fn escape_turns(
 
   use _ <- result.try(
     ux_await(driver, "abort acknowledged", fn(sample) {
-      sample.model.interrupt != None
+      sample.model.shared.interrupt != None
     }),
   )
 

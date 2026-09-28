@@ -92,7 +92,7 @@ pub fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
 @internal
 pub fn body_layout(body: Rect, model: Model) -> #(Rect, Rect, Rect) {
   let changes = diff_pane_width(model)
-  let rail = case model.agent_rail_visible && model.width >= 100 {
+  let rail = case model.view.agent_rail_visible && model.view.width >= 100 {
     True -> 34
     False -> 0
   }
@@ -146,7 +146,7 @@ fn queue_height(
   model: Model,
   rows: List(snapshot_view.PendingInput),
 ) -> Int {
-  let wanted = case model.queue_editor.surface, rows {
+  let wanted = case model.view.queue_editor.surface, rows {
     queue_editor.Closed, [] -> 0
     queue_editor.Closed, _ -> int.min(5, list.length(rows) + 2)
     queue_editor.Inspector, _ | queue_editor.Editor, _ ->
@@ -158,7 +158,8 @@ fn queue_height(
 /// The active strand's todo board, when it has one.
 @internal
 pub fn todo_board(model: Model) -> Option(todo_list.Board) {
-  dict.get(model.todo_boards, model.active_strand) |> option.from_result
+  dict.get(model.shared.todo_boards, model.shared.active_strand)
+  |> option.from_result
 }
 
 // The panel may take a third of the body and must leave the conversation
@@ -187,8 +188,8 @@ pub fn todo_area(body: Rect, model: Model) -> Rect {
 }
 
 fn diff_pane_width(model: Model) -> Int {
-  case model.diff_view != DiffHidden && model.width >= 140 {
-    True -> int.min(72, model.width / 2)
+  case model.view.diff_view != DiffHidden && model.view.width >= 140 {
+    True -> int.min(72, model.view.width / 2)
     False -> 0
   }
 }
@@ -197,14 +198,14 @@ fn diff_pane_width(model: Model) -> Int {
 /// surface or as the automatic side pane.
 @internal
 pub fn diff_shown(model: Model) -> Bool {
-  model.diff_view == DiffVisible || diff_pane_width(model) > 0
+  model.view.diff_view == DiffVisible || diff_pane_width(model) > 0
 }
 
 /// Reports whether captured edits replace the conversation as the main
 /// surface, which happens only when there is no room for a side pane.
 @internal
 pub fn main_shows_diff(model: Model) -> Bool {
-  model.diff_view == DiffVisible && diff_pane_width(model) == 0
+  model.view.diff_view == DiffVisible && diff_pane_width(model) == 0
 }
 
 /// Divides the footer rectangle from `layout` into the footer proper and the
@@ -220,23 +221,30 @@ pub fn footer_split(area: Rect, model: Model) -> #(Rect, Rect) {
 /// The rows the agent strip draws, from the same roster the workspace uses.
 @internal
 pub fn strip_lines(model: Model) -> List(agent_strip.Line) {
-  agent_strip.lines(model.strip, displayed_agents(model), model.active_strand)
+  agent_strip.lines(
+    tui_model.strip(model),
+    displayed_agents(model),
+    model.shared.active_strand,
+  )
 }
 
 /// The rows the agent strip takes on this screen.
 @internal
 pub fn strip_height(model: Model) -> Int {
-  agent_strip.height(strip_lines(model), model.height)
+  agent_strip.height(strip_lines(model), model.view.height)
 }
 
 fn footer_height(model: Model) -> Int {
-  case model.queue_editor.surface != queue_editor.Closed && model.height <= 12 {
+  case
+    model.view.queue_editor.surface != queue_editor.Closed
+    && model.view.height <= 12
+  {
     True -> 1
     False ->
-      case model.details_expanded {
-        True -> footer_rows(model.width)
+      case model.shared.details_expanded {
+        True -> footer_rows(model.view.width)
         False ->
-          case model.width < 100 {
+          case model.view.width < 100 {
             True -> 2
             False -> 1
           }
@@ -422,10 +430,11 @@ fn wrapped_cursor(prefix: String, width: Int, rows: Int) -> #(Int, Int) {
 fn input_height(model: Model) -> Int {
   // Reserve the same rows that `input_layout` assigns to the attachment
   // list, so every accepted image is visible above the editor.
-  let chip_rows = model.attachments |> composer.preview_lines |> list.length
+  let chip_rows =
+    model.shared.attachments |> composer.preview_lines |> list.length
 
   let content_rows =
-    model.input
+    model.view.input
     |> input_view_state(editor_content_width(model))
     |> text_area.line_count
     |> int.max(1)
@@ -451,8 +460,8 @@ pub fn composer_status_lines(model: Model) -> List(String) {
   // it is context for the prompt about to be written, not a report on one
   // already sent. An empty queue renders nothing, so the band keeps its
   // height when the advisor has nothing waiting.
-  let queue_focused = model.queue_editor.surface != queue_editor.Closed
-  let nudges = case model.nudges, queue_focused {
+  let queue_focused = model.view.queue_editor.surface != queue_editor.Closed
+  let nudges = case model.shared.nudges, queue_focused {
     _, True | None, False -> []
     Some(board), False -> list.take(advisor_pending.lines(board), 1)
   }
@@ -461,29 +470,29 @@ pub fn composer_status_lines(model: Model) -> List(String) {
   // pinned. It is the standing objective the next prompt is written
   // against, so unlike the nudge queue it is not consumed by a run start
   // and does not disappear while the session works.
-  let goal = case model.goal, queue_focused {
+  let goal = case model.shared.goal, queue_focused {
     _, True | None, False -> []
     Some(board), False -> goal_view.row(board)
   }
   let active = case active_status_label(model) {
     None -> []
     Some(status) -> [
-      activity_glyph(model.activity_frame)
+      activity_glyph(model.view.activity_frame)
       <> " "
       <> text_hygiene.single_line(status)
-      <> elapsed_label(model.activity_elapsed_s),
+      <> elapsed_label(model.shared.activity_elapsed_s),
     ]
   }
 
   // The workspace, the visible rail and the agent strip already own the
   // roster. Repeating it above the editor would spend its typing space on
   // the same observation.
-  let reviewers = case model.overlay, queue_focused {
+  let reviewers = case model.view.overlay, queue_focused {
     _, True | AgentInspector(_), False -> []
     _, False ->
       case
-        model.agent_rail_visible
-        && model.width >= 100
+        model.view.agent_rail_visible
+        && model.view.width >= 100
         && diff_pane_width(model) == 0
         || strip_height(model) > 0
       {
@@ -506,12 +515,15 @@ pub fn composer_status_lines(model: Model) -> List(String) {
 // editor instead.
 fn reviewer_band_lines(model: Model) -> List(String) {
   let idle_advisor =
-    model.height >= 20
-    && model.active_strand != advisor_pending.advisor_strand
+    model.view.height >= 20
+    && model.shared.active_strand != advisor_pending.advisor_strand
     && strand_listed(model, advisor_pending.advisor_strand)
     && !strand_running(model, advisor_pending.advisor_strand)
   case
-    reviewer_status.lines(model.reviewer_rows, model.active_strand),
+    reviewer_status.lines(
+      model.shared.reviewer_rows,
+      model.shared.active_strand,
+    ),
     idle_advisor
   {
     [], True -> ["Advisor · idle · /agents to inspect", ""]
@@ -532,7 +544,7 @@ pub fn pending_layout(area: Rect, model: Model) -> #(Rect, Rect) {
 // Receipt is a server fact; sending and waiting for a free channel are local
 // facts. Naming them separately prevents an accepted queue from looking lost.
 fn pending_status(model: Model) -> Option(String) {
-  case model.pending_submission, model.awaiting_outcome {
+  case model.shared.pending_submission, model.shared.awaiting_outcome {
     Some(_), _ -> Some("Not sent yet · waiting for session sync · Esc cancels")
     None, Some(_) -> Some("Sent · waiting for receipt")
     None, None -> None
@@ -542,7 +554,7 @@ fn pending_status(model: Model) -> Option(String) {
 // Stacking the chips leaves the editor the full interior width, so the wrap
 // the operator sees no longer depends on what is attached.
 fn editor_content_width(model: Model) -> Int {
-  int.max(2, model.width - 2)
+  int.max(2, model.view.width - 2)
 }
 
 /// How long the active strand has been busy, in the shape the prompt
@@ -610,15 +622,15 @@ pub fn active_status_label(model: Model) -> Option(String) {
 }
 
 fn running_tool_label(model: Model) -> String {
-  let calls = case model.captured {
+  let calls = case model.shared.captured {
     None -> []
     Some(#(_, view)) ->
-      case dict.get(view.operations, model.active_strand) {
+      case dict.get(view.operations, model.shared.active_strand) {
         Error(Nil) -> []
         Ok(current) ->
           tool_activity.running(
             view.cells,
-            list.map(model.records, fn(record) { record.entry }),
+            list.map(model.shared.records, fn(record) { record.entry }),
             current,
           )
       }
@@ -642,7 +654,7 @@ fn active_stream_kind(model: Model) -> Option(String) {
   |> list.reverse
   |> list.find(fn(stream) {
     let Stream(strand:, ..) = stream
-    strand == model.active_strand && stream.kind != "end"
+    strand == model.shared.active_strand && stream.kind != "end"
   })
   |> result.map(fn(stream) {
     let Stream(kind:, ..) = stream
@@ -683,17 +695,17 @@ pub fn goal_inspector_area(body: Rect, editor: Rect) -> Rect {
 /// The goal inspector's area for the model's current screen size.
 @internal
 pub fn model_goal_inspector_area(model: Model) -> Rect {
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, input, _) = layout(screen, model)
   let #(_, composer) = pending_layout(panel_inner(input), model)
-  let #(_, editor) = input_layout(composer, model.attachments)
+  let #(_, editor) = input_layout(composer, model.shared.attachments)
   goal_inspector_area(body, editor)
 }
 
 /// The area the notes panel is drawn into when it replaces the transcript.
 @internal
 pub fn note_detail_area(model: Model) -> Rect {
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
   let #(transcript, _, _) = body_layout(conversation, model)
@@ -709,7 +721,7 @@ pub fn note_detail_area(model: Model) -> Rect {
 /// ```
 @internal
 pub fn message_detail_area(model: Model) -> Rect {
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
   agents.inspection_detail_area(body)
 }
@@ -729,7 +741,7 @@ pub fn message_detail_area(model: Model) -> Rect {
 /// ```
 @internal
 pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body_area, input_area, _) = layout(screen, model)
   let #(conversation, queue) = queue_body_layout(body_area, model)
   let #(transcript_panel, agent_panel, changes_panel) =
@@ -778,10 +790,10 @@ pub fn transcript_width(model: Model) -> Int {
 /// The active strand's pending inputs in the captured cut.
 @internal
 pub fn queue_rows(model: Model) -> List(snapshot_view.PendingInput) {
-  case model.captured {
+  case model.shared.captured {
     Some(#(_, view)) ->
       option.unwrap(view.pending_inputs, [])
-      |> list.filter(fn(row) { row.strand == model.active_strand })
+      |> list.filter(fn(row) { row.strand == model.shared.active_strand })
     None -> []
   }
 }
@@ -812,7 +824,7 @@ pub fn tiny_queue_measure(
 /// The whole screen as a rectangle, at the size the model last saw.
 @internal
 pub fn model_screen(model: Model) -> geometry.Rect {
-  geometry.rect_new(0, 0, model.width, model.height)
+  geometry.rect_new(0, 0, model.view.width, model.view.height)
 }
 
 fn model_queue_area_for(
@@ -840,7 +852,7 @@ pub fn queue_preview_area_for(
   let content = queue_content_area(area)
   case area.size.height {
     height if height <= 2 ->
-      case list.first(list.drop(rows, model.queue_editor.selected)) {
+      case list.first(list.drop(rows, model.view.queue_editor.selected)) {
         Error(Nil) -> content
         Ok(row) -> {
           let #(_, width) =
@@ -849,7 +861,7 @@ pub fn queue_preview_area_for(
         }
       }
     height if height <= 4 ->
-      case list.first(list.drop(rows, model.queue_editor.selected)) {
+      case list.first(list.drop(rows, model.view.queue_editor.selected)) {
         Error(Nil) -> content
         Ok(row) -> {
           let width = queue_panel.tiny_preview_width(row, content.size.width)
@@ -897,8 +909,8 @@ pub fn queue_draft_area(area: Rect) -> Rect {
 /// a local submission the server has not yet reported a phase for.
 @internal
 pub fn strand_running(model: Model, target: String) -> Bool {
-  model.submitting == Some(target)
-  || list.any(model.strands, fn(strand) {
+  model.shared.submitting == Some(target)
+  || list.any(model.shared.strands, fn(strand) {
     let Strand(id:, live_phase:, ..) = strand
     id == target && live_phase != None
   })
@@ -909,7 +921,7 @@ pub fn strand_running(model: Model, target: String) -> Bool {
 /// edge that says there is a session here to ask about.
 @internal
 pub fn strand_listed(model: Model, target: String) -> Bool {
-  list.any(model.strands, fn(strand) {
+  list.any(model.shared.strands, fn(strand) {
     let Strand(id:, ..) = strand
     id == target
   })
@@ -929,7 +941,7 @@ pub fn summary_body_area(screen: Rect) -> Rect {
 }
 
 fn normal_diff_panel(model: Model) -> Rect {
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
   let #(main, _, changes) = body_layout(conversation, model)
@@ -948,10 +960,10 @@ pub fn borrowed_diff_panel(model: Model) -> Option(Rect) {
     !diff_borrow_eligible(model) || panel_inner(normal).size.height >= 8,
     None,
   )
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, input, _) = layout(screen, model)
   let #(_, composer) = pending_layout(panel_inner(input), model)
-  let #(_, editor) = input_layout(composer, model.attachments)
+  let #(_, editor) = input_layout(composer, model.shared.attachments)
   let expanded =
     geometry.rect_new(
       normal.position.x,
@@ -969,8 +981,8 @@ pub fn borrowed_diff_panel(model: Model) -> Option(Rect) {
 @internal
 pub fn diff_borrow_eligible(model: Model) -> Bool {
   diff_shown(model)
-  && model.worktree.focus == worktree_view.Navigator
-  && case model.overlay {
+  && model.shared.worktree.focus == worktree_view.Navigator
+  && case model.view.overlay {
     NoOverlay -> True
     ModelSelector(_)
     | AgentInspector(_)
@@ -979,10 +991,10 @@ pub fn diff_borrow_eligible(model: Model) -> Bool {
     | PeerLinkManager(_)
     | ApprovalInspector(_) -> False
   }
-  && !model.notes_open
-  && model.queue_editor.surface == queue_editor.Closed
-  && model.summary_surface == queue_editor.Closed
-  && model.context.surface == context_view.Hidden
+  && !model.view.notes_open
+  && model.view.queue_editor.surface == queue_editor.Closed
+  && model.view.summary_surface == queue_editor.Closed
+  && model.shared.context.surface == context_view.Hidden
 }
 
 /// The changes panel in use: the borrowed one when it applies, otherwise
@@ -999,8 +1011,8 @@ fn active_diff_layout(model: Model) -> diff_panel.Layout {
   let area = panel_inner(active_diff_panel(model))
   diff_panel.layout(
     area,
-    list.length(worktree_view.labels(model.worktree)),
-    model.worktree.selected,
+    list.length(worktree_view.labels(model.shared.worktree)),
+    model.shared.worktree.selected,
   )
 }
 
@@ -1040,14 +1052,14 @@ pub fn diff_patch_height(model: Model) -> Int {
 pub fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
   use <- bool.guard(
     !diff_shown(model)
-      || model.queue_editor.surface != queue_editor.Closed
-      || model.summary_surface != queue_editor.Closed
-      || model.context.surface != context_view.Hidden,
+      || model.view.queue_editor.surface != queue_editor.Closed
+      || model.view.summary_surface != queue_editor.Closed
+      || model.shared.context.surface != context_view.Hidden,
     None,
   )
   use <- bool.guard(
-    model.notes_open
-      || case model.overlay {
+    model.view.notes_open
+      || case model.view.overlay {
       NoOverlay -> False
       _ -> True
     },
@@ -1057,7 +1069,7 @@ pub fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
     diff_panel.navigation_hit(
       active_diff_layout(model),
       at,
-      list.length(worktree_view.labels(model.worktree)),
+      list.length(worktree_view.labels(model.shared.worktree)),
     )
   {
     Ok(index) -> Some(index)
@@ -1069,11 +1081,11 @@ pub fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
 /// unavailable task and result evidence instead of inventing successful work.
 @internal
 pub fn displayed_agents(model: Model) -> List(agent_view.Row) {
-  let rows = case model.captured {
-    Some(_) -> model.agent_rows
-    None -> agent_view.legacy(model.strands)
+  let rows = case model.shared.captured {
+    Some(_) -> model.shared.agent_rows
+    None -> agent_view.legacy(model.shared.strands)
   }
-  case model.peer {
+  case model.shared.peer {
     Disconnected ->
       list.map(rows, fn(row) {
         agent_view.Row(

@@ -202,7 +202,8 @@ fn await(driver, predicate) {
         let sample = tui_driver.play(driver, [])
         case predicate(sample) {
           True -> poll.Settled(sample)
-          False -> poll.Pending(sample.model.notice <> "\n" <> sample.frame)
+          False ->
+            poll.Pending(sample.model.shared.notice <> "\n" <> sample.frame)
         }
       },
     )
@@ -216,14 +217,14 @@ fn await(driver, predicate) {
 }
 
 fn attached(sample: tui_driver.Sample, id) {
-  case sample.model.peer, sample.model.captured {
+  case sample.model.shared.peer, sample.model.shared.captured {
     tui_model.Attached, Some(#(cut, _)) -> cut.attachment.expected.session == id
     _, _ -> False
   }
 }
 
 fn user_turns(sample: tui_driver.Sample) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(message: message.UserMessage(content:, ..), ..) ->
         Ok(
@@ -241,7 +242,7 @@ fn user_turns(sample: tui_driver.Sample) {
 }
 
 fn settled(sample: tui_driver.Sample) {
-  list.any(sample.model.records, fn(record) {
+  list.any(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
         list.contains(
@@ -251,11 +252,13 @@ fn settled(sample: tui_driver.Sample) {
       _ -> False
     }
   })
-  && list.all(sample.model.strands, fn(strand) { strand.live_phase == None })
+  && list.all(sample.model.shared.strands, fn(strand) {
+    strand.live_phase == None
+  })
 }
 
 fn writable(sample: tui_driver.Sample) {
-  case sample.model.channel {
+  case sample.model.shared.channel {
     Some(channel) -> session_channel.mutation_available(channel)
     None -> False
   }
@@ -299,7 +302,7 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
     ])
   let alice_cut = await(alice, settled)
   let bob_cut = await(bob, settled)
-  assert alice_cut.model.records == bob_cut.model.records
+  assert alice_cut.model.shared.records == bob_cut.model.shared.records
   assert list.contains(user_turns(bob_cut), "A-only durable turn")
   tui_driver.stop(alice)
   let _ = await(bob, writable)
@@ -329,15 +332,15 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
   let terminal = connect(restored, "")
   let listing =
     await(terminal, fn(sample) {
-      case sample.model.overlay {
+      case sample.model.view.overlay {
         tui_model.DaemonSelector(_) -> True
         _ -> False
       }
     })
-  assert !attachment.busy(listing.model.candidate)
-  assert listing.model.captured == None
+  assert !attachment.busy(listing.model.view.candidate)
+  assert listing.model.shared.captured == None
   assert process.receive(arrivals, 0) == Error(Nil)
-  let assert tui_model.DaemonSelector(selector) = listing.model.overlay
+  let assert tui_model.DaemonSelector(selector) = listing.model.view.overlay
     as "listing is a server-backed metadata page"
   let assert Ok(selected) =
     list.first(list.drop(selector.page.sessions, selector.selected))
@@ -346,7 +349,7 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
   release(arrivals, selected.session_id)
   let opened =
     await(terminal, fn(sample) { attached(sample, selected.session_id) })
-  assert opened.model.workspace.path == selected.workspace
+  assert opened.model.shared.workspace.path == selected.workspace
   let other = case selected.session_id == a.id {
     True -> b
     False -> a
@@ -358,7 +361,7 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
     ])
   let _ =
     await(terminal, fn(sample) {
-      case sample.model.overlay {
+      case sample.model.view.overlay {
         tui_model.DaemonSelector(_) -> True
         _ -> False
       }
@@ -372,11 +375,11 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
     as "selecting the other saved row starts its own incarnation"
   assert switch_id == other.id
   let pending = tui_driver.play(terminal, [])
-  assert pending.model.session == selected.session_id
-  assert pending.model.records == opened.model.records
+  assert pending.model.shared.session == selected.session_id
+  assert pending.model.shared.records == opened.model.shared.records
   process.send(permit, Nil)
   let replaced = await(terminal, fn(sample) { attached(sample, other.id) })
-  assert replaced.model.workspace.path == other.workspace
+  assert replaced.model.shared.workspace.path == other.workspace
   case other.id == b.id {
     True -> {
       assert user_turns(replaced) == []

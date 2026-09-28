@@ -65,7 +65,7 @@ import tui/markdown
 import tui/model.{
   type Model, AgentInspector, ApprovalInspector, DaemonSelector, Disconnected,
   FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
-  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow,
+  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -96,7 +96,7 @@ pub fn view(
   model: Model,
   screen: Rect,
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
-  case model.view.frame_cache {
+  case model.view.caches.frame_cache {
     Some(FrameCache(screen: cached_screen, rendered:, ..)) ->
       cached_frame(rendered, cached_screen, screen, fn() {
         render_frame(model, screen)
@@ -141,13 +141,14 @@ pub fn render_frame(
   let #(pending_area, composer_area) =
     layout.pending_layout(layout.panel_inner(input_area), model)
   let #(paste_area, editor_area) =
-    layout.input_layout(composer_area, model.attachments)
+    layout.input_layout(composer_area, model.shared.attachments)
   let #(footer_area, strip_area) = layout.footer_split(footer_area, model)
   let strip = layout.strip_lines(model)
 
   // The editor is wrapped to the cells the chip leaves it, never resized to
   // fit: the source text and cursor stay exactly what history will replay.
-  let input_view = layout.input_view_state(model.input, editor_area.size.width)
+  let input_view =
+    layout.input_view_state(model.view.input, editor_area.size.width)
   let editor =
     text_area.textarea_new()
     |> text_area.with_max_lines(0)
@@ -161,7 +162,7 @@ pub fn render_frame(
   // Paint order is also z-order: the canvas owns every cell, the panels draw
   // only their borders over it, and the palette and overlays land last.
   let base =
-    repaint_canvas(screen, model.repaint_phase)
+    repaint_canvas(screen, model.view.repaint_phase)
     |> render_header(header_area, model)
     |> render_conversation_heading(transcript_panel, model)
     |> render_transcript(transcript_area, model)
@@ -172,17 +173,17 @@ pub fn render_frame(
     |> render_composer_chrome(
       input_area,
       input_title(model),
-      agent_strip.badge(strip, model.active_strand),
+      agent_strip.badge(strip, model.shared.active_strand),
     )
     |> render_pending_band(pending_area, model)
-    |> render_paste_chip(paste_area, model.attachments)
+    |> render_paste_chip(paste_area, model.shared.attachments)
     |> text_area.render(editor_area, editor, input_view)
     |> render_footer(footer_area, model)
     |> agent_strip.render(
       strip_area,
       strip,
-      model.strip.focus,
-      model.active_strand,
+      model.view.strip_focus,
+      model.shared.active_strand,
     )
     |> render_command_palette(body_area, model)
   let base = case layout.borrowed_diff_panel(model) {
@@ -193,7 +194,7 @@ pub fn render_frame(
       |> render_diff_view(layout.panel_inner(area), model)
     None -> base
   }
-  let rendered = case model.overlay {
+  let rendered = case model.view.overlay {
     NoOverlay -> base
     ModelSelector(selector) -> model_selector.render(base, screen, selector)
     AgentInspector(selected) ->
@@ -201,7 +202,7 @@ pub fn render_frame(
         base,
         body_area,
         layout.displayed_agents(model),
-        model.active_strand,
+        model.shared.active_strand,
         selected,
         agent_detail_content(model, selected),
       )
@@ -217,12 +218,12 @@ pub fn render_frame(
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
   }
 
-  let rendered = case model.overlay {
+  let rendered = case model.view.overlay {
     AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
       render_command_palette(
         rendered,
         body_area,
-        Model(..model, overlay: NoOverlay),
+        Model(..model, view: View(..model.view, overlay: NoOverlay)),
       )
     _ -> rendered
   }
@@ -230,7 +231,7 @@ pub fn render_frame(
   // Selected cells keep their original contents. A growing pending/reviewer
   // band may shrink the pane, so restore only its current intersection; the
   // selected transcript must never paint over newly visible controls.
-  let rendered = case model.selection {
+  let rendered = case model.view.selection {
     Some(selected) -> {
       let current_area =
         [
@@ -242,7 +243,7 @@ pub fn render_frame(
         |> list.find(fn(area) { area.position == selected.area.position })
         |> result.unwrap(selected.area)
       case
-        model.view.selection_frame,
+        model.view.caches.selection_frame,
         geometry.intersect(selected.area, current_area)
       {
         Some(original), Ok(area) ->
@@ -258,7 +259,7 @@ pub fn render_frame(
     }
     None -> rendered
   }
-  let cursor = case model.overlay, model.queue_editor.surface {
+  let cursor = case model.view.overlay, model.view.queue_editor.surface {
     NoOverlay, queue_editor.Editor -> queue_editor_cursor(model, queue_area)
     NoOverlay, _ -> text_area.cursor_screen_pos(input_view, editor_area)
     AgentInspector(agents.Inspector(focus: agents.Composing, ..)), _ ->
@@ -275,7 +276,7 @@ pub fn render_frame(
     render_summary_surface(rendered, cursor, screen, model)
   let #(rendered, cursor) =
     render_context_surface(rendered, cursor, screen, model)
-  #(appearance.apply(rendered, model.palette), cursor)
+  #(appearance.apply(rendered, model.view.palette), cursor)
 }
 
 /// Draws a rounded border and a left-aligned title, leaving the interior alone.
@@ -395,7 +396,7 @@ fn render_agent_rail(
           |> agents.render_rail(
             roster,
             layout.displayed_agents(model),
-            model.active_strand,
+            model.shared.active_strand,
           )
           |> paragraph.render_styled(
             observations,
@@ -413,7 +414,7 @@ fn render_agent_rail(
             buf,
             area,
             layout.displayed_agents(model),
-            model.active_strand,
+            model.shared.active_strand,
           )
       }
     }
@@ -424,15 +425,17 @@ fn render_agent_rail(
 // The rail reports captured observations. Opening /diff owns refreshing Git;
 // a missing or stale observation must not become a fabricated clean worktree.
 fn studio_observation_lines(model: Model) -> List(String) {
-  let advice = case model.nudges {
+  let advice = case model.shared.nudges {
     Some(board) -> list.take(advisor_pending.lines(board), 1)
     None ->
-      case list.any(model.strands, fn(strand) { strand.id == "advisor" }) {
+      case
+        list.any(model.shared.strands, fn(strand) { strand.id == "advisor" })
+      {
         True -> ["Advisor nudges · not observed"]
         False -> []
       }
   }
-  let changes = case model.worktree.board {
+  let changes = case model.shared.worktree.board {
     None -> ["CHANGES · /diff (not observed)"]
     Some(board) -> [
       "CHANGES · " <> int.to_string(board.total) <> " files · /diff",
@@ -444,7 +447,7 @@ fn studio_observation_lines(model: Model) -> List(String) {
         <> " "
         <> text_hygiene.single_line(file.path)
       })
-      |> list.append([model.worktree.message])
+      |> list.append([model.shared.worktree.message])
     ]
   }
   list.append(advice, changes)
@@ -453,9 +456,9 @@ fn studio_observation_lines(model: Model) -> List(String) {
 // Names are presentation only. Pairing one with its identity prevents a
 // legacy switch or replay from showing a previous session's title.
 fn session_title(model: Model) -> String {
-  case model.session_label {
-    Some(#(id, name)) if id == model.session && name != "" -> name
-    Some(_) | None -> model.session
+  case model.shared.session_label {
+    Some(#(id, name)) if id == model.shared.session && name != "" -> name
+    Some(_) | None -> model.shared.session
   }
 }
 
@@ -468,7 +471,7 @@ fn render_header(
   let details =
     text.truncate(
       " "
-        <> text_hygiene.single_line(model.current_model)
+        <> text_hygiene.single_line(model.shared.current_model)
         <> " · Ctrl+g details ",
       int.max(0, area.size.width / 3),
       "…",
@@ -485,7 +488,7 @@ fn render_header(
     text.truncate(
       text_hygiene.single_line(session_title(model))
         <> " · "
-        <> text_hygiene.single_line(workspace.label(model.workspace)),
+        <> text_hygiene.single_line(workspace.label(model.shared.workspace)),
       room,
       "…",
     )
@@ -575,20 +578,20 @@ fn render_transcript(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  case model.notes_open, layout.main_shows_diff(model) {
+  case model.view.notes_open, layout.main_shows_diff(model) {
     True, _ ->
       paragraph.render_styled(
         buffer.clear(buf, area),
         area,
-        notes_content(model, area, model.active_strand).lines,
+        notes_content(model, area, model.shared.active_strand).lines,
       )
     False, True -> render_diff_view(buf, area, model)
     False, False ->
       render_rows(
         buf,
         area,
-        model.view.rendered_rows,
-        model.scroll_offset + tui_model.viewport_backlog(model),
+        model.view.caches.rendered_rows,
+        model.view.scroll_offset + tui_model.viewport_backlog(model),
       )
   }
 }
@@ -630,8 +633,8 @@ fn render_rows(
 
 fn transcript_title(model: Model) -> String {
   let surface = case
-    model.help_open,
-    model.notes_open,
+    model.view.help_open,
+    model.view.notes_open,
     layout.main_shows_diff(model)
   {
     True, _, _ -> "help"
@@ -642,7 +645,7 @@ fn transcript_title(model: Model) -> String {
   " "
   <> surface
   <> " / "
-  <> text_hygiene.single_line(model.active_strand)
+  <> text_hygiene.single_line(model.shared.active_strand)
   <> " "
 }
 
@@ -1093,7 +1096,7 @@ fn agent_detail_content(model: Model, inspector: agents.Inspector) {
       Some(fn(area: Rect) { notes_content(model, area, selected).lines })
     agents.Collaboration ->
       Some(fn(area: Rect) {
-        case model.captured {
+        case model.shared.captured {
           Some(#(cut, view)) ->
             collaboration_view.lines(
               view,
@@ -1114,7 +1117,7 @@ fn agent_message_content(
   scroll: Int,
   area: Rect,
 ) -> span.Text {
-  model.agent_messages
+  model.shared.agent_messages
   |> agent_messages.for_strand(selected)
   |> agent_message_panel.render(message, scroll, area)
 }
@@ -1122,7 +1125,13 @@ fn agent_message_content(
 fn notes_content(model: Model, area: Rect, target: String) -> span.Text {
   let rows = prepared_notes(model, target, area)
   let context = note_context(model, target)
-  note_panel.render(rows, model.note_selected, model.note_scroll, context, area)
+  note_panel.render(
+    rows,
+    model.view.note_selected,
+    model.view.note_scroll,
+    context,
+    area,
+  )
 }
 
 /// The notes panel's rows for `target`, wrapped to the panel width with
@@ -1134,7 +1143,7 @@ pub fn prepared_notes(
   area: Rect,
 ) -> List(note_panel.Row) {
   let width = note_panel.body_width(area)
-  case model.note_board {
+  case model.shared.note_board {
     Some(board) if board.strand == target -> {
       let chosen = selected_note(model, board)
       list.map(board.notes, fn(note) {
@@ -1145,7 +1154,7 @@ pub fn prepared_notes(
         let body = case chosen == Some(note.key) {
           False -> []
           True -> {
-            let value = case model.note_mode, note.extent {
+            let value = case model.view.note_mode, note.extent {
               note_panel.Raw, notes_view.Complete -> raw_note_line(note.text)
               note_panel.Readable, notes_view.Complete ->
                 Line(ToolDetail, notes_view.readable_note(note))
@@ -1182,7 +1191,7 @@ fn historical_note_rows(model: Model, target: String, width: Int) {
         relation: " · not a current read",
         body: transcript_content(
           [
-            case model.note_mode {
+            case model.view.note_mode {
               note_panel.Raw ->
                 Line(ToolDetail, "```text\n" <> payload <> "\n```")
               note_panel.Readable ->
@@ -1197,7 +1206,7 @@ fn historical_note_rows(model: Model, target: String, width: Int) {
 }
 
 fn note_context(model: Model, target: String) -> List(String) {
-  case model.note_board {
+  case model.shared.note_board {
     Some(board) if board.strand == target -> [
       "notes for "
         <> target
@@ -1211,7 +1220,7 @@ fn note_context(model: Model, target: String) -> List(String) {
       case historical_note_payload(model, target) {
         Some(_) -> ["Historical run-start digest · r fetches current notes"]
         None ->
-          case model.overlay {
+          case model.view.overlay {
             AgentInspector(_) -> [
               "no agent notes are available for " <> target <> " · r refresh",
             ]
@@ -1227,7 +1236,7 @@ fn note_context(model: Model, target: String) -> List(String) {
 }
 
 fn missing_note_context(model: Model, target: String) -> List(String) {
-  case model.overlay {
+  case model.view.overlay {
     AgentInspector(_) -> [
       "no agent notes are available for " <> target <> " · r refresh",
     ]
@@ -1241,7 +1250,7 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
 }
 
 fn note_compact_status(board: notes_view.Board, model: Model) -> String {
-  let freshness = case model.captured {
+  let freshness = case model.shared.captured {
     Some(#(cut, _)) if cut.next_seq - 1 > board.as_of -> "stale · "
     _ -> "current read · "
   }
@@ -1253,7 +1262,7 @@ fn note_compact_status(board: notes_view.Board, model: Model) -> String {
 }
 
 fn historical_note_payload(model: Model, target: String) -> Option(String) {
-  model.records
+  model.shared.records
   |> list.find_map(fn(record) {
     let protocol.EntryRecord(strand:, entry:) = record
     case strand == target, entry {
@@ -1267,7 +1276,7 @@ fn historical_note_payload(model: Model, target: String) -> Option(String) {
 }
 
 fn note_read_status(board: notes_view.Board, model: Model) -> String {
-  case model.captured {
+  case model.shared.captured {
     Some(#(cut, _)) if cut.next_seq - 1 > board.as_of ->
       "Session advanced since this read · r refreshes. Saved plans may need correction."
     _ ->
@@ -1278,7 +1287,7 @@ fn note_read_status(board: notes_view.Board, model: Model) -> String {
 // Only the accepted operation's own revision establishes that a note predates
 // this turn. Unrelated session activity says nothing about the note's accuracy.
 fn note_turn_relation(seq: Int, model: Model, target: String) -> String {
-  case model.captured {
+  case model.shared.captured {
     None -> ""
     Some(#(_, view)) -> {
       let started = {
@@ -1313,7 +1322,9 @@ fn raw_note_line(text: String) -> Line {
 @internal
 pub fn selected_note(model: Model, board: notes_view.Board) -> Option(String) {
   case
-    list.find(board.notes, fn(note) { Some(note.key) == model.note_selected })
+    list.find(board.notes, fn(note) {
+      Some(note.key) == model.view.note_selected
+    })
   {
     Ok(note) -> Some(note.key)
     Error(Nil) ->
@@ -1328,7 +1339,7 @@ fn render_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  use <- bool.lazy_guard(!model.details_expanded, fn() {
+  use <- bool.lazy_guard(!model.shared.details_expanded, fn() {
     render_compact_footer(buf, area, model)
   })
   let #(project, model_name, usage, status, combined) = footer_sections(model)
@@ -1351,15 +1362,15 @@ fn render_compact_footer(
   // ordinary terminal widths.
   let pieces =
     [
-      model.cache_outlook,
-      text_hygiene.single_line(model.notice),
-      text_hygiene.single_line(model.current_model),
-      context_view.footer(model.context),
-      "est $" <> transcript_lines.money(model.usage.cost.total),
+      model.view.cache_outlook,
+      text_hygiene.single_line(model.shared.notice),
+      text_hygiene.single_line(model.shared.current_model),
+      context_view.footer(model.shared.context),
+      "est $" <> transcript_lines.money(model.shared.usage.cost.total),
       sessions_hint(
-        text_area.value(model.input),
-        model.attachments,
-        model.daemon_host,
+        text_area.value(model.view.input),
+        model.shared.attachments,
+        model.view.daemon_host,
       ),
     ]
     |> list.filter(fn(piece) { piece != "" })
@@ -1461,8 +1472,8 @@ fn footer_sections(
   model: Model,
 ) -> #(span.Line, span.Line, span.Line, span.Line, span.Line) {
   let project_text =
-    model.workspace |> workspace.label |> text_hygiene.single_line
-  let model_text = text_hygiene.single_line(model.current_model)
+    model.shared.workspace |> workspace.label |> text_hygiene.single_line
+  let model_text = text_hygiene.single_line(model.shared.current_model)
   let status_text = model |> model_footer_status |> text_hygiene.single_line
   let project =
     span.line_new([
@@ -1470,7 +1481,7 @@ fn footer_sections(
         " "
           <> transcript_lines.compact(
           project_text,
-          footer_project_limit(model.width),
+          footer_project_limit(model.view.width),
         )
           <> " ",
         theme.footer_text(),
@@ -1488,9 +1499,9 @@ fn footer_sections(
   // not fit is dropped from the right rather than cut, because an ellipsis
   // through the middle of `cache 1.2m/40k` hid the very figures the
   // expanded footer exists to show.
-  let rate = transcript_lines.output_rate_label(model.output_rate_tps)
+  let rate = transcript_lines.output_rate_label(model.shared.output_rate_tps)
   let #(cache, spend) =
-    transcript_lines.usage_pieces(model.usage, model.cache_outlook)
+    transcript_lines.usage_pieces(model.shared.usage, model.view.cache_outlook)
   let usage =
     span.line_new([
       span.span_styled(
@@ -1498,10 +1509,10 @@ fn footer_sections(
           <> fit_pieces(
           [
             cache,
-            context_view.footer(model.context),
+            context_view.footer(model.shared.context),
             ..list.append(spend, rate)
           ],
-          footer_usage_limit(model.width),
+          footer_usage_limit(model.view.width),
         )
           <> " ",
         theme.footer_text(),
@@ -1530,8 +1541,8 @@ fn footer_sections(
 fn model_footer_status(model: Model) -> String {
   footer_status(
     agents.summary_rows(layout.displayed_agents(model)),
-    model.notice,
-    footer_status_limit(model.width),
+    model.shared.notice,
+    footer_status_limit(model.view.width),
   )
 }
 
@@ -1745,7 +1756,7 @@ fn render_pending_band(
 }
 
 fn input_title(model: Model) -> String {
-  let behavior = case model.overlay, model.strip.focus {
+  let behavior = case model.view.overlay, model.view.strip_focus {
     AgentInspector(agents.Inspector(focus: agents.Browsing, ..)), _ ->
       " Tab writes · Enter opens agent "
     _, agent_strip.Browsing(_) ->
@@ -1758,28 +1769,34 @@ fn input_title(model: Model) -> String {
 // A long child ID must not hide whether Enter sends, queues, or steers.
 // Its distinguishing suffix remains visible; the workspace shows it in full.
 fn recipient_label(model: Model) -> String {
-  model.active_strand
+  model.shared.active_strand
   |> text_hygiene.single_line
   |> string.reverse
-  |> text.truncate(int.max(8, int.min(32, model.width / 3)), "…")
+  |> text.truncate(int.max(8, int.min(32, model.view.width / 3)), "…")
   |> string.reverse
 }
 
 fn input_behavior(model: Model) -> String {
   use <- bool.guard(
-    model.captured != None
-      && !tui_model.is_known_strand(model.strands, model.active_strand),
+    model.shared.captured != None
+      && !tui_model.is_known_strand(
+      model.shared.strands,
+      model.shared.active_strand,
+    ),
     " recipient unavailable · draft retained · ^O agents ",
   )
-  use <- bool.guard(model.peer == Disconnected, case model.reconnect {
-    ReconnectAttempting(..) -> " Reconnecting to the daemon · draft retained "
-    ReconnectIdle | ReconnectSpent ->
-      " Disconnected · /sessions to reconnect · draft retained "
-  })
+  use <- bool.guard(
+    model.shared.peer == Disconnected,
+    case model.view.reconnect {
+      ReconnectAttempting(..) -> " Reconnecting to the daemon · draft retained "
+      ReconnectIdle | ReconnectSpent ->
+        " Disconnected · /sessions to reconnect · draft retained "
+    },
+  )
   case
     tui_model.active_interrupt(model),
     layout.active_status_label(model),
-    model.submission_mode
+    model.view.submission_mode
   {
     Some(_), _, _ -> " stopped · enter sends held input with your message "
     None, None, _ -> " prompt · enter sends · / commands "
@@ -1812,8 +1829,11 @@ fn render_command_palette(
   model: Model,
 ) -> buffer.Buffer {
   let suggestions =
-    command.suggestions_with_skills(text_area.value(model.input), model.skills)
-  case suggestions, model.overlay {
+    command.suggestions_with_skills(
+      text_area.value(model.view.input),
+      model.shared.skills,
+    )
+  case suggestions, model.view.overlay {
     [], _
     | _, ModelSelector(_)
     | _, AgentInspector(_)
@@ -1826,7 +1846,7 @@ fn render_command_palette(
       let width = int.max(1, int.min(72, body.size.width - 4))
       let height = int.max(1, int.min(10, list.length(suggestions) + 2))
       let selected =
-        int.min(model.command_selected, list.length(suggestions) - 1)
+        int.min(model.view.command_selected, list.length(suggestions) - 1)
       let offset = int.max(0, selected - { height - 3 })
       let area =
         geometry.rect_new(
@@ -1886,7 +1906,7 @@ fn render_command_palette(
 /// one already sent.
 @internal
 pub fn goal_availability(model: Model) -> focused_goal_panel.Availability {
-  case model.goal_request {
+  case model.shared.goal_request {
     Some(_) -> focused_goal_panel.Pending
     None -> focused_goal_panel.Ready
   }
@@ -1928,7 +1948,7 @@ fn render_inline_queue(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  let state = model.queue_editor
+  let state = model.view.queue_editor
   case state.surface, area.size.height {
     _, 0 -> buf
     queue_editor.Closed, _ -> {
@@ -1964,7 +1984,7 @@ fn render_inline_queue(
             area.size.width,
           )
         height if height <= 4 -> " queue · ↑↓ Pg ↵ e Esc "
-        _ -> " queued inputs · " <> model.active_strand <> " "
+        _ -> " queued inputs · " <> model.shared.active_strand <> " "
       }
       buf
       |> buffer.clear(area)
@@ -2122,7 +2142,7 @@ fn queue_input_view(input: text_area.TextAreaState, area: Rect) {
 }
 
 fn queue_editor_cursor(model: Model, area: Rect) {
-  case model.queue_editor.draft {
+  case model.view.queue_editor.draft {
     Some(draft) -> {
       let editor_area = layout.queue_draft_area(area)
       let safe =
@@ -2140,7 +2160,7 @@ fn queue_editor_cursor(model: Model, area: Rect) {
 }
 
 fn diff_title(model: Model) -> String {
-  case model.worktree.focus, model.worktree.board {
+  case model.shared.worktree.focus, model.shared.worktree.board {
     worktree_view.Navigator, Some(_) -> " worktree · NAV ↑↓ r Enter PgUp/Dn "
     worktree_view.Navigator, None -> " captured · NAV ↑↓ r Enter PgUp/Dn "
     worktree_view.Composer, Some(_) -> " worktree · COMPOSER Ctrl+d "
@@ -2281,13 +2301,13 @@ fn render_diff_view(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  let items = diff_navigation_items(model.worktree)
+  let items = diff_navigation_items(model.shared.worktree)
   let panel =
-    diff_panel.layout(area, list.length(items), model.worktree.selected)
+    diff_panel.layout(area, list.length(items), model.shared.worktree.selected)
   buf
   |> paragraph.render_styled(
     panel.heading,
-    diff_heading_lines(model.worktree, panel.heading.size.height),
+    diff_heading_lines(model.shared.worktree, panel.heading.size.height),
   )
   |> paragraph.render_styled(
     panel.navigation,
@@ -2298,15 +2318,19 @@ fn render_diff_view(
         diff_navigation_line(
           item,
           panel.navigation_offset + index,
-          model.worktree.selected,
+          model.shared.worktree.selected,
           panel.navigation.size.width,
         )
       }),
   )
   |> paragraph.render_styled(panel.selected, [
-    diff_selected_header(model.worktree, panel.selected.size.width),
+    diff_selected_header(model.shared.worktree, panel.selected.size.width),
   ])
-  |> render_rows(panel.patch, model.view.diff_rows, model.diff_scroll_offset)
+  |> render_rows(
+    panel.patch,
+    model.view.caches.diff_rows,
+    model.view.diff_scroll_offset,
+  )
 }
 
 fn diff_heading_lines(
@@ -2332,14 +2356,16 @@ fn diff_heading_lines(
 }
 
 fn queue_count_line(model: Model) -> String {
-  case model.captured {
+  case model.shared.captured {
     Some(#(_, view)) ->
       case view.pending_inputs {
         Some(rows) ->
           "Queued inputs: "
           <> int.to_string(
             list.length(
-              list.filter(rows, fn(row) { row.strand == model.active_strand }),
+              list.filter(rows, fn(row) {
+                row.strand == model.shared.active_strand
+              }),
             ),
           )
         None -> "Queued input count unavailable"
@@ -2351,33 +2377,36 @@ fn queue_count_line(model: Model) -> String {
 /// The rows of the summary surface for the selected tab.
 @internal
 pub fn summary_lines(model: Model, width: Int) -> List(span.Line) {
-  let #(jobs, jobs_notice) = case model.jobs {
-    Some(board) if board.strand == model.active_strand -> #(
+  let #(jobs, jobs_notice) = case model.shared.jobs {
+    Some(board) if board.strand == model.shared.active_strand -> #(
       Some(board),
-      model.jobs_notice,
+      model.shared.jobs_notice,
     )
     Some(_) -> #(None, "Live jobs unavailable for the current strand")
-    None -> #(None, model.jobs_notice)
+    None -> #(None, model.shared.jobs_notice)
   }
   summary_panel.lines(
-    model.summary_tab,
-    completion_summary.latest(model.completion, model.active_strand),
-    model.usage,
+    model.view.summary_tab,
+    completion_summary.latest(
+      model.shared.completion,
+      model.shared.active_strand,
+    ),
+    model.shared.usage,
     context_usage_line(model),
     queue_count_line(model),
     jobs,
     jobs_notice,
     jobs_observation_line(model),
-    model.summary_job_selected,
+    model.view.summary_job_selected,
     width,
   )
 }
 
 fn jobs_observation_line(model: Model) -> String {
-  case model.jobs_observed_ms {
+  case model.shared.jobs_observed_ms {
     Some(observed) ->
       "Job ages and deadlines are at last refresh · observation received "
-      <> live_jobs.duration(int.max(0, model.last_frame_ms - observed))
+      <> live_jobs.duration(int.max(0, model.view.last_frame_ms - observed))
       <> " ago"
     None ->
       "Job ages and deadlines are at last refresh · receipt age unavailable"
@@ -2387,10 +2416,10 @@ fn jobs_observation_line(model: Model) -> String {
 // Context belongs to one measured provider request. Session usage accumulates
 // every request and strand, so it can never stand in for this number.
 fn context_usage_line(model: Model) -> String {
-  let records = case model.captured {
+  let records = case model.shared.captured {
     Some(#(cut, view)) ->
-      snapshot_view.branch(view, cut.window, model.active_strand).records
-    None -> model.records
+      snapshot_view.branch(view, cut.window, model.shared.active_strand).records
+    None -> model.shared.records
   }
   let measured =
     records
@@ -2420,7 +2449,7 @@ fn context_usage_line(model: Model) -> String {
 }
 
 fn render_summary_surface(buf, cursor, screen, model: Model) {
-  case model.summary_surface {
+  case model.view.summary_surface {
     queue_editor.Closed -> #(buf, cursor)
     queue_editor.Inspector | queue_editor.Editor -> {
       let inner = layout.panel_inner(screen)
@@ -2428,7 +2457,7 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
       let lines = summary_lines(model, body.size.width)
       let offset =
         int.min(
-          model.summary_scroll,
+          model.view.summary_scroll,
           int.max(0, list.length(lines) - body.size.height),
         )
       let rendered =
@@ -2442,7 +2471,7 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
             int.min(2, inner.size.height),
           ),
           [
-            summary_panel.tab_line(model.summary_tab, inner.size.width),
+            summary_panel.tab_line(model.view.summary_tab, inner.size.width),
             span.line_new([
               span.span_styled(
                 "[] job · PgUp/Dn · r jobs · Esc back",
@@ -2458,7 +2487,7 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
 }
 
 fn render_context_surface(buf, cursor, screen, model: Model) {
-  case model.context.surface {
+  case model.shared.context.surface {
     context_view.Hidden -> #(buf, cursor)
     context_view.Overview | context_view.All -> {
       let inner = layout.panel_inner(screen)
@@ -2466,10 +2495,10 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
         True -> " context · a · PgUp/Dn · r · Esc "
         False -> " context · a detail · PgUp/Dn · r refresh · Esc back "
       }
-      let lines = context_panel.lines(model.context, inner.size.width)
+      let lines = context_panel.lines(model.shared.context, inner.size.width)
       let offset =
         int.min(
-          model.context.scroll,
+          model.shared.context.scroll,
           int.max(0, list.length(lines) - inner.size.height),
         )
       let rendered =

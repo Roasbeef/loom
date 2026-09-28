@@ -164,7 +164,8 @@ fn await_open(
         let sample = tui_driver.play(driver, [])
         case predicate(sample) {
           True -> poll.Settled(sample)
-          False -> poll.Pending(string.slice(sample.model.notice, 0, 512))
+          False ->
+            poll.Pending(string.slice(sample.model.shared.notice, 0, 512))
         }
       },
     )
@@ -507,7 +508,7 @@ fn exercise(
   let bob_ready = await_open(bob.data, writable)
   let observed =
     await_open(reader.data, fn(sample) {
-      case sample.model.captured {
+      case sample.model.shared.captured {
         Some(#(cut, view)) ->
           cut.attachment.role == snapshot.Observer
           && list.length(view.peers) == 3
@@ -523,7 +524,7 @@ fn exercise(
     ],
     fn(identity) {
       let #(sample, principal, role) = identity
-      let assert Some(#(cut, _)) = sample.model.captured
+      let assert Some(#(cut, _)) = sample.model.shared.captured
         as "each native client has authenticated attachment metadata"
       assert origin.stable_identity(cut.attachment.origin) == principal
       assert cut.attachment.role == role
@@ -793,7 +794,7 @@ fn live_tool_switches(
   })
   let highlighted = highlight_target(alice, a2)
   let original_alice = attachment_of(highlighted)
-  let assert Some(channel) = highlighted.model.channel
+  let assert Some(channel) = highlighted.model.shared.channel
     as "the selector retains the live original channel"
 
   // The owner acknowledgement precedes Enter. A2 refusal cannot detach A1
@@ -806,20 +807,20 @@ fn live_tool_switches(
   // The attempt counter and the candidate slot survive a cut, so the refusal
   // is observed as one whole provisional lifetime instead: `begin_open`
   // advances the counter, and only an outcome returns the slot to idle.
-  let attempts = highlighted.model.next_attempt
+  let attempts = highlighted.model.view.next_attempt
   let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
   let refused =
     tui_v2_test.await(alice.data, fn(sample) {
-      sample.model.next_attempt > attempts
-      && !attachment.busy(sample.model.candidate)
+      sample.model.view.next_attempt > attempts
+      && !attachment.busy(sample.model.view.candidate)
       && held_tool(sample)
     })
   assert attachment_of(refused) == original_alice
-  assert refused.model.session == original
-  assert refused.model.records == highlighted.model.records
-  assert buffered.sender(refused.model.inbox)
-    == buffered.sender(highlighted.model.inbox)
-  let assert Some(retained) = refused.model.channel
+  assert refused.model.shared.session == original
+  assert refused.model.shared.records == highlighted.model.shared.records
+  assert buffered.sender(refused.model.shared.inbox)
+    == buffered.sender(highlighted.model.shared.inbox)
+  let assert Some(retained) = refused.model.shared.channel
     as "the rejected candidate cannot take custody of A1's socket"
   assert session_channel.socket(retained) == session_channel.socket(channel)
   owner_command(address, owner, epoch, ["set-role", a2, "alice", "operator"])
@@ -864,11 +865,12 @@ fn live_tool_switches(
   let owner_done = tui_v2_test.await(peer.data, completed_tool)
   let reader_done =
     tui_v2_test.await(reader.data, fn(sample) {
-      completed_tool(sample) && sample.model.records == owner_done.model.records
+      completed_tool(sample)
+      && sample.model.shared.records == owner_done.model.shared.records
     })
   assert attachment_of(owner_done) == original_attachment
   assert attachment_of(reader_done) == reader_attachment
-  assert reader_done.model.session == original
+  assert reader_done.model.shared.session == original
   assert list.drop(recorded_messages(owner_done), 4) == prior_messages
   let assert [
     message.AssistantMessage(content: final, ..),
@@ -911,14 +913,15 @@ fn live_tool_switches(
     let assert Ok(probe) = tui_driver.start(address, owner, target.0)
       as "the owner obtains a fresh post-completion cut for the other session"
     let sample = tui_v2_test.await(probe.data, writable)
-    assert sample.model.session == target.0
-    assert sample.model.records == target.1.model.records
+    assert sample.model.shared.session == target.0
+    assert sample.model.shared.records == target.1.model.shared.records
     stop_driver(probe)
   })
   select_live(alice, original)
   let returned =
     tui_v2_test.await(alice.data, fn(sample) {
-      completed_tool(sample) && sample.model.records == owner_done.model.records
+      completed_tool(sample)
+      && sample.model.shared.records == owner_done.model.shared.records
     })
   assert attachment_of(returned).expected == original_alice.expected
   stop_driver(peer)
@@ -947,7 +950,7 @@ fn select_live(
   let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
   let _ =
     tui_v2_test.await(driver.data, fn(sample) {
-      writable(sample) && sample.model.session == target
+      writable(sample) && sample.model.shared.session == target
     })
   Nil
 }
@@ -955,7 +958,7 @@ fn select_live(
 // Failure diagnostics deliberately exclude the model, credentials and requests.
 fn marker_diagnostic(sample: tui_driver.Sample) -> Nil {
   let phase = case
-    list.find(sample.model.strands, fn(row) { row.id == "main" })
+    list.find(sample.model.shared.strands, fn(row) { row.id == "main" })
   {
     Ok(row) ->
       case row.live_phase {
@@ -968,10 +971,10 @@ fn marker_diagnostic(sample: tui_driver.Sample) -> Nil {
     "held tool marker absent: phase="
     <> string.slice(phase, 0, 64)
     <> " notice="
-    <> string.inspect(string.slice(sample.model.notice, 0, 512)),
+    <> string.inspect(string.slice(sample.model.shared.notice, 0, 512)),
   )
   let latest =
-    list.find(sample.model.records, fn(record) {
+    list.find(sample.model.shared.records, fn(record) {
       case record.entry {
         entry.MessageEntry(message: message.ToolResultMessage(..), ..) -> True
         _ -> False
@@ -1014,7 +1017,7 @@ fn marker_result(record: entry.Entry) -> Nil {
 
 // The gateway projects this phase from the durable main-strand operation.
 fn held_tool(sample: tui_driver.Sample) -> Bool {
-  list.any(sample.model.strands, fn(strand) {
+  list.any(sample.model.shared.strands, fn(strand) {
     strand.id == "main" && strand.live_phase == Some("tools")
   })
 }
@@ -1030,11 +1033,11 @@ fn completed_tool(sample: tui_driver.Sample) -> Bool {
       ),
       ..
     ] ->
-      list.any(sample.model.strands, fn(strand) {
+      list.any(sample.model.shared.strands, fn(strand) {
         strand.id == "main" && strand.live_phase == None
       })
-      && sample.model.streams == []
-      && sample.model.submitting == None
+      && sample.model.shared.streams == []
+      && sample.model.shared.submitting == None
     _ -> False
   }
 }
@@ -1042,7 +1045,7 @@ fn completed_tool(sample: tui_driver.Sample) -> Bool {
 // Preserve every message variant in the oracle, including invocation and
 // result. Only non-message records such as configuration are projected away.
 fn recorded_messages(sample: tui_driver.Sample) -> List(message.AgentMessage) {
-  list.filter_map(sample.model.records, fn(record) {
+  list.filter_map(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(message:, ..) -> Ok(message)
       _ -> Error(Nil)
@@ -1091,7 +1094,7 @@ fn failed_switch_preserves_channel(
 
   let highlighted = highlight_target(alice, target)
   let original = attachment_of(highlighted)
-  let assert Some(original_channel) = highlighted.model.channel
+  let assert Some(original_channel) = highlighted.model.shared.channel
     as "Alice retains her already synchronized original session channel"
 
   // The acknowledgement happens before Enter across these two connections.
@@ -1107,22 +1110,22 @@ fn failed_switch_preserves_channel(
   // The attempt counter and the candidate slot survive a cut, so the refusal
   // is observed as one whole provisional lifetime instead: `begin_open`
   // advances the counter, and only an outcome returns the slot to idle.
-  let attempts = highlighted.model.next_attempt
+  let attempts = highlighted.model.view.next_attempt
   let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
   let refused =
     tui_v2_test.await(alice.data, fn(sample) {
-      sample.model.next_attempt > attempts
-      && !attachment.busy(sample.model.candidate)
+      sample.model.view.next_attempt > attempts
+      && !attachment.busy(sample.model.view.candidate)
       && writable(sample)
     })
 
   // Refusal ends the candidate without transferring custody of the old view.
-  assert refused.model.session == highlighted.model.session
+  assert refused.model.shared.session == highlighted.model.shared.session
   assert attachment_of(refused) == original
-  assert refused.model.records == highlighted.model.records
-  assert buffered.sender(refused.model.inbox)
-    == buffered.sender(highlighted.model.inbox)
-  let assert Some(retained_channel) = refused.model.channel
+  assert refused.model.shared.records == highlighted.model.shared.records
+  assert buffered.sender(refused.model.shared.inbox)
+    == buffered.sender(highlighted.model.shared.inbox)
+  let assert Some(retained_channel) = refused.model.shared.channel
     as "candidate refusal preserves the adopted original channel"
   assert session_channel.socket(retained_channel)
     == session_channel.socket(original_channel)
@@ -1133,7 +1136,7 @@ fn failed_switch_preserves_channel(
     as "the target remains attachable to its authorized owner after Alice's refusal"
   let _ =
     tui_v2_test.await(probe.data, fn(sample) {
-      writable(sample) && sample.model.session == target
+      writable(sample) && sample.model.shared.session == target
     })
   stop_driver(probe)
 
@@ -1148,11 +1151,11 @@ fn failed_switch_preserves_channel(
   let reader_updated = tui_v2_test.await(reader.data, changed)
 
   // The fresh cut and later traffic still belong to the original attachment.
-  assert alice_updated.model.session == highlighted.model.session
-  assert reader_updated.model.session == highlighted.model.session
+  assert alice_updated.model.shared.session == highlighted.model.shared.session
+  assert reader_updated.model.shared.session == highlighted.model.shared.session
   assert configuration_of(alice_updated) == configuration_of(reader_updated)
   assert attachment_of(alice_updated) == original
-  let assert Some(updated_channel) = alice_updated.model.channel
+  let assert Some(updated_channel) = alice_updated.model.shared.channel
     as "continued traffic uses Alice's original adopted channel"
   assert session_channel.socket(updated_channel)
     == session_channel.socket(original_channel)
@@ -1180,7 +1183,7 @@ fn successful_switches(
   let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
   let b_ready =
     tui_v2_test.await(alice.data, fn(sample) {
-      writable(sample) && sample.model.session == target
+      writable(sample) && sample.model.shared.session == target
     })
   let b_attachment = attachment_of(b_ready)
   assert b_attachment.expected.session == target
@@ -1203,7 +1206,7 @@ fn successful_switches(
   let assert [b_completed] =
     captured_turns([alice], [#("alice", "isolated B turn")], ["isolatedbanswer"])
     as "B captures exactly its own first turn, without A's previous history"
-  assert b_completed.model.session == target
+  assert b_completed.model.shared.session == target
 
   let _ =
     tui_driver.play(peer.data, [
@@ -1219,9 +1222,9 @@ fn successful_switches(
   let assert [a_completed, observed] =
     captured_turns([peer, reader], a_turns, a_answers)
     as "A's remaining terminals receive its independently authored third turn"
-  assert a_completed.model.records == observed.model.records
+  assert a_completed.model.shared.records == observed.model.shared.records
   assert attachment_of(observed) == reader_attachment
-  assert observed.model.session == original
+  assert observed.model.shared.session == original
   assert !writable(observed)
 
   // After A positively completes, an attributed B configuration change forces
@@ -1236,7 +1239,7 @@ fn successful_switches(
   let assert [b_retained] =
     captured_turns([alice], [#("alice", "isolated B turn")], ["isolatedbanswer"])
     as "Alice remains on B with only B's complete turn after A makes progress"
-  assert b_retained.model.records == b_completed.model.records
+  assert b_retained.model.shared.records == b_completed.model.shared.records
   assert attachment_of(b_retained) == b_attachment
 
   // Returning to the resident original must preserve its epoch and incarnation.
@@ -1244,7 +1247,7 @@ fn successful_switches(
   let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
   let returned =
     tui_v2_test.await(alice.data, fn(sample) {
-      writable(sample) && sample.model.session == original
+      writable(sample) && sample.model.shared.session == original
     })
   assert attachment_of(returned).expected == reader_attachment.expected
   assert origin.stable_identity(attachment_of(returned).origin) == "alice"
@@ -1267,16 +1270,16 @@ fn highlight_target(
     ])
   let listed =
     tui_v2_test.await(alice.data, fn(sample) {
-      case sample.model.overlay {
+      case sample.model.view.overlay {
         tui_model.DaemonSelector(selector) ->
-          sample.model.control_request == None
+          sample.model.view.control_request == None
           && list.any(selector.page.sessions, fn(row) {
             row.session_id == target
           })
         _ -> False
       }
     })
-  let assert tui_model.DaemonSelector(selector) = listed.model.overlay
+  let assert tui_model.DaemonSelector(selector) = listed.model.view.overlay
     as "the actual authorized selector supplies the target row and selection"
 
   // Navigation uses the model's row index, never a position guessed from a frame.
@@ -1297,7 +1300,7 @@ fn highlight_target(
       alice.data,
       list.repeat(backend.KeyPress(direction), distance),
     )
-  let assert tui_model.DaemonSelector(selected) = highlighted.model.overlay
+  let assert tui_model.DaemonSelector(selected) = highlighted.model.view.overlay
     as "real navigation keeps the catalogue open until explicit Enter"
   let assert Ok(row) =
     list.first(list.drop(selected.page.sessions, selected.selected))
@@ -1364,9 +1367,9 @@ fn revoke_live_member(
   // at admission, closing the terminal's independently owned socket too.
   let closed =
     tui_v2_test.await(bob.data, fn(sample) {
-      sample.model.peer == tui_model.Disconnected
+      sample.model.shared.peer == tui_model.Disconnected
     })
-  assert closed.model.records == before.model.records
+  assert closed.model.shared.records == before.model.shared.records
   list.each([alice, reader], fn(driver) {
     let remaining =
       tui_v2_test.await(driver.data, fn(sample) {
@@ -1397,8 +1400,8 @@ fn revoke_live_member(
     as "both surviving terminals have completed their own authoritative capture"
   assert alice_configuration == reader_configuration
   let retained = tui_driver.play(bob.data, [])
-  assert retained.model.peer == tui_model.Disconnected
-  assert retained.model.records == before.model.records
+  assert retained.model.shared.peer == tui_model.Disconnected
+  assert retained.model.shared.records == before.model.shared.records
   assert configuration_of(retained) == configuration_of(before)
 
   // Membership loss does not revoke the credential itself. An authenticated
@@ -1591,7 +1594,7 @@ fn exercise_peer_link_overlay(
     ])
   let loaded =
     tui_v2_test.await(driver.data, fn(sample) {
-      case sample.model.overlay {
+      case sample.model.view.overlay {
         tui_model.PeerLinkManager(peer_links.State(
           prompt: peer_links.Browsing,
           inspection: Some(_),
@@ -1600,11 +1603,12 @@ fn exercise_peer_link_overlay(
         _ -> False
       }
     })
-  assert textarea.value(loaded.model.input) == "draft survives peer management"
+  assert textarea.value(loaded.model.view.input)
+    == "draft survives peer management"
     as "opening the modal leaves unrelated composer text intact"
 
   let chooser = tui_driver.play(driver.data, [backend.KeyPress("l")])
-  let assert tui_model.PeerLinkManager(state) = chooser.model.overlay
+  let assert tui_model.PeerLinkManager(state) = chooser.model.view.overlay
     as "link opens a resident-session chooser"
   let assert peer_links.ChoosingSession = state.prompt
     as "the chooser owns arrow-key navigation"
@@ -1626,7 +1630,8 @@ fn exercise_peer_link_overlay(
       driver.data,
       list.repeat(backend.KeyPress(direction), distance),
     )
-  let assert tui_model.PeerLinkManager(selected) = highlighted.model.overlay
+  let assert tui_model.PeerLinkManager(selected) =
+    highlighted.model.view.overlay
   assert selected.selected_session == target_index
     as "navigation selects the intended resident target"
   let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
@@ -1635,7 +1640,7 @@ fn exercise_peer_link_overlay(
   let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
   let linked =
     tui_v2_test.await(driver.data, fn(sample) {
-      case sample.model.overlay {
+      case sample.model.view.overlay {
         tui_model.PeerLinkManager(peer_links.State(
           inspection: Some(peer_links.Inspection(outgoing:, ..)),
           ..,
@@ -1650,7 +1655,8 @@ fn exercise_peer_link_overlay(
     })
   assert string.contains(linked.frame, target)
     as "inspection renders the exact outgoing session identity"
-  assert textarea.value(linked.model.input) == "draft survives peer management"
+  assert textarea.value(linked.model.view.input)
+    == "draft survives peer management"
     as "link creation preserves the composer draft"
 
   let forward = [
@@ -1693,7 +1699,7 @@ fn exercise_peer_link_overlay(
       ..,
     )),
     ..,
-  )) = proposed.model.overlay
+  )) = proposed.model.view.overlay
     as "the TUI asks for explicit reverse direction confirmation"
   assert reverse_source == target
   assert reverse_target == source
@@ -1701,7 +1707,7 @@ fn exercise_peer_link_overlay(
   let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
   let reversed =
     tui_v2_test.await(driver.data, fn(sample) {
-      case sample.model.overlay {
+      case sample.model.view.overlay {
         tui_model.PeerLinkManager(peer_links.State(
           inspection: Some(peer_links.Inspection(incoming:, ..)),
           ..,
@@ -1714,7 +1720,7 @@ fn exercise_peer_link_overlay(
         _ -> False
       }
     })
-  assert textarea.value(reversed.model.input)
+  assert textarea.value(reversed.model.view.input)
     == "draft survives peer management"
     as "reverse grant confirmation does not submit the composer"
   let assert Ok(_) = peer_exchange(address, owner, epoch, reverse)
@@ -1727,7 +1733,7 @@ fn exercise_peer_link_overlay(
   let _ = tui_driver.play(driver.data, [backend.KeyPress("d")])
   let revoked =
     tui_v2_test.await(driver.data, fn(sample) {
-      case sample.model.overlay {
+      case sample.model.view.overlay {
         tui_model.PeerLinkManager(peer_links.State(
           inspection: Some(peer_links.Inspection(outgoing: [], incoming:)),
           ..,
@@ -1738,7 +1744,8 @@ fn exercise_peer_link_overlay(
         _ -> False
       }
     })
-  assert textarea.value(revoked.model.input) == "draft survives peer management"
+  assert textarea.value(revoked.model.view.input)
+    == "draft survives peer management"
     as "revoke and refresh preserve the composer draft"
   assert peer_exchange(address, owner, epoch, [
       "send", source, "main", target, "main", "--message-id", "forward-2",
@@ -1768,7 +1775,7 @@ fn peer_exchange(address, credential, epoch, arguments) {
 
 fn peer_turn_complete(sample: tui_driver.Sample, body: String, answer: String) {
   let reply =
-    list.any(sample.model.records, fn(record) {
+    list.any(sample.model.shared.records, fn(record) {
       case record.entry {
         entry.MessageEntry(
           message: message.AssistantMessage(
@@ -1780,11 +1787,13 @@ fn peer_turn_complete(sample: tui_driver.Sample, body: String, answer: String) {
         _ -> False
       }
     })
-  peer_message_visible(sample, body) && reply && sample.model.streams == []
+  peer_message_visible(sample, body)
+  && reply
+  && sample.model.shared.streams == []
 }
 
 fn peer_message_visible(sample: tui_driver.Sample, body: String) {
-  list.any(sample.model.records, fn(record) {
+  list.any(sample.model.shared.records, fn(record) {
     case record.entry {
       entry.MessageEntry(
         message: message.UserMessage(
@@ -1806,8 +1815,8 @@ fn assert_shared_turns(
 ) -> Nil {
   let assert [first, second, observer] = captured_turns(drivers, turns, answers)
     as "the two operators and observer each completed their own credited capture"
-  assert first.model.records == second.model.records
-  assert first.model.records == observer.model.records
+  assert first.model.shared.records == second.model.shared.records
+  assert first.model.shared.records == observer.model.shared.records
   assert !writable(observer)
 }
 
@@ -1830,7 +1839,7 @@ fn captured_turns(
       let sample =
         tui_v2_test.await(driver.data, fn(sample) {
           let users =
-            list.filter_map(sample.model.records, fn(record) {
+            list.filter_map(sample.model.shared.records, fn(record) {
               case record.entry {
                 entry.MessageEntry(
                   message: message.UserMessage(
@@ -1848,7 +1857,7 @@ fn captured_turns(
               }
             })
           let replies =
-            list.filter_map(sample.model.records, fn(record) {
+            list.filter_map(sample.model.shared.records, fn(record) {
               case record.entry {
                 entry.MessageEntry(
                   message: message.AssistantMessage(content:, ..),
@@ -1859,9 +1868,9 @@ fn captured_turns(
             })
           users == expected_users
           && replies == expected_answers
-          && sample.model.streams == []
-          && sample.model.submitting == None
-          && list.any(sample.model.strands, fn(strand) {
+          && sample.model.shared.streams == []
+          && sample.model.shared.submitting == None
+          && list.any(sample.model.shared.strands, fn(strand) {
             strand.id == "main" && strand.live_phase == None
           })
         })
@@ -1885,19 +1894,19 @@ fn stop_driver(
 }
 
 fn attachment_of(sample: tui_driver.Sample) -> snapshot.Attachment {
-  let assert Some(#(cut, _)) = sample.model.captured
+  let assert Some(#(cut, _)) = sample.model.shared.captured
     as "attachment identity comes from the terminal's authenticated capture"
   cut.attachment
 }
 
 fn peers_of(sample: tui_driver.Sample) -> List(snapshot_view.Peer) {
-  let assert Some(#(_, view)) = sample.model.captured
+  let assert Some(#(_, view)) = sample.model.shared.captured
     as "presence comes from the terminal's coherent capture"
   view.peers
 }
 
 fn has_principals(sample: tui_driver.Sample, principals: List(String)) -> Bool {
-  case sample.model.captured {
+  case sample.model.shared.captured {
     Some(#(_, view)) ->
       list.length(view.peers) == list.length(principals)
       && list.all(principals, fn(principal) {
@@ -1933,14 +1942,14 @@ fn invite(address, owner, epoch, session, principal, role, name) {
 }
 
 fn writable(sample: tui_driver.Sample) {
-  case sample.model.channel {
+  case sample.model.shared.channel {
     Some(channel) -> session_channel.mutation_available(channel)
     None -> False
   }
 }
 
 fn configuration_of(sample: tui_driver.Sample) {
-  let assert Some(#(_, view)) = sample.model.captured
+  let assert Some(#(_, view)) = sample.model.shared.captured
     as "configuration is read only from a real credited capture"
   let assert Ok(configuration) = dict.get(view.configurations, "main")
     as "the main strand has a projected configuration"
@@ -1948,7 +1957,7 @@ fn configuration_of(sample: tui_driver.Sample) {
 }
 
 fn changed(sample: tui_driver.Sample) {
-  case sample.model.captured {
+  case sample.model.shared.captured {
     Some(#(_, view)) ->
       case dict.get(view.configurations, "main") {
         Ok(configuration) ->

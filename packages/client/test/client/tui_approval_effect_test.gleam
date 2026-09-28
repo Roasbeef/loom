@@ -374,11 +374,11 @@ fn exercise(
   assert field(admitted, "event") == json.String("mutation_outcome")
   let pending_view =
     tui_v2_test.await(terminal.data, fn(sample) {
-      list.any(sample.model.approvals, fn(record) {
+      list.any(sample.model.shared.approvals, fn(record) {
         record.status == approval.Pending
       })
     })
-  let assert [pending] = pending_view.model.approvals
+  let assert [pending] = pending_view.model.shared.approvals
     as "the actual bash refusal raises exactly one pending question"
   let assert Ok(cell) = api.escalation_cell(instance.runtime, pending.id)
     as "the question is a real durable broker escalation"
@@ -479,9 +479,9 @@ fn exercise(
   // the assertion below observes the panel this fixture is about to close.
   let inspected =
     tui_v2_test.await(terminal.data, fn(sample) {
-      case sample.model.overlay {
+      case sample.model.view.overlay {
         tui_model.ApprovalInspector(_) ->
-          list.any(sample.model.approvals, fn(record) {
+          list.any(sample.model.shared.approvals, fn(record) {
             record.id == pending.id && record.origin == Some(author)
           })
           && string.contains(sample.frame, "Permission required")
@@ -494,7 +494,7 @@ fn exercise(
   // Exact-action inspection is modal and covers the transcript summaries.
   // Close that panel before asking whether the winning author is painted.
   let closed = tui_driver.play(terminal.data, [backend.KeyPress("esc")])
-  assert closed.model.overlay == tui_model.NoOverlay
+  assert closed.model.view.overlay == tui_model.NoOverlay
     as "Esc dismissed the inspector rather than being dropped before it opened"
 
   // Completion and live-job observations can change the layout after a scroll
