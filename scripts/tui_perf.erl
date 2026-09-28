@@ -217,6 +217,18 @@ run("replay", [SizeS], Label) ->
                pct(lists:sort(Views), 0.5), Records, Failures,
                GcCount1 - GcCount0, GcWords1 - GcWords0]);
 
+%% The committed recording replayed as it stands, then the memory the
+%% process retains holding the final model: the census after a full
+%% collection, with the drawn frames already dropped.
+run("replay_census", [], Label) ->
+    {Inbox, M0} = tui_perf_dev:replay_model(),
+    Path = filename:join(recordings(), "gemini-flash-reply.jsonl"),
+    {ok, Moments} = 'tui@recording':decode_file(list_to_binary(Path)),
+    Steps = 'tui@recording':to_steps(Moments),
+    Script = 'tui@virtual_backend':script({terminal_size, 160, 48}, Steps, Inbox),
+    {ok, {run, Final, _}} = tui:run_script(M0, Script),
+    census(Label, "replayed", Final);
+
 %% Where a replay's calls go, by function (TUI_PERF_TYPE as for profile_at).
 %% The trace slows the replay, and the replay paces frames on the host
 %% clock, so the counts describe a slower run than the timed one.
