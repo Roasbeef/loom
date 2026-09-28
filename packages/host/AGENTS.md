@@ -22,6 +22,9 @@ callers own launch timing, authentication policy, and application messages.
 - `host/bootstrap.ServerProcess` retains a paused wrapper's port.
   `spawn_server` returns it with the OS PID; `release_server_process` lets
   the wrapper exec the server after its identity has been published.
+  `spawn_server` waits for one byte the wrapper's shell writes before it
+  parks, so the PID it returns already leads its own process group: OTP
+  reports a forked child's PID before the child calls `setsid`.
 - `host/bootstrap.ProcessIdentity` distinguishes `ProcessPresent(birth)`
   from confirmed `ProcessAbsent`. Observation errors remain errors. The Erlang
   side returns exactly this shape, so nothing translates between the

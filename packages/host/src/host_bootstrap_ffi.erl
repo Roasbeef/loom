@@ -232,7 +232,16 @@ spawn_server(ExecutableBinary, ArgumentBinaries, WorkingBinary, LogBinary) ->
     Arguments = lists:map(fun unicode:characters_to_list/1, ArgumentBinaries),
     Working = filename:absname(unicode:characters_to_list(WorkingBinary)),
     Log = filename:absname(unicode:characters_to_list(LogBinary)),
-    Script = "IFS= read -r LOOM_RELEASE || exit 0; "
+    %% The wrapper announces itself with one byte before it parks. The port
+    %% learns the child's pid as soon as erl_child_setup has forked it, but
+    %% the child only calls setsid(2) afterwards, on its own schedule, before
+    %% it execs /bin/sh. Until then the pid names no process group, so a
+    %% group signal sent to it finds nobody and the wrapper outlives its
+    %% cleanup. A byte written by the shell proves the exec happened, and
+    %% with it the setsid, so the pid handed back is always a group leader.
+    %% The pre-exec output is the only thing on this pipe: the exec below
+    %% sends the daemon's own output to the log.
+    Script = "printf S; IFS= read -r LOOM_RELEASE || exit 0; "
              "exec \"$@\" >> \"$LOOM_LOG\" 2>&1",
     try
         Port = open_port(
@@ -242,14 +251,32 @@ spawn_server(ExecutableBinary, ArgumentBinaries, WorkingBinary, LogBinary) ->
              {env, [{"LOOM_LOG", Log}]},
              {args, ["-p", "-c", Script, "loomd", Executable | Arguments]}]
         ),
-        case erlang:port_info(Port, os_pid) of
-            {os_pid, Pid} -> {ok, {Port, Pid}};
-            undefined ->
-                _ = safe_port_close(Port),
-                {error, <<"server process exited during spawn">>}
-        end
+        await_server_wrapper(Port)
     catch
         Class:Reason -> {error, describe({Class, Reason})}
+    end.
+
+%% The bound only covers a fork and an exec of /bin/sh, which take
+%% milliseconds even on a loaded host; it exists so a wedged fork server
+%% fails the launch rather than hanging it. Closing the port on expiry
+%% gives a wrapper that starts late EOF on its release read, so it exits
+%% without ever running the daemon.
+-define(WRAPPER_SETTLE_MS, 5000).
+
+await_server_wrapper(Port) ->
+    receive
+        {Port, {data, <<"S", _/binary>>}} ->
+            case erlang:port_info(Port, os_pid) of
+                {os_pid, Pid} -> {ok, {Port, Pid}};
+                undefined ->
+                    _ = safe_port_close(Port),
+                    {error, <<"server process exited during spawn">>}
+            end;
+        {Port, {exit_status, _Status}} ->
+            {error, <<"server process exited during spawn">>}
+    after ?WRAPPER_SETTLE_MS ->
+        _ = safe_port_close(Port),
+        {error, describe(server_wrapper_did_not_settle)}
     end.
 
 close_server_process(Port) ->
