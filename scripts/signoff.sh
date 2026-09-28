@@ -28,7 +28,15 @@
 #                            lanes visiting the same package tree — the
 #                            client lane and the bootstrap fixtures both
 #                            build packages/client — cannot compile the
-#                            same module at once.
+#                            same module at once. It also builds the
+#                            one loom-exec (packages/sandbox/loom-exec)
+#                            that every real-helper suite in every lane
+#                            runs. Those suites once ran a `go build`
+#                            per test, several at a time across lanes,
+#                            and three runs on 2026-09-27 went red when
+#                            some of those builds read a Go build-cache
+#                            object that was zero from some offset on;
+#                            now no lane compiles the helper.
 #   client                   scripts/check.sh client tui, then
 #                            scripts/e2e_client_bootstrap.sh: the native
 #                            TUI bootstrap and the shipped-daemon fixtures.

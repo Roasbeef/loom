@@ -1146,8 +1146,8 @@ scrubbing rules in full.
 The M2 acceptance test runs the production wiring: the real provider
 gateway over a scripted SSE transport, the real ToolBroker over the
 **real Go `loom-exec` helper**, and the real tool registry. It is
-feature-detected; with no Go toolchain the tests print a skip reason and
-pass.
+feature-detected; with no helper built (`make sandbox` builds it) the
+tests print a skip reason and pass.
 
 The happy path drives four settlements from one prompt:
 

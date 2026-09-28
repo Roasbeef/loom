@@ -468,9 +468,9 @@ hand-built records (`agent_test`, `job_test`, `schedule_test`,
 `history_test`, `advise_test`, `codemode_test` and the rest), and the
 `*_size_test` files pin how much each seam's closures capture.
 
-`integration_test` is the one end-to-end: it builds the real `loom-exec`
-helper with the Go toolchain, starts a real broker over it, and runs a
-command through `bash`. It is feature-detected and skips, with its
+`integration_test` is the one end-to-end: it starts a real broker over the
+real `loom-exec` helper `make sandbox` builds, and runs a command through
+`bash`. It is feature-detected and skips, with its
 reason, on a host that cannot run it.
 
 ## Reading further
