@@ -120,7 +120,8 @@ fn fixture_with(
                   access.Owner -> stub(297, "not capped")
                 }
 
-              Switching -> switching(sessions, request, attachment, ceiling)
+              Switching ->
+                switching(sessions, request, attachment, ceiling, open)
 
               // The session is resident but its gateway is not running: the
               // relay's attach is refused, as it is when a session is
@@ -165,20 +166,41 @@ fn fixture_with(
 // page socket's transport makes, `opened_for` with the role the router
 // admitted and `ticket_for` with the attachment and ceiling it handed over,
 // for the session the request's header names.
-fn switching(tickets, request, attachment: server.Attachment(String), ceiling) {
+//
+// A request that carries `x-switch-ended` is asked as a page that has ended
+// but whose socket is still up: its `open` answers that it is no longer open.
+// The answer carries the asking page's deadline in `x-page-deadline`.
+fn switching(
+  tickets,
+  request,
+  attachment: server.Attachment(String),
+  ceiling,
+  open: fn() -> Result(Int, Nil),
+) {
   let role = case attachment.authority {
     access.Participant(access.Observer) -> ui_socket.Observing
     access.Participant(access.Operator) | access.Owner -> ui_socket.Operating
   }
   let target = result.unwrap(req.get_header(request, "x-switch-target"), "")
-  case
+  let open = case req.get_header(request, "x-switch-ended") {
+    Ok(_) -> fn() { Error(Nil) }
+    Error(Nil) -> open
+  }
+  let deadline = case open() {
+    Ok(until) -> [#("x-page-deadline", int.to_string(until))]
+    Error(Nil) -> []
+  }
+  let answer = case
     ui_socket.opened_for(role, fn() {
-      ui_socket.ticket_for(attachment, tickets, ceiling, target)
+      ui_socket.ticket_for(attachment, tickets, ceiling, open, target)
     })
   {
     sessions.Ticketed(path) -> stub(290, path)
     sessions.Declined(reason) -> stub(291, string.inspect(reason))
   }
+  list.fold(deadline, answer, fn(answer, header) {
+    response.set_header(answer, header.0, header.1)
+  })
 }
 
 fn stub(status: Int, text: String) {
@@ -968,12 +990,88 @@ pub fn a_ticket_for_another_session_is_refused_and_signs_nothing_out_test() {
 // The page's socket as a switch asks for a ticket: the upgrade of the page
 // `entered` is asked for `target`, and answers with what the daemon decided.
 fn ask(port: Int, entered: Entered, target: String) -> Answer {
+  ask_with(port, entered, target, [])
+}
+
+// `ask`, with more request headers.
+fn ask_with(
+  port: Int,
+  entered: Entered,
+  target: String,
+  more: List(#(String, String)),
+) -> Answer {
   get(port, entered.page <> "/ws?csrf-token=" <> entered.nonce, [
     host(port),
     #("cookie", "loom_ui=" <> entered.cookie),
     #("origin", "http://127.0.0.1:" <> int.to_string(port)),
     #("x-switch-target", target),
+    ..more
   ])
+}
+
+// The deadline a switch answer says the asking page ends at.
+fn deadline_of(answer: Answer) -> Int {
+  let assert Ok(text) = list.key_find(answer.headers, "x-page-deadline")
+    as "the answer carries the asking page's deadline"
+  let assert Ok(until) = int.parse(text) as "the deadline is a number"
+  until
+}
+
+// A page's switch to another session never ends later than the page it left:
+// the ticket carries the asking page's deadline, and the page it becomes is
+// given the earlier of that and its own eight hours, so a chain of switches
+// is bounded by the page it began from.
+pub fn a_switch_never_outlives_the_page_it_left_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let left = create_session(ready, "chain-left", 941)
+    let target = create_session(ready, "chain-target", 942)
+    let first = enter(port, operate(port, credential, left))
+    let from_first = ask(port, first, target)
+    assert from_first.status == 290
+    let first_ends = deadline_of(from_first)
+
+    let second = enter(port, from_first.body)
+    let from_second = ask(port, second, left)
+    assert from_second.status == 290
+    assert deadline_of(from_second) <= first_ends
+
+    let third = enter(port, from_second.body)
+    assert deadline_of(ask(port, third, target)) <= first_ends
+
+    // A link from `loom ui` is not a switch, and keeps its own eight hours.
+    let fresh = enter(port, operate(port, credential, target))
+    assert deadline_of(ask(port, fresh, left)) >= first_ends
+  })
+}
+
+// A page that has ended but whose socket is still up mints nothing.
+pub fn an_ended_page_mints_no_ticket_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let left = create_session(ready, "ended-left", 943)
+    let target = create_session(ready, "ended-target", 944)
+    let page = enter(port, operate(port, credential, left))
+    let refused = ask_with(port, page, target, [#("x-switch-ended", "yes")])
+    assert refused.status == 291
+    assert refused.body == "NotHeld"
+  })
+}
+
+// A principal who operates the session it is on and only observes the target
+// gets an observer's page there, which cannot switch onward.
+pub fn a_switch_cannot_raise_the_role_on_the_target_test() {
+  fixture_with(Switching, fn(ready, port, _) {
+    let left = create_session(ready, "role-left", 945)
+    let target = create_session(ready, "role-target", 946)
+    let operator = member(ready, "ui-mixed", left, access.Operator)
+    also_holds(ready, "ui-mixed", target, access.Observer)
+    let page = enter(port, operate(port, operator, left))
+    let asked = ask(port, page, target)
+    assert asked.status == 290
+    let arrived = enter(port, asked.body)
+    let refused = ask(port, arrived, left)
+    assert refused.status == 291
+    assert refused.body == "NotHeld"
+  })
 }
 
 // The daemon answers an operator's page holding another session with a ticket

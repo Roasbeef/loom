@@ -2522,8 +2522,9 @@ from the page:
    membership opens none.
 3. `manager.get` must report the session resident. A ticket for a session no
    process runs would end at a socket that is refused with nothing to say why.
-4. `ui_sessions.mint` issues the ticket with the page's own credential digest,
-   its own principal, and its own ceiling. The ceiling caps the role the new
+4. `ui_sessions.mint_before` issues the ticket with the page's own credential
+   digest, its own principal, its own ceiling and its own deadline, and the
+   page must still be open when it is asked (below). The ceiling caps the role the new
    page is admitted with and never grants one, so a switch cannot raise what a
    link allowed: a page minted from an operator page is an operator page for a
    session the principal operates and an observer page for one it only
@@ -2593,9 +2594,19 @@ row the page draws, receive the ticket in the tree the page sends back, and exch
 it reaches every running session its principal holds, at the role the principal
 holds there, capped by the page's own ceiling. That is what the credential's
 holder could already do with `loom ui --session`, and the ceiling is still opt-in
-(`--operate`), the page still lives eight hours, and revoking the credential
-ends every page it minted and stops every later mint. An observer page cannot
-mint. The page never gets a role or a session beyond the principal's
+(`--operate`), and revoking the credential ends every page it minted and stops
+every later mint. An observer page cannot mint.
+
+**A chain of switches ends with the page it began from.** A ticket that a
+page mints for a switch carries that page's deadline
+(`ui_sessions.mint_before`), and the page its exchange creates ends at the
+earlier of that deadline and `session_ms` from its own exchange. Without this
+a page could renew itself by switching, A to B to A, each exchange giving a
+fresh eight hours, and the deadline that keeps a copied cookie from working
+past the day would not hold. A ticket from `ui.link` keeps today's rule: eight
+hours from its exchange. The daemon also refuses to mint for a page that is no
+longer open, so a page that ended but whose socket is still up mints nothing
+(`ticket_for`'s first step, answered `NotHeld`). The page never gets a role or a session beyond the principal's
 memberships, and a switch adds no authority to the principal. It does remove the
 page's one-session bound, which the proposal said it would, and the owner
 accepted that for operator pages.

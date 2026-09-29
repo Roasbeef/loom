@@ -203,7 +203,7 @@ pub fn upgrade(
   attachment: server.Attachment(instance),
   hub: gateway.Gateway,
   tickets: ui_sessions.Sessions,
-  open: fn() -> Result(Nil, Nil),
+  open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
 ) -> Response(mist.ResponseData) {
   let role = role_of(attachment.authority)
@@ -223,7 +223,9 @@ pub fn upgrade(
         authority: attachment.authority,
         digest: attachment.digest,
       ),
-      check: ui_relay.while_open(fn() { authorize(attachment) }, open),
+      check: ui_relay.while_open(fn() { authorize(attachment) }, fn() {
+        result.replace(open(), Nil)
+      }),
       ceiling:,
       failed_reader: fn() {
         let _ =
@@ -268,6 +270,7 @@ pub fn upgrade(
               attachment,
               attach,
               tickets,
+              open,
               expected,
               signals,
               settled,
@@ -378,6 +381,7 @@ fn admit(
   attachment: server.Attachment(instance),
   attach: ui_relay.Attach,
   tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
   settled: process.Subject(Nil),
@@ -399,7 +403,7 @@ fn admit(
       },
       open: fn(target) {
         opened_for(role_of(attachment.authority), fn() {
-          ticket_for(attachment, tickets, attach.ceiling, target)
+          ticket_for(attachment, tickets, attach.ceiling, open, target)
         })
       },
     )
@@ -539,6 +543,12 @@ pub fn opened_for(role: Role, ask: fn() -> sessions.Answer) -> sessions.Answer {
 /// Each step is the daemon's own and is made afresh, with the digest of the
 /// credential the page was admitted under, and none is taken from the page:
 ///
+/// 0. The asking page must still be open: `open` answers its deadline while
+///    the page's UI session is live and unreplaced, and a page that has ended
+///    but whose socket is still up mints nothing (`NotHeld`). The deadline
+///    goes on the ticket (`ui_sessions.mint_before`), so the page it becomes
+///    ends no later than this one, and a chain of switches never outlives
+///    the page it began from.
 /// 1. `target` must be a canonical session identity.
 /// 2. `manager.session_authority` must find a membership of the page's
 ///    principal in `target`, an owner's in every active session. This is the
@@ -568,56 +578,24 @@ pub fn ticket_for(
   attachment: server.Attachment(instance),
   tickets: ui_sessions.Sessions,
   ceiling: access.Role,
+  open: fn() -> Result(Int, Nil),
   target: String,
 ) -> sessions.Answer {
-  case ids.parse_session_id(target) {
-    Error(_) -> sessions.Declined(sessions.NotHeld)
-    Ok(_) ->
-      case
-        manager.session_authority(
-          attachment.registry,
-          attachment.digest,
-          target,
-        )
-      {
-        Error(manager.Catalogue(catalogue.Missing)) ->
-          sessions.Declined(sessions.NotHeld)
-        Error(_) -> sessions.Declined(sessions.Unavailable)
-        Ok(_) -> running_ticket(attachment, tickets, ceiling, target)
-      }
-  }
-}
-
-// The step after the membership check: the session must be resident, and then
-// the ticket is minted with the page's own credential digest and ceiling.
-fn running_ticket(
-  attachment: server.Attachment(instance),
-  tickets: ui_sessions.Sessions,
-  ceiling: access.Role,
-  target: String,
-) -> sessions.Answer {
-  case manager.get(attachment.registry, target) {
-    Error(_) -> sessions.Declined(sessions.Unavailable)
-    Ok(view) ->
-      case view.status {
-        manager.Resident(_) -> minted(attachment, tickets, ceiling, target)
-        manager.Reserved
-        | manager.Saved
-        | manager.Opening(_)
-        | manager.Stopping(_)
-        | manager.RecoveryBlocked(_) -> sessions.Declined(sessions.NotRunning)
-      }
-  }
-}
-
-fn minted(
-  attachment: server.Attachment(instance),
-  tickets: ui_sessions.Sessions,
-  ceiling: access.Role,
-  target: String,
-) -> sessions.Answer {
-  case
-    ui_sessions.mint(
+  let outcome = {
+    use until <- result.try(open() |> result.replace_error(sessions.NotHeld))
+    use _ <- result.try(
+      ids.parse_session_id(target) |> result.replace_error(sessions.NotHeld),
+    )
+    use _ <- result.try(
+      manager.session_authority(attachment.registry, attachment.digest, target)
+      |> result.map_error(not_held),
+    )
+    use view <- result.try(
+      manager.get(attachment.registry, target)
+      |> result.replace_error(sessions.Unavailable),
+    )
+    use _ <- result.try(running(view.status))
+    ui_sessions.mint_before(
       tickets,
       ui_sessions.Grant(
         session_id: target,
@@ -625,10 +603,34 @@ fn minted(
         principal: attachment.principal.id,
         ceiling:,
       ),
+      until,
     )
-  {
+    |> result.replace_error(sessions.Unavailable)
+  }
+  case outcome {
     Ok(issued) -> sessions.Ticketed(page.exchange_path(target, issued.ticket))
-    Error(Nil) -> sessions.Declined(sessions.Unavailable)
+    Error(reason) -> sessions.Declined(reason)
+  }
+}
+
+// A refused membership check: the catalogue holds no such membership, or the
+// registry could not answer.
+fn not_held(error: manager.Error) -> sessions.Reason {
+  case error {
+    manager.Catalogue(catalogue.Missing) -> sessions.NotHeld
+    _ -> sessions.Unavailable
+  }
+}
+
+// Only a resident session has a page to show.
+fn running(status: manager.Status) -> Result(Nil, sessions.Reason) {
+  case status {
+    manager.Resident(_) -> Ok(Nil)
+    manager.Reserved
+    | manager.Saved
+    | manager.Opening(_)
+    | manager.Stopping(_)
+    | manager.RecoveryBlocked(_) -> Error(sessions.NotRunning)
   }
 }
 

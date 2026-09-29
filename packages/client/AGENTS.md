@@ -157,7 +157,10 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `open` is `opened_for(role, ..)`, which declines an observer's page without
   asking, and otherwise `ticket_for(attachment, tickets, ceiling, target)`,
   which checks with the page's credential digest that the identity is a
-  canonical session's, that `manager.session_authority` finds the principal's
+  canonical session's (after `open()` says the asking page is still open, which
+  also yields its deadline, carried onto the ticket by
+  `ui_sessions.mint_before`, so a chain of switches never outlives the page it
+  began from; `ui.link` tickets keep eight hours), that `manager.session_authority` finds the principal's
   membership in it and that `manager.get` reports it resident, then mints a
   ticket into the same table with the page's own principal and ceiling
   (`sessions.Ticketed(path)`, else `Declined(NotHeld | NotRunning |
