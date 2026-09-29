@@ -1387,14 +1387,17 @@ text from a peer, a session or an error message reaches a browser.
 | Ending | Cause | Says | Socket close |
 |---|---|---|---|
 | `PageEnded` | The page's UI session is gone: a newer link for the same principal and session replaced it, its eight hours ran out, or the daemon restarted. The daemon keeps no record of which. | "This page has ended." A new link ends the page you had open before it, and a page lasts eight hours. Run `loom ui --session <id>` for a fresh link. | 1000 |
-| `AccessRevoked` | The credential behind the page, or the membership under it, was revoked or changed. | "Your access to this session was revoked or changed." Ask the owner to restore it, then run `loom ui --session <id>`. | 1000 |
-| `SessionStopped` | The gateway exited: the session stopped or the daemon shut it down. | "The session stopped." Open it again, then run `loom ui --session <id>`. | 1000 |
+| `AccessRevoked` | The credential behind the page, or the membership under it, was revoked, or the capped role changed. The socket's own check answers this reason when it refuses. | "Your access to this session was revoked or changed." Ask the owner to restore it, then run `loom ui --session <id>`. | 1000 |
+| `SessionStopped` | The gateway exited (the session stopped, or the daemon shut it down), or closed the attachment while the page's check still passes with the authority it attached with (its snapshot reader failed and the incarnation is stopping). | "The session stopped." Open it again, then reload this page; the page's own link still works, so a fresh one is not needed. | 1000 |
 | `NotOpen` | The gateway refused the relay's attach. | "The session is not open." The daemon may still be opening it: reload, and if it stays closed run `loom ui --session <id>`. | 4000 |
 | `DaemonNotReady` | The daemon was starting, stopping or too slow to answer. | "The daemon was not ready." Reload in a moment, and if it keeps failing run `loom ui --session <id>`. | 4000 |
 | `LinkExpired` | The ticket was already redeemed, or its 60 seconds passed. | "This link has expired or was already used." Run `loom ui --session <id>` for a fresh one. | not a socket |
 | `ConnectionFailed` | Any other end, including a lane that failed. | "The connection to the session failed." Reload, and if it fails again run `loom ui --session <id>`. | 1000 |
 
-`PageEnded` and `LinkExpired` do not tell the person to reload: a page whose
+`SessionStopped` is the one ending whose page is still good: the UI session
+lasts eight hours and serving the page does not need the session resident, so
+a reload reconnects once the session is open again. `PageEnded` and
+`LinkExpired` do not tell the person to reload: a page whose
 key is gone has nothing to reload into. The session identity in the advice is
 drawn only when it parses as a canonical identity; the address of a refused
 page is otherwise whatever a link said, and the notice would repeat it as a
@@ -1424,7 +1427,9 @@ The client runtime is the only reader of the code, and it reads one bit of it.
   that closes with 1000, or script in the page that removes the component's
   `route`. Neither is taken here.
 
-The socket picks the code from the reason the relay reports: `ending.close`
+A relay that cannot start reports `DaemonNotReady`, so that socket closes
+with a retry as well. The socket picks the code from the ending the relay
+reports: `ending.close`
 maps `NotOpen` and `DaemonNotReady` to a retry and every other ending to a
 final close. `ui_socket` still waits a quarter second before closing so the
 component's patch for the notice is sent first.
@@ -1451,9 +1456,10 @@ component's patch for the notice is sent first.
   first tree arrives, and a shadow root with no slot hides its host's light
   content, so the paragraph shows exactly while the page has no session:
   before the socket connects, while the daemon refuses it, and when the tab
-  has no nonce. It says that the page is not connected, lists the three
-  causes a person can tell apart by trying (the daemon may still be
-  starting, the page may have ended, the tab may have lost its key), and
+  has no nonce. It says that the page is not connected, lists the causes
+  a person can tell apart by trying (the daemon may still be starting, the
+  session may not be open, the page may have ended, the tab may have lost
+  its key), and
   gives the two remedies: reload, or run `loom ui --session <id>` for a
   fresh link. The session page's script no longer writes its own note for a
   tab with no nonce; the paragraph covers it.
