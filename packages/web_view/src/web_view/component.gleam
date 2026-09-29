@@ -123,6 +123,8 @@ import session_view/transcript
 import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/turns
+import web_view/ending.{type Ending}
+import web_view/view/ended
 import web_view/view/expansion
 import web_view/view/heading
 import web_view/view/lane
@@ -254,8 +256,11 @@ pub type Status {
   /// said "following" for this, which read as the scroll state.
   Connected
 
-  /// The connection ended, and the last drawn cut stays on the page.
-  Ended(reason: String)
+  /// The connection ended, and the last drawn cut stays on the page. The
+  /// page draws `ending`'s notice (`web_view/view/ended`) in its heading:
+  /// the closed reason class, never the reason string a peer or a lane
+  /// reported.
+  Ended(ending: Ending)
 }
 
 /// What the page last told an operator about their own input.
@@ -599,8 +604,16 @@ pub fn update(
       stepping(Model(..model, shared:), [tick_at(at)], at)
     }
 
+    // The relay could not attach. Whatever the gateway said is not drawn:
+    // a reason that names no ending stands for a session that is not open.
     Refused(reason:) -> #(
-      Model(..model, view: View(..model.view, status: Ended(reason))),
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          status: Ended(ending.from_reason(reason, otherwise: ending.NotOpen)),
+        ),
+      ),
       effect.none(),
     )
 
@@ -1162,7 +1175,8 @@ fn statused(model: Model(socket)) -> Model(socket) {
     model.shared.captured
   {
     Ended(_), _, _ -> model.view.status
-    _, Some(reason), _ -> Ended(reason)
+    _, Some(reason), _ ->
+      Ended(ending.from_reason(reason, otherwise: ending.ConnectionFailed))
     Connecting, None, Some(_) -> Connected
     Connecting, None, None | Connected, None, _ -> model.view.status
   }
@@ -1743,7 +1757,16 @@ pub fn heading(model: Model(socket)) -> Element(message) {
     name: option.map(model.view.label, fn(label) { label.name }),
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
     status: status_text(model.view.status),
+    notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )
+}
+
+// The ending a page that has ended draws a notice for.
+fn ended_ending(status: Status) -> Option(Ending) {
+  case status {
+    Connecting | Connected -> None
+    Ended(ending:) -> Some(ending)
+  }
 }
 
 // The connection's status as the heading words it.
@@ -1751,6 +1774,6 @@ fn status_text(status: Status) -> String {
   case status {
     Connecting -> "connecting"
     Connected -> "connected"
-    Ended(reason:) -> "disconnected: " <> reason
+    Ended(_) -> "disconnected"
   }
 }
