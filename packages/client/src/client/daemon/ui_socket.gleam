@@ -317,8 +317,8 @@ pub fn upgrade(
   response
 }
 
-// Whether the admitted page is an observer's or an operator's.
-type Role {
+/// Whether the admitted page is an observer's or an operator's.
+pub type Role {
   Observing
   Operating
 }
@@ -359,7 +359,9 @@ fn admit(
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
-      sessions: fn() { listed(attachment) },
+      sessions: fn() {
+        listed_for(role_of(attachment.authority), fn() { listed(attachment) })
+      },
     )
   let start =
     component.Start(
@@ -425,15 +427,42 @@ fn closing(close: ending.Close) -> mist.Next(Phase, Signal) {
 // they hold a membership in, an owner every active session, and a revoked
 // credential none. It carries the catalogue's own fields, and never a
 // database path or a configuration, which the entry has no place for. A
-// failed read is an empty list, which the sidebar draws as nothing. The page
-// ceiling does not narrow it: the ceiling caps what the page may do in its
-// session, and this is a read of metadata the credential is entitled to.
+// failed read is an empty list, which the sidebar draws as nothing.
 fn listed(attachment: server.Attachment(instance)) -> List(sessions.Entry) {
   case
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
   {
     Ok(#(_, views)) -> list.map(views, listed_entry)
     Error(_) -> []
+  }
+}
+
+/// The sidebar's list for a page of `role`: the read's result for an
+/// operator's page, and an empty list for an observer's, with the read never
+/// made.
+///
+/// An observer's page is the one a person hands to someone who may only watch
+/// one session, and the page's authority is already the smaller of the
+/// membership and the link's ceiling. The names, host paths and residency of
+/// the principal's other sessions are not part of what watching one session
+/// grants, so a stolen observer link must not widen to them
+/// (protocol-change/051, the addendum on strand focus and the session
+/// sidebar). Only an operator's page lists, and only an operator's page will
+/// be offered switching.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.listed_for(Observing, read) == []
+/// ```
+@internal
+pub fn listed_for(
+  role: Role,
+  read: fn() -> List(sessions.Entry),
+) -> List(sessions.Entry) {
+  case role {
+    Observing -> []
+    Operating -> read()
   }
 }
 

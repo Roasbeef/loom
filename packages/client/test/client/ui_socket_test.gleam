@@ -233,3 +233,26 @@ pub fn a_running_session_is_live_and_the_rest_are_saved_test() {
     },
   )
 }
+
+// An observer's page is supplied no list, and the read is never made: a
+// stolen observer link does not widen to the principal's project list. An
+// operator's page is supplied what the read returns.
+pub fn only_an_operators_page_is_listed_sessions_test() {
+  let entry =
+    sessions.Entry(
+      id: "a",
+      name: "web ui",
+      workspace: "/src/loom",
+      created_at: 1,
+      residency: sessions.Live,
+    )
+  let asked = process.new_subject()
+  let read = fn() {
+    process.send(asked, Nil)
+    [entry]
+  }
+  assert ui_socket.listed_for(ui_socket.Observing, read) == []
+  assert process.receive(asked, 0) == Error(Nil)
+  assert ui_socket.listed_for(ui_socket.Operating, read) == [entry]
+  assert process.receive(asked, 0) == Ok(Nil)
+}

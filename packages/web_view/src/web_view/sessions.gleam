@@ -1,5 +1,5 @@
-//// The sessions a page's principal may see, as the session sidebar lists
-//// them: what the daemon's catalogue says about each, and how they are
+//// The sessions a page's principal may see, as the operator's session
+//// sidebar lists them: what the daemon's catalogue says about each, and how they are
 //// grouped and ordered for a reader.
 ////
 //// The list is the catalogue's and not the session's. The daemon reads it
@@ -126,11 +126,9 @@ fn holds(group: Group, current: String) -> Bool {
   list.any(group.entries, fn(entry) { entry.id == current })
 }
 
-// A group's newest creation time. A group always has an entry, since a
-// grouping holds none for a key with no entries.
+// A group's newest creation time.
 fn newest(group: Group) -> Int {
-  case group.entries {
-    [first, ..] -> first.created_at
-    [] -> 0
-  }
+  list.fold(group.entries, 0, fn(latest, entry) {
+    int.max(latest, entry.created_at)
+  })
 }

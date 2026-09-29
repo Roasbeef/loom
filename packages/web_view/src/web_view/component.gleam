@@ -144,7 +144,6 @@ import web_view/view/expansion
 import web_view/view/heading
 import web_view/view/lane
 import web_view/view/live
-import web_view/view/sidebar
 import web_view/view/strip
 import web_view/view/todo_panel
 
@@ -280,7 +279,8 @@ pub type Transport(socket) {
     /// component reads it once at the top of each message.
     now: fn() -> Int,
     /// The sessions the page's principal may see, for the sidebar: the
-    /// daemon's authorized catalogue read, or an empty list when it fails.
+    /// daemon's authorized catalogue read for an operator's page, or an
+    /// empty list when it fails or the page is an observer's.
     /// It runs in the component's process when the page opens and every
     /// `sessions_refresh_ms` after, and it must not run long: the page's
     /// runtime waits for it.
@@ -1593,6 +1593,13 @@ fn took_draft(fact: session_model.SurfaceFact) -> Bool {
 /// `Tail`, as a page's first strand does, and the projection and the strip are
 /// rebuilt by `refreshed`, since the strand is one of their inputs.
 ///
+/// Focusing cancels the lane's unsent frames, as the terminal's
+/// `cancel_pending` does, so a submit or a decision still queued behind the
+/// lane is not sent to the new strand. Its draft stays in the composer, which
+/// now addresses the new strand, and the shared record's "Not sent" line goes
+/// to the transcript, which the page does not draw; the operator sees the
+/// draft again and presses Send if they still want it.
+///
 /// Focusing the strand already shown, a strand the capture does not list,
 /// or a page that is not yet showing a capture changes nothing. The check is
 /// the caller's in the sense `step.focus` says, and it is made here because a
@@ -1860,7 +1867,10 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
 }
 
 /// The sidebar's groups: the principal's sessions by workspace, newest
-/// first, as last read.
+/// first, as last read. Only the operator's page draws them; the observer's
+/// page has none to draw, because the daemon supplies an observer's page an
+/// empty list (`ui_socket.listed_for`) and the observer's view has no
+/// sidebar.
 ///
 /// ## Examples
 ///
@@ -2082,7 +2092,6 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         "Observer · read-only · you can follow this session; ask the owner for operator access",
       ),
     ]),
-    sidebar.view(model.view.groups, model.shared.session),
   ])
 }
 

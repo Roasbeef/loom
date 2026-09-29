@@ -205,8 +205,9 @@ fn listed_page(entries: List(Entry)) {
   model
 }
 
+// The operator's page, the only one that draws the sidebar.
 fn observer_html(model) -> String {
-  element.to_string(component.view(model))
+  element.to_string(operator_page.view(model))
 }
 
 // The sidebar draws each workspace by its last segment, with the whole path
@@ -291,4 +292,13 @@ pub fn focusing_a_strand_leaves_the_sidebar_alone_test() {
   let listed = listed_page(listing())
   let #(moved, _) = component.focus(listed, "advisor")
   assert component.session_groups(moved) == component.session_groups(listed)
+}
+
+// An observer's page draws no sidebar, whatever list it holds: the daemon
+// supplies it none, and the view has nowhere to draw one.
+pub fn an_observers_page_draws_no_sidebar_test() {
+  let drawn = element.to_string(component.view(listed_page(listing())))
+  assert !string.contains(drawn, "<aside")
+  assert !string.contains(drawn, "vetting lint")
+  assert !string.contains(drawn, "/src/loom")
 }

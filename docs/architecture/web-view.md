@@ -609,7 +609,9 @@ authorized catalogue read the terminal's session picker uses
 (`manager.authorized_page`) made with the page's credential digest, so a
 member sees only their own sessions and a revoked credential none. The
 component reads it when the page opens and at most every 30 seconds on a
-tick, groups it by workspace (`web_view/sessions`), and `view/sidebar`
+tick (an observer's page is given an empty list and draws no sidebar, so a
+stolen observer link does not disclose the principal's other sessions),
+groups it by workspace (`web_view/sessions`), and `view/sidebar`
 draws it read-only as the page's last child, so no admitted event path
 moves. The entry carries name, workspace, creation time and residency, and
 nothing of the registration's path, key or configuration. Opening another

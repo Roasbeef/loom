@@ -1566,6 +1566,19 @@ strand on screen, since the shared step's commands read the active strand.
 Nothing new is sendable: an operator could already address any strand the
 terminal can.
 
+**Approval cards follow focus.** The cards are drawn for the strand on
+screen, so focusing strand B hides strand A's pending cards. A's chip still
+shows that it is waiting for input, and focusing A brings the cards back. A
+decision travels with the escalation's identity and the sequence the card
+was drawn at, and is sent only for the record still pending there
+(`operator.drawn`), so no decision lands on the wrong strand.
+
+**A queued send is cancelled.** A focus cancels the lane's unsent frames, as
+the terminal's `cancel_pending` does, so a submit or decision still queued
+behind the lane is not sent to the new strand. The draft stays in the
+composer, now addressed to the new strand, and the "Not sent" line goes to
+the shared record's transcript, which the page does not draw.
+
 **A returned prompt.** A prompt the daemon hands back
 (protocol-change/038) for another strand of the session is put in the
 composer and named in the notice with the strand it was held for and the
@@ -1582,7 +1595,11 @@ cannot be focused from the page; the "settled" chip is not a control.
 
 ### The session sidebar, read-only
 
-**What it is.** The page lists the principal's sessions, grouped by
+**Ruling (owner, 2026-09-29).** The list is shown to operator pages only.
+An observer's page lists nothing and draws no sidebar. Switching, the
+follow-up below, will be offered to operator pages only.
+
+**What it is.** An operator's page lists the principal's sessions, grouped by
 workspace and newest first, with the session on screen marked and each
 session's residency (resident or saved). The daemon supplies the list with
 the read a terminal's session picker uses, `manager.authorized_page`,
@@ -1602,20 +1619,25 @@ session on screen and name an unnamed session by its first eight
 characters. The sidebar has no link, button or handler, adds no event to
 either page, and is the page's last child so that no admitted path moves.
 
-**The page ceiling does not narrow it.** The ceiling caps what a page may
-do in its session. The list is metadata the credential is entitled to, and
-the credential's holder is the person whose browser it is. A page whose
-link was minted with an observer ceiling therefore lists the same sessions.
-This is the one place a page reads beyond its own session, and it is the
-reason this section exists. If that is too wide, the alternative is to list
-only the current session's workspace; that is a one-line filter in
-`ui_socket.listed`.
+**An observer's page is given no list.** An observer page is the one a
+person hands to someone who may only watch one session. Its authority is the
+smaller of the membership and the link's ceiling, and the names, host paths
+and residency of the principal's other sessions are not part of watching
+one session. Listing them would widen a stolen observer link from one
+transcript to the owner's project list, which the ceiling exists to bound.
+`ui_socket.listed_for` returns an empty list for an observer's page without
+making the read, and the observer's view has no sidebar. The role tested is
+the page's admitted authority, which the router has already capped by the
+link's ceiling, so both an observer membership and an observer ceiling
+produce an observer page. The component's read on open still runs and
+returns at once.
 
 **Cost.** One catalogue query per page per 30 seconds, made in the
 component's process, which waits for it (the manager call is bounded at
-five seconds and a failure is an empty list). A browser holding a page sees
-the names and workspace paths of sessions other than the one it opened,
-within the principal's own entitlement.
+five seconds and a failure is an empty list). A browser holding an
+operator's page sees the names and workspace paths of sessions other than
+the one it opened, within the principal's own entitlement; a holder of an
+observer's page sees none.
 
 ### Opening another session from the sidebar: proposal, not implemented
 
@@ -1628,8 +1650,9 @@ and every way to do that mints a credential from inside a page.
 
 **The smallest design that would work.**
 
-1. A row of the sidebar becomes a button on an operator's page and on an
-   observer's alike, with one handler whose message names the listed
+1. A row of the sidebar becomes a button on an operator's page only (the
+   owner's ruling of 2026-09-29; an observer's page has no list), with one
+   handler whose message names the listed
    session. The socket admits a click beneath a fixed sidebar path, as it
    does for the strip.
 2. The handler asks the daemon for a ticket for that session with the

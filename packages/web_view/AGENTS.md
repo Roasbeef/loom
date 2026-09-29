@@ -64,7 +64,9 @@ page keys and nonces, and the relay into the session's gateway.
   component reads `Transport.sessions` on `Opened` and on a `Ticked` at
   least `sessions_refresh_ms` (30 s) after the last read, keeps at most
   `sessions.listed_limit` entries, and `component.session_groups(model)` is
-  what it draws. The list cannot open a session (protocol-change/051, the
+  what the operator's page draws. The observer's page draws no sidebar:
+  `ui_socket.listed_for` gives it an empty list without making the read
+  (owner, 2026-09-29). The list cannot open a session (protocol-change/051, the
   addendum on strand focus and the session sidebar, has the proposal).
 - `component.Model(socket)` (opaque): two records, as the terminal's is.
   `shared` is `session_view/model.Shared(socket, Nil, Nil, Nil)`, the

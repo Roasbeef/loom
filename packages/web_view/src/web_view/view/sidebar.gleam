@@ -1,5 +1,5 @@
 //// The session sidebar: the principal's sessions, grouped by workspace and
-//// newest first, on both pages.
+//// newest first, on the operator's page only.
 ////
 //// The sidebar draws a list the daemon's catalogue supplied
 //// (`web_view/sessions`) and decides nothing. It is read-only: no row is a
