@@ -26,8 +26,19 @@ fn page(updates) {
   component.new(page_fixture.start()) |> component.apply(updates)
 }
 
-fn at(model, now: Int) {
-  component.update(model, component.Ticked(now)).0
+// A page whose transport reads a clock the test sets, and the clock.
+fn timed(updates) {
+  let clock = page_fixture.clock()
+  #(
+    component.new(page_fixture.start_with(clock)) |> component.apply(updates),
+    clock,
+  )
+}
+
+// The page after a tick that the transport's clock reads `now` at.
+fn at(model, clock: page_fixture.Clock, now: Int) {
+  page_fixture.set(clock, now)
+  component.update(model, component.Ticked).0
 }
 
 fn html(model) -> String {
@@ -112,9 +123,10 @@ pub fn a_settled_strand_folds_into_a_count_test() {
 // seconds, which the browser shows as the terminal would.
 pub fn a_chip_counts_a_measured_duration_whatever_the_clock_test() {
   let offset = fn(now: Int) {
+    let clock = page_fixture.clock()
     let drawn =
-      component.new(page_fixture.start())
-      |> at(now)
+      component.new(page_fixture.start_with(clock))
+      |> at(clock, now)
       |> component.apply([lane_fixture.captured(10, None)])
       |> html
     let assert Ok(#(_, after)) =
@@ -131,11 +143,11 @@ pub fn a_chip_counts_a_measured_duration_whatever_the_clock_test() {
 
 pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
   // One request that read a 40k prefix and wrote to the one-hour head.
+  let #(page, clock) = timed([lane_fixture.captured(10, None)])
   let warm =
-    settled()
-    |> at(0)
+    at(page, clock, 0)
     |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 1)])
-    |> at(60_000)
+    |> at(clock, 60_000)
   let drawn = html(warm)
 
   // The ring carries its words beside it on the figures row, so an idle
@@ -162,11 +174,11 @@ pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
 }
 
 pub fn an_unproven_provider_shows_an_idle_age_not_a_countdown_test() {
+  let #(page, clock) = timed([lane_fixture.captured(10, None)])
   let idle =
-    settled()
-    |> at(0)
+    at(page, clock, 0)
     |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 0)])
-    |> at(600_000)
+    |> at(clock, 600_000)
   let drawn = html(idle)
   assert string.contains(drawn, "ring ring-idle")
   assert string.contains(drawn, "cache idle 10m")
@@ -175,11 +187,11 @@ pub fn an_unproven_provider_shows_an_idle_age_not_a_countdown_test() {
 }
 
 pub fn a_cache_miss_is_a_row_after_the_turn_that_paid_for_it_test() {
+  let #(page, clock) = timed([lane_fixture.captured(10, None)])
   let missed =
-    settled()
-    |> at(0)
+    at(page, clock, 0)
     |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 0)])
-    |> at(600_000)
+    |> at(clock, 600_000)
     |> component.apply([lane_fixture.usage_push("main", 0, 40_000, 0)])
   let drawn = html(missed)
   assert in_order(drawn, [
@@ -261,11 +273,11 @@ pub fn a_peer_message_is_stored_never_read_and_has_no_reply_test() {
 // Nothing the session wrote reaches the page as markup: each string arrives
 // escaped, and no element it names exists.
 pub fn session_markup_arrives_only_as_text_test() {
+  let #(page, clock) = timed([lane_fixture.captured(10, None)])
   let missed =
-    settled()
-    |> at(0)
+    at(page, clock, 0)
     |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 0)])
-    |> at(600_000)
+    |> at(clock, 600_000)
     |> component.apply([lane_fixture.usage_push("main", 0, 40_000, 0)])
   let pages = [
     html(missed),

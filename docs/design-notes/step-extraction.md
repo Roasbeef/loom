@@ -52,15 +52,16 @@ outputs join the step's one outbox through `hold_channel`
 (`tui/model.gleam:937` (`hold_channel`)), and `runtime.take` returns
 them with the model (`tui/runtime.gleam:355` (`take`)).
 
-The web view holds the lane, an inbox and what it derived from the last
-capture (`web_view/component.gleam:287` (`Model`)). Its `update`
-(`web_view/component.gleam:506` (`update`)) reduces on `Arrived` and
-`Ticked`, folds the lane's updates in `apply`
-(`web_view/component.gleam:639` (`apply`)), and re-implements the
-capture fold (`captured`, `fresh`, `recaptured`), the usage and cache
-fold (`used`, `settle_cache`, `settle_pushed`, `noted`) and the submission
-fold (`settled`) that `tui/inbound` and `tui/outbound` already contain.
-That is the drift the issue names.
+The web view held the lane, an inbox and what it derived from the last
+capture in its own `Model`, one record of 22 fields. Its `update` reduced
+on `Arrived` and `Ticked`, folded the lane's updates in `apply`, and
+re-implemented the capture fold (`captured`, `fresh`, `recaptured`), the
+usage and cache fold (`used`, `settle_cache`, `settle_pushed`, `noted`) and
+the submission fold (`settled`) that `tui/inbound` and `tui/outbound`
+already contain. That is the drift the issue names. S5 deleted those
+functions; this section and the next two describe the code as the note was
+written, so they cite no lines in `web_view/component.gleam` for what S5
+removed.
 
 ```mermaid
 flowchart LR
@@ -142,7 +143,7 @@ terminal, 4 handles, 3 split.
 | `transcript` | a | The banner, build, configuration, approval and error lines every host shows. |
 | `records` | a | The active strand's records from the last cut. |
 | `cache` | a | The prompt-cache ledger both hosts fold usage into. |
-| `cache_notices` | a | Miss notices; the web files the same ones in `noted` (`web_view/component.gleam:853`). |
+| `cache_notices` | a | Miss notices; the web filed the same ones in its own `noted`, which S5 deleted. |
 | `cache_outlook` | b | The terminal footer's label as of the last tick; the web keeps a label per chip. |
 | `scrollback` | a | The bounded history window; history paging is Part 2's second item. |
 | `notice` | a | The last line said to the operator; both hosts show one. |
@@ -165,7 +166,7 @@ terminal, 4 handles, 3 split.
 | `workspace` | a | The session's path and branch; the page's header wants it. |
 | `strands` | a | The captured strand list. |
 | `agent_summary` | b | A string derived from `strands` by `tui/agents`, which imports etui; the terminal derives it at paint instead. |
-| `reviewer_rows`, `agent_rows` | a | Both hosts observe them, the web in `fresh` (`web_view/component.gleam:743`). |
+| `reviewer_rows`, `agent_rows` | a | Both hosts observe them, the web did in its own `fresh` before S5. |
 | `strip` | split | `roster` is `agent_roster.Roster` and moves; `focus` is the strip's keyboard cursor and stays (`tui/agent_strip.gleam:65` (`State`)). |
 | `agent_messages` | a | Provenance-checked sends; the module imports nothing BEAM-only. |
 | `advisor_history` | a | The advisor's captured board. |
@@ -174,7 +175,7 @@ terminal, 4 handles, 3 split.
 | `session`, `session_label` | a | Identity and catalogue name. |
 | `local_options` | b | The launch's options, read by session creation. |
 | `inbox` | c | `Inbox(source, Message)`; the source is the terminal's subject and the web's `Nil`. |
-| `peer` | a | `Attached`, `Disconnected`, `Preview`, `Replaying`; reducers branch on it, and the type is `Peer` (`session_view/model.gleam:419`). The web is always `Attached`. |
+| `peer` | a | `Attached`, `Disconnected`, `Preview`, `Replaying`; reducers branch on it, and the type is `Peer` (`session_view/model.gleam:426`). The web is always `Attached`. |
 | `candidate` | b | The provisional attachment: a lane, a `Subject(Nil)` and an inbox inside a job slot, `attachment.Status` (`tui/attachment.gleam:92`). |
 | `channel` | c | `Option(Channel(socket, recorder))`. |
 | `captured` | a | The last cut and its view. |
@@ -192,26 +193,26 @@ terminal, 4 handles, 3 split.
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
 | `agent_rail_visible` | b | A pane toggle. |
-| `details_expanded` | a | The extent the shared line builders read through `presentation` (`session_view/model.gleam:1074`), and `advance_generation_clock` checks it (`session_view/step.gleam:135`); a page will toggle it too. |
+| `details_expanded` | a | The extent the shared line builders read through `presentation` (`session_view/model.gleam:1081`), and `advance_generation_clock` checks it (`session_view/step.gleam:135`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
 | `streams`, `tool_tails` | a | The live answer and tool tails. |
 | `reading_lines` | b | Frozen transient rows while reading above the tail. |
 | `scroll_offset` | b | The viewport. |
-| `render_revision` | a | A presentation revision shared reducers bump (`session_view/model.gleam:797` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
+| `render_revision` | a | A presentation revision shared reducers bump (`session_view/model.gleam:804` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
 | `rendered_revision`, `rendered_row_count`, `revealed_rows`, `rendered_anchors`, `rendered_gutters`, `record_gutters` | b | The row projection's outputs. |
 | `compact_call_cache`, `compact_entry_cache` | a | Line caches keyed by `transcript_line.Line`, read by the shared line builders through `Presentation`. |
 | `pending_records` | a | Legacy entries awaiting append. |
 | `record_cache_valid` | a | Today a flag cleared at twelve write sites; it becomes a counter the terminal compares, in the shape of `record_cache_epoch`. |
 | `record_cache_width`, `record_cache_strand`, `record_cache_details` | b | What the record rows were built for. |
-| `frame_revision` | a | A presentation revision (`session_view/model.gleam:816` (`invalidate_frame`)); every `append_system` bumps it. |
+| `frame_revision` | a | A presentation revision (`session_view/model.gleam:823` (`invalidate_frame`)); every `append_system` bumps it. |
 | `frame_debt` | b | Frame pacing. |
 | `monotonic_time_ms`, `transport_time_ms` | b | The host's clocks; the shell reads them into the stamp. |
 | `stamp` | a | The readings the step applies at. |
 | `terminal` | b | This terminal's identity in a creation key. |
 | `client_build` | a | The build the mismatch line compares; data, read once. |
 | `last_frame_ms` | b | Frame pacing. |
-| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`session_view/model.gleam:828` (`mark_activity`)); the terminal's quiet timer reads it. |
+| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`session_view/model.gleam:835` (`mark_activity`)); the terminal's quiet timer reads it. |
 | `quiet_for_ms` | b | Idle pacing. |
 | `connection_backlog` | a | Set by the shared drain from the inbox it holds (`tui/inbound.gleam:387` (`drain_connection`)); the terminal's poll reads it. |
 | `recorder` | c | `Option(recorder)`. |
@@ -219,7 +220,7 @@ terminal, 4 handles, 3 split.
 | `herdr_reporter`, `herdr_published` | b | The pane reporter, a host handle the terminal alone performs against; it stays in the terminal's record rather than becoming a type parameter because no shared reducer names it. |
 | `outbox` | a | `List(Effect(socket, recorder))`; the terminal moves it into its own outbox at each call boundary, as `hold_channel` does for the lane. |
 | `next_job`, `running` | b | Job keys and the runtime's table. |
-| `record_cache_epoch` | a | Already the counter shape (`session_view/model.gleam:393` (`record_cache_epoch`)). |
+| `record_cache_epoch` | a | Already the counter shape (`session_view/model.gleam:400` (`record_cache_epoch`)). |
 | `view` | b | The etui caches themselves. |
 
 The shared record therefore holds no etui type, no `Subject`, no weft
@@ -233,9 +234,9 @@ the footer string in its projection.
 
 ### The web view's `component.Model`
 
-22 fields (`web_view/component.gleam:287` (`Model`)). Thirteen go away
-because the shared record holds them; nine stay as the web's view or host
-state.
+22 fields before S5. Thirteen go away because the shared record holds
+them; nine stay as the web's view or host state. The table is the plan;
+the S5 entry in section 5 says where the landed `View` differs from it.
 
 | Field | Fate | Replaced by |
 |---|---|---|
@@ -399,7 +400,7 @@ entry points above gain the parameter with it.
 
 `Effect` is two variants because those are the two effects the shared
 reducers decide. Every `Channel` effect comes through `hold_channel`
-(`session_view/model.gleam:850` (`hold_channel`)), and the one `Record` a shared
+(`session_view/model.gleam:857` (`hold_channel`)), and the one `Record` a shared
 reducer queues is the channelless arrival
 (`session_view/lane_fold.gleam:998` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
 the reducer runs
@@ -465,22 +466,19 @@ The web's `component.Model(socket)` becomes
 `WebModel(shared: step.Model(socket, Nil, Nil), view: WebView)`.
 `component.update` reads the clock once at its top,
 `let at = model.view.transport.now()`, and builds the stamp from it; the
-selector mappings that read `transport.now()` today, in `open`
-(`web_view/component.gleam:362`) and `arm`
-(`web_view/component.gleam:400`), stop carrying `at`, and the read in
-`commanded` (`web_view/component.gleam:1392`) goes with them. This is the
+selector mappings that read `transport.now()` today, in `open` and `arm`,
+stop carrying `at`, and the read in `commanded` goes with them. This is the
 terminal's `runtime.stamp` shape (`tui/runtime.gleam:80` (`stamp`)). An
 `Arrived`
 becomes two shared calls in one Lustre message, `Arrived` then
 `Input(Ticked)`, which is the delivery ADR-014 describes for a host that
 wakes on arrival and still one render per burst. `rearm` stays as it is,
-reading `step.next_due` (`web_view/component.gleam:1469` (`rearm`)).
+reading the lane's `next_due`.
 `operator_page` keeps its `Observed` and `effect.map` layering over the
 component (`web_view/operator_page.gleam:99` (`update`)); its
 `Submitted` and `Decided` become `Acted(Submit(..))` and
 `Acted(Decide(..))` after the page's own checks on the draft's length and
-emptiness, which are the page socket's limits and not the session's
-(`web_view/component.gleam:1249` (`submit`)).
+emptiness, which are the page socket's limits and not the session's.
 
 ## 3. Admission and reducers
 
@@ -683,28 +681,29 @@ The worst cases in the code, and the cut for each:
 Once the component drives the shared step, its orchestration is the
 shell's `update`, `perform` and `rearm`, and its view derivation. The
 table maps each function in `web_view/component.gleam` to what replaces
-it.
+it. Its left column is the code before S5, which S5 deleted, so it cites
+no lines.
 
 | Today | After | Where the logic lives |
 |---|---|---|
-| `update`'s `Opened` arm (`web_view/component.gleam:356` (`Opened`)) | `step.attach(shared, session_channel.start(socket, expected, now: at), inbox.new(Nil), stamp)`, then `Ticked` | `session_view/step` |
+| `update`'s `Opened` arm | `step.attach(shared, session_channel.start(socket, expected, now: at), inbox.new(Nil), stamp)`, then `Ticked` | `session_view/step` |
 | `Refused` | view `status: Ended(reason)` | shell |
-| `Arrived` (`web_view/component.gleam:367` (`Arrived`)) | `step.update(Arrived(frames))` then `step.update(Input(stamp, Ticked))` | `session_view/step` |
+| `Arrived` | `step.update(Arrived(frames))` then `step.update(Input(stamp, Ticked))` | `session_view/step` |
 | `Ticked` | `step.update(Input(stamp, Ticked))`, then the strip's label check | `session_view/step`, shell |
-| `reduce` (`web_view/component.gleam:542`), `drained`, `take_filed`, `received` | the shared `Ticked`: `drain_connection` then `tick_channel` | `session_view/inbound` |
-| `apply` (`web_view/component.gleam:639`) | `apply_channel_update` | `session_view/inbound` |
-| `captured` (`web_view/component.gleam:736`), `fresh`, `recaptured` | `reconcile_cut`, `apply_cut`, `render_cut` | `session_view/inbound` |
-| `used` (`web_view/component.gleam:790`), `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:879`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
-| `relaned` (`web_view/component.gleam:957`), `restripped`, `strip_of`, `outlook`, `running_ms`, `strands` | `derive(before, after)`: rebuild blocks, pieces and the strip when `shared.render_revision` moved | shell, view state |
-| `ticked` (`web_view/component.gleam:1192` (`ticked`)) | the same per-chip label comparison over `shared.cache` and `shared.stamp` | shell |
-| `settled` (`web_view/component.gleam:1219` (`settled`)) | `apply_submission`; `drafts` bumps on the `pending_submission` edge | `session_view/outbound`, shell |
-| `submit` (`web_view/component.gleam:1249` (`submit`)) | the page's empty and length checks, then `Acted(Submit(text, [], delivery))` | shell, `session_view/commands` |
-| `decide` (`web_view/component.gleam:1289` (`decide`)) | `Acted(Decide(id, seq, choice))`; the drawn-sequence check is `operator.drawn` inside the shared arm | `session_view/commands` |
-| `commanded` (`web_view/component.gleam:1392`), `flushed` | the shell's `update`: stamp, shared call, `perform`, `rearm` | shell |
-| `perform` (`web_view/component.gleam:1431` (`perform`)) | unchanged, over `step.Effect(socket, Nil)`: `Lane(Transmit)`, `Lane(Shut)`; `Note` and `Recorded` are `Nil` | shell |
-| `rearm` (`web_view/component.gleam:1467` (`rearm`)) | unchanged, reading `step.next_due(shared)` | shell |
+| `reduce`, `drained`, `take_filed`, `received` | the shared `Ticked`: `drain_connection` then `tick_channel` | `session_view/inbound` |
+| `apply` | `apply_channel_update` | `session_view/inbound` |
+| `captured`, `fresh`, `recaptured` | `reconcile_cut`, `apply_cut`, `render_cut` | `session_view/inbound` |
+| `used`, `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:879`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
+| `relaned`, `restripped`, `strip_of`, `outlook`, `running_ms`, `strands` | `derive(before, after)`: rebuild blocks, pieces and the strip when `shared.render_revision` moved | shell, view state |
+| `ticked` | the same per-chip label comparison over `shared.cache` and `shared.stamp` | shell |
+| `settled` | `apply_submission`; `drafts` bumps on the `pending_submission` edge | `session_view/outbound`, shell |
+| `submit` | the page's empty and length checks, then `Acted(Submit(text, [], delivery))` | shell, `session_view/commands` |
+| `decide` | `Acted(Decide(id, seq, choice))`; the drawn-sequence check is `operator.drawn` inside the shared arm | `session_view/commands` |
+| `commanded`, `flushed` | the shell's `update`: stamp, shared call, `perform`, `rearm` | shell |
+| `perform` | unchanged, over `step.Effect(socket, Nil)`: `Lane(Transmit)`, `Lane(Shut)`; `Note` and `Recorded` are `Nil` | shell |
+| `rearm` | unchanged, reading `step.next_due(shared)` | shell |
 | `open`, `arm`, `waiting`, `init`, `new` | unchanged, less the clock reads in the mappings | shell |
-| `activity` (`web_view/component.gleam:1595` (`activity`)) | `model.active_strand_live(shared)` | `session_view/model` |
+| `activity` | `model.active_strand_live(shared)` | `session_view/model` |
 | `lines`, `rows`, `pieces`, `strip`, `addressed`, `status`, `pending`, `notice`, `drafts`, `attachment`, `lane`, `session_id` | accessors over `{shared, view}` | shell |
 | `view`, `heading`, and the region modules `web_view/view/heading`, `strip` and `lane` | unchanged | view |
 
@@ -1833,6 +1832,164 @@ page, the observer page and a session with a running strand. *Size:*
 `operator_page.gleam` changes its two command arms; `client/daemon/ui_socket`
 is untouched.
 
+*S5 as landed.* The web view drives the shared step and no longer folds
+the lane's updates itself. `component.Model` is `{shared, view}`, with
+`shared` a `session_view/model.Shared(socket, Nil, Nil, Nil)` built by the
+new `step.new`. `update` reads the transport's clock once, at its top, and
+the four messages that carried a reading lost it: `Opened(socket)`,
+`Arrived(messages)` and `Ticked` no longer take `at`. An `Arrived` is
+`step.update(msg.Arrived(frames))` and then a tick in one Lustre message, so
+a burst is still one render; `Opened` adopts the lane and ticks, so what was
+filed before it existed is drained in order; `Ticked` is a tick.
+`session_view/msg` gained `Msg`, `Arrival` and `Event`, the message types
+S4 deferred for their first caller. `submit` and `decide` wrap
+`msg.Submit` and `msg.Decide` and call `step.update` with `Acted`.
+`web_view/component.gleam` went from 1,703 lines to about 1,540, of which
+most of what remains is documentation; the fold, the cache and usage
+handling, the submission handling and the strip's input bookkeeping are
+gone, and `derive` is written as `refreshed`, since `derive` is a reserved
+word in Gleam. `operator_page.gleam` changed only its documentation,
+because `submit` and `decide` kept their signatures. `client/daemon/ui_socket`
+is untouched.
+
+Slash commands on the operator page work as the terminal's do. `submit`
+keeps the page socket's two checks (an empty draft and a draft over
+`prompt_limit`, refused with a `Warned` notice), parses the draft with
+`command.parse_with_skills`, runs a `command.Session` through
+`commands.act`, and refuses a `command.Surface` with a notice and no frame.
+`/compact` is now a `compact` command and not a prompt to the model,
+`operator_page_test` proves it, and `/models`, `/sessions` and `/details`
+send nothing. An unknown command is refused by the shared step as the
+terminal refuses it. The page loads no skills catalogue, so a skill's slash
+command, which the page used to send to the daemon as a prompt, is now
+refused as unknown; reading the catalogue is the follow-up.
+
+This departs from the plan in the following ways.
+
+1. `step.attach` and `step.next_due` were not written. The web's `Opened` is
+   three statements over public functions (start the lane, set the peer,
+   `hold_channel`), and `rearm` reads `session_channel.next_due` of the
+   record's lane; a shared function for either would have one caller.
+2. The step's tick omits the terminal's block-summary read. The daemon may
+   run a summarizer for a label it is asked for, and the page draws no
+   labels, so asking would spend a model call for nothing. The terminal
+   still sends it between the side surfaces' reads and the lane's tick.
+3. An `Acted` leaves the facts its command recorded on the record, and
+   `step.forget_surfaces` drops them. The host that acted knows which of its
+   controls the command consumed, and the web reads `DraftTaken` for its
+   composer, then drops. A `Ticked` drops them itself. The sketch dropped in
+   both.
+4. A tick with no adopted lane drains nothing and keeps the frames. The
+   terminal's tick reads a frame that finds no lane as the preview peer's
+   traffic, which would lose what a page filed before its transport opened.
+5. The page does not compare `render_revision`, which question 3
+   recommended. It moves for stream fragments and tool tails, so the page
+   would have projected once per batch of a streaming answer. `Projected`
+   holds what the blocks and pieces were built from (the capture, the
+   history window, the cache notices, the agent rows, the paging) and
+   `Stripped` what the strip was built from (the roster less its clock, the
+   cache ledger, the agent rows, the strands); `refreshed` rebuilds only what
+   differs, and an unchanged input is the same term, so the comparison costs
+   a pointer check. Because it compares state rather than an event, it needs
+   no `before`, and `older` forces a reprojection just by changing the
+   paging.
+6. `Shared` gained `ended`, the reason the adopted lane failed. The lane
+   keeps none, the failure updates are applied and gone by the time a host
+   looks, and the transcript line that says it is prose. The heading's
+   "disconnected: reason" and the page's status read it. The terminal never
+   reads it, and its adoption clears it, which is the one line each that
+   `tui.gleam` and `tui/interaction.gleam` changed.
+7. The page resumes its history window itself. After a `history` read is
+   answered, refused or abandoned the window is still in the reading mode
+   `history_view.older` set, which the terminal leaves until its reader
+   scrolls back. `refreshed` resumes it and folds the newest capture in,
+   which is what the page's `paged` and `resumed` did.
+8. The page writes `shared` in two places: it trims the history window to the
+   rows it draws (`history_view.retain_from`), and it marks the window as
+   wanting older rows (`history_view.older`).
+
+Some behaviour changed with the move, each because the page now runs the
+terminal's engine.
+
+- The page sends the terminal's reads. After a first capture it reads the
+  strand's notes, to seed a todo board it does not draw, then the session's
+  context, the advisor's pending nudges and the goal, each when the one
+  before is answered, and it reads the context again when an operation ends
+  and on a configuration change. That is four round trips at load that hold
+  the lane's command slot, and a context read the daemon answers with a
+  branch scan on each operation, for every open page. The ruling on question
+  12 chose it; it is the cost of not choosing which reads a host has a
+  surface for, and a page that draws none of those boards could skip them.
+- The composer's notice line shows the shared notice, so it now says "notes
+  sent" after the first read and "streaming text" during an answer, and a
+  daemon's refusal appears as its code and message, drawn as text. Question 6
+  said this would happen.
+- A Steer on an idle strand is an ordinary prompt, as in the terminal. The
+  page offers Steer only while the strand runs, so this is reachable only
+  through a forged form field, which `composition` already refuses.
+- A decision now takes the same refusals as every other mutation
+  (`outbound.mutation_refusal`). The page's own arm queued a decision behind
+  an in-flight read and refused it behind an in-flight mutation or an
+  occupied queued slot, and the shared step does the same, because
+  `session_channel.mutation_available` is the same predicate in both. The
+  only new refusals are `mutation_refusal`'s two others: an unknown active
+  strand, and an `Attached` peer with no channel. The card stays and the
+  operator presses the button again.
+- A command to a strand the last capture does not list is refused as
+  "recipient unavailable". `main` is always listed by a real daemon; the test
+  fixtures now list it.
+- The engine writes lines and notices the page does not draw into
+  `shared.transcript`, as it does for the terminal, and `returned_drafts`
+  is dropped by `forget_surfaces` with the other facts, so a held prompt the
+  daemon hands back is not shown to the operator on the page. That is the
+  ruling on question 12, and it is a loss of the prompt's last copy.
+- What the operator page may send widened from a prompt and a decision to
+  any session command a draft names, except adding a directory. The two
+  handlers, the socket's accepted events, the Operator ceiling and the
+  gateway's role check are as they were. protocol-change/051's addendum
+  "the operator page runs session commands" (2026-09-29) supersedes the
+  text that says the page has two commands, re-prices a stolen page, and
+  records the refusal of `/add-dir`.
+
+The tests changed in three ways. The message fixtures dropped `at`.
+`page_fixture` gained a settable clock, the three cells that list `main`,
+and `refuse_reads`, which refuses the reads a first capture starts so that
+a test that wants an idle lane gets one; `lane_fixture`'s captures now carry
+metadata that differs when their views do (the shared step treats two cuts
+with one cursor and one metadata as one cut) and share `page_fixture`'s
+connection identity, since a change of attachment starts a context read.
+`web_view_parity_test`'s terminal runs the units the page's tick runs, in
+the terminal's order, and answers the reads, and its decision now meets a
+busy lane in both hosts. Fourteen tests are new: `session_view/step_test`
+holds `update` to the terminal's tick order over a scripted drain and pins
+the drain before the reads by a mutation that fails it, and covers filing,
+the dropped facts, a tick with no lane and the two arms of `Acted`; and
+`operator_page_test` covers `/compact`, an unknown command, the terminal
+commands and a command that sends nothing.
+
+Measured on the branch against `origin/main` at `81c31493b`.
+`make check-affected BASE=origin/main` is green, exit status 0 in 424 s:
+`session_view` passes 122 tests (ten new), `web_view` 85 (four new), the
+`tui` suite 986 and `client` 2,307. `delivery_test` still counts one render
+for a burst of forty frames and three for a burst of a hundred and fifty.
+The golden recording, the replay snapshot and `session_channel_property_test`
+in the `tui` suite pass unchanged. `make doc-check` is clean. Lint finds no
+error-tier finding; `web_view` has one warning, an R3 on `took_draft`, a
+predicate over the twenty variants of `SurfaceFact` of which only
+`DraftTaken` matters. `web_view@component` compiles in 0.17 s
+(`core_inline_module` 0.014 s) and `session_view@step` in 0.08 s (0.006
+s), from `compile:forms` over their abstract forms as in S4; the tick's
+chain applies to a parameter, as `settle_tick`'s does, and no module holds a
+settle chain that grew.
+
+Not run: the hand check in a browser of the operator page, the observer page
+and a session with a running strand; `loom replay --all --plain` between
+two builds, where only the goldens above stand in; and
+`scripts/tui_perf.sh`, since the terminal's step is unchanged apart from
+one field each in its constructor and its adoption. `make signoff` is
+required by the affected-gates check for a change that touches the
+daemon's package, and was not run.
+
 **S6: the record.** ADR-014 gains an addendum saying the four blockers
 are closed and how; `packages/session_view/CLAUDE.md`,
 `packages/tui/CLAUDE.md` and `packages/web_view/CLAUDE.md` with their
@@ -1880,7 +2037,12 @@ them.
    so it stops re-projecting on a capture that changed nothing, which is
    an invariant its `CLAUDE.md` already states. *Done in the first half of
    S4:* kept, and documented in `session_view/model`'s module comment; the
-   web's `derive` is S5's.
+   web's `derive` is S5's. *Resolved in S5:* the web does not compare
+   `render_revision`. It moves for stream fragments and tool tails the page
+   does not draw, so a page that re-projected on each move would project
+   once per batch of a streaming answer. The page compares the inputs its
+   projections read instead; section 5's S5 entry has the two records of
+   them.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
@@ -1936,11 +2098,19 @@ them.
    and the burst fell by about 0.1%. Section 5's entry has the figures.
 
 6. **The notice's level.** The web draws `Warned` differently from `Said`
-   (`web_view/component.gleam:229` (`Notice`)); the shared `notice` is a
+   (`component.Notice`); the shared `notice` is a
    string, and the terminal writes it at about 120 sites.
    *Recommendation:* keep the string in S1 through S5 and draw every
    shared notice as `Said`; type it afterwards if the page needs the
    distinction, since a typed notice changes no terminal frame.
+   *Resolved in S5:* as recommended, with one addition. The page's own
+   refusals of an input before it reaches the session (an empty or
+   oversized draft, a terminal-surface command, a stale approval) stay
+   `Warned`, in a `View` field cleared by the operator's next input. The
+   cost is that the composer's notice line now shows what the session last
+   said, as the terminal's footer does: "notes sent" after the first read,
+   "streaming text" during an answer, and a daemon's refusal as its code
+   and message. Typing the notice is now worth doing.
 
 7. **Slash commands mix surfaces and session commands.**
    `command.Command` has both, so the shared `submit_text` keeps arms it
@@ -1966,7 +2136,10 @@ them.
    `component_test` builds `Arrived([frame], 0)` with its own readings.
    *Recommendation:* the fixture's `Transport` gains a settable clock and
    the tests set it where they passed `at`; the paragraph is rewritten in
-   S6.
+   S6. *Resolved in S5:* the messages lost their `at`. `page_fixture.start`
+   still reads a constant zero, which is all most tests need; a test that
+   needs the transport to read a later time builds a `page_fixture.clock`,
+   sets it and starts the page with `start_with`.
 
 9. **The candidate's frames and the shared inbox.** The adopted inbox's
    source and the attempt's frames subject are compared by admission
@@ -2057,4 +2230,8 @@ them.
     in a host with no surfaces of its own, the web view; the terminal keeps
     calling the shared pieces as it does today. It is written in S5 with
     the web view as its first caller, with a `session_view` test holding
-    it to the terminal's order.
+    it to the terminal's order. *Landed in S5:* `step.update` and
+    `session_view/step_test`. The entry differs from the sketch in three
+    ways, which the S5 entry in section 5 explains: the tick leaves out the
+    block-summary read, an `Acted` leaves its facts for the host, and a tick
+    with no adopted lane keeps the frames.

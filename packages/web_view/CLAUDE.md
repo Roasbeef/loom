@@ -38,13 +38,19 @@ page keys and nonces, and the relay into the session's gateway.
   button, a read). It holds no command. `component.older_path` is the
   button's Lustre event path, the one path the socket admits an
   observer's click at.
-- `component.Model(socket)` (opaque): the lane, the filed frames
-  (`session_view/inbox`), the last capture, the strand's history window
-  (`history_view.State`, the terminal's `scrollback`), how much history
-  the page holds (`Paging`), the transcript blocks it holds and the turns
-  laid out from them (`turns.Piece`), the agent rows, the roster, the
-  cache ledger and its miss notices, the agent `Strip`, the approvals, the
-  connection `Status`, the operator `Notice` and the sent-draft count.
+- `component.Model(socket)` (opaque): two records, as the terminal's is.
+  `shared` is `session_view/model.Shared(socket, Nil, Nil, Nil)`, the
+  session state the shared step reads and writes: the lane, the inbox, the
+  last capture, the strand's history window (`scrollback`), the agent rows,
+  roster, cache ledger and notices, the approvals, the notice and the
+  drafts the lane sent. `view` is what only this host holds: the transport
+  and its deadline timer, how much history the page holds (`Paging`), the
+  transcript blocks it holds and the turns laid out from them
+  (`turns.Piece`), the agent `Strip`, the inputs each was built from, the
+  connection `Status`, the page's own refusal and the count of drafts a
+  command consumed. The component writes `shared` in two places only: it
+  trims the history window to the rows the page draws, and it marks the
+  window as wanting older rows.
 - `component.live_rows` (150) and `component.held_rows` (300): the page
   holds the newest `live_rows` rows of `main`, cut between turns
   (`turns.grouped`); once the reader loads older rows its limit is
@@ -87,9 +93,15 @@ page keys and nonces, and the relay into the session's gateway.
   key changed, which is why the memos are leaves and why `turns` keys a
   turn's work by its input (`docs/lustre.md`, "A memo inside a memo that
   hit is forgotten"). `lane_memo_test` counts the lines a render draws.
-- `component.{submit, decide}`: the two commands, through the engine's
-  arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
-  never offers remembering a grant for the session.
+- `component.{submit, decide}`: the two inputs, wrapped as the shared
+  step's commands (`step.update` with `Acted`). `submit` checks the draft's
+  emptiness and length, which are the page socket's limits, and then parses
+  it with `command.parse_with_skills`: a `command.Session` runs through
+  `commands.act` as the terminal runs it, and a `command.Surface` is refused
+  with a `Warned` notice and never sent, so `/compact` is a compaction and
+  `/models` is refused. The page loads no skills catalogue, so a skill's
+  slash command is refused as unknown. `Answer` is `AllowOnce | Deny`; a
+  page never offers remembering a grant for the session.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
   delivery)` and `Decided(id, seq, answer)`. The lane's "Load older"
   button sends `Observed(component.OlderRequested)`.
@@ -103,9 +115,9 @@ page keys and nonces, and the relay into the session's gateway.
 
 ## Relationships
 
-- **Depends on**: `session_view` (the lane, the inbox, the operator arms,
-  `history_view`, `transcript.branch_blocks`, `turns`, `approval`, the
-  line types), `core` (the
+- **Depends on**: `session_view` (the shared step and its record, the
+  lane, the inbox, `commands`, `history_view`, `transcript.branch_blocks`,
+  `turns`, `approval`, the line types), `core` (the
   origin label; JSON in tests), `lustre == 5.7.1`, `houdini == 1.2.1`,
   `gleam_erlang`.
 - **Depended on by**: `client`, whose `client/daemon/ui_socket` starts one
@@ -120,19 +132,25 @@ page keys and nonces, and the relay into the session's gateway.
   and a `Nil` from its one deadline timer, armed for the lane's
   `session_channel.next_due` (mapped to `Ticked`). Each source is one
   `server_component.select` from `init`, so its subjects belong to the
-  component's process. Of the lane's updates,
-  `Captured` is folded into the history window and projects the page,
-  `HistoryPage` answers the page's own `history` read and is folded in
-  with `history_view.accept`, `Auxiliary(UsageChanged)` feeds the cache
-  ledger and the roster, and `Submission`, `Acknowledged`,
-  `RequestRefused` and `UnknownOutcome` replace the operator's notice, so
-  it always states the outcome of the latest command; a refused `history`
-  read also retires the demand. `LookedUp`, `Streamed`, `ToolStreamed`,
-  `Noticed` and the other `Auxiliary` events are dropped.
+  component's process. Every message reaches the shared step as
+  `step.update`: `Arrived` is `msg.Arrived` then a tick, `Ticked` and
+  `Opened` are a tick, and a command is `Acted`. The step folds each lane
+  update into `shared` (captures, history pages, usage and the cache
+  ledger, streams, refusals, acknowledgements), as it does for the
+  terminal. The page then derives what it draws from `shared` (see the
+  invariants). The notice is the shared record's `notice`, drawn as `Said`,
+  so it states the latest thing the session said (a stream's "streaming
+  text", a read's "notes sent") as often as the outcome of a command; only
+  the page's own refusals are `Warned`.
 - Out on the lane, besides the lane's own snapshot requests and the
-  operator's commands: at most one `history` read at a time
-  (`session_channel.history`), for at most 100 sequences below the oldest
-  record the page holds.
+  operator's commands: at most one request at a time. The shared step's
+  reads go out as the terminal's do, one after another and each when the
+  one before is answered: the strand's notes (a first capture, to seed a
+  todo board the page does not draw), the session's context (a first
+  capture, a configuration change and the end of each operation), the
+  advisor's pending nudges and the goal. Also the `history` read
+  (`session_channel.history`) for at most 100 sequences below the oldest
+  record the page holds. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in each chip, `<loom-fold>` around a settled
   turn's work, and `<loom-follow>` around the lane, which keeps the newest
@@ -150,22 +168,28 @@ page keys and nonces, and the relay into the session's gateway.
   lines a capture becomes, how a lane folds into turns, which agents a strip
   lists, what the cache may claim and what an operator's input becomes on
   the wire are `session_view`'s.
-- **Derive per capture, never per render or per tick.** A capture is
-  projected once into blocks, pieces and the strip, and an idle refresh
-  that brings back the capture already drawn projects nothing. A tick
-  rebuilds the strip only when a cache label changed; the browser counts
-  elapsed time. Logic that decides something about the session
-  belongs there, where the terminal uses it too.
+- **Derive from inputs that moved, never per render or per tick.** The
+  blocks and pieces are rebuilt only when the capture, the history window,
+  the cache notices, the agent rows or the paging differ from what the last
+  projection read (`Projected`), and the strip only when its inputs
+  (`Stripped`, less the roster's clock) or a drawn cache label did. An idle
+  refresh that brings back the capture already drawn projects nothing. The
+  shared record's `render_revision` is not the signal: it moves for stream
+  fragments and tool tails the page does not draw, and a page that
+  re-projected on each would project once per batch of a streaming answer.
+  Logic that decides something about the session belongs to `session_view`,
+  where the terminal uses it too.
 - **Event-driven delivery, one render per burst.** `Arrived` files its
-  batch and reduces every filed frame in arrival order, then runs the
-  lane's tick; there is no periodic tick. Lustre renders once per message
-  whatever it changed, so the batching has to happen in the selector's
-  mapping, before `update`. After every transition `rearm` cancels the one
-  timer and arms it for the lane's `next_due`; `update` performs that
-  itself, because the `Timer` handle must stay in the model (ADR-013, the
-  addendum on event-driven delivery). `component_test` pins the
-  reduction; `delivery_test` counts the renders a burst costs on the real
-  runtime and watches the timer fire.
+  batch and then ticks, which drains every filed frame in arrival order and
+  runs the lane's tick; there is no periodic tick. Lustre renders once per
+  message whatever it changed, so the batching has to happen in the
+  selector's mapping, before `update`. `update` reads the transport's clock
+  once, at its top, and the step reads none. After every transition `rearm`
+  cancels the one timer and arms it for the lane's `next_due`; `update`
+  performs that itself, because the `Timer` handle must stay in the model
+  (ADR-013, the addendum on event-driven delivery). `component_test` pins
+  the reduction; `delivery_test` counts the renders a burst costs on the
+  real runtime and watches the timer fire.
 - **The page's rows are bounded.** The page holds at most `live_rows`
   rows, or `held_rows` once paged, plus at most one block when the newest
   turn alone is longer than the limit; loading older rows past the limit
@@ -193,9 +217,14 @@ page keys and nonces, and the relay into the session's gateway.
   (protocol-change/051, the addendum on history paging), and
   `page_events_test` pins that the observer's view registers that one
   handler. An operator's page is
-  `operator_page.app()`. The daemon's gateway refuses an observer's
-  mutation independently, and the engine refuses one on an observer's
-  attachment as a third layer.
+  `operator_page.app()`. Its two handlers are unchanged, but since S5 the
+  draft one of them carries is parsed as the terminal parses it, so the page
+  sends any session command a draft names (`/add-dir`, `/fork`, `/model`,
+  `/goal ...` and the rest of `command.Session`), not only a prompt; what
+  bounds them is the attachment's role, capped at operator, which the
+  gateway enforces. The daemon's gateway refuses an observer's mutation
+  independently, and the engine refuses one on an observer's attachment as a
+  third layer.
 - **No handler or attribute from session text.** Button messages carry the
   daemon's escalation identity and sequence; cards are keyed by sequence
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever

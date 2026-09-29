@@ -137,6 +137,39 @@ fn catch_ups(frames: List(String)) -> Int {
   list.count(frames, string.contains(_, "\"cmd\":\"catch_up\""))
 }
 
+// Whether a frame is a read the shared step sent rather than one of the
+// lane's own requests for a capture.
+fn is_read(frame: String) -> Bool {
+  !string.contains(frame, "\"cmd\":\"snapshot")
+  && !string.contains(frame, "\"cmd\":\"subscribe\"")
+  && !string.contains(frame, "\"cmd\":\"catch_up\"")
+}
+
+// Refuses each read the page writes, and the reads its refusals release,
+// until it writes none, and returns every frame it wrote meanwhile. A first
+// capture makes the step read the strand's notes and the session's context,
+// and each read holds the lane's one command slot until it is answered, so a
+// lane is idle only once they have been.
+//
+// After the last read the wire is watched for `last_ms` more, so a frame the
+// lane's own timer sends shortly after is in the answer.
+fn refusing(page: Page, last_ms: Int, seen: List(String)) -> List(String) {
+  let frames = written(page.wire, 100)
+  case list.filter(frames, is_read) {
+    [] -> list.append(seen, list.append(frames, written(page.wire, last_ms)))
+    reads -> {
+      list.each(reads, fn(frame) {
+        process.send(
+          page.inbox,
+          page_fixture.refusal(page_fixture.request_id(frame)),
+        )
+      })
+      let _ = settle(page.renders, 100)
+      refusing(page, last_ms, list.append(seen, frames))
+    }
+  }
+}
+
 // A page that has taken its first capture after hearing a push, so its lane
 // is `Pushing`, its refresh is `pushing_refresh_ms` out, and nothing is in
 // flight.
@@ -145,7 +178,7 @@ fn following_pushed() -> Page {
   process.send(page.inbox, delta(0))
   list.each(page_fixture.transfer("observer", []), process.send(page.inbox, _))
   let _ = settle(page.renders, 200)
-  let _ = written(page.wire, 0)
+  let _ = refusing(page, 0, [])
   page
 }
 
@@ -177,6 +210,6 @@ pub fn a_polling_lane_is_refreshed_by_its_deadline_timer_test() {
   let page = started()
   list.each(page_fixture.transfer("observer", []), process.send(page.inbox, _))
   let _ = settle(page.renders, 100)
-  let frames = written(page.wire, 600)
+  let frames = refusing(page, 600, [])
   assert catch_ups(frames) == 1
 }

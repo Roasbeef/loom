@@ -277,6 +277,25 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   lane's command slot, and `advance_activity_clocks`, which moves the
   activity and generation clocks to the stamp. The terminal imports the
   module as `session_step`.
+- `step.update(shared, msg.Msg(source))`: the whole-event entry for a host
+  with no surfaces of its own, which is the web view (S5, question 12 of the
+  design note). `msg.Arrived([Frame(source, message) | Replayed(event)])`
+  files through `admission` and reduces nothing. `msg.Input(stamp, Ticked)`
+  runs the terminal's tick less its surfaces, in its order: the activity and
+  roster clocks, the drain of every held frame (each lane update applied on
+  its own with `nothing_shown()`), `service_reads`, and the lane's tick with
+  its history read; it then settles against the record it started from and
+  drops the facts such a host has no surface for (`forget_surfaces`: the
+  surface facts, queue notices, goal observations and returned drafts). The
+  terminal's block-summary read is left out, because the daemon may run a
+  summarizer for a label. `Input(stamp, Acted(command))` runs `commands.act`
+  and settles, and leaves the command's facts for the host to read
+  (`DraftTaken`) before it calls `forget_surfaces`. A tick with no lane
+  drains nothing. The result is the record and the effects, oldest first.
+  The terminal does not call it; `step_test` holds it to the terminal's
+  order. `step.new(strand, session, stamp, inbox, replay_inbox)` builds the
+  record such a host starts from, with no lane and `peer: Disconnected`.
+  `Shared.ended` is why the adopted lane failed, set by the lane fold.
 - `queue_request.State` (the queue editor's lane correlation),
   `agent_messages` (provenance-checked inter-agent sends),
   `attempt_replay.State(socket, recorder)` (the two-slot replay of recorded

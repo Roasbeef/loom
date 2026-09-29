@@ -14,6 +14,7 @@ import core/codec
 import core/ids
 import core/json
 import core/message
+import core/register
 import gleam/bit_array
 import gleam/dynamic
 import gleam/erlang/process.{type Subject}
@@ -43,10 +44,59 @@ fn reply(id: Int, event: String, body: json.JsonValue) {
   )
 }
 
+// One register cell in the form a capture's metadata carries it.
+fn cell(
+  namespace: register.RegisterNs,
+  key: String,
+  seq: Int,
+  value: json.JsonValue,
+) -> json.JsonValue {
+  json.Object([
+    #("namespace", json.String(register.ns_to_string(namespace))),
+    #("key", json.String(key)),
+    #("seq", json.Int(seq)),
+    #("value", value),
+  ])
+}
+
+// The three cells that list `main` as a strand: its configuration, its leaf
+// and its state, in the forms `machine/codec` writes. A capture that lists no
+// strand has no recipient, and the engine refuses a command to it.
+fn main_cells() -> List(json.JsonValue) {
+  [
+    cell(
+      register.StrandConfig,
+      "main",
+      1,
+      json.Object([
+        #(
+          "model",
+          json.Object([
+            #("provider", json.String("test")),
+            #("modelId", json.String("test")),
+          ]),
+        ),
+        #("thinkingLevel", json.String("off")),
+        #("activeToolNames", json.Array([])),
+      ]),
+    ),
+    cell(register.StrandLeaf, "main", 2, json.Null),
+    cell(
+      register.StrandState,
+      "main",
+      3,
+      json.Object([
+        #("currentOperationId", json.Null),
+        #("pendingNextRun", json.Array([])),
+      ]),
+    ),
+  ]
+}
+
 fn metadata(cells: List(json.JsonValue)) -> String {
   json.to_string(
     json.Object([
-      #("cells", json.Array(cells)),
+      #("cells", json.Array(list.append(main_cells(), cells))),
       #("message_count", json.Int(0)),
       #(
         "usage",
@@ -280,7 +330,7 @@ pub fn escalation(
 }
 
 /// What a page is started with: session `A`, and a transport whose socket
-/// is the test's subject.
+/// is the test's subject and whose clock reads zero.
 ///
 /// ## Examples
 ///
@@ -288,6 +338,79 @@ pub fn escalation(
 /// page_fixture.start()
 /// ```
 pub fn start() -> component.Start(Wire) {
+  started(fn() { 0 })
+}
+
+/// A page's clock that a test sets, for a test that needs the transport to
+/// read a later time than the last message did. The component reads it once
+/// at the top of each message, so a test sets it before sending one.
+pub opaque type Clock {
+  Clock(cell: Subject(ClockMessage))
+}
+
+type ClockMessage {
+  Set(ms: Int)
+  Read(reply: Subject(Int))
+}
+
+/// A clock reading zero.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let clock = page_fixture.clock()
+/// ```
+pub fn clock() -> Clock {
+  let started = process.new_subject()
+  process.spawn(fn() {
+    let cell = process.new_subject()
+    process.send(started, cell)
+    serve(cell, 0)
+  })
+  let assert Ok(cell) = process.receive(started, 1000)
+    as "the clock process started"
+  Clock(cell)
+}
+
+fn serve(cell: Subject(ClockMessage), ms: Int) -> Nil {
+  case process.receive_forever(cell) {
+    Set(ms:) -> serve(cell, ms)
+    Read(reply:) -> {
+      process.send(reply, ms)
+      serve(cell, ms)
+    }
+  }
+}
+
+/// Sets what `clock` reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.set(clock, 60_000)
+/// ```
+pub fn set(clock: Clock, ms: Int) -> Nil {
+  process.send(clock.cell, Set(ms))
+}
+
+/// What a page is started with, as `start` does, whose transport reads
+/// `clock`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.start_with(clock)
+/// ```
+pub fn start_with(clock: Clock) -> component.Start(Wire) {
+  started(fn() {
+    let reply = process.new_subject()
+    process.send(clock.cell, Read(reply))
+    let assert Ok(ms) = process.receive(reply, 1000) as "the clock answered"
+    ms
+  })
+}
+
+fn started(now: fn() -> Int) -> component.Start(Wire) {
   component.Start(
     session_id: "A",
     label: None,
@@ -296,15 +419,52 @@ pub fn start() -> component.Start(Wire) {
       connect: fn(_, _) { Nil },
       transmit: fn(wire, frame) { process.send(wire, frame) },
       shut: fn(_) { Nil },
-      now: fn() { 0 },
+      now:,
     ),
   )
 }
 
-/// A page for `role` whose lane has completed its first transfer, so it is
-/// following and has no request out, writing to `wire`. The frames of that
-/// transfer are taken off the wire, so what a test reads there next is what
-/// the page sent after it.
+/// The daemon's refusal of the read the lane sent as request `id`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.refusal(4)
+/// ```
+pub fn refusal(id: Int) -> connection_event.Message {
+  connection_event.Incoming(
+    "{\"v\":2,\"reply_to\":"
+    <> int.to_string(id)
+    <> ",\"event\":\"error\",\"body\":{\"code\":\"unavailable\",\"message\":\"busy\"}}",
+  )
+}
+
+/// The refusals of the four reads a first capture starts, one after the
+/// other, as a test that cannot read the wire delivers them: the lane's
+/// requests one to three are the transfer's, and the reads of the strand's
+/// notes, the session's context, the advisor's pending nudges and the
+/// session goal take the next four, each sent when the one before is
+/// answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.first_reads_refused()
+/// ```
+pub fn first_reads_refused() -> List(connection_event.Message) {
+  [refusal(4), refusal(5), refusal(6), refusal(7)]
+}
+
+/// A page for `role` whose lane has completed its first transfer and every
+/// read the transfer's capture set going, so it is following and has no
+/// request out, writing to `wire`. The frames of the transfer and of those
+/// reads are taken off the wire, so what a test reads there next is what the
+/// page sent after them.
+///
+/// A first capture makes the shared step read the strand's notes, to seed a
+/// todo board, and the session's context, and each read holds the lane's one
+/// command slot until it is answered. What these tests are about is not the
+/// answers, so each is refused.
 ///
 /// ## Examples
 ///
@@ -312,13 +472,54 @@ pub fn start() -> component.Start(Wire) {
 /// page_fixture.ready(process.new_subject(), "operator")
 /// ```
 pub fn ready(wire: Wire, role: String) -> component.Model(Wire) {
-  let page =
-    run(component.new(start()), component.update, [
-      component.Opened(wire, 0),
-      component.Arrived(transfer(role, []), 0),
-    ])
-  let _ = sent(wire)
-  page
+  run(component.new(start()), component.update, [
+    component.Opened(wire),
+    component.Arrived(transfer(role, [])),
+  ])
+  |> refuse_reads(component.update, wire, component.Arrived)
+}
+
+/// Refuses every read the page has written to `wire`, and the reads its
+/// refusals release, until the wire holds none, and takes the frames it
+/// found off the wire. `arrived` wraps the refusals as the message the
+/// page's own `update` takes for traffic from its transport.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.refuse_reads(page, component.update, wire, component.Arrived)
+/// ```
+pub fn refuse_reads(
+  page: model,
+  update: fn(model, message) -> #(model, Effect(message)),
+  wire: Wire,
+  arrived: fn(List(connection_event.Message)) -> message,
+) -> model {
+  refusing(page, update, wire, arrived, 8)
+}
+
+// One round: the reads on the wire are refused, and the round repeats for
+// the reads that frees, until the wire holds none or `rounds` are spent.
+fn refusing(
+  page: model,
+  update: fn(model, message) -> #(model, Effect(message)),
+  wire: Wire,
+  arrived: fn(List(connection_event.Message)) -> message,
+  rounds: Int,
+) -> model {
+  let reads =
+    list.filter(sent(wire), fn(frame) {
+      !string.contains(frame, "\"cmd\":\"snapshot")
+      && !string.contains(frame, "\"cmd\":\"subscribe\"")
+    })
+  case reads, rounds {
+    [], _ | _, 0 -> page
+    _, _ ->
+      run(page, update, [
+        arrived(list.map(reads, fn(frame) { refusal(request_id(frame)) })),
+      ])
+      |> refusing(update, wire, arrived, rounds - 1)
+  }
 }
 
 /// Folds `messages` through `update` from `model`, performing every effect
@@ -329,7 +530,7 @@ pub fn ready(wire: Wire, role: String) -> component.Model(Wire) {
 /// ## Examples
 ///
 /// ```gleam
-/// page_fixture.run(model, component.update, [component.Ticked(0)])
+/// page_fixture.run(model, component.update, [component.Ticked])
 /// ```
 pub fn run(
   model: model,

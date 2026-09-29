@@ -278,6 +278,13 @@ pub type Shared(socket, recorder, source, replay_source) {
     inbox: inbox.Inbox(source, connection_event.Message),
     /// Where commands go: a live lane, nowhere, the preview or a replay.
     peer: Peer,
+    /// Why the adopted lane ended, as the lane reported it: a closed
+    /// socket's reason, a protocol violation or an expired deadline. `None`
+    /// while the lane lives, and again once another lane is adopted. The
+    /// transcript carries the same reason in a line; a host that states the
+    /// connection's condition in a place of its own, as the web view's
+    /// heading does, reads it here rather than parsing that line.
+    ended: Option(String),
     /// Serial credited state for the adopted socket only.
     channel: Option(session_channel.Channel(socket, recorder)),
     /// Last complete raw cut and its coherent metadata projection.

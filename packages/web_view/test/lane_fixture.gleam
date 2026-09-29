@@ -20,6 +20,7 @@ import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -545,12 +546,15 @@ fn capture_of(
     snapshot.Captured(
       snapshot.Attachment(
         snapshot.Expected("A", "epoch", "incarnation"),
-        "tab",
+        "connection",
         message.Origin("alice", "Alice"),
         snapshot.Operator,
       ),
       newest + 1,
-      json.Null,
+      // The capture's raw metadata is what the view is projected from, so a
+      // capture with another view has other metadata. The shared step treats
+      // two cuts with one cursor and one metadata as the same cut.
+      json.String(string.inspect(#(strands, operations, cells))),
       snapshot.Window(list.reverse(items), list.length(items) * 100, None),
       None,
     )
