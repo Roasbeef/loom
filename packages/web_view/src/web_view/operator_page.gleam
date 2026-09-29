@@ -47,6 +47,7 @@ import lustre/event
 import session_view/approval
 import session_view/operator
 import session_view/snapshot
+import web_view/completion
 import web_view/component
 import web_view/view/lane
 import web_view/view/strip
@@ -279,23 +280,57 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
     [
       identity(model),
       keyed.div([attribute.class("editor")], [
-        #(
-          "draft-" <> int.to_string(component.drafts(model)),
-          html.textarea(
-            [
-              attribute.name("draft"),
-              attribute.rows(3),
-              attribute.aria_label("Message to " <> component.strand),
-              attribute.placeholder("Message " <> component.strand),
-            ],
-            "",
-          ),
-        ),
+        #("draft-" <> int.to_string(component.drafts(model)), editor(model)),
       ]),
       html.div([attribute.class("composer-actions")], [
         notice(component.notice(model)),
         ..actions(component.activity(model))
       ]),
+    ],
+  )
+}
+
+// The editor, inside `<loom-composer>` (`packages/web_client`), which lists
+// the slash commands as the draft grows and sends it on Command or Control
+// with Enter. The textarea is still the uncontrolled editor it was, and the
+// element only listens to it: the browser owns the text, the form's submit is
+// the one event the server hears, and Enter in the editor is a newline. The
+// element's `commands` attribute is the static table of completions, which
+// holds no session text (`web_view/completion`).
+//
+// A prompt the daemon handed back is put in the editor by the element, which
+// alone knows whether the operator has typed there since. The server tells it
+// with the count in `returned`, which rises with each return, and with the
+// prompts themselves as text-node children in the slot named `returned`,
+// each numbered by a `data-n`. The element's shadow root has no such slot,
+// so the browser never draws them; they are only read. They come after the
+// textarea, so the textarea keeps its place in the tree.
+fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
+  element.element(
+    "loom-composer",
+    [
+      attribute.attribute("commands", completion.table()),
+      attribute.attribute("returned", int.to_string(component.returns(model))),
+    ],
+    [
+      html.textarea(
+        [
+          attribute.name("draft"),
+          attribute.rows(3),
+          attribute.aria_label("Message to " <> component.strand),
+          attribute.placeholder("Message " <> component.strand),
+        ],
+        "",
+      ),
+      ..list.map(component.returned(model), fn(returned) {
+        html.span(
+          [
+            attribute.attribute("slot", "returned"),
+            attribute.attribute("data-n", int.to_string(returned.number)),
+          ],
+          [html.text(returned.text)],
+        )
+      })
     ],
   )
 }

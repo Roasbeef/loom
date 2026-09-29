@@ -8,6 +8,7 @@
 //// page, and at the same path on the operator's.
 
 import gleam/list
+import gleam/string
 import lane_fixture
 import lustre/element.{type Element}
 import page_fixture
@@ -41,4 +42,24 @@ pub fn an_observer_page_with_nothing_older_carries_no_handler_test() {
     component.new(page_fixture.start())
     |> component.apply([lane_fixture.conversation(1, 30)])
   assert handlers(component.view(page)) == []
+}
+
+// The composer's list and its keys run in the browser, in `<loom-composer>`,
+// which listens to the editor and submits the form. None of that reaches the
+// server as an event of its own: the operator's page still registers only
+// the click and the submit that `ui_socket.operator_accepts` admits, with an
+// approval pending and the composer's editor in the tree.
+pub fn the_operators_page_registers_only_clicks_and_submits_test() {
+  let page =
+    component.new(page_fixture.start())
+    |> component.apply([lane_fixture.conversation(301, 450)])
+  let names =
+    handlers(operator_page.view(page))
+    |> list.map(fn(key) {
+      let assert Ok(name) = list.last(string.split(key, "\n"))
+        as "a handler key ends in its event name"
+      name
+    })
+    |> list.unique
+  assert list.sort(names, string.compare) == ["click", "submit"]
 }
