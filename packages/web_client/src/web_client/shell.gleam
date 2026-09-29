@@ -156,9 +156,9 @@ fn button_class(region: Region) -> attribute.Attribute(Msg) {
 // width and no paint. The sidebar's wrapper is not drawn when the page has
 // no sidebar.
 fn column(model: Model, region: Region) -> Element(Msg) {
-  case region, model.sidebar {
-    shell_rule.Sidebar, shell_rule.Unlisted -> element.none()
-    shell_rule.Sidebar, shell_rule.Listed | shell_rule.Panel, _ ->
+  case shell_rule.has_button(model.sidebar, region) {
+    False -> element.none()
+    True ->
       html.div(column_attributes(model, region), [
         component.named_slot(slot(region), [], []),
       ])

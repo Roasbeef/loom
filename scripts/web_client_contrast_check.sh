@@ -78,6 +78,8 @@ ratios() {
 			printf "%s %s %s %.2f\n", theme, token, surface, \
 				ratio(value[theme, token], value[theme, surface])
 		}
+		# The switch is one-way: every token after the light block is read as
+		# a light value, so the stylesheet must keep that block last.
 		/prefers-color-scheme: light/ { theme = "light"; next }
 		BEGIN { theme = "dark" }
 		/^[ \t]*--color-[a-z0-9-]+: #[0-9a-fA-F]{6};/ {

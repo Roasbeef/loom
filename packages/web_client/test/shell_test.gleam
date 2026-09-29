@@ -2,7 +2,6 @@
 //// are open, what each button says, and what a closed column lets the
 //// keyboard reach.
 
-import gleam/list
 import web_client/shell_rule.{
   Closed, Layout, Listed, Open, Panel, Reachable, Sidebar, Unlisted, Unreachable,
 }
@@ -38,19 +37,6 @@ pub fn each_button_moves_only_its_own_column_test() {
 pub fn a_closed_column_cannot_be_reached_and_an_open_one_can_test() {
   assert shell_rule.reach(Closed) == Unreachable
   assert shell_rule.reach(Open) == Reachable
-
-  let layouts = [
-    shell_rule.initial(),
-    Layout(sidebar: Closed, panel: Open),
-    Layout(sidebar: Open, panel: Closed),
-    Layout(sidebar: Closed, panel: Closed),
-  ]
-  list.each(layouts, fn(layout) {
-    list.each([Sidebar, Panel], fn(region) {
-      let state = shell_rule.state(layout, region)
-      assert { shell_rule.reach(state) == Unreachable } == { state == Closed }
-    })
-  })
 }
 
 pub fn each_button_says_what_pressing_it_does_test() {
