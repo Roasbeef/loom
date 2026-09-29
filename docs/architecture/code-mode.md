@@ -840,8 +840,16 @@ What each jail can reach:
 - **After, every jail except a satellite.** The daemon creates
   `<state root>/run` mode 0700 at startup and every session base masks it
   (`client/serve.established_masks`), so `bash`, the hermetic build and
-  an extension invocation cannot list it or connect to a socket in it.
-  The token files are where they were.
+  an extension invocation cannot list it on either platform, and cannot
+  connect to a socket in it under bubblewrap. Seatbelt allows unix-socket
+  connects by path whatever the file rules say, so on macOS the digest
+  name, which no jail can list, is what keeps them from a socket. The
+  token files are where they were.
+- **A session whose writable roots cover `<state root>/run`**, such as
+  one opened on the home directory, could replace that directory from a
+  jail, so it does not use the shared root:
+  `client/serve.codemode_socket_root` sends it back to binding under its
+  own work root, and the mask stays.
 - **After, a satellite.** `client/codemode.reaching_socket` derives the
   satellite's base from the session base: its own socket directory
   becomes a readable root, and the mask on `<state root>/run` is dropped.

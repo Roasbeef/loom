@@ -1461,7 +1461,7 @@ fn execute_after_vetting(
     |> result.try(fn(_) { prepare_root(sockets) })
   case prepared {
     Error(reason) -> {
-      let _removed = simplifile.delete_all([root, sockets])
+      remove_execution_directories(root, sockets)
       codemode_tool.Execution(
         result: codemode_tool.CompileFailed(codemode_tool.WorkspaceSetupFailed(
           reason:,
@@ -1503,7 +1503,7 @@ fn execute_after_vetting(
       // with it. The launcher's janitor may still unlink the socket after
       // this; the unlink of a missing file is a no-op, and no other
       // execution can have been given this directory.
-      let _removed = simplifile.delete_all([root, sockets])
+      remove_execution_directories(root, sockets)
       codemode_tool.Execution(
         result: translate(execution.outcome),
         enforcement: translate_enforcement(execution.enforcement),
@@ -1511,6 +1511,16 @@ fn execute_after_vetting(
       )
     }
   }
+}
+
+// Both directories one execution owns, removed independently and the
+// socket directory first: `delete_all` stops at the first failure, and a
+// build root that could not be removed must not leave the socket
+// directory behind in the shared socket root.
+fn remove_execution_directories(root: String, sockets: String) -> Nil {
+  let _sockets = simplifile.delete(sockets)
+  let _root = simplifile.delete(root)
+  Nil
 }
 
 // The pipeline's rejection translated before any execution resources exist.
@@ -2049,7 +2059,11 @@ fn exec_socket_directory(
 ///   because the socket is unreachable.
 ///
 /// Every other jail in the session is built from the base unchanged and
-/// keeps the mask. What the satellite gains is the socket root: its own
+/// keeps the mask, which stops it listing the socket root on both
+/// platforms and connecting to a socket there under bubblewrap. Seatbelt
+/// allows unix-socket connects by path whatever the file rules say, so on
+/// macOS the digest name, which no jail can list, is the barrier. What
+/// the satellite gains is the socket root: its own
 /// directory, and under host reads the other socket directories beside
 /// it. Those hold sockets and nothing else; a socket accepts a connection
 /// only with its execution's token, which stays in that execution's

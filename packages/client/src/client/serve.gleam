@@ -860,11 +860,7 @@ pub fn resolve_managed(
       ..settings,
       session_id: registration.id,
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
-      // The socket root `client/daemon/root` created, and the one the
-      // state-root masks below cover.
-      codemode_sockets: Some(
-        state_root <> "/" <> codemode_wiring.runtime_directory,
-      ),
+      codemode_sockets: codemode_socket_root(settings.base_policy, state_root),
       // The daemon's secrets, not the daemon's directory. Masking the
       // whole state root also masked a workspace an operator had every
       // right to open on it; see `state_root_mask_candidates` for the grain and
@@ -872,6 +868,40 @@ pub fn resolve_managed(
       base_policy: protecting_state_root(settings.base_policy, state_root),
     ),
   )
+}
+
+/// Where a managed session binds its code-mode cap sockets: the daemon's
+/// `<state root>/run`, unless the session's own writable roots cover it.
+///
+/// The covered case is a session opened on a directory above the state
+/// root, such as the operator's home directory. A jailed process that can
+/// write the parent of `run` could replace the directory before a
+/// satellite's socket is bound in it. So that session binds under its own
+/// work root instead, as every session did before issue #611, and keeps
+/// the mask; its socket path is then as long as its workspace makes it,
+/// and a workspace too deep is refused in band.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.codemode_socket_root(serve.base_policy("/work"), "/home/o/.loom")
+/// //   == Some("/home/o/.loom/run")
+/// ```
+///
+@internal
+pub fn codemode_socket_root(
+  base: policy.SandboxPolicy,
+  state_root: String,
+) -> Option(String) {
+  let root = state_root <> "/" <> codemode_wiring.runtime_directory
+  case
+    list.any(base.writable_roots, fn(writable) {
+      policy.covers(root: writable, path: root)
+    })
+  {
+    True -> None
+    False -> Some(root)
+  }
 }
 
 /// Builds domain services from their stored maintenance configuration only.
@@ -5440,10 +5470,11 @@ fn established_masks(state_root: String) -> List(String) {
 
     // The code-mode socket root. Each directory under it holds one
     // execution's cap socket, and only that execution's satellite is
-    // given its directory back (`client/codemode.reaching_socket`). No
-    // other jail needs a socket, and a jail that could connect to one
-    // could occupy the single connection the satellite is waiting to
-    // make.
+    // given its directory back (`client/codemode.reaching_socket`). The
+    // mask stops every other jail listing it on both platforms, and
+    // stops connecting under bubblewrap. Seatbelt allows unix-socket
+    // connects by path regardless, so on macOS the unlisted digest name
+    // is what keeps another jail from the socket.
     state_root <> "/" <> codemode_wiring.runtime_directory,
   ]
 }

@@ -3858,7 +3858,12 @@ these forks because they define the same modules.
   `proc.run` children, which share its base) can list the other socket
   directories beside its own; they hold sockets only, and each accepts a
   connection only with its execution's token, which stays in that
-  execution's workspace directory. The in-band length refusal remains
+  execution's workspace directory. The mask stops listing on both
+  platforms and connecting only under bubblewrap; Seatbelt allows
+  unix-socket connects by path, so on macOS the unlisted digest name is
+  the barrier. A session whose writable roots cover `<state root>/run`
+  (one opened on the home directory) binds under its own work root
+  instead (`serve.codemode_socket_root`). The in-band length refusal remains
   for the residual case and names the socket root, not the workspace.
 - **MCP reaches a model through code mode, and a host with no code mode
   starts no MCP server.** A server's tools are a *module* a program may

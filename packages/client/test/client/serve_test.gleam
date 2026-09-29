@@ -2502,3 +2502,25 @@ pub fn code_mode_defaults_to_both_isolated_surfaces_test() {
   let assert Error(_) = serve.parse_codemode_seams(Some("invalid"))
     as "unknown modes must not silently select a default"
 }
+
+// --- where a managed session binds its code-mode sockets (#611) ------------
+
+pub fn a_session_binds_its_sockets_under_the_daemon_runtime_root_test() {
+  assert serve.codemode_socket_root(serve.base_policy("/work"), "/home/o/.loom")
+    == Some("/home/o/.loom/run")
+}
+
+pub fn a_session_that_can_write_the_runtime_root_binds_in_its_workspace_test() {
+  // A session on the home directory could replace `run` from a jail, so
+  // it keeps the mask and binds under its own work root instead.
+  assert serve.codemode_socket_root(
+      serve.base_policy("/home/o"),
+      "/home/o/.loom",
+    )
+    == None
+  assert serve.codemode_socket_root(
+      serve.base_policy("/home/o/.loom"),
+      "/home/o/.loom",
+    )
+    == None
+}
