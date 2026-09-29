@@ -242,6 +242,16 @@
   .outlook.ring-idle::before{border-color:var(--color-fg-quiet);}
   .outlook.ring-elapsed::before{border-style:dashed;border-color:var(--color-fg-quiet);}
   .editor textarea{field-sizing:content;min-height:4.5em;max-height:30vh;width:100%;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider); border-radius:4px;padding:8px;font:14px/1.5 var(--font-sans);resize:vertical;}
+  /* The composer's element and its list of commands. The list is drawn in
+     the element's shadow root, above the editor in the flow, so opening it
+     grows the dock upward and leaves the editor and its buttons where they
+     were. It is capped and scrolls on its own. */
+  loom-composer{display:block;}
+  ul.completions{position:relative;list-style:none;margin:0 0 6px 0;padding:4px;max-height:min(16em,30vh); overflow-y:auto;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:6px;}
+  li.completion{display:flex;flex-wrap:wrap;gap:0 12px;align-items:baseline;padding:4px 8px;border-radius:4px;cursor:pointer;}
+  li.completion.current{background:var(--color-bg-raised);box-shadow:inset 2px 0 0 var(--color-current);}
+  .completion-command{font:13px/1.4 var(--font-mono);color:var(--color-current);}
+  .completion-hint{color:var(--color-fg-quiet);font-size:12px;}
   .composer-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;}
   .notice{margin:0 auto 0 0;color:var(--color-fg-quiet);font-size:13px;min-width:0;}
   .notice.warned{color:var(--color-danger);}

@@ -24,6 +24,7 @@
 //// `web_view`'s `priv/static`, which the page loads under the unchanged
 //// policy (`script-src 'self'`).
 
+import web_client/composer
 import web_client/elapsed
 import web_client/fold
 import web_client/follow
@@ -37,6 +38,7 @@ import web_client/follow
 /// // web_client.main()
 /// ```
 pub fn main() -> Nil {
+  let _ = composer.register()
   let _ = elapsed.register()
   let _ = fold.register()
   let _ = follow.register()
