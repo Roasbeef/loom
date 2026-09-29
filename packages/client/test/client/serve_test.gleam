@@ -166,6 +166,7 @@ fn settings_under(root: String) -> serve.Settings {
   let root = absolute(root)
   serve.Settings(
     peer_directory: None,
+    codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/session.db",
@@ -1578,6 +1579,9 @@ pub fn the_state_root_masks_name_the_secrets_and_not_the_root_test() {
     "/home/o/.loom/launch.lock",
     "/home/o/.loom/endpoints",
     "/home/o/.loom/daemon.endpoint",
+    // The code-mode socket root (#611): masked from every jail, and
+    // lifted only in a satellite's own base for its own directory.
+    "/home/o/.loom/run",
   ]
   list.each(secrets, fn(entry) {
     assert list.contains(masks, entry) as { "masked: " <> entry }

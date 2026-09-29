@@ -1021,6 +1021,7 @@ fn absolute(path: String) -> String {
 fn settings_at(test_root: String) -> serve.Settings {
   serve.Settings(
     peer_directory: None,
+    codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: test_root <> "/session.db",

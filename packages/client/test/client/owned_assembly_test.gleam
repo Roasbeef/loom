@@ -65,6 +65,7 @@ pub fn settings() -> serve.Settings {
     )
   serve.Settings(
     peer_directory: None,
+    codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/session.db",

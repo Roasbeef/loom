@@ -157,15 +157,21 @@
 //// Under `work_root`, one directory per `{op_id, step_id, source_index}`
 //// — named by a short digest of that triple, for reasons `exec_root`
 //// explains — holding
-//// the cloned build seed, the compiled `.beam` set, the cap socket, and
-//// the private token file. Two properties fall out of the placement. It
-//// is inside the workspace, so the session base already makes it writable
-//// and no policy has to be widened to build there; and it is unique per
+//// the cloned build seed, the compiled `.beam` set, and the private token
+//// file. Two properties fall out of the placement. It is inside the
+//// workspace, so the session base already makes it writable and no
+//// policy has to be widened to build there; and it is unique per
 //// execution, so neither two strands running code mode at the same time
 //// nor two `code_mode` calls in one batch can share a build root. The
-//// directory is removed once the execution
-//// settles — the seed clone is large and every build clones it fresh
-//// anyway.
+//// directory is removed once the execution settles — the seed clone is
+//// large and every build clones it fresh anyway.
+////
+//// The cap socket is the one file that does not live there. An AF_UNIX
+//// path is limited to about 100 bytes, so it is bound in a directory of
+//// its own under the socket root (`socket_directory`): `<state root>/run`
+//// under the daemon, masked from every jail, and granted to the one
+//// satellite that connects to it (`reaching_socket`). That directory is
+//// keyed on the same triple and removed at the same time.
 
 import broker/broker.{type Broker}
 import broker/budget.{type Budget}
@@ -239,6 +245,17 @@ pub type Config {
     entropy: fn(Int) -> BitArray,
     /// Where per-execution directories are created.
     work_root: String,
+    /// Where each execution's cap-socket directory is created, or `None`
+    /// to create it under `work_root` beside the execution directory.
+    ///
+    /// A separate root because an AF_UNIX path is limited to about 100
+    /// bytes and `work_root` is inside the workspace, whose depth the
+    /// operator chooses (issue #611). The daemon sets it to
+    /// `<state root>/run`, whose length does not depend on any
+    /// workspace; `socket_directory` says what lives under it and
+    /// `reaching_socket` says how one satellite's jail is given its own
+    /// directory there and no other.
+    socket_root: Option(String),
     /// The prepared build seed (`make codemode-seed`).
     seed_root: String,
     /// Absolute path to `gleam`.
@@ -366,6 +383,25 @@ pub type Scratch =
 ///
 pub fn over_scratch(config: Config, store: Scratch) -> Config {
   Config(..config, scratch: store)
+}
+
+/// The same host configuration, binding every cap socket under `root`
+/// rather than under the workspace. `None` keeps the socket directories
+/// under `work_root`.
+///
+/// `client/serve` passes `<state root>/run` for a daemon-managed session,
+/// which is how a workspace of any depth gets a socket path under the
+/// kernel's limit (issue #611).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.sockets_under(Some("/home/o/.loom/run"))
+/// ```
+///
+pub fn sockets_under(config: Config, root: Option(String)) -> Config {
+  Config(..config, socket_root: root)
 }
 
 /// The same host configuration, serving `schedule.*` over one scheduling
@@ -745,6 +781,12 @@ pub const default_call_timeout_ms = 120_000
 /// workspace. Inside it, so the session base already makes it writable.
 pub const work_directory = ".codemode"
 
+/// Where a daemon binds code-mode cap sockets, relative to its state
+/// root. Short, because every byte of `<state root>/run/<16 hex>/s` counts
+/// against the 100-byte socket-path budget; the daemon creates it, mode
+/// 0700, and every session base masks it (`client/serve`).
+pub const runtime_directory = "run"
+
 /// Where the session's content-addressed blobs live, relative to the
 /// workspace.
 ///
@@ -781,6 +823,9 @@ pub fn default_config(
     clock:,
     entropy: token.production_entropy(),
     work_root: workspace <> "/" <> work_directory,
+    // No runtime root of its own: a host that has one, the daemon, names
+    // it with `sockets_under`.
+    socket_root: None,
     seed_root: toolchain.seed_root,
     gleam_path: toolchain.gleam_path,
     erl_path: toolchain.erl_path,
@@ -1404,11 +1449,19 @@ fn execute_after_vetting(
   request: codemode_tool.Request,
 ) -> codemode_tool.Execution {
   let root = exec_root(config, request)
+  let sockets = exec_socket_directory(config, request)
 
-  // The socket check first: it is pure, and failing it after creating the
+  // The socket check first: it is pure, and failing it after creating a
   // directory would leave one behind for an execution that never ran.
-  case check_socket_path(root) |> result.try(fn(_) { prepare_root(root) }) {
-    Error(reason) ->
+  // Both directories are this execution's alone, so removing them on the
+  // way out of a failed preparation cannot touch another execution's.
+  let prepared =
+    check_socket_path(sockets)
+    |> result.try(fn(_) { prepare_root(root) })
+    |> result.try(fn(_) { prepare_root(sockets) })
+  case prepared {
+    Error(reason) -> {
+      let _removed = simplifile.delete_all([root, sockets])
       codemode_tool.Execution(
         result: codemode_tool.CompileFailed(codemode_tool.WorkspaceSetupFailed(
           reason:,
@@ -1419,6 +1472,7 @@ fn execute_after_vetting(
         ),
         refusal: codemode_tool.NothingRefused,
       )
+    }
     Ok(Nil) -> {
       let #(now, _clock) = clock.read(config.clock)
       let deadline_ms =
@@ -1445,8 +1499,11 @@ fn execute_after_vetting(
       // The whole execution is over: the node is destroyed, the socket and
       // token are unlinked by the host's own teardown, and nothing but the
       // outcome outlives it. The seed clone is large and every build makes
-      // a fresh one, so the directory goes too.
-      let _removed = simplifile.delete(root)
+      // a fresh one, so the directory goes too, and the socket directory
+      // with it. The launcher's janitor may still unlink the socket after
+      // this; the unlink of a missing file is a no-op, and no other
+      // execution can have been given this directory.
+      let _removed = simplifile.delete_all([root, sockets])
       codemode_tool.Execution(
         result: translate(execution.outcome),
         enforcement: translate_enforcement(execution.enforcement),
@@ -1733,8 +1790,13 @@ pub fn prepare_root(root: String) -> Result(Nil, String) {
 }
 
 /// An AF_UNIX socket the kernel will not bind is worth catching before a
-/// directory exists, where the workspace can be named in the answer,
-/// rather than as an `einval` from `listen` three stages later.
+/// directory exists, where the root that is too deep can be named in the
+/// answer, rather than as an `einval` from `listen` three stages later.
+///
+/// `directory` is a socket directory (`socket_directory`), so its parent
+/// is the socket root. Under a daemon that root is `<state root>/run` and
+/// the workspace plays no part in the length; the refusal names the root,
+/// because a shallower root is the only fix.
 ///
 /// Public for the reason `prepare_root` is: the extension dispatch binds a
 /// socket under the same root and must ask the same question in the same
@@ -1743,11 +1805,12 @@ pub fn prepare_root(root: String) -> Result(Nil, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// // codemode.check_socket_path("/w/.codemode/9f2b") == Ok(Nil)
+/// // codemode.check_socket_path("/home/o/.loom/run/9f2b1c0ad3e45871")
+/// //   == Ok(Nil)
 /// ```
 ///
-pub fn check_socket_path(root: String) -> Result(Nil, String) {
-  let path = socket_path(root)
+pub fn check_socket_path(directory: String) -> Result(Nil, String) {
+  let path = socket_path(directory)
   case bit_array.byte_size(<<path:utf8>>) > max_socket_path_bytes {
     False -> Ok(Nil)
     True ->
@@ -1756,26 +1819,24 @@ pub fn check_socket_path(root: String) -> Result(Nil, String) {
         <> path
         <> ", which is longer than the "
         <> int.to_string(max_socket_path_bytes)
-        <> " bytes a unix socket path may have; run the session from a "
-        <> "shallower workspace",
+        <> " bytes a unix socket path may have; the socket root "
+        <> filepath.directory_name(directory)
+        <> " is too deep, so run the daemon with a shallower state root",
       )
   }
 }
 
-/// This execution's own directory: the build root, the `.beam` set, the
-/// cap socket, and the private token file all live under it.
+/// This execution's own directory: the build root, the `.beam` set and
+/// the private token file live under it. The cap socket does not; it
+/// lives in `socket_directory`, whose length does not depend on the
+/// workspace (issue #611).
 ///
 /// The name is a 64-bit FNV-1a digest of `{op_id, step_id, source_index}`
-/// rendered as sixteen hex characters, and its shortness is the point
-/// rather than an aesthetic. The cap socket lives inside this directory
-/// and an AF_UNIX path is capped at about 108 bytes by the kernel, so a
-/// directory named for a full operation id and a step id spends forty-odd
-/// of them before the workspace prefix is counted; a workspace a couple of
-/// levels deeper then fails at `listen` with `einval`, which is a poor way
-/// to learn about a path limit. The digest cannot carry a separator, a dot
-/// segment or a space out of the work root the way a step id could. The
-/// directory is removed when the execution settles, and the artifact's
-/// `manifest_hash` remains the durable fingerprint of what ran.
+/// rendered as sixteen hex characters. The digest cannot carry a
+/// separator, a dot segment or a space out of the work root the way a
+/// step id could. The directory is removed when the execution settles,
+/// and the artifact's `manifest_hash` remains the durable fingerprint of
+/// what ran.
 ///
 /// ## Why the source index is in the key
 ///
@@ -1797,7 +1858,8 @@ pub fn check_socket_path(root: String) -> Result(Nil, String) {
 /// cannot state. No length prefixing is needed here (unlike
 /// `agent.call_site_digest`): there are exactly three fields, in a fixed
 /// order, and the last is an integer rendering that cannot contain the
-/// separator.
+/// separator. The socket directory is keyed on the same triple for the
+/// same reason (`socket_directory`).
 ///
 /// ## Examples
 ///
@@ -1866,17 +1928,184 @@ pub fn host_root(config: Config, extension extension: String) -> String {
   config.work_root <> "/" <> digest("host\n" <> extension)
 }
 
-/// The cap-channel socket for an execution rooted at `root`. One
-/// character, for the same reason `exec_root` is a digest.
+/// The directory one execution's cap socket is bound in: a sixteen-hex
+/// name under the socket root (`Config.socket_root`, or `work_root` when
+/// the host names none).
+///
+/// ## Why it is not the execution directory
+///
+/// An AF_UNIX path is limited to 104 bytes on macOS and 108 on Linux, and
+/// the execution directory is inside the workspace, so a socket there
+/// failed in any workspace deeper than about 60 bytes (issue #611). Under
+/// the daemon the socket root is `<state root>/run`, and the socket path
+/// is that root plus nineteen bytes whatever the workspace is. The build
+/// root and the token file stay in the execution directory: neither has a
+/// length limit, and the token file is the credential, which stays where
+/// the session base already confines it.
+///
+/// ## Why the key is the execution triple plus the work root
+///
+/// Uniqueness per execution is what keeps issue #87 closed: the launcher's
+/// janitor unlinks the socket after the host dies, asynchronously, and
+/// `prepare_root` begins with a recursive delete, so two executions that
+/// shared this directory could remove each other's live socket. Keying on
+/// `{op_id, step_id, source_index}` gives each execution its own, exactly
+/// as `exec_root` does. The work root joins the key because one socket
+/// root serves every workspace the daemon hosts, where `exec_root` is
+/// already separated by the workspace path. It is length-prefixed, so no
+/// work root can end in a string that makes two keys equal.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert codemode.socket_path("/w/.codemode/9f2b") == "/w/.codemode/9f2b/s"
+/// // codemode.socket_directory(config, op_id:, step_id: "turn-4", source_index: 0)
+/// //   == "/home/o/.loom/run/3c61d0b2a9e4f718"
 /// ```
 ///
-pub fn socket_path(root: String) -> String {
-  root <> "/s"
+pub fn socket_directory(
+  config: Config,
+  op_id op_id: OpId,
+  step_id step_id: String,
+  source_index source_index: Int,
+) -> String {
+  under_socket_root(
+    config,
+    ids.op_id_to_string(op_id)
+      <> "\n"
+      <> step_id
+      <> "\n"
+      <> int.to_string(source_index),
+  )
+}
+
+/// The socket directory for a session-lived extension host, keyed as
+/// `host_root` is: on the extension's name, within one work root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.host_socket_directory(config, "web_search")
+/// //   != codemode.host_root(config, "web_search")
+/// ```
+///
+pub fn host_socket_directory(
+  config: Config,
+  extension extension: String,
+) -> String {
+  under_socket_root(config, "host\n" <> extension)
+}
+
+// One naming rule for both kinds of socket directory, so an execution's
+// and an extension host's can only differ by their key. The prefixes
+// differ too ("sock" against "host"), which keeps the two key spaces
+// apart even for an extension whose name reads like a coordinate.
+fn under_socket_root(config: Config, key: String) -> String {
+  socket_root(config)
+  <> "/"
+  <> digest(
+    "sock\n"
+    <> int.to_string(string.byte_size(config.work_root))
+    <> ":"
+    <> config.work_root
+    <> "\n"
+    <> key,
+  )
+}
+
+// The socket root this configuration binds under. The eager `unwrap` is
+// right: the fallback is a field that is already computed.
+fn socket_root(config: Config) -> String {
+  option.unwrap(config.socket_root, config.work_root)
+}
+
+// The socket directory for one `code_mode` request.
+fn exec_socket_directory(
+  config: Config,
+  request: codemode_tool.Request,
+) -> String {
+  socket_directory(
+    config,
+    op_id: request.op_id,
+    step_id: request.step_id,
+    source_index: request.source_index,
+  )
+}
+
+/// The session base with one socket directory made reachable, for the
+/// jail of the satellite that connects to it and for no other.
+///
+/// Two changes, and only these two:
+///
+/// - `directory` becomes a readable root, so a session with workspace-only
+///   reads can still reach the socket. Under the default host reads it is
+///   already covered, and the extra root changes nothing.
+/// - A protected entry is dropped only when it lies inside `root` (the
+///   socket root) and covers `directory`. The daemon masks
+///   `<state root>/run` from every jail (`client/serve`), and `protected`
+///   is the policy's only subtractive verb: no grant or root can reopen a
+///   path under a mask, so the satellite's own base has to be derived
+///   without it. A mask above the socket root, such as an operator's mask
+///   of the whole state root, is kept, and the launch then refuses in band
+///   because the socket is unreachable.
+///
+/// Every other jail in the session is built from the base unchanged and
+/// keeps the mask. What the satellite gains is the socket root: its own
+/// directory, and under host reads the other socket directories beside
+/// it. Those hold sockets and nothing else; a socket accepts a connection
+/// only with its execution's token, which stays in that execution's
+/// directory in its workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.reaching_socket(base, under: "/h/.loom/run",
+/// //   directory: "/h/.loom/run/3c61d0b2a9e4f718")
+/// ```
+///
+pub fn reaching_socket(
+  base: SandboxPolicy,
+  under root: String,
+  directory directory: String,
+) -> SandboxPolicy {
+  policy.SandboxPolicy(
+    ..base,
+    readable_roots: list.unique(list.append(base.readable_roots, [directory])),
+    protected: list.filter(base.protected, fn(entry) {
+      !{
+        policy.covers(root:, path: entry)
+        && policy.covers(root: entry, path: directory)
+      }
+    }),
+  )
+}
+
+/// `reaching_socket` for the socket root this configuration binds under.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.reaching_socket_of(config, base, directory)
+/// ```
+///
+pub fn reaching_socket_of(
+  config: Config,
+  base: SandboxPolicy,
+  directory: String,
+) -> SandboxPolicy {
+  reaching_socket(base, under: socket_root(config), directory:)
+}
+
+/// The cap-channel socket in a socket directory. One character, so the
+/// directory's own name is most of what the path spends past its root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.socket_path("/h/.loom/run/9f2b") == "/h/.loom/run/9f2b/s"
+/// ```
+///
+pub fn socket_path(directory: String) -> String {
+  directory <> "/s"
 }
 
 /// The longest cap-socket path this wiring will attempt.
@@ -1884,7 +2113,7 @@ pub fn socket_path(root: String) -> String {
 /// The kernel's `sun_path` is 108 bytes including its terminator on Linux
 /// and 104 on macOS; a few bytes of margin under the smaller of the two
 /// turns an opaque `einval` from `listen` into a worded refusal that names
-/// the real problem — the workspace sits too deep for a code-mode socket.
+/// the real problem: the socket root sits too deep.
 pub const max_socket_path_bytes = 100
 
 // FNV-1a 64 over the key's codepoints, rendered as sixteen lowercase hex
@@ -1948,7 +2177,13 @@ pub fn exec_config(
   widened_by grants: List(Grant),
 ) -> pipeline.ExecConfig {
   let pooled = pooled_budget(config, deadline_ms)
-  let base_policy = execution_policy(request.base_policy)
+  let sockets = exec_socket_directory(config, request)
+
+  // The satellite's base, and only the satellite's, reaches this one
+  // socket directory. The build's base is derived separately
+  // (`build_config`) and never reaches the socket root.
+  let base_policy =
+    reaching_socket_of(config, execution_policy(request.base_policy), sockets)
   let seam = vetting_seam(request.seam)
   pipeline.ExecConfig(
     vet_policy: seam_allowlist(config, seam),
@@ -1977,7 +2212,7 @@ pub fn exec_config(
       // agent's toolchain, the same one `bash` would reach.
       env: request.env,
       cwd: request.workspace,
-      cap_socket_path: socket_path(root),
+      cap_socket_path: socket_path(sockets),
       entropy: config.entropy,
       clock: config.clock,
       write_token_file: satellite.private_token_writer(root <> "/token"),

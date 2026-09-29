@@ -222,6 +222,7 @@ fn settings(
     as "the fixture locates its protocol-speaking helper"
   serve.Settings(
     peer_directory: None,
+    codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/" <> file,

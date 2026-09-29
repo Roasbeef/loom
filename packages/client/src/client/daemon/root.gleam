@@ -27,6 +27,7 @@
 
 import broker/internal/call
 import broker/token
+import client/codemode as codemode_wiring
 import client/daemon/lifetime
 import client/daemon/limits
 import client/daemon/listener
@@ -859,6 +860,14 @@ fn directories(config: Config) {
       root <> "/sessions",
     )
   use Nil <- result.try(bootstrap.ensure_private_directory(paths.sessions))
+
+  // The code-mode socket root (issue #611). Created here, mode 0700,
+  // before any session is admitted, because every session base masks it
+  // unconditionally (`client/serve.established_masks`) and a jail refuses
+  // a mask over a missing path whose parent it cannot write.
+  use Nil <- result.try(bootstrap.ensure_private_directory(
+    root <> "/" <> codemode_wiring.runtime_directory,
+  ))
   use Nil <- result.try(unaliased_file(paths.lock))
   use Nil <- result.try(unaliased_file(paths.catalogue))
   Ok(paths)

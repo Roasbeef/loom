@@ -324,6 +324,12 @@ pub type Settings {
     domain_paths: Option(DomainPaths),
     /// Resident-only peer lookups supplied by the owning daemon.
     peer_directory: Option(peers.Directory),
+    /// Where code-mode cap sockets are bound: `<state root>/run` for a
+    /// daemon-managed session, `None` to bind them under the workspace's
+    /// `.codemode`. A field because only the daemon knows its state root,
+    /// and a socket under the workspace fails in any deep workspace
+    /// (issue #611).
+    codemode_sockets: Option(String),
     /// The session's base policy — the ceiling every tool call is
     /// composed against, and the thing an escalation widens. `main`
     /// fills it with `base_policy(workspace)`; it is a field rather than
@@ -854,6 +860,11 @@ pub fn resolve_managed(
       ..settings,
       session_id: registration.id,
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
+      // The socket root `client/daemon/root` created, and the one the
+      // state-root masks below cover.
+      codemode_sockets: Some(
+        state_root <> "/" <> codemode_wiring.runtime_directory,
+      ),
       // The daemon's secrets, not the daemon's directory. Masking the
       // whole state root also masked a workspace an operator had every
       // right to open on it; see `state_root_mask_candidates` for the grain and
@@ -1161,6 +1172,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     workspace:,
     domain_paths: None,
     peer_directory: None,
+    codemode_sockets: None,
     base_policy: admitting_config_mounts(
       base_policy_for(
         workspace,
@@ -2020,7 +2032,11 @@ fn code_mode_seam(
           // The MCP layer widens both installed modes' allowlists, their
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
-          |> codemode_wiring.over_mcp(layer),
+          |> codemode_wiring.over_mcp(layer)
+          // Cap sockets under the daemon's short runtime root rather than
+          // the workspace, so the socket path has the same length for a
+          // workspace of any depth (issue #611).
+          |> codemode_wiring.sockets_under(settings.codemode_sockets),
         ),
         layer,
       ))
@@ -5421,6 +5437,14 @@ fn established_masks(state_root: String) -> List(String) {
     // singleton fence, and a jailed process that could unlink or rewrite
     // it could induce a second daemon over the same catalogue.
     state_root <> "/daemon.lock",
+
+    // The code-mode socket root. Each directory under it holds one
+    // execution's cap socket, and only that execution's satellite is
+    // given its directory back (`client/codemode.reaching_socket`). No
+    // other jail needs a socket, and a jail that could connect to one
+    // could occupy the single connection the satellite is waiting to
+    // make.
+    state_root <> "/" <> codemode_wiring.runtime_directory,
   ]
 }
 

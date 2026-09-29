@@ -1118,6 +1118,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     as "the test process must know where it is"
   serve.Settings(
     peer_directory: None,
+    codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/session.db",

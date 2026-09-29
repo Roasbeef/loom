@@ -337,8 +337,20 @@ pub fn the_pipeline_is_handed_phase_specific_bases_test() {
   let request = request_for("turn-4:tools")
   let built =
     codemode.exec_config(config, request, "/work/x", 9000, widened_by: [])
+  let sockets =
+    codemode.socket_directory(
+      config,
+      op_id: request.op_id,
+      step_id: request.step_id,
+      source_index: request.source_index,
+    )
   assert built.satellite.base_policy
-    == codemode.execution_policy(request.base_policy)
+    == codemode.reaching_socket_of(
+      config,
+      codemode.execution_policy(request.base_policy),
+      sockets,
+    )
+  assert built.satellite.cap_socket_path == codemode.socket_path(sockets)
   let build_config = codemode.build_config(config, request)
   let run_base = codemode.execution_policy(request.base_policy)
   assert build_config.base_policy == run_base
@@ -409,6 +421,138 @@ pub fn a_socket_path_stays_under_the_kernels_limit_test() {
   let config = config_for(broker_actor)
   let path = codemode.socket_path(codemode.exec_root(config, request_for("t")))
   assert string.length(path) <= codemode.max_socket_path_bytes
+  broker.stop(broker_actor)
+}
+
+// --- the socket root (#611) --------------------------------------------------
+
+// A daemon's socket root, and a workspace deep enough that the old
+// placement could not have bound a socket in it.
+const daemon_sockets = "/home/o/.loom/run"
+
+fn deep_config(broker_actor: broker.Broker) -> codemode.Config {
+  let deep = "/" <> string.repeat("d", 149)
+  codemode.default_config(
+    broker: broker_actor,
+    clock: clock.fixed(at: 1000),
+    workspace: deep,
+    toolchain: codemode.toolchain(
+      gleam_path: "/opt/gleam/bin/gleam",
+      erl_path: "/usr/lib/erlang/bin/erl",
+      seed_root: "/opt/loom/codemode-seed",
+    ),
+  )
+  |> codemode.sockets_under(Some(daemon_sockets))
+}
+
+pub fn a_deep_workspace_gets_a_socket_under_the_budget_test() {
+  // The socket path is the socket root plus nineteen bytes whatever the
+  // workspace is, and the execution directory stays in the workspace.
+  let broker_actor = idle_broker()
+  let config = deep_config(broker_actor)
+  let request = request_for("turn-1:tools")
+  let sockets =
+    codemode.socket_directory(
+      config,
+      op_id: request.op_id,
+      step_id: request.step_id,
+      source_index: request.source_index,
+    )
+  assert string.starts_with(sockets, daemon_sockets <> "/")
+  assert string.byte_size(codemode.socket_path(sockets))
+    == string.byte_size(daemon_sockets) + 19
+  assert codemode.check_socket_path(sockets) == Ok(Nil)
+  assert string.starts_with(
+    codemode.exec_root(config, request),
+    config.work_root <> "/",
+  )
+  broker.stop(broker_actor)
+}
+
+pub fn a_too_deep_socket_root_is_refused_naming_the_root_test() {
+  // The residual case: the socket root itself is too deep. The refusal
+  // names that root, since moving the workspace would not help.
+  let root = "/" <> string.repeat("r", 90)
+  let assert Error(reason) =
+    codemode.check_socket_path(root <> "/0000000000000000")
+    as "a socket under a 91-byte root is over the budget"
+  assert string.contains(reason, "the socket root " <> root <> " is too deep")
+}
+
+pub fn socket_directories_are_one_per_execution_and_workspace_test() {
+  // Issue #87's key, carried to the socket root: distinct per source
+  // index within one step, stable for the same coordinates, and distinct
+  // for the same coordinates in another workspace, since one socket root
+  // serves every workspace the daemon hosts.
+  let broker_actor = idle_broker()
+  let config = deep_config(broker_actor)
+  let other =
+    codemode.Config(
+      ..config,
+      work_root: "/elsewhere/" <> codemode.work_directory,
+    )
+  let op = an_op(7)
+  let at = fn(config, index) {
+    codemode.socket_directory(
+      config,
+      op_id: op,
+      step_id: "turn-1:tools",
+      source_index: index,
+    )
+  }
+  assert at(config, 0) != at(config, 1)
+  assert at(config, 1) == at(config, 1)
+  assert at(config, 0) != at(other, 0)
+  assert codemode.host_socket_directory(config, extension: "web")
+    != codemode.host_socket_directory(other, extension: "web")
+  broker.stop(broker_actor)
+}
+
+pub fn reaching_a_socket_lifts_only_the_mask_over_it_test() {
+  // The satellite's base loses the socket root's mask and gains its own
+  // directory as a readable root. A mask above the socket root and a mask
+  // elsewhere are kept, and nothing else changes.
+  let directory = daemon_sockets <> "/3c61d0b2a9e4f718"
+  let base =
+    policy.SandboxPolicy(
+      ..policy.workspace_default("/work"),
+      readable_roots: ["/work"],
+      protected: [daemon_sockets, "/home/o/.loom/owner.token", "/work/.blobs"],
+    )
+  let reached =
+    codemode.reaching_socket(base, under: daemon_sockets, directory:)
+  assert reached.protected == ["/home/o/.loom/owner.token", "/work/.blobs"]
+  assert reached.readable_roots == ["/work", directory]
+  assert reached.writable_roots == base.writable_roots
+  assert reached.env_allow == base.env_allow
+  assert reached.network == base.network
+
+  // A mask over the whole state root is above the socket root, so it
+  // stays, and the launch then refuses because the socket is masked.
+  let whole = policy.SandboxPolicy(..base, protected: ["/home/o/.loom"])
+  assert codemode.reaching_socket(whole, under: daemon_sockets, directory:).protected
+    == ["/home/o/.loom"]
+}
+
+pub fn only_the_satellite_base_reaches_the_socket_root_test() {
+  // The build's base is derived without the socket grant, so the hermetic
+  // build keeps the mask; the satellite's base reaches its one directory.
+  let broker_actor = idle_broker()
+  let config = deep_config(broker_actor)
+  let request =
+    codemode_tool.Request(
+      ..request_for("turn-4:tools"),
+      base_policy: policy.SandboxPolicy(
+        ..policy.workspace_default("/work"),
+        protected: [daemon_sockets],
+      ),
+    )
+  let built = codemode.exec_config(config, request, "/work/x", 9000, [])
+  assert !list.contains(built.satellite.base_policy.protected, daemon_sockets)
+  assert list.contains(
+    codemode.build_config(config, request).base_policy.protected,
+    daemon_sockets,
+  )
   broker.stop(broker_actor)
 }
 
