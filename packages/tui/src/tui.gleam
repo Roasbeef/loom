@@ -172,17 +172,36 @@ type Launch {
 
 // The two catalogue verbs the launcher owns. `rm` carries its consent so the
 // parser settles the question and the runner never re-derives it from flags.
-type SessionsCommand {
-  ListRegistrations
+// `list` carries its own `Showing` for the same reason: the parser is the
+// one place `--all` is read, so the runner never re-derives the question
+// from flags either.
+@internal
+pub type SessionsCommand {
+  ListRegistrations(showing: Showing)
   RemoveRegistration(session_id: String, consent: Consent)
 }
 
 // Whether the person has already agreed to lose a conversation. `--yes` is
 // the whole of the second variant; without it the runner asks, and refuses
 // when there is no terminal to ask.
-type Consent {
+@internal
+pub type Consent {
   AskAtTerminal
   GivenOnCommandLine
+}
+
+/// Which rows `loom sessions list` prints.
+///
+/// The resident track is the daemon's active catalogue: a runtime that is
+/// up, one starting or stopping, and a stuck cleanup all belong to it,
+/// because each still occupies the daemon rather than sitting idle. A
+/// saved registration and a bare reservation are the idle remainder, and
+/// stay out of the default view until `--all` asks for the whole
+/// catalogue.
+@internal
+pub type Showing {
+  ResidentOnly
+  Every
 }
 
 // Which of a replay's frames to print. A recording produces one frame per
@@ -898,6 +917,31 @@ pub fn launch_view(arguments: List(String)) -> Result(ViewRequest, String) {
   }
 }
 
+/// Classifies the words after `loom sessions` the way the launcher does,
+/// answering the parsed command when they name one and the refusal
+/// otherwise. It is the test seam for `--all`, `--yes`, and the shared
+/// local options, none of which the runner re-parses once this has settled
+/// them onto the command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(tui.ListRegistrations(tui.Every)) =
+///   tui.launch_sessions(["list", "--all"])
+/// let assert Ok(tui.ListRegistrations(tui.ResidentOnly)) =
+///   tui.launch_sessions(["list"])
+/// ```
+@internal
+pub fn launch_sessions(
+  arguments: List(String),
+) -> Result(SessionsCommand, String) {
+  case parse_launch(["sessions", ..arguments]) {
+    Sessions(command:, ..) -> Ok(command)
+    Invalid(reason) -> Error(reason)
+    _other -> Error("not a sessions launch")
+  }
+}
+
 // An interactive launch: a remote session when `--addr` is given, otherwise
 // a local one over the bootstrap ladder.
 fn parse_terminal_launch(arguments: List(String)) -> Launch {
@@ -928,7 +972,14 @@ fn parse_sessions(arguments: List(String)) -> Launch {
     #(False, remaining) -> #(AskAtTerminal, remaining)
   }
   case rest {
-    ["list", ..flags] -> sessions_launch(flags, ListRegistrations)
+    ["list", ..flags] -> {
+      let #(all, remaining) = take_switch(flags, "--all")
+      let showing = case all {
+        True -> Every
+        False -> ResidentOnly
+      }
+      sessions_launch(remaining, ListRegistrations(showing))
+    }
     ["rm", id, ..flags] ->
       sessions_launch(flags, RemoveRegistration(id, consent))
     ["rm"] -> Invalid("sessions rm needs a session id\n" <> sessions_usage())
@@ -961,8 +1012,14 @@ fn take_switch(arguments: List(String), flag: String) -> #(Bool, List(String)) {
 }
 
 fn sessions_usage() -> String {
-  "usage: loom sessions list [--state-dir <path>] [--server <path>]\n"
+  "usage: loom sessions list [--all] [--state-dir <path>] [--server <path>]\n"
   <> "       loom sessions rm <session-id> [--yes] [--state-dir <path>]\n"
+  <> "  list shows the resident track by default; --all adds every saved\n"
+  <> "  registration and reservation\n"
+  <> "  resident: running in the daemon now\n"
+  <> "  saved: has a database, not running; opens when selected\n"
+  <> "  reserved: a creation that never finished, an id with no database\n"
+  <> "  behind it; retry the create or remove it\n"
   <> "  rm asks for confirmation unless --yes is given, and refuses a\n"
   <> "  session the daemon still holds open; stop it first"
 }
@@ -1145,7 +1202,7 @@ fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
     Error(reason) -> sessions_failed(reason)
     Ok(#(control, host)) -> {
       let outcome = case command {
-        ListRegistrations -> list_registrations(host)
+        ListRegistrations(showing:) -> list_registrations(host, showing)
         RemoveRegistration(session_id:, consent:) ->
           remove_registration(host, session_id, consent)
       }
@@ -1190,13 +1247,124 @@ fn sessions_host(options: bootstrap.Options) {
 }
 
 // A terminal gets the aligned, coloured table; anything else gets the one
-// line per row that scripts already parse, byte for byte as before.
-fn list_registrations(host: daemon_selection.Host) -> Result(String, String) {
+// line per row that scripts already parse, byte for byte as before. The
+// default view narrows both to the resident track; `--all` widens either
+// back to the whole catalogue.
+fn list_registrations(
+  host: daemon_selection.Host,
+  showing: Showing,
+) -> Result(String, String) {
   use rows <- result.map(registration_rows(host, "", [], 100))
-  case rows, ffi_terminal.require_terminal() {
-    [], _ -> "no sessions"
-    rows, Ok(Nil) -> frame.buffer_to_styled(session_table.render(rows))
-    rows, Error(_) -> string.join(list.map(rows, registration_line), "\n")
+  format_listing(rows, showing, ffi_terminal.require_terminal())
+}
+
+/// Renders `loom sessions list` exactly as it would print, given the
+/// daemon's full page of rows, which of them to show, and whether standard
+/// output is a terminal.
+///
+/// Kept apart from `list_registrations` so the formatting — the filter, the
+/// hidden-count note, and the plain fallback — can be exercised without a
+/// daemon to list from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = [session_row(control_protocol.Saved)]
+/// assert tui.format_listing(rows, tui.ResidentOnly, Error("not a tty"))
+///   == "no sessions"
+/// ```
+@internal
+pub fn format_listing(
+  rows: List(control_protocol.Session),
+  showing: Showing,
+  terminal: Result(Nil, String),
+) -> String {
+  let visible = visible_rows(rows, showing)
+  case terminal {
+    Error(_) -> plain_listing(visible)
+    Ok(Nil) -> terminal_listing(visible, rows, showing)
+  }
+}
+
+// The rows a `Showing` keeps. `Every` is the identity; `ResidentOnly` drops
+// exactly the two lifecycles `session_table.resident_track` calls idle.
+fn visible_rows(
+  rows: List(control_protocol.Session),
+  showing: Showing,
+) -> List(control_protocol.Session) {
+  case showing {
+    Every -> rows
+    ResidentOnly ->
+      list.filter(rows, fn(row) { session_table.resident_track(row.status) })
+  }
+}
+
+// The plain, script-parsed format: one line per visible row, byte for byte
+// as before. No hidden-count note here — a line a parser was not expecting
+// would break it, and a script that wants every row already has `--all`.
+fn plain_listing(visible: List(control_protocol.Session)) -> String {
+  case visible {
+    [] -> "no sessions"
+    rows -> string.join(list.map(rows, registration_line), "\n")
+  }
+}
+
+// The styled, terminal format: the table (or an empty-catalogue notice),
+// followed by the hidden-count note when `--all` would add rows.
+fn terminal_listing(
+  visible: List(control_protocol.Session),
+  all_rows: List(control_protocol.Session),
+  showing: Showing,
+) -> String {
+  let body = case visible {
+    [] -> empty_notice(showing)
+    rows -> frame.buffer_to_styled(session_table.render(rows))
+  }
+  case hidden_summary(all_rows, showing) {
+    "" -> body
+    summary -> body <> "\n" <> summary
+  }
+}
+
+fn empty_notice(showing: Showing) -> String {
+  case showing {
+    Every -> "no sessions"
+    ResidentOnly -> "no resident sessions"
+  }
+}
+
+// The two lifecycles `--all` alone reveals: a saved registration and a bare
+// reservation. Naming each by its own count, rather than one combined
+// figure, is what lets a person tell stale history apart from a stuck
+// creation without reaching for `--all` first.
+fn hidden_summary(
+  rows: List(control_protocol.Session),
+  showing: Showing,
+) -> String {
+  case showing {
+    Every -> ""
+    ResidentOnly -> {
+      let saved =
+        list.count(rows, fn(row) { row.status == control_protocol.Saved })
+      let reserved =
+        list.count(rows, fn(row) { row.status == control_protocol.Reserved })
+      case
+        list.filter_map(
+          [#(saved, "saved"), #(reserved, "reserved")],
+          hidden_word,
+        )
+      {
+        [] -> ""
+        parts -> string.join(parts, ", ") <> " not shown (use --all)"
+      }
+    }
+  }
+}
+
+fn hidden_word(count: #(Int, String)) -> Result(String, Nil) {
+  case count.0 {
+    0 -> Error(Nil)
+    n -> Ok(int.to_string(n) <> " " <> count.1)
   }
 }
 

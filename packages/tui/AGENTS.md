@@ -887,7 +887,18 @@ boundaries and the split's measurements under Invariants.
   <id>`: it reaches the control endpoint as the owner over the same
   bootstrap ladder the picker uses, prints a styled table on a terminal and
   one line per row otherwise, or one line of outcome, and exits with a
-  status. `rm` asks at the terminal before it
+  status. `list` shows the resident track by default — every lifecycle but
+  a saved registration and a bare reservation, which `session_table.resident_track`
+  tells apart from the rest — and prints one trailing line on a terminal
+  naming each hidden lifecycle by its own count, `"4 saved, 1 reserved not
+  shown (use --all)"`, when it held any back; `--all` (`tui.Showing`'s
+  `Every`) widens either format to the whole catalogue, and off a terminal
+  that trailing line never prints, since a parser was not expecting it.
+  `tui.format_listing` is the pure seam behind both formats, taking the
+  daemon's full page, a `Showing`, and a stand-in for
+  `ffi_terminal.require_terminal`, which is what lets `sessions_list_test`
+  exercise every case with no daemon and no real terminal. `rm` asks at the
+  terminal before it
   sends and refuses outright when standard input is not a terminal, unless
   `--yes` was given. `ClaimAccess` and `Enroll` are `loom claim` and `loom
   enroll` (protocol-change/053), which hand their arguments to `tui/claim`
@@ -975,7 +986,11 @@ boundaries and the split's measurements under Invariants.
   etui buffer sized to its content: aligned columns measured in cells, the
   lifecycle coloured by `session_table.state`. Off a terminal the launcher
   keeps the old one-line-per-row format byte for byte, because scripts parse
-  it.
+  it. `session_table.resident_track` is the filter behind the default view:
+  a saved registration and a bare reservation answer `False`, and every
+  other lifecycle — a transition or a blocked recovery included — answers
+  `True`, so both formats draw the same reduced row set before `--all`
+  widens either back to the whole catalogue.
 - `tui/pacing` is the arithmetic of the terminal loop's two rates, with no
   model in sight: `FrameDebt`, `FrameBoundary`, `CacheFreshness` and
   `FrameDecision` with `frame_boundary` and `frame_decision` for frame
