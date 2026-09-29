@@ -109,8 +109,8 @@ pub fn update(
 }
 
 /// The operator's page: the heading, the agent strip, the lane, and the
-/// dock, which holds the approvals waiting for a decision, in a region of
-/// their own, directly above the composer.
+/// dock, which holds the todo panel, the approvals waiting for a decision,
+/// in a region of their own directly above the composer, and the composer.
 ///
 /// The page is a fixed frame: the heading and the agent strip at the top,
 /// the dock at the bottom, and the lane between them as the one thing that
@@ -129,6 +129,13 @@ pub fn update(
 /// and scrolls on its own, so a 16 KiB action preview cannot push the
 /// composer off the screen.
 ///
+/// The todo panel is the dock's first child, above the approvals. It is the
+/// terminal's pinned board and reviewer band, drawn by `component.plan`, and
+/// like the approvals it grows the dock upward, shrinks the transcript by as
+/// much and is capped by the stylesheet, so the panel can neither move the
+/// composer nor cover a transcript row. With no board and no reviewer it is
+/// `element.none()`, as the approvals are.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -144,6 +151,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       Observed(component.OlderRequested),
     ),
     html.footer([attribute.class("dock")], [
+      component.plan(model),
       approvals(component.pending(model)),
       composer(model),
     ]),
@@ -160,7 +168,8 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
 //
 // With nothing pending the region is `element.none()`, an empty text node,
 // rather than nothing at all. The composer therefore stays the dock's
-// second child whether or not a card is drawn, so the path a browser event
+// third child, after the todo panel's place and this one, whether or not
+// a card is drawn, so the path a browser event
 // names for the composer's form is the same before and after a card
 // appears, and a submit in flight still reaches the form.
 fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {

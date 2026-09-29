@@ -73,6 +73,23 @@ page keys and nonces, and the relay into the session's gateway.
   line, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
   exist, and words otherwise.
+- `todo_panel.view(board, reviewers)` draws the terminal's pinned todo
+  board and reviewer band on both pages, from plain values;
+  `component.plan(model)` reads them: `Shared.todo_boards` at
+  `Shared.active_strand`, and `reviewer_status.lines` over
+  `Shared.reviewer_rows`, the terminal's own lines. The phase holding the
+  active task (`todo_list.focus`) is expanded with every task, each with the
+  terminal's glyph (`✓ ▸ ○ ⊘ –`, hidden from assistive technology, with the
+  status as a visually hidden word) and a blocked task's reason; the other
+  phases are one row of `name ✓` or `name n/m`; the header carries the
+  phase's count and `n/m done`; a board with every task closed is one row.
+  The band's lines are drawn as they are, in a `pre-wrap` block under the
+  board, and it is drawn without a board when a reviewer runs. The panel is
+  memoized on the board and the lines, and is `element.none()` when there
+  is neither. It is the dock's first child on the operator's page and sits
+  between the lane and the bar on the observer's, so the lane's
+  `older_path` is unchanged. The terminal's idle-advisor placeholder is not
+  drawn.
 - `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip
@@ -169,7 +186,7 @@ page keys and nonces, and the relay into the session's gateway.
   operator's commands: at most one request at a time. The shared step's
   reads go out as the terminal's do, one after another and each when the
   one before is answered: the strand's notes (a first capture, to seed a
-  todo board the page does not draw), the session's context (a first
+  todo board, which the todo panel draws), the session's context (a first
   capture, a configuration change and the end of each operation), the
   advisor's pending nudges and the goal. Also the `history` read
   (`session_channel.history`) for at most 100 sequences below the oldest
@@ -292,6 +309,11 @@ page keys and nonces, and the relay into the session's gateway.
   names the tool; nothing has `autofocus`; the composer's submit never
   decides an approval; a decision is sent only for the record still pending
   at the drawn sequence (`operator.drawn`).
+- **The todo panel never covers the transcript and carries no handler.**
+  It is in the flow of the pinned frame, so the transcript shrinks by its
+  height; the stylesheet caps it (`max-height: 28vh`) and it scrolls
+  inside. Its text is session text, drawn as text nodes; its classes are a
+  closed set chosen from the status, never from a string.
 - **The list offers only what Send would run.** `completion` drops a row
   exactly when `component.page_command` refuses the command it names, so
   there is no second list of what the page refuses; a row that takes an
