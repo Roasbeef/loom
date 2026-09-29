@@ -22,8 +22,9 @@ import session_view/attempt_replay
 import session_view/cache_miss
 import session_view/cache_watch
 import session_view/lane_fold
-import session_view/model.{type Shared, Shared} as session_model
+import session_view/model.{Shared} as session_model
 import session_view/session_channel
+import session_view/step as session_step
 import session_view/surfaces
 import tui/attachment
 import tui/buffered
@@ -33,9 +34,7 @@ import tui/inbound
 import tui/interaction
 import tui/job_runner
 import tui/layout
-import tui/model.{
-  type Model, type TerminalShared, Caches, FrameCache, Model, View,
-} as tui_model
+import tui/model.{type Model, Caches, FrameCache, Model, View} as tui_model
 import tui/pacing
 import tui/render
 import tui/session_control
@@ -147,8 +146,9 @@ pub fn update_tick(model: Model) -> Model {
 // Preserve the original model for the quiet-time comparison after all
 // reads settle.
 //
-// The first eight reads take the shared record alone and read nothing of the
-// terminal, so they run as one chain over `Shared` and are held once, before
+// The first eight reads (`session_step.service_reads`) take the shared
+// record alone and read nothing of the terminal, so they run as one chain
+// over `Shared` and are held once, before
 // the terminal's activity poll. One hold moves their effects into the outbox
 // in the order the chain decided them and applies their editor notices after
 // the last, and since none of the eight reads what a notice changes, the
@@ -156,7 +156,7 @@ pub fn update_tick(model: Model) -> Model {
 fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
     drained
-    |> tui_model.run_shared(service_reads)
+    |> tui_model.run_shared(session_step.service_reads)
     |> session_control.service_activity
     |> tui_model.run_shared(surfaces.service_block_summaries)
     |> inbound.tick_channel
@@ -174,21 +174,6 @@ fn settle_tick(model: Model, drained: Model) -> Model {
     ),
     view: View(..drained.view, quiet_for_ms:),
   )
-}
-
-// The side surfaces' reads over the shared record, in the order the tick
-// has always serviced them. They share the lane's one command slot, so the
-// order decides which waiting read is sent first.
-fn service_reads(shared: TerminalShared) -> TerminalShared {
-  shared
-  |> surfaces.service_queue_read
-  |> surfaces.service_worktree_read
-  |> surfaces.service_notes_read
-  |> surfaces.service_todo_seed
-  |> surfaces.service_jobs_read
-  |> surfaces.service_context_read
-  |> surfaces.service_advisor_nudges_read
-  |> surfaces.service_goal_read
 }
 
 /// What a tick leaves `Model.connection_backlog` as, given the model before
@@ -249,7 +234,8 @@ pub fn apply_replay_change(
 
 // The activity indicator has a session half and a terminal half. The
 // elapsed readings are session state a second host shows too, so
-// `advance_activity_clocks` moves them over the shared record alone; the
+// `session_step.advance_activity_clocks` moves them over the shared record
+// alone; the
 // glyph's animation frame is the terminal's, so it advances here, after the
 // shared call. Each half marks the frame stale for its own change. When both
 // change in one tick the frame revision moves twice, which nothing can see:
@@ -263,7 +249,10 @@ pub fn apply_replay_change(
 // clocks change nothing it reads.
 fn advance_activity_indicator(model: Model) -> Model {
   let model =
-    tui_model.hold_shared(model, advance_activity_clocks(model.shared))
+    tui_model.hold_shared(
+      model,
+      session_step.advance_activity_clocks(model.shared),
+    )
   case session_model.active_strand_live(model.shared) {
     False -> model
     True -> {
@@ -277,72 +266,6 @@ fn advance_activity_indicator(model: Model) -> Model {
         False -> tui_model.invalidate_frame(advanced)
       }
     }
-  }
-}
-
-// Advances the active strand's activity clock and the generation clock to
-// the stamp, over the shared record alone.
-//
-// The tick is the one place the elapsed counts move, so rendering stays a
-// pure function of the record. The time is the event's stamp. Going idle
-// clears the start, so the next activity counts from zero rather than from
-// wherever the last one stopped. The frame is marked stale when the count a
-// host shows has moved; the terminal's glyph is advanced by its own half.
-fn advance_activity_clocks(
-  shared: Shared(socket, recorder, source, replay_source),
-) -> Shared(socket, recorder, source, replay_source) {
-  let shared = advance_generation_clock(shared)
-  case session_model.active_strand_live(shared) {
-    False -> Shared(..shared, activity_started_ms: None, activity_elapsed_s: 0)
-    True -> {
-      let now = shared.stamp.now_ms
-      let started = option.unwrap(shared.activity_started_ms, now)
-      let activity_elapsed_s = { now - started } / 1000
-      let advanced =
-        Shared(
-          ..shared,
-          activity_started_ms: Some(started),
-          activity_elapsed_s:,
-        )
-      case activity_elapsed_s == shared.activity_elapsed_s {
-        True -> advanced
-        False -> session_model.invalidate_frame(advanced)
-      }
-    }
-  }
-}
-
-// A live reasoning row shows how long the generation has run, read from the
-// generation clock `tui/inbound` starts and stops and the event's stamp, so
-// the step reads no clock of its own. The reading moves once a second, and
-// only a change repaints; the repaint rebuilds the transient rows and reuses
-// every durable one, because the record cache's inputs have not moved. A
-// generation with no reasoning row on screen is read but not repainted,
-// since nothing drawn depends on the figure.
-fn advance_generation_clock(
-  shared: Shared(socket, recorder, source, replay_source),
-) -> Shared(socket, recorder, source, replay_source) {
-  let elapsed = case shared.generation_started_ms {
-    None -> 0
-    Some(started) -> int.max({ shared.stamp.now_ms - started } / 1000, 0)
-  }
-  use <- bool.guard(
-    when: elapsed == shared.generation_elapsed_s,
-    return: shared,
-  )
-
-  let advanced = Shared(..shared, generation_elapsed_s: elapsed)
-  let reasoning_shown =
-    !shared.details_expanded
-    && list.any(shared.streams, fn(stream) {
-      stream.strand == shared.active_strand && stream.kind == "thinking"
-    })
-  case reasoning_shown {
-    False -> advanced
-    True ->
-      advanced
-      |> session_model.invalidate_transcript
-      |> session_model.invalidate_frame
   }
 }
 
