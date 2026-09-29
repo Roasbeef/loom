@@ -69,6 +69,10 @@ pub type Wiring {
     env: List(#(String, String)),
     /// A fresh operation seed for each observation.
     entropy: fn() -> Int,
+    /// The Git executable every fixed call names, resolved once on the host
+    /// by `host_git.program`. On macOS it is never the Xcode shim, whose
+    /// `xcrun` cache rewrite would run under the call's file-size limit.
+    git: String,
   )
 }
 
@@ -677,9 +681,10 @@ fn run_git(
         demand: wiring.demand,
         argv: list.append(
           [
-            "git", "--no-pager", "--no-optional-locks", "--literal-pathspecs",
-            "-c", "core.fsmonitor=false", "-c", "status.renames=false", "-c",
-            "core.untrackedCache=false", "-c", "submodule.recurse=false",
+            wiring.git, "--no-pager", "--no-optional-locks",
+            "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c",
+            "status.renames=false", "-c", "core.untrackedCache=false", "-c",
+            "submodule.recurse=false",
           ],
           arguments,
         ),

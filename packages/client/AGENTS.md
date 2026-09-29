@@ -3241,6 +3241,20 @@ these forks because they define the same modules.
   copied. A write refusal aborts assembly; host code never follows a planted
   tool-home symlink to publish this file. Imported operator hooks keep their
   original HOME and ordinary global Git configuration.
+- **Jailed Git calls use the host-resolved binary, never the Xcode shim.**
+  `serve` fills `worktree_diff.Wiring.git` once per assembly from
+  `host_git.program`, and both `git_identity` and `worktree_diff` name it in
+  `argv[0]`. On macOS `/usr/bin/git` is a shim that runs `xcrun`, and a miss
+  in `xcrun`'s per-user cache (keyed partly on HOME) rewrites the whole cache
+  file. That rewrite runs under the call's one-megabyte `fsize_bytes` limit;
+  once the cache exceeds a megabyte it is killed by `SIGXFSZ` (exit 153)
+  before Git starts. `host_git` therefore asks `/usr/bin/xcrun --find git`
+  on the host, outside every jail, only when the Git on `PATH` is exactly
+  `/usr/bin/git` on Darwin, and keeps the found path if `xcrun` fails. Linux
+  and a non-shim Git are unchanged. Under `WorkspaceReads` on macOS the
+  Seatbelt system view grants `/Library` but not `/Applications`, so an
+  Xcode.app toolchain's Git is unreadable there; it was already unreachable
+  through the shim, which execs the same binary.
 - **The `[tools]` table selects network and extra environment.**
   `catalog.parse_tools` reads an operator's `network = "off" | "full"`
   (full is the default and what an absent table means) plus `env` names

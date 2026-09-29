@@ -65,6 +65,7 @@ import client/hookrunner
 import client/hookserve
 import client/hookwire
 import client/host
+import client/host_git
 import client/install
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
@@ -3237,6 +3238,7 @@ fn assemble_in(
       demand: settings.demand,
       env: environment,
       entropy:,
+      git: host_git.program(),
     )
 
   // Resolve identity before the runtime can commit. Only global identity
