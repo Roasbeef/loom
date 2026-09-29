@@ -30,13 +30,26 @@
 //// content shrinks or the box grows it moves the scroll position up to fit,
 //// and the event for that is heard after the rows that landed since, so it
 //// reads as a move up that ends far from the bottom. The element tells the
-//// two apart (`origin`) by what it heard first: a wheel, a finger or a
-//// pointer press on the transcript within `touch_window` makes a scroll the
-//// reader's. Without one, a transcript that is the size it was at the last
-//// scroll was moved by something that changes no size, a key or a scrollbar
-//// drag, and is the reader's too. A transcript that changed size, with no
-//// touch, was moved by the layout, and does not leave the tail: the size
-//// change brings `Resized`, which scrolls to the bottom.
+//// two apart (`origin`) by what it heard first: a wheel, a finger, a pointer
+//// press or a key pressed inside the transcript, within `touch_window`,
+//// makes a scroll the reader's. Without one, a transcript that is the size
+//// it was at the last scroll was moved by something that changes no size,
+//// and is the reader's too. A transcript that changed size, with no touch,
+//// was moved by the layout, and does not leave the tail: the size change
+//// brings `Resized`, which scrolls to the bottom.
+////
+//// The key is noted and nothing more: the listener reads neither the key nor
+//// its modifiers, cancels nothing and sends nothing, and only the composer
+//// acts on keys. It hears only keys pressed with focus inside the
+//// transcript.
+////
+//// The cost of the rule is that a scroll with none of those events before it
+//// is the reader's only while the transcript holds still. While content is
+//// growing, find-in-page, a key pressed with focus outside the transcript
+//// and, in Firefox, a scrollbar drag (it raises no `pointerdown` there) see
+//// a changed extent, so they read as `Layout` and cannot leave the tail
+//// until the growth stops. Wheel, trackpad, touch and keys pressed in the
+//// transcript are first-class.
 ////
 //// The element also follows the transcript's own box. The dock grows when
 //// an approval card appears, and the transcript shrinks by as much; the
@@ -181,8 +194,8 @@ pub type Msg {
   /// transcript was scrolled `top` pixels and `extent` big when it did.
   Watched(watching: Watching, top: Float, extent: Extent)
 
-  /// The reader's wheel, finger or pointer touched the transcript, at this
-  /// time in milliseconds.
+  /// The reader's wheel, finger, pointer or a key touched the transcript, at
+  /// this time in milliseconds.
   Touched(at: Int)
 
   /// The transcript scrolled to `top` pixels while it was `extent` big, at
@@ -262,20 +275,20 @@ pub fn position(gap: Int) -> Position {
   }
 }
 
-/// How long, in milliseconds, a touch of the reader's wheel, finger or
-/// pointer keeps the scrolls that follow it the reader's.
+/// How long, in milliseconds, a touch of the reader's wheel, finger, pointer
+/// or keyboard keeps the scrolls that follow it the reader's.
 pub const touch_window = 500
 
 /// What moved the transcript, as far as a scroll event can tell.
 pub type Origin {
-  /// The reader's wheel, finger or pointer touched the transcript within
+  /// The reader's wheel, finger, pointer or a key touched the transcript within
   /// `touch_window`, so the scroll is theirs.
   Input
 
   /// Nothing touched it, but the transcript is the same size as at the last
-  /// scroll, so nothing under the scroll position moved: a key or a
-  /// scrollbar drag, which raise no event this element listens to, is the
-  /// likely cause.
+  /// scroll, so nothing under the scroll position moved: a key pressed
+  /// outside the transcript, find-in-page or a scrollbar drag, which raise no
+  /// event this element listens to, is the likely cause.
   Steady
 
   /// Nothing touched it and it changed size since the last scroll: the
@@ -350,8 +363,7 @@ pub fn after_scroll(
   case position(gap), int.compare(moved, 0), origin {
     Following, _, _ -> Following
     Reading, order.Lt, Input | Reading, order.Lt, Steady -> Reading
-    Reading, order.Lt, Layout -> current
-    Reading, order.Eq, _ | Reading, order.Gt, _ -> current
+    Reading, _, _ -> current
   }
 }
 
@@ -442,7 +454,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // moving the element never runs two. The watch needs the element's
     // shadow root, which an effect is handed only once the element has
     // rendered.
-    Connected -> #(model, start())
+    Connected -> #(model, effect.batch([stop(model.watching), start()]))
     Watched(watching:, top:, extent:) -> #(
       Model(..model, watching: Some(watching), top:, extent:),
       effect.none(),
@@ -537,9 +549,17 @@ fn gap_of(host: ffi_dom.Element) -> Int {
 }
 
 // The events that are the reader's hand on the transcript: the wheel, a
-// finger and a pointer press, which includes a press on the scrollbar. Each
-// is heard passively, so the browser never waits on this element to scroll.
-const reader_input = ["wheel", "touchstart", "touchmove", "pointerdown"]
+// finger, a pointer press, which includes a press on the scrollbar, and a key
+// pressed inside it. Each is heard passively and only noted: the handler
+// reads nothing from the event, so it can neither act on a key nor cancel
+// one. The browser never waits on this element to scroll.
+const reader_input = [
+  "wheel",
+  "touchstart",
+  "touchmove",
+  "pointerdown",
+  "keydown",
+]
 
 // Starts watching. The scroller is the `<loom-follow>` element itself, whose
 // shadow root the effect is handed: the stylesheet gives it a fixed share of

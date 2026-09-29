@@ -241,6 +241,51 @@ pub fn the_reader_scrolling_up_by_key_or_scrollbar_leaves_the_tail_test() {
   assert model.position == Reading
 }
 
+pub fn a_key_scroll_while_content_grows_leaves_the_tail_test() {
+  // Page Up heard by the keydown listener stamps a touch, so the scroll is
+  // the reader's although rows landing at the same time changed the extent.
+  let model =
+    feed(at_the_bottom(), [
+      follow.Touched(at: 8990),
+      follow.Scrolled(
+        top: 1000.0,
+        extent: Extent(content: 2100.0, view: 500.0),
+        at: 9000,
+      ),
+    ])
+
+  assert model.position == Reading
+}
+
+pub fn a_scroll_with_no_input_while_content_grows_cannot_leave_the_tail_test() {
+  // The remaining trade-off pinned: find-in-page, or a Firefox scrollbar drag
+  // (no pointerdown there), raises none of the heard events, and rows landing
+  // at the same time change the extent, so the scroll reads as the layout's.
+  // The reader is not seen to leave until the growth stops.
+  let growing =
+    feed(at_the_bottom(), [
+      follow.Scrolled(
+        top: 1000.0,
+        extent: Extent(content: 2100.0, view: 500.0),
+        at: 9000,
+      ),
+    ])
+
+  assert growing.position == Following
+
+  // Once the transcript holds still, the same key scroll is the reader's.
+  let still =
+    feed(growing, [
+      follow.Scrolled(
+        top: 800.0,
+        extent: Extent(content: 2100.0, view: 500.0),
+        at: 9100,
+      ),
+    ])
+
+  assert still.position == Reading
+}
+
 pub fn a_slow_scrollbar_drag_stays_the_readers_test() {
   // The press at the scrollbar, then a drag whose first scroll ends near the
   // bottom and whose next is heard later than one window after the press.
