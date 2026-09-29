@@ -5,10 +5,12 @@
 //// (`web_view/sessions`) and decides nothing. It is read-only: no row is a
 //// link, a button or a handler, because a page is bound to one session by its
 //// key and opening another needs a link the page cannot make
-//// (protocol-change/051, the addendum on the session sidebar). It is the last
-//// child of the page's `main`, so the paths of everything before it, which
-//// `component.older_path` and `component.strip_path` name, do not move, and
-//// the stylesheet places it beside the frame rather than in the flow.
+//// (protocol-change/051, the addendum on the session sidebar). It is the
+//// second child of the page's frame (`view/shell`), between the top bar and
+//// the centre column, and the left column of the stylesheet's grid. It has
+//// no handler, so the paths `component.older_path` and
+//// `component.strip_path` name are those of regions after it, and they count
+//// on it keeping its place as `element.none()` when it is not drawn.
 ////
 //// Every name is drawn as a text node, and a workspace's whole path as a
 //// `title` attribute that Lustre escapes. The catalogue's fields are written
@@ -21,6 +23,7 @@
 //// The module takes `sessions.Group`s and the current identity, and imports
 //// nothing from `web_view/component`, which imports it.
 
+import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
@@ -60,6 +63,9 @@ fn group(group: Group, current: String) -> Element(message) {
   html.section([attribute.class("workspace-group")], [
     html.h3([attribute.class("workspace"), attribute.title(group.workspace)], [
       html.text(basename(group.workspace)),
+      html.span([attribute.class("group-count")], [
+        html.text(int.to_string(list.length(group.entries))),
+      ]),
     ]),
     html.ul(
       [attribute.class("sessions")],

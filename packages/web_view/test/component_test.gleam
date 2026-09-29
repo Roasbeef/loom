@@ -337,19 +337,23 @@ pub fn the_lane_is_drawn_inside_the_follower_test() {
   assert string.contains(lane, "class=\"transcript lane\"")
 }
 
-// The observer's frame is pinned as the operator's is: the heading and the
-// agent strip above the transcript, the read-only bar below it. The
-// stylesheet scrolls only the transcript between them.
-pub fn the_observers_frame_is_heading_strip_transcript_bar_test() {
+// The observer's frame is pinned as the operator's is: the top bar above the
+// centre, whose transcript is above the read-only bar, and the strand panel
+// last. The stylesheet scrolls only the transcript between them.
+pub fn the_observers_frame_is_bar_centre_panel_test() {
   let page =
     simulate.message(simulation(), component.Opened(wire()))
     |> arrive(page_fixture.transfer("observer", []))
   let html = element.to_string(simulate.view(page))
   assert in_order(html, [
+    "<div class=\"loom-session\">",
     "class=\"session-head\"",
-    "class=\"agent-strip\"",
+    "<main class=\"centre\">",
     "<loom-follow class=\"follow\">",
     "class=\"observer-bar\"",
+    "</main>",
+    "<aside aria-label=\"Strand panel\" class=\"panel\">",
+    "class=\"agent-strip\"",
   ])
 }
 

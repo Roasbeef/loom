@@ -60,7 +60,8 @@ page keys and nonces, and the relay into the session's gateway.
   (`Live | Saved`), `Group` and `grouped(entries, current)` (the current
   session's workspace first, then by newest session, sessions newest first,
   ties by identity and path). `view/sidebar.view(groups, current)` draws it,
-  read-only, as the page's last child (`aside.sidebar`), memoized. The
+  read-only, as the frame's second child (`aside.sidebar`, the left column;
+  `element.none()` where a page draws none), memoized. The
   component reads `Transport.sessions` on `Opened` and on a `Ticked` at
   least `sessions_refresh_ms` (30 s) after the last read, keeps at most
   `sessions.listed_limit` entries, and `component.session_groups(model)` is
@@ -99,10 +100,20 @@ page keys and nonces, and the relay into the session's gateway.
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
   types or plain values. `heading.view(session_id, name, workspace,
-  status, notice)` draws the heading, with the ended page's notice as its
-  last child; `component.heading(model)` reads those
+  status, context, cost, notice)` draws the top bar (the brand, the
+  workspace and name, the status, the `ctx ~41%` estimate and the session's
+  `est $` cost, worded as the terminal's footer words them), with the ended
+  page's notice as its last child; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
-  `strip.view(strip)` draws the agent strip, memoized on the whole strip;
+  `shell.view(audience, bar, sidebar, centre, panel)` lays the frame out,
+  and is where its order is written: the bar (0), the sidebar (1, or
+  `element.none()`), the centre `main` (2, the transcript first, then the
+  dock or the observer's bar) and the strand panel (3, last).
+  `panel.view(count, strands)` is the panel's `aside`, its title first and
+  the strip second; `component.strands(model, focus)` builds it for both
+  pages. `strip.view(strip, focus)` draws the cards (the agent strip, kept
+  under its old name), memoized on the whole strip, and `strip.count`
+  counts them;
   `lane.view(pieces, live, top, load, replies)` draws the transcript lane, memoized per
   line, followed by the live region, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
@@ -344,9 +355,12 @@ page keys and nonces, and the relay into the session's gateway.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in each chip and in the live reasoning row, `<loom-fold>` around a settled
   turn's work, `<loom-expand>` around a row with more to show, and `<loom-follow>` around the lane. The stylesheet pins the
-  page's frame (the heading and the agent strip at the top, the dock or
-  the observer's bar at the bottom, the page itself never scrolling) and
-  makes `<loom-follow>` the scroll container between them. It keeps the
+  page's frame (a grid: the top bar across the full width, and under it the
+  sessions' sidebar, the centre and the strand panel; the dock or the
+  observer's bar at the bottom of the centre, the page itself never
+  scrolling) and makes `<loom-follow>` the scroll container between them
+  and the dock. The sidebar is dropped below 1212px, and below 980px the
+  panel becomes a row of cards under the bar. It keeps the
   newest row in view while the reader is at the bottom, shows a "Jump to
   latest" button while they are not, and keeps the reader's place when a
   press of "Load older" brings rows in above them. They run in the browser
@@ -434,8 +448,11 @@ page keys and nonces, and the relay into the session's gateway.
   `component.older_path` or beneath `component.strip_path`
   (protocol-change/051, the addenda on history paging and strand focus), and
   `page_events_test` pins that the observer's handlers are exactly those.
-  The sidebar and every other region add none, and the sidebar is the last
-  child so no admitted path moves. An operator's page is
+  The sidebar and every other region add none. The strand panel is the
+  frame's last child, so a region added after it does not move an admitted
+  path; the redesign's shell moved both constants once (`older_path` is
+  `0\t2\t0\t0\t0`, `strip_path` `0\t3\t1\t0`), and `page_events_test` and
+  `ui_socket_test` pin them. An operator's page is
   `operator_page.app()`. Since S5 the draft its composer carries is parsed
   as the terminal parses it, so the page sends any session command a draft
   names (`/fork`, `/model`, `/goal ...` and the rest of `command.Session`),

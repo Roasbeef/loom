@@ -119,6 +119,7 @@ import session_view/cache_miss
 import session_view/cache_watch
 import session_view/command
 import session_view/connection_event
+import session_view/context_view
 import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
@@ -149,6 +150,8 @@ import web_view/view/heading
 import web_view/view/lane
 import web_view/view/live
 import web_view/view/nudges
+import web_view/view/panel
+import web_view/view/shell
 import web_view/view/strip
 import web_view/view/todo_panel
 
@@ -196,24 +199,27 @@ pub const live_rows = 150
 pub const held_rows = 300
 
 /// The Lustre event path of the lane's "Load older" button, on both pages:
-/// the lane is the third child of the page's `main`, the line above its
-/// oldest row the lane's first child, and the button that line's first
-/// child. The page socket admits a `click` from an observer at this path and
-/// no other event (`client/daemon/ui_socket.observer_accepts`,
-/// protocol-change/051, the addendum on history paging). `page_events_test`
-/// fails if the view moves the button, so the two cannot drift apart.
-pub const older_path = "0\t2\t0\t0"
-
-/// The Lustre event path of the agent strip's chip list, on both pages: the
-/// strip is the second child of the page's `main` and its list the strip's
-/// first child. Every handler under it is one chip's button, which focuses
-/// that chip's strand, so the page socket admits a `click` from an observer
-/// at any path beneath it and no other path but `older_path`
+/// the lane is the first child of the centre column, which is the third
+/// child of the page's frame (`view/shell`), the line above its oldest row
+/// the lane's first child, and the button that line's first child. The page
+/// socket admits a `click` from an observer at this path and no other event
 /// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the
-/// addendum on strand focus). A path beneath the list that names no button
-/// finds no handler in the runtime and does nothing. `page_events_test` fails
-/// if the view moves the strip or the buttons leave the list.
-pub const strip_path = "0\t1\t0"
+/// addendum on history paging). `page_events_test` fails if the view moves
+/// the button, so the two cannot drift apart.
+pub const older_path = "0\t2\t0\t0\t0"
+
+/// The Lustre event path of the strand panel's card list, on both pages: the
+/// panel is the fourth and last child of the page's frame (`view/shell`); its
+/// title is the panel's first child, the strip's `nav` its second, and the
+/// `ul` of cards the `nav`'s first child. Every handler under it
+/// is one card's button, which focuses that card's strand, so the page
+/// socket admits a `click` from an observer at any path beneath it and no
+/// other path but `older_path` (`client/daemon/ui_socket.observer_accepts`,
+/// protocol-change/051, the addendum on strand focus). A path beneath the
+/// list that names no button finds no handler in the runtime and does
+/// nothing. `page_events_test` fails if the view moves the panel or the
+/// buttons leave the list.
+pub const strip_path = "0\t3\t1\t0"
 
 /// How long the sidebar's list stands before the page reads it again, in
 /// milliseconds of the transport's clock. The list changes when a session is
@@ -2354,17 +2360,18 @@ pub fn session_id(model: Model(socket)) -> String {
   model.shared.session
 }
 
-/// The observer's page: the heading, the agent strip, the lane, the todo
-/// panel when the strand has a board or a reviewer is running, the advisor's
-/// pending nudges when any are queued, and a fixed line saying the page is
-/// read-only. Its one event handler is the lane's
-/// "Load older" button, whose message asks for a read and nothing else; the
-/// page socket admits that one event from an observer and drops every other
-/// frame (protocol-change/051, the addendum on history paging).
+/// The observer's page: the top bar, no sidebar, a centre column holding the
+/// lane, the todo panel when the strand has a board or a reviewer is
+/// running, the advisor's pending nudges when any are queued and a fixed line
+/// saying the page is read-only, and the strand panel. Its event handlers are
+/// the lane's "Load older" button, whose message asks for a read and nothing
+/// else, and one focus click per card of the strand panel; the page socket
+/// admits those from an observer and drops every other frame
+/// (protocol-change/051, the addenda on history paging and strand focus).
 ///
-/// Each region is drawn by its own module under `web_view/view`
-/// (`heading`, `strip` and `lane`); this function only lays them out, as
-/// `operator_page.view` does for the operator's page.
+/// Each region is drawn by its own module under `web_view/view` (`heading`,
+/// `lane`, `panel` and `strip`); this function only lays them out through
+/// `view/shell`, as `operator_page.view` does for the operator's page.
 ///
 /// ## Examples
 ///
@@ -2372,24 +2379,45 @@ pub fn session_id(model: Model(socket)) -> String {
 /// // element.to_string(component.view(model))
 /// ```
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
-  html.main([attribute.class("loom-session")], [
+  shell.view(
+    shell.Observer,
     heading(model),
-    strip.view(model.view.strip, FocusRequested),
-    lane.view(
-      model.view.pieces,
-      live(model),
-      top(model),
-      OlderRequested,
-      lane.NoReplies,
-    ),
-    plan(model),
-    nudges.view(pending_nudges(model)),
-    html.p([attribute.class("observer-bar")], [
-      html.text(
-        "Observer · read-only · you can follow this session; ask the owner for operator access",
+    element.none(),
+    [
+      lane.view(
+        model.view.pieces,
+        live(model),
+        top(model),
+        OlderRequested,
+        lane.NoReplies,
       ),
-    ]),
-  ])
+      plan(model),
+      nudges.view(pending_nudges(model)),
+      html.p([attribute.class("observer-bar")], [
+        html.text(
+          "Observer · read-only · you can follow this session; ask the owner for operator access",
+        ),
+      ]),
+    ],
+    strands(model, FocusRequested),
+  )
+}
+
+/// The strand panel both pages draw: a card for each strand the page lists,
+/// each a button whose click is `focus` applied to the strand's name. A
+/// page's message type decides what a press means, so the operator's page
+/// passes its own wrapper.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.strands(model, FocusRequested)
+/// ```
+pub fn strands(
+  model: Model(socket),
+  focus: fn(String) -> message,
+) -> Element(message) {
+  panel.view(strip.count(model.view.strip), strip.view(model.view.strip, focus))
 }
 
 /// The todo panel both pages draw above their bottom bar: the followed
@@ -2418,11 +2446,17 @@ pub fn plan(model: Model(socket)) -> Element(message) {
   )
 }
 
-/// The page's heading, drawn by `web_view/view/heading` from the session's
-/// identity, the catalogue's label and the connection's status.
+/// The page's top bar, drawn by `web_view/view/heading` from the session's
+/// identity, the catalogue's label, the connection's status and the two
+/// estimates the terminal's footer shows.
 ///
-/// The heading module takes the label's two fields and the status's words
-/// as plain values, because it cannot import the types this module defines.
+/// The context figure is the engine's estimate for the strand on screen
+/// (`context_view.footer`, which words it `ctx ~41%`), and the cost is the
+/// session's running total across strands (`Shared.usage`, which every
+/// `UsageChanged` event folds into whatever strand it names), worded as the
+/// terminal words it. The heading module takes the label's two fields and
+/// the words as plain values, because it cannot import the types this module
+/// defines.
 ///
 /// ## Examples
 ///
@@ -2435,6 +2469,8 @@ pub fn heading(model: Model(socket)) -> Element(message) {
     name: option.map(model.view.label, fn(label) { label.name }),
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
     status: status_text(model.view.status),
+    context: context_view.footer(model.shared.context),
+    cost: "est $" <> transcript_lines.money(model.shared.usage.cost.total),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )
 }
