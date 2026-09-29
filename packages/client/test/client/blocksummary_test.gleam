@@ -14,6 +14,7 @@ import client/blocksummary
 import client/blocksummarybook
 import client/catalog
 import client/distill
+import client/vision
 import core/clock
 import core/entry
 import core/ids.{type EntryId, type OpId}
@@ -400,7 +401,7 @@ pub fn another_strands_stream_is_not_summarized_live_test() {
   let rig = a_rig(held("unused"))
   let operation = an_operation(rig.opened, "sub:main/audit", 8)
   let tap =
-    blocksummary.observer(rig.name, single_provider())(
+    blocksummary.observer(rig.name, by_context, single_provider())(
       a_request("acme", operation),
       "g-4",
     )
@@ -419,7 +420,7 @@ pub fn live_requests_coalesce_behind_the_one_out_test() {
   let rig = a_rig(held("The agent compares two fixes."))
   let operation = an_operation(rig.opened, "main", 5)
   let tap =
-    blocksummary.observer(rig.name, single_provider())(
+    blocksummary.observer(rig.name, by_context, single_provider())(
       a_request("acme", operation),
       "g-1",
     )
@@ -457,7 +458,7 @@ pub fn another_providers_stream_is_not_observed_test() {
   let rig = a_rig(held("unused"))
   let operation = an_operation(rig.opened, "main", 6)
   let tap =
-    blocksummary.observer(rig.name, single_provider())(
+    blocksummary.observer(rig.name, by_context, single_provider())(
       a_request("other", operation),
       "g-2",
     )
@@ -482,7 +483,10 @@ pub fn a_cross_provider_fallback_chain_is_not_observed_test() {
   let rig = a_rig(held("unused"))
   let operation = an_operation(rig.opened, "main", 7)
   let tap =
-    blocksummary.observer(rig.name, admits)(a_request("acme", operation), "g-3")
+    blocksummary.observer(rig.name, by_context, admits)(
+      a_request("acme", operation),
+      "g-3",
+    )
   tap(reasoning(string.repeat("a", 8192)))
   assert process.receive(rig.held, 300) == Error(Nil)
   stop(rig)
@@ -538,7 +542,7 @@ pub fn a_text_turn_is_observed_when_only_the_vision_chain_crosses_test() {
 
   let rig = a_rig(held("The agent reads."))
   let operation = an_operation(rig.opened, "main", 10)
-  let tap = blocksummary.observer(rig.name, admits)
+  let tap = blocksummary.observer(rig.name, by_context, admits)
   tap(a_request("acme", operation), "g-5")(reasoning(string.repeat("a", 4096)))
   let assert Ok(#(asked, release)) = process.receive(rig.held, 2000)
     as "a text turn must reach the summarizer"
@@ -947,4 +951,17 @@ fn single_provider() -> fn(machine_strand.ModelIdentity, blocksummary.Turn) ->
     a_catalogue([#(model.Main, ["acme"]), #(model.Summarize, ["acme"])]),
     "acme",
   )
+}
+
+// The classifier the observer is given in these tests, which looks at the
+// context alone. Production passes the dispatcher's own rule, whose held
+// batch case `vision_test` covers.
+fn by_context(
+  _operation: OpId,
+  context: List(message.AgentMessage),
+) -> blocksummary.Turn {
+  case vision.image_bearing(context) {
+    True -> blocksummary.ImageTurn
+    False -> blocksummary.TextTurn
+  }
 }

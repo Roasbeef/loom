@@ -57,7 +57,7 @@
 //// `live_admission` therefore observes a stream only when every target
 //// that could answer it shares the summarizer's endpoint. The `vision`
 //// chain counts only on a turn that carries an image, which the observer
-//// reads from the request. Both predicates
+//// reads from the request with the dispatcher's own classifier. Both predicates
 //// are computed once from the catalogue when the session is assembled.
 //// Advisor messages are harness-written text that every provider in the
 //// session is already sent, so they carry no such restriction.
@@ -92,11 +92,10 @@ import client/blocksummarybook.{
 import client/catalog
 import client/distill.{type Distiller}
 import client/notes
-import client/vision
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type Seq}
 import core/json.{type JsonValue}
-import core/message
+import core/message.{type AgentMessage}
 import core/register
 import events/bus
 import gleam/bool
@@ -615,7 +614,8 @@ fn same_endpoint(
 
 /// What a generation request's current turn carries, which decides whether
 /// a text-only identity is dispatched to its own service or to the `vision`
-/// chain (`client/vision.image_bearing`).
+/// chain. The dispatcher's own classifier decides which one a request is
+/// (`client/wiring.request_image_bearing`).
 pub type Turn {
   /// No image in the current turn: a text-only identity answers itself.
   TextTurn
@@ -757,24 +757,32 @@ fn chain_head(
 ///
 /// ```gleam
 /// // gateway.tap_provider_with(surface, to: hub,
-/// //   also: blocksummary.observer(name, live_admission(catalogue, provider)))
+/// //   also: blocksummary.observer(name, turn_of, live_admission(catalogue, provider)))
 /// ```
 ///
 pub fn observer(
   name: address.Address(Message),
+  turn_of: fn(OpId, List(AgentMessage)) -> Turn,
   admits: fn(ModelIdentity, Turn) -> Bool,
 ) -> fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil {
   fn(spec, generation) {
     // The turn is read from the request the relay is about to dispatch, by
-    // the rule the dispatcher routes on, so the two cannot disagree about
-    // which requests go to the `vision` chain. A poll carries no context
-    // and is treated as an image turn, the stricter answer.
+    // the classifier the caller passes, which in production is the
+    // dispatcher's own (`wiring.request_image_bearing`). Re-deriving the
+    // rule here would let the two disagree about which requests go to the
+    // `vision` chain, and a request the dispatcher sends there must not
+    // have its reasoning sent to the summarizer. That includes a held batch
+    // whose image sits in an earlier entry than its text: the context alone
+    // shows no image, but the operation's admitted batch does.
+    //
+    // A poll carries no context and is treated as an image turn. A poll
+    // reaches only its own identity (`wiring.resolved_target`), never the
+    // `vision` chain, so `TextTurn` could also be sound; `ImageTurn` is the
+    // stricter of the two answers, and the one that holds if a poll ever
+    // gains a route.
     let observed = case spec {
       effects.GenerationRequest(operation:, configuration:, context:, ..) ->
-        case vision.image_bearing(context) {
-          True -> Ok(#(operation, configuration.model, ImageTurn))
-          False -> Ok(#(operation, configuration.model, TextTurn))
-        }
+        Ok(#(operation, configuration.model, turn_of(operation, context)))
       effects.PollRequest(operation:, configuration:, ..) ->
         Ok(#(operation, configuration.model, ImageTurn))
       effects.SummaryRequest(..) -> Error(Nil)
