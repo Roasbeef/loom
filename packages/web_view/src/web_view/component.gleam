@@ -507,7 +507,7 @@ type View(socket) {
     /// so the next one waits `sessions_refresh_ms`.
     groups: List(sessions.Group),
     listed_at: Option(Int),
-    /// When the page last asked for the strand's live jobs, on the
+    /// When the page opened or last asked for the strand's live jobs, on the
     /// transport's clock, so the next ask waits `jobs_refresh_ms` whether or
     /// not the daemon answered. A refused read is therefore not repeated on
     /// every tick.
@@ -748,7 +748,14 @@ pub fn update(
       let shared =
         Shared(..model.shared, peer: session_model.Attached)
         |> session_model.hold_channel(lane)
-      stepping(Model(..model, shared:), [tick_at(at)], at)
+
+      // The jobs clock starts here, so the first tick-driven ask comes one
+      // `jobs_refresh_ms` after the page opens, behind the reads a first
+      // capture starts. The terminal asks for jobs only when a jobs surface
+      // opens, and the two hosts' lanes must stay in one engine state
+      // through the startup reads.
+      let view = View(..model.view, jobs_asked_at: Some(at))
+      stepping(Model(shared:, view:), [tick_at(at)], at)
       |> relisted(at)
     }
 
@@ -830,8 +837,8 @@ fn relisted(
   }
 }
 
-// Marks the strand's live jobs as wanted when the page has never asked, or
-// last asked `jobs_refresh_ms` or more ago, and no answer is outstanding. The
+// Marks the strand's live jobs as wanted when the page opened or last asked
+// `jobs_refresh_ms` or more ago, and no answer is outstanding. The
 // shared step sends the read once the lane is ready for it
 // (`surfaces.service_jobs_read`), so this only says that one is owed. The
 // read is `live_jobs`, a read the gateway allows every role, and its answer
