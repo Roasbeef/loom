@@ -34,6 +34,7 @@ import session_view/transcript_line.{type Line}
 import session_view/transcript_lines
 import session_view/turns
 import web_view/markdown_view
+import web_view/view/expansion
 import web_view/view/strip
 
 /// The lane: the page strand's turns, keyed by the engine's identity for
@@ -328,7 +329,7 @@ fn item_element(
 ) -> Element(message) {
   case item {
     turns.Narrated(block:) -> block_element(block, draw)
-    turns.Step(standing:, summary:, detail:, ..) ->
+    turns.Step(standing:, summary:, detail:, call:, ..) ->
       html.div([attribute.class("step"), standing_class(standing)], [
         html.p([attribute.class("step-head")], [
           html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
@@ -339,7 +340,7 @@ fn item_element(
             html.text(standing_text(standing)),
           ]),
         ]),
-        ..list.map(detail, line_row(_, draw))
+        ..expander(detail, turns.expanded_step(call, detail), draw)
       ])
   }
 }
@@ -377,8 +378,47 @@ fn block_element(
 ) -> Element(message) {
   html.div(
     [attribute.class("block")],
-    list.map(block.rows, fn(row) { line_row(row.1, draw) }),
+    expander(
+      list.map(block.rows, fn(row) { row.1 }),
+      turns.expanded_block(block),
+      draw,
+    ),
   )
+}
+
+// Rows the reader may expand. With nothing more to show they are the rows,
+// each in its memo. With more (`turns.expanded_step`, `expanded_block`),
+// they are one `<loom-expand>` (`packages/web_client`) holding the compact
+// rows in its `compact` slot and the expansion, cut to the page's budget
+// (`expansion.capped`), in its `full` slot. Both are the server's children,
+// escaped text nodes like every other row; the element shows one slot at a
+// time in the browser, so opening it costs no message, and the server never
+// renders which is open. The expansion's rows are memoized per line as the
+// compact ones are, so an unchanged call draws nothing again.
+fn expander(
+  compact: List(Line),
+  full: List(Line),
+  draw: fn(Line) -> Element(message),
+) -> List(Element(message)) {
+  let shown = list.map(compact, line_row(_, draw))
+  case full {
+    [] -> shown
+    [_, ..] -> [
+      element.element("loom-expand", [attribute.class("expand")], [
+        html.div(
+          [
+            attribute.attribute("slot", "compact"),
+            attribute.class("expand-compact"),
+          ],
+          shown,
+        ),
+        html.div(
+          [attribute.attribute("slot", "full"), attribute.class("expand-full")],
+          list.map(expansion.capped(full), line_row(_, draw)),
+        ),
+      ]),
+    ]
+  }
 }
 
 fn line_element(line: Line) -> Element(message) {
