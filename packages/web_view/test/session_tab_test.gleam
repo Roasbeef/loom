@@ -1,0 +1,254 @@
+//// The Session section's jobs and viewers rows.
+////
+//// The first group draws `view/session_tab` from plain rows, its whole
+//// contract: what each row says, that names and commands are only text nodes,
+//// and that a page passing no roster draws no viewers. The second drives the
+//// pages: a tick makes the read-only `live_jobs` read once per interval and
+//// no more, the reply fills the row, an operator's page names its viewers, and
+//// an observer's page draws the jobs and never the viewers.
+
+import core/message
+import gleam/erlang/process
+import gleam/int
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/string
+import lane_fixture
+import lustre/element
+import page_fixture
+import session_view/connection_event
+import session_view/session_summary.{Another, Live, Unread, Viewer, Viewers, You}
+import session_view/snapshot
+import session_view/snapshot_view
+import web_view/component
+import web_view/operator_page
+import web_view/view/session_tab
+
+fn drawn(jobs, viewers) -> String {
+  element.to_string(session_tab.view(jobs, viewers))
+}
+
+pub fn nothing_to_say_draws_nothing_test() {
+  assert !string.contains(drawn(Unread, None), "session-rows")
+}
+
+pub fn unread_jobs_say_so_and_never_zero_test() {
+  let html = drawn(Unread, Some(Viewers([], 0)))
+
+  assert string.contains(html, "<details class=\"session-rows\">")
+  assert string.contains(html, "Jobs")
+  assert string.contains(html, "not read yet")
+  assert !string.contains(html, "none live")
+}
+
+pub fn a_board_with_no_job_says_none_live_at_the_last_refresh_test() {
+  let html = drawn(Live(0, [], 0), None)
+
+  assert string.contains(html, "none live")
+  assert string.contains(html, "at last refresh")
+}
+
+pub fn jobs_are_a_count_their_rows_and_what_was_left_out_test() {
+  let html =
+    drawn(
+      Live(11, ["job-1 · running · started by op-1 · sleep 1 · age 2s"], 10),
+      None,
+    )
+
+  assert string.contains(html, "11 live")
+  assert string.contains(html, " · at last refresh")
+  assert string.contains(html, "<li>job-1 · running · started by op-1")
+  assert string.contains(html, "+10 more jobs not shown")
+}
+
+pub fn a_job_command_is_only_ever_a_text_node_test() {
+  let html =
+    drawn(Live(1, ["job · running · <script>alert(1)</script>"], 0), None)
+
+  assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
+  assert !string.contains(html, "<script")
+}
+
+pub fn viewers_are_named_with_their_role_and_your_own_is_marked_test() {
+  let html =
+    drawn(
+      Unread,
+      Some(Viewers(
+        [
+          Viewer("Alice", "operator", You),
+          Viewer("<b>Bob</b>", "observer", Another),
+        ],
+        5,
+      )),
+    )
+
+  assert string.contains(html, "5 attached")
+  assert string.contains(html, "Alice")
+  assert string.contains(html, " · operator · you")
+  assert string.contains(html, "&lt;b&gt;Bob&lt;/b&gt;")
+  assert string.contains(html, " · observer<")
+  assert string.contains(html, "+3 more not shown")
+  assert !string.contains(html, "<b>Bob")
+}
+
+pub fn no_roster_means_no_viewers_row_test() {
+  let html = drawn(Live(0, [], 0), None)
+
+  assert !string.contains(html, "Viewers")
+  assert !string.contains(html, "attached")
+}
+
+pub fn the_view_carries_no_handler_test() {
+  let html = drawn(Live(1, ["x"], 0), Some(Viewers([], 0)))
+  assert !string.contains(html, "data-lustre-on")
+}
+
+// --- on the pages ---------------------------------------------------------------
+
+fn jobs_frame(id: Int, command: String) -> connection_event.Message {
+  connection_event.Incoming(
+    "{\"v\":2,\"reply_to\":"
+    <> int.to_string(id)
+    <> ",\"event\":\"snapshot\",\"body\":{\"mode\":\"live_jobs\",\"board\":"
+    <> "{\"strand\":\"main\",\"observed_at_ms\":1000,\"jobs\":[{\"id\":\"job-1\","
+    <> "\"state\":\"running\",\"started_by\":\"op-1\",\"command_excerpt\":\""
+    <> command
+    <> "\",\"age_ms\":250,\"deadline_ms\":10750}],\"total\":1,\"omitted\":0}}}",
+  )
+}
+
+fn live_jobs_reads(frames: List(String)) -> List(String) {
+  list.filter(frames, string.contains(_, "\"cmd\":\"live_jobs\""))
+}
+
+fn operator(model) -> String {
+  element.to_string(operator_page.view(model))
+}
+
+fn observer(model) -> String {
+  element.to_string(component.view(model))
+}
+
+// A page whose lane finished its first transfer and whose first reads were
+// refused, on a clock the test sets.
+fn ready(clock, wire, role: String) {
+  page_fixture.run(
+    component.new(page_fixture.start_with(clock)),
+    component.update,
+    [
+      component.Opened(wire),
+      component.Arrived(page_fixture.transfer(role, [])),
+    ],
+  )
+  |> page_fixture.refuse_reads(component.update, wire, component.Arrived)
+}
+
+pub fn a_tick_reads_the_jobs_once_per_interval_test() {
+  let clock = page_fixture.clock()
+  let wire = process.new_subject()
+  let model = ready(clock, wire, "operator")
+  let _ = page_fixture.sent(wire)
+
+  // The first tick asks, and names the strand the page shows.
+  let model = page_fixture.run(model, component.update, [component.Ticked])
+  let asked = live_jobs_reads(page_fixture.sent(wire))
+  assert list.length(asked) == 1
+  let assert [read] = asked as "one read"
+  assert string.contains(read, "\"strand\":\"main\"")
+
+  // The answer fills the row, whatever the browser sees of the command.
+  let model =
+    page_fixture.run(model, component.update, [
+      component.Arrived([jobs_frame(page_fixture.request_id(read), "sleep 10")]),
+    ])
+  assert string.contains(operator(model), "1 live")
+  assert string.contains(operator(model), "job-1 · running · started by op-1")
+
+  // A tick inside the interval asks for nothing; one after it asks again.
+  let model = page_fixture.run(model, component.update, [component.Ticked])
+  assert live_jobs_reads(page_fixture.sent(wire)) == []
+  page_fixture.set(clock, component.jobs_refresh_ms)
+  let _ = page_fixture.run(model, component.update, [component.Ticked])
+  assert list.length(live_jobs_reads(page_fixture.sent(wire))) == 1
+}
+
+pub fn a_refused_read_is_not_repeated_on_every_tick_test() {
+  let clock = page_fixture.clock()
+  let wire = process.new_subject()
+  let model = ready(clock, wire, "operator")
+  let _ = page_fixture.sent(wire)
+
+  let model = page_fixture.run(model, component.update, [component.Ticked])
+  let assert [read] = live_jobs_reads(page_fixture.sent(wire)) as "one read"
+  let model =
+    page_fixture.run(model, component.update, [
+      component.Arrived([page_fixture.refusal(page_fixture.request_id(read))]),
+    ])
+  let _ = page_fixture.sent(wire)
+
+  let model = page_fixture.run(model, component.update, [component.Ticked])
+  assert live_jobs_reads(page_fixture.sent(wire)) == []
+  assert string.contains(operator(model), "not read yet")
+
+  // The refusal cleared the outstanding ask, so once the interval has passed
+  // the next tick asks exactly once more.
+  page_fixture.set(clock, component.jobs_refresh_ms)
+  let _ = page_fixture.run(model, component.update, [component.Ticked])
+  assert list.length(live_jobs_reads(page_fixture.sent(wire))) == 1
+}
+
+pub fn a_job_command_on_a_page_is_escaped_test() {
+  let clock = page_fixture.clock()
+  let wire = process.new_subject()
+  let model = ready(clock, wire, "operator")
+  let _ = page_fixture.sent(wire)
+  let model = page_fixture.run(model, component.update, [component.Ticked])
+  let assert [read] = live_jobs_reads(page_fixture.sent(wire)) as "one read"
+  let model =
+    page_fixture.run(model, component.update, [
+      component.Arrived([
+        jobs_frame(page_fixture.request_id(read), "<script>alert(1)</script>"),
+      ]),
+    ])
+
+  list.each([operator(model), observer(model)], fn(html) {
+    assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
+    assert !string.contains(html, "<script")
+  })
+}
+
+fn peers() -> List(snapshot_view.Peer) {
+  [
+    snapshot_view.Peer(
+      "connection",
+      message.Origin("alice", "Alice"),
+      snapshot.Operator,
+    ),
+    snapshot_view.Peer(
+      "watcher",
+      message.Origin("bob", "Bob <i>the watcher</i>"),
+      snapshot.Observer,
+    ),
+  ]
+}
+
+pub fn an_operators_page_names_its_viewers_and_an_observers_does_not_test() {
+  let model =
+    component.new(page_fixture.start())
+    |> component.apply([
+      lane_fixture.attended(lane_fixture.captured(10, None), peers()),
+    ])
+
+  let operating = operator(model)
+  assert string.contains(operating, "2 attached")
+  assert string.contains(operating, "Alice")
+  assert string.contains(operating, " · operator · you")
+  assert string.contains(operating, "Bob &lt;i&gt;the watcher&lt;/i&gt;")
+  assert !string.contains(operating, "<i>the watcher")
+
+  // The observer's page holds the same roster and shows none of it.
+  let observing = observer(model)
+  assert !string.contains(observing, "Viewers")
+  assert !string.contains(observing, "attached")
+  assert !string.contains(observing, "the watcher")
+}

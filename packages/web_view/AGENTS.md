@@ -199,7 +199,11 @@ page keys and nonces, and the relay into the session's gateway.
   board and reviewer band on both pages, from plain values;
   `component.plan(model)` reads them: `Shared.todo_boards` at
   `Shared.active_strand`, and `reviewer_status.lines` over
-  `Shared.reviewer_rows`, the terminal's own lines. The phase holding the
+  `Shared.reviewer_rows`, the terminal's own lines. The board is one line
+  until the reader opens it, `Todo · 3 of 5 done · <active task>`, the
+  summary of a `<loom-fold>` (the browser keeps its open state, so a patch
+  leaves it alone and an observer's page has it too); the line follows the
+  strand the page shows because the board is that strand's. Opened, the phase holding the
   active task (`todo_list.focus`) is expanded with every task, each with the
   terminal's glyph (`✓ ▸ ○ ⊘ –`, hidden from assistive technology, with the
   status as a visually hidden word) and a blocked task's reason; the other
@@ -212,6 +216,34 @@ page keys and nonces, and the relay into the session's gateway.
   between the lane and the bar on the observer's, so the lane's
   `older_path` is unchanged. The terminal's idle-advisor placeholder is not
   drawn.
+- `changes.view(board)` draws the Changes section on both pages from
+  `component.changes(model)`, the board `session_view/changes_view` folds from
+  the records of the window the page projects (`relaned` builds it with the
+  transcript, so a message that moved neither costs no fold). It is a
+  collapsed `<details>` below the lane on both pages, `Changes · 2 files · +14
+  -2` with `from this session's edits` under it, then one `<details>` per file
+  with the first open. Paths and diff rows are text nodes; a row's class is
+  one of four literals chosen from the fold's `Kind`. It has no handler, is
+  memoized on the board, and is `element.none()` with no edit. It reads no
+  worktree: the daemon serves worktree bytes to an Owner binding only. The
+  tabbed panel of the web design note will move it into a Changes tab.
+- `session_tab.view(jobs, viewers)` draws the Session section: the followed
+  strand's live jobs and, where the page shows them, the attached viewers
+  (`session_view/session_summary`). The component asks for the jobs on a
+  `Ticked` when it has never asked or last asked `jobs_refresh_ms` (10 s) ago
+  and no answer is outstanding (the tick-driven ask only: the lane also
+  requests a read whenever a run's completion changes, `lane_fold`): it marks `Shared.jobs_refresh` as requested and
+  the shared step sends the `live_jobs` read once the lane is ready
+  (`surfaces.service_jobs_read`). The read is one of the gateway's
+  `read_only` commands, every role may send it, and its answer is a snapshot
+  the lane folds like any other, so it adds no event and no accepted page
+  event. A refused read is not repeated before the interval passes
+  (`View.jobs_asked_at`), and a board for another strand than the one shown
+  reads as not read yet. Viewers are drawn on the operator's page and never on
+  the observer's, which is handed `None` (a default the design note adopted,
+  open to an owner override). Job commands and viewer names are text nodes.
+  Like the Changes section it is a collapsed `<details>` below the lane until
+  the tabbed panel moves it.
 - `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip

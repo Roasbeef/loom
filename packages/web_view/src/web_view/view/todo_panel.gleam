@@ -13,6 +13,18 @@
 //// every other phase is folded into one summary row. A board whose tasks
 //// are all closed is one row.
 ////
+//// The board is drawn as one line until the reader opens it: `Todo · 3 of 5
+//// done · check it`, the count of closed tasks and the text of the active
+//// one. The line is the summary of a `<loom-fold>` (`packages/web_client`),
+//// and the board, the phase that holds the active task with every task in it,
+//// is the fold's other child. The fold opens and closes in the browser, so it
+//// needs no handler and works on an observer's page, and the server never
+//// renders its state, so a patch that changes the board leaves the reader's
+//// choice alone. The line follows the strand the page shows, because the
+//// caller hands in that strand's board. A board whose tasks are all closed is
+//// already one row, and a reviewer band is drawn open under the line, since a
+//// running reviewer is the thing a reader glancing at the dock wants to see.
+////
 //// Each status has its own glyph as well as its own colour, so the panel
 //// still reads without colour: `✓` done, `▸` active, `○` pending, `⊘`
 //// blocked, `–` dropped. The glyph is hidden from assistive technology and
@@ -92,9 +104,10 @@ fn board_elements(board: Option(Board)) -> List(Element(message)) {
 
 // --- an open board -------------------------------------------------------------
 
-// The header, the focused phase's tasks in order, and the folded rest. The
-// tasks are one list in the phase's order with the active one marked, so the
-// panel scrolls inside its capped height rather than windowing around it.
+// The one-line summary, folded over the header, the focused phase's tasks in
+// order, and the folded rest. The tasks are one list in the phase's order
+// with the active one marked, so the panel scrolls inside its capped height
+// rather than windowing around it.
 fn open(
   board: Board,
   phase: Phase,
@@ -102,10 +115,50 @@ fn open(
   total: Int,
 ) -> Element(message) {
   html.div([attribute.class("todo-board")], [
-    header(phase, closed, total),
-    html.ul([attribute.class("todo-tasks")], list.map(phase.tasks, task_item)),
-    others(board, phase),
+    element.element("loom-fold", [attribute.class("todo-fold")], [
+      line(board, closed, total),
+      html.div([attribute.class("todo-detail")], [
+        header(phase, closed, total),
+        html.ul(
+          [attribute.class("todo-tasks")],
+          list.map(phase.tasks, task_item),
+        ),
+        others(board, phase),
+      ]),
+    ]),
   ])
+}
+
+// The collapsed line: the label, how many tasks are closed, and the active
+// task's text when there is one. A board with no active task, whose open work
+// is all blocked or not started, says only the count.
+fn line(board: Board, closed: Int, total: Int) -> Element(message) {
+  let doing = case todo_list.active(board) {
+    Some(#(_, task)) -> [
+      html.span([attribute.class("todo-quiet")], [html.text(" · ")]),
+      html.span([attribute.class("todo-current")], [html.text(clean(task.text))]),
+    ]
+    None -> []
+  }
+
+  html.span(
+    [attribute.attribute("slot", "summary"), attribute.class("todo-line")],
+    list.flatten([
+      [
+        html.span([attribute.class("todo-label")], [html.text("Todo")]),
+        html.span([attribute.class("todo-quiet")], [
+          html.text(
+            " · "
+            <> int.to_string(closed)
+            <> " of "
+            <> int.to_string(total)
+            <> " done",
+          ),
+        ]),
+      ],
+      doing,
+    ]),
+  )
 }
 
 fn header(phase: Phase, closed: Int, total: Int) -> Element(message) {
