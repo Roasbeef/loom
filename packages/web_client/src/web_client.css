@@ -64,9 +64,33 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
-/* The light tokens, a warm paper. */
+/* The light tokens, a warm paper, and how a theme reaches every part of the
+   page (docs/design-notes/web-design.md, sections 5 and 6.5).
+
+   The page follows `prefers-color-scheme` until the reader presses the
+   Theme button, which sets `data-theme="light"` or `data-theme="dark"` on
+   the document's root (web_client/shell, web_client/layout_rule). Custom
+   properties inherit through a shadow root's boundary, so a value set on
+   the root reaches the server component and every client component under
+   it. What would stop it is the `:host` rule Tailwind writes with the dark
+   `@theme` above: a declaration on a host beats the value the host would
+   inherit, so each element would keep the dark palette whatever the root
+   says. The `:host` rule at the end of this block neutralises that. It sets
+   each token to `inherit` in every shadow root, and the stylesheet is
+   unlayered, so it wins over Tailwind's layered rule. The palette is
+   therefore written on `:root` only, and nothing but the root ever holds a
+   value.
+
+   The light palette is written twice, once for a system that prefers light
+   and no forced dark, and once for a forced light. CSS cannot share the two,
+   so scripts/web_client_contrast_check.sh fails when they differ, and when
+   a token has no `inherit` line below. Forced dark needs no block of its
+   own: it is the `@theme` palette, and the first block does not apply to it.
+   Keep both light blocks, and the `:host` rule, after `@theme`, and the
+   light blocks last among the palettes: the contrast check reads a hex value
+   after the light media query as a light value. */
 @media (prefers-color-scheme: light) {
-  :root, :host {
+  :root:not([data-theme="dark"]) {
     --color-bg: #f6f5f2;
     --color-bg-raised: #ffffff;
     --color-bg-sunk: #efede8;
@@ -102,9 +126,80 @@
     --shadow-card: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
   }
 }
+:root[data-theme="light"] {
+  --color-bg: #f6f5f2;
+  --color-bg-raised: #ffffff;
+  --color-bg-sunk: #efede8;
+  --color-bg-user: #ffffff;
+  --color-code: #f1efe9;
+  --color-fg: #1d1c1a;
+  --color-fg-quiet: #6f6b63;
+  --color-fg-faint: #a29d92;
+  --color-divider: #e2dfd8;
+  --color-current: #3b5bdb;
+  --color-signal: #d9822b;
+  --color-signal-text: #975a1e;
+  --color-advisor: #d9822b;
+  --color-advisor-text: #975a1e;
+  --color-peer: #8b5cf6;
+  --color-peer-text: #764ed1;
+  --color-danger: #d6336c;
+  --color-danger-text: #c02d61;
+  --color-added: #2f9e44;
+  --color-added-text: #237833;
+  --color-added-bg: #e6f4ea;
+  --color-removed-bg: #fbe9ef;
+  --color-strand-2: #0f9d8a;
+  --color-strand-2-text: #0b7567;
+  --color-strand-3: #7a8a3a;
+  --color-strand-3-text: #616e2e;
+  --color-strand-4: #1a8fc4;
+  --color-strand-4-text: #14709a;
+  --color-strand-5: #b0429f;
+  --color-strand-5-text: #a73e97;
+  --color-strand-6: #c2502e;
+  --color-strand-6-text: #b04829;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
+}
+:host {
+  --color-bg: inherit;
+  --color-bg-raised: inherit;
+  --color-bg-sunk: inherit;
+  --color-bg-user: inherit;
+  --color-code: inherit;
+  --color-fg: inherit;
+  --color-fg-quiet: inherit;
+  --color-fg-faint: inherit;
+  --color-divider: inherit;
+  --color-current: inherit;
+  --color-signal: inherit;
+  --color-signal-text: inherit;
+  --color-advisor: inherit;
+  --color-advisor-text: inherit;
+  --color-peer: inherit;
+  --color-peer-text: inherit;
+  --color-danger: inherit;
+  --color-danger-text: inherit;
+  --color-added: inherit;
+  --color-added-text: inherit;
+  --color-added-bg: inherit;
+  --color-removed-bg: inherit;
+  --color-strand-2: inherit;
+  --color-strand-2-text: inherit;
+  --color-strand-3: inherit;
+  --color-strand-3-text: inherit;
+  --color-strand-4: inherit;
+  --color-strand-4-text: inherit;
+  --color-strand-5: inherit;
+  --color-strand-5-text: inherit;
+  --color-strand-6: inherit;
+  --color-strand-6-text: inherit;
+  --shadow-card: inherit;
+}
 
 :root { color-scheme: dark; }
-@media (prefers-color-scheme: light) { :root { color-scheme: light; } }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { color-scheme: light; } }
+:root[data-theme="light"] { color-scheme: light; }
 
 @layer base {
   body { margin: 0; background: var(--color-bg); color: var(--color-fg); font: 14px/1.5 var(--font-sans); overflow: hidden; }
@@ -175,6 +270,11 @@
   .shell-toggle{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:44px;padding:0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);cursor:pointer;}
   .shell-toggle:hover{background:var(--color-bg-sunk);color:var(--color-fg);}
   .shell-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  /* The Theme button sits beside the panel's toggle: words, not an icon, since
+     it names the theme the page shows. */
+  .shell-theme{flex:0 0 auto;display:flex;align-items:center;margin:0;padding:0 12px;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:12px/1 var(--font-mono);cursor:pointer;}
+  .shell-theme:hover{background:var(--color-bg-sunk);color:var(--color-fg);}
+  .shell-theme:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .toggle-icon{position:relative;display:block;width:16px;height:13px;box-sizing:border-box;border:1.5px solid currentColor;border-radius:3px;}
   .toggle-icon::after{content:"";position:absolute;top:0;bottom:0;width:4px;background:currentColor;}
   .toggle-sidebar .toggle-icon::after{left:0;}

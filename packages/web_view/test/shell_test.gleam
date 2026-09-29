@@ -9,7 +9,7 @@
 //// region.
 
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import lane_fixture
 import lustre/element
@@ -108,4 +108,39 @@ pub fn the_sidebar_attribute_is_a_fixed_word_test() {
   assert string.contains(html, "sidebar=\"listed\"")
   assert count(html, "sidebar=\"") == 1
   assert !string.contains(html, "<script>")
+}
+
+const workspace_hash =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// The frame carries the workspace digest the host handed the component, on
+// the operator's page and the observer's, so the element can key the
+// reader's layout by it. The value written is the digest, not the label's
+// path.
+pub fn the_frame_carries_the_workspace_digest_test() {
+  let start =
+    component.Start(
+      ..page_fixture.start(),
+      label: Some(component.Label(
+        name: "web ui",
+        workspace: "/home/me/src/loom",
+      )),
+      workspace_digest: workspace_hash,
+    )
+  let model = component.new(start)
+
+  let operator = element.to_string(operator_page.view(model))
+  assert string.contains(operator, "workspace=\"" <> workspace_hash <> "\"")
+  assert count(operator, "workspace=\"") == 1
+
+  let observer = element.to_string(component.view(model))
+  assert string.contains(observer, "workspace=\"" <> workspace_hash <> "\"")
+  assert count(observer, "workspace=\"") == 1
+}
+
+// A host with no digest writes no attribute, so the element reads none and
+// keeps nothing for the page.
+pub fn a_host_without_a_digest_writes_no_workspace_attribute_test() {
+  let html = element.to_string(operator_page.view(listed(listing())))
+  assert !string.contains(html, "workspace=\"")
 }

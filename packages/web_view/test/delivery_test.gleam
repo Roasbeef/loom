@@ -75,6 +75,7 @@ fn started() -> Page {
     component.Start(
       session_id: "A",
       label: None,
+      workspace_digest: "",
       expected: snapshot.Expected("A", "epoch", "incarnation"),
       transport:,
     )

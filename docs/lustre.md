@@ -618,7 +618,11 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   handler, and nothing else. No approval card carries a marker, the centre
   column where the dock is has no button, and the panel carries no decision
   control. A hidden side column is `inert`, which takes its content out of
-  the tab order.
+  the tab order. The reader's layout (the two columns and the active tab) is
+  kept in the browser's `localStorage` under a workspace digest the daemon
+  computes, through the two storage calls in `internal/dom.mjs`; nothing
+  session-derived is kept and the server never learns it (protocol-change/051,
+  the addendum on the storage decision).
 - **No raw HTML.** It renders through Lustre's virtual DOM, as the server
   component does. Its browser calls are one file, `internal/dom.mjs`, one
   DOM call per export and no logic, declared in `internal/ffi_dom.gleam`;

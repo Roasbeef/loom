@@ -26,6 +26,7 @@ fn start() -> component.Start(ui_relay.Relay) {
   component.Start(
     session_id: "A",
     label: None,
+    workspace_digest: "",
     expected: snapshot.Expected("A", "epoch", "incarnation"),
     transport: component.Transport(
       connect: fn(_, _) { Nil },

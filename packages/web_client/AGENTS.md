@@ -30,13 +30,25 @@ renders again just for it:
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
   form is submitted, which is why they are here.
-- `<loom-shell sidebar="listed" needing="0">` is the page's frame. The server
+- `<loom-shell sidebar="listed" needing="0" workspace="<digest>">` is the
+  page's frame. The server
   draws the top bar, the sessions sidebar, the centre and the strand panel as
   its children, in the slots `bar`, `left`, the default and `right`, and the
   element lays them out and draws a button at each end of the bar that hides
   and shows a side column. Which columns are open is the reader's preference
-  and nothing the server holds, so the server never renders it and nothing
-  is kept across a reload. A hidden column takes no width and is `inert`, so
+  and nothing the server holds, so the server never renders it. It is kept
+  in the browser's storage, per workspace: on connect the element reads its
+  `workspace` attribute, a SHA-256 digest of the workspace path that the
+  daemon computed (`component.Start.workspace_digest`), and asks
+  `layout_rule` for the stored layout (the two columns and the active tab,
+  nothing else; the focused strand is never kept, so a reload shows `main`),
+  and every change writes it back through `ffi_dom.storage_write`. A page
+  with no digest keeps nothing. A Theme button in the bar cycles the page
+  through following the system, light and dark (`layout_rule.next_theme`) by
+  setting or removing `data-theme` on `<html>`, which the stylesheet reads;
+  the choice is kept per browser under its own item, and `assets/web_view_page.js` applies it from that item before first paint, since the shell connects only after the socket opens (`js_check` pins the item name to `layout_rule.theme_key`). The server never learns
+  the layout
+  (protocol-change/051, the addendum on the storage decision). A hidden column takes no width and is `inert`, so
   its content leaves the tab order. The `sidebar` attribute is a fixed word
   the server writes (`listed` or `none`), so an observer's page, which has no
   sidebar, gets no button for one. The strand panel has three tabs, Strands,
@@ -165,10 +177,14 @@ time builds anything.
   `Prevention`, `Repetition`), `intent` (`ToggleSidebar | TogglePanel |
   LeaveStrand`, or nothing), `cancels`, `candidate`, `title`, `shortcuts` and
   `crumb_link`, and
-  `shell.Model(layout, sidebar, needing, keys)` and `shell.Msg` (`Toggled(region)`,
-  `Chosen(tab)`, `SidebarChanged(presence)`, `NeedingChanged(count)`,
-  `Relayed(relay)`, `Pressed(intent)`, `Connected`, `Disconnected`,
-  `Listening(listener)`): the
+  `shell.Model(layout, sidebar, needing, workspace, keys)` and `shell.Msg`
+  (`Toggled(region)`, `Chosen(tab)`, `SidebarChanged(presence)`,
+  `NeedingChanged(count)`, `Relayed(relay)`, `Pressed(intent)`, `Connected`,
+  `Disconnected`, `Listening(listener)`, `ThemeCycled`,
+  `Restored(workspace, saved, theme)`).
+  `Listening` stops any listener the model still holds as it keeps the new
+  one, because `listen` registers after the paint and can arrive after a
+  later `Connected`. The
   shadow root holds the bar (the two buttons around the `bar` slot) and the
   body (a wrapper per side column around its slot, and the default slot in the
   centre; the panel's wrapper holds the tab bar above the slot). A closed
@@ -177,6 +193,18 @@ time builds anything.
   from `shell_rule.label` and `shell_rule.tab_label`. A tab press changes
   the custom state and nothing else: closing and reopening the panel keeps the
   tab.
+- `layout_rule.Workspace` (`Identified(digest)` | `Anonymous`), with
+  `workspace` (a total decoder of the `workspace` attribute: exactly 64
+  lower-case hex digits, else `Anonymous`), `layout_key` (`loom.layout.v1.` and
+  the digest, or nothing), `encode` (a JSON object of three words) and
+  `restore` (total: any stored text, or a missing or blocked item, answers a
+  `shell_rule.Layout`; the default for malformed text, and the default of one
+  field that is missing or names an unknown word), and the theme:
+  `Theme` (`System` | `Light` | `Dark`), `theme` (a total decoder of the stored
+  word: anything but `light` and `dark` follows the system), `encode_theme`,
+  `next_theme`, `data_theme` (the root's attribute, or nothing for `System`),
+  `label` and `word` for the button, and `theme_key`. It imports neither Lustre
+  nor the DOM binding, and `layout_test` covers it on Node.
 - `composer.Model(entries, draft, selected, palette, returns)` and
   `composer.Msg` (`Configured`, `Returned`, `Typed`, `Moved`, `Accepted`,
   `Picked`, `Dismissed`, `Sent`, `Ignored`): `commands` is the table the
@@ -214,7 +242,10 @@ time builds anything.
   `resize_observer`, `observe`, `mutation_observer`, `observe_child_list`,
   `disconnect`, `value`, `set_value`, `utf16_length`, `set_selection_range`,
   `focus`, `click`, `request_submit`, `request_submit_with`, `now`,
-  `set_interval` and `clear_interval`. Its types are `Element` (an element, or the shadow root
+  `set_interval`, `clear_interval`, `document_element`, `set_attribute`,
+  `remove_attribute`, `storage_read` and `storage_write` (each
+  one `localStorage` call inside a `try`, answering a `Result`, since storage
+  throws when blocked; the only way the package reaches storage). Its types are `Element` (an element, or the shadow root
   Lustre hands an `after_paint` effect, which answers queries alike),
   `Listener`, `Observer` and `Timer`. The one decision in `dom.mjs` is
   turning a null or undefined DOM answer into `Error(Nil)`. Add a function
@@ -318,7 +349,11 @@ sends the server nothing.
   JavaScript file under `src` is not `internal/dom.mjs`, or if one names
   `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function`,
   `document.write`, `srcdoc`, `DOMParser`, `createContextualFragment` or a
-  dynamic `import(`. It has its own self-test.
+  dynamic `import(`, or if `localStorage` is used other than by
+  `window.localStorage.getItem(` and `.setItem(`, or `sessionStorage`,
+  `indexedDB`, `document.cookie` or `cookieStore` appears, or a Gleam
+  `@external(javascript, ...)` names a file other than `./dom.mjs`. It has its
+  own self-test.
 - **Words use a `-text` token; marks use the plain one.** The stylesheet's
   hues come in pairs (`--color-signal` and `--color-signal-text`, and the same
   for `advisor`, `peer`, `danger`, `added` and `strand-2` to `strand-6`). The
@@ -332,6 +367,16 @@ sends the server nothing.
   `bg-sunk`, `bg-user`, `code`, and the diff backgrounds for `added-text` and
   `danger-text`) in either theme, or if a rule sets `color:` from a mark
   token, `--hue` or `fg-faint`. It has its own self-test.
+- **Tokens live on `:root`; a shadow root only inherits them.** The Theme
+  button sets `data-theme` on `<html>`, and custom properties inherit through
+  every shadow root under it. Tailwind's `@theme` also writes the dark palette
+  on `:host`, which would shadow the inherited value in each element, so the
+  stylesheet ends the palettes with a `:host` rule that sets every token to
+  `inherit` (`web_client.css`, the light tokens). A new token needs a line in
+  the dark `@theme`, in both light palettes (`:root:not([data-theme="dark"])`
+  under the light media query, and `:root[data-theme="light"]`) and in that
+  `:host` rule; the contrast check fails when the light palettes disagree or a
+  token has no `inherit` line.
 - **State the DOM would hold in an expando lives in the model.** The
   returned-prompt bookkeeping (`Seen(taken)`), the scroll bookkeeping (`top`,
   `extent`, `touched`) and the held row are Lustre model fields, never

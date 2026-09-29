@@ -44,6 +44,7 @@ import client/daemon/server
 import client/daemon/ui_relay
 import client/daemon/upgrade_log
 import client/gateway
+import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http/request.{type Request}
@@ -323,6 +324,18 @@ pub type Role {
   Operating
 }
 
+// The lower-case SHA-256 of a workspace path in hex, which the page carries
+// as its storage identity (`component.Start`). A digest is not the path: the
+// page's attribute and the browser's storage key never hold a path, and the
+// browser cannot recover one from it.
+fn digest(workspace: String) -> String {
+  workspace
+  |> bit_array.from_string
+  |> bootstrap.sha256
+  |> bit_array.base16_encode
+  |> string.lowercase
+}
+
 // The role the admitted authority gives the page. The router has already
 // capped it, so `Owner` does not reach here from a page; it is read as an
 // operator's for totality.
@@ -372,6 +385,8 @@ fn admit(
         name: attachment.registration.name,
         workspace: attachment.registration.workspace,
       )),
+      // The digest, not the path, is what the page's storage is keyed by.
+      workspace_digest: digest(attachment.registration.workspace),
       expected:,
       transport:,
     )

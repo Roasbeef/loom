@@ -24,7 +24,11 @@ page keys and nonces, and the relay into the session's gateway.
 
 - `component.Start(socket)`: what the daemon supplies when it starts a
   component: the session ID, the catalogue's `Label(name, workspace)` for
-  the heading (or `None`, which only tests pass), the `snapshot.Expected` attachment every cut
+  the heading (or `None`, which only tests pass), `workspace_digest` (the
+  lower-case SHA-256 of the workspace path in hex, which the daemon computes
+  in `client/daemon/ui_socket`, or an empty string; the frame writes it as
+  the `workspace` attribute and `<loom-shell>` keys the reader's layout by it),
+  the `snapshot.Expected` attachment every cut
   must match, and a `Transport(socket)`. The heading shows the name (or
   `Session` and the ID's first eight characters) with the whole ID in a
   `title`, and the workspace's last segment with the whole path in a
@@ -109,9 +113,10 @@ page keys and nonces, and the relay into the session's gateway.
   `est $` cost, worded as the terminal's footer words them), with the ended
   page's notice as its last child; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
-  `shell.view(audience, bar, sidebar, centre, panel, needing)` draws the
-  frame, the client element `<loom-shell sidebar="listed|none"
-  needing="n">`, and is where its
+  `shell.view(audience, bar, sidebar, centre, panel, needing, workspace)`
+  draws the frame, the client element `<loom-shell sidebar="listed|none"
+  needing="n" workspace="digest">` (`workspace` only when the host has a
+  digest), and is where its
   order is written: the bar (0, `slot="bar"`), the sidebar (1, `slot="left"`,
   or `element.none()` when `shell.Unlisted`), the centre `main` (2, the
   default slot: the transcript first, then the dock or the observer's bar)

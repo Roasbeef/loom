@@ -33,9 +33,10 @@
 //// the key set and every exclusion. No intent sends anything to the session,
 //// and none decides an approval: an approval card is a place where no key acts.
 ////
-//// Nothing here is remembered: a reload opens both columns on the Strands
-//// tab (docs/design-notes/web-design.md, section 4, puts persistence in a
-//// later change).
+//// A layout is what a page starts with and what the reader changes. Keeping
+//// one across a reload is `web_client/layout_rule`'s, over the same types:
+//// the two columns and the tab are the whole of what is stored, and a page
+//// with nothing stored starts from `initial`.
 
 import gleam/int
 import gleam/list

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # web_client_js_check.sh — keep the browser package's JavaScript to one file
-# that names none of the APIs that turn text into markup or code.
+# that names none of the APIs that turn text into markup or code, and keep
+# the browser's storage behind two calls in it.
 #
 #   scripts/web_client_js_check.sh [dir]     fail on a violation (default
 #                                            packages/web_client/src)
@@ -31,6 +32,30 @@
 #      one-call exports a reviewer reads, and this stops the obvious way to
 #      break that.
 #
+#   3. Browser storage is reached only by `storage_read` and `storage_write`
+#      in `dom.mjs`, and only through `window.localStorage.getItem(` and
+#      `window.localStorage.setItem(`. Any other use of `localStorage`
+#      (`clear`, `removeItem`, `key`, a bare alias), and any use of
+#      `sessionStorage`, `indexedDB`, `document.cookie` or `cookieStore`, is a
+#      violation. Rule 1 already keeps every other JavaScript file out, and a
+#      Gleam file may not declare an `@external(javascript, ...)` to any file
+#      but `./dom.mjs`, so a component cannot reach storage, or any other
+#      script, some other way. Layout and theme are decided in Gleam
+#      (`web_client/layout_rule`) and only the two calls touch the storage
+#      (protocol-change/051, the addendum on the storage decision). The
+#      page's own scripts in `assets/` are outside `src` and keep the tab's
+#      nonce in `sessionStorage`; they are not the components.
+#
+# This is a line- and token-scoped reviewer aid, not hardening. It matches
+# text, so a line that pairs `window.localStorage.getItem(` with another
+# storage call, or a computed property name (`window["local" + "Storage"]`),
+# passes it. What it does is make the obvious way to break the boundary fail
+# the build and leave anything cleverer to the reviewer of a small file.
+#
+# It also pins the theme's storage item name: `assets/web_view_page.js` applies
+# the saved theme before first paint and repeats the name that
+# `layout_rule.theme_key` holds, so the two must match.
+#
 # The match is on the token anywhere in the file, comments included, so a
 # comment that must discuss one spells it differently.
 #
@@ -60,7 +85,14 @@ patterns=(
 	'DOMParser'
 	'createContextualFragment'
 	'\bimport[[:space:]]*\('
+	'sessionStorage'
+	'indexedDB'
+	'document[[:space:]]*\.[[:space:]]*cookie'
+	'cookieStore'
 )
+
+# The only uses of localStorage a file may have: the two storage calls.
+storage_use='window\.localStorage\.(getItem|setItem)\('
 
 # check <dir>: print each violation, and return non-zero if there was one.
 check() {
@@ -85,7 +117,19 @@ check() {
 				failed=1
 			fi
 		done
+		if grep -n 'localStorage' "$file" | grep -vE -- "$storage_use" >&2; then
+			echo "web_client_js_check: $file uses localStorage outside storage_read and storage_write" >&2
+			failed=1
+		fi
 	done < <(find "$dir" -type f \( -name '*.mjs' -o -name '*.js' -o -name '*.cjs' -o -name '*.ts' \) | LC_ALL=C sort)
+
+	# A Gleam file may bind JavaScript only in dom.mjs.
+	while IFS= read -r file; do
+		if grep -nE '@external\(javascript' "$file" | grep -vE '@external\(javascript, *"\./dom\.mjs"' >&2; then
+			echo "web_client_js_check: $file binds JavaScript other than ./dom.mjs" >&2
+			failed=1
+		fi
+	done < <(find "$dir" -type f -name '*.gleam' | LC_ALL=C sort)
 
 	return $failed
 }
@@ -127,7 +171,14 @@ self_test() {
 		'new DOMParser().parseFromString(x, "text/html");' \
 		'range.createContextualFragment(x);' \
 		'import(x);' \
-		'await import ("./x.mjs");'; do
+		'await import ("./x.mjs");' \
+		'window.localStorage.clear();' \
+		'window.localStorage.removeItem(k);' \
+		'const s = window.localStorage;' \
+		'sessionStorage.setItem(k, v);' \
+		'indexedDB.open(k);' \
+		'document.cookie = k;' \
+		'cookieStore.set(k, v);'; do
 		name=$(printf '%s' "$body" | tr -c 'A-Za-z0-9' '_')
 		fresh "$name"
 		printf '%s\n' "$body" >>"$case_dir/$sole"
@@ -136,6 +187,33 @@ self_test() {
 			return 1
 		fi
 	done
+
+	# The two storage calls are what the tree is allowed.
+	fresh storage
+	printf 'export function storage_read(k) { return window.localStorage.getItem(k); }\n' \
+		>>"$case_dir/$sole"
+	printf 'export function storage_write(k, v) { window.localStorage.setItem(k, v); }\n' \
+		>>"$case_dir/$sole"
+	if ! check "$case_dir" >/dev/null 2>&1; then
+		echo "web_client_js_check: self-test: the two storage calls do not pass" >&2
+		return 1
+	fi
+
+	# A Gleam file binding another JavaScript file is a violation; dom.mjs is
+	# the one binding allowed.
+	fresh binding
+	printf '@external(javascript, "./dom.mjs", "now")\npub fn now() -> Int\n' \
+		>"$case_dir/web_client/internal/ffi.gleam"
+	if ! check "$case_dir" >/dev/null 2>&1; then
+		echo "web_client_js_check: self-test: a binding to dom.mjs does not pass" >&2
+		return 1
+	fi
+	printf '@external(javascript, "../../assets/x.mjs", "now")\npub fn other() -> Int\n' \
+		>>"$case_dir/web_client/internal/ffi.gleam"
+	if check "$case_dir" >/dev/null 2>&1; then
+		echo "web_client_js_check: self-test: a binding to another file passed" >&2
+		return 1
+	fi
 
 	# Words that merely contain a forbidden one are not it.
 	fresh contained
@@ -168,12 +246,27 @@ self_test() {
 	done
 }
 
+# check_theme_key: the page script and the layout rule name one item.
+check_theme_key() {
+	local key
+	key=$(sed -n 's/^pub const theme_key = "\(.*\)"$/\1/p' \
+		"$root/packages/web_client/src/web_client/layout_rule.gleam")
+	if [ -z "$key" ] ||
+		! grep -qF "getItem(\"$key\")" "$root/packages/web_client/assets/web_view_page.js"; then
+		echo "web_client_js_check: assets/web_view_page.js does not read the theme item '$key' that layout_rule.theme_key names" >&2
+		return 1
+	fi
+}
+
 case "${1-}" in
 --self-test) self_test ;;
 -*)
 	echo "usage: $self [dir | --self-test]" >&2
 	exit 2
 	;;
-"") check "$root/packages/web_client/src" ;;
+"")
+	check "$root/packages/web_client/src"
+	check_theme_key
+	;;
 *) check "$1" ;;
 esac

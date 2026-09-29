@@ -2267,3 +2267,172 @@ separate places, and no key handler in the operator's or the observer's tree
 with an approval pending. `ui_socket_test` drops a `keydown` frame on the
 operator's socket. The listener, the decoder over a real event and the target
 lookup run only in a browser and were not run.
+
+## Addendum: the storage decision (2026-09-29)
+
+**Status**: PROPOSED, IMPLEMENTED with issue #569, step 7 of the web UI
+redesign (`docs/design-notes/web-design.md`, section 4) · **Raised by**:
+issue #569
+
+`<loom-shell>` now keeps the reader's layout in the browser's `localStorage`.
+The addendum on the page nonce mentions browser storage once, for the nonce in
+`sessionStorage`, and states no rule for anything else stored. This one does.
+It adds no socket event, no operation to what a page may do, and no frozen
+interface. The only change to a type the daemon fills in is a new field on
+`component.Start`, which is described below.
+
+### What was decided
+
+**What is stored.** Two records, and nothing else:
+
+- The layout of one workspace: whether the sessions sidebar is open, whether
+  the strand panel is open, and which of the panel's tabs shows. It is one item
+  per workspace, `loom.layout.v1.<digest>`, holding a JSON object of three
+  words, for example `{"sidebar":"open","panel":"closed","tab":"changes"}`.
+- The page's theme, per browser and not per workspace: the item
+  `loom.theme.v1`, holding one of the words `system`, `light` and `dark`. The
+  Theme button in the bar moves the page from following the operating system's
+  setting to light, then dark, then back, by setting or removing `data-theme`
+  on the document's root, and a missing or unknown stored word follows the
+  system. It is a per-browser preference, so it has no digest in its name.
+
+The owner ruled (issue #569, 2026-09-29) that the focused strand is not saved
+or restored: a reload shows `main`. The viewed session is not stored either,
+since the page's address names it. **Nothing session-derived is stored.** No
+strand name, session identity, path, transcript text or count reaches storage,
+and the values the two records hold are words from fixed sets.
+
+**Where.** In `internal/dom.mjs`, through two exports, `storage_read` and
+`storage_write`, which each make one call on `window.localStorage` inside a
+`try` and answer a `Result`, because storage throws when it is blocked and in
+some private windows. They are bound in `internal/ffi_dom.gleam` beside the
+other DOM bindings. Every decision about the record is Gleam in
+`web_client/layout_rule`: the item's name, the encoding, and the decoding. The
+decoding is total. It accepts any string and answers a layout, the default
+(both columns open, the Strands tab) for a missing, blocked or malformed item,
+and the default for one field that names a word this release does not know, so
+a tab a later release removes does not discard the columns saved beside it.
+The module imports neither Lustre nor the DOM binding, and its tests run on
+Node. The one other read is the saved theme's, in the page script before first paint (see "What the reader sees").
+
+`scripts/web_client_js_check.sh` holds the boundary, as it already holds the
+rule that `dom.mjs` is the only JavaScript in the package. It fails on any
+`localStorage` use other than `window.localStorage.getItem(` and
+`window.localStorage.setItem(`, on `sessionStorage`, `indexedDB`,
+`document.cookie` and `cookieStore` anywhere in the package's JavaScript, and
+on a Gleam `@external(javascript, ...)` to any file but `./dom.mjs`, so a
+component cannot reach storage another way. The page's own scripts under
+`assets/`, which keep the nonce in `sessionStorage`, are not the components
+and are outside that check.
+
+**The key.** A page names its workspace by a digest: the lower-case SHA-256 of
+the workspace's canonical path in hex, which the daemon computes when it admits
+the page's socket (`client/daemon/ui_socket`) and hands the component in
+`component.Start.workspace_digest`. The frame writes it as the `workspace`
+attribute of `<loom-shell>`, left out when the host has none. A path is never an
+attribute or a storage key. The element reads the attribute from its own host
+when it connects and decodes it totally (`layout_rule.workspace`): anything but
+64 lower-case hex digits is no workspace, and a page with no workspace reads no
+item and writes none, so it can neither share nor overwrite another's layout.
+The digest is not a secret and stores nothing that is: it is a name, and a
+script on the origin that reads storage learns which workspaces the browser has
+opened and the columns it left open in each.
+
+**What the server learns.** Nothing. The layout is read and written in the
+browser, and no message carries it: the element sends the server no event of
+its own, and the socket's accepted list is unchanged. The server draws every
+pane and every column whether or not the browser shows it, and it never learns
+which. `component.Start` gains one field, filled from the registration the page
+route has already read, and no wire format, frame or daemon state changes.
+
+**What the scope means.** `localStorage` is scoped to the scheme, host and
+port. The daemon binds `127.0.0.1:0` by default, so a restart on a new port is
+a new origin with empty storage, and the page starts from the defaults;
+`--bind` with a fixed port avoids that. `127.0.0.1` and `localhost` are
+different origins and each has its own layout. A page served on another
+loopback port cannot read this page's storage, which is the property the page
+nonce relies on for `sessionStorage`. The content security policy does not
+restrict storage. Tabs of one workspace share the item, and one tab's change
+reaches another only when that tab loads.
+
+**What the reader sees.** The layout is applied a frame after the shell
+connects: the read runs after the paint, so a reader whose columns are stored
+closed sees them open for that frame. The theme is applied earlier, before the
+first paint, by `assets/web_view_page.js`. The page's first document holds only
+the server component, so the shell does not exist until the socket has opened
+and the first render has come back, and a shell-only read would show the system's
+theme for that whole wait on every load to a reader who chose the other. The page
+script already runs before the shell and before paint, so this one read of
+`loom.theme.v1` lives there, in a `try`, and sets `data-theme` only to the
+fixed words `light` or `dark`, never to the stored text. It is the one use of
+`localStorage` outside `dom.mjs`, and it is outside the package the JavaScript
+check scans, like the nonce's `sessionStorage`; the check fails if its item name
+differs from `layout_rule.theme_key`. The shell owns every later change.
+
+**How the theme reaches every shadow root.** The attribute goes on the
+document's root, because custom properties inherit through a shadow boundary
+and nothing else reaches all of the page's roots: the server component's, and
+one for each client component inside it. The stylesheet had to change for that
+to work. Tailwind writes the dark palette on `:root, :host`, and every shadow
+root adopts the stylesheet, so each host declared its own tokens, and a
+declaration on a host beats the value the host would inherit; a forced light
+theme would have reached the document and no element. The stylesheet now sets
+each token to `inherit` in a `:host` rule (unlayered, so it beats Tailwind's
+layered one), and writes the light palette on `:root` only, twice: once under
+`prefers-color-scheme: light` unless the root says `dark`, and once for
+`data-theme="light"`. Forced dark is the `@theme` palette and needs no block.
+Headless Chrome, given a page with the stylesheet's token rules adopted into a
+shadow root nested in another, resolved every combination of a light or dark
+system setting and no, light and dark attribute to the right value at each
+depth, and resolved forced light to the dark value at both depths when the
+`:host` rule was left out. `scripts/web_client_contrast_check.sh` fails when the
+two light palettes disagree, when a token has no `inherit` line, and, as
+before, when any text token is under 4.5 to 1 in either theme.
+
+### What was considered
+
+- **Storing the record on the server, per principal and workspace** (Option B
+  in the design note). It survives a restart on a new port and follows a
+  principal across browsers, and it needs a persistence surface in the daemon,
+  a socket event that an observer's page must also send, a decision on who
+  writes whose layout, and a round trip for a toggle the browser would still
+  apply first. The owner chose the browser's storage. If restarts on a new port
+  prove a nuisance, a fixed `--bind` or Option B remains open without changing
+  what the elements do.
+- **A theme button that swaps light and dark.** It could not say which the
+  page shows without asking the browser what the system prefers, and it could
+  never go back to following the system. Three states cost one more press.
+- **The workspace path as the key.** It is readable in the developer tools and
+  in the markup, and the client-component rule keeps attributes to identities
+  and numbers.
+- **One record keyed by workspace, holding the focused strand and the session
+  viewed.** The mockup does that. Neither carries over, for the reasons in the
+  design note.
+
+### Cost
+
+- One item of a few dozen bytes per workspace and browser, and one for the
+  theme, never cleaned up: a workspace that is never opened again leaves its
+  item behind.
+- A digest field on `component.Start`, which the tests that build one must
+  supply.
+- The layout is lost when the daemon's origin changes, and it is not shared
+  between a browser's profiles or machines.
+- The one-frame flash from the default to the stored layout.
+- The stylesheet lists each token three times (the dark palette, the light
+  palette twice) and once more for `inherit`. The contrast check holds the
+  copies together, and a new token must be added to each.
+
+### Verification
+
+`layout_test` (`packages/web_client`) covers the default on nothing stored, the
+default on malformed text of several kinds, an unknown tab, an unknown column
+word, a missing field, the round trip of all twelve layouts, and that text which
+is not a digest names no workspace. `shell_test` (`packages/web_view`) shows the
+frame carries the digest on both pages and none when the host has none.
+`web_client_js_check.sh --self-test` plants each storage violation and a stray
+binding. `layout_test` also covers the theme: a missing or unknown word follows
+the system, the round trip, the cycle, and the root attribute each theme sets.
+The element's read and write, the button, and the storage's behaviour in a
+private window run only in a browser and were not run; the shadow-root token
+check above ran in Chrome on a reduced page and not on the served page.

@@ -9,7 +9,30 @@
 //// buttons and the panel's tab bar. Which columns are open, and which tab
 //// the panel shows, are the reader's preference and nothing the server
 //// holds, so the server never renders them and a patch leaves the reader's
-//// choice alone, as it does a fold's. A hidden column is drawn by the server
+//// choice alone, as it does a fold's.
+////
+//// The preference is kept in the browser's storage, per workspace
+//// (protocol-change/051, the addendum on the storage decision). When the
+//// element connects it reads the `workspace` attribute the server wrote, a
+//// digest the daemon computed, and asks `layout_rule` what the stored layout
+//// for it is; the rule answers the default for a missing, blocked or
+//// malformed item. Every change the reader makes writes the layout back. The
+//// page draws its default first and the stored layout a frame later, since
+//// the read runs after the paint. Nothing session-derived is kept: the focused
+//// strand is not, and a reload shows `main`. A page with no `workspace`
+//// attribute keeps nothing, reads nothing and never touches another
+//// workspace's layout. The server never learns the layout.
+////
+//// The bar also draws a Theme button. Each press moves the page from following
+//// the system's colour setting to light, then dark, then back
+//// (`layout_rule.next_theme`), by setting or removing `data-theme` on the
+//// document's root, which the stylesheet reads. The root is where the
+//// attribute must go: custom properties inherit into every shadow root under
+//// it, the server component's and each client component's, and the stylesheet
+//// makes each of those take its tokens from the root (`web_client.css`, the
+//// light tokens). The choice is kept per browser, not per workspace, under
+//// its own storage item, and a missing or unknown value follows the system.
+//// The button is a real button and sends the server nothing. A hidden column is drawn by the server
 //// all the same, because the server does not know, so the column's wrapper
 //// is what makes it inert: it takes no width, is not painted, and is out of
 //// the tab order (`shell_rule.reach`), so the keyboard never lands on a
@@ -86,6 +109,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_client/internal/ffi_dom.{type Listener}
+import web_client/layout_rule.{type Theme, type Workspace}
 import web_client/shell_rule.{
   type Intent, type Layout, type Presence, type Region, type Relay, type Tab,
 }
@@ -100,6 +124,12 @@ pub type Model {
     layout: Layout,
     sidebar: Presence,
     needing: Int,
+    /// The workspace the layout is kept for, known once the stored layout has
+    /// been read. Until then, and for a page with no digest, it is
+    /// `Anonymous` and nothing is written.
+    workspace: Workspace,
+    /// The page's theme, which the document's root carries as `data-theme`.
+    theme: Theme,
     /// The listener on the document while the element is connected.
     keys: Option(Listener),
   )
@@ -135,6 +165,15 @@ pub type Msg {
 
   /// The document's key listener is in place.
   Listening(listener: Listener)
+
+  /// The reader pressed the Theme button.
+  ThemeCycled
+
+  /// The storage has been read for the page's workspace. `saved` is the
+  /// layout to show, or `None` for a page that has no workspace, which keeps
+  /// the layout it has. `theme` is the browser's saved theme, which does not
+  /// depend on the workspace.
+  Restored(workspace: Workspace, saved: Option(Layout), theme: Theme)
 }
 
 /// Registers the element with the browser.
@@ -174,24 +213,31 @@ fn needing(value: String) -> Result(Msg, Nil) {
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   let layout = shell_rule.initial()
   #(
-    Model(layout:, sidebar: shell_rule.Unlisted, needing: 0, keys: None),
+    Model(
+      layout:,
+      sidebar: shell_rule.Unlisted,
+      needing: 0,
+      workspace: layout_rule.Anonymous,
+      theme: layout_rule.System,
+      keys: None,
+    ),
     component.set_pseudo_state(shell_rule.tab_state(layout.tab)),
   )
 }
 
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
-    Toggled(region:) -> #(
-      Model(..model, layout: shell_rule.toggled(model.layout, region)),
-      effect.none(),
-    )
+    Toggled(region:) ->
+      changed(model, shell_rule.toggled(model.layout, region), effect.none())
 
     // The state of the tab that stops showing is removed and the new one
     // added in the same turn, so the stylesheet never sees two tabs showing.
-    Chosen(tab:) -> #(
-      Model(..model, layout: shell_rule.chosen(model.layout, tab)),
-      tab_changed(model.layout.tab, tab),
-    )
+    Chosen(tab:) ->
+      changed(
+        model,
+        shell_rule.chosen(model.layout, tab),
+        tab_changed(model.layout.tab, tab),
+      )
     SidebarChanged(presence:) -> #(
       Model(..model, sidebar: presence),
       effect.none(),
@@ -201,10 +247,18 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // One listener per connection: moving the element stops the old one
     // before it starts another, so a page that replaced the element leaves
     // nothing listening on the document.
-    Connected -> #(model, effect.batch([stop_keys(model.keys), listen()]))
+    Connected -> #(
+      model,
+      effect.batch([stop_keys(model.keys), listen(), restore()]),
+    )
+
+    // `listen` registers after the paint, so this can arrive after a later
+    // `Connected` or a `Disconnected` has already run. Whatever listener the
+    // model still holds is stopped as the new one is kept, so a reconnect
+    // within one frame leaves exactly one listener on the document.
     Listening(listener:) -> #(
       Model(..model, keys: Some(listener)),
-      effect.none(),
+      stop_keys(model.keys),
     )
     Disconnected -> #(Model(..model, keys: None), stop_keys(model.keys))
 
@@ -221,18 +275,120 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // The layout changes first, so a panel that was closed is open when the
     // card is pressed, and the press follows the render. The card's own
     // handler does the rest: the strand is focused by the server, exactly as
-    // when a person presses the card.
+    // when a person presses the card. The panel a relay opened is saved like
+    // one the reader opened.
     Relayed(relay:) -> {
       let layout = shell_rule.relayed(model.layout, relay)
-      #(
-        Model(..model, layout:),
+      changed(
+        model,
+        layout,
         effect.batch([
           tab_changed(model.layout.tab, layout.tab),
           press_card(relay.card),
         ]),
       )
     }
+
+    // The stored layout replaces the default the page drew first. The tab's
+    // custom state moves with it, so the stylesheet shows the pane the
+    // restored tab names. The saved theme is applied to the root in the same
+    // turn, and is not written back: it is what the storage already holds.
+    Restored(workspace:, saved:, theme:) ->
+      case saved {
+        None -> #(Model(..model, workspace:, theme:), apply_theme(theme))
+        Some(layout) -> #(
+          Model(..model, workspace:, layout:, theme:),
+          effect.batch([
+            tab_changed(model.layout.tab, layout.tab),
+            apply_theme(theme),
+          ]),
+        )
+      }
+
+    // The next theme is applied to the root and written to the storage in the
+    // same turn, so a reload after the press shows the theme the reader chose.
+    ThemeCycled -> {
+      let theme = layout_rule.next_theme(model.theme)
+      #(
+        Model(..model, theme:),
+        effect.batch([apply_theme(theme), save_theme(theme)]),
+      )
+    }
   }
+}
+
+// Sets `data-theme` on the document's root, or removes it where the theme
+// follows the system, so the stylesheet's `prefers-color-scheme` rule decides.
+fn apply_theme(theme: Theme) -> Effect(Msg) {
+  use _ <- effect.from
+  let root = ffi_dom.document_element()
+  case layout_rule.data_theme(theme) {
+    Some(word) -> ffi_dom.set_attribute(root, "data-theme", word)
+    None -> ffi_dom.remove_attribute(root, "data-theme")
+  }
+}
+
+// Writes the theme to its item. As with the layout, a refused write is
+// dropped: the page shows the theme the reader chose and the next load
+// follows the system.
+fn save_theme(theme: Theme) -> Effect(Msg) {
+  use _ <- effect.from
+  let _ =
+    ffi_dom.storage_write(
+      layout_rule.theme_key,
+      layout_rule.encode_theme(theme),
+    )
+  Nil
+}
+
+// A change of layout the reader made: kept in the model, written to the
+// storage under the page's workspace, and followed by `effects`, the ones the
+// change needs on the page. The write is one effect, so a change that is not
+// saved because the storage is blocked still shows.
+fn changed(
+  model: Model,
+  layout: Layout,
+  effects: Effect(Msg),
+) -> #(Model, Effect(Msg)) {
+  #(
+    Model(..model, layout:),
+    effect.batch([save(model.workspace, layout), effects]),
+  )
+}
+
+// Writes the layout under the workspace's item. A page with no workspace
+// writes nothing. A refused write, from blocked or full storage, is dropped:
+// the layout on screen is right, the next load starts from the default, and
+// there is nothing the reader could do about it.
+fn save(workspace: Workspace, layout: Layout) -> Effect(Msg) {
+  case layout_rule.layout_key(workspace) {
+    None -> effect.none()
+    Some(key) -> {
+      use _ <- effect.from
+      let _ = ffi_dom.storage_write(key, layout_rule.encode(layout))
+      Nil
+    }
+  }
+}
+
+// Reads the workspace's digest from the host's own attribute, which the
+// server wrote before the element connected, and the stored layout under it.
+// It runs after the paint, so the page has drawn its default when the stored
+// layout arrives. A page whose attribute is not a digest reads nothing and
+// answers no layout, so the one it has stands.
+fn restore() -> Effect(Msg) {
+  use dispatch, root <- effect.after_paint
+  let host = ffi_dom.host(ffi_dom.as_element(root))
+  let workspace =
+    layout_rule.workspace(result.unwrap(
+      ffi_dom.attribute(host, "workspace"),
+      "",
+    ))
+  let saved =
+    layout_rule.layout_key(workspace)
+    |> option.map(fn(key) { layout_rule.restore(ffi_dom.storage_read(key)) })
+  let theme = layout_rule.theme(ffi_dom.storage_read(layout_rule.theme_key))
+  dispatch(Restored(workspace:, saved:, theme:))
 }
 
 // The custom states for a change of tab: the old one out and the new one in
@@ -277,6 +433,7 @@ fn view(model: Model) -> Element(Msg) {
     html.div([attribute.class("shell-bar")], [
       button(model, shell_rule.Sidebar),
       component.named_slot("bar", [], []),
+      theme_button(model),
       button(model, shell_rule.Panel),
     ]),
     html.div([attribute.class("shell-body")], [
@@ -515,6 +672,22 @@ fn button(model: Model, region: Region) -> Element(Msg) {
       )
     }
   }
+}
+
+// The Theme button: a real button whose words say which theme the page shows
+// and what pressing it does. Its label is fixed words from the rule and holds
+// nothing from the session.
+fn theme_button(model: Model) -> Element(Msg) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("shell-theme"),
+      attribute.aria_label(layout_rule.label(model.theme)),
+      attribute.title(layout_rule.label(model.theme)),
+      event.on_click(ThemeCycled),
+    ],
+    [html.text(layout_rule.word(model.theme))],
+  )
 }
 
 fn button_class(region: Region) -> attribute.Attribute(Msg) {
