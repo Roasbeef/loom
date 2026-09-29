@@ -31,6 +31,13 @@ renders again just for it:
   into the editor. These react to text that only the browser has until the
   form is submitted, which is why they are here.
 
+A page that has ended or was refused needs no element here. The server draws
+its notice (`web_view/view/ended`, `web_view/page.refusal`), and the shell's
+own paragraph inside the component shows while nothing has mounted; this
+package only styles them (`.ended-notice`, `.page-note` in `web_client.css`).
+A tab that mounted and then lost its socket is the one case no element covers
+yet (protocol-change/051, the addendum on an ended page).
+
 It is the client package of Lustre's full-stack layout: `core` and
 `session_view` are the shared code, `loomd` with `web_view` is the server,
 and this is the client. Unlike the guide's single-page app it is a set of
