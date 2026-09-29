@@ -270,6 +270,23 @@ pub type Notice {
   Warned(text: String)
 }
 
+/// A prompt the daemon handed back unsent (protocol-change/038), which the
+/// composer puts back in its editor.
+pub type Returned {
+  Returned(
+    /// Its place in the order the daemon handed prompts back, from one.
+    number: Int,
+    /// What the operator had sent. Attachments do not come back with it.
+    text: String,
+  )
+}
+
+/// How many returned prompts the page keeps for the composer's element to
+/// take. The element takes each one within a frame of its arrival, so the
+/// latest few are more than it needs, and the cap keeps a run of returns from
+/// making every render carry them all.
+pub const returned_kept = 4
+
 /// Whether the page's strand is running an operation.
 pub type Activity {
   /// Nothing is running: a draft is sent as a prompt.
@@ -379,6 +396,14 @@ type View(socket) {
     /// later reply to that command is `Shared.answer`, and the two are what
     /// `notice` draws.
     outcome: String,
+    /// How many prompts the daemon has handed back to this page's strand
+    /// since the page opened, and the latest `returned_kept` of them, oldest
+    /// first. The composer's element puts each in the editor once, by its
+    /// number. The shared record holds a returned prompt only until the next
+    /// step forgets it (`step.forget_surfaces`), so it is taken here at the
+    /// end of every message.
+    returns: Int,
+    returned: List(Returned),
     /// How many drafts a command consumed at dispatch. A draft a prompt
     /// carries is consumed when the lane sends it, which the shared record
     /// counts as `drafts_sent`; the composer's editor is keyed by the sum,
@@ -468,6 +493,8 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       status: Connecting,
       refusal: None,
       outcome: "",
+      returns: 0,
+      returned: [],
       consumed: 0,
       timer: None,
       armed: None,
@@ -633,8 +660,81 @@ fn finished(
   effects: List(step_effect.Effect(socket, Nil)),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  let model = refreshed(model) |> rearm(at)
+  let model = taken(model) |> refreshed |> rearm(at)
   #(model, perform(model.view.transport, effects))
+}
+
+// Takes the prompts the daemon handed back out of the shared record, which
+// keeps them only until a step forgets them. The daemon held each prompt
+// only in memory, so this is its last copy (protocol-change/038); the page
+// keeps it for the composer's element to put in the editor, and says what
+// came back. A prompt for a strand the page does not compose for, or for
+// another session, has no editor here, and the notice says so instead of
+// pretending it was restored.
+fn taken(model: Model(socket)) -> Model(socket) {
+  case model.shared.returned_drafts {
+    [] -> model
+    drafts -> {
+      let mine =
+        list.filter(drafts, fn(draft) {
+          draft.session == model.shared.session && draft.strand == strand
+        })
+      let numbered =
+        list.index_map(mine, fn(draft, index) {
+          Returned(number: model.view.returns + index + 1, text: draft.text)
+        })
+      let returned =
+        list.append(model.view.returned, numbered)
+        |> list.reverse
+        |> list.take(returned_kept)
+        |> list.reverse
+      Model(
+        shared: Shared(..model.shared, returned_drafts: [], answer: ""),
+        view: View(
+          ..model.view,
+          refusal: None,
+          outcome: returned_words(drafts, mine),
+          returns: model.view.returns + list.length(mine),
+          returned:,
+        ),
+      )
+    }
+  }
+}
+
+// What the page says when prompts come back: how many, for which strand, and
+// whether they are in the composer.
+fn returned_words(
+  drafts: List(session_model.ReturnedDraft),
+  mine: List(session_model.ReturnedDraft),
+) -> String {
+  let elsewhere = list.length(drafts) - list.length(mine)
+  let here = case mine {
+    [] -> []
+    [_, ..] -> [
+      counted(list.length(mine))
+      <> " held for "
+      <> strand
+      <> ", put back in the composer",
+    ]
+  }
+  let there = case elsewhere {
+    0 -> []
+    count -> [
+      counted(count)
+      <> " held for another strand or session, which the page cannot show",
+    ]
+  }
+  "The daemon handed back "
+  <> string.join(list.append(here, there), "; ")
+  <> "."
+}
+
+fn counted(count: Int) -> String {
+  case count {
+    1 -> "1 prompt"
+    _ -> int.to_string(count) <> " prompts"
+  }
 }
 
 /// Folds lane updates into the component as the shared step's lane fold
@@ -656,12 +756,17 @@ pub fn apply(
   model: Model(socket),
   updates: List(session_channel.Update),
 ) -> Model(socket) {
-  let shared =
-    list.fold(updates, model.shared, fn(shared, update) {
-      lane_fold.apply_channel_update(shared, update, lane_fold.nothing_shown())
-      |> step.forget_surfaces
-    })
-  refreshed(Model(..model, shared:))
+  list.fold(updates, model, fn(model, update) {
+    let shared =
+      lane_fold.apply_channel_update(
+        model.shared,
+        update,
+        lane_fold.nothing_shown(),
+      )
+    let held = taken(Model(..model, shared:))
+    Model(..held, shared: step.forget_surfaces(held.shared))
+  })
+  |> refreshed
 }
 
 // --- what the page draws ---------------------------------------------------
@@ -1197,11 +1302,16 @@ fn commanded(
     True -> model.view.consumed + 1
     False -> model.view.consumed
   }
-  finished(
-    Model(
-      shared: step.forget_surfaces(shared),
+
+  // A prompt the daemon handed back is taken before the step's leftovers are
+  // forgotten, which would drop it.
+  let acted =
+    taken(Model(
+      shared:,
       view: View(..model.view, refusal: None, outcome: shared.notice, consumed:),
-    ),
+    ))
+  finished(
+    Model(..acted, shared: step.forget_surfaces(acted.shared)),
     effects,
     at,
   )
@@ -1457,6 +1567,31 @@ pub fn notice(model: Model(socket)) -> Notice {
 /// ```
 pub fn drafts(model: Model(socket)) -> Int {
   model.shared.drafts_sent + model.view.consumed
+}
+
+/// How many prompts the daemon has handed back to the page's strand since
+/// the page opened. The composer's element compares it with the count it
+/// last saw, so a number that rises is a return to put in the editor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.returns(model)
+/// ```
+pub fn returns(model: Model(socket)) -> Int {
+  model.view.returns
+}
+
+/// The latest prompts the daemon handed back, oldest first, each numbered
+/// by its place in `returns`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.returned(model)
+/// ```
+pub fn returned(model: Model(socket)) -> List(Returned) {
+  model.view.returned
 }
 
 /// The attachment the last capture was taken for: who the page acts as.

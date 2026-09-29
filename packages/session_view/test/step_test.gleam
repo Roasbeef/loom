@@ -25,6 +25,7 @@ import session_view/lane_fold
 import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
 import session_view/operator
+import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
 import session_view/step
@@ -439,4 +440,24 @@ pub fn a_reply_is_kept_as_the_answer_and_a_read_refusal_is_not_test() {
       session_channel.RequestRefused("steer", 5, "conflict", "busy"),
     )
   assert refused.answer == "conflict: busy"
+}
+
+// A prompt the daemon hands back is the prompt's last copy, so forgetting the
+// surfaces a host has none for leaves it in the record for the host to take.
+pub fn forgetting_surfaces_keeps_a_returned_prompt_test() {
+  let returned =
+    applied(
+      attached(),
+      session_channel.Auxiliary(protocol.HeldInputReturned(
+        strand: "main",
+        id: "h1",
+        kind: "queue",
+        text: "deploy when green",
+        attachment_count: 0,
+      )),
+    )
+  assert returned.returned_drafts
+    == [session_model.ReturnedDraft("session", "main", "deploy when green")]
+  assert step.forget_surfaces(returned).returned_drafts
+    == returned.returned_drafts
 }

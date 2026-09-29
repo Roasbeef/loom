@@ -341,7 +341,8 @@ pub fn new(
 /// approval inspector shows none of the three. The settle then compares the
 /// record with the one the event started from, as `session_step.settle` does
 /// after each of the terminal's events, and the facts such a host has no
-/// surface for are dropped (`forget_surfaces`).
+/// surface for are dropped (`forget_surfaces`). A prompt the daemon handed
+/// back stays in `Shared.returned_drafts` for the host to take.
 ///
 /// What the terminal alone does in its tick is absent: the recorded replay,
 /// its daemon-control drains, the activity poll and the footer's cache label.
@@ -390,14 +391,18 @@ pub fn update(
 }
 
 /// Drops what the record's reducers noted for surfaces a host does not have:
-/// the surface facts, the queue editor's notices, the goal board's
-/// observations and the held prompts the daemon handed back.
+/// the surface facts, the queue editor's notices and the goal board's
+/// observations.
 ///
 /// The record accumulates these until a host applies them and empties the
 /// lists, and a host with no surface for them would otherwise grow them for
-/// the life of the session. A returned prompt is the prompt's last copy, so
-/// dropping it is a loss; the web view has no editor to put it in
-/// (`docs/design-notes/step-extraction.md`, question 12).
+/// the life of the session. The held prompts the daemon handed back are not
+/// dropped. A returned prompt is the prompt's last copy, so losing it is a
+/// loss whichever host it is, and a host that has somewhere to put it (the
+/// web view keeps it for the composer's element, since question 12 of
+/// `docs/design-notes/step-extraction.md` was reopened) takes it out of
+/// `Shared.returned_drafts` and empties the list, as the terminal does. A host
+/// with nowhere to put one must empty the list itself.
 ///
 /// ## Examples
 ///
@@ -408,13 +413,7 @@ pub fn update(
 pub fn forget_surfaces(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
-  Shared(
-    ..shared,
-    surface_facts: [],
-    queue_notices: [],
-    goal_observations: [],
-    returned_drafts: [],
-  )
+  Shared(..shared, surface_facts: [], queue_notices: [], goal_observations: [])
 }
 
 // Files one arrival into the buffer that waits for it. A frame from a source

@@ -292,7 +292,9 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   its own with `nothing_shown()`), `service_reads`, and the lane's tick with
   its history read; it then settles against the record it started from and
   drops the facts such a host has no surface for (`forget_surfaces`: the
-  surface facts, queue notices, goal observations and returned drafts). The
+  surface facts, queue notices and goal observations; a returned prompt is
+  the prompt's last copy, so it stays in `returned_drafts` for the host to
+  take and empty, as the web view does for the composer's element). The
   terminal's block-summary read is left out, because the daemon may run a
   summarizer for a label. `Input(stamp, Acted(command))` runs `commands.act`
   and settles, and leaves the command's facts for the host to read
