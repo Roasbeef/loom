@@ -30,6 +30,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/render
 import tui/session_model
+import tui/side_surfaces
 import tui/surfaces
 import tui/workspace
 import tui_test/pushed
@@ -213,7 +214,7 @@ pub fn inspector_retains_the_draft_and_shows_unavailable_without_a_connection_te
       ),
     )
   let opened =
-    surfaces.open_context(original, context.Overview)
+    side_surfaces.open_context(original, context.Overview)
     |> fn(model) { tui.update(backend.Resize(100, 30), model) }
   let #(buf, _) = render.view(opened, geometry.rect_new(0, 0, 100, 30))
   assert string.contains(
@@ -251,7 +252,7 @@ pub fn wheel_scrolls_the_visible_inspector_without_moving_transcript_test() {
       fn() { 0 },
     )
   let opened =
-    surfaces.open_context(base, context.All)
+    side_surfaces.open_context(base, context.All)
     |> fn(model) { tui.update(backend.Resize(100, 30), model) }
   let moved = tui.update(backend.MouseScroll(5, 5, False), opened)
   assert moved.shared.context.scroll == 0

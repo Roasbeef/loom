@@ -70,6 +70,7 @@ import tui/selection
 import tui/session_control
 import tui/session_model.{Attached, OverlaySubmission, Shared}
 import tui/session_selector
+import tui/side_surfaces
 import tui/submit
 import tui/summary_panel
 import tui/surfaces
@@ -540,7 +541,7 @@ fn update_goal_inspector(
       )
     focused_goal_panel.Continue(next) ->
       Model(..model, view: View(..model.view, overlay: GoalInspector(next)))
-    focused_goal_panel.Refresh -> surfaces.request_goal_status(model)
+    focused_goal_panel.Refresh -> side_surfaces.request_goal_status(model)
     focused_goal_panel.Pause ->
       tui_model.run_shared(model, surfaces.submit_goal_action(
         _,
@@ -715,11 +716,11 @@ fn update_agent_inspector(
     keys.Char("]") if inspector.detail == agents.Messages ->
       select_agent_message(model, inspector, 1)
     keys.Char("[") if inspector.detail == agents.Notes ->
-      surfaces.select_note(model, -1)
+      side_surfaces.select_note(model, -1)
     keys.Char("]") if inspector.detail == agents.Notes ->
-      surfaces.select_note(model, 1)
+      side_surfaces.select_note(model, 1)
     keys.Char("r") if inspector.detail == agents.Notes ->
-      surfaces.refresh_notes(model)
+      side_surfaces.refresh_notes(model)
     keys.Ctrl("g") if inspector.detail == agents.Notes -> toggle_note_mode(model)
     keys.Ctrl("g") -> submit.toggle_details(model)
     keys.Char("n") ->
@@ -841,7 +842,7 @@ fn update_agent_inspector(
     AgentInspector(next)
       if next.detail == agents.Notes && next.selected != inspector.selected
     ->
-      surfaces.refresh_notes(
+      side_surfaces.refresh_notes(
         Model(
           ..changed,
           view: View(
@@ -918,7 +919,7 @@ fn select_agent_detail(
       ),
     )
   case detail {
-    agents.Notes -> surfaces.refresh_notes(selected)
+    agents.Notes -> side_surfaces.refresh_notes(selected)
     agents.Overview | agents.Messages | agents.Collaboration -> selected
   }
 }
@@ -1266,11 +1267,11 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
 
 fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   case key, model.view.help_open, model.view.notes_open {
-    keys.Char("r"), False, True -> surfaces.refresh_notes(model)
-    keys.Up, False, True -> surfaces.select_note(model, -1)
-    keys.Down, False, True -> surfaces.select_note(model, 1)
-    keys.Char("["), False, True -> surfaces.select_note(model, -1)
-    keys.Char("]"), False, True -> surfaces.select_note(model, 1)
+    keys.Char("r"), False, True -> side_surfaces.refresh_notes(model)
+    keys.Up, False, True -> side_surfaces.select_note(model, -1)
+    keys.Down, False, True -> side_surfaces.select_note(model, 1)
+    keys.Char("["), False, True -> side_surfaces.select_note(model, -1)
+    keys.Char("]"), False, True -> side_surfaces.select_note(model, 1)
     keys.Ctrl("g"), False, True -> toggle_note_mode(model)
     keys.Ctrl("g"), _, _ -> submit.toggle_details(model)
     keys.PageUp, False, True -> {

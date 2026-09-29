@@ -38,7 +38,7 @@ import tui/markdown
 import tui/model.{type Model, Caches, Model, View} as tui_model
 import tui/render
 import tui/session_model.{Shared}
-import tui/surfaces
+import tui/side_surfaces
 import tui/transcript_anchor
 
 /// Terminal polling still produces idle ticks so the websocket inbox can be
@@ -183,7 +183,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
           revealed_rows:,
           rendered_anchors:,
           rendered_gutters:,
-          scroll_offset: case surfaces.notes_surface(after) {
+          scroll_offset: case side_surfaces.notes_surface(after) {
             True -> after.view.scroll_offset
             False ->
               bounded_scroll_offset(

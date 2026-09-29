@@ -58,8 +58,8 @@ import tui/queue_editor
 import tui/queue_panel
 import tui/render
 import tui/session_model.{ReturnedDraft, Shared}
+import tui/side_surfaces
 import tui/summary_panel
-import tui/surfaces
 
 /// Decides whether one unexpected daemon death earns a reconnect.
 ///
@@ -202,7 +202,7 @@ pub fn apply_channel_update(
 pub fn surroundings(model: Model) -> lane_fold.Surroundings {
   lane_fold.Surroundings(
     worktree: worktree_view_of(model),
-    notes: case surfaces.notes_surface(model) {
+    notes: case side_surfaces.notes_surface(model) {
       True -> lane_fold.NotesShown
       False -> lane_fold.NotesHidden
     },
@@ -658,7 +658,7 @@ fn show_surface(
 // selection holds. Any other board only seeded the todo panel, which the
 // event fold has already done.
 fn show_notes(model: Model, board: notes_view.Board) -> Model {
-  case board.strand == surfaces.notes_target(model) {
+  case board.strand == side_surfaces.notes_target(model) {
     False -> model
     True -> {
       let previous = case model.shared.note_board {
@@ -691,7 +691,7 @@ fn show_notes(model: Model, board: notes_view.Board) -> Model {
           note_board: Some(board),
           // A read the terminal sent to seed the todo panel is not
           // news to an operator who has no notes surface open.
-          notice: case surfaces.notes_surface(model) {
+          notice: case side_surfaces.notes_surface(model) {
             True -> "notes refreshed for " <> board.strand
             False -> model.shared.notice
           },
@@ -831,7 +831,7 @@ pub fn note_max_scroll(model: Model) -> Int {
     AgentInspector(_) -> layout.message_detail_area(model)
     _ -> layout.note_detail_area(model)
   }
-  render.prepared_notes(model, surfaces.notes_target(model), area)
+  render.prepared_notes(model, side_surfaces.notes_target(model), area)
   |> note_panel.max_scroll(model.view.note_selected)
 }
 
