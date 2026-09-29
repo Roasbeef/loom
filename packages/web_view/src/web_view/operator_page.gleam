@@ -197,7 +197,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
 // for any of it.
 fn bar(model: component.Model(socket)) -> controls.Bar(Msg(socket)) {
   controls.Bar(
-    strand: component.strand,
+    strand: component.strand(model),
     stop: case component.activity(model) {
       component.Busy -> Some(Controlled(component.Stop))
       component.Idle -> None
