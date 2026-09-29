@@ -574,18 +574,29 @@ pub fn a_step_id_cannot_climb_out_of_the_work_root_test() {
   broker.stop(broker_actor)
 }
 
-pub fn the_socket_and_the_token_live_under_that_directory_test() {
+pub fn the_build_lives_in_that_directory_and_the_socket_beside_it_test() {
+  // The build root is the execution directory; the socket is in its own
+  // directory under the socket root (issue #611), which for a host that
+  // names none is the work root.
   let broker_actor = idle_broker()
+  let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
   let built =
     codemode.exec_config(
-      config_for(broker_actor),
+      config,
       request,
       "/work/.codemode/one",
       9000,
       widened_by: [],
     )
-  assert built.satellite.cap_socket_path == "/work/.codemode/one/s"
+  assert built.satellite.cap_socket_path
+    == codemode.socket_path(codemode.socket_directory(
+      config,
+      op_id: request.op_id,
+      step_id: request.step_id,
+      source_index: request.source_index,
+    ))
+  assert string.starts_with(built.satellite.cap_socket_path, config.work_root)
   assert built.compile.build_root == "/work/.codemode/one"
   broker.stop(broker_actor)
 }
