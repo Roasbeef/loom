@@ -1,89 +1,148 @@
 # Current handoff
 
-This handoff is pinned to `868dfedd8754e1b8a750add24227bd2b83fcd167`
-plus the documentation cleanup commits on `docs/tracker-cleanup`. Live
-tracker state was checked on 2026-09-27. Main subsequently merged #576 and
-#577 through #578 at `e386fc5d`; those shared-step design and web-layout
-changes are outside this branch's baseline.
+This handoff is baselined against `c5fe2441d` (`main` after #619, S5 of the
+step extraction) on 2026-09-29, plus the S6 documentation commits on
+`docs/step-extraction-record`. Tracker state was read with `gh` the same
+day. Every claim below was checked against that tree or that tracker; a
+claim that could not be checked says so.
 
-The previous edition was pinned to `b4eeb50c` and carried stale in-flight
-statuses. #558–#560, claim-flow step 1 (#562), web UI phase A (#563),
-event-driven delivery (#567), roster-on-subscribe (#574), and the etui
-pin (#570) are merged. Their old signoffs are not new validation of this
-branch.
+## What the previous edition got wrong
+
+The previous edition was pinned to `868dfedd8` and written on a branch that
+predates the whole step extraction. Four of its statements are now false.
+
+- It said web UI phase B needed the extracted step and that three of
+  ADR-014's four blockers remained. All four are closed, and the step lives
+  in `session_view`. ADR-014's addendum of 2026-09-29 says how.
+- It said the web view drives the lane and the projection. The web view
+  drives the shared step (`step.update`), and its component holds two
+  records, `shared` and `view`.
+- It said the client and the terminal pin etui at `58d0cbd7`. Both pin
+  `c10f6a64` (`gleam.toml`), which adds a linear wrap for a word wider than
+  the row.
+- It said an approval card sits below the composer. The card sits above it,
+  in the dock the stylesheet pins to the viewport's bottom edge, so a card
+  appearing grows the dock upward and never moves Send.
+
+It also treated operator diagnostics (#363, #377, #286) and the provider
+debt PR #579 as unmerged. Those issues are closed and #579 merged on
+2026-09-28. The terminal-state work (#399, #524, PR #583) is still open.
 
 ## Where the tree is
 
-`packages/session_view` owns the portable session lane, decoders, snapshot
-adoption and transcript projection. Its manifest depends on `core`,
-`machine` and the standard library. `packages/tui` owns the terminal step
-and its effects, and `packages/web_view` owns the Lustre component and
-operator page. ADR-013, ADR-014 and protocol-change/051 record the split;
-[the client architecture](architecture/client.md#the-client-engine-and-its-hosts)
-is the map.
+**Part 1 of [issue #569](https://github.com/Roasbeef/loom/issues/569) is
+done.** The session's half of the client step lives in `packages/session_view`,
+which depends on `core`, `machine` and `gleam_stdlib` alone, held there by
+lint R6. It holds the lane (`session_channel`), the decoders, snapshot
+adoption, the projection and the line builders, and, since S4, the shared
+step: the session record `model.Shared(socket, recorder, source,
+replay_source)`, the folds of pushed events and lane updates
+(`event_fold`, `lane_fold`), the operator's commands (`commands`), the
+side-surface reads (`surfaces`), the settle, and `step.update`.
 
-The terminal runtime stamps and admits inputs, the step returns effects,
-and the runtime settles those effects. Socket arrivals wake the terminal.
-`terminal_poll_timeout` follows the lane deadline, with a one-second idle
-ceiling because resize still needs a poll. Both client and terminal pin
-etui at `58d0cbd775aad61b2a42830eb818a83e1a0ad1d8`. The lane's pushing
-refresh is 5000 ms, and the gateway publishes presence on subscription.
-[Delivery](architecture/delivery.md) explains the ordering and ownership.
+The two hosts run it in different shapes.
 
-The web component takes bursts of at most 64 frames and schedules the
-lane's next deadline. Its strand is `main`. Claim invitations no longer
-carry a bearer: protocol-change/053 step 1 is merged. The remaining owner
-admin steps still need an implementation decision; do not infer approval
-from the claim-flow merge.
+- **The terminal** (`packages/tui`) holds `Model(shared, view)`, with
+  `TerminalShared` binding the four handle parameters. It calls the shared
+  units one at a time, applies the surface facts each records between the
+  drain's updates, and does not call `step.update`. The terminal runtime
+  stamps and admits inputs, the step returns effects, and the runtime
+  performs them. Its socket wakes its loop, and `terminal_poll_timeout`
+  follows the lane's deadline with a one-second idle ceiling, because a
+  resize needs a poll.
+- **The web view** (`packages/web_view`) holds `component.Model(shared,
+  view)`. `update` reads the transport's clock once, hands the step a
+  message (`Arrived` files, `Ticked` drains and ticks, `Acted` runs a
+  command) and derives what it draws from the record the step left,
+  rebuilding a projection only when its inputs moved. A burst of at most 64
+  frames is one message, and so one render, and one timer is armed for the
+  lane's `next_due`. `session_view/step_test` holds `step.update` to the
+  order of the terminal's tick, since nothing else does.
 
-## Tracker cleanup wave
+The lane's pushing refresh is 5,000 ms, and the gateway pushes the roster to
+a subscriber (protocol-change/054). [Delivery](architecture/delivery.md)
+explains the ordering and ownership, and [the client
+architecture](architecture/client.md#the-client-engine-and-its-hosts) is the
+map.
 
-The survey covered 90 issues. #1, #139, #372, #426 and #481 were closed
-with evidence. #19 was consolidated into #181, preserving the dedicated
-credential-store work; [#579](https://github.com/Roasbeef/loom/pull/579)
-updates its plan and spec-gap references. None of these closures claims
-that keychain-backed storage has shipped.
+**The page today.** `loomd --ui` serves an observer's page and an operator's
+page for one session, on the strand `main`. Both draw the agent strip with
+cache rings and miss notices, turns with folded work, sub-agent, advisor and
+peer rows, rendered Markdown, and the newest 150 rows with paging back to 300
+(`Load older`). An operator's page also has a composer and approval cards,
+and since S5 it runs any session command a draft names, except `/add-dir` and
+`/add-write-dir` (protocol-change/051, the newest addendum). It cannot yet
+draw a live answer, a todo board, an expanded row or a second strand, and its
+composer has no autocomplete. Claim invitations carry no bearer: 053 step 1 is
+merged, and the owner admin steps still need an implementation decision. Do
+not infer approval from the claim-flow merge.
 
-This branch addresses #394, #94 and #76:
-
-- Waking schedule confirmation names `[schedules] model_created = "wake"`.
-  The example explains `off`/`steer`/`wake`, recurring expiry, late one-shot
-  delivery, and the provider spending boundary. Subagent schedules steer.
-- The production Anthropic serializer advertises 22 built-ins. The full
-  both-mode tool array is 68,311 Unicode characters / 68,419 UTF-8 bytes.
-  The 17.1K–22.8K token range is a character estimate, not a provider token
-  count. `scripts/measure_tool_surface.escript` and its Python summarizer
-  reproduce the census; the [design note](design-notes/tool-search-and-code-mode.md)
-  revises the recommendation against it.
-- The style audit corrects eager-argument and effectful-escape guidance,
-  and the stale claims about `api.compact`, `api.navigate`, idle strand
-  creation and conformance assertion checking. Lint severity is unchanged.
-
-Two independent implementation branches are still in progress: operator
-diagnostics (#363, #377, #286), and terminal state (#399, #524). Their
-proposals 055 and 056 and their unmerged behavior are not part of this
-branch. Each needs its own adversarial review and exact-head validation.
-
-The survey added `work:*`, `batch:*`, `status:partial`, `needs:upstream`,
-and missing `area:*` labels while preserving existing phase and priority
-labels. The batch labels identify related work; they do not assert that
-all acceptance criteria have passed.
+The toolchain is Gleam 1.19.0-rc2 (`.github/workflows/ci.yml`). `make
+check-affected BASE=origin/main` runs only the gates a change can affect; a
+change to the daemon's package also needs `make signoff`.
 
 ## Next actions, in order
 
-1. Review and land the independent cleanup PRs only after their exact-head
-   gates and required Linux signoff pass. Merge is not authorized by this
-   survey task. Resolve shared documentation conflicts against the final
-   merged code rather than retaining both branches' line citations.
-2. Measure actual provider token counts and representative workloads before
-   choosing tool search. Exit: measured prompt size, cache-prefix behavior
-   and discovery cost, rather than another character estimate.
-3. Wake etui on SIGWINCH before raising the terminal's one-second idle
+Part 2 of #569 (the web UI's phase B) is the current work. A first batch is
+in progress and is not on `main`; look for its branch or PR before
+starting any of it. Items 1 to 3 are in the order that work is running.
+
+1. **A pinned frame, and following the tail.** Header and agent strip pinned
+   at the top, the composer and approval cards pinned at the bottom, and the
+   transcript its own scroll container that follows the tail unless the
+   reader scrolled up, with a "jump to latest" control when they have. This
+   replaces whole-page scrolling, which is what makes following fragile
+   (`<loom-follow>` landed in #577 and does not follow in practice). Exit:
+   find whether following regressed or covers only some growth (a capture
+   against a push, a reader a few pixels above the bottom), then a hand check
+   in a browser of the operator page, the observer page and a session with a
+   running strand. S5 did not run that hand check, and it is still owed.
+2. **The composer.** Slash-command autocomplete listing the session commands
+   the page can run (not surface commands, not `/add-dir` or `/add-write-dir`),
+   with the names and argument hints the terminal's completer draws from
+   `command`; Cmd+Enter and Ctrl+Enter submit, and plain Enter inserts a
+   newline, as a client-side listener that adds no event to the socket's
+   accepted list; a typed notice, so the page draws command outcomes and
+   refusals and not read names ("advisor_pending sent" on every page load);
+   and a prompt the daemon returns put back in the composer, or at least a
+   notice naming the strand and count. Exit for the last two: the page
+   states what happened to a returned prompt, and no notice shows an internal
+   read name.
+3. **Expand a row, then the todo panel.** A `code_mode` call shows a
+   six-line preview and the program it ran cannot be read from the page;
+   the same holds for tool results and reasoning. The todo panel is a view
+   over state already shared (`todo_board`, `core/todo_list.decode`): the
+   active phase expanded, other phases folded, the terminal's status glyphs
+   and `n/m done`, with the reviewer band beside it.
+4. **The rest of Part 2**, in the order #569 lists it: strand focus (advisor
+   and `sub:*` as their own columns), live streams (the streaming reasoning
+   row with its elapsed time and headline, and a streaming answer), the
+   session sidebar, advisor nudges, changes and trace panes, peer reply,
+   session actions (fork, stop, goals), images, the admin page and CLI (053
+   steps 2 onward), share and invite from the page (needs a narrow 051
+   addendum), and a visual design pass. Also open there: an ended page must
+   say so, a decision on more than one page per principal per session, and
+   whether the memory context the daemon attaches to each prompt belongs in
+   the transcript.
+5. **Option (d), later.** Once S5's engine has run for a while, examine
+   moving the terminal onto `step.update` by passing a pure callback
+   the sequencer calls after each piece, so both hosts run one sequence. It
+   is recorded on #569 and not planned. Exit: a written estimate of the three
+   costs the note names (callbacks through the step, reordering risk that
+   the replay identity checks catch, and the Erlang inliner on long settle
+   chains), measured with `scripts/tui_perf.sh` and `erlc +time` before any
+   code.
+6. **Terminal state.** Land or close PR #583 (#399, #524).
+7. **Wake etui on SIGWINCH** before raising the terminal's one-second idle
    ceiling. Exit: resize repaints without waiting for a poll, and a quiet
    terminal wakes only for work its lane or runtime owes.
-4. Continue the shared-step and owner-admin plans from their current merged
-   proposals. Exit criteria belong in their issues and protocol changes;
-   the tracker sweep does not expand their authorized scope.
+8. **Measure actual provider token counts** and representative workloads
+   before choosing tool search. Exit: measured prompt size, cache-prefix
+   behavior and discovery cost, rather than the character estimate in
+   [the design note](design-notes/tool-search-and-code-mode.md).
+
+Before remote multi-viewer use of the page (052), measure the server-side
+re-render and diff cost per batch per viewer.
 
 ## Rulings to preserve
 
@@ -98,12 +157,36 @@ a review finding; a new source of messages that wakes nothing belongs in
 which lines a capture becomes and what an operator's input becomes on the
 wire are `session_view`'s. A host owns its runtime and its view and
 nothing else; session logic found in `web_view`, or duplicated in `tui`, is
-a review finding.
+a review finding. The page compares what each projection was built from, and
+not `render_revision`, which moves for stream fragments and tool tails the
+page does not draw (question 3 of the step-extraction note).
+
+**Commands, not a shared key vocabulary** (owner, 2026-09-27). Keys stay in
+the terminal, and both hosts hand the session the same closed
+`msg.Command`. The web view maps its DOM events to it. ADR-014's second
+blocker is amended accordingly.
+
+**Daemon control, reconnect and the attachment jobs stay terminal-only**
+(owner, 2026-09-27). A session sidebar mounts one component per session.
+
+**The host keeps the loop over a drain's updates** (owner, 2026-09-28,
+question 11). One update is the shared unit, and the recorded facts are
+applied between updates.
+
+**`step.update` is the entry for a host with no surfaces of its own** (owner,
+2026-09-28, question 12, option (a)). The terminal keeps calling the shared
+units, and a `session_view` test holds the two orders together. A change to
+the terminal's tick order changes `update` and `step_test` too.
+
+**The page runs every session command but adding a directory** (owner,
+2026-09-29). `/add-dir` and `/add-write-dir` name a path on the daemon's
+host and are refused on the page. A `command.Surface` command is refused
+with a notice and never sent as a prompt.
 
 **Effects are values and name their handles.** A step or a lane returns
 what it decided; the host performs it, in decision order, against the
 handle each effect names, never a handle looked up at perform time. The
-web host performs the lane's outputs inside one `effect.from`, because
+web host performs the step's effects inside one `effect.from`, because
 Lustre's `effect.batch` does not order them.
 
 **The buffer bound is the host's.** Admission never drops a frame for
@@ -114,7 +197,7 @@ Event-driven delivery changes when a host reduces, not these.
 
 **A page is never more than an operator.** The role is the smallest of the
 membership, the ceiling the link was minted with, and Operator. A page
-never offers allow for the session, its approval cards sit below the
+never offers allow for the session, its approval cards sit above the
 composer and are drawn from the record alone, nothing from the session
 becomes markup, and the page nonce is never rendered into a document.
 
@@ -133,22 +216,27 @@ listing is never permission to activate a saved target.
 
 ## Deliberately open and carried forward
 
+- **The page runs reads for surfaces it does not draw.** After a first
+  capture it reads notes, context, advisor nudges and the goal, four round
+  trips that hold the lane's command slot, and it reads the context again
+  when an operation ends. The owner chose this over choosing which reads a
+  host has a surface for. Revisit it if a per-page cost is measured.
+- **A returned prompt is lost on the page** until item 2 above lands: the
+  step drops `returned_drafts`, and the page has no editor to hold it.
+- **The page loads no skills catalogue**, so a skill's slash command is
+  refused as unknown there. Reading the catalogue is a follow-up.
 - **Remote access to the page**, protocol-change/052: a TLS proxy at a
   listed origin with a `__Host-` cookie. Proposed, design only; today a
   remote person uses `ssh -L`.
-- **The 053 admin page.** A later phase of 053, if built at all: loopback
-  only, revoke-only, rendering each grant as a `loom access` line.
-- **Web UI phase B**, interactivity beyond the composer and approvals:
-  strand focus, history paging, fork, abort, image prompts and the
-  auxiliary reads. It needs strand focus, and with it the extracted step:
-  of ADR-014's four blockers the inbox split is done, and engine-owned key
-  and pointer types, the split of the model into engine and view state,
-  and host handles as type parameters remain.
+- **The 053 admin page.** A later phase of 053: loopback only, revoke-only,
+  rendering each grant as a `loom access` line.
 - **`conformance` declares `prompt` as a dependency and imports nothing
   from it.** Remove it, with the manifest updates that follow.
-- `msg.Event` still carries etui's `keys.Key` and `backend.MouseButton`,
-  and the test fixture `pushed.attached()` is a replaying peer with a lane,
-  a state the shipped client never reaches.
+- The module comment of `session_view/model.gleam` still says the web view
+  "will bind" the handles to its relay and `Nil`. It does, so the sentence
+  is stale; fix it with the next change to that file.
+- The test fixture `pushed.attached()` is a replaying peer with a lane, a
+  state the shipped client never reaches.
 
 ## Earlier collaboration follow-ups
 
@@ -160,21 +248,15 @@ outgoing-link limit race remain carried-forward follow-ups. The coordinator
 example for following up with already launched children also remains open.
 Protocol 054 still needs its previously requested live quiet-web drive to
 confirm attachment reaches `Pushing` and rendering follows the pushed rate.
-This docs
-batch did not re-test their reachability or close them.
+This edition did not re-test the reachability of these items or close them.
 
 ## Validation boundary
 
-The cleanup passed format, doc, prelude and lint checks, the 17 schedule
-tests, TOML policy parsing, mirror equality, and a byte-identical replay of
-all three measured tool-array profiles. Removing the operator-setting
-text fails the new regression; restoring it passes. Doc and lint checks
-retain existing warnings. An independent Astra pass found two inaccurate
-prose claims; both were corrected and rechecked with no remaining findings.
-
-Full `make check`, hosted CI and Linux signoff remain separate gates for
-this branch. [Provider PR #579](https://github.com/Roasbeef/loom/pull/579)'s hosted Linux gate passed, but its separate
-remote signoff stopped in dependency preparation after three Hex rate-limit
-retries. No passing signoff is inferred from hosted CI. The carried-forward
-rulings above were retained as design constraints; this wave does not
-re-certify their historical end-to-end tests.
+S6 changed documents only. `make doc-check` is the proof: coverage, the
+`AGENTS.md` mirrors and every file:line citation in the documents it
+checks. No code was built or run for this edition, so the counts and timings
+it relies on are the ones recorded slice by slice in section 5 of
+[the step-extraction note](design-notes/step-extraction.md), measured
+against the trees named there. The hand check in a browser is not run, as
+item 1 says. Where a document and the code disagreed, the code was taken;
+the note's S6 entry lists the disagreements.
