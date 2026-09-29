@@ -12,6 +12,7 @@ import broker/policy
 import client/catalog
 import client/codemode
 import client/daemon/transfer
+import client/host_git
 import client/serve
 import client/session_git
 import client/worktree_diff
@@ -518,20 +519,19 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
           clock:,
         )
         as "the fixture starts the production broker and pool"
-      run(
-        worktree_diff.Wiring(
-          workspace:,
-          broker:,
-          base_policy: base,
-          clock:,
-          demand: exec.PlatformEnforcement,
-          env: [
-            #("PATH", path),
-            #("HOME", "/nonexistent"),
-          ],
-          entropy: fn() { bootstrap.system_time_ms() },
-        ),
-      )
+      run(worktree_diff.Wiring(
+        workspace:,
+        broker:,
+        base_policy: base,
+        clock:,
+        demand: exec.PlatformEnforcement,
+        env: [
+          #("PATH", path),
+          #("HOME", "/nonexistent"),
+        ],
+        entropy: fn() { bootstrap.system_time_ms() },
+        git: host_git.program(),
+      ))
 
       // The pool's original helper witnesses, not a stop request, prove drain.
       broker.stop(broker)

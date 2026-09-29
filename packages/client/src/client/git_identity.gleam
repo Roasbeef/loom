@@ -22,7 +22,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import host/bootstrap
 import tools/tool
 
 /// The server selects the generated global configuration for every tool.
@@ -47,8 +46,7 @@ pub fn prepare(
   helper helper: String,
   reading reading: fn(String) -> Result(String, Nil),
 ) -> Result(Option(String), String) {
-  let git = bootstrap.find_executable("git")
-  let configured = configured_identity(wiring, git, home, reading)
+  let configured = configured_identity(wiring, home, reading)
   let #(identity, warning) = case configured {
     Ok(identity) -> #(identity, None)
     Error(_) -> #(
@@ -104,11 +102,9 @@ pub fn prepare(
 
 fn configured_identity(
   wiring: worktree_diff.Wiring,
-  git: Result(String, String),
   home: Option(String),
   reading: fn(String) -> Result(String, Nil),
 ) -> Result(List(#(String, String)), String) {
-  use git <- result.try(git)
   let environment =
     list.append(
       [#("PATH", "/usr/bin:/bin"), #("HOME", option_home(home))],
@@ -116,11 +112,15 @@ fn configured_identity(
         reading(name) |> result.map(fn(value) { #(name, value) })
       }),
     )
+
+  // `wiring.git` is the host-resolved binary, never the Xcode shim. A fresh
+  // operator HOME misses `xcrun`'s cache, and the shim's cache rewrite would
+  // be killed by this call's one-megabyte file-size limit before Git ran.
   use #(code, output) <- result.try(run(
     wiring,
     worktree_diff.read_policy(wiring.base_policy),
     [
-      git, "config", "--global", "--includes", "--null", "--get-regexp",
+      wiring.git, "config", "--global", "--includes", "--null", "--get-regexp",
       "^user\\.(name|email)$",
     ],
     environment,

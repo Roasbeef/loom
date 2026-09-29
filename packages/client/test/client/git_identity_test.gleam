@@ -8,6 +8,7 @@ import broker/exec
 import broker/policy
 import client/catalog
 import client/git_identity
+import client/host_git
 import client/internal/ffi_os
 import client/serve
 import client/worktree_diff
@@ -360,6 +361,7 @@ fn with_fixture(run: fn(worktree_diff.Wiring, String) -> Nil) -> Nil {
       demand: exec.BestEffort,
       env: environment,
       entropy: ffi_os.unique_positive_integer,
+      git: host_git.program(),
     ),
     home,
   )
