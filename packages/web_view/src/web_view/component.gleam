@@ -261,8 +261,9 @@ pub type Start(socket) {
     /// the host could not read it.
     label: Option(Label),
     /// A digest of the canonical workspace path, which the daemon computes:
-    /// the lower-case SHA-256 in hex, 64 digits, or an empty string when the
-    /// host has none. It is the page's storage identity. The frame carries it
+    /// the lower-case SHA-256 in hex, 64 digits. It is the page's storage
+    /// identity. (Fixtures pass an empty string, which the frame leaves
+    /// out.) The frame carries it
     /// as an attribute (`web_view/view/shell`) and `<loom-shell>` keeps the
     /// reader's layout under it, so two workspaces do not share a layout and
     /// a path is never an attribute or a storage key. It is an identity, not
