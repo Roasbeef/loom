@@ -15,6 +15,15 @@
 //// The terminal binds them in `tui/model` (`TerminalShared`) and holds the
 //// record beside its own `View`; the web view will bind them to its relay
 //// and `Nil`.
+////
+//// Four fields are presentation revisions rather than session facts:
+//// `render_revision`, `frame_revision`, `activity_revision` and
+//// `record_cache_epoch`, with the `record_cache_valid` flag beside them.
+//// The reducers bump them when they change what a host draws, so a host
+//// compares a revision with the one it last drew instead of comparing the
+//// whole record after every event. A host that rebuilds its view on every
+//// update may ignore them (`docs/design-notes/step-extraction.md`, question
+//// 3).
 
 import core/entry
 import core/json
