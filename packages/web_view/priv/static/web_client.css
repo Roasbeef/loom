@@ -4,10 +4,13 @@
    input 70025a835127b62418602e25adc3a5081709bc1f4a33bb848bdff9dd648ea7af  packages/web_client/src/web_client.css
    input f3ab6e0dbb95b18908bb7ac779e6b39ee27b194fded7dcc3e36ced3018e52e3d  packages/web_client/manifest.toml
    input 3b586cd1621bd38a480e327db879e806dcf68bdc144971e9296cac086926cc34  packages/web_client/src/web_client.gleam
-   input 705ee3e43b6ae34ee8018693df6bbdf8915687e3aaac3494d3dfe497c07bd600  packages/web_client/src/web_client/composer.gleam
-   input 5426afd76e4d58ce45712604921aa9996ef25df5ff55f42d0b7a6441dd4d4ee7  packages/web_client/src/web_client/elapsed.gleam
+   input fc0e03943e8374eba8006110c63b1ab0e9f5bec0611ae701e361f4f4c7a722d9  packages/web_client/src/web_client/composer.gleam
+   input 7662394b3b1b2041d0753ecde09957672cecbb4dbfd25ea06bc60094fd6e7880  packages/web_client/src/web_client/composer_rule.gleam
+   input ae85124057749cc835a4b2cd293b943b6fa6b804c0ce0ba014a3aca6c33b95de  packages/web_client/src/web_client/duration.gleam
+   input bb0e98c223a8a3835ba61a4db8e7f6ea59a485c3270f93db97358aa0d121aa89  packages/web_client/src/web_client/elapsed.gleam
    input 3e038808b473603a4854cbe86c83374a5a42f2a8bc7b7ea58bdfe8f21f76abff  packages/web_client/src/web_client/fold.gleam
-   input 42d35297935e6d54199032d911a6350df8d8393df47eec25d6201773402892ba  packages/web_client/src/web_client/follow.gleam
+   input 16973514d16d51e0177781be0dd94a3584c95eda800bd038df4f216858b0681b  packages/web_client/src/web_client/follow.gleam
+   input c682767cb058f8969ecb3a9fe2bfe9a7741f3654d948df46c835e40000eab37f  packages/web_client/src/web_client/follow_rule.gleam
    input 3ef5d5683a55ed95642ac5d6a90e81b3d184edd38476ddcab2ea3d2febf36575  packages/web_client/src/web_client/internal/ffi_dom.gleam
    input 91220d01533b29cf2c852aab5395535065a70ab8ba09441c7c9136ed9bb0d8c8  packages/web_view/src/web_view/completion.gleam
    input 9499b422b8cd7ab34eda90fe0c686380e8b5d9b47899af60b1b4dd714550345a  packages/web_view/src/web_view/component.gleam
