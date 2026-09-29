@@ -208,8 +208,8 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   the daemon's latest reply to a command the lane sent (an acknowledgement,
   a refusal, a lost reply), which `lane_fold.apply_channel_update` writes
   beside `notice`; `notice` is replaced by any event and `answer` only by
-  another reply, and a refusal of an automatic read (`session_channel.is_read`)
-  is not one. The terminal reads `notice`; the web page reads `answer`.
+  another reply, and a refusal of a read the host issued itself (`session_channel.is_read`,
+  `history`, `escalations_get`) is not one. The terminal reads `notice`; the web page reads `answer`.
   `build_notice` is the
   build-mismatch lines the host computed when it adopted a daemon, which a
   cut splices in; the builds themselves are the host's, because

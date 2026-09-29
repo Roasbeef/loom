@@ -225,13 +225,23 @@ pub fn apply_channel_update(
   case update {
     session_channel.Acknowledged(..) -> Shared(..folded, answer: folded.notice)
     session_channel.RequestRefused(command:, ..) ->
-      case session_channel.is_read(command) || folded.notice == shared.notice {
+      case host_read(command) || folded.notice == shared.notice {
         True -> folded
         False -> Shared(..folded, answer: folded.notice)
       }
     session_channel.UnknownOutcome(..) ->
       Shared(..folded, answer: folded.notice)
     _ -> folded
+  }
+}
+
+// The reads the host issues on its own account: the automatic reads, the
+// pending-decisions lookup a capture triggers, and the history read a host's
+// own paging control asks for. A refusal of one is no command's outcome.
+fn host_read(command: String) -> Bool {
+  case command {
+    "history" | "escalations_get" -> True
+    _ -> session_channel.is_read(command)
   }
 }
 

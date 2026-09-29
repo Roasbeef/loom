@@ -379,11 +379,17 @@ pub fn only_a_commands_refusal_is_drawn_test() {
       ),
     ])
   assert component.notice(model) == component.Said("conflict: busy")
-  let model =
-    component.apply(model, [
-      session_channel.RequestRefused("advisor_pending", 9, "unsupported", "no"),
-    ])
-  assert component.notice(model) == component.Said("conflict: busy")
+
+  // The reads the host issues itself are refused without a word: the
+  // automatic ones, the pending-decisions lookup, and the history read the
+  // "Load older" button asks for.
+  list.each(["advisor_pending", "escalations_get", "history"], fn(name) {
+    let model =
+      component.apply(model, [
+        session_channel.RequestRefused(name, 9, "unsupported", "no"),
+      ])
+    assert component.notice(model) == component.Said("conflict: busy")
+  })
 }
 
 pub fn the_composer_refuses_any_field_it_does_not_offer_test() {
