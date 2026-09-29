@@ -71,11 +71,12 @@ time builds anything.
   ends further away changes nothing, because that is either the reader
   coming back or the element's own scroll to the bottom reported after more
   rows landed. `follow.origin` tells who made a scroll: `Input` when a
-  `wheel`, `touchstart`, `touchmove` or `pointerdown` on the element was heard
+  `wheel`, `touchstart`, `touchmove`, `pointerdown` or `keydown` on the element was heard
   within `follow.touch_window` (`Touched`, passive listeners that read
   nothing from the event), `Steady` when nothing was heard but the
   transcript's `Extent` (content and view height) is what it was at the
-  last scroll, which is a key or a scrollbar drag, and `Layout` when nothing
+  last scroll (find-in-page, a key pressed outside the transcript, a
+  scrollbar drag), and `Layout` when nothing
   was heard and the extent changed, which is the browser fitting the scroll
   position to a box that grew or content that shrank. A `Layout` scroll
   never leaves `Following`; the size change that caused it brings `Resized`,
@@ -171,8 +172,8 @@ attribute changes and DOM events reach its `update`; its timers dispatch
 messages to it. Nothing here opens a connection. The one element that
 looks outside itself is `<loom-follow>`, which reads and sets its own
 scroll position, observes the size of itself and its children, and hears
-(passively, reading nothing from them) the wheel, a finger and a pointer
-press on itself; it reads no content. `<loom-composer>` listens to its own
+(passively, reading nothing from them, not even the key) the wheel, a finger,
+a pointer press and a key pressed inside itself; it reads no content. `<loom-composer>` listens to its own
 editor's `input` and `keydown`, and writes the editor's value; the one thing
 it sends is the form's submit, which the server already accepts.
 
@@ -186,8 +187,10 @@ it sends is the form's submit, which the server already accepts.
   of command names and hints written in `session_view`; the returned
   prompts it takes arrive as text-node children, never as attributes.
 - **No key handling and no focus near an approval card.** Only
-  `<loom-composer>` listens for a key, and only on its own editor, through
-  its slot. It calls `focus` once, on that editor, when the operator chooses
+  `<loom-composer>` acts on a key, and only on its own editor, through its
+  slot. `<loom-follow>` may note that a key was pressed inside the transcript
+  (a passive `keydown` that reads nothing from the event, never cancels it and
+  sends nothing), so a keyboard scroll counts as the reader's. It calls `focus` once, on that editor, when the operator chooses
   a row. The approval cards are outside it, in the dock, and no key it
   handles decides one: Command or Control with Enter submits the composer's
   form, which sends a prompt or a command and decides nothing.
@@ -195,8 +198,9 @@ it sends is the form's submit, which the server already accepts.
   uses `unsafe_raw_html` or `innerHTML`. `scripts/web_client_js_check.sh`, run
   by `make lint` (so by `make lint-web_client` and `make check`), fails if any
   JavaScript file under `src` is not `internal/dom.mjs`, or if one names
-  `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function` or
-  `document.write`. It has its own self-test.
+  `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function`,
+  `document.write`, `srcdoc`, `DOMParser`, `createContextualFragment` or a
+  dynamic `import(`. It has its own self-test.
 - **State the DOM would hold in an expando lives in the model.** The
   returned-prompt bookkeeping (`Seen(taken)`), the scroll bookkeeping (`top`,
   `extent`, `touched`) and the held row are Lustre model fields, never

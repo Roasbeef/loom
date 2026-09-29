@@ -1303,21 +1303,32 @@ The client components' logic moved from three JavaScript files
 (`follow.mjs`, `composer.mjs`, `clock.mjs`) into Gleam over one binding,
 `internal/dom.mjs`, whose every export is a single DOM call or property read
 (issue #569, part 2). Nothing the page sends, accepts or is allowed changes:
-no new event on the socket, no HTML written, no key handled outside the
+no new event on the socket, no HTML written, no key acted on outside the
 composer's editor, and the policy is unchanged. `scripts/web_client_js_check.sh`
 now fails the build if that file is not the only JavaScript in the package or
-names `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function`
-or `document.write`.
+names `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function`,
+`document.write`, `srcdoc`, `DOMParser`, `createContextualFragment` or a
+dynamic `import(`. That is a textual check, not a proof: the guarantee is that
+the file is a short list of one-call exports a reviewer reads.
 
 One behaviour is new and belongs here. `<loom-follow>` listens, passively, for
-`wheel`, `touchstart`, `touchmove` and `pointerdown` on itself, and notes only
+`wheel`, `touchstart`, `touchmove`, `pointerdown` and `keydown` on itself, and notes only
 when each happened. It reads nothing from the events and cancels none. A scroll
 up that ends away from the bottom now leaves the tail only when the reader made
 it: one of those events was heard within half a second, or the transcript is
 the size it was at the last scroll. A scroll the browser makes to fit a box that
 grew or content that shrank, heard after rows landed, was being taken for the
 reader leaving, which stopped the follow in the middle of a burst of rows. The
-listeners are not keys, and no key is heard.
+`keydown` listener is the rule's one touch: it is passive, reads nothing from
+the event (not the key, not its modifiers), never cancels it and sends nothing
+to the server, and it hears only keys pressed with focus inside the transcript,
+which holds no approval card. Only the composer acts on keys; the follower
+notes that one was pressed, so a keyboard scroll counts as the reader's. The
+owner approved it on 2026-09-29. The cost that remains: while content is
+growing, find-in-page, a key pressed with focus outside the transcript and a
+Firefox scrollbar drag (no `pointerdown` there) see a changed size, so they read
+as the layout's and cannot leave the tail until the growth stops. Wheel,
+trackpad, touch and keys in the transcript are unaffected.
 
 **Verification.** `packages/web_client/test` runs the decision as pure
 functions and as sequences of the element's messages. The listeners, the scroll
