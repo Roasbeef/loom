@@ -13,8 +13,8 @@ it departed from this note, the S2 entry in section 5 says how and why.
 S3 was re-sliced on 2026-09-28, with the owner's approval, after a census
 found that section 3's lists miss much of what the lane and event folds
 reach; section 5's S3 entry gives the census and the new landings, and
-S3a′ to S3e′ have landed. The first half of S4 has landed: the shared
-step's modules are in `session_view`, and its entry points wait on
+S3a′ to S3e′ have landed. S4 has landed: the shared step's modules are
+in `session_view`, and its entry points move to S5 under the ruling on
 question 12.
 
 Issue #530 left the terminal and the web view sharing the session lane and
@@ -1676,8 +1676,10 @@ two hundred lines new.
 modules into `session_view` and write the entry points `tui.step` calls.
 It landed in two, and this is the first: every function the S3 slices put
 over `Shared` now lives in `session_view`, and the terminal calls it there.
-The entry points and the `session_view`-shaped `Msg`, `Arrival` and
-`Event` are the second half, and wait on question 12.
+The owner ruled on question 12 on 2026-09-28 for option (a), so S4 is
+complete at this half: `update`, `attach`, `new` and `next_due` and the
+`session_view`-shaped `Msg`, `Arrival` and `Event` move to S5, written
+with the web view as their first caller.
 
 Twelve modules moved with `git mv`, and no code in them changed beyond
 their imports; a later commit rewrote their module comments.
@@ -2051,3 +2053,8 @@ them.
     Ticked))` and the terminal's tick leave the same `Shared` and queue
     the same effects in the same order. It needs the owner's ruling,
     because it changes what section 2 says `tui.step` calls.
+    *Ruled 2026-09-28: (a).* `step.update` is the entry for a whole event
+    in a host with no surfaces of its own, the web view; the terminal keeps
+    calling the shared pieces as it does today. It is written in S5 with
+    the web view as its first caller, with a `session_view` test holding
+    it to the terminal's order.
