@@ -273,8 +273,12 @@ catalogue does not hold, is skipped without a request and keeps the
 terminal's first-line digest. A stream still being written names no
 provider, and a role's chain can fall back across services, so a strand's
 live reasoning is observed only when every target that could answer it
-shares that endpoint: its own identity, every chain it heads, and the
-`vision` chain when it cannot read images. `blocksummary.settled_admission`
+shares that endpoint: its own identity, every chain it heads, and, when it
+cannot read images, the `vision` chain on a turn that carries an image
+(`vision.image_bearing` of the request's context, the rule the dispatcher
+routes on). A text turn of a text-only identity is answered by that
+identity, so a `vision` chain on another service does not turn its live
+headlines off. `blocksummary.settled_admission`
 and `blocksummary.live_admission` compute both sets once from the
 catalogue, and the live test runs at the provider tap, so a fragment that
 could have come from another service never leaves the relay. Advice and

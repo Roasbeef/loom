@@ -55,7 +55,9 @@
 //// names no provider, and the strand's configured identity may not be the
 //// one that answers, because a role's chain can fall back across services;
 //// `live_admission` therefore observes a stream only when every target
-//// that could answer it shares the summarizer's endpoint. Both predicates
+//// that could answer it shares the summarizer's endpoint. The `vision`
+//// chain counts only on a turn that carries an image, which the observer
+//// reads from the request. Both predicates
 //// are computed once from the catalogue when the session is assembled.
 //// Advisor messages are harness-written text that every provider in the
 //// session is already sent, so they carry no such restriction.
@@ -90,6 +92,7 @@ import client/blocksummarybook.{
 import client/catalog
 import client/distill.{type Distiller}
 import client/notes
+import client/vision
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type Seq}
 import core/json.{type JsonValue}
@@ -610,6 +613,18 @@ fn same_endpoint(
   }
 }
 
+/// What a generation request's current turn carries, which decides whether
+/// a text-only identity is dispatched to its own service or to the `vision`
+/// chain (`client/vision.image_bearing`).
+pub type Turn {
+  /// No image in the current turn: a text-only identity answers itself.
+  TextTurn
+
+  /// An image in the current turn, or a request that cannot say. A
+  /// text-only identity is dispatched to the `vision` chain.
+  ImageTurn
+}
+
 /// Whether reasoning streamed for a strand configured with `identity` is
 /// certain to come from the summarize entry `provider`'s endpoint, so its
 /// live text may be summarized.
@@ -618,25 +633,29 @@ fn same_endpoint(
 /// identity is not always the one that answers. A strand whose identity
 /// heads a role's chain is dispatched to that role, and the gateway walks
 /// the chain on a retryable failure, so a fallback may answer from another
-/// service. A text-only identity with an image in the turn is dispatched
-/// to the `vision` chain instead. So the identity is admitted only when
+/// service. A text-only identity is dispatched to the `vision` chain
+/// instead, but only on a turn that carries an image (`ImageTurn`), and the
+/// request says which turn it is. So the identity is admitted only when
 /// every target that could answer shares the summarizer's endpoint: the
-/// identity itself, every chain it heads, and, when it cannot read images,
-/// the `vision` chain. A chain that crosses endpoints turns live summaries
-/// off for every strand that could walk it. Settled blocks are unaffected:
-/// they are checked against the provider the committed message names.
+/// identity itself, every chain it heads, and, when it cannot read images
+/// and the turn carries one, the `vision` chain. A chain that crosses
+/// endpoints turns live summaries off for every strand that could walk it.
+/// Settled blocks are unaffected: they are checked against the provider the
+/// committed message names.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // blocksummary.admits_live(catalogue, "baseten-glm-5-3-flash",
-/// //   strand.ModelIdentity(provider: "baseten-kimi-k3", model_id: "kimi"))
+/// //   strand.ModelIdentity(provider: "baseten-kimi-k3", model_id: "kimi"),
+/// //   TextTurn)
 /// ```
 ///
 pub fn admits_live(
   catalogue: catalog.Catalog,
   provider: String,
   identity: ModelIdentity,
+  turn: Turn,
 ) -> Bool {
   let only_endpoint = fn(names: List(String)) {
     names
@@ -653,27 +672,30 @@ pub fn admits_live(
         Ok(_other) | Error(Nil) -> True
       }
     })
-  let seen = case catalog.find(catalogue, identity.provider) {
-    Ok(catalog.CatalogModel(vision: catalog.TextOnly, ..)) ->
+  let seen = case turn, catalog.find(catalogue, identity.provider) {
+    ImageTurn, Ok(catalog.CatalogModel(vision: catalog.TextOnly, ..)) ->
       case list.key_find(catalogue.roles, model.Vision) {
         Ok(names) -> only_endpoint(names)
         Error(Nil) -> True
       }
-    Ok(catalog.CatalogModel(vision: catalog.ReadsImages, ..)) | Error(Nil) ->
-      True
+    ImageTurn, Ok(catalog.CatalogModel(vision: catalog.ReadsImages, ..))
+    | ImageTurn, Error(Nil)
+    | TextTurn, Ok(_)
+    | TextTurn, Error(Nil)
+    -> True
   }
 
   same_endpoint(catalogue, provider, identity.provider) && headed && seen
 }
 
 /// `admits_live` answered once, at wiring time, for every identity the
-/// catalogue holds, as the predicate `observer` takes.
+/// catalogue holds and both turns, as the predicate `observer` takes.
 ///
 /// The answer depends only on the catalogue, so computing it per request
 /// would repeat the same walk and copy the catalogue into every relay's
-/// observer process. The set holds the admitted `(provider, model_id)`
-/// pairs. An identity outside the catalogue is not admitted, since its
-/// endpoint cannot be known.
+/// observer process. Each set holds the admitted `(provider, model_id)`
+/// pairs of one turn. An identity outside the catalogue is not admitted,
+/// since its endpoint cannot be known.
 ///
 /// ## Examples
 ///
@@ -684,17 +706,24 @@ pub fn admits_live(
 pub fn live_admission(
   catalogue: catalog.Catalog,
   provider: String,
-) -> fn(ModelIdentity) -> Bool {
-  let admitted =
+) -> fn(ModelIdentity, Turn) -> Bool {
+  let admitted_on = fn(turn: Turn) {
     catalogue.models
     |> list.map(fn(entry) {
       strand.ModelIdentity(provider: entry.name, model_id: entry.model_id)
     })
-    |> list.filter(admits_live(catalogue, provider, _))
+    |> list.filter(admits_live(catalogue, provider, _, turn))
     |> list.map(fn(identity) { #(identity.provider, identity.model_id) })
     |> set.from_list
+  }
+  let text = admitted_on(TextTurn)
+  let image = admitted_on(ImageTurn)
 
-  fn(identity: ModelIdentity) {
+  fn(identity: ModelIdentity, turn: Turn) {
+    let admitted = case turn {
+      TextTurn -> text
+      ImageTurn -> image
+    }
     set.contains(admitted, #(identity.provider, identity.model_id))
   }
 }
@@ -733,18 +762,30 @@ fn chain_head(
 ///
 pub fn observer(
   name: address.Address(Message),
-  admits: fn(ModelIdentity) -> Bool,
+  admits: fn(ModelIdentity, Turn) -> Bool,
 ) -> fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil {
   fn(spec, generation) {
-    case spec {
-      effects.GenerationRequest(operation:, configuration:, ..)
-      | effects.PollRequest(operation:, configuration:, ..) ->
-        case admits(configuration.model) {
+    // The turn is read from the request the relay is about to dispatch, by
+    // the rule the dispatcher routes on, so the two cannot disagree about
+    // which requests go to the `vision` chain. A poll carries no context
+    // and is treated as an image turn, the stricter answer.
+    let observed = case spec {
+      effects.GenerationRequest(operation:, configuration:, context:, ..) ->
+        case vision.image_bearing(context) {
+          True -> Ok(#(operation, configuration.model, ImageTurn))
+          False -> Ok(#(operation, configuration.model, TextTurn))
+        }
+      effects.PollRequest(operation:, configuration:, ..) ->
+        Ok(#(operation, configuration.model, ImageTurn))
+      effects.SummaryRequest(..) -> Error(Nil)
+    }
+    case observed {
+      Ok(#(operation, identity, turn)) ->
+        case admits(identity, turn) {
           True -> fn(event) { observe(name, operation, generation, event) }
           False -> fn(_event) { Nil }
         }
-
-      effects.SummaryRequest(..) -> fn(_event) { Nil }
+      Error(Nil) -> fn(_event) { Nil }
     }
   }
 }
