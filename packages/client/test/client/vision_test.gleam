@@ -14,6 +14,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
+import client/blocksummary
 import client/catalog
 import client/escalate
 import client/vision as client_vision
@@ -47,6 +48,7 @@ import runtime/effects
 import session/session
 import simplifile
 import storage/storage
+import support/addresses
 import support/provider as provider_test
 import support/tool_registry
 
@@ -967,6 +969,38 @@ pub fn held_image_and_text_batch_routes_admission_and_dispatch_test() {
       ]),
     )
   assert continued.target == request.target
+
+  // The block summarizer's live observer asks the same question, and must
+  // answer it the same way: the context `[image, text]` alone shows no
+  // image, but the request went to the `vision` chain, so its reasoning is
+  // an image turn and must not reach a summarizer on another service. The
+  // continuation context is the same case one step later.
+  let turns = process.new_subject()
+  let observed = fn(context) {
+    let _tap =
+      blocksummary.observer(
+        addresses.new(),
+        fn(operation, context) {
+          case wiring.request_image_bearing(config, operation, context) {
+            True -> blocksummary.ImageTurn
+            False -> blocksummary.TextTurn
+          }
+        },
+        fn(_identity, turn) {
+          process.send(turns, turn)
+          False
+        },
+      )(effects.GenerationRequest(..spec, context:), "g-held")
+    process.receive(turns, 1000)
+  }
+  assert observed([image_user(), text]) == Ok(blocksummary.ImageTurn)
+  assert observed([
+      image_user(),
+      text,
+      assistant_answer(),
+      text_user("follow-up"),
+    ])
+    == Ok(blocksummary.ImageTurn)
 
   // A successor run excludes the previous batch at its immutable source leaf.
   let next_op = ids.mint_op(ids.generator(clock.fixed(0), 9876)).0

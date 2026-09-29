@@ -873,10 +873,11 @@ catalogue without opening runtimes. Explicit admission invokes
   accepts the message's `provider` (an unknown name is refused). A stream
   names no provider and a role's chain may fall back across services, so
   `observer(name, admits)` observes a request only when `admits` accepts
-  its strand identity; production passes `live_admission(catalogue,
+  its strand identity and `Turn`; production passes `live_admission(catalogue,
   provider)`, the identities for which `admits_live` holds: the identity,
-  every chain it heads, and a text-only identity's `vision` chain all
-  share the endpoint. Both sets are computed once at wiring time, so no
+  every chain it heads, and, for a text-only identity on an `ImageTurn`
+  (`vision.image_bearing` of the request's context; a poll counts as one),
+  the `vision` chain all share the endpoint. Both sets are computed once at wiring time, so no
   catalogue is copied into a relay process. Any other request gets a
   no-op callback. Advice and nudges bodies
   (`advisorslice.delivered_body`) are exempt. The machine has two

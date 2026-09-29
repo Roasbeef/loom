@@ -3361,8 +3361,8 @@ fn assemble_in(
   // published by the observer below and relayed by the hub as pushed
   // `tool_output` frames (`protocol-change/031`).
   let event_bus = bus.start()
-  let built =
-    wiring.build_effects(wiring.Config(
+  let wiring_config =
+    wiring.Config(
       observe_output: hub.tool_output_observer(event_bus, opened),
       gateway: settings.gateway,
       role: model.Main,
@@ -3385,7 +3385,8 @@ fn assemble_in(
       env: environment,
       clock:,
       entropy:,
-    ))
+    )
+  let built = wiring.build_effects(wiring_config)
   let effects_record =
     effects.Effects(
       ..built,
@@ -3403,7 +3404,12 @@ fn assemble_in(
       provider: hub.tap_provider_with(
         hub.tap_preview_provider(built.provider, to: name),
         to: name,
-        also: summary_tap(summary_route, settings.catalog, summary_name),
+        also: summary_tap(
+          summary_route,
+          settings.catalog,
+          summary_name,
+          wiring_config,
+        ),
       ),
       // The only work this adds on the driver process is one
         // `process.spawn_unlinked`; everything a reap actually does
@@ -6312,11 +6318,20 @@ fn summary_tap(
   route: Option(blocksummary.Route),
   catalogue: catalog.Catalog,
   name: address.Address(blocksummary.Message),
+  config: wiring.Config,
 ) -> fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil {
   case route {
     Some(route) ->
       blocksummary.observer(
         name,
+        // The dispatcher's own rule, so the observer and the dispatch agree
+        // about which requests go to the `vision` chain.
+        fn(operation, context) {
+          case wiring.request_image_bearing(config, operation, context) {
+            True -> blocksummary.ImageTurn
+            False -> blocksummary.TextTurn
+          }
+        },
         blocksummary.live_admission(catalogue, route.provider),
       )
     None -> fn(_spec, _generation) { fn(_event) { Nil } }
