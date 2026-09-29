@@ -56,6 +56,7 @@ import web_view/component
 import web_view/view/controls
 import web_view/view/lane
 import web_view/view/nudges
+import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/strip
 
@@ -168,27 +169,40 @@ pub fn update(
 /// // element.to_string(operator_page.view(model))
 /// ```
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
-  html.main([attribute.class("loom-session operator")], [
+  shell.view(
+    shell.Operator,
     component.heading(model),
-    strip.view(component.strip(model), fn(strand) {
+    sidebar_place(model),
+    [
+      lane.view(
+        component.pieces(model),
+        component.live(model),
+        component.top(model),
+        Observed(component.OlderRequested),
+        lane.Replies(Replying),
+      ),
+      html.footer([attribute.class("dock")], [
+        component.plan(model),
+        nudges.view(component.pending_nudges(model)),
+        controls.view(bar(model)),
+        approvals(component.pending(model)),
+        composer(model),
+      ]),
+    ],
+    component.strands(model, fn(strand) {
       Observed(component.FocusRequested(strand))
     }),
-    lane.view(
-      component.pieces(model),
-      component.live(model),
-      component.top(model),
-      Observed(component.OlderRequested),
-      lane.Replies(Replying),
-    ),
-    html.footer([attribute.class("dock")], [
-      component.plan(model),
-      nudges.view(component.pending_nudges(model)),
-      controls.view(bar(model)),
-      approvals(component.pending(model)),
-      composer(model),
-    ]),
-    sidebar.view(component.session_groups(model), component.session_id(model)),
-  ])
+  )
+}
+
+// The sidebar's place in the frame. A page whose catalogue read listed
+// nothing has no sidebar to draw, and the frame is told so, so that its bar
+// draws no button that would hide an empty column.
+fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
+  case component.session_groups(model) {
+    [] -> shell.Unlisted
+    groups -> shell.Listed(sidebar.view(groups, component.session_id(model)))
+  }
 }
 
 // The controls, with what each sends. Stop is offered while the strand runs

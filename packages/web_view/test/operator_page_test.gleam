@@ -519,29 +519,35 @@ pub fn an_ended_operator_page_says_so_and_keeps_its_paths_test() {
   assert string.contains(html, "class=\"ended-notice\"")
   assert string.contains(html, ending.headline(ending.PageEnded))
 
-  // The notice is inside the heading, before the strip, so it is the
-  // heading's last child and nothing else moved.
+  // The notice is inside the top bar, before the centre and the panel, so
+  // it is the bar's last child and nothing else moved.
   assert in_order(html, [
     "class=\"session-head\"",
     "class=\"ended-notice\"",
     "</header>",
+    "<main class=\"centre\">",
     "class=\"agent-strip\"",
   ])
 }
 
-// The page's frame is pinned: the heading and the agent strip above the
-// transcript, the dock below it, in that order among `main`'s children. The
-// stylesheet gives the transcript (`<loom-follow>`) the height between
-// them and scrolls only it, so the order here is what pins the header at
-// the top and the composer and approvals at the bottom.
-pub fn the_frame_is_heading_strip_transcript_dock_test() {
+// The page's frame is pinned: the top bar above the centre, whose transcript
+// is above its dock, and the strand panel last, in that order among the
+// frame's children. The stylesheet gives the transcript (`<loom-follow>`) the
+// height between the bar and the dock and scrolls only it, so the order here
+// is what pins the bar at the top and the composer and approvals at the
+// bottom of the centre.
+pub fn the_frame_is_bar_centre_panel_test() {
   let #(model, _) = page("operator", pending())
   let html = element.to_string(operator_page.view(model))
   assert in_order(html, [
+    "<loom-shell class=\"loom-session operator\"",
     "class=\"session-head\"",
-    "class=\"agent-strip\"",
+    "<main class=\"centre\">",
     "<loom-follow class=\"follow\">",
     "<footer class=\"dock\">",
+    "</main>",
+    "<aside aria-label=\"Strand panel\" class=\"panel\" slot=\"right\">",
+    "class=\"agent-strip\"",
   ])
 }
 

@@ -20,6 +20,9 @@
 //// - `<loom-composer>` (`web_client/composer`) wraps the operator's editor:
 ////   it lists slash commands as the draft grows, sends the draft on Command
 ////   or Control with Enter, and puts a returned prompt back in the editor.
+//// - `<loom-shell sidebar="listed">` (`web_client/shell`) is the page's
+////   frame. It lays the server's regions out in its slots and draws the two
+////   buttons that hide and show the sidebar and the strand panel.
 ////
 //// Every element keeps the page's rules (protocol-change/051): it renders
 //// only what its own attributes say, and those hold daemon identities or
@@ -36,6 +39,7 @@ import web_client/elapsed
 import web_client/expand
 import web_client/fold
 import web_client/follow
+import web_client/shell
 
 /// Registers every element. The bundle calls this once when the page loads
 /// it; an element already registered is left as it is.
@@ -51,5 +55,6 @@ pub fn main() -> Nil {
   let _ = expand.register()
   let _ = fold.register()
   let _ = follow.register()
+  let _ = shell.register()
   Nil
 }
