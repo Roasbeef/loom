@@ -979,26 +979,14 @@ pub fn adopt_daemon(model: Model, daemon: job.Daemon) -> Model {
   )
 }
 
-/// The build-mismatch notice for a daemon's build and this client's.
-///
-/// The authenticated build belongs to the retained control host. Projecting
-/// its mismatch on every coherent cut keeps attachment and later captures from
-/// erasing the update notice when they replace the transcript presentation.
-/// `theirs` is the build the daemon's `hello` named, `None` when it named
-/// none. `ours` is `View.client_build`, read when the model was created, so
-/// neither the comparison nor a cut reads an environment variable.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let lines =
-///   tui_model.daemon_build_lines(
-///     Some(build_identity.Identity("0.2.0", "bbbb")),
-///     model.view.client_build,
-///   )
-/// ```
-@internal
-pub fn daemon_build_lines(
+// The build-mismatch notice for a daemon's build and this client's. The
+// authenticated build belongs to the retained control host. Projecting its
+// mismatch on every coherent cut keeps attachment and later captures from
+// erasing the update notice when they replace the transcript presentation.
+// `theirs` is the build the daemon's `hello` named, `None` when it named
+// none. `ours` is `View.client_build`, read when the model was created, so
+// neither the comparison nor a cut reads an environment variable.
+fn daemon_build_lines(
   theirs: Option(build_identity.Identity),
   ours: build_identity.Identity,
 ) -> List(Line) {
