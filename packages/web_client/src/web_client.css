@@ -265,6 +265,10 @@
   .panel-tab:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .tab-badge{padding:0 5px;border:1px solid var(--color-signal);border-radius:99px;color:var(--color-signal-text);font:600 11px/1.4 var(--font-mono);}
   .region.closed{width:0;visibility:hidden;transition:width 180ms ease,visibility 0s linear 180ms;}
+  /* While the saved layout is being restored (web_client/shell, `Still`) the
+     columns change at once, so a column saved as closed does not slide shut
+     on every load. The class is removed after that frame is painted. */
+  .shell.still .region,.shell.still .region.closed{transition:none;}
   /* The buttons: a real button at each end of the bar, drawn as a small
      window with its side column filled while the column is open. */
   .shell-toggle{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:44px;padding:0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);cursor:pointer;}
