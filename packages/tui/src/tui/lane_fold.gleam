@@ -27,7 +27,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/set
 import gleam/string
-import host/build_identity
 import machine/strand as machine_strand
 import session_view/advisor_history
 import session_view/agent_roster
@@ -45,7 +44,7 @@ import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/todo_board
-import session_view/transcript_line.{type Line, Line, System}
+import session_view/transcript_line.{Line, System}
 import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agent_messages
@@ -62,48 +61,6 @@ import tui/session_model.{
   ReplayAdopted, Replaying, SameSession, Shared, UnconfirmedSubmission,
 }
 import tui/surfaces
-
-/// The authenticated build belongs to the retained control host. Projecting
-/// its mismatch on every coherent cut keeps attachment and later captures from
-/// erasing the update notice when they replace the transcript presentation.
-/// `theirs` is `Shared.daemon_build`, `None` until a control connection is
-/// adopted and when the daemon's `hello` named no build. `ours` is
-/// `Shared.client_build`, read when the model was created, so a cut reads no
-/// environment variable.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let lines =
-///   lane_fold.daemon_build_lines(
-///     shared.daemon_build,
-///     shared.client_build,
-///   )
-/// ```
-@internal
-pub fn daemon_build_lines(
-  theirs: Option(build_identity.Identity),
-  ours: build_identity.Identity,
-) -> List(Line) {
-  case theirs {
-    None -> []
-    Some(theirs) ->
-      case build_identity.matches(ours, theirs) {
-        True -> []
-        False -> [
-          Line(
-            System,
-            "daemon build "
-              <> build_identity.describe(theirs)
-              <> " differs from this client's "
-              <> build_identity.describe(ours)
-              <> "; the daemon runs the build it was started with, so "
-              <> "restart it to pick up an update",
-          ),
-        ]
-      }
-  }
-}
 
 /// What the host shows that decides a shared write inside one update.
 ///
@@ -731,7 +688,7 @@ fn render_cut(
     Line(System, boundary),
     Line(System, attachment_banner),
     ..list.append(
-      daemon_build_lines(shared.daemon_build, shared.client_build),
+      shared.build_notice,
       list.append(
         configuration_lines(view, active),
         list.append(

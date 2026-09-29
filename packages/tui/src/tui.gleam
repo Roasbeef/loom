@@ -82,7 +82,6 @@ import tui/interaction
 import tui/internal/ffi_terminal
 import tui/job
 import tui/job_runner
-import tui/lane_fold
 import tui/layout
 import tui/model.{
   type Model, DiffAutomatic, Model, Newer, NoClipboard, NoOverlay, Older,
@@ -536,7 +535,6 @@ pub fn new_model_with_clock(
       models: interaction.demo_models(),
       skills: [],
       current_model: "baseten-kimi-k3",
-      workspace: project,
       strands:,
       reviewer_rows: [],
       agent_rows: [],
@@ -577,8 +575,7 @@ pub fn new_model_with_clock(
       record_cache_valid: False,
       frame_revision: 0,
       stamp:,
-      client_build: build_identity.current(),
-      daemon_build: None,
+      build_notice: [],
       activity_revision: 0,
       connection_backlog: session_model.MailboxDrained,
       recorder: None,
@@ -615,8 +612,10 @@ pub fn new_model_with_clock(
       overlay: NoOverlay,
       strip_focus: agent_strip.Composing,
       local_options: None,
+      workspace: project,
       candidate: attachment.idle(),
       daemon_host: None,
+      client_build: build_identity.current(),
       control_request: None,
       activity_poll: tui_model.ActivityDue,
       reconnect: ReconnectIdle,
@@ -686,11 +685,15 @@ fn interactive(launch: Launch, record: String) -> Nil {
       // later `/sessions` switch derives it the same way from its choice.
       let local =
         Model(
-          shared: Shared(..base.shared, workspace: case options.workspace {
-            "" -> base.shared.workspace
-            path -> workspace.discover_from(path)
-          }),
-          view: tui_model.View(..base.view, local_options: Some(options)),
+          ..base,
+          view: tui_model.View(
+            ..base.view,
+            local_options: Some(options),
+            workspace: case options.workspace {
+              "" -> base.view.workspace
+              path -> workspace.discover_from(path)
+            },
+          ),
         )
       case bootstrap.resolve_daemon(options, process.self(), 90_000) {
         Error(reason) ->
@@ -1713,13 +1716,7 @@ fn attach_daemon(
       let model =
         Model(
           ..model,
-          shared: Shared(
-            ..model.shared,
-            transcript: lane_fold.daemon_build_lines(
-              model.shared.daemon_build,
-              base.shared.client_build,
-            ),
-          ),
+          shared: Shared(..model.shared, transcript: model.shared.build_notice),
         )
 
       // Flushed for the reason `connect_remote` gives: the first request

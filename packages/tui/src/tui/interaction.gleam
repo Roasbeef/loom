@@ -346,7 +346,6 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
             note_board: None,
             notes_requested: None,
             approvals: [],
-            workspace: workspace,
             active_strand: target_strand,
             agent_rows: case
               model.shared.session == cut.attachment.expected.session
@@ -385,6 +384,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           ),
           view: View(
             ..model.view,
+            workspace: workspace,
             note_selected: None,
             prompted_approvals: [],
             overlay: NoOverlay,

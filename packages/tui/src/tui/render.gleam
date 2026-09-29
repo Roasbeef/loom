@@ -489,7 +489,7 @@ fn render_header(
     text.truncate(
       text_hygiene.single_line(session_title(model))
         <> " · "
-        <> text_hygiene.single_line(workspace.label(model.shared.workspace)),
+        <> text_hygiene.single_line(workspace.label(model.view.workspace)),
       room,
       "…",
     )
@@ -1473,7 +1473,7 @@ fn footer_sections(
   model: Model,
 ) -> #(span.Line, span.Line, span.Line, span.Line, span.Line) {
   let project_text =
-    model.shared.workspace |> workspace.label |> text_hygiene.single_line
+    model.view.workspace |> workspace.label |> text_hygiene.single_line
   let model_text = text_hygiene.single_line(model.shared.current_model)
   let status_text = model |> model_footer_status |> text_hygiene.single_line
   let project =

@@ -1030,15 +1030,17 @@ pub fn long_checkout_paths_do_not_hide_the_session_identity_test() {
     {
       let base = model()
       tui_model.Model(
-        ..base,
         shared: session_model.Shared(
           ..base.shared,
+          session: "review-session",
+          current_model: "provider/model",
+        ),
+        view: tui_model.View(
+          ..base.view,
           workspace: workspace.Context(
             "/work/" <> string.repeat("nested/", 30),
             None,
           ),
-          session: "review-session",
-          current_model: "provider/model",
         ),
       )
     }

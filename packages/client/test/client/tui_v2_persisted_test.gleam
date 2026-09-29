@@ -351,7 +351,7 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
   release(arrivals, selected.session_id)
   let opened =
     await(terminal, fn(sample) { attached(sample, selected.session_id) })
-  assert opened.model.shared.workspace.path == selected.workspace
+  assert opened.model.view.workspace.path == selected.workspace
   let other = case selected.session_id == a.id {
     True -> b
     False -> a
@@ -381,7 +381,7 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
   assert pending.model.shared.records == opened.model.shared.records
   process.send(permit, Nil)
   let replaced = await(terminal, fn(sample) { attached(sample, other.id) })
-  assert replaced.model.shared.workspace.path == other.workspace
+  assert replaced.model.view.workspace.path == other.workspace
   case other.id == b.id {
     True -> {
       assert user_turns(replaced) == []

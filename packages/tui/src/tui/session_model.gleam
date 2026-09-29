@@ -19,7 +19,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
-import host/build_identity
 import session_view/advisor_history
 import session_view/advisor_pending
 import session_view/agent_roster
@@ -55,7 +54,6 @@ import tui/completion_summary
 import tui/msg
 import tui/queue_request
 import tui/step_effect
-import tui/workspace
 
 /// The session state: what a second host showing the same session would need
 /// to show it or act on it correctly.
@@ -229,8 +227,6 @@ pub type Shared(socket, recorder, source, replay_source) {
     skills: List(command.Suggestion),
     /// The model the active strand runs on, as the daemon reported it.
     current_model: String,
-    /// The session's working directory and branch.
-    workspace: workspace.Context,
     /// The strands the last capture listed.
     strands: List(protocol.Strand),
     /// Current reviewer progress, with operation-owned task excerpts.
@@ -358,18 +354,14 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// them from its message before any reducer runs, and every reducer that
     /// needs the time reads them here, so a step reads no clock.
     stamp: msg.Stamp,
-    /// The build this client runs, which the build-mismatch notice compares
-    /// with the daemon's. It comes from two environment variables that do
-    /// not change while the process runs, so it is read once, when the model
-    /// is created, rather than on every coherent cut that draws the notice.
-    client_build: build_identity.Identity,
-    /// The build the daemon named in its `hello` on the control connection,
-    /// if it named one. The build-mismatch notice compares it with
-    /// `client_build` on every coherent cut. The terminal writes it when it
-    /// adopts a control connection, beside `View.daemon_host`, which holds
-    /// the connection itself and stays the terminal's; the value here is the
-    /// data a cut needs, so the notice reads no terminal state.
-    daemon_build: Option(build_identity.Identity),
+    /// The build-mismatch notice every coherent cut draws: a system line
+    /// naming the daemon's build and this client's when they differ, and
+    /// nothing when they match or the daemon named no build. Reading and
+    /// comparing the two builds is the host's work, because the client's
+    /// build comes from the environment (`host/build_identity`), so the host
+    /// writes these lines when it adopts a daemon's control connection and
+    /// a cut only splices them into the transcript.
+    build_notice: List(Line),
     /// Bumped by operator or traffic activity (`mark_activity`); idle pacing
     /// reads it.
     activity_revision: Int,

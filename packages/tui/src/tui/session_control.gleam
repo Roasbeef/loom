@@ -232,7 +232,7 @@ pub fn load_catalogue_collection(
             command,
             collection,
             model.shared.session,
-            model.shared.workspace.path,
+            model.view.workspace.path,
           ),
         )
       Model(
@@ -400,7 +400,7 @@ fn finish_control(model: Model, result) {
     Some(Ok(PageLoaded(page, selected, collection))) -> {
       let selector =
         session_selector.new(
-          session_selector.prioritize(page, model.shared.workspace.path),
+          session_selector.prioritize(page, model.view.workspace.path),
           selected,
         )
 
@@ -639,8 +639,8 @@ fn create_session_configured(model: Model, config: String) -> Model {
         job.CreateSession(
           host.control,
           key,
-          model.shared.workspace.path,
-          workspace.session_name(model.shared.workspace),
+          model.view.workspace.path,
+          workspace.session_name(model.view.workspace),
           config,
         )
       let #(model, job_key) =

@@ -25,9 +25,11 @@
 //// the agent strip's roster is `Shared.roster` beside its keyboard focus
 //// in `View.strip_focus`, and the queue editor's requests on the lane are
 //// `Shared.queue_request` beside the editor in `View.queue_editor`. The
-//// daemon's build is `Shared.daemon_build` beside the control connection in
-//// `View.daemon_host`, and a held prompt the daemon returns waits in
-//// `Shared.returned_drafts` until the terminal moves it into an editor.
+//// build-mismatch notice a cut draws is `Shared.build_notice`, which the
+//// terminal writes from the daemon it adopts into `View.daemon_host` and the
+//// client's build in `View.client_build`, and a held prompt the daemon
+//// returns waits in `Shared.returned_drafts` until the terminal moves it into
+//// an editor.
 ////
 //// The record is shaped by the first two slices of moving the client
 //// step into `session_view` (`docs/design-notes/step-extraction.md`).
@@ -107,6 +109,7 @@ import tui/session_selector
 import tui/summary_panel
 import tui/terminal_lane
 import tui/transcript_anchor
+import tui/workspace
 import weft
 
 /// Whether the transcript area is showing captured edits.
@@ -452,10 +455,20 @@ pub type View {
     /// The local launch's options, which session creation and the
     /// reconnect reuse; `None` for a remote attachment.
     local_options: Option(bootstrap.Options),
+    /// The repository path and branch the terminal attached from, which the
+    /// footer, the session picker's ordering and a new session's name read.
+    /// It is the terminal's reading of its own directory, so it stays here
+    /// rather than in the session state.
+    workspace: workspace.Context,
     /// One provisional replacement, whose original deadline includes capture.
     candidate: attachment.Status,
     /// Terminal-owned daemon control, independent of the selected session.
     daemon_host: Option(job.Daemon),
+    /// The build this client runs, which the build-mismatch notice compares
+    /// with the daemon's. It comes from two environment variables that do
+    /// not change while the process runs, so it is read once, when the model
+    /// is created, and `adopt_daemon` compares it with each daemon it adopts.
+    client_build: build_identity.Identity,
     /// One bounded metadata page request; no catalogue accumulation.
     control_request: Option(ControlRequest),
     /// The session picker's activity poll, separate from the control job.
@@ -939,12 +952,12 @@ pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
 /// Records the daemon whose control connection the terminal now holds.
 ///
 /// The connection and its key are the terminal's and go in
-/// `View.daemon_host`; the build the daemon's `hello` named is data every
-/// coherent cut compares with this client's build, so it also goes in
-/// `Shared.daemon_build`, where the build-mismatch notice reads it. Both
+/// `View.daemon_host`. The build the daemon's `hello` named is compared with
+/// `View.client_build` here, and the mismatch notice that comparison yields
+/// goes in `Shared.build_notice`, which every coherent cut draws. Both
 /// places that adopt a control connection, the launch and the reconnect,
-/// write through this function, so the two fields always describe the same
-/// daemon.
+/// write through this function, so the notice always describes the daemon
+/// the terminal holds.
 ///
 /// ## Examples
 ///
@@ -958,9 +971,55 @@ pub fn adopt_daemon(model: Model, daemon: job.Daemon) -> Model {
       build_identity.Identity(build.version, build.commit)
     })
   Model(
-    shared: Shared(..model.shared, daemon_build:),
+    shared: Shared(
+      ..model.shared,
+      build_notice: daemon_build_lines(daemon_build, model.view.client_build),
+    ),
     view: View(..model.view, daemon_host: Some(daemon)),
   )
+}
+
+/// The build-mismatch notice for a daemon's build and this client's.
+///
+/// The authenticated build belongs to the retained control host. Projecting
+/// its mismatch on every coherent cut keeps attachment and later captures from
+/// erasing the update notice when they replace the transcript presentation.
+/// `theirs` is the build the daemon's `hello` named, `None` when it named
+/// none. `ours` is `View.client_build`, read when the model was created, so
+/// neither the comparison nor a cut reads an environment variable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lines =
+///   tui_model.daemon_build_lines(
+///     Some(build_identity.Identity("0.2.0", "bbbb")),
+///     model.view.client_build,
+///   )
+/// ```
+@internal
+pub fn daemon_build_lines(
+  theirs: Option(build_identity.Identity),
+  ours: build_identity.Identity,
+) -> List(Line) {
+  case theirs {
+    None -> []
+    Some(theirs) ->
+      case build_identity.matches(ours, theirs) {
+        True -> []
+        False -> [
+          transcript_line.Line(
+            transcript_line.System,
+            "daemon build "
+              <> build_identity.describe(theirs)
+              <> " differs from this client's "
+              <> build_identity.describe(ours)
+              <> "; the daemon runs the build it was started with, so "
+              <> "restart it to pick up an update",
+          ),
+        ]
+      }
+  }
 }
 
 /// Queues the release of what a job reply holds, when nobody will take it.
