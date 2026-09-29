@@ -17,6 +17,7 @@ import client/grants
 import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/json as gleam_json
 import gleam/option.{None, Some}
 import gleam/string
@@ -37,6 +38,18 @@ fn fixture_id(seed: Int) -> ids.SessionId {
     ids.mint_session(ids.generator(clock.fixed(at: 1_700_000_000_000), seed))
   id
 }
+
+// How long each wait in this module lasts, in milliseconds. Every step here
+// is a chain of asynchronous hops (the relay's attach, the lane's subscribe
+// and first capture, the session's commit), and none of them arms a timer
+// in the happy path, so a wait ends when the chain completes or never. A
+// hang is therefore a stall, and a bound only has to be longer than the
+// slowest scheduling the parallel client run produces. The 32-core signoff
+// container ran 2328 client tests at once and starved this page past
+// 5 000 ms once. Twenty seconds is the bound the daemon-driven client
+// tests already use for a reply under the same load
+// (`tui_approval_effect_test.reply_wait_ms`).
+const patience_ms = 20_000
 
 fn alice() -> access.Principal {
   access.Principal("alice", "Alice", access.MemberPrincipal)
@@ -90,15 +103,23 @@ fn start_page(
 }
 
 // Reads the component's messages for the browser until one says the page is
-// following the session.
+// following the session. The bound is one deadline for the whole wait: a
+// page that keeps redrawing without connecting must not restart it with
+// each patch, or a wait meant to be `within` long could run for that long
+// per message.
 fn await_connected(client, within: Int) -> Nil {
-  let assert Ok(message) = process.receive(client, within)
-    as "the page keeps drawing until it follows the session"
+  await_connected_until(client, bootstrap.monotonic_time_ms() + within)
+}
+
+fn await_connected_until(client, deadline: Int) -> Nil {
+  let remaining = int.max(0, deadline - bootstrap.monotonic_time_ms())
+  let assert Ok(message) = process.receive(client, remaining)
+    as "the page draws until it follows the session, inside the deadline"
   let text =
     gleam_json.to_string(server_component.client_message_to_json(message))
   case string.contains(text, "\"connected\"") {
     True -> Nil
-    False -> await_connected(client, within)
+    False -> await_connected_until(client, deadline)
   }
 }
 
@@ -118,7 +139,7 @@ pub fn an_operators_page_prompts_and_denies_through_the_gateway_test() {
   let assert Ok(before) = api.leaf(harness.runtime) as "the leaf reads"
 
   let #(runtime, client) = start_page(harness)
-  await_connected(client, 5000)
+  await_connected(client, patience_ms)
 
   // The composer's submit, as the browser's form event decodes to it.
   lustre.send(
@@ -129,7 +150,7 @@ pub fn an_operators_page_prompts_and_denies_through_the_gateway_test() {
     )),
   )
   let assert poll.Answered(_) =
-    poll.until(within: 5000, every: 10, attempt: fn() {
+    poll.until(within: patience_ms, every: 10, attempt: fn() {
       case api.leaf(harness.runtime) {
         Ok(leaf) if leaf != before -> poll.Done(leaf)
         Ok(_) | Error(_) -> poll.Retry
@@ -147,7 +168,7 @@ pub fn an_operators_page_prompts_and_denies_through_the_gateway_test() {
     lustre.dispatch(operator_page.Decided("esc-web", cell.seq, component.Deny)),
   )
   let assert poll.Answered(_) =
-    poll.until(within: 5000, every: 10, attempt: fn() {
+    poll.until(within: patience_ms, every: 10, attempt: fn() {
       case api.escalation(harness.runtime, "esc-web") {
         Ok(record) if record.status == durable.Rejected -> poll.Done(Nil)
         Ok(_) | Error(_) -> poll.Retry
