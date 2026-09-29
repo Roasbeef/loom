@@ -113,6 +113,7 @@ page keys and nonces, and the relay into the session's gateway.
   `transcript_lines.response_awaited` says their answer is still owed
   (entry not in the projected window, operation still running in the
   capture), so the committed row replaces the region in one patch. The
+  page also drops a stream whose answer the projected window already holds (a capture before the push) and keeps a mid-answer attach's sampled preview until the pushed text is at least as long (`steadied`), where the terminal shrinks to the first fragment. The
   region opts out of the log's live announcement (`aria-live="off"`). No
   read or socket event is involved, and `page_events_test` and `older_path`
   are unchanged. `live_test` pins the rows, the hand-over and the patch

@@ -380,6 +380,39 @@ pub fn asked(operation: Option(String)) -> session_channel.Update {
   capture_of([item(1, 10_000, said("go", None))], operation, [], [])
 }
 
+/// `update`, a capture, with the daemon's sampled preview of the answer
+/// running under `main`'s operation: what a page that attaches mid-answer
+/// is told about the text so far, before any pushed fragment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.previewed(lane_fixture.asked(None), "Hello wor")
+/// ```
+pub fn previewed(
+  update: session_channel.Update,
+  text: String,
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, trigger) ->
+      session_channel.Captured(
+        cut,
+        snapshot_view.View(
+          ..view,
+          preview: Some(snapshot_view.Preview(
+            1,
+            main_op(),
+            generation(2),
+            "text",
+            text,
+          )),
+        ),
+        trigger,
+      )
+    other -> other
+  }
+}
+
 /// The identity of the request whose answer will be committed as record
 /// `seq`, as the daemon writes it: the entry it reserved is the last element.
 ///

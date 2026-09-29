@@ -465,7 +465,11 @@ shows the operation running on the strand. When the capture holds the entry,
 the row replaces the region in the same patch, and the keyed list places it
 where the region was. When the capture says the operation ended without the
 entry (an interrupted answer), the region goes. A request that reserved no
-entry (an older daemon) leaves with the record's streams.
+entry (an older daemon) leaves with the record's streams. A stream whose
+entry the window already holds is dropped, so a capture that lands before
+the push cannot draw the answer twice. A page that attached mid-answer keeps
+the capture's sampled preview until the pushed text is at least as long,
+where the record alone would shrink the answer to the first fragment.
 
 The patch cost is the region's, and the committed rows do not enter it.
 A fragment changes `Shared.streams` and nothing a capture projects, so

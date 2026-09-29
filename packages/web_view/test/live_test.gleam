@@ -275,6 +275,47 @@ pub fn the_committed_row_replaces_the_live_one_without_a_gap_test() {
   })
 }
 
+// A capture can land before the entry's push. The record's streams still
+// hold the answer then, and the capture already draws its row: one copy.
+pub fn a_capture_before_the_push_does_not_draw_the_answer_twice_test() {
+  let generation = lane_fixture.generation(2)
+  let model =
+    page([running(), lane_fixture.fragment(generation, "text", "Final answer")])
+    |> component.apply([lane_fixture.answered(["Final answer"])])
+  list.each(pages(model), fn(view) {
+    assert count(element.to_string(view), "Final answer") == 1
+    assert region(view) == ""
+  })
+}
+
+// A page that attaches mid-answer is told the text so far as a preview. The
+// first pushed fragment would replace it in the record and shrink the
+// answer to that fragment, so the page keeps the preview until the pushed
+// text is at least as long.
+pub fn a_preview_is_kept_until_the_pushed_text_is_as_long_test() {
+  let generation = lane_fixture.generation(2)
+  let seeded =
+    page([
+      lane_fixture.previewed(running(), "Hello wor"),
+    ])
+  assert string.contains(region(observer(seeded)), "Hello wor")
+
+  let short =
+    component.apply(seeded, [lane_fixture.fragment(generation, "text", "ld")])
+  list.each(pages(short), fn(view) {
+    assert string.contains(region(view), "Hello wor")
+  })
+
+  let longer =
+    component.apply(short, [
+      lane_fixture.fragment(generation, "text", " and all the rest"),
+    ])
+  list.each(pages(longer), fn(view) {
+    assert string.contains(region(view), "ld and all the rest")
+    assert !string.contains(region(view), "Hello wor")
+  })
+}
+
 // An answer that a capture already holds when its stream arrives late (a
 // fragment the daemon replays after the record) is not drawn a second time.
 pub fn a_stream_for_a_committed_answer_is_not_drawn_again_test() {

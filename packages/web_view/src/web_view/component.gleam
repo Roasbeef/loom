@@ -102,6 +102,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre
 import lustre/attribute
@@ -830,15 +831,27 @@ fn refreshed(model: Model(socket)) -> Model(socket) {
 // when the page attached, and neither once the terminal's own records hold
 // the answer.
 //
-// The record drops a strand's streams when the entry lands, ahead of the
-// capture that gives this page the row. Until that capture the page would
-// show nothing where the answer was. So when the record has no stream, the
-// streams the page last drew stay while their answer is still owed
-// (`response_awaited`): its entry is not in the window the page projects and
-// the capture still shows the operation running. Once the entry is drawn as
-// a row, or the capture says the operation ended without one, they go. A
-// stream that reserved no entry (an older daemon) is never kept. This runs
-// after the projection, so it reads the window that was just built.
+// Three things are added for a page that draws only captures.
+//
+// - A stream whose answer the projected window already holds is dropped, so
+//   a capture that lands before the entry's push cannot draw the answer
+//   twice.
+// - The record drops a strand's streams when the entry lands, ahead of the
+//   capture that gives this page the row. So when the record has no stream,
+//   the streams the page last drew stay while their answer is still owed
+//   (`response_awaited`): its entry is not in the window the page projects
+//   and the capture still shows the operation running. Once the entry is
+//   drawn as a row, or the capture says the operation ended without one,
+//   they go. A stream that reserved no entry (an older daemon) is never kept.
+// - A page that attached mid-answer draws the capture's sampled preview
+//   until the first pushed fragment, which the shared record then puts in
+//   its place, so the answer would shrink to that fragment and grow again.
+//   The page keeps what it drew of a request while the pushed text is
+//   shorter than that (`steadied`); the terminal, which has the same
+//   source, still shows the shorter text.
+//
+// This runs after the projection, so it reads the window that was just
+// built.
 fn streamed(model: Model(socket)) -> Model(socket) {
   let shown =
     session_model.presentation(model.shared)
@@ -846,7 +859,14 @@ fn streamed(model: Model(socket)) -> Model(socket) {
     |> list.filter(fn(stream) { stream.kind != "end" })
   case shown, model.view.streams {
     [], [] -> model
-    [_, ..], _ -> Model(..model, view: View(..model.view, streams: shown))
+    [_, ..], last -> {
+      let records = projected_records(model)
+      let held =
+        list.filter(shown, fn(stream) {
+          !transcript_lines.response_recorded(records, stream.generation)
+        })
+      Model(..model, view: View(..model.view, streams: steadied(held, last)))
+    }
     [], last ->
       case list.any(last, awaited(model, _)) {
         True -> model
@@ -855,13 +875,39 @@ fn streamed(model: Model(socket)) -> Model(socket) {
   }
 }
 
-// Whether the answer this stream is writing is still to come as a row.
-fn awaited(model: Model(socket), stream: Stream) -> Bool {
+// The pushed streams, except that a stream keeps the text drawn last time
+// for its request and kind while that is longer: only a sampled preview is
+// ever longer than the pushed text that replaces it.
+fn steadied(pushed: List(Stream), last: List(Stream)) -> List(Stream) {
+  list.map(pushed, fn(stream) {
+    let earlier =
+      list.find(last, fn(before) {
+        before.generation == stream.generation
+        && before.kind == stream.kind
+        && before.bytes > stream.bytes
+      })
+    result.unwrap(earlier, stream)
+  })
+}
+
+// The records of the window the page projects, newest first.
+fn projected_records(model: Model(socket)) -> List(protocol.EntryRecord) {
   case model.shared.captured {
-    None -> True
+    None -> []
     Some(#(_, view)) ->
+      history_view.branch(model.shared.scrollback, view).records
+  }
+}
+
+// Whether the answer this stream is writing is still to come as a row. A
+// stream for another strand than the one the page follows is never drawn.
+fn awaited(model: Model(socket), stream: Stream) -> Bool {
+  case model.shared.captured, stream.strand == model.shared.active_strand {
+    _, False -> False
+    None, True -> True
+    Some(#(_, view)), True ->
       transcript_lines.response_awaited(
-        history_view.branch(model.shared.scrollback, view).records,
+        projected_records(model),
         view.operations,
         stream,
       )
@@ -1597,7 +1643,7 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
           elapsed_ms:,
           headline: block_summary.live(shared.summaries, stream.generation),
         ))
-      "tool_call" | "end" -> Error(Nil)
+      "tool_call" -> Error(Nil)
       _ -> Ok(live.Answer(Line(Assistant, text)))
     }
   })
