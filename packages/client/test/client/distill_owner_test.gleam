@@ -14,6 +14,18 @@ import session/session
 import simplifile
 import weft
 
+/// Upper bound on every wait that spans real SQLite work or a gate release.
+///
+/// Each wait covers opening and migrating a database, committing a head
+/// transaction, or a message a peer sends right after such work. With about
+/// 2300 client tests sharing 32 cores, that work took longer than the earlier
+/// 1 s to 3 s bounds and two tests timed out together. The waits are ceilings
+/// for a run that has already been started, not delays, so a passing run pays
+/// nothing for the larger value. It reuses `reply_wait_ms` from
+/// `tui_approval_effect_test`, and the run deadline uses it too so that one
+/// bound covers the whole run rather than a bound per message.
+const work_wait_ms = 20_000
+
 fn path(lane: String) -> String {
   let root = "build/test_db/distill-owner-" <> lane
   let _stale = simplifile.delete(root)
@@ -41,7 +53,7 @@ fn acquisition(
         use pid <- result.map(transfer())
         let release = process.new_subject()
         process.send(arrived, #(pid, release))
-        let assert Ok(Nil) = process.receive(release, 1000)
+        let assert Ok(Nil) = process.receive(release, work_wait_ms)
           as "the transfer test gate must be released"
         pid
       }),
@@ -60,31 +72,32 @@ fn run(acquire: custody.Acquisition) -> weft.Detached(Nil, String) {
       custody.close(owned)
     }),
   ])
-  |> weft.deadline(3000)
+  |> weft.deadline(work_wait_ms)
   |> weft.start_detached
 }
 
 pub fn owned_distillation_closes_original_sqlite_actor_test() {
   let arrived = process.new_subject()
   let running = run(acquisition(path("normal"), arrived))
-  let assert Ok(#(pid, release)) = process.receive(arrived, 1000)
+  let assert Ok(#(pid, release)) = process.receive(arrived, work_wait_ms)
     as "the actual SQLite actor must reach transfer"
   let watch = process.monitor(pid)
   process.send(release, Nil)
-  let assert weft.PulledOutcome(weft.Completed(..)) = weft.pull(running, 2000)
+  let assert weft.PulledOutcome(weft.Completed(..)) =
+    weft.pull(running, work_wait_ms)
     as "completion must follow owned close"
-  assert weft.pull(running, 1000) == weft.AllDelivered
+  assert weft.pull(running, work_wait_ms) == weft.AllDelivered
   let assert Ok(process.Normal) =
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(down) { down.reason })
-    |> process.selector_receive(1000)
+    |> process.selector_receive(work_wait_ms)
     as "the original SQLite actor must retire normally"
 }
 
 pub fn owned_distillation_cancellation_during_transfer_retains_sqlite_test() {
   let arrived = process.new_subject()
   let running = run(acquisition(path("cancel-transfer"), arrived))
-  let assert Ok(#(pid, release)) = process.receive(arrived, 1000)
+  let assert Ok(#(pid, release)) = process.receive(arrived, work_wait_ms)
     as "the actual SQLite actor must reach transfer"
   let watch = process.monitor(pid)
   weft.cancel_detached(running)
@@ -96,13 +109,14 @@ pub fn owned_distillation_cancellation_during_transfer_retains_sqlite_test() {
     |> process.selector_receive(0)
     == Error(Nil)
   process.send(release, Nil)
-  let assert weft.PulledOutcome(weft.Abandoned(..)) = weft.pull(running, 2000)
+  let assert weft.PulledOutcome(weft.Abandoned(..)) =
+    weft.pull(running, work_wait_ms)
     as "cancelled work waits for owned cleanup"
-  assert weft.pull(running, 1000) == weft.AllDelivered
+  assert weft.pull(running, work_wait_ms) == weft.AllDelivered
   let assert Ok(process.Normal) =
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(down) { down.reason })
-    |> process.selector_receive(1000)
+    |> process.selector_receive(work_wait_ms)
     as "cancellation must close the original actor normally"
 }
 
@@ -115,26 +129,27 @@ pub fn owned_distillation_cancellation_before_open_keeps_published_holder_test()
     run(fn() {
       let proceed = process.new_subject()
       process.send(acquiring, proceed)
-      let assert Ok(Nil) = process.receive(proceed, 1000)
+      let assert Ok(Nil) = process.receive(proceed, work_wait_ms)
         as "the acquisition gate must be released"
       acquire()
     })
-  let assert Ok(proceed) = process.receive(acquiring, 1000)
+  let assert Ok(proceed) = process.receive(acquiring, work_wait_ms)
     as "the adopted holder must reach acquisition"
   weft.cancel_detached(running)
   assert weft.pull(running, 20) == weft.NotYet
   process.send(proceed, Nil)
-  let assert Ok(#(pid, release)) = process.receive(arrived, 1000)
+  let assert Ok(#(pid, release)) = process.receive(arrived, work_wait_ms)
     as "the surviving holder must retain the actual acquired actor"
   let watch = process.monitor(pid)
   process.send(release, Nil)
-  let assert weft.PulledOutcome(weft.Abandoned(..)) = weft.pull(running, 2000)
+  let assert weft.PulledOutcome(weft.Abandoned(..)) =
+    weft.pull(running, work_wait_ms)
     as "cancelled acquisition must drain before an outcome"
-  assert weft.pull(running, 1000) == weft.AllDelivered
+  assert weft.pull(running, work_wait_ms) == weft.AllDelivered
   let assert Ok(process.Normal) =
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(down) { down.reason })
-    |> process.selector_receive(1000)
+    |> process.selector_receive(work_wait_ms)
     as "the acquired actor must retire despite builder death"
 }
 
@@ -189,15 +204,15 @@ pub fn owned_distillation_close_failure_retains_postcommit_custody_test() {
         outcome
       }),
     ])
-    |> weft.deadline(3000)
+    |> weft.deadline(work_wait_ms)
     |> weft.cancel_grace(1000)
     |> weft.start_detached
-  let assert Ok(#(holder, retire)) = process.receive(retained, 1000)
+  let assert Ok(#(holder, retire)) = process.receive(retained, work_wait_ms)
     as "test must retain cleanup for its intentionally blocked holder"
   let scope_watch = process.monitor(weft.scope_pid(running))
-  let assert Ok(opened) = process.receive(published, 1000)
+  let assert Ok(opened) = process.receive(published, work_wait_ms)
     as "the real head transaction must commit"
-  assert process.receive(failed, 1000)
+  assert process.receive(failed, work_wait_ms)
     == Ok(Error("injected close failure after commit"))
   assert weft.pull(running, 20) == weft.NotYet
   assert process.is_alive(holder)
@@ -212,15 +227,15 @@ pub fn owned_distillation_close_failure_retains_postcommit_custody_test() {
   assert retire() == Ok(Nil)
   process.kill(holder)
   let assert weft.PulledOutcome(weft.DrainProofLost(..)) =
-    weft.pull(running, 1000)
+    weft.pull(running, work_wait_ms)
     as "destroying a blocked holder cannot establish retirement"
   // Done accounts for delivery, not drain: the original scope's exit carries
   // the verdict even when Done reaches the caller before that exit.
-  assert weft.pull(running, 1000) == weft.AllDelivered
+  assert weft.pull(running, work_wait_ms) == weft.AllDelivered
   let assert Ok(reason) =
     process.new_selector()
     |> process.select_specific_monitor(scope_watch, fn(down) { down.reason })
-    |> process.selector_receive(1000)
+    |> process.selector_receive(work_wait_ms)
     as "the original scope exit must remain observable"
   assert reason != process.Normal
   process.trap_exits(False)
