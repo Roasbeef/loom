@@ -20,6 +20,7 @@
 //// lines a render draws, and a change here must leave its counts as they
 //// are.
 
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -34,7 +35,6 @@ import session_view/transcript_line.{type Line}
 import session_view/transcript_lines
 import session_view/turns
 import web_view/markdown_view
-import web_view/view/expansion
 import web_view/view/strip
 
 /// The lane: the page strand's turns, keyed by the engine's identity for
@@ -190,7 +190,7 @@ fn line_row(
 
 fn piece_key(piece: turns.Piece) -> String {
   case piece {
-    turns.Plain(block:) | turns.Commentary(block:) -> block.key
+    turns.Plain(block:, ..) | turns.Commentary(block:) -> block.key
     turns.Work(key:, ..)
     | turns.Spawned(key:, ..)
     | turns.Returned(key:, ..)
@@ -205,7 +205,7 @@ fn piece_element(
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   case piece {
-    turns.Plain(block:) -> block_element(block, draw)
+    turns.Plain(block:, thoughts:) -> block_element(block, thoughts, draw)
 
     // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
     // collapsed until the reader opens it. The fold opens and closes in the
@@ -316,7 +316,7 @@ fn work_items(
 ) -> List(#(String, Element(message))) {
   list.map(items, fn(item) {
     let key = case item {
-      turns.Narrated(block:) -> block.key
+      turns.Narrated(block:, ..) -> block.key
       turns.Step(key:, ..) -> key
     }
     #(key, item_element(item, draw))
@@ -328,8 +328,8 @@ fn item_element(
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   case item {
-    turns.Narrated(block:) -> block_element(block, draw)
-    turns.Step(standing:, summary:, detail:, call:, ..) ->
+    turns.Narrated(block:, thoughts:) -> block_element(block, thoughts, draw)
+    turns.Step(standing:, summary:, detail:, full:, ..) ->
       html.div([attribute.class("step"), standing_class(standing)], [
         html.p([attribute.class("step-head")], [
           html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
@@ -340,7 +340,7 @@ fn item_element(
             html.text(standing_text(standing)),
           ]),
         ]),
-        ..expander(detail, turns.expanded_step(call, detail), draw)
+        ..expander(detail, full, draw)
       ])
   }
 }
@@ -371,30 +371,35 @@ fn standing_text(standing: turns.Standing) -> String {
 
 // A block drawn as the transcript draws it, one line per row. The blank a
 // terminal places between tool groups is spacing here, so a spacer block
-// never reaches the lane.
+// never reaches the lane. A reasoning row that has a full form
+// (`thoughts`, by the row's key) is an expander of its own, so the rest of
+// the block, an answer beside the reasoning, is not drawn twice.
 fn block_element(
   block: transcript_lines.Block,
+  thoughts: Dict(String, List(Line)),
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   html.div(
     [attribute.class("block")],
-    expander(
-      list.map(block.rows, fn(row) { row.1 }),
-      turns.expanded_block(block),
-      draw,
-    ),
+    list.flat_map(block.rows, fn(row) {
+      case dict.get(thoughts, row.0) {
+        Ok(full) -> expander([row.1], full, draw)
+        Error(Nil) -> [line_row(row.1, draw)]
+      }
+    }),
   )
 }
 
 // Rows the reader may expand. With nothing more to show they are the rows,
-// each in its memo. With more (`turns.expanded_step`, `expanded_block`),
-// they are one `<loom-expand>` (`packages/web_client`) holding the compact
-// rows in its `compact` slot and the expansion, cut to the page's budget
-// (`expansion.capped`), in its `full` slot. Both are the server's children,
-// escaped text nodes like every other row; the element shows one slot at a
-// time in the browser, so opening it costs no message, and the server never
-// renders which is open. The expansion's rows are memoized per line as the
-// compact ones are, so an unchanged call draws nothing again.
+// each in its memo. With more (`Step.full`, `Piece.Plain.thoughts`, which
+// `turns` built once for the capture and the host's cap already cut), they
+// are one `<loom-expand>` (`packages/web_client`) holding the compact rows
+// in its `compact` slot and the full ones in its `full` slot. Both are the
+// server's children, escaped text nodes like every other row; the element
+// shows one slot at a time in the browser, so opening it costs no message,
+// and the server never renders which is open. The full rows are memoized
+// per line as the compact ones are, so an unchanged call draws nothing
+// again.
 fn expander(
   compact: List(Line),
   full: List(Line),
@@ -414,7 +419,7 @@ fn expander(
         ),
         html.div(
           [attribute.attribute("slot", "full"), attribute.class("expand-full")],
-          list.map(expansion.capped(full), line_row(_, draw)),
+          list.map(full, line_row(_, draw)),
         ),
       ]),
     ]

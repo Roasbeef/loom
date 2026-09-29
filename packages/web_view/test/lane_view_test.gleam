@@ -304,7 +304,7 @@ pub fn session_markup_arrives_only_as_text_test() {
 
 fn key(piece: turns.Piece) -> String {
   case piece {
-    turns.Plain(block) | turns.Commentary(block) -> block.key
+    turns.Plain(block, _) | turns.Commentary(block) -> block.key
     turns.Work(key:, ..)
     | turns.Spawned(key:, ..)
     | turns.Returned(key:, ..)

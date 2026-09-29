@@ -29,7 +29,7 @@ pub const max_lines = 300
 /// The most text one expanded row draws. A text is measured in bytes, which
 /// is never fewer than its characters, and is cut by characters, at most this
 /// many, so a cut never splits a multi-byte character.
-pub const max_characters = 16_000
+pub const max_characters = 8000
 
 /// Whether a line of text was drawn whole.
 type Clip {
@@ -80,38 +80,31 @@ fn take(
       case rows > 0 && chars > 0 {
         False -> #(list.reverse(kept), Clipped)
         True -> {
-          let #(text, clip) = clipped(text, rows, chars)
+          let #(text, spanned, clip) = clipped(text, rows, chars)
           let kept = [Line(speaker:, text:), ..kept]
           case clip {
             Clipped -> #(list.reverse(kept), Clipped)
             Whole ->
-              take(
-                rest,
-                rows - line_count(text),
-                chars - string.byte_size(text),
-                kept,
-              )
+              take(rest, rows - spanned, chars - string.byte_size(text), kept)
           }
         }
       }
   }
 }
 
-// One line's text cut to `rows` lines and `chars` bytes. The byte check
-// comes first and cuts by characters, so the split that counts newlines
-// never sees more than the budget however long the text is.
-fn clipped(text: String, rows: Int, chars: Int) -> #(String, Clip) {
+// One line's text cut to `rows` lines and `chars` bytes, with the number of
+// lines the result spans. The byte check comes first and cuts by characters,
+// so the split that counts newlines never sees more than the budget however
+// long the text is.
+fn clipped(text: String, rows: Int, chars: Int) -> #(String, Int, Clip) {
   let #(text, by_size) = case string.byte_size(text) > chars {
     True -> #(string.slice(text, 0, chars), Clipped)
     False -> #(text, Whole)
   }
   let rows_of = string.split(text, "\n")
-  case list.length(rows_of) > rows, by_size {
-    True, _ -> #(string.join(list.take(rows_of, rows), "\n"), Clipped)
-    False, size -> #(text, size)
+  let spanned = list.length(rows_of)
+  case spanned > rows, by_size {
+    True, _ -> #(string.join(list.take(rows_of, rows), "\n"), rows, Clipped)
+    False, size -> #(text, spanned, size)
   }
-}
-
-fn line_count(text: String) -> Int {
-  list.length(string.split(text, "\n"))
 }

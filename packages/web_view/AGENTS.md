@@ -77,20 +77,24 @@ page keys and nonces, and the relay into the session's gateway.
   exist, and words otherwise.
 - **Expanding a row.** The terminal's `Ctrl+g` shows a call's whole program
   and result and a reasoning block's whole text. The page holds the same
-  records (the pieces carry each `Step`'s `call` and each block's `source`),
-  so `lane.view` draws a row that has more to show as one `<loom-expand>`
-  (`web_client`): the compact rows in a child with `slot="compact"`, the full
-  rows in one with `slot="full"`. `turns.expanded_step(call, detail)` and
-  `turns.expanded_block(block)` (`session_view`) give the full rows, and give
-  `[]` when they equal the compact ones, so a call whose result is already
-  shown, or a response that only speaks, has no expander. The rows are the
-  terminal's own builders (`transcript_lines.expanded_call_lines`, and the
-  prose builder at `Complete` extent). No event, handler or socket read is
-  involved: the text is already in the model, so choosing which form shows
-  is the browser's, as a fold's open state is, and it works on an observer's
-  page. Both forms are in every viewer's document, so
+  records, and `component.relaned` asks `turns.pieces` for the expansions
+  (`turns.Expand(expansion.capped)`) when it projects a capture, so they are
+  built once per projection and never on a render. A `Step` carries its
+  `full` rows and a `Plain` or `Narrated` piece carries `thoughts`, the full
+  form of each reasoning row by the row's key, both already cut. `lane.view`
+  draws a row that has more to show as one `<loom-expand>` (`web_client`): the
+  compact rows in a child with `slot="compact"`, the full rows in one with
+  `slot="full"`. For a call that is the rows under its summary; for a
+  response it is only the reasoning row, so an answer beside the reasoning is
+  drawn once. A row whose full form equals the compact one (a call whose
+  result is already shown, a one-line reasoning block) has none. The rows are
+  the terminal's own builders (`transcript_lines.expanded_call_lines`, and
+  `assistant_block_lines` at expanded extent). No event, handler or socket
+  read is involved: the text is already in the model, so choosing which form
+  shows is the browser's, as a fold's open state is, and it works on an
+  observer's page. Both forms are in every viewer's document, so
   `view/expansion.capped` cuts the full rows to `max_lines` (300) lines and
-  `max_characters` (16,000) characters per row and ends a cut row with one
+  `max_characters` (8,000) characters per row and ends a cut row with one
   line saying so. The rows are memoized per line as the compact ones are.
   Session text is drawn as text nodes: a program is a Markdown code block,
   so a `<pre><code>` holding text.

@@ -1344,7 +1344,7 @@ that has more to show, as the children of a new client element,
 `<loom-expand>`, and the element shows one of them. Both forms are session
 text drawn as text nodes (a program is a `<pre><code>`), the element has no
 attribute, handles no key, and its button's words are fixed. Each expanded row
-is cut to 300 lines or 16,000 characters. The content security policy is
+is cut to 300 lines or 8,000 characters. The content security policy is
 unchanged. Considered and not taken: asking the server for the full row on
 click, which would be a new page event and a round trip for text the page
 holds.

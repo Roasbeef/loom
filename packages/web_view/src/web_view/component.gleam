@@ -123,6 +123,7 @@ import session_view/transcript
 import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/turns
+import web_view/view/expansion
 import web_view/view/heading
 import web_view/view/lane
 import web_view/view/strip
@@ -889,7 +890,13 @@ fn relaned(model: Model(socket)) -> Model(socket) {
       let #(blocks, fit) =
         held(lead, opened, branch.unloaded, limit(model.view.paging))
       let latest = turns.latest(view, shared.agent_rows, strand)
-      let pieces = turns.pieces(blocks, view.strands, latest)
+      let pieces =
+        turns.pieces(
+          blocks,
+          view.strands,
+          latest,
+          turns.Expand(expansion.capped),
+        )
       let #(scrollback, earlier) = case fit, branch.unloaded {
         Whole, None -> #(shared.scrollback, Reached)
         Whole, Some(_) ->
