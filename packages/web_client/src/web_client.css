@@ -368,7 +368,7 @@
   .todo-phase{color:var(--color-fg);font-weight:700;}
   .todo-quiet{color:var(--color-fg-quiet);}
   loom-fold.todo-fold{display:block;}
-  .todo-current{color:var(--color-signal);font-weight:700;}
+  .todo-current{color:var(--color-signal-text);font-weight:700;}
   .todo-detail{padding-top:4px;}
   /* The Changes section (web_view/view/changes): the session's own edits,
      collapsed, below the transcript. Its height is capped and it scrolls on
