@@ -66,12 +66,15 @@ for pkg in "${targets[@]}"; do
     continue
   fi
   # The browser package targets JavaScript. The gate compiles it, warning
-  # free, and runs nothing: executing JavaScript would need a runtime the
-  # gate does not otherwise require. What its elements render is checked by
-  # web_view's rendered-output tests, and its bundle by the asset gate.
+  # free, and runs its tests under whichever JavaScript runtime is on PATH
+  # (scripts/web_client_test.sh, which prints a SKIP the census refuses when
+  # there is none). The tests cover the components' decisions; what its
+  # elements render is checked by web_view's rendered-output tests, its
+  # bundle by the asset gate and its one JavaScript file by `make lint`.
   if [ "$pkg" = "web_client" ]; then
-    echo "==> $pkg (JavaScript, compiled only)"
-    (cd "packages/$pkg" && gleam format --check src && gleam build --warnings-as-errors)
+    echo "==> $pkg (JavaScript)"
+    (cd "packages/$pkg" && gleam format --check src test && gleam build --warnings-as-errors)
+    scripts/web_client_test.sh
     continue
   fi
   echo "==> $pkg"

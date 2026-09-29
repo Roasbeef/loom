@@ -34,7 +34,11 @@ client components inside a server component, because 051 keeps the session
 on the BEAM (`docs/lustre.md`).
 
 The package targets JavaScript only (`target = "javascript"`) and depends on
-`lustre == 5.7.1`, `gleam_stdlib` and `gleam_json`. `make gen-client` bundles it with
+`lustre == 5.7.1`, `gleam_stdlib` and `gleam_json`. Its only JavaScript is
+`src/web_client/internal/dom.mjs`, one DOM call or property read per export
+with no logic, declared in `internal/ffi_dom.gleam`; every decision the
+components make is Gleam over it (see `internal/ffi_dom` under Key Types).
+`make gen-client` bundles it with
 `lustre_dev_tools` (a dev dependency here and nowhere else) into
 `packages/web_view/priv/static/web_client.mjs`, together with the page's
 stylesheet, which Tailwind builds from `src/web_client.css`, and the two
@@ -51,71 +55,124 @@ time builds anything.
   had run, in milliseconds, by the server (`agent_roster.running_ms`), and
   is the only attribute the element reads; `anchor` is the browser's clock
   when it arrived. The element never subtracts a daemon instant from the
-  browser's clock. `elapsed.duration` is the terminal strip's format.
+  browser's clock. `duration.format` is the terminal strip's format.
 - `fold.Model` (`Closed` | `Opened`) and `fold.Msg` (`Toggled`): the fold's
   shadow root holds one button carrying the `summary` slot and, while open,
   the default slot. Each toggle emits `fold.toggled_event`
   (`loom-fold-toggled`, bubbling and composed, no data).
-- `follow.Model(position, gap, watching, anchor)`, `follow.Position`
-  (`Following` | `Reading`) and `follow.Msg` (`Connected`, `Disconnected`,
-  `Watched`, `Scrolled(gap, moved)`, `Resized`, `Measured(gap)`, `Folded`,
-  `Paged`, `Jumped`, `Held(anchor)`, `Released`): a scroll sets the
-  position from where it ended and which way it moved
-  (`follow.after_scroll`): within `follow.slack` pixels of the bottom is
-  `Following`, a move up that ends further away is `Reading`, and a move
-  down that ends further away changes nothing, because that is either the
-  reader coming back or the element's own scroll to the bottom reported
-  after more rows landed. A resize of the transcript or its content
-  scrolls to the bottom only while `Following`; a fold's toggle event,
-  heard on the slot, sets `Reading`, so opening a fold never scrolls past
-  it. A click heard on the slot whose target carries the server's fixed
+- `follow.Model(reader, watching, anchor)` (`follow_rule.Reader` holds
+  position, gap, top, extent and touched, and `follow_rule` moves it),
+  `follow_rule.Position` (`Following` | `Reading`) and `follow.Msg` (`Connected`,
+  `Disconnected`, `Watched`, `Touched`, `Scrolled(top, extent, at)`,
+  `Resized`, `Measured`, `Folded`, `Paged`, `Jumped`, `Held`, `Released`):
+  a scroll sets the position from where it ended, which way it moved and who
+  moved it (`follow_rule.after_scroll(current, gap, moved, origin)`). Within
+  `follow_rule.slack` pixels of the bottom is `Following`. A move up that ends
+  further away is `Reading` only when the reader made it; a move down that
+  ends further away changes nothing, because that is either the reader
+  coming back or the element's own scroll to the bottom reported after more
+  rows landed. `follow_rule.origin` tells who made a scroll: `Input` when a
+  `wheel`, `touchstart`, `touchmove`, `pointerdown` or `keydown` on the element was heard
+  within `follow_rule.touch_window` (`Touched`, passive listeners that read
+  nothing from the event), `Steady` when nothing was heard but the
+  transcript's `Extent` (content and view height) is what it was at the
+  last scroll (find-in-page, a key pressed outside the transcript, a
+  scrollbar drag), and `Layout` when nothing
+  was heard and the extent changed, which is the browser fitting the scroll
+  position to a box that grew or content that shrank. A `Layout` scroll
+  never leaves `Following`; the size change that caused it brings `Resized`,
+  which scrolls to the bottom. Each `Input` scroll renews `touched`, so a
+  slow scrollbar drag stays the reader's. A resize of the transcript or its
+  content scrolls to the bottom only while `Following`; a fold's toggle
+  event, heard on the slot, sets `Reading`, so opening a fold never scrolls
+  past it. A click heard on the slot whose target carries the server's fixed
   `data-loom-older` marker is `Paged`: it sets `Reading` and holds the
-  lane's first row and its place on screen (`anchor`); a scroll by the
-  reader measures it again, and the first resize after which that row is
-  no longer the lane's first scrolls the transcript to put it back and
-  releases it. The shadow root holds the default slot and, while the
-  reader is `Reading` more than `slack` pixels from the bottom, one
-  button, "Jump to latest" (`Jumped`), whose wrapper has no height and
-  sticks to the scroller's bottom edge.
+  lane's first row and its place on screen (`follow.Anchor`, `None` when
+  the page has no lane row); a scroll by the reader measures it again, and
+  the first resize after which that row is no longer the lane's first
+  scrolls the transcript to put it back and releases it (`follow_rule.keeping`
+  over a `follow_rule.Standing`: `Detached`, `Leading`, `Displaced(top)`). The
+  watch (`follow.Watching`) is the element, its scroll listener and input
+  listeners, a `ResizeObserver` on the element and on each of its
+  children, and a `MutationObserver` that keeps those current: the
+  element's own box is fixed, so it is the content that changes size when a
+  row lands. The shadow root holds the default slot and, while the reader is
+  `Reading` more than `slack` pixels from the bottom, one button, "Jump to
+  latest" (`Jumped`), whose wrapper has no height and sticks to the
+  scroller's bottom edge.
 - `composer.Model(entries, draft, selected, palette, returns)` and
   `composer.Msg` (`Configured`, `Returned`, `Typed`, `Moved`, `Accepted`,
   `Picked`, `Dismissed`, `Sent`, `Ignored`): `commands` is the table the
-  server built from the terminal's suggestions (`composer.entries` decodes
-  it, and decodes to no table if it is not one); `composer.matching(entries,
+  server built from the terminal's suggestions (`composer_rule.entries` decodes
+  it, and decodes to no table if it is not one); `composer_rule.matching(entries,
   draft)` is `command.suggestions`' rule over that table, one-word commands
   by prefix and a word with a closed vocabulary (`/effort `, `/goal `) by
-  its argument rows past the space. `composer.intent(key, chord, phase,
+  its argument rows past the space. `composer_rule.intent(key, chord, phase,
   palette)` says what a key does: Command or Control with Enter is `Sent`
   and its default cancelled; while the list shows, the arrows are `Moved`,
   Tab and Enter are `Accepted` and Escape is `Dismissed`; everything else,
   and every key during composition, is the browser's. `Returns` is `Unseen`
-  or `Seen(baseline, count)`: the first `returned` count is the baseline, an
-  editor drawn afresh takes none of the returns before it, and a count that
-  rises runs `ffi_composer.restore(baseline)`, which takes each numbered
-  child of the `returned` slot once, oldest first. The shadow root holds the
+  or `Seen(taken)`: the first `returned` count is the baseline, so an editor
+  drawn afresh takes none of the returns before it. `composer_rule.hear` turns
+  each later count into `Take(after, up_to)` when it is above `taken` and
+  advances `taken` in the same turn, so two returns that arrive before one
+  frame paints claim disjoint ranges and each prompt is taken once. The
+  effect reads the numbered children of the `returned` slot, and
+  `composer_rule.taken` picks the ones in the range, oldest first, and
+  `composer_rule.joined` puts each in the draft (an empty editor takes it as its
+  draft; a typed one keeps its text and takes it after a blank line).
+  `composer_rule.revealed` says where the list scrolls to keep the highlighted
+  row in view. The shadow root holds the
   list, above one default slot; the list is `role="listbox"` and its rows
   `role="option"`.
-- `internal/ffi_clock`: `now` (`Date.now`), `every` (`setInterval`) and
-  `cancel` (`clearInterval`), in `clock.mjs`.
-- `internal/ffi_follow`: `watch` (a passive `scroll` listener on the
-  element, and a `ResizeObserver` on the element and on each of its
-  children, which a `MutationObserver` keeps current: the element's own box
-  is fixed, so it is the content that changes size when a row lands),
-  `unwatch`, `measure`, `to_bottom`, and for the held row `hold`,
-  `remeasure` and `keep` (`Waiting` | `Restored`), which read the first
-  row's box and scroll the element by a distance, in `follow.mjs`.
-- `internal/ffi_composer`: `place` (write the editor and focus it, for a
-  chosen row), `send` (`requestSubmit` on the form, with its first submit
-  button), `restore` (take the numbered returned children into the editor)
-  and `reveal` (scroll the list to the highlighted row), in `composer.mjs`.
-  With `ffi_clock` and `ffi_follow`, these are the package's only browser
-  APIs.
+- `internal/ffi_dom` and `internal/dom.mjs`: the package's only browser
+  API and its only JavaScript. Every function is one DOM call or property
+  access: `host`, `as_element`, `same`, `is_connected`, `first_element_child`,
+  `children`, `closest`, `query_selector`, `query_selector_all`, `dataset_get`,
+  `text_content`, `scroll_top`, `set_scroll_top`, `scroll_by`,
+  `scroll_height`, `client_height`, `offset_top`, `offset_height`,
+  `bounding_top`, `add_passive_listener`, `remove_listener`,
+  `resize_observer`, `observe`, `mutation_observer`, `observe_child_list`,
+  `disconnect`, `value`, `set_value`, `utf16_length`, `set_selection_range`,
+  `focus`, `request_submit`, `request_submit_with`, `now`, `set_interval` and
+  `clear_interval`. Its types are `Element` (an element, or the shadow root
+  Lustre hands an `after_paint` effect, which answers queries alike),
+  `Listener`, `Observer` and `Timer`. The one decision in `dom.mjs` is
+  turning a null or undefined DOM answer into `Error(Nil)`. Add a function
+  there only when a component needs a DOM call that is not bound, and keep
+  the logic in Gleam. There is no other `.mjs`: the lint gate below fails
+  one.
+
+## Tests
+
+What the components decide is in three modules that import neither Lustre nor
+`ffi_dom`: `follow_rule` (the scroll rule, `Reader` and its transitions,
+`keeping`), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,
+`joined`, `revealed`) and `duration`. `follow`, `composer` and `elapsed` are
+the elements over them. The split is enforced, not just conventional: Lustre's
+client runtime declares `class LustreEvent extends CustomEvent` at load, Node
+18 (the signoff container's) has no global `CustomEvent`, and a test that
+imports an element throws before any test runs. `scripts/web_client_test.sh`
+walks the imports reachable from `test/` and fails if one reaches `lustre` or
+`web_client/internal/`.
+
+`test/` holds gleeunit tests for what the components decide: `follow`'s
+scroll rules and the sequences of messages the page sends, `composer`'s
+`matching`, `intent`, `hear`, `taken`, `joined` and `revealed`, and
+`duration.format`. They run on the JavaScript target, so they need Node,
+Bun or Deno: `make test-web_client` (`scripts/web_client_test.sh`, which
+`scripts/check.sh` runs after the compile). The container the signoff runs in
+installs Node for this; a machine with no runtime prints a `SKIP` line that
+`.github/scripts/skip_census.sh` refuses. What the tests do not reach is the
+DOM: the listeners, the observers, the scroll events, the caret and focus,
+`requestSubmit`, and the way the browser lays the page out. Those run only in
+a browser and are checked by hand.
 
 ## Relationships
 
 - **Depends on**: `lustre` (client components, `lustre.register`),
   `gleam_stdlib`, `gleam_json` (the fold event's empty payload). Dev only:
-  `lustre_dev_tools`, for `make gen-client`.
+  `lustre_dev_tools`, for `make gen-client`, and `gleeunit`, for the tests.
 - **Depended on by**: nothing at compile time. `packages/web_view` renders
   its elements by tag name, and `packages/client` serves its bundle from
   `web_view`'s `priv/static` (`ui_http.Client`).
@@ -126,10 +183,11 @@ None over the socket. Each element is a Lustre runtime inside the browser:
 attribute changes and DOM events reach its `update`; its timers dispatch
 messages to it. Nothing here opens a connection. The one element that
 looks outside itself is `<loom-follow>`, which reads and sets its own
-scroll position and observes the size of itself and its children; it reads
-no content. `<loom-composer>` listens to its own editor's `input` and
-`keydown`, and writes the editor's value; the one thing it sends is the
-form's submit, which the server already accepts.
+scroll position, observes the size of itself and its children, and hears
+(passively, reading nothing from them, not even the key) the wheel, a finger,
+a pointer press and a key pressed inside itself; it reads no content. `<loom-composer>` listens to its own
+editor's `input` and `keydown`, and writes the editor's value; the one thing
+it sends is the form's submit, which the server already accepts.
 
 ## Invariants
 
@@ -141,13 +199,24 @@ form's submit, which the server already accepts.
   of command names and hints written in `session_view`; the returned
   prompts it takes arrive as text-node children, never as attributes.
 - **No key handling and no focus near an approval card.** Only
-  `<loom-composer>` listens for a key, and only on its own editor, through
-  its slot. It calls `focus` once, on that editor, when the operator chooses
+  `<loom-composer>` acts on a key, and only on its own editor, through its
+  slot. `<loom-follow>` may note that a key was pressed inside the transcript
+  (a passive `keydown` that reads nothing from the event, never cancels it and
+  sends nothing), so a keyboard scroll counts as the reader's. It calls `focus` once, on that editor, when the operator chooses
   a row. The approval cards are outside it, in the dock, and no key it
   handles decides one: Command or Control with Enter submits the composer's
   form, which sends a prompt or a command and decides nothing.
 - **No raw HTML.** Lustre renders through its virtual DOM; nothing here
-  uses `unsafe_raw_html` or `innerHTML`.
+  uses `unsafe_raw_html` or `innerHTML`. `scripts/web_client_js_check.sh`, run
+  by `make lint` (so by `make lint-web_client` and `make check`), fails if any
+  JavaScript file under `src` is not `internal/dom.mjs`, or if one names
+  `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function`,
+  `document.write`, `srcdoc`, `DOMParser`, `createContextualFragment` or a
+  dynamic `import(`. It has its own self-test.
+- **State the DOM would hold in an expando lives in the model.** The
+  returned-prompt bookkeeping (`Seen(taken)`), the scroll bookkeeping (`top`,
+  `extent`, `touched`) and the held row are Lustre model fields, never
+  properties set on the host element.
 - **No state the server needs.** A fold's open state, a clock reading and
   whether the reader follows the tail live only in the browser; the server
   never reads them.
@@ -158,6 +227,12 @@ form's submit, which the server already accepts.
   intermediate positions that read as the reader leaving the tail. The row
   it holds for "Load older" is found by structure (the lane's first
   child), and only its box is read.
+- **Only a scroll the reader made leaves the tail.** A browser moves the
+  scroll position up by itself when content shrinks or the box grows, and the
+  event is heard after the rows that landed since, so by geometry alone it is
+  the reader leaving. `follow_rule.origin` refuses that (see `follow.Model`
+  above). Keep any change to the follow rule inside `follow_rule.after_scroll` and
+  `follow_rule.origin`, and add a sequence to `test/follow_test.gleam`.
 - **The committed bundle is generated.** Change this package and run `make
   gen-client`; `make client-check` (part of `make check`) fails on drift,
   by digests, without Node, Bun or a network.

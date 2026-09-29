@@ -19,6 +19,21 @@ import simplifile
 import support/provider
 import weft/registry as address
 
+// How long a test waits for an event it has already caused, such as the next
+// resolver arrival or a settled account after a gate is released.
+//
+// Every one of these waits returns at the event, so the number is not a
+// pacing delay; it only decides how late a real pass may be before the test
+// calls it hung. Completing a pass runs the SQLite memory work and the weft
+// drain proof on the scheduler, and measured under CPU contention that
+// latency has a tail past one second (25 passes at 64 spinning processes on
+// 16 cores: median about 60 ms, worst 1250 ms). The Linux signoff lane
+// missed a one-second bound twice this way. Five seconds is also the ceiling
+// `domain_call` places on any call, so no wait here can outlast the worker's
+// own bound. Negative checks keep their short windows: an event that comes
+// late can make them pass without proving anything, but never fail them.
+const patience_ms = 5000
+
 /// A burst creates one follow-up, after the prior waiters and witness retire.
 pub fn domain_cadence_parked_stop_opens_nothing_test() {
   let assert Ok(names) = address.start() as "registry must start"
@@ -27,9 +42,9 @@ pub fn domain_cadence_parked_stop_opens_nothing_test() {
   let options = config(name, arrivals, "parked")
   let assert Ok(_) = distillpass.prepare_domain(options)
     as "domain must prepare without starting a pass"
-  assert distillpass.active_witness(name, waiting_ms: 1000) == Ok(None)
+  assert distillpass.active_witness(name, waiting_ms: patience_ms) == Ok(None)
   assert process.receive(arrivals, 0) == Error(Nil)
-  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Ok(Nil)
   assert simplifile.is_file(options.pipeline.memory_path) == Ok(False)
   assert address.stop(names) == Ok(Nil)
 }
@@ -43,30 +58,32 @@ pub fn domain_cadence_quiesce_waits_follow_up_test() {
     distillpass.prepare_domain(config(name, arrivals, "quiesce"))
     as "domain must prepare"
   distillpass.begin_domain(worker.data)
-  let assert Ok(first) = process.receive(arrivals, 1000)
+  let assert Ok(first) = process.receive(arrivals, patience_ms)
     as "published domain may begin"
   distillpass.begin_domain(worker.data)
-  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Ok(Nil)
   assert process.receive(arrivals, 0) == Error(Nil)
   let current = process.new_subject()
   let finished = process.new_subject()
   assert distillpass.request_domain_settled(name, current) == Ok(Nil)
   assert distillpass.request_quiesce(name, finished) == Ok(Nil)
-  assert distillpass.trigger(name, waiting_ms: 1000) != Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) != Ok(Nil)
   process.send(first, Ok([]))
-  let assert Ok(second) = process.receive(arrivals, 1000)
+  let assert Ok(second) = process.receive(arrivals, patience_ms)
     as "the already-coalesced pass must still run"
-  let assert Ok(distillpass.Completed(_)) = process.receive(current, 1000)
+  let assert Ok(distillpass.Completed(_)) =
+    process.receive(current, patience_ms)
     as "ordinary Await observes the first completed pass"
   assert process.receive(finished, 20) == Error(Nil)
   process.send(second, Ok([]))
-  let assert Ok(distillpass.Completed(_)) = process.receive(finished, 1000)
+  let assert Ok(distillpass.Completed(_)) =
+    process.receive(finished, patience_ms)
     as "quiesce answers only after the follow-up retires"
   assert process.is_alive(worker.pid)
   distillpass.begin_domain(worker.data)
-  assert distillpass.active_witness(name, waiting_ms: 1000) == Ok(None)
+  assert distillpass.active_witness(name, waiting_ms: patience_ms) == Ok(None)
   assert process.receive(arrivals, 0) == Error(Nil)
-  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Ok(Nil)
   assert address.stop(names) == Ok(Nil)
 }
 
@@ -83,31 +100,31 @@ pub fn domain_cadence_resume_unfences_a_settled_domain_test() {
   let assert Ok(_) =
     distillpass.start_domain(config(name, arrivals, "resume-settled"))
     as "domain must start"
-  let assert Ok(first) = process.receive(arrivals, 1000)
+  let assert Ok(first) = process.receive(arrivals, patience_ms)
     as "first admission must run immediately"
   process.send(first, Ok([]))
   let assert Ok(distillpass.Completed(_)) =
-    distillpass.domain_settled(name, waiting_ms: 1000)
+    distillpass.domain_settled(name, waiting_ms: patience_ms)
     as "the first pass must settle before the fence"
 
   // Nothing is coalesced behind this fence, so it is answered from the settled
   // account at once and leaves the worker refusing further work.
   let fenced = process.new_subject()
   assert distillpass.request_quiesce(name, fenced) == Ok(Nil)
-  let assert Ok(distillpass.Completed(_)) = process.receive(fenced, 1000)
+  let assert Ok(distillpass.Completed(_)) = process.receive(fenced, patience_ms)
     as "a quiesce with nothing owed answers from the settled account"
-  assert distillpass.trigger(name, waiting_ms: 1000)
+  assert distillpass.trigger(name, waiting_ms: patience_ms)
     == Error("domain worker is stopping")
 
   assert distillpass.request_resume(name) == Ok(Nil)
-  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
-  let assert Ok(second) = process.receive(arrivals, 2000)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Ok(Nil)
+  let assert Ok(second) = process.receive(arrivals, patience_ms)
     as "a resumed domain admits a scheduled pass again"
   process.send(second, Ok([]))
   let assert Ok(distillpass.Completed(_)) =
-    distillpass.domain_settled(name, waiting_ms: 1000)
+    distillpass.domain_settled(name, waiting_ms: patience_ms)
     as "the resumed pass must complete"
-  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Ok(Nil)
   assert address.stop(names) == Ok(Nil)
 }
 
@@ -124,20 +141,20 @@ pub fn domain_cadence_resume_survives_a_late_quiesce_answer_test() {
   let assert Ok(_) =
     distillpass.start_domain(config(name, arrivals, "resume-stale"))
     as "domain must start"
-  let assert Ok(first) = process.receive(arrivals, 1000)
+  let assert Ok(first) = process.receive(arrivals, patience_ms)
     as "first admission must run immediately"
 
   // The fence lands while the pass is parked, so its answer is owed rather
   // than sent, and the revival happens in the gap.
   let fenced = process.new_subject()
   assert distillpass.request_quiesce(name, fenced) == Ok(Nil)
-  assert distillpass.trigger(name, waiting_ms: 1000)
+  assert distillpass.trigger(name, waiting_ms: patience_ms)
     == Error("domain worker is stopping")
   assert distillpass.request_resume(name) == Ok(Nil)
-  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Ok(Nil)
 
   process.send(first, Ok([]))
-  let assert Ok(second) = process.receive(arrivals, 2000)
+  let assert Ok(second) = process.receive(arrivals, patience_ms)
     as "the resumed domain runs the pass the revived session asked for"
   assert process.receive(fenced, 0) == Error(Nil)
   process.send(second, Ok([]))
@@ -145,12 +162,12 @@ pub fn domain_cadence_resume_survives_a_late_quiesce_answer_test() {
   // The withdrawn fence must leave admission exactly where the resume put it.
   // A trigger can return while the second pass is still finishing; it admits
   // a follow-up but is not a barrier for that pass's completion.
-  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
-  let assert Ok(third) = process.receive(arrivals, 2000)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Ok(Nil)
+  let assert Ok(third) = process.receive(arrivals, patience_ms)
     as "a resumed domain still schedules after its stale fence is answered"
   process.send(third, Ok([]))
   let assert Ok(distillpass.Completed(_)) =
-    distillpass.domain_settled(name, waiting_ms: 1000)
+    distillpass.domain_settled(name, waiting_ms: patience_ms)
     as "the pass after the late answer must complete"
 
   // The worker sends this settled reply after all three passes. Any stale
@@ -158,7 +175,7 @@ pub fn domain_cadence_resume_survives_a_late_quiesce_answer_test() {
   // so the negative needs no timing window.
   assert process.receive(fenced, 0) == Error(Nil)
     as "the resume withdrew the fence, so its subject is never answered"
-  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Ok(Nil)
   assert address.stop(names) == Ok(Nil)
 }
 
@@ -172,7 +189,7 @@ pub fn domain_cadence_repeated_fences_park_one_reply_per_caller_test() {
   let assert Ok(_) =
     distillpass.start_domain(config(name, arrivals, "resume-repeat"))
     as "domain must start"
-  let assert Ok(first) = process.receive(arrivals, 1000)
+  let assert Ok(first) = process.receive(arrivals, patience_ms)
     as "first admission must run immediately"
 
   // Five close-and-reopen cycles while the pass is parked, then the fence
@@ -185,11 +202,11 @@ pub fn domain_cadence_repeated_fences_park_one_reply_per_caller_test() {
   assert distillpass.request_quiesce(name, fenced) == Ok(Nil)
 
   process.send(first, Ok([]))
-  let assert Ok(distillpass.Completed(_)) = process.receive(fenced, 1000)
+  let assert Ok(distillpass.Completed(_)) = process.receive(fenced, patience_ms)
     as "the standing fence is answered once nothing more is owed"
   assert process.receive(fenced, 100) == Error(Nil)
     as "the withdrawn fences left no parked replies behind"
-  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Ok(Nil)
   assert address.stop(names) == Ok(Nil)
 }
 
@@ -203,7 +220,7 @@ pub fn domain_cadence_withdrawn_fence_is_never_answered_test() {
   let assert Ok(_) =
     distillpass.start_domain(config(name, arrivals, "resume-withdraw"))
     as "domain must start"
-  let assert Ok(first) = process.receive(arrivals, 1000)
+  let assert Ok(first) = process.receive(arrivals, patience_ms)
     as "first admission must run immediately"
 
   let withdrawn = process.new_subject()
@@ -213,11 +230,12 @@ pub fn domain_cadence_withdrawn_fence_is_never_answered_test() {
   assert distillpass.request_quiesce(name, standing) == Ok(Nil)
 
   process.send(first, Ok([]))
-  let assert Ok(distillpass.Completed(_)) = process.receive(standing, 1000)
+  let assert Ok(distillpass.Completed(_)) =
+    process.receive(standing, patience_ms)
     as "the fence issued after revival is the one answered"
   assert process.receive(withdrawn, 100) == Error(Nil)
     as "the fence the resume withdrew receives no account"
-  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Ok(Nil)
   assert address.stop(names) == Ok(Nil)
 }
 
@@ -231,21 +249,21 @@ pub fn domain_cadence_resume_cannot_withdraw_a_stop_test() {
   let assert Ok(worker) = distillpass.start_domain(options)
     as "domain must start"
   let original = process.monitor(worker.pid)
-  let assert Ok(#(_owner, release)) = process.receive(started, 1000)
+  let assert Ok(#(_owner, release)) = process.receive(started, patience_ms)
     as "the original provider owner must begin"
   assert distillpass.stop_domain(name, waiting_ms: 20)
     == Error("domain retirement remains unconfirmed")
-  assert process.receive(cancelled, 1000) == Ok(Nil)
+  assert process.receive(cancelled, patience_ms) == Ok(Nil)
 
   // The stop has already asked the cancellation witness to exit, so this
   // admission is final and the resume must leave it alone.
   assert distillpass.request_resume(name) == Ok(Nil)
-  assert distillpass.trigger(name, waiting_ms: 1000)
+  assert distillpass.trigger(name, waiting_ms: patience_ms)
     == Error("domain worker is stopping")
 
   // And the retirement the stop began still completes.
   process.send(release, Nil)
-  assert down(original, 2000) == Ok(process.Normal)
+  assert down(original, patience_ms) == Ok(process.Normal)
   assert address.stop(names) == Ok(Nil)
 }
 
@@ -256,22 +274,22 @@ pub fn domain_cadence_coalesces_and_replies_before_follow_up_test() {
   let arrivals = process.new_subject()
   let assert Ok(_) = distillpass.start_domain(config(name, arrivals, "burst"))
     as "domain must start"
-  let assert Ok(first) = process.receive(arrivals, 1000)
+  let assert Ok(first) = process.receive(arrivals, patience_ms)
     as "first admission must run immediately"
   int.range(1, 20, Nil, fn(_, _) {
-    assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+    assert distillpass.trigger(name, waiting_ms: patience_ms) == Ok(Nil)
   })
   let answer = process.new_subject()
   assert distillpass.request_domain_settled(name, answer) == Ok(Nil)
 
   // Same-sender ordering makes this reply a barrier after the await request.
   let assert Ok(Some(witness)) =
-    distillpass.active_witness(name, waiting_ms: 1000)
+    distillpass.active_witness(name, waiting_ms: patience_ms)
     as "active pass must own its cancellation witness"
   let watch = process.monitor(witness)
   assert process.receive(answer, 0) == Error(Nil)
   process.send(first, Ok([]))
-  let assert Ok(second) = process.receive(arrivals, 1000)
+  let assert Ok(second) = process.receive(arrivals, patience_ms)
     as "the coalesced follow-up must resolve fresh sources"
 
   // The second resolver stays parked, so a reply cannot belong to its pass.
@@ -279,13 +297,13 @@ pub fn domain_cadence_coalesces_and_replies_before_follow_up_test() {
     as "postponed waiters must receive the completed pass before follow-up"
   assert report.sources == 0
   assert !process.is_alive(witness)
-  assert down(watch, 1000) == Ok(process.Normal)
+  assert down(watch, patience_ms) == Ok(process.Normal)
   process.send(second, Ok([]))
   let assert Ok(distillpass.Completed(_)) =
-    distillpass.domain_settled(name, waiting_ms: 1000)
+    distillpass.domain_settled(name, waiting_ms: patience_ms)
     as "the second pass must finish"
   assert process.receive(arrivals, 0) == Error(Nil)
-  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Ok(Nil)
   assert address.stop(names) == Ok(Nil)
 }
 
@@ -296,21 +314,21 @@ pub fn domain_cadence_failure_discards_pending_test() {
   let arrivals = process.new_subject()
   let assert Ok(_) = distillpass.start_domain(config(name, arrivals, "failure"))
     as "domain must start"
-  let assert Ok(first) = process.receive(arrivals, 1000)
+  let assert Ok(first) = process.receive(arrivals, patience_ms)
     as "first resolver must arrive"
-  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Ok(Nil)
   process.send(first, Error("catalogue unavailable"))
-  assert distillpass.domain_settled(name, waiting_ms: 1000)
+  assert distillpass.domain_settled(name, waiting_ms: patience_ms)
     == Ok(distillpass.Refused("catalogue unavailable"))
   assert process.receive(arrivals, 50) == Error(Nil)
-  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
-  let assert Ok(second) = process.receive(arrivals, 1000)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Ok(Nil)
+  let assert Ok(second) = process.receive(arrivals, patience_ms)
     as "a later explicit trigger must resolve again"
   process.send(second, Ok([]))
   let assert Ok(distillpass.Completed(_)) =
-    distillpass.domain_settled(name, waiting_ms: 1000)
+    distillpass.domain_settled(name, waiting_ms: patience_ms)
     as "explicit retry must complete"
-  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Ok(Nil)
   assert address.stop(names) == Ok(Nil)
 }
 
@@ -321,19 +339,19 @@ pub fn domain_cadence_stop_active_resolver_test() {
   let arrivals = process.new_subject()
   let assert Ok(_) = distillpass.start_domain(config(name, arrivals, "stop"))
     as "domain must start"
-  let assert Ok(_gate) = process.receive(arrivals, 1000)
+  let assert Ok(_gate) = process.receive(arrivals, patience_ms)
     as "resolver must be active"
   let answer = process.new_subject()
   assert distillpass.request_domain_settled(name, answer) == Ok(Nil)
   let assert Ok(Some(witness)) =
-    distillpass.active_witness(name, waiting_ms: 1000)
+    distillpass.active_witness(name, waiting_ms: patience_ms)
     as "active witness must be observable"
   let watch = process.monitor(witness)
-  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
-  assert distillpass.stop_domain(name, waiting_ms: 2000) == Ok(Nil)
-  assert process.receive(answer, 1000)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Ok(Nil)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Ok(Nil)
+  assert process.receive(answer, patience_ms)
     == Ok(distillpass.Refused("domain shutdown cancelled the pass"))
-  assert down(watch, 1000) == Ok(process.Normal)
+  assert down(watch, patience_ms) == Ok(process.Normal)
   assert process.receive(arrivals, 0) == Error(Nil)
   assert address.stop(names) == Ok(Nil)
 }
@@ -347,16 +365,16 @@ pub fn domain_cadence_worker_death_retires_witness_test() {
   let assert Ok(worker) =
     distillpass.start_domain(config(name, arrivals, "death"))
     as "domain must start"
-  let assert Ok(_gate) = process.receive(arrivals, 1000)
+  let assert Ok(_gate) = process.receive(arrivals, patience_ms)
     as "resolver must be active"
   let assert Ok(Some(witness)) =
-    distillpass.active_witness(name, waiting_ms: 1000)
+    distillpass.active_witness(name, waiting_ms: patience_ms)
     as "active witness must be observable"
   let watch = process.monitor(witness)
   process.kill(worker.pid)
-  let assert Ok(_reason) = down(watch, 1000)
+  let assert Ok(_reason) = down(watch, patience_ms)
     as "worker death must not leave a live cancellation witness"
-  assert distillpass.trigger(name, waiting_ms: 1000) != Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) != Ok(Nil)
   assert address.stop(names) == Ok(Nil)
   process.trap_exits(False)
 }
@@ -390,16 +408,16 @@ pub fn domain_cadence_stop_waits_original_provider_test() {
   let assert Ok(worker) = distillpass.start_domain(options)
     as "domain must start"
   let original = process.monitor(worker.pid)
-  let assert Ok(#(owner, release)) = process.receive(started, 1000)
+  let assert Ok(#(owner, release)) = process.receive(started, patience_ms)
     as "the original provider owner must begin"
   let assert Ok(Some(witness)) =
-    distillpass.active_witness(name, waiting_ms: 1000)
+    distillpass.active_witness(name, waiting_ms: patience_ms)
     as "active witness must be present"
   let watch = process.monitor(witness)
   assert distillpass.stop_domain(name, waiting_ms: 20)
     == Error("domain retirement remains unconfirmed")
-  assert process.receive(cancelled, 1000) == Ok(Nil)
-  assert down(watch, 1000) == Ok(process.Normal)
+  assert process.receive(cancelled, patience_ms) == Ok(Nil)
+  assert down(watch, patience_ms) == Ok(process.Normal)
   assert process.is_alive(owner)
   let assert Error(_) = distillpass.domain_settled(name, waiting_ms: 20)
     as "witness retirement must not settle the still-owned provider"
@@ -407,7 +425,7 @@ pub fn domain_cadence_stop_waits_original_provider_test() {
 
   // The already admitted stop completes only after the original owner retires.
   process.send(release, Nil)
-  assert down(original, 2000) == Ok(process.Normal)
+  assert down(original, patience_ms) == Ok(process.Normal)
   assert !process.is_alive(owner)
   assert address.stop(names) == Ok(Nil)
 }
@@ -422,23 +440,23 @@ pub fn domain_cadence_provider_proof_loss_is_permanent_test() {
   let options = held_provider_config(name, started, cancelled, "proof-loss")
   let assert Ok(worker) = distillpass.start_domain(options)
     as "domain must start"
-  let assert Ok(#(owner, _release)) = process.receive(started, 1000)
+  let assert Ok(#(owner, _release)) = process.receive(started, patience_ms)
     as "the original provider owner must begin"
-  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Ok(Nil)
   process.kill(owner)
   let assert Ok(distillpass.Refused(reason)) =
-    distillpass.domain_settled(name, waiting_ms: 2000)
+    distillpass.domain_settled(name, waiting_ms: patience_ms)
     as "original transport death must refuse the pass"
-  assert distillpass.trigger(name, waiting_ms: 1000) == Error(reason)
-  assert distillpass.stop_domain(name, waiting_ms: 1000) == Error(reason)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Error(reason)
+  assert distillpass.stop_domain(name, waiting_ms: patience_ms) == Error(reason)
   assert process.is_alive(worker.pid)
   assert process.receive(started, 50) == Error(Nil)
-  assert distillpass.trigger(name, waiting_ms: 1000) == Error(reason)
+  assert distillpass.trigger(name, waiting_ms: patience_ms) == Error(reason)
 
   // Test cleanup kills the blocked owner; it does not call that retirement.
   let watch = process.monitor(worker.pid)
   process.kill(worker.pid)
-  let assert Ok(_) = down(watch, 1000) as "blocked test worker must exit"
+  let assert Ok(_) = down(watch, patience_ms) as "blocked test worker must exit"
   assert address.stop(names) == Ok(Nil)
   process.trap_exits(False)
 }
@@ -464,7 +482,7 @@ fn held_provider_config(name, started, cancelled, lane) {
           let assert Ok(Nil) = process.receive(release, 3000)
             as "scripted transport has a finite release deadline"
         })
-      let assert Ok(release) = process.receive(ready, 1000)
+      let assert Ok(release) = process.receive(ready, patience_ms)
         as "scripted transport must park"
       Ok(
         http.PreparedRequest(

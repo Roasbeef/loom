@@ -16,14 +16,40 @@
 //// The element starts `Following`. A scroll that ends within `slack`
 //// pixels of the bottom is `Following`. A scroll that moves the transcript
 //// up and ends further away is the reader leaving the tail, and is
-//// `Reading`. A scroll that moves it down and ends short of the bottom
-//// changes nothing: it is either the reader on their way back down, or the
-//// element's own scroll to the bottom, reported after more rows landed
-//// beneath it. Reading the gap alone would take that second case for the
-//// reader scrolling up, and the transcript would stop following in the
-//// middle of a burst of rows. When the content grows while the element is
-//// `Following`, it scrolls to the bottom; while `Reading`, it does nothing.
-//// Scrolling back to the bottom resumes following, as does the button.
+//// `Reading`, provided the reader made it. A scroll that moves it down and
+//// ends short of the bottom changes nothing: it is either the reader on
+//// their way back down, or the element's own scroll to the bottom, reported
+//// after more rows landed beneath it. Reading the gap alone would take that
+//// second case for the reader scrolling up, and the transcript would stop
+//// following in the middle of a burst of rows. When the content grows while
+//// the element is `Following`, it scrolls to the bottom; while `Reading`,
+//// it does nothing. Scrolling back to the bottom resumes following, as does
+//// the button.
+////
+//// Who made a scroll matters because the browser makes some. When the
+//// content shrinks or the box grows it moves the scroll position up to fit,
+//// and the event for that is heard after the rows that landed since, so it
+//// reads as a move up that ends far from the bottom. The element tells the
+//// two apart (`follow_rule.origin`) by what it heard first: a wheel, a finger, a pointer
+//// press or a key pressed inside the transcript, within `follow_rule.touch_window`,
+//// makes a scroll the reader's. Without one, a transcript that is the size
+//// it was at the last scroll was moved by something that changes no size,
+//// and is the reader's too. A transcript that changed size, with no touch,
+//// was moved by the layout, and does not leave the tail: the size change
+//// brings `Resized`, which scrolls to the bottom.
+////
+//// The key is noted and nothing more: the listener reads neither the key nor
+//// its modifiers, cancels nothing and sends nothing, and only the composer
+//// acts on keys. It hears only keys pressed with focus inside the
+//// transcript.
+////
+//// The cost of the rule is that a scroll with none of those events before it
+//// is the reader's only while the transcript holds still. While content is
+//// growing, find-in-page, a key pressed with focus outside the transcript
+//// and, in Firefox, a scrollbar drag (it raises no `pointerdown` there) see
+//// a changed extent, so they read as `Layout` and cannot leave the tail
+//// until the growth stops. Wheel, trackpad, touch and keys pressed in the
+//// transcript are first-class.
 ////
 //// The element also follows the transcript's own box. The dock grows when
 //// an approval card appears, and the transcript shrinks by as much; the
@@ -60,9 +86,9 @@
 //// touches them.
 
 import gleam/dynamic/decode
-import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/order
+import gleam/result
 import lustre
 import lustre/attribute
 import lustre/component
@@ -71,38 +97,59 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_client/fold
-import web_client/internal/ffi_follow
+import web_client/follow_rule.{
+  type Extent, type Reader, Detached, Displaced, Extent, Following, Leading,
+  Reading, Restored, Waiting,
+}
+import web_client/internal/ffi_dom
 
 /// The element's tag.
 pub const name = "loom-follow"
 
-/// How many pixels from the bottom of the transcript still count as at the
-/// bottom. A reader who scrolls up by one notch of a wheel moves further
-/// than this; a transcript whose last row is still being laid out does not.
-pub const slack = 40
+/// A running watch on the transcript: the element that scrolls, and what is
+/// listening to it, which `stop` ends together.
+pub type Watching {
+  Watching(
+    /// The `<loom-follow>` element itself, which the stylesheet makes the
+    /// scroll container.
+    host: ffi_dom.Element,
+    /// The passive `scroll` listener on `host`.
+    scroll: ffi_dom.Listener,
+    /// The passive listeners for the reader's own input, by event name.
+    inputs: List(#(String, ffi_dom.Listener)),
+    /// The observer of the size of `host` and of each of its children.
+    sizes: ffi_dom.Observer,
+    /// The observer of `host`'s children coming and going, which keeps
+    /// `sizes` observing the current ones.
+    children: ffi_dom.Observer,
+  )
+}
 
-/// Where the reader is.
-pub type Position {
-  /// At the bottom of the transcript: a row that lands is scrolled into
-  /// view.
-  Following
-
-  /// Scrolled up to read: a row that lands leaves the transcript where it
-  /// is.
-  Reading
+/// The lane's first row, held while older rows load above it, and where its
+/// top edge was in the viewport when it was last measured. Only the row's box
+/// is read; nothing here reads its content.
+pub type Anchor {
+  Anchor(
+    /// The scroller the row is in, which is scrolled to put the row back.
+    host: ffi_dom.Element,
+    /// The element the server draws the rows in, whose first child the row
+    /// was when it was held.
+    lane: ffi_dom.Element,
+    /// The held row.
+    row: ffi_dom.Element,
+    /// The row's top edge in the viewport, in pixels, when last measured.
+    top: Float,
+  )
 }
 
 /// What the element knows: where the reader is, how far the bottom of the
-/// transcript was from the bottom of its view when last measured, its watch
-/// on the transcript while it is on the page, and the row it holds in place
-/// while older rows are loading above it.
+/// transcript was from the bottom of its view when last measured, how far
+/// the transcript was scrolled and how big it was when a scroll was last
+/// heard, when the reader last touched it, its watch on the transcript while
+/// it is on the page, and the row it holds in place while older rows are
+/// loading above it.
 pub type Model {
-  Model(
-    position: Position,
-    gap: Int,
-    watching: Option(ffi_follow.Watching),
-    anchor: Option(ffi_follow.Anchor),
-  )
+  Model(reader: Reader, watching: Option(Watching), anchor: Option(Anchor))
 }
 
 /// Everything the element can be told.
@@ -113,12 +160,17 @@ pub type Msg {
   /// The element left the page.
   Disconnected
 
-  /// The watch on the transcript's scrolling and size started.
-  Watched(watching: ffi_follow.Watching)
+  /// The watch on the transcript's scrolling and size started, and the
+  /// transcript was scrolled `top` pixels and `extent` big when it did.
+  Watched(watching: Watching, top: Float, extent: Extent)
 
-  /// The transcript scrolled. Its view's bottom is `gap` pixels above its
-  /// content's, and it moved by `moved` pixels, negative for a move up.
-  Scrolled(gap: Int, moved: Int)
+  /// The reader's wheel, finger, pointer or a key touched the transcript, at
+  /// this time in milliseconds.
+  Touched(at: Int)
+
+  /// The transcript scrolled to `top` pixels while it was `extent` big, at
+  /// this time in milliseconds.
+  Scrolled(top: Float, extent: Extent, at: Int)
 
   /// The transcript or its content changed size: a row landed, a fold
   /// opened or closed, or the dock grew.
@@ -138,8 +190,9 @@ pub type Msg {
   Jumped
 
   /// The lane's first row and where it is on screen, held while older rows
-  /// load above it.
-  Held(anchor: ffi_follow.Anchor)
+  /// load above it, or nothing when the page has no lane or the lane has no
+  /// row.
+  Held(anchor: Option(Anchor))
 
   /// The older rows arrived and the held row is back where it was, or the
   /// row left the page: nothing is held any more.
@@ -163,49 +216,9 @@ pub fn register() -> Result(Nil, lustre.Error) {
 
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(
-    Model(position: Following, gap: 0, watching: None, anchor: None),
+    Model(reader: follow_rule.start(), watching: None, anchor: None),
     effect.none(),
   )
-}
-
-/// The reader's position for a gap between the view's bottom and the
-/// content's, in pixels.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert follow.position(0) == follow.Following
-/// assert follow.position(600) == follow.Reading
-/// ```
-pub fn position(gap: Int) -> Position {
-  case gap <= slack {
-    True -> Following
-    False -> Reading
-  }
-}
-
-/// The reader's position after a scroll that ended `gap` pixels from the
-/// bottom and moved by `moved` pixels, negative for a move up. Ending
-/// within `slack` of the bottom is following whichever way the scroll
-/// went. Further away, only a move up is the reader leaving the tail; a
-/// move down there is either the reader coming back or the element's own
-/// scroll to the bottom that rows landing beneath it have since outgrown,
-/// and neither changes where the reader is.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert follow.after_scroll(follow.Following, 300, -80) == follow.Reading
-/// assert follow.after_scroll(follow.Following, 300, 80) == follow.Following
-/// assert follow.after_scroll(follow.Reading, 300, 80) == follow.Reading
-/// assert follow.after_scroll(follow.Reading, 10, 80) == follow.Following
-/// ```
-pub fn after_scroll(current: Position, gap: Int, moved: Int) -> Position {
-  case position(gap), int.compare(moved, 0) {
-    Following, _ -> Following
-    Reading, order.Lt -> Reading
-    Reading, order.Eq | Reading, order.Gt -> current
-  }
 }
 
 /// Applies one message. The transcript is read and scrolled only inside
@@ -214,7 +227,7 @@ pub fn after_scroll(current: Position, gap: Int, moved: Int) -> Position {
 /// ## Examples
 ///
 /// ```gleam
-/// // follow.update(model, follow.Scrolled(0, 40))
+/// // follow.update(model, follow.Scrolled(40.0, 0))
 /// ```
 pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
@@ -222,22 +235,33 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // moving the element never runs two. The watch needs the element's
     // shadow root, which an effect is handed only once the element has
     // rendered.
-    Connected -> #(model, start())
-    Watched(watching:) -> #(
-      Model(..model, watching: Some(watching)),
+    Connected -> #(model, effect.batch([stop(model.watching), start()]))
+    Watched(watching:, top:, extent:) -> #(
+      Model(
+        ..model,
+        reader: follow_rule.watched(model.reader, top, extent),
+        watching: Some(watching),
+      ),
+      effect.none(),
+    )
+    Touched(at:) -> #(
+      Model(..model, reader: follow_rule.touched(model.reader, at)),
       effect.none(),
     )
     Disconnected -> #(Model(..model, watching: None), stop(model.watching))
 
     // A scroll the element made itself lands at the bottom and moves down,
-    // so only the reader's own scroll up changes the position. A held row
-    // is measured again, so the place kept for the reader is where they
-    // have scrolled to, not where they pressed the button.
-    Scrolled(gap:, moved:) -> #(
+    // so only the reader's own scroll up changes the position. A scroll the
+    // layout made, when the box grew or the content shrank, can move up too;
+    // it has no touch before it and a size the last scroll did not see, so
+    // it does not leave the tail, and the size change that caused it brings
+    // `Resized`, which scrolls back down. A held row is measured again, so
+    // the place kept for the reader is where they have scrolled to, not
+    // where they pressed the button.
+    Scrolled(top:, extent:, at:) -> #(
       Model(
         ..model,
-        position: after_scroll(model.position, gap, moved),
-        gap: gap,
+        reader: follow_rule.scrolled(model.reader, top, extent, at),
       ),
       remeasure(model.anchor),
     )
@@ -249,7 +273,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // measured again, since growth below the reader is what shows the
     // button.
     Resized ->
-      case model.position, model.anchor {
+      case model.reader.position, model.anchor {
         Following, _ -> #(
           Model(..model, anchor: None),
           to_bottom(model.watching),
@@ -257,108 +281,221 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Reading, Some(anchor) -> #(model, keep(model.watching, anchor))
         Reading, None -> #(model, measure(model.watching))
       }
-    Measured(gap:) -> #(Model(..model, gap: gap), effect.none())
+    Measured(gap:) -> #(
+      Model(..model, reader: follow_rule.measured(model.reader, gap)),
+      effect.none(),
+    )
 
     // The fold's event arrives in the turn of the fold's own update, a frame
     // before the render that resizes the lane, so that resize finds
     // `Reading`.
-    Folded -> #(Model(..model, position: Reading), effect.none())
+    Folded -> #(
+      Model(..model, reader: follow_rule.folded(model.reader)),
+      effect.none(),
+    )
 
     // Pressing the button is the reader's own move, as opening a fold is,
     // so the rows that land do not carry the transcript to its end. The
     // click reaches the slot before the server has the press, and the rows
     // come back a round trip later, so the row is held before anything
     // moves.
-    Paged -> #(Model(..model, position: Reading), hold(model.watching))
-    Held(anchor:) -> #(Model(..model, anchor: Some(anchor)), effect.none())
+    Paged -> #(
+      Model(..model, reader: follow_rule.paged(model.reader)),
+      hold(model.watching),
+    )
+    Held(anchor:) -> #(Model(..model, anchor:), effect.none())
     Released -> #(Model(..model, anchor: None), measure(model.watching))
 
     // The button is the way back to the tail without a scroll: it follows
     // again from here, and nothing stays held.
     Jumped -> #(
-      Model(..model, position: Following, gap: 0, anchor: None),
+      Model(..model, reader: follow_rule.jumped(model.reader), anchor: None),
       to_bottom(model.watching),
     )
   }
 }
 
+// How big the scroller and its content are now.
+fn extent_of(host: ffi_dom.Element) -> Extent {
+  Extent(
+    content: ffi_dom.scroll_height(host),
+    view: ffi_dom.client_height(host),
+  )
+}
+
+// The gap now, read from the scroller.
+fn gap_of(host: ffi_dom.Element) -> Int {
+  let extent = extent_of(host)
+  follow_rule.gap(extent.content, ffi_dom.scroll_top(host), extent.view)
+}
+
+// The events that are the reader's hand on the transcript: the wheel, a
+// finger, a pointer press, which includes a press on the scrollbar, and a key
+// pressed inside it. Each is heard passively and only noted: the handler
+// reads nothing from the event, so it can neither act on a key nor cancel
+// one. The browser never waits on this element to scroll.
+const reader_input = [
+  "wheel",
+  "touchstart",
+  "touchmove",
+  "pointerdown",
+  "keydown",
+]
+
+// Starts watching. The scroller is the `<loom-follow>` element itself, whose
+// shadow root the effect is handed: the stylesheet gives it a fixed share of
+// the viewport and lets its content scroll inside it, so the header, the
+// agent strip and the dock never move with the transcript.
+//
+// Every scroll reports where it ended and how big the transcript was. Every
+// touch of the reader's reports when. Every change in the size of the
+// scroller or of its content reports growth. The content is the scroller's
+// children (the line above the oldest row and the lane), not the scroller:
+// its own box has a fixed height, so it does not change when a row lands. The
+// children are observed as they are added, since the scroller can be
+// connected before the server's rows are in it.
 fn start() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
-  let watching =
-    ffi_follow.watch(
-      root,
-      fn(gap, moved) { dispatch(Scrolled(gap:, moved:)) },
-      fn() { dispatch(Resized) },
-    )
-  dispatch(Watched(watching))
+  let host = ffi_dom.host(ffi_dom.as_element(root))
+  let scroll =
+    ffi_dom.add_passive_listener(host, "scroll", fn() {
+      dispatch(Scrolled(
+        top: ffi_dom.scroll_top(host),
+        extent: extent_of(host),
+        at: ffi_dom.now(),
+      ))
+    })
+  let inputs =
+    list.map(reader_input, fn(event) {
+      let listener =
+        ffi_dom.add_passive_listener(host, event, fn() {
+          dispatch(Touched(at: ffi_dom.now()))
+        })
+      #(event, listener)
+    })
+  let sizes = ffi_dom.resize_observer(fn() { dispatch(Resized) })
+  ffi_dom.observe(sizes, host)
+  observe_children(sizes, host)
+  let children =
+    ffi_dom.mutation_observer(fn() { observe_children(sizes, host) })
+  ffi_dom.observe_child_list(children, host)
+
+  dispatch(Watched(
+    Watching(host:, scroll:, inputs:, sizes:, children:),
+    top: ffi_dom.scroll_top(host),
+    extent: extent_of(host),
+  ))
 }
 
-fn stop(watching: Option(ffi_follow.Watching)) -> Effect(Msg) {
+fn observe_children(sizes: ffi_dom.Observer, host: ffi_dom.Element) -> Nil {
+  list.each(ffi_dom.children(host), ffi_dom.observe(sizes, _))
+}
+
+fn stop(watching: Option(Watching)) -> Effect(Msg) {
   case watching {
     None -> effect.none()
     Some(watching) -> {
       use _ <- effect.from
-      ffi_follow.unwatch(watching)
+      ffi_dom.remove_listener(watching.host, "scroll", watching.scroll)
+      list.each(watching.inputs, fn(input) {
+        ffi_dom.remove_listener(watching.host, input.0, input.1)
+      })
+      ffi_dom.disconnect(watching.sizes)
+      ffi_dom.disconnect(watching.children)
     }
   }
 }
 
-fn to_bottom(watching: Option(ffi_follow.Watching)) -> Effect(Msg) {
+// Scrolls the transcript to its bottom at once. It is never animated: a
+// smooth scroll reports its intermediate positions, and each would be a move
+// for `<loom-follow>` to read as the reader leaving the tail.
+fn to_bottom(watching: Option(Watching)) -> Effect(Msg) {
   case watching {
     None -> effect.none()
-    Some(watching) -> {
+    Some(Watching(host:, ..)) -> {
       use _ <- effect.from
-      ffi_follow.to_bottom(watching)
+      ffi_dom.set_scroll_top(host, ffi_dom.scroll_height(host))
     }
   }
 }
 
-fn measure(watching: Option(ffi_follow.Watching)) -> Effect(Msg) {
+fn measure(watching: Option(Watching)) -> Effect(Msg) {
   case watching {
     None -> effect.none()
-    Some(watching) -> {
+    Some(Watching(host:, ..)) -> {
       use dispatch <- effect.from
-      dispatch(Measured(ffi_follow.measure(watching)))
+      dispatch(Measured(gap_of(host)))
     }
   }
 }
 
-fn hold(watching: Option(ffi_follow.Watching)) -> Effect(Msg) {
+// Holds the first row of the lane inside the watched scroller, and the
+// viewport position of its top edge. The lane is the element's `.lane`
+// child; nothing here reads a row's content.
+fn hold(watching: Option(Watching)) -> Effect(Msg) {
   case watching {
     None -> effect.none()
-    Some(watching) -> {
+    Some(Watching(host:, ..)) -> {
       use dispatch <- effect.from
-      dispatch(Held(ffi_follow.hold(watching)))
+      let anchor = {
+        use lane <- result.try(ffi_dom.query_selector(host, ".lane"))
+        use row <- result.map(ffi_dom.first_element_child(lane))
+        Anchor(host:, lane:, row:, top: ffi_dom.bounding_top(row))
+      }
+      dispatch(Held(option.from_result(anchor)))
     }
   }
 }
 
-fn remeasure(anchor: Option(ffi_follow.Anchor)) -> Effect(Msg) {
+// The same row, measured again after the reader scrolled.
+fn remeasure(anchor: Option(Anchor)) -> Effect(Msg) {
   case anchor {
     None -> effect.none()
     Some(anchor) -> {
       use dispatch <- effect.from
-      dispatch(Held(ffi_follow.remeasure(anchor)))
+      let top = ffi_dom.bounding_top(anchor.row)
+      dispatch(Held(Some(Anchor(..anchor, top:))))
     }
+  }
+}
+
+// Whether the held row is still the lane's first child.
+fn leads(anchor: Anchor) -> Bool {
+  ffi_dom.first_element_child(anchor.lane)
+  |> result.map(ffi_dom.same(_, anchor.row))
+  |> result.unwrap(or: False)
+}
+
+// Where the held row stands on the page now.
+fn standing(anchor: Anchor) -> follow_rule.Standing {
+  case ffi_dom.is_connected(anchor.row), leads(anchor) {
+    False, _ -> Detached
+    True, True -> Leading
+    True, False -> Displaced(top: ffi_dom.bounding_top(anchor.row))
   }
 }
 
 // Puts a held row back if older rows have landed above it, and measures
 // the gap either way, so a reader who is held while more rows arrive below
-// still sees the button.
-fn keep(
-  watching: Option(ffi_follow.Watching),
-  anchor: ffi_follow.Anchor,
-) -> Effect(Msg) {
+// still sees the button. The stylesheet turns the browser's own scroll
+// anchoring off for the scroller, so this is the one place the reader's
+// place is kept.
+fn keep(watching: Option(Watching), anchor: Anchor) -> Effect(Msg) {
   use dispatch <- effect.from
-  case ffi_follow.keep(anchor) {
-    ffi_follow.Waiting -> Nil
-    ffi_follow.Restored -> dispatch(Released)
+  case follow_rule.keeping(standing(anchor), anchor.top) {
+    Waiting -> Nil
+    Restored(by:) -> {
+      case by == 0.0 {
+        True -> Nil
+        False -> ffi_dom.scroll_by(anchor.host, by)
+      }
+      dispatch(Released)
+    }
   }
 
   case watching {
     None -> Nil
-    Some(watching) -> dispatch(Measured(ffi_follow.measure(watching)))
+    Some(Watching(host:, ..)) -> dispatch(Measured(gap_of(host)))
   }
 }
 
@@ -389,7 +526,7 @@ fn view(model: Model) -> Element(Msg) {
       [],
     )
 
-  case model.position, position(model.gap) {
+  case model.reader.position, follow_rule.position(model.reader.gap) {
     Reading, Reading ->
       element.fragment([
         slot,

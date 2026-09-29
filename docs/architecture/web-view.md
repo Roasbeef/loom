@@ -432,7 +432,7 @@ the newest capture in.
 **What the step does for surfaces the page lacks.** The page runs the
 shared step and so does what the step does, including reads for surfaces
 it does not draw. After a first capture it reads the strand's notes, to
-seed a todo board it does not draw, and then the session's context, the
+seed a todo board, which the todo panel draws, and then the session's context, the
 advisor's pending nudges and the goal, each when the one before is
 answered; it reads the context again when an operation ends and when the
 configuration changes. That is four round trips at load that hold the
@@ -549,7 +549,7 @@ keeps a page from acting.
 | Role ceiling | An operator's power by default. A page is an observer's unless minted with `--operate`, and never above Operator. | `ui_relay.capped` |
 | Component type | An observer's page sending a command. Its `Msg` has no command and its view one handler, the "Load older" read; the socket admits only that click at its fixed path and drops every other frame. | `web_view/component`, `ui_socket.observer_accepts` |
 | Approval card rules | Tricking the person into approving (below). | `web_view/operator_page` |
-| Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is text. | `web_view/view/lane`, `web_view/view/strip`, `web_view/markdown_view`, `web_view/operator_page` |
+| Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is text. | `web_view/view/lane`, `web_view/view/strip`, `web_view/view/todo_panel`, `web_view/markdown_view`, `web_view/operator_page` |
 | Response headers | Inline script and style, framing, `Referer` leaks of the ticket and key, caching. | `ui_http.secured`, `page.content_security_policy` |
 
 The approval card follows its own rules, because it is where an agent
@@ -640,7 +640,7 @@ browser goes away, because a runtime outlives its last client.
 - **The rest of the page's features.** The page runs the shared step, and
   what it draws is a small part of what the step knows. Part 2 of
   [issue #569](https://github.com/Roasbeef/loom/issues/569) builds the
-  page out: expandable rows, the todo panel, live streams, strand focus and the session
+  page out: expandable rows, live streams, strand focus and the session
   sidebar. History paging is built on the shared record's `scrollback`
   (`history_view.State`); the row limit and `Paging` stay the page's view
   state.
@@ -655,6 +655,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/component.gleam` | The observer's application: the shared step's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the clock read once per message, `submit` and `decide` wrapping the operator's inputs as the step's commands, the history read `older`, `refreshed` deriving the row window (`live_rows`, `held_rows`, `Paging`) and the strip from the record, and `view`, which lays out the regions below. |
 | `packages/web_view/src/web_view/view/heading.gleam` | The heading: the session's name, its workspace and the connection's status, drawn from plain values the component hands it. |
 | `packages/web_view/src/web_view/view/strip.gleam` | The agent strip and its `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
+| `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board with the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces, folded work, the cards, and each transcript line and card body in its own leaf memo. |
 | `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |
 | `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted` and `Decided`, the uncontrolled composer and its total form decoder, the approval cards. |

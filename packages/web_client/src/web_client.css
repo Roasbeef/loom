@@ -219,6 +219,30 @@
   p.cache-miss{margin:0;padding:6px 10px;border:1px dashed var(--color-signal);border-radius:6px; color:var(--color-signal);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .observer-bar{flex:0 0 auto;margin:16px 0 0 0;padding:12px 16px;border-top:1px solid var(--color-divider); color:var(--color-fg-quiet);font-size:13px;}
   .page-note{margin:16px;color:var(--color-fg-quiet);}
+  /* The todo panel: the strand's board and the reviewer band, above the
+     composer in the operator's dock and above the observer's bar. Its height
+     is capped and it scrolls on its own, so a long phase cannot cover the
+     transcript, which is the flexible item and shrinks instead. */
+  section.todo-panel{flex:0 0 auto;min-height:0;max-height:28vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box; margin:8px 0 0 0;padding:8px 12px;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:8px; font:13px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  footer.dock > section.todo-panel{margin:0 0 8px 0;}
+  .todo-board p,.todo-reviewers p{margin:0;}
+  .todo-head{display:flex;flex-wrap:wrap;gap:0 8px;align-items:baseline;}
+  .todo-label{color:var(--color-signal);font-weight:700;}
+  .todo-phase{color:var(--color-fg);font-weight:700;}
+  .todo-quiet{color:var(--color-fg-quiet);}
+  .todo-total{margin-left:auto;color:var(--color-fg-quiet);}
+  ul.todo-tasks{list-style:none;margin:0;padding:0;}
+  li.todo-task{position:relative;padding-left:8px;}
+  .todo-glyph{display:inline-block;width:1.5em;}
+  .todo-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+  li.todo-done .todo-glyph,span.todo-done{color:var(--color-added);}
+  li.todo-done .todo-text,li.todo-dropped .todo-text{color:var(--color-fg-quiet);text-decoration:line-through;}
+  li.todo-dropped .todo-glyph{color:var(--color-fg-quiet);}
+  li.todo-active,li.todo-active .todo-text{color:var(--color-signal);font-weight:700;}
+  li.todo-blocked .todo-glyph,li.todo-blocked .todo-text{color:var(--color-danger);}
+  .todo-others{color:var(--color-fg-quiet);}
+  .todo-board + .todo-reviewers{margin-top:6px;padding-top:6px;border-top:1px solid var(--color-divider);}
+  .todo-reviewers{color:var(--color-fg-quiet);white-space:pre-wrap;}
   /* The approvals sit in the dock above the composer. Their height is
      capped and they scroll on their own, so a long action preview or
      several pending cards cannot push the composer off the screen. */

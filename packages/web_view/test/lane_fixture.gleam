@@ -16,6 +16,7 @@ import core/ids
 import core/json
 import core/message
 import core/register
+import core/todo_list
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -307,6 +308,42 @@ pub fn captured_cells(
   extra: List(snapshot_view.Cell),
 ) -> session_channel.Update {
   capture_of(list.take(items(), count), operation, running, extra)
+}
+
+/// A capture of `main` holding a prompt and then one `todo` call and result
+/// per board, so the newest of `boards` is the strand's board, with each of
+/// `running` running its operation: the page has a board to draw and, when a
+/// reviewer runs, a band.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.planned([todo_list.empty()], [])
+/// ```
+pub fn planned(
+  boards: List(todo_list.Board),
+  running: List(#(String, String)),
+) -> session_channel.Update {
+  let calls =
+    list.index_map(boards, fn(board, index) {
+      let call_id = "plan-" <> int.to_string(index)
+      let details = json.Object([#("todo", todo_list.encode(board))])
+      let seq = 2 + index * 2
+      [
+        item(
+          seq,
+          11_000 + seq,
+          assistant([call(call_id, "todo", json.Object([]))]),
+        ),
+        item(seq + 1, 11_000 + seq + 1, result(call_id, "todo", details, 0)),
+      ]
+    })
+  capture_of(
+    [item(1, 10_000, said("plan it", None)), ..list.flatten(calls)],
+    None,
+    running,
+    [],
+  )
 }
 
 /// A capture of `main` holding one prompt and then one assistant answer per
