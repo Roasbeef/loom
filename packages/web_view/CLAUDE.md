@@ -139,10 +139,38 @@ page keys and nonces, and the relay into the session's gateway.
   (`panel_test` pins all of it). `strip.view(strip, focus)` draws the cards
   (the agent strip, kept under its old name), memoized on the whole strip, and
   `strip.count` counts them;
-  `lane.view(pieces, live, top, load, replies)` draws the transcript lane, memoized per
-  line, followed by the live region, with the line above its oldest row: a "Load older" button sending
+  `lane.view(pieces, live, top, load, replies, marks)` draws the transcript
+  lane, memoized per line, followed by the live region, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
   exist, and words otherwise.
+- **The timeline and the marker controls.** Each piece of the lane is a
+  `div.tl-row` holding a `span.dot` (decoration, `aria-hidden`, in the hue of
+  the strand the piece belongs to, on a line down the left edge) and the
+  piece. `lane.Marks(active, hue, positions)` is what the lane needs to place
+  them, built by `component.marks` from `strip.positions`: a piece of the
+  strand on screen has no marker; a spawn's and a result's dot and the strand's
+  `button.tag` in their heads belong to the child; a nudge's belong to the
+  advisor; a peer's message belongs to no strand here. Where the strand is
+  listed and is not on screen, the dot and tag carry `data-loom-focus`, the
+  position of that strand's card, a number; otherwise the tag is plain text and
+  the dot decoration. No such control has a handler. `<loom-shell>` hears the
+  click and presses the card with `data-loom-card` of the same number
+  (`strip.card_marker`, `strip.focus_marker`, `strip.focus_attribute`;
+  protocol-change/051, the addendum on the marker relay). Position zero is
+  `main`, because the strip lists `main` first. `crumb.view(session, strand)`
+  is the breadcrumb, `component.crumb(model)` the centre's first child while a
+  strand other than `main` is in focus and an empty node otherwise, so the
+  transcript's path is the same either way (`older_path` is `0\t2\t1\t0\t0`);
+  its `All strands` link is the marker `0` and the whole element carries
+  `data-loom-crumb`. `strand_detail.view(chip)` is a strand's own view, the
+  Strands pane's third child after the list while a strand other than `main`
+  is in focus (`component.detail`): a `← Strands` link (the marker `0`), the
+  ring, the name and status line, the figures the card leaves out (Model,
+  Context, Cache, Running, each drawn only when known; the cache words are
+  `cache_miss.outlook_label`'s and no others; no Cost, since the session keeps
+  cost as one total) and the tools the strand ran lately. The pane carries the
+  class `detailed`, which hides the title and the list in the stylesheet; the
+  list stays in the page because the relay presses a card.
 - **Expanding a row.** The terminal's `Ctrl+g` shows a call's whole program
   and result and a reasoning block's whole text. The page holds the same
   records, and `component.relaned` asks `turns.pieces` for the expansions
@@ -266,14 +294,21 @@ page keys and nonces, and the relay into the session's gateway.
   text nodes.
 - `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
-  label, and `running_ms`, how long its operation had run when the strip
-  was built), the advisor's chip and the settled count. The component
-  builds them and `strip.view` draws them. `strip.hue_class` and
-  `strip.ring_class` map a hue and an outlook to literal classes.
-  `Strip.followed` is the strand the strip marks as current
-  (`component.strand(model)`). `strip.view(strip, focus)` draws each chip
-  as `li > button.chip-hit` whose click is `focus(name)`, the name the strip
-  was built with; the "settled" chip is not a control.
+  label, `running_ms`, how long its operation had run when the strip was
+  built, and the agent row's `model` and `recent` tools), the advisor's chip
+  and the settled count. The component builds them and `strip.view` draws
+  them. `strip.hue_class` and `strip.ring_class` map a hue and an outlook to
+  literal classes. `Strip.followed` is the strand the strip marks as current
+  (`component.strand(model)`). `strip.view(strip, focus)` draws each chip as
+  `li > button.chip-hit` whose click is `focus(name)`, the name the strip was
+  built with, holding a ring (the outlook's shape and nothing else, hidden
+  from a screen reader), the name and one status line
+  (`session_view/strand_card.status_line`, in the attention colour for a
+  strand that needs approval). A card carries no clock and no figure: those
+  are the strand's own view's. It carries `data-loom-card`, its position
+  (`strip.positions` numbers the cards, the listed chips in order and the
+  advisor last, for the cards and the lane); the "settled" chip is not a
+  control and not counted.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
   `tui/markdown` also draws. `view/lane` uses it for the speakers the
@@ -416,7 +451,7 @@ page keys and nonces, and the relay into the session's gateway.
   (`session_channel.history`) for at most 100 sequences below the oldest
   record the page holds. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
-  `<loom-elapsed offset>` in each chip and in the live reasoning row, `<loom-fold>` around a settled
+  `<loom-elapsed offset>` in a strand's own view and in the live reasoning row, `<loom-fold>` around a settled
   turn's work, `<loom-expand>` around a row with more to show, and `<loom-follow>` around the lane and `<loom-shell>` around the page. The stylesheet pins the
   page's frame (`<loom-shell>`: the top bar across the full width, and under
   it the sessions' sidebar, the centre and the strand panel; the dock or the
@@ -518,8 +553,12 @@ page keys and nonces, and the relay into the session's gateway.
   path; the redesign's shell moved both constants once (`older_path` is
   `0\t2\t0\t0\t0`, `strip_path` `0\t3\t1\t0`; the tabbed panel moved
   `strip_path` again, to `0\t3\t0\t1\t0`, because the Strands pane is the
-  panel's first child), and `page_events_test` and `ui_socket_test` pin
-  them. An operator's page is
+  panel's first child; the breadcrumb's place moved `older_path` to
+  `0\t2\t1\t0\t0`), and `page_events_test` and `ui_socket_test` pin
+  them. The transcript's dots and tags, the breadcrumb and the strand view's
+  back link add none: they carry a marker, the shell presses a card, and
+  `page_events_test` pins that the handler table still holds only the cards
+  and the older button with markers drawn. An operator's page is
   `operator_page.app()`. Since S5 the draft its composer carries is parsed
   as the terminal parses it, so the page sends any session command a draft
   names (`/fork`, `/model`, `/goal ...` and the rest of `command.Session`),

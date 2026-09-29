@@ -408,6 +408,19 @@ pub fn request_submit(form: Element) -> Nil
 @external(javascript, "./dom.mjs", "request_submit_with")
 pub fn request_submit_with(form: Element, submitter: Element) -> Nil
 
+/// Clicks an element as a person's press does, running its click listeners
+/// and, for a button, its activation behaviour (`click`). The shell uses it to
+/// press a strand card on behalf of a control that has no handler of its own,
+/// so the press is an ordinary click on an ordinary handler.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.click(card)
+/// ```
+@external(javascript, "./dom.mjs", "click")
+pub fn click(element: Element) -> Nil
+
 /// The browser's wall clock in Unix milliseconds (`Date.now`). The daemon
 /// states an operation's start on the same scale.
 ///

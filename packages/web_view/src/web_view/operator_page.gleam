@@ -174,12 +174,14 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
     component.heading(model),
     sidebar_place(model),
     [
+      component.crumb(model),
       lane.view(
         component.pieces(model),
         component.live(model),
         component.top(model),
         Observed(component.OlderRequested),
         lane.Replies(Replying),
+        component.marks(model),
       ),
       html.footer([attribute.class("dock")], [
         component.plan(model),

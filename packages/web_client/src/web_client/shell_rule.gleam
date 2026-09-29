@@ -16,6 +16,15 @@
 //// so the tests load it under Node (`scripts/web_client_test.sh` checks
 //// that).
 ////
+//// The shell also relays clicks. The transcript's dots and tags, the
+//// breadcrumb's `All strands` and a strand view's back link are controls with
+//// no handler of their own: each carries `data-loom-focus`, the position of a
+//// strand card, and the shell presses that card. `relay` decodes the marker
+//// totally, `relayed` says how the layout changes, and `card_selector` names
+//// the card to press. The pressing itself is the element's, and it is an
+//// ordinary click on the card's ordinary handler, so nothing the socket
+//// admits changes (protocol-change/051, the addendum on the marker relay).
+////
 //// Nothing here is remembered: a reload opens both columns on the Strands
 //// tab (docs/design-notes/web-design.md, section 4, puts persistence in a
 //// later change). Nothing here handles a key.
@@ -287,7 +296,7 @@ pub fn needing(value: String) -> Int {
   let graphemes = string.to_graphemes(value)
   let plain =
     list.all(graphemes, fn(grapheme) { string.contains("0123456789", grapheme) })
-    && list.length(graphemes) <= 4
+    && string.drop_start(value, 4) == ""
   case plain {
     True -> result.unwrap(int.parse(value), 0)
     False -> 0
@@ -329,4 +338,90 @@ pub fn strands_words(count: Int) -> String {
     count if count > 1 -> "Strands, " <> int.to_string(count) <> " need approval"
     _ -> "Strands"
   }
+}
+
+/// Whether a relayed click also shows the strand panel on its Strands tab.
+pub type Reveal {
+  /// Open the panel if it is closed and choose the Strands tab, so the
+  /// strand the click focused is seen where it is described.
+  Show
+
+  /// Leave the layout as it is.
+  Keep
+}
+
+/// What a click on a marked control asks for: the strand card at `card` is
+/// pressed, and the layout changes as `reveal` says.
+pub type Relay {
+  Relay(
+    /// The position of the card to press, from the marker's number.
+    card: Int,
+    /// Whether the panel is shown.
+    reveal: Reveal,
+  )
+}
+
+/// What the click on a control carrying `data-loom-focus` asks for, from the
+/// marker's value. The marker is a number the server wrote, a card's position
+/// among the cards as drawn, and decoding is total: anything but a plain
+/// non-negative number of at most three digits is no request, so a control
+/// that says something else does nothing.
+///
+/// Position zero is `main`, which the strip always lists first. Pressing its
+/// card is `All strands`, which leaves the panel as it is: the reader is
+/// leaving a strand's view and has no need of a panel they may have closed.
+/// Any other position is a strand, and the panel is shown on its Strands tab
+/// (the strand's own view is there).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.relay("2") == Ok(shell_rule.Relay(2, shell_rule.Show))
+/// assert shell_rule.relay("0") == Ok(shell_rule.Relay(0, shell_rule.Keep))
+/// assert shell_rule.relay("main") == Error(Nil)
+/// ```
+pub fn relay(value: String) -> Result(Relay, Nil) {
+  let graphemes = string.to_graphemes(value)
+  let plain =
+    graphemes != []
+    && list.all(graphemes, fn(grapheme) {
+      string.contains("0123456789", grapheme)
+    })
+    && string.drop_start(value, 3) == ""
+  case plain, int.parse(value) {
+    True, Ok(0) -> Ok(Relay(card: 0, reveal: Keep))
+    True, Ok(card) -> Ok(Relay(card:, reveal: Show))
+    _, _ -> Error(Nil)
+  }
+}
+
+/// The layout after a relayed click: where `relay` says to show the panel,
+/// the panel is open on its Strands tab, and otherwise nothing changes. The
+/// sidebar is never touched.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let closed = shell_rule.toggled(shell_rule.initial(), shell_rule.Panel)
+/// let shown = shell_rule.relayed(closed, shell_rule.Relay(2, shell_rule.Show))
+/// assert shown == shell_rule.initial()
+/// ```
+pub fn relayed(layout: Layout, relay: Relay) -> Layout {
+  case relay.reveal {
+    Show -> Layout(..layout, panel: Open, tab: Strands)
+    Keep -> layout
+  }
+}
+
+/// The selector of the strand card at `card`, which the shell presses for a
+/// relayed click. The attribute's name is the server's fixed word
+/// (`web_view/view/strip.card_marker`), and the value is the number.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.card_selector(3) == "[data-loom-card=\"3\"]"
+/// ```
+pub fn card_selector(card: Int) -> String {
+  "[data-loom-card=\"" <> int.to_string(card) <> "\"]"
 }

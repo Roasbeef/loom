@@ -32,13 +32,29 @@
 //// no focus, and sends the server nothing. Its buttons and tabs are real
 //// buttons, so a keyboard presses them as it presses any button.
 ////
+//// The element relays clicks (protocol-change/051, the addendum on the marker
+//// relay). A server-drawn control that focuses a strand and has no handler of
+//// its own, such as a dot or a tag in the transcript, the breadcrumb's `All
+//// strands` or a strand view's back link, carries `data-loom-focus` with the
+//// position of a strand card. The element hears a click that reaches the
+//// centre or the panel through its slots, decodes the marker totally
+//// (`shell_rule.relay`), shows the panel on its Strands tab where the rule
+//// says to, and presses the card with that position. The press is an
+//// ordinary click on the card's ordinary handler, so what the server hears is
+//// what it hears when a person presses the card, and the observer's socket
+//// admits nothing new. A click on anything else fails the decoder and does
+//// nothing.
+////
 //// The element wraps the dock, and so holds an approval card in its
 //// subtree, as `<loom-follow>` holds the lane. That is a fact about the
-//// tree and not about behaviour: the element listens for no key and no
-//// event beyond its own buttons' clicks, and it never moves focus. Nothing
-//// it does can decide, or hide, an approval: the dock is in the centre
-//// column, which has no button, and the panel carries no decision control.
+//// tree and not about behaviour: the element listens for no key and for no
+//// click but its own buttons' and a marked control's, and it never moves
+//// focus. A click on a marker inside an approval card cannot decide it: the
+//// card carries no marker, and the card pressed is always a strand card, whose
+//// only effect is to focus its strand. The dock is in the centre column,
+//// which has no button, and the panel carries no decision control.
 
+import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{Some}
 import lustre
@@ -48,7 +64,10 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
-import web_client/shell_rule.{type Layout, type Presence, type Region, type Tab}
+import web_client/internal/ffi_dom
+import web_client/shell_rule.{
+  type Layout, type Presence, type Region, type Relay, type Tab,
+}
 
 /// The element's tag.
 pub const name = "loom-shell"
@@ -72,6 +91,11 @@ pub type Msg {
 
   /// The server set the `needing` attribute.
   NeedingChanged(count: Int)
+
+  /// A click reached the centre or the panel on a control that carries a
+  /// strand marker, and asks for the strand card at that position to be
+  /// pressed.
+  Relayed(relay: Relay)
 }
 
 /// Registers the element with the browser.
@@ -135,6 +159,47 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
     NeedingChanged(count:) -> #(Model(..model, needing: count), effect.none())
+
+    // The layout changes first, so a panel that was closed is open when the
+    // card is pressed, and the press follows the render. The card's own
+    // handler does the rest: the strand is focused by the server, exactly as
+    // when a person presses the card.
+    Relayed(relay:) -> {
+      let layout = shell_rule.relayed(model.layout, relay)
+      #(
+        Model(..model, layout:),
+        effect.batch([
+          tab_changed(model.layout.tab, layout.tab),
+          press_card(relay.card),
+        ]),
+      )
+    }
+  }
+}
+
+// The custom states for a change of tab: the old one out and the new one in
+// in the same turn, or nothing when the tab did not change.
+fn tab_changed(from: Tab, to: Tab) -> Effect(Msg) {
+  case from == to {
+    True -> effect.none()
+    False ->
+      effect.batch([
+        component.remove_pseudo_state(shell_rule.tab_state(from)),
+        component.set_pseudo_state(shell_rule.tab_state(to)),
+      ])
+  }
+}
+
+// Presses the strand card at `card`. The cards are the server's light-DOM
+// descendants of the host, so the host's own query reaches them; a card that
+// is not there, because the strand left the list between the click and now,
+// is not pressed and nothing happens.
+fn press_card(card: Int) -> Effect(Msg) {
+  use _, root <- effect.after_paint
+  let host = ffi_dom.host(ffi_dom.as_element(root))
+  case ffi_dom.query_selector(host, shell_rule.card_selector(card)) {
+    Ok(element) -> ffi_dom.click(element)
+    Error(Nil) -> Nil
   }
 }
 
@@ -148,11 +213,30 @@ fn view(model: Model) -> Element(Msg) {
     html.div([attribute.class("shell-body")], [
       column(model, shell_rule.Sidebar),
       html.div([attribute.class("shell-centre")], [
-        component.default_slot([], []),
+        component.default_slot([event.on("click", marker())], []),
       ]),
       column(model, shell_rule.Panel),
     ]),
   ])
+}
+
+// A click on a control that carries the server's strand marker. The marker's
+// value is read from the click's own target, so a click on anything else, a
+// child of a marked control included, fails the decoder and dispatches
+// nothing; a value that is not a plain number fails it too.
+fn marker() -> decode.Decoder(Msg) {
+  use value <- decode.subfield(
+    ["target", "dataset", "loomFocus"],
+    decode.string,
+  )
+  case shell_rule.relay(value) {
+    Ok(relay) -> decode.success(Relayed(relay))
+    Error(Nil) ->
+      decode.failure(
+        Relayed(shell_rule.Relay(card: 0, reveal: shell_rule.Keep)),
+        "a strand marker",
+      )
+  }
 }
 
 // A column's button, or nothing where the page has no such column. It is a
@@ -206,7 +290,11 @@ fn column(model: Model, region: Region) -> Element(Msg) {
         shell_rule.Panel -> [
           tab_bar(model),
           html.div([attribute.class("panel-body")], [
-            component.named_slot(slot(region), [], []),
+            component.named_slot(
+              slot(region),
+              [event.on("click", marker())],
+              [],
+            ),
           ]),
         ]
       })

@@ -50,6 +50,17 @@ renders again just for it:
   custom states shows every pane, stacked. The `needing` attribute is a count
   the server writes, the number of strands waiting on a decision, which the
   Strands tab shows as a badge and names in its label; decoding is total.
+  The shell also relays clicks. A server-drawn control that focuses a strand
+  and has no handler (a dot or a tag in the transcript, the breadcrumb's `All
+  strands`, a strand view's back link) carries `data-loom-focus` with the
+  position of a strand card, and each card carries `data-loom-card` with its
+  own. The element hears a `click` that reaches its centre slot or its panel
+  slot, reads `dataset.loomFocus` from the click's own target, decodes it
+  totally (`shell_rule.relay`), shows the panel on its Strands tab where the
+  rule says (`shell_rule.relayed`; position zero, `main`, leaves the layout
+  alone) and presses the card with `ffi_dom.click`. The press is an ordinary
+  click on the card's ordinary handler, so the socket admits nothing new
+  (protocol-change/051, the addendum on the marker relay).
 
 A page that has ended or was refused needs no element here. The server draws
 its notice (`web_view/view/ended`, `web_view/page.refusal`), and the shell's
@@ -147,9 +158,12 @@ time builds anything.
   with `toggled`, `chosen`, `state`, `reach`, `label`, `tabs`, `tab_label`,
   `tab_state`, `has_button`, `presence` (a total decoder of the `sidebar`
   attribute), `needing` (a total decoder of the `needing` attribute: a plain
-  number of at most four digits, else none), `badge` and `strands_words`, and
+  number of at most four digits, else none), `badge` and `strands_words`,
+  `relay` (a total decoder of a marker: `Relay(card, reveal)` with `Show` or
+  `Keep`), `relayed` and `card_selector`, and
   `shell.Model(layout, sidebar, needing)` and `shell.Msg` (`Toggled(region)`,
-  `Chosen(tab)`, `SidebarChanged(presence)`, `NeedingChanged(count)`): the
+  `Chosen(tab)`, `SidebarChanged(presence)`, `NeedingChanged(count)`,
+  `Relayed(relay)`): the
   shadow root holds the bar (the two buttons around the `bar` slot) and the
   body (a wrapper per side column around its slot, and the default slot in the
   centre; the panel's wrapper holds the tab bar above the slot). A closed
@@ -192,8 +206,8 @@ time builds anything.
   `bounding_top`, `add_passive_listener`, `remove_listener`,
   `resize_observer`, `observe`, `mutation_observer`, `observe_child_list`,
   `disconnect`, `value`, `set_value`, `utf16_length`, `set_selection_range`,
-  `focus`, `request_submit`, `request_submit_with`, `now`, `set_interval` and
-  `clear_interval`. Its types are `Element` (an element, or the shadow root
+  `focus`, `click`, `request_submit`, `request_submit_with`, `now`,
+  `set_interval` and `clear_interval`. Its types are `Element` (an element, or the shadow root
   Lustre hands an `after_paint` effect, which answers queries alike),
   `Listener`, `Observer` and `Timer`. The one decision in `dom.mjs` is
   turning a null or undefined DOM answer into `Error(Nil)`. Add a function
@@ -262,8 +276,9 @@ it sends is the form's submit, which the server already accepts.
   `<loom-composer>` acts on a key, and only on its own editor, through its
   slot. `<loom-shell>` holds the dock in its subtree, as the page's frame,
   but listens for no key, moves no focus, and acts only on the clicks of its
-  own two buttons, which hide and show the side columns; the centre column,
-  where the dock is, has no button. `<loom-follow>` may note that a key was pressed inside the transcript
+  own buttons and tabs and on a click whose own target carries a strand marker
+  (which presses a strand card and nothing else); the centre column, where the
+  dock is, has no button, and no approval card carries a marker. `<loom-follow>` may note that a key was pressed inside the transcript
   (a passive `keydown` that reads nothing from the event, never cancels it and
   sends nothing), so a keyboard scroll counts as the reader's. It calls `focus` once, on that editor, when the operator chooses
   a row. The approval cards are outside it, in the dock, and no key it

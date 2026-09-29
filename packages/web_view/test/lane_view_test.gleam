@@ -1,7 +1,8 @@
 //// The rendered page for a capture that holds every piece the lane draws
-//// (`lane_fixture`): the agent strip and its cache rings, folded work, the
-//// spawn row and the child's result card, the delivered nudge, the peer
-//// card and the cache-miss row. Each test renders the component and reads
+//// (`lane_fixture`): the strand cards and their cache rings, a strand's own
+//// view for the figures a card leaves out, folded work, the spawn row and the
+//// child's result card, the delivered nudge, the peer card and the
+//// cache-miss row. Each test renders the component and reads
 //// the HTML the browser would receive, so a class, a text or an escape that
 //// goes missing fails here rather than only on a screenshot.
 ////
@@ -45,6 +46,12 @@ fn html(model) -> String {
   element.to_string(component.view(model))
 }
 
+// The page after the reader focuses `strand`, whose own view then draws the
+// figures a card does not.
+fn focused(model, strand: String) {
+  component.update(model, component.FocusRequested(strand)).0
+}
+
 fn settled() {
   page([lane_fixture.captured(10, None)])
 }
@@ -75,21 +82,24 @@ pub fn the_strip_lists_main_then_working_agents_then_the_advisor_test() {
     ">advisor<",
   ])
 
-  // A working agent's elapsed time is counted in the browser on from a
-  // duration the roster measured, never from a daemon instant; the strand
-  // the lane follows is marked as the current one.
-  assert string.contains(
-    drawn,
-    "<loom-elapsed class=\"elapsed\" offset=\"7000\"></loom-elapsed>",
-  )
+  // A card is a ring, a name and one status line: no clock and no figures,
+  // which are a strand's own view's. The strand the lane follows is marked as
+  // the current one, and each card carries its position.
+  assert !string.contains(drawn, "loom-elapsed")
   assert !string.contains(drawn, "since=")
   assert string.contains(
     drawn,
-    "<button aria-current=\"true\" class=\"chip-hit\" type=\"button\">",
+    "<button aria-current=\"true\" class=\"chip-hit\" data-loom-card=\"0\" type=\"button\">",
   )
+  assert in_order(drawn, [
+    "data-loom-card=\"0\"",
+    "data-loom-card=\"1\"",
+    "data-loom-card=\"2\"",
+    "data-loom-card=\"3\"",
+  ])
 
-  // Every state has a glyph and a word, never a colour alone.
-  assert string.contains(drawn, "<span class=\"state running\">")
+  // Every state has a word, never a colour alone.
+  assert string.contains(drawn, "<span class=\"chip-status running\">")
   assert string.contains(drawn, "Working")
   let chips =
     query.find_all(
@@ -115,19 +125,20 @@ pub fn a_settled_strand_folds_into_a_count_test() {
   assert !string.contains(drawn, ">tests<")
 }
 
-// A chip's elapsed time is a duration the roster measured from the
-// daemon's own records (the glance was written seven seconds into the
-// operation), never the daemon's start instant set against the page's
+// A strand's elapsed time, in its own view, is a duration the roster measured
+// from the daemon's own records (the glance was written seven seconds into
+// the operation), never the daemon's start instant set against the page's
 // clock. A page whose clock reads the start instant, one that reads the
 // Unix epoch, and one that is three years ahead all draw the same seven
 // seconds, which the browser shows as the terminal would.
-pub fn a_chip_counts_a_measured_duration_whatever_the_clock_test() {
+pub fn a_strands_view_counts_a_measured_duration_whatever_the_clock_test() {
   let offset = fn(now: Int) {
     let clock = page_fixture.clock()
     let drawn =
       component.new(page_fixture.start_with(clock))
       |> at(clock, now)
       |> component.apply([lane_fixture.captured(10, None)])
+      |> focused(lane_fixture.child)
       |> html
     let assert Ok(#(_, after)) =
       string.split_once(drawn, "<loom-elapsed class=\"elapsed\" offset=\"")
@@ -150,12 +161,13 @@ pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
     |> at(clock, 60_000)
   let drawn = html(warm)
 
-  // The ring carries its words beside it on the figures row, so an idle
-  // chip with no elapsed time or context size does not show a bare glyph.
+  // The card's ring is only a shape, hidden from a screen reader; its words
+  // are a strand's own view's, so the list carries none.
   assert string.contains(
     drawn,
-    "<span class=\"cache\"><span aria-hidden=\"true\" class=\"ring ring-tail\"></span>cache tail ≤4m</span>",
+    "<span aria-hidden=\"true\" class=\"ring ring-card ring-tail\"></span>",
   )
+  assert !string.contains(drawn, "cache tail")
 
   // The operator's composer names the same outlook for the strand it
   // addresses.
@@ -173,6 +185,24 @@ pub fn the_ring_and_the_outlook_say_only_what_the_rows_proved_test() {
   assert !string.contains(html(running), "ring-tail")
 }
 
+// The advisor is always listed, so its own view is the one a test can open
+// without a running strand: it says the outlook in the words the rows proved,
+// in the Cache row, and no others.
+pub fn a_strands_view_names_the_outlook_in_the_words_the_rows_proved_test() {
+  let #(page, clock) = timed([lane_fixture.captured(10, None)])
+  let warm =
+    at(page, clock, 0)
+    |> component.apply([lane_fixture.usage_push("advisor", 40_000, 0, 1)])
+    |> at(clock, 60_000)
+    |> focused("advisor")
+  let drawn = html(warm)
+  assert in_order(drawn, [
+    "<dt class=\"detail-term\">Cache</dt>",
+    "<dd class=\"detail-value\">cache tail ≤4m</dd>",
+  ])
+  assert string.contains(drawn, "ring ring-detail ring-tail")
+}
+
 pub fn an_unproven_provider_shows_an_idle_age_not_a_countdown_test() {
   let #(page, clock) = timed([lane_fixture.captured(10, None)])
   let idle =
@@ -180,10 +210,21 @@ pub fn an_unproven_provider_shows_an_idle_age_not_a_countdown_test() {
     |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 0)])
     |> at(clock, 600_000)
   let drawn = html(idle)
-  assert string.contains(drawn, "ring ring-idle")
-  assert string.contains(drawn, "cache idle 10m")
-  assert !string.contains(drawn, "cache tail")
-  assert !string.contains(drawn, "cache head")
+  assert string.contains(drawn, "ring ring-card ring-idle")
+
+  // The words are the strand's own view's, and claim an idle age, never a
+  // countdown, when the provider has not proved one.
+  let opened = html(focused(idle, "main"))
+  assert !string.contains(opened, "cache tail")
+  let advisor =
+    at(page, clock, 0)
+    |> component.apply([lane_fixture.usage_push("advisor", 40_000, 0, 0)])
+    |> at(clock, 600_000)
+    |> focused("advisor")
+    |> html
+  assert string.contains(advisor, "cache idle 10m")
+  assert !string.contains(advisor, "cache tail")
+  assert !string.contains(advisor, "cache head")
 }
 
 pub fn a_cache_miss_is_a_row_after_the_turn_that_paid_for_it_test() {
@@ -195,7 +236,7 @@ pub fn a_cache_miss_is_a_row_after_the_turn_that_paid_for_it_test() {
     |> component.apply([lane_fixture.usage_push("main", 0, 40_000, 0)])
   let drawn = html(missed)
   assert in_order(drawn, [
-    "advisor · nudge · delivered",
+    ">advisor</button> · nudge · delivered",
     "class=\"cache-miss\">Cache miss after 10m idle: 40k tokens re-billed (~$0.14)</p>",
   ])
 }
@@ -233,10 +274,13 @@ pub fn a_spawn_and_its_result_wear_the_childs_hue_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "class=\"spawn hue-2\">",
-    "↳ agent_spawn · sub:&lt;b&gt;review",
+    "↳ agent_spawn · ",
+    ">sub:&lt;b&gt;review</button>",
     "review &lt;the&gt; patch",
     "class=\"result-card hue-2\">",
-    "from sub:&lt;b&gt;review · result · completed",
+    "from ",
+    ">sub:&lt;b&gt;review</button>",
+    " · result · completed",
     "looks &lt;fine&gt; &amp; tidy",
   ])
 }
@@ -247,7 +291,7 @@ pub fn a_delivered_nudge_is_an_advisor_row_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "class=\"nudge\">",
-    "advisor · nudge · delivered",
+    ">advisor</button> · nudge · delivered",
     "class=\"card-body markdown\">",
     "class=\"md-list\">",
     "Confirm the &lt;sweep&gt; excludes generated SQL.",
@@ -303,10 +347,13 @@ pub fn session_markup_arrives_only_as_text_test() {
   })
 
   // An observer's page with every piece drawn holds no control but the
-  // strip's chips, one button each: four strands are listed.
+  // strand cards, one button each for the four strands listed, and the tags of
+  // the strands the transcript names: the spawn's, the result's and the
+  // nudge's, which carry a marker and no handler.
   let observer = html(missed)
-  assert list.length(string.split(observer, "<button")) == 5
+  assert list.length(string.split(observer, "<button")) == 8
   assert list.length(string.split(observer, "class=\"chip-hit\"")) == 5
+  assert list.length(string.split(observer, "class=\"tag\"")) == 4
   assert !string.contains(observer, "<form")
   assert !string.contains(observer, "\" open")
 }

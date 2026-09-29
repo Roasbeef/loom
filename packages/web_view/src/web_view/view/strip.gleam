@@ -5,11 +5,22 @@
 //// and classes (`Strip`, `Chip`, `chip-hit`) are from then; the stylesheet
 //// draws each chip as a card.
 ////
-//// A strand that waits on a decision reads `Needs approval`
-//// (`session_view/strand_card`), in the attention colour. The approval card
-//// that answers it is drawn in the dock and only for the strand on screen, so
-//// the strand's card is a button that focuses the strand, which draws the
-//// approval card, and carries no control that decides.
+//// A card is a ring, the strand's name and one status line
+//// (`session_view/strand_card`), and nothing else: the model, the context, the
+//// cache's expiry and the elapsed time are figures of one strand's own view
+//// (`view/strand_detail`), not of a row in a list. A strand that waits on a
+//// decision reads `Needs approval`, in the attention colour. The approval
+//// card that answers it is drawn in the dock and only for the strand on
+//// screen, so the strand's card is a button that focuses the strand, which
+//// draws the approval card, and carries no control that decides.
+////
+//// Each card carries `data-loom-card`, its position among the cards as drawn
+//// (the listed chips in order, then the advisor's), a number and never a
+//// name. The transcript's dots and tags carry `data-loom-focus` with the
+//// same number, and `<loom-shell>` clicks the card that has it, so a control
+//// with no handler of its own does what the card does
+//// (protocol-change/051, the addendum on the marker relay). `positions` is
+//// the one place that numbers them, for the cards and for the lane.
 ////
 //// The component derives a `Strip` when a capture, a usage push or a tick
 //// changed something it draws (`component.restripped`), and this module
@@ -18,9 +29,9 @@
 //// `session_view/cache_watch`'s. Nothing here decides anything about the
 //// session.
 ////
-//// A strand's name, its activity line and its figures are session content
-//// or derived from it, so each is drawn as a text node and never as an
-//// attribute, a class or a key. The chips are listed by position rather
+//// A strand's name and its status line are session content or derived from
+//// it, so each is drawn as a text node and never as an attribute, a class or
+//// a key. The chips are listed by position rather
 //// than keyed by name, and a chip's hue comes from its position among the
 //// captured strands, never from its name. Every class is a complete
 //// literal, so Tailwind finds it.
@@ -39,11 +50,10 @@
 //// component imports this module to lay the page out, and a module the
 //// component imports cannot import the component back.
 
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
-import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -69,6 +79,12 @@ pub type Chip {
     /// built, in milliseconds (`agent_roster.running_ms`), or `None` when
     /// it has no operation.
     running_ms: Option(Int),
+    /// The model the strand runs on, as the capture reported it, or empty
+    /// when it did not.
+    model: String,
+    /// The tools the strand's current operation ran most recently, oldest
+    /// first, as `agent_view` bounds them.
+    recent: List(String),
   )
 }
 
@@ -106,6 +122,77 @@ pub fn count(strip: Strip) -> Int {
   }
 }
 
+/// Every card the strip draws, in the order it draws them: the listed chips,
+/// then the advisor's. The chip counting settled strands is not a card.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.cards(strip) == [main_chip, tests_chip, advisor_chip]
+/// ```
+pub fn cards(strip: Strip) -> List(Chip) {
+  case strip.advisor {
+    Some(advisor) -> list.append(strip.chips, [advisor])
+    None -> strip.chips
+  }
+}
+
+/// The position of each card's strand, by the strand's identity: the number
+/// the card carries as `data-loom-card` and a dot or tag for the strand
+/// carries as `data-loom-focus`. `main` is always first, so position zero is
+/// `main` wherever `main` is listed; the advisor is last.
+///
+/// The map holds identities, which are the daemon's and never reach the page:
+/// a marker holds only the number.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // dict.get(strip.positions(strip), "main") == Ok(0)
+/// ```
+pub fn positions(strip: Strip) -> Dict(String, Int) {
+  cards(strip)
+  |> list.index_map(fn(chip, position) { #(chip.line.id, position) })
+  |> dict.from_list
+}
+
+/// The card of the strand the strip marks as current, when it has one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.followed_card(strip)
+/// ```
+pub fn followed_card(strip: Strip) -> Option(Chip) {
+  list.find(cards(strip), fn(chip) { chip.line.id == strip.followed })
+  |> option.from_result
+}
+
+/// The name of the marker attribute on a card, whose value is its position.
+/// It is fixed here, and `<loom-shell>` reads the same word.
+pub const card_marker = "loom-card"
+
+/// The name of the marker attribute on a control that has no handler and does
+/// what a card does: a dot or a tag in the transcript, the breadcrumb's `All
+/// strands` and the detail's back link. Its value is a card's position. It is
+/// fixed here, and `<loom-shell>` reads the same word.
+pub const focus_marker = "loom-focus"
+
+/// The marker a control carries to focus the strand at `position`.
+///
+/// It holds a number and nothing else: no name, no identity, nothing the
+/// session wrote. The control has no handler; `<loom-shell>` hears the click
+/// and clicks the card with the same position.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.focus_attribute(2) == attribute.data("loom-focus", "2")
+/// ```
+pub fn focus_attribute(position: Int) -> attribute.Attribute(message) {
+  attribute.data(focus_marker, int.to_string(position))
+}
+
 /// The agent strip: one card per listed strand, the advisor's last, and one
 /// line counting the strands that settled.
 ///
@@ -135,9 +222,14 @@ pub fn view(strip: Strip, focus: fn(String) -> message) -> Element(message) {
           ]),
         ]
       }
-      let chip_element = chip_element(_, strip.followed, focus)
+      let cards =
+        list.index_map(strip.chips, fn(chip, position) {
+          chip_element(chip, position, strip.followed, focus)
+        })
       let advisor = case strip.advisor {
-        Some(chip) -> [chip_element(chip)]
+        Some(chip) -> [
+          chip_element(chip, list.length(strip.chips), strip.followed, focus),
+        ]
         None -> []
       }
 
@@ -148,7 +240,7 @@ pub fn view(strip: Strip, focus: fn(String) -> message) -> Element(message) {
         [
           html.ul(
             [attribute.class("chips")],
-            list.flatten([list.map(strip.chips, chip_element), settled, advisor]),
+            list.flatten([cards, settled, advisor]),
           ),
         ],
       )
@@ -158,40 +250,28 @@ pub fn view(strip: Strip, focus: fn(String) -> message) -> Element(message) {
 
 fn chip_element(
   chip: Chip,
+  position: Int,
   followed: String,
   focus: fn(String) -> message,
 ) -> Element(message) {
   let line = chip.line
-  let figures =
-    option.map(line.tokens, fn(count) {
-      agent_roster.count_label(count) <> " ctx"
-    })
-    |> option.to_result(Nil)
-    |> result.map(list.wrap)
-    |> result.unwrap([])
   html.li(chip_attributes(chip, followed), [
     html.span([attribute.class("swatch"), attribute.aria_hidden(True)], []),
     html.button(
       [
         attribute.type_("button"),
         attribute.class("chip-hit"),
+        attribute.data(card_marker, int.to_string(position)),
         ..press_attributes(chip.line.id, followed, focus)
       ],
       [
-        html.span([attribute.class("chip-head")], [
+        ring(chip.cache, Card),
+        html.span([attribute.class("chip-text")], [
           html.span([attribute.class("chip-name")], [html.text(line.name)]),
-          html.span([attribute.class("state"), status_class(line.status)], [
-            html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
-              html.text(status_glyph(line.status)),
-            ]),
-            html.text(strand_card.word(line.status)),
-          ]),
-        ]),
-        html.span([attribute.class("chip-activity")], [html.text(line.text)]),
-        html.span([attribute.class("chip-figures")], [
-          elapsed(chip),
-          html.text(string.join(figures, " · ")),
-          ring(chip.cache),
+          html.span(
+            [attribute.class("chip-status"), status_class(line.status)],
+            [html.text(strand_card.status_line(line))],
+          ),
         ]),
       ],
     ),
@@ -230,52 +310,42 @@ fn press_attributes(
   }
 }
 
-// How long the strand's operation has run. The browser counts it
-// (`<loom-elapsed>`, from `packages/web_client`), so the server never
-// renders again only to move a clock. The attribute is a duration the
-// roster measured on the daemon host's clock, and the element anchors it to
-// the browser's clock when it arrives: an instant from one clock is never
-// subtracted from the other, so a browser whose clock is off by a minute
-// still counts right. A rebuilt strip carries a fresh reading, which
-// re-anchors the count.
-fn elapsed(chip: Chip) -> Element(message) {
-  case chip.running_ms {
-    Some(running) ->
-      element.element(
-        "loom-elapsed",
-        [
-          attribute.class("elapsed"),
-          attribute.attribute("offset", int.to_string(running)),
-        ],
-        [],
-      )
-    None -> element.none()
-  }
+/// Where a ring is drawn, which decides its size.
+pub type Size {
+  /// On a card in the strand list.
+  Card
+
+  /// In a strand's own view, larger.
+  Detail
 }
 
-// The cache ring: its shape from the outlook, its words from
-// `cache_miss.outlook_label`, which is all the outlook may claim and is
-// never session text. The words are drawn beside the ring rather than kept
-// in a tooltip. A strand whose outlook is shown is resting, so its chip has
-// no elapsed time and usually no context size, and a ring on its own read
-// as a stray glyph; with its words it reads as the cache's state. The ring
-// is then decoration, hidden from a screen reader, which reads the words.
-fn ring(cache: Option(#(cache_miss.Outlook, String))) -> Element(message) {
-  case cache {
-    None -> element.none()
-    Some(#(held, label)) ->
-      html.span([attribute.class("cache")], [
-        html.span(
-          [
-            attribute.class("ring"),
-            ring_class(held),
-            attribute.aria_hidden(True),
-          ],
-          [],
-        ),
-        html.text(label),
-      ])
+/// The cache ring: its shape from the outlook and nothing else, drawn at the
+/// size `size` names. The words for it (`cache_miss.outlook_label`) belong to
+/// a strand's own view, so a ring here is decoration, hidden from a screen
+/// reader. A strand with no outlook to show draws a plain ring, so every card
+/// lines up.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.ring(chip.cache, strip.Card)
+/// ```
+pub fn ring(
+  cache: Option(#(cache_miss.Outlook, String)),
+  size: Size,
+) -> Element(message) {
+  let shape = case cache {
+    Some(#(held, _)) -> ring_class(held)
+    None -> attribute.class("ring-none")
   }
+  let size = case size {
+    Card -> attribute.class("ring-card")
+    Detail -> attribute.class("ring-detail")
+  }
+  html.span(
+    [attribute.class("ring"), size, shape, attribute.aria_hidden(True)],
+    [],
+  )
 }
 
 /// The class naming how an outlook is drawn: a held head, a held tail, an
@@ -317,7 +387,16 @@ pub fn hue_class(hue: turns.Hue) -> attribute.Attribute(message) {
   }
 }
 
-fn status_class(status: agent_view.Status) -> attribute.Attribute(message) {
+/// The class that colours a strand's status line, a whole literal chosen from
+/// the closed status type: the attention colour for a strand that needs a
+/// decision, the danger colour for a failed one, and so on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.status_class(agent_view.NeedsInput) == attribute.class("needs-input")
+/// ```
+pub fn status_class(status: agent_view.Status) -> attribute.Attribute(message) {
   case status {
     agent_view.Working -> attribute.class("running")
     agent_view.Waiting -> attribute.class("waiting")
@@ -326,18 +405,5 @@ fn status_class(status: agent_view.Status) -> attribute.Attribute(message) {
     agent_view.Failed -> attribute.class("failed")
     agent_view.Halted -> attribute.class("halted")
     agent_view.Idle | agent_view.Unavailable -> attribute.class("idle")
-  }
-}
-
-// The glyph beside every state label; colour never carries state alone.
-fn status_glyph(status: agent_view.Status) -> String {
-  case status {
-    agent_view.Working -> "●"
-    agent_view.Waiting -> "◌"
-    agent_view.NeedsInput -> "◇"
-    agent_view.Finished -> "✓"
-    agent_view.Failed -> "✕"
-    agent_view.Halted -> "⊘"
-    agent_view.Idle | agent_view.Unavailable -> "○"
   }
 }

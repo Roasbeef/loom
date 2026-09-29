@@ -163,3 +163,7 @@ export function set_interval(interval, callback) {
 export function clear_interval(timer) {
   clearInterval(timer);
 }
+
+export function click(element) {
+  element.click();
+}

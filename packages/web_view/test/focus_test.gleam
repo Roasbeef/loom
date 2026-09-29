@@ -196,7 +196,8 @@ pub fn an_observers_focus_sends_no_command_test() {
 }
 
 // An observer who has focused a strand still has no composer and no control
-// but the chips.
+// but the chips and the marker controls, which carry no handler: the
+// breadcrumb's link, the strand view's back link and the transcript's tags.
 pub fn an_observer_can_focus_but_not_act_test() {
   let #(model, _) = observing(reviewer_running())
   let drawn = html(focused(model, lane_fixture.child))
@@ -205,7 +206,22 @@ pub fn an_observer_can_focus_but_not_act_test() {
   assert string.contains(drawn, "Observer · read-only")
   let buttons = list.length(string.split(drawn, "<button")) - 1
   let chips = list.length(string.split(drawn, "class=\"chip-hit\"")) - 1
-  assert buttons == chips
+  let markers = marker_buttons(drawn)
+  assert markers >= 2
+  assert buttons == chips + markers
+}
+
+// How many buttons carry the marker that the shell relays, read from the
+// text of each button's opening tag.
+fn marker_buttons(html: String) -> Int {
+  string.split(html, "<button")
+  |> list.drop(1)
+  |> list.count(fn(rest) {
+    case string.split_once(rest, ">") {
+      Ok(#(opening, _)) -> string.contains(opening, "data-loom-focus")
+      Error(Nil) -> False
+    }
+  })
 }
 
 // A press on a chip reaches the page as the focus, through the handler the
@@ -220,7 +236,12 @@ pub fn a_press_on_the_advisors_chip_focuses_it_on_an_observers_page_test() {
     )
     |> simulate.start(Nil)
     |> simulate.click(on: query.descendant(
-      of: query.element(query.class("hue-advisor")),
+      // The lane's own rows and cards carry hue classes too, and the centre
+      // comes before the panel, so the chip is named by its own class as well.
+      of: query.element(query.and(
+        query.class("chip"),
+        query.class("hue-advisor"),
+      )),
       matching: query.class("chip-hit"),
     ))
   assert component.strand(simulate.model(pressed)) == "advisor"

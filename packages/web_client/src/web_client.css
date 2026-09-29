@@ -212,26 +212,38 @@
   ul.chips{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;}
   li.chip{position:relative;min-width:0; background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:8px; box-shadow:var(--shadow-card);font-size:12px;}
   /* A chip is a button that focuses its strand: it fills the chip and draws
-     the same three lines the chip always did. */
-  .chip-hit{display:grid;grid-template-columns:minmax(0,1fr);row-gap:2px;box-sizing:border-box;width:100%;min-width:0;margin:0;padding:8px 10px 8px 14px; border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
+     a ring, the strand's name and one status line. The figures a card leaves
+     out are in the strand's own view (.strand-detail below). */
+  .chip-hit{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:10px;align-items:center;box-sizing:border-box;width:100%;min-width:0;margin:0;padding:9px 10px 9px 14px; border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
   .chip-hit:hover{background:color-mix(in srgb,var(--hue,var(--color-fg-quiet)) 8%,transparent);}
   .chip-hit:focus-visible{outline:2px solid var(--hue,var(--color-current));outline-offset:2px;}
   li.chip .swatch{position:absolute;left:0;top:0;bottom:0;width:4px;border-radius:8px 0 0 8px; background:var(--hue,var(--color-fg-quiet));}
-  .chip-head{display:flex;align-items:baseline;gap:8px;min-width:0;}
+  .chip-text{display:grid;row-gap:1px;min-width:0;}
   .chip-name{font:600 12px/1.4 var(--font-mono);color:var(--hue-text,var(--color-fg));min-width:0; overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .state{margin-left:auto;flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-mono);}
-  .state .glyph{margin-right:4px;}
-  .state.running .glyph{color:var(--color-current);}
-  .state.waiting .glyph{color:var(--color-fg-quiet);}
-  .state.needs-input,.state.needs-input .glyph{color:var(--color-signal-text);}
-  .state.done .glyph{color:var(--color-added-text);}
-  .state.failed,.state.failed .glyph{color:var(--color-danger-text);}
-  .chip-activity{color:var(--color-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
-  .chip-figures{display:flex;align-items:center;gap:8px;color:var(--color-fg-quiet);font:11px/1.4 var(--font-mono); min-height:14px;}
+  .chip-status{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .chip-status.needs-input{color:var(--color-signal-text);}
+  .chip-status.failed{color:var(--color-danger-text);}
+  .chip-status.done{color:var(--color-added-text);}
   li.chip.following{box-shadow:inset 0 0 0 1px var(--hue,var(--color-divider));border-color:var(--hue,var(--color-divider));}
   li.chip.settled{display:grid;grid-template-columns:minmax(0,1fr);align-content:center;padding:8px 12px;border-style:dashed;border-color:var(--color-fg-faint);}
   li.chip.settled .chip-name{color:var(--color-fg-quiet);font-weight:400;}
   .elapsed{font-variant-numeric:tabular-nums;}
+  /* A strand's own view (web_view/view/strand_detail), in the Strands pane in
+     place of the title and the list while a strand other than main is in
+     focus. The list stays in the page beneath it, hidden, because the
+     shell's relay presses a card. */
+  .pane-strands.detailed > .panel-title,.pane-strands.detailed > nav.agent-strip{display:none;}
+  .strand-detail{display:flex;flex-direction:column;gap:14px;min-width:0;}
+  button.detail-back,button.crumb-all{align-self:flex-start;margin:0;padding:0;border:0;border-radius:0;background:transparent;color:var(--color-current);font:12px/1.4 var(--font-sans);cursor:pointer;}
+  button.detail-back:hover,button.crumb-all:hover{text-decoration:underline;}
+  .detail-head{display:flex;align-items:center;gap:12px;min-width:0;}
+  .detail-title{display:grid;row-gap:2px;min-width:0;}
+  .detail-name{color:var(--hue-text,var(--color-fg));font:600 15px/1.3 var(--font-mono);overflow-wrap:anywhere;}
+  .detail-figures{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;margin:0;font:12px/1.5 var(--font-mono);}
+  .detail-term{color:var(--color-fg-quiet);}
+  .detail-value{margin:0;min-width:0;overflow-wrap:anywhere;text-align:right;}
+  .detail-recent .panel-title{margin:0 0 6px 0;}
+  ul.detail-tools{list-style:none;margin:0;padding:0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   /* The session sidebar, the left column: the principal's sessions by
      workspace, read-only. It is a column of the frame and scrolls on its own.
      Below 1212px it is not drawn. */
@@ -254,12 +266,14 @@
   .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-mono);}
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
-  .cache{display:inline-flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;}
   .ring{display:inline-block;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
   .ring.ring-head{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 25%,transparent);}
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
   .ring.ring-idle{border-color:var(--color-fg-faint);}
   .ring.ring-elapsed{border:2px dashed var(--color-fg-faint);}
+  .ring.ring-none{border-color:var(--color-divider);}
+  .ring.ring-card{width:16px;height:16px;}
+  .ring.ring-detail{width:26px;height:26px;border-width:3px;}
   /* The transcript's scroll container: the client component draws the lane
      inside it and scrolls it (web_client/follow). Its height is what the
      frame leaves, so it never grows with the rows. Scroll anchoring is off
@@ -285,7 +299,31 @@
   .lane-boundary{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   button.load-older{padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px; background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-mono);cursor:pointer;}
   button.load-older:hover{border-color:var(--color-current);}
-  .transcript.lane{display:flex;flex-direction:column;gap:10px;min-width:0;flex:1 0 auto;}
+  .transcript.lane{display:flex;flex-direction:column;min-width:0;flex:1 0 auto;}
+  /* The timeline (web_view/view/lane): one row per piece, a dot in the hue of
+     the strand the piece belongs to on a thin line down the left edge. The
+     dot is decoration; where the piece belongs to another strand the page
+     lists it carries data-loom-focus and is pressed, with the strand's tag,
+     through the shell's relay. The row's own padding is the space between
+     pieces, so the line runs unbroken. The live answer has no dot and
+     is indented to line up with the rows. */
+  .tl-row{position:relative;min-width:0;padding:0 0 10px 22px;}
+  .tl-row::before{content:"";position:absolute;left:7px;top:0;bottom:0;border-left:1px solid var(--color-divider);}
+  .tl-row:first-child::before{top:8px;}
+  .tl-body{min-width:0;}
+  .dot{position:absolute;left:3px;top:6px;width:9px;height:9px;margin:-2px;box-sizing:content-box;border:2px solid var(--color-bg);border-radius:50%;background:var(--hue,var(--color-current));}
+  .dot[data-loom-focus]{cursor:pointer;}
+  .dot[data-loom-focus]::after{content:"";position:absolute;inset:-6px;}
+  .dot[data-loom-focus]:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--hue,var(--color-current)) 28%,transparent);}
+  .transcript.lane > .block.live{padding-left:22px;}
+  button.tag{margin:0;padding:0 5px;border:1px solid var(--hue,var(--color-fg-quiet));border-radius:4px;background:transparent;color:var(--hue-text,var(--color-fg));font:11px/1.5 var(--font-mono);cursor:pointer;}
+  button.tag:hover{background:color-mix(in srgb,var(--hue,var(--color-fg-quiet)) 10%,transparent);}
+  /* The breadcrumb above the transcript while a strand other than main is in
+     focus (web_view/view/crumb), in the centre column's 780px width. */
+  nav.crumb{display:flex;align-items:center;gap:8px;min-width:0;padding:0 0 8px 22px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .crumb-session{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .crumb-strand{color:var(--color-fg);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .crumb-spacer{flex:1 1 auto;}
   .block{min-width:0;}
   .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
   .line.user,.line.assistant{font:14px/1.5 var(--font-sans);}

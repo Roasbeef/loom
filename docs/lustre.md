@@ -574,8 +574,11 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   identities or numbers.** `<loom-elapsed offset>` is a duration in
   milliseconds, which the element anchors to the browser's clock, since a
   browser's clock need not agree with the daemon's. No attribute carries
-  session text. `<loom-shell sidebar>` is a fixed word, `listed` or `none`,
-  written from a type. `<loom-composer commands>` is the one attribute of
+  session text. `<loom-shell sidebar needing>` holds a fixed word, `listed`
+  or `none`, written from a type, and a count of strands waiting on a
+  decision. A control that has no handler carries `data-loom-focus`, and a
+  strand card `data-loom-card`, each a number: a card's position among the
+  cards as drawn, never a name. `<loom-composer commands>` is the one attribute of
   another kind: the static table of slash-command names and hints, written in
   `session_view` and built for the page by `web_view/completion`.
 - **Session text reaches it only as the server's children.** `<loom-fold>`
@@ -602,10 +605,15 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   made. Only the composer acts on keys; the follower notes that one was
   pressed, reading nothing from it, so a keyboard scroll counts as the
   reader's. `<loom-shell>` draws the page's frame around the dock and so holds
-  an approval card in its subtree, but it listens for no key and no event
-  beyond the clicks of its own two buttons, never moves focus, and has no
-  button for the centre column where the dock is. A hidden side column is
-  `inert`, which takes its content out of the tab order.
+  an approval card in its subtree, but it listens for no key, never moves
+  focus, and hears a click only on its own buttons and tabs and on a control
+  whose own target carries a strand marker (the marker relay,
+  protocol-change/051, the addendum of that name): it then presses the strand
+  card with the same number, an ordinary click on the card's ordinary
+  handler, and nothing else. No approval card carries a marker, the centre
+  column where the dock is has no button, and the panel carries no decision
+  control. A hidden side column is `inert`, which takes its content out of
+  the tab order.
 - **No raw HTML.** It renders through Lustre's virtual DOM, as the server
   component does. Its browser calls are one file, `internal/dom.mjs`, one
   DOM call per export and no logic, declared in `internal/ffi_dom.gleam`;

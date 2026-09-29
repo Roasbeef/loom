@@ -1974,3 +1974,130 @@ draft fact and moving no draft count.
 The visual result, the arming delay on the goal row, the disclosure's open
 state and the composer's element taking a reply are left to a hand check in a
 browser.
+
+## Addendum: the marker relay (2026-09-29)
+
+**Status**: PROPOSED, IMPLEMENTED with issue #569, step 5 of the web UI
+redesign (`docs/design-notes/web-design.md`, sections 3.1 and 6.1) ·
+**Raised by**: issue #569
+
+The redesign lets a strand be focused from five places: a dot on the
+transcript's timeline, a strand's tag in a row, a strand's card in the panel,
+a bar in the sidebar, and a link in the breadcrumb or the strand's own view.
+Only the cards carry a handler. The other controls carry a marker, and a
+client element clicks the card that has the same number. This addendum
+approves that one new thing, a client script that clicks a server-drawn
+control, and states what it does and does not change. It adds no event to the
+socket's accepted list, no operation to what an observer's page may do, and no
+frozen interface.
+
+### Why the controls have no handlers
+
+Lustre names an event handler by its path in the tree, and the observer's
+socket admits a click at two paths: `component.older_path` and any path
+beneath `component.strip_path`, which is the list of strand cards. If each
+dot, tag and link carried its own handler, a page of 300 rows would hold 300
+more handlers, and the observer's filter would have to admit a click beneath
+the lane. A forged click at one of those paths would then ask for a focus by
+a path the filter could no longer tie to a card that exists.
+
+### What was decided
+
+**The marker.** A control that focuses a strand and has no handler carries
+`data-loom-focus`, and its value is a number: the position of the strand's
+card among the cards as drawn, the listed strands in order and the advisor
+last (`web_view/view/strip.positions`). Each card carries `data-loom-card`
+with its own position. Position zero is `main`, because the strip always
+lists `main` first, so a control for `All strands` is the marker `0`. The
+value is never a strand's name or identity, and no session text reaches
+either attribute. A strand the page does not list has no card, so a control
+for it carries no marker and is words or decoration. A piece of the strand on
+screen carries none, because focusing the strand already shown does nothing.
+
+**The relay.** `<loom-shell>` hears a `click` that reaches its centre slot or
+its panel slot. It reads one fact from the event, the `data-loom-focus` of the
+click's own target, decodes it totally (`shell_rule.relay`: a plain number of
+at most three digits, anything else is no request), and presses the card
+whose `data-loom-card` has that number with the browser's own `click`. The
+press is an ordinary click on the card's ordinary handler, so the server hears
+exactly what it hears when a person presses the card, and the shared record's
+active strand moves as it always did. Where the position is not zero the shell
+also opens the panel if it was closed and shows the Strands tab, where the
+strand's own view is drawn; `All strands` leaves the layout alone. A click on
+anything else fails the decoder and does nothing. A position with no card
+finds nothing to press.
+
+**The strand's view.** While a strand other than `main` is in focus, the
+Strands tab draws that strand's own view after the list of cards, and the
+stylesheet hides the list and the title. The list stays in the page because
+the relay works by pressing a card, and the cards must exist to be pressed.
+`main` has no view: focusing `main` is `All strands` (the note's section 3.2,
+an owner default).
+
+**The breadcrumb.** While a strand other than `main` is in focus, the
+centre's first child is a breadcrumb naming the session and the strand, with
+an `All strands` link that carries the marker `0`. Otherwise the same place
+holds an empty node. It is the centre's first child so that the transcript's
+path is the same in both cases, and that path moved once for it:
+`component.older_path` is `0\t2\t1\t0\t0`, where it was `0\t2\t0\t0\t0`.
+`component.strip_path` moved when the panel became tabbed (`0\t3\t0\t1\t0`).
+Both are constants that `ui_socket` and the tests read, so nothing else
+quotes a value.
+
+### What a forged marker or click is worth
+
+Whoever holds a page's socket can already press a card, because an observer's
+socket admits that click. A marker adds nothing to that: it names a card that
+exists, by position, and pressing it is what the socket already admits at the
+card's path. A page script that fires a click on a marker is a script that
+could fire it on the card. The server never reads a marker; it reads the
+click's path, which is a card's. A marker whose value names no card, or that is
+not a number, does nothing, and the value cannot name a strand, an approval or
+a decision.
+
+The relay presses one kind of control, a strand card, chosen by a fixed
+selector, and never a control it finds by content. No approval card carries
+either marker, and a click inside an approval card whose target has no marker
+fails the decoder. The relay therefore cannot decide, dismiss or hide an
+approval. It can change which strand is on screen, which changes which
+approval cards are drawn, and a person could do that by pressing the card
+(`docs/design-notes/web-design.md`, section 6.1).
+
+### What was considered
+
+- **A handler on every control, and an observer filter that admits a click
+  beneath the lane.** The larger surface, and the one that would admit a click
+  the filter cannot tie to a strand that exists. Rejected, as the note
+  recommends.
+- **A copy of the focus in the browser.** The active strand is the shared
+  record's, and a copy would have to be reconciled with it on every patch
+  and every reload. The note keeps the record as the one source.
+- **A listener on `document`.** The page has no content outside `<loom-shell>`,
+  so the element's slots hear every click the relay needs, a smaller claim.
+
+### Cost
+
+- One more single-call export in `internal/dom.mjs`, `click`, declared in
+  `internal/ffi_dom.gleam`. `scripts/web_client_js_check.sh` still fails on
+  any other JavaScript and on the calls that turn text into markup.
+- A pointer press on a marker is two clicks, the marker's and the card's,
+  which the server sees as one.
+- The shell now listens to `click` on two slots, where before it heard only
+  its own buttons. The listener reads one property of the event's target and
+  nothing else.
+- Focusing from a marker in a browser is checked by hand: the listener, the
+  query and the press run only there. The rules are tested on Node.
+
+### Verification
+
+`shell_test` (`packages/web_client`) shows the marker decoded totally, the
+layout after a relayed click, `All strands` leaving the layout alone, and the
+card selector. `marker_test` (`packages/web_view`) shows a dot's and a tag's
+number equalling the card's for the same strand, every marker and card value a
+number, no marker on the strand on screen or on a strand the page does not
+list, dots as spans and never buttons, the breadcrumb and the strand's view
+drawn with the list still in the page, and no handler on any of them.
+`page_events_test` shows the observer's and the operator's handler tables
+holding only the cards' clicks with markers drawn, and `ui_socket_test` shows a
+click at a dot's, a tag's, the breadcrumb's and the back link's paths dropped
+and a click at a card's admitted. No browser was in the loop.

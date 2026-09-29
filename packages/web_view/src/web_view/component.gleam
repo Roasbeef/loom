@@ -149,6 +149,7 @@ import session_view/worktree_view
 import web_view/ending.{type Ending}
 import web_view/sessions
 import web_view/view/changes
+import web_view/view/crumb
 import web_view/view/ended
 import web_view/view/expansion
 import web_view/view/heading
@@ -158,6 +159,7 @@ import web_view/view/nudges
 import web_view/view/panel
 import web_view/view/session_tab
 import web_view/view/shell
+import web_view/view/strand_detail
 import web_view/view/strip
 import web_view/view/todo_panel
 
@@ -205,14 +207,15 @@ pub const live_rows = 150
 pub const held_rows = 300
 
 /// The Lustre event path of the lane's "Load older" button, on both pages:
-/// the lane is the first child of the centre column, which is the third
-/// child of the page's frame (`view/shell`), the line above its oldest row
-/// the lane's first child, and the button that line's first child. The page
-/// socket admits a `click` from an observer at this path and no other event
+/// the lane is the second child of the centre column, which is the third
+/// child of the page's frame (`view/shell`), after the breadcrumb or the empty
+/// node in its place; the line above its oldest row is the lane's first
+/// child, and the button that line's first child. The page socket admits a
+/// `click` from an observer at this path and no other event
 /// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the
 /// addendum on history paging). `page_events_test` fails if the view moves
 /// the button, so the two cannot drift apart.
-pub const older_path = "0\t2\t0\t0\t0"
+pub const older_path = "0\t2\t1\t0\t0"
 
 /// The Lustre event path of the strand panel's card list, on both pages: the
 /// panel is the fourth and last child of the page's frame (`view/shell`); its
@@ -1438,11 +1441,14 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
   let chips =
     agent_roster.chips(shared.roster, shared.agent_rows, shared.active_strand)
   let chip = fn(line: agent_roster.Line) {
+    let row = agent_row(shared, line.id)
     strip.Chip(
       line:,
       hue: turns.hue(shared.strands, line.id),
       cache: outlook(shared, line.id),
       running_ms: running_ms(shared, line.id),
+      model: option.map(row, fn(row) { row.model }) |> option.unwrap(""),
+      recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
     )
   }
   strip.Strip(
@@ -1451,6 +1457,14 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
     settled: chips.settled,
     followed: shared.active_strand,
   )
+}
+
+// A strand's agent row, which carries what its own view shows beyond the
+// roster's line: the model it runs on and the tools it ran lately.
+fn agent_row(shared: Session(socket), id: String) -> Option(agent_view.Row) {
+  shared.agent_rows
+  |> list.find(fn(row) { row.id == id })
+  |> option.from_result
 }
 
 // How long a strand's current operation has run, on the roster's clock.
@@ -2421,9 +2435,10 @@ pub fn session_id(model: Model(socket)) -> String {
 }
 
 /// The observer's page: the top bar, no sidebar, a centre column holding the
-/// lane, the todo panel when the strand has a board or a reviewer is
-/// running, the advisor's pending nudges when any are queued and a fixed line
-/// saying the page is read-only, and the strand panel. Its event handlers are
+/// breadcrumb while another strand is in focus, the lane, the todo panel when
+/// the strand has a board or a reviewer is running, the advisor's pending
+/// nudges when any are queued and a fixed line saying the page is read-only,
+/// and the strand panel. Its event handlers are
 /// the lane's "Load older" button, whose message asks for a read and nothing
 /// else, and one focus click per card of the strand panel; the page socket
 /// admits those from an observer and drops every other frame
@@ -2444,12 +2459,14 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     heading(model),
     shell.Unlisted,
     [
+      crumb(model),
       lane.view(
         model.view.pieces,
         live(model),
         top(model),
         OlderRequested,
         lane.NoReplies,
+        marks(model),
       ),
       plan(model),
       nudges.view(pending_nudges(model)),
@@ -2487,6 +2504,7 @@ pub fn panel(
   panel.view(
     strip.count(model.view.strip),
     strip.view(model.view.strip, focus),
+    detail(model),
     changes.view(model.view.changes),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),
@@ -2494,6 +2512,67 @@ pub fn panel(
       jobs(model),
       viewers,
     ),
+  )
+}
+
+/// The strand on screen's own view for the Strands tab, when there is one: a
+/// strand other than `main`, which has none, since focusing `main` is `All
+/// strands` and shows the list.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.detail(model) == None
+/// ```
+pub fn detail(model: Model(socket)) -> Option(Element(message)) {
+  case model.shared.active_strand == primary {
+    True -> None
+    False ->
+      strip.followed_card(model.view.strip)
+      |> option.map(strand_detail.view)
+  }
+}
+
+/// The breadcrumb above the transcript while a strand other than `main` is in
+/// focus, or the empty node that keeps its place otherwise, so the
+/// transcript's path is the same in both.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.crumb(model)
+/// ```
+pub fn crumb(model: Model(socket)) -> Element(message) {
+  case model.shared.active_strand == primary {
+    True -> element.none()
+    False ->
+      case strip.followed_card(model.view.strip) {
+        Some(card) ->
+          crumb.view(
+            heading.session_name(
+              model.shared.session,
+              option.map(model.view.label, fn(label) { label.name }),
+            ),
+            card.line.name,
+          )
+        None -> element.none()
+      }
+  }
+}
+
+/// What the lane needs to mark its rows as belonging to a strand: the strand
+/// on screen and its hue, and the position of each strand the panel lists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.marks(model).active == "main"
+/// ```
+pub fn marks(model: Model(socket)) -> lane.Marks {
+  lane.Marks(
+    active: model.shared.active_strand,
+    hue: turns.hue(model.shared.strands, model.shared.active_strand),
+    positions: strip.positions(model.view.strip),
   )
 }
 

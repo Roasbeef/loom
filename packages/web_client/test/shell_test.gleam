@@ -146,3 +146,63 @@ pub fn the_strands_tab_names_how_many_strands_wait_test() {
   assert shell_rule.strands_words(2) == "Strands, 2 need approval"
   assert shell_rule.strands_words(-1) == "Strands"
 }
+
+// The marker on a control with no handler is the server's number, a card's
+// position. Decoding is total: whatever else it holds is no request, so a
+// control that says something else does nothing.
+pub fn a_strand_marker_decodes_totally_test() {
+  assert shell_rule.relay("0") == Ok(shell_rule.Relay(0, shell_rule.Keep))
+  assert shell_rule.relay("1") == Ok(shell_rule.Relay(1, shell_rule.Show))
+  assert shell_rule.relay("12") == Ok(shell_rule.Relay(12, shell_rule.Show))
+  assert shell_rule.relay("999") == Ok(shell_rule.Relay(999, shell_rule.Show))
+  assert shell_rule.relay("007") == Ok(shell_rule.Relay(7, shell_rule.Show))
+  assert shell_rule.relay("") == Error(Nil)
+  assert shell_rule.relay("1000") == Error(Nil)
+  assert shell_rule.relay("-1") == Error(Nil)
+  assert shell_rule.relay("+1") == Error(Nil)
+  assert shell_rule.relay("1.0") == Error(Nil)
+  assert shell_rule.relay(" 1") == Error(Nil)
+  assert shell_rule.relay("main") == Error(Nil)
+  assert shell_rule.relay("sub:tests") == Error(Nil)
+  assert shell_rule.relay("<b>1</b>") == Error(Nil)
+  assert shell_rule.relay("1\n2") == Error(Nil)
+}
+
+// A click on a strand shows the panel on the Strands tab wherever the reader
+// left it, and leaves the sidebar alone, in either state.
+pub fn a_relayed_strand_click_shows_the_strands_tab_test() {
+  let away =
+    shell_rule.initial()
+    |> shell_rule.toggled(Panel)
+    |> shell_rule.toggled(Sidebar)
+    |> shell_rule.chosen(Session)
+  assert away == Layout(sidebar: Closed, panel: Closed, tab: Session)
+
+  let shown = shell_rule.relayed(away, shell_rule.Relay(2, shell_rule.Show))
+  assert shown == Layout(sidebar: Closed, panel: Open, tab: Strands)
+
+  // Already showing: nothing moves.
+  assert shell_rule.relayed(
+      shell_rule.initial(),
+      shell_rule.Relay(2, shell_rule.Show),
+    )
+    == shell_rule.initial()
+}
+
+// `All strands` is a relay of position zero: it presses `main`'s card and does
+// not reopen a panel the reader closed, or leave the tab they chose.
+pub fn all_strands_leaves_the_layout_as_it_is_test() {
+  let away =
+    shell_rule.initial()
+    |> shell_rule.toggled(Panel)
+    |> shell_rule.chosen(Changes)
+  let assert Ok(relay) = shell_rule.relay("0")
+  assert shell_rule.relayed(away, relay) == away
+}
+
+// The card pressed is found by the server's fixed attribute and the number
+// alone.
+pub fn a_card_is_named_by_its_position_test() {
+  assert shell_rule.card_selector(0) == "[data-loom-card=\"0\"]"
+  assert shell_rule.card_selector(14) == "[data-loom-card=\"14\"]"
+}

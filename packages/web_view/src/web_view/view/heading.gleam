@@ -90,10 +90,18 @@ pub fn view(
   )
 }
 
-// A session with no name, or none the host could read, is named by its
-// identity's first eight characters. The whole identity is in the
-// heading's `title`, so the shortening loses nothing a reader can need.
-fn session_name(session_id: String, name: Option(String)) -> String {
+/// A session with no name, or none the host could read, is named by its
+/// identity's first eight characters. The whole identity is in the
+/// heading's `title`, so the shortening loses nothing a reader can need. The
+/// breadcrumb names the session the same way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert heading.session_name("0192ab34cd", None) == "Session 0192ab34"
+/// assert heading.session_name("0192ab34cd", Some("docs")) == "docs"
+/// ```
+pub fn session_name(session_id: String, name: Option(String)) -> String {
   case name {
     Some("") | None -> "Session " <> string.slice(session_id, 0, 8)
     Some(name) -> name
