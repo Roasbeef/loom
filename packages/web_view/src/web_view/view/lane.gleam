@@ -35,6 +35,7 @@ import session_view/transcript_line.{type Line}
 import session_view/transcript_lines
 import session_view/turns
 import web_view/markdown_view
+import web_view/view/live
 import web_view/view/strip
 
 /// The lane: the page strand's turns, keyed by the engine's identity for
@@ -73,17 +74,26 @@ import web_view/view/strip
 /// the one handler the view attaches (protocol-change/051, the addendum on
 /// history paging), so `load` must ask for a read and nothing else.
 ///
+/// The response the provider is still writing is `live`, drawn as the last
+/// entry of the lane's keyed list (`view/live`). It is keyed `live`, which no
+/// piece's key can equal, so the committed row that replaces it is inserted
+/// before it in the same patch that removes it, and the answer does not
+/// leave the page and come back. The committed rows above it are the pieces
+/// and are drawn as they were: a fragment changes `live` alone, so the diff
+/// is that region and every piece's memo holds.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.view(component.pieces(model), component.top(model), OlderRequested)
+/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested)
 /// ```
 pub fn view(
   pieces: List(turns.Piece),
+  live: List(live.Row),
   top: Top,
   load: message,
 ) -> Element(message) {
-  rows(pieces, boundary(top, load), line_element)
+  rows(pieces, live, boundary(top, load), line_element)
 }
 
 /// What lies above the oldest row the page holds.
@@ -120,11 +130,12 @@ pub const older_marker = "loom-older"
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.rows(pieces, element.none(), fn(line) { html.text(line.text) })
+/// // lane.rows(pieces, [], element.none(), fn(line) { html.text(line.text) })
 /// ```
 @internal
 pub fn rows(
   pieces: List(turns.Piece),
+  live: List(live.Row),
   top: Element(message),
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
@@ -132,11 +143,27 @@ pub fn rows(
     top,
     keyed.div(
       [attribute.class("transcript lane"), attribute.role("log")],
-      list.map(pieces, fn(piece) {
-        #(piece_key(piece), piece_element(piece, draw))
-      }),
+      list.append(
+        list.map(pieces, fn(piece) {
+          #(piece_key(piece), piece_element(piece, draw))
+        }),
+        live_entry(live, draw),
+      ),
     ),
   ])
+}
+
+// The live region as the lane's last entry, or no entry while nothing is
+// streaming. Its key is a word, and a piece's key is a sequence, so the two
+// never collide.
+fn live_entry(
+  rows: List(live.Row),
+  draw: fn(Line) -> Element(message),
+) -> List(#(String, Element(message))) {
+  case rows {
+    [] -> []
+    [_, ..] -> [#("live", live.view(rows, draw))]
+  }
 }
 
 // The line above the oldest row. Every word is fixed here; only the row

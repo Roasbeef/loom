@@ -1352,3 +1352,176 @@ holds.
 The heading's status now says "connected" where it said "following". It is the
 connection's state, and the word was read as the scroll state, which only
 `<loom-follow>` knows.
+
+## Addendum: a page with no session says why (2026-09-29)
+
+A page can lose its session in several ways, and until now none of them told
+the person anything (issue #569, part 2). Redeeming a new link ends the
+principal's other page for the session (the ticket section above), but the
+ended page kept a stale transcript under a small header word, and reloading it
+answered "no page session under this key". A page whose socket the daemon
+refused stayed empty, because Lustre's client runtime reconnects after any
+close code but 1000 and a refused handshake shows the browser only that it
+failed. This addendum decides what the page says, in what words, and which
+close code ends the socket. It adds no event to the socket's accepted lists,
+no route, no script logic, and does not touch the content security policy.
+
+**What was found first.** Most refusals were never a 1000 close. A refusal in
+the router (a missing or expired page session, a revoked credential, a
+session that is not resident, no free permit) answers the WebSocket handshake
+with an HTTP status. The browser reports that as a failed connection with
+close code 1006, which Lustre's runtime retries after 500 ms, doubling to at
+most ten seconds, for as long as the tab is open. Those tabs were empty and
+silent, not final. The 1000 closes came from three places after the upgrade:
+the permit's transfer timing out, the component failing to start, and a
+page's end from the gateway. The relay's own attach refusal left the socket
+open with a header word.
+
+### The endings
+
+One closed type, `web_view/ending.Ending`, names why a page has no session.
+Everything the page says about it is a fixed string chosen by the variant, and
+a reason string that names no variant is drawn as `ConnectionFailed`, so no
+text from a peer, a session or an error message reaches a browser.
+
+| Ending | Cause | Says | Socket close |
+|---|---|---|---|
+| `PageEnded` | The page's UI session is gone: a newer link for the same principal and session replaced it, its eight hours ran out, or the daemon restarted. The daemon keeps no record of which. | "This page has ended." A new link ends the page you had open before it, and a page lasts eight hours. Run `loom ui --session <id>` for a fresh link. | 1000 |
+| `AccessRevoked` | The credential behind the page, or the membership under it, was revoked, or the capped role changed. The socket's own check answers this reason when it refuses. | "Your access to this session was revoked or changed." Ask the owner to restore it, then run `loom ui --session <id>`. | 1000 |
+| `SessionStopped` | The gateway exited (the session stopped, or the daemon shut it down), or closed the attachment while the page's check still passes with the authority it attached with (its snapshot reader failed and the incarnation is stopping). | "The session stopped." Open it again, then reload this page; the page's own link still works, so a fresh one is not needed. | 1000 |
+| `NotOpen` | The gateway refused the relay's attach. | "The session is not open." The daemon may still be opening it: reload, and if it stays closed run `loom ui --session <id>`. | 4000 |
+| `DaemonNotReady` | The daemon was starting, stopping or too slow to answer. | "The daemon was not ready." Reload in a moment, and if it keeps failing run `loom ui --session <id>`. | 4000 |
+| `LinkExpired` | The ticket was already redeemed, or its 60 seconds passed. | "This link has expired or was already used." Run `loom ui --session <id>` for a fresh one. | not a socket |
+| `ConnectionFailed` | Any other end, including a lane that failed. | "The connection to the session failed." Reload, and if it fails again run `loom ui --session <id>`. | 1000 |
+
+`SessionStopped` is the one ending whose page is still good: the UI session
+lasts eight hours and serving the page does not need the session resident, so
+a reload reconnects once the session is open again. `PageEnded` and
+`LinkExpired` do not tell the person to reload: a page whose
+key is gone has nothing to reload into. The session identity in the advice is
+drawn only when it parses as a canonical identity; the address of a refused
+page is otherwise whatever a link said, and the notice would repeat it as a
+command to run.
+
+### Close codes
+
+The client runtime is the only reader of the code, and it reads one bit of it.
+
+- **1000 is final.** The runtime does not reconnect. The page uses it after the
+  component has drawn a notice the person must act on, so the notice stays and
+  the daemon is not asked again every ten seconds.
+- **4000 is retried.** Mist sends 4000 when a socket handler stops abnormally
+  (`mist.stop_abnormal`), and the runtime reconnects after its backoff. The page
+  uses it for endings the daemon may clear by itself, and for the two failures
+  in `ui_socket.admit` that are the daemon's alone: the permit transfer
+  running past its second, and the component's start running past Lustre's
+  one-second budget. A tab that hit one of those used to close with 1000 and
+  stay empty for good.
+- **1006, a failed handshake, is retried and cannot be changed.** The router's
+  refusals stay HTTP statuses, because a WebSocket that is not upgraded cannot
+  carry a frame. The runtime keeps retrying them, at most every ten seconds.
+  For a transient refusal that is what is wanted. For a permanent one it costs
+  the daemon one refused request per ten seconds per open tab, refused at the
+  cookie lookup or the resident check, and the person sees the page's waiting
+  paragraph (below). Stopping the loop would take either an upgraded socket
+  that closes with 1000, or script in the page that removes the component's
+  `route`. Neither is taken here.
+
+A relay that cannot start reports `DaemonNotReady`, so that socket closes
+with a retry as well. The socket picks the code from the ending the relay
+reports: `ending.close`
+maps `NotOpen` and `DaemonNotReady` to a retry and every other ending to a
+final close. `ui_socket` still waits a quarter second before closing so the
+component's patch for the notice is sent first.
+
+### What the page shows
+
+- **A live page that ends** draws a notice inside its heading, after the
+  status, as a row of its own: the headline, and the advice. The status word
+  reads "disconnected", with no reason after it. The notice is inside the
+  heading so that no region after it changes its path; `component.older_path`
+  and the composer's form keep the addresses they had. The last cut of the
+  transcript stays, as before, under the notice. `web_view/view/ended` draws
+  it from the ending, as text nodes.
+- **A page that is reloaded after it ended** is answered with a document for
+  the ending in place of the bare status text: `page.refusal`, the stylesheet
+  and no script, under the same headers and the same status code as before
+  (401 for a missing page session or a revoked credential, 403 for another
+  session or a non-member, 503 for a daemon that is not ready). A ticket
+  exchange for a link that was used or expired is answered the same way with
+  `LinkExpired`.
+- **A page that never connects** is not blank. The shell puts one fixed
+  paragraph inside the `<lustre-server-component>` element as light-DOM
+  content. The client runtime attaches the component's shadow root when the
+  first tree arrives, and a shadow root with no slot hides its host's light
+  content, so the paragraph shows exactly while the page has no session:
+  before the socket connects, while the daemon refuses it, and when the tab
+  has no nonce. It says that the page is not connected, lists the causes
+  a person can tell apart by trying (the daemon may still be starting, the
+  session may not be open, the page may have ended, the tab may have lost
+  its key), and
+  gives the two remedies: reload, or run `loom ui --session <id>` for a
+  fresh link. The session page's script no longer writes its own note for a
+  tab with no nonce; the paragraph covers it.
+
+### What was considered
+
+- **A `web_client` element that watches `lustre:close` and draws the notice.**
+  It would cover a page that drops after it mounted, and could give up after a
+  bounded number of retries. It needs new `dom.mjs` exports (an event listener
+  on another element, attribute writes), a rule module and a test target, and
+  it still cannot tell an ended page from a daemon restarting, because the close
+  event carries no code and the handshake's status is hidden. Not taken; see the
+  cost below.
+- **A status endpoint the page's script polls after a close.** A new route and
+  new script logic to recover what the socket already knew. Not taken.
+- **Upgrade every refused socket and close it with a code.** Only the refusals
+  after the page's cookie, key and nonce check could be upgraded without
+  opening the socket to any peer that passes the origin check, and the notice
+  would still have to be drawn by a component started for the purpose. Not
+  taken.
+- **Tell a replaced page from an expired one.** It needs a record of ended UI
+  sessions, which is state the daemon otherwise never keeps. The advice is true
+  of both, so `PageEnded` covers them.
+- **Ending as a typed field of `connection_event.Closed`.** The event is the
+  session engine's and the terminal uses it; the string it carries stays, and
+  `ending.reason` and `ending.from_reason` are the two halves of the hop,
+  held to each other by a test.
+
+### Cost
+
+- A tab that lost its socket after mounting, by a daemon restart or a network
+  break, still shows its stale transcript with the header's last word until
+  the runtime reconnects, and after a restart it is refused on every retry.
+  Nothing on the page says so. Only a page that the gateway ended, or whose
+  attach the relay was refused, gets a notice. A client element could close
+  this gap; it is the follow-up the decision above left out.
+- A permanent handshake refusal is retried every ten seconds for as long as the
+  tab is open, behind the waiting paragraph.
+- A 4000 close exits the socket process abnormally, which the mist supervisor
+  logs as a child termination. It is rare (a session that was opening, or a
+  root that was slow), and the retry is the point.
+- The relay asks the attachment's check a second time when the gateway closes
+  it, to name the cause. The check is the page's own authorization and changes
+  nothing.
+
+### Verification
+
+`ending_test` holds the three tables to each other: every ending round-trips
+through its reason string, no two share a reason or a headline, only
+`NotOpen` and `DaemonNotReady` are retried, and every advice names the
+command with the session. `component_test` and `operator_page_test` draw
+each ending on both pages, draw a reason that names none as
+`ConnectionFailed` with none of its words, and keep the heading's children in
+place. `page_test` pins the waiting paragraph inside the component and the
+refusal document's escaping. `ui_relay_test` shows a replaced or expired UI
+session ending the page as `PageEnded`, a revoked credential as
+`AccessRevoked`, and a refused attach naming `NotOpen` to both the component
+and the socket. `ui_route_test` reloads an ended page and a used link and
+reads their notices, checks that an address that is not a session identity is
+never repeated, and drives a real WebSocket to a page whose gateway is not
+running: the notice is in the frames the browser gets, and the close code is
+4000. No browser is in the loop. That the client runtime hides the light-DOM
+paragraph when it mounts, and retries after 4000 and not after 1000, was read
+in its source (`docs/lustre.md`) and is left to the hand check on a live
+daemon.

@@ -42,13 +42,14 @@ import lustre/element/html
 /// ## Examples
 ///
 /// ```gleam
-/// // heading.view("0192ab34cd", Some("docs"), Some("/src/loom"), "following")
+/// // heading.view("0192ab34cd", Some("docs"), Some("/src/loom"), "connected", element.none())
 /// ```
 pub fn view(
   session_id session_id: String,
   name name: Option(String),
   workspace workspace: Option(String),
   status status: String,
+  notice notice: Element(message),
 ) -> Element(message) {
   html.header([attribute.class("session-head")], [
     html.h1([attribute.title(session_id)], [
@@ -58,6 +59,7 @@ pub fn view(
     html.p([attribute.class("status"), attribute.role("status")], [
       html.text(status),
     ]),
+    notice,
   ])
 }
 

@@ -29,6 +29,7 @@
 import gleam/erlang/application
 import gleam/result
 import houdini
+import web_view/ending.{type Ending}
 
 /// The route prefix every view path lives under.
 pub const prefix = "/ui"
@@ -83,6 +84,16 @@ pub fn session_path(key: String, session_id: String) -> String {
 /// `route`, the page's own address plus `/ws`, so the socket is opened only
 /// with the nonce in its query.
 ///
+/// The component holds a fixed paragraph as light-DOM content. Lustre's
+/// client runtime attaches the component's shadow root only when the first
+/// tree arrives, and a shadow root with no slot hides its host's light
+/// content, so the paragraph is on screen exactly while the page has no
+/// session: before the socket connects, and for as long as the daemon
+/// refuses it. A refused handshake is a bare failure to the browser, which
+/// cannot read its status, so this paragraph is the only place the page can
+/// say why it is empty. It needs no script and no attribute the session
+/// controls (protocol-change/051, the addendum on an ended page).
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -105,11 +116,64 @@ pub fn shell(session_id: String) -> String {
   <> asset_path(client_asset)
   <> "\"></script>"
   <> "</head><body>"
-  <> "<lustre-server-component></lustre-server-component>"
+  <> "<lustre-server-component><p class=\"page-note\">"
+  <> houdini.escape(waiting_notice(session_id))
+  <> "</p></lustre-server-component>"
   <> "<script src=\""
   <> asset_path(page_asset)
   <> "\"></script>"
   <> "</body></html>\n"
+}
+
+/// What a page says while it has no session and nothing more specific is
+/// known: the socket has not connected, or the daemon refuses it. The causes
+/// it lists are the ones a person can tell apart by trying, in the order to
+/// try them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   page.waiting_notice("0192ab"),
+///   "loom ui --session 0192ab",
+/// )
+/// ```
+pub fn waiting_notice(session_id: String) -> String {
+  "This page is not connected to the session. The daemon may still be "
+  <> "starting, the session may not be open (open it again), this page may "
+  <> "have ended, or this tab may have lost its key for the page. Reload it. "
+  <> "If it stays like this, run `loom ui --session "
+  <> session_id
+  <> "` for a fresh link."
+}
+
+/// The document a browser gets when it asks for a page that cannot be
+/// served: the reason class and what to do, and nothing else. It replaces
+/// the bare status text those requests used to answer, which said "no page
+/// session under this key" to a person who had done nothing wrong.
+///
+/// The status code is the caller's and does not change; this is only the
+/// body. It carries the stylesheet and no script, so it is served under the
+/// same policy as every `/ui` response and needs nothing more from it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // page.refusal(ending.PageEnded, "0198c0de-...")
+/// ```
+pub fn refusal(reason: Ending, session_id: String) -> String {
+  "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+  <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+  <> "<title>Loom</title>"
+  <> "<link rel=\"stylesheet\" href=\""
+  <> asset_path(stylesheet_asset)
+  <> "\"></head><body>"
+  <> "<section class=\"ended-notice ended-document\" role=\"alert\">"
+  <> "<p class=\"ended-headline\">"
+  <> houdini.escape(ending.headline(reason))
+  <> "</p><p class=\"ended-advice\">"
+  <> houdini.escape(ending.advice(reason, session_id))
+  <> "</p></section></body></html>\n"
 }
 
 /// The page the ticket exchange answers with. Its body names the keyed page

@@ -269,10 +269,20 @@ What the client runtime does, from
   after 500 ms doubling to at most 10 s, and waits for the tab to become
   visible if it is hidden. A close with code 1000 is final. Loom's mist
   fork sends 1000 when a handler returns `mist.stop()` (the `NormalStop`
-  arm in `mist/internal/websocket.gleam`), so a page Loom closes stays
-  closed. A connection that drops without a close frame (the daemon
-  restarted) is retried, and each retry is refused with a `401` until the
-  person runs `loom ui` again.
+  arm in `mist/internal/websocket.gleam`), so a page Loom closes that way
+  stays closed. It sends 4000 when a handler returns `mist.stop_abnormal`
+  (the `AbnormalStop` arm), which the runtime retries. `ui_socket` chooses
+  between them from `web_view/ending.close`: 1000 for an ending the person
+  resolves, 4000 for one the daemon may clear by itself. A handshake the
+  daemon refuses with an HTTP status is a close code 1006 to the browser,
+  which cannot read the status, and is retried. A connection that drops
+  without a close frame (the daemon restarted) is retried too, and each
+  retry is refused with a `401` until the person runs `loom ui` again.
+  The runtime attaches the component's shadow root only when the first
+  `Mount` arrives, so a paragraph placed inside the element as light-DOM
+  content is shown until then and hidden after; the page shell uses that to
+  say why a page that never connected is empty
+  (protocol-change/051, the addendum on an ended page).
 
 ### The wire format
 
@@ -405,9 +415,12 @@ Loom's chain, one link per process:
    the gateway and exits.
 3. The gateway ends the attachment (session stopped, access revoked): the
    relay files `connection_event.Closed` with the component, tells the
-   socket (`Ended`), and exits. The socket waits a quarter second
-   (`ended_grace_ms`) so the component's patch for the ended state is
-   sent first, then stops, which is step 1.
+   socket (`Ended`), and exits. The reason is one of
+   `web_view/ending`'s fixed strings, and the component draws that ending's
+   notice. The socket waits a quarter second (`ended_grace_ms`) so the
+   patch for the notice is sent first, then stops with the close code the
+   ending calls for (1000, or 4000 for an ending that may clear), which is
+   step 1.
 4. The component crashes: the link takes the socket down, the relay's
    monitor fires, and the browser reconnects.
 
@@ -736,7 +749,7 @@ shared record holds now, and rebuilds only what differs. The keyed rows and
 pieces stay in the model, so a frame or a tick that changes none of the
 projection's inputs costs the view no projection. The comparison is of
 inputs and not of the record's `render_revision`, which moves for stream
-fragments the page does not draw.
+fragments, which change the live region and nothing the lane's memos hold.
 
 **Key the transcript.** An append-only list diffs well without keys: the
 old lines compare equal and the new ones are inserted at the end. A list
@@ -1143,7 +1156,7 @@ All apply to 5.7.1. Re-check each when the pin moves.
 | Conditional `prevent_default` and `stop_propagation` are impossible. | `event.advanced` flags have no effect. | [`lustre/event`][doc-event], `advanced` |
 | `memo` compares dependencies with `=:=` on Erlang, not by reference. | Equal rebuilt values count as unchanged, and cost a deep comparison. | [`lustre/element`][doc-element], `ref` |
 | The server decoder has no arm for `ContextProvided` (`kind` 4). | Context values from the browser are dropped; a `Batch` containing one fails to decode as a whole. **(source)** | [`transport.gleam`][src-transport], `server_message_decoder` |
-| The client reconnects on any close code but 1000, forever, capped at 10 s. | After a daemon restart, an open page retries and gets `401` every 10 s. **(source)** | [`server_component.ffi.mjs`][src-client-ws], `WebsocketTransport` |
+| The client reconnects on any close code but 1000, forever, capped at 10 s. | After a daemon restart, an open page retries and gets `401` every 10 s, with nothing on the page saying so. A refused handshake is retried too, so a page's own end must be a 1000 close after the component drew it. **(source)** | [`server_component.ffi.mjs`][src-client-ws], `WebsocketTransport` |
 | The client reads `csrf-token` once, when `route` is set, and sends the string `null` when none is present; changing `csrf-token` on a connected element closes and reconnects. | Set `csrf-token` before `route`, or the socket opens without the page nonce and is refused. **(source)** | [`server_component.ffi.mjs`][src-client], `attributeChangedCallback` |
 | The default `ws` method passes an `http:` URL to `new WebSocket`. | Needs a browser that accepts `http(s)` URLs there. **(source)** | same |
 | `register_callback` with an anonymous function cannot be deregistered. | Use `register_subject` on Erlang. | [`lustre/server_component`][doc-sc] |

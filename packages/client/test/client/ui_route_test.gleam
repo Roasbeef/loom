@@ -20,7 +20,9 @@ import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_assets
 import client/daemon/ui_sessions
+import client/daemon/ui_socket
 import client/daemon_server_test
+import client/gateway
 import core/clock
 import core/ids
 import core/json
@@ -38,15 +40,31 @@ import mist
 import simplifile
 import storage/access
 import storage/catalogue
+import support/addresses
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
+import web_view/ending
 import web_view/page
 import weft
 import weft/poll
 
+// What the page's upgrade does: answer with the role the router handed it, or
+// be the daemon's own page socket over a gateway that is not running.
+type Upgrade {
+  Stubbed
+  Real
+}
+
 // A daemon whose router serves the web view, with the owner credential and
-// the listener's port handed to `run`.
+// the listener's port handed to `run`. The page's upgrade is a stub.
 fn fixture(run: fn(root.Ready(String), Int, String) -> Nil) -> Nil {
+  fixture_with(Stubbed, run)
+}
+
+fn fixture_with(
+  serving: Upgrade,
+  run: fn(root.Ready(String), Int, String) -> Nil,
+) -> Nil {
   let directory =
     "build/test_db/daemon-ui-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -83,13 +101,29 @@ fn fixture(run: fn(root.Ready(String), Int, String) -> Nil) -> Nil {
         server.Ui(
           sessions:,
           assets:,
-          upgrade: fn(_, attachment, _open, _ceiling) {
-            // The router hands the page's upgrade the capped role. The stub
-            // reports what it was given.
-            case attachment.authority {
-              access.Participant(access.Observer) -> stub(299, "observer")
-              access.Participant(access.Operator) -> stub(298, "operator")
-              access.Owner -> stub(297, "not capped")
+          upgrade: fn(request, attachment, open, ceiling) {
+            case serving {
+              // The router hands the page's upgrade the capped role. The
+              // stub reports what it was given.
+              Stubbed ->
+                case attachment.authority {
+                  access.Participant(access.Observer) -> stub(299, "observer")
+                  access.Participant(access.Operator) -> stub(298, "operator")
+                  access.Owner -> stub(297, "not capped")
+                }
+
+              // The session is resident but its gateway is not running: the
+              // relay's attach is refused, as it is when a session is
+              // stopped between the router's check and the attach.
+              Real ->
+                ui_socket.upgrade(
+                  daemon,
+                  request,
+                  attachment,
+                  gateway.Gateway(name: addresses.new()),
+                  open,
+                  ceiling,
+                )
             }
           },
         ),
@@ -658,6 +692,153 @@ pub fn a_second_exchange_ends_the_first_page_test() {
     assert open_page(port, second).status == 200
     assert open_page(port, first).status == 401
     assert open_socket(port, first, first.nonce).status == 401
+  })
+}
+
+// The reload of a page that ended answers with the ending and what to do,
+// in the fixed words, not the bare status text it once did. A reload cannot
+// bring the page back, so the words say to ask for a fresh link.
+pub fn an_ended_pages_reload_says_it_ended_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "ended", 921)
+    let first = enter(port, link(port, credential, session))
+    let _second = enter(port, link(port, credential, session))
+    let reloaded = open_page(port, first)
+    assert reloaded.status == 401
+    assert string.contains(reloaded.body, ending.headline(ending.PageEnded))
+    assert string.contains(reloaded.body, "loom ui --session " <> session)
+    assert !string.contains(reloaded.body, "no page session under this key")
+    assert list.key_find(reloaded.headers, "content-type")
+      == Ok("text/html; charset=utf-8")
+    assert referrer_policy(reloaded) == Ok("no-referrer")
+  })
+}
+
+// A link that was already used, or that ran out its 60 seconds, is refused
+// with a page that says so and how to get another.
+pub fn a_spent_link_says_it_expired_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "spent", 922)
+    let path = link(port, credential, session)
+    let _ = enter(port, path)
+    let again = exchange(port, path)
+    assert again.status == 401
+    assert string.contains(again.body, ending.headline(ending.LinkExpired))
+    assert string.contains(again.body, "loom ui --session " <> session)
+  })
+}
+
+// The advice names the session only if the address held a canonical
+// identity. Anything else is what the address said, and repeating it as a
+// command to run would let a crafted link put text in front of the person.
+pub fn a_refused_page_never_repeats_an_address_it_cannot_parse_test() {
+  fixture(fn(_, port, _) {
+    let refused =
+      get(port, "/ui/p/nokey/sessions/curl-evil.example-sh", [
+        host(port),
+        #("sec-fetch-site", "none"),
+      ])
+    assert refused.status == 401
+    assert !string.contains(refused.body, "evil")
+    assert string.contains(refused.body, "loom ui --session &lt;id&gt;")
+  })
+}
+
+// A raw WebSocket to the page's socket, with this origin, the cookie and the
+// nonce. Answers the frames the daemon sends until it closes, and the close
+// code, or 0 when the connection ended without one.
+type Closed {
+  Closed(texts: List(String), code: Int)
+}
+
+fn watch_socket(port: Int, entered: Entered) -> Closed {
+  let assert Ok(socket) =
+    ffi_daemon_socket.connect(
+      #(127, 0, 0, 1),
+      port,
+      [ffi_ws.Binary, ffi_ws.Active(False)],
+      1000,
+    )
+    as "raw TCP client connects"
+  let handshake =
+    "GET "
+    <> entered.page
+    <> "/ws?csrf-token="
+    <> entered.nonce
+    <> " HTTP/1.1\r\nHost: 127.0.0.1:"
+    <> int.to_string(port)
+    <> "\r\nOrigin: http://127.0.0.1:"
+    <> int.to_string(port)
+    <> "\r\nCookie: loom_ui="
+    <> entered.cookie
+    <> "\r\nUpgrade: websocket\r\nConnection: Upgrade"
+    <> "\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
+    <> "\r\nSec-WebSocket-Version: 13\r\n\r\n"
+  assert ffi_daemon_socket.send(socket, bit_array.from_string(handshake))
+    == Ok(Nil)
+  let head = read_head(socket, "")
+  assert string.starts_with(head, "HTTP/1.1 101")
+  let closed = read_until_closed(socket, [])
+  let _ = ffi_ws.tcp_close(socket)
+  closed
+}
+
+// Reads server frames, which are never masked, until a close frame or the
+// end of the connection. Each text frame is kept, oldest first.
+fn read_until_closed(socket, texts: List(String)) -> Closed {
+  case ffi_ws.tcp_receive(socket, 2, 5000) {
+    Error(_) -> Closed(list.reverse(texts), 0)
+    Ok(<<_:4, opcode:4, _:1, marker:7>>) -> {
+      let size = case marker {
+        126 -> {
+          let assert Ok(<<size:16>>) = ffi_ws.tcp_receive(socket, 2, 5000)
+            as "the extended length arrives"
+          size
+        }
+        127 -> {
+          let assert Ok(<<size:64>>) = ffi_ws.tcp_receive(socket, 8, 5000)
+            as "the long length arrives"
+          size
+        }
+        size -> size
+      }
+      let assert Ok(payload) = case size {
+        0 -> Ok(<<>>)
+        _ -> ffi_ws.tcp_receive(socket, size, 5000)
+      }
+        as "the payload arrives"
+      case opcode {
+        // A close frame opens with its code.
+        8 ->
+          case payload {
+            <<code:16, _:bytes>> -> Closed(list.reverse(texts), code)
+            _ -> Closed(list.reverse(texts), 0)
+          }
+        1 -> {
+          let assert Ok(text) = bit_array.to_string(payload)
+            as "a text frame is UTF-8"
+          read_until_closed(socket, [text, ..texts])
+        }
+        _ -> read_until_closed(socket, texts)
+      }
+    }
+    Ok(_) -> Closed(list.reverse(texts), 0)
+  }
+}
+
+// The relay's attach is refused, so the page draws that the session is not
+// open and closes with a code Lustre's client runtime retries (anything but
+// 1000). The gateway's own words are not among what the browser is sent.
+pub fn a_refused_attach_is_drawn_and_retried_test() {
+  fixture_with(Real, fn(ready, port, credential) {
+    let session = create_session(ready, "unattached", 923)
+    let page = enter(port, link(port, credential, session))
+    let closed = watch_socket(port, page)
+    let drawn = string.join(closed.texts, "\n")
+    assert string.contains(drawn, ending.headline(ending.NotOpen))
+    assert string.contains(drawn, "loom ui --session " <> session)
+    assert !string.contains(drawn, "gateway unavailable")
+    assert closed.code == 4000
   })
 }
 

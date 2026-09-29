@@ -317,6 +317,39 @@ pub fn response_recorded(
   }
 }
 
+/// Whether a live response is still owed to the transcript a host draws:
+/// its request reserved a durable entry that `records` do not hold yet, and
+/// `operations` still shows the operation that made it running on its strand.
+///
+/// A pushed entry clears the strand's streams the moment it lands, but a host
+/// that draws only captures has no row for it until the next capture arrives.
+/// Such a host keeps drawing the stream it last saw while this is true, so
+/// the answer does not leave the page and come back, and stops once the
+/// capture holds the entry (the exact hand-over, as `display_streams` makes
+/// it against the terminal's records) or the capture says the operation is
+/// over with no entry (an interrupted answer, which no record will replace).
+/// A stream whose identity names no entry is never owed: older daemons and
+/// summary requests keep the behaviour they had.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.response_awaited(branch.records, view.operations, stream)
+/// ```
+@internal
+pub fn response_awaited(
+  records: List(protocol.EntryRecord),
+  operations: Dict(String, String),
+  stream: Stream,
+) -> Bool {
+  case stream_identity.response_entry(stream.generation) {
+    None -> False
+    Some(_) ->
+      !response_recorded(records, stream.generation)
+      && dict.get(operations, stream.strand) == Ok(stream.operation)
+  }
+}
+
 /// A live stream seeded from the snapshot's sampled preview of an
 /// unfinished answer.
 @internal
@@ -471,7 +504,17 @@ pub fn summarized_reasoning_line(header: String, label: String) -> Line {
 /// A longer summary is cut with an ellipsis at the end of the last row.
 pub const summary_rows = 3
 
-fn line_count(text: String) -> String {
+/// How many lines a reasoning block holds so far, in words: `1 line`,
+/// `2 lines`. A live reasoning row says this and how long the generation has
+/// run, and a host that draws the clock itself takes the count from here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.line_count("one\ntwo") == "2 lines"
+/// ```
+@internal
+pub fn line_count(text: String) -> String {
   let count = text |> string.split("\n") |> list.length
   int.to_string(count)
   <> case count {

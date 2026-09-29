@@ -18,6 +18,7 @@ import page_fixture
 import session_view/connection_event
 import session_view/session_channel
 import web_view/component
+import web_view/ending
 
 fn simulation() {
   simulate.application(
@@ -119,19 +120,102 @@ pub fn a_closed_connection_is_drawn_as_it_arrives_test() {
       following,
       component.Arrived([connection_event.Closed("access was revoked")]),
     )
-  assert string.contains(
-    element.to_string(simulate.view(closed)),
-    "disconnected: access was revoked",
-  )
+  let html = element.to_string(simulate.view(closed))
+  assert string.contains(html, "disconnected")
   assert component.status(simulate.model(closed))
-    == component.Ended("access was revoked")
+    == component.Ended(ending.AccessRevoked)
+
+  // The page says why, in the words of the ending, and what to do about it:
+  // the fresh link's command names the session the page was opened for.
+  assert string.contains(html, "class=\"ended-notice\"")
+  assert string.contains(html, ending.headline(ending.AccessRevoked))
+  assert string.contains(html, "loom ui --session A")
+}
+
+// A page whose lane is open and has drawn its first cut, so a close has a
+// lane to end.
+fn following() {
+  simulate.message(simulation(), component.Opened(wire()))
+  |> arrive(page_fixture.transfer("observer", []))
+}
+
+// The relay's reasons are a closed vocabulary, and each one is drawn as its
+// own ending. A page that ended because a newer link replaced it says so,
+// and says to ask for a fresh link, not to reload: the reload would find no
+// page session under its key.
+pub fn each_relay_reason_is_drawn_as_its_ending_test() {
+  list.each(ending.all(), fn(reason) {
+    let closed =
+      simulate.message(
+        following(),
+        component.Arrived([connection_event.Closed(ending.reason(reason))]),
+      )
+    assert component.status(simulate.model(closed)) == component.Ended(reason)
+    let html = element.to_string(simulate.view(closed))
+    assert string.contains(html, ending.headline(reason))
+  })
+  let replaced =
+    simulate.message(
+      following(),
+      component.Arrived([
+        connection_event.Closed(ending.reason(ending.PageEnded)),
+      ]),
+    )
+  let html = element.to_string(simulate.view(replaced))
+  assert string.contains(html, "This page has ended.")
+  assert string.contains(html, "Opening a new link")
+}
+
+// A reason that is not one of the fixed strings, such as the words a lane
+// failed with, is never drawn: the page shows the failure class and nothing
+// the reason carried.
+pub fn an_unrecognised_reason_is_not_drawn_test() {
+  let closed =
+    simulate.message(
+      following(),
+      component.Arrived([
+        connection_event.Closed("<b>frame 7 was undecodable</b> at /secret"),
+      ]),
+    )
+  assert component.status(simulate.model(closed))
+    == component.Ended(ending.ConnectionFailed)
+  let html = element.to_string(simulate.view(closed))
+  assert !string.contains(html, "undecodable")
+  assert !string.contains(html, "/secret")
+  assert string.contains(html, ending.headline(ending.ConnectionFailed))
+}
+
+// A page that has not ended draws no notice, and the heading keeps the same
+// children either way, so no other region moves.
+pub fn a_live_page_draws_no_ended_notice_test() {
+  let live =
+    simulate.message(simulation(), component.Opened(wire()))
+    |> arrive(page_fixture.transfer("observer", []))
+  assert !string.contains(
+    element.to_string(simulate.view(live)),
+    "ended-notice",
+  )
 }
 
 pub fn a_refused_open_ends_the_page_test() {
   let refused =
-    simulate.message(simulation(), component.Refused("access was revoked"))
+    simulate.message(
+      simulation(),
+      component.Refused(ending.reason(ending.AccessRevoked)),
+    )
   assert component.status(simulate.model(refused))
-    == component.Ended("access was revoked")
+    == component.Ended(ending.AccessRevoked)
+
+  // The gateway's own words for a refusal name no ending. The session is
+  // not open, and the page says that rather than repeating them.
+  let unattached =
+    simulate.message(simulation(), component.Refused("gateway unavailable"))
+  assert component.status(simulate.model(unattached))
+    == component.Ended(ending.NotOpen)
+  assert !string.contains(
+    element.to_string(simulate.view(unattached)),
+    "gateway unavailable",
+  )
 }
 
 // Protocol-change/051, the operator addendum: an observer's page is a fixed

@@ -42,6 +42,7 @@ import mist
 import storage/access
 import storage/catalogue
 import storage/domain
+import web_view/ending.{type Ending}
 import web_view/page
 import weft
 
@@ -279,7 +280,7 @@ fn web_document(
         True ->
           case ui_sessions.redeem(ui.sessions, ticket, id) {
             Error(ui_sessions.UnknownTicket) ->
-              plain(401, "unknown or expired ticket")
+              refused_page(401, ending.LinkExpired, id)
             Error(ui_sessions.OtherSession) ->
               plain(403, "ticket names another session")
             Ok(redeemed) ->
@@ -324,30 +325,46 @@ fn page_grant(
         False -> Error(Nil)
       }
     })
-    |> result.map_error(fn(_) { plain(401, "no page session under this key") }),
+    |> result.map_error(fn(_) { refused_page(401, ending.PageEnded, id) }),
   )
   let grant = ui_sessions.grant(page)
   use Nil <- result.try(case grant.session_id == id {
     True -> Ok(Nil)
-    False -> Error(plain(403, "page session names another session"))
+    False -> Error(refused_page(403, ending.PageEnded, id))
   })
   use state <- result.try(
     ready(config, upgrade_log.Page)
-    |> result.map_error(fn(_) { plain(503, "daemon unavailable") }),
+    |> result.map_error(fn(_) { refused_page(503, ending.DaemonNotReady, id) }),
   )
   use _principal <- result.try(
     asked(upgrade_log.Page, "authenticate", fn() {
       manager.authenticate(state.registry, grant.credential)
     })
-    |> result.map_error(fn(_) { plain(401, "credential revoked") }),
+    |> result.map_error(fn(_) { refused_page(401, ending.AccessRevoked, id) }),
   )
   use _authority <- result.try(
     asked(upgrade_log.Page, "session_authority", fn() {
       manager.session_authority(state.registry, grant.credential, id)
     })
-    |> result.map_error(fn(_) { plain(403, "not a member of this session") }),
+    |> result.map_error(fn(_) { refused_page(403, ending.AccessRevoked, id) }),
   )
   Ok(#(state, page, cookie))
+}
+
+// The answer to a page request that cannot be served: the status the check
+// chose, and a document that says which ending it is and what to do, in the
+// fixed words of `web_view/ending`. The page's socket is refused by the same
+// checks and its browser reads only that the handshake failed, so the body
+// matters to a person who reloads or opens the address; a script never
+// reads it. The path's session identity is drawn only if it parses as a
+// canonical identity, because it is otherwise whatever the address said and
+// the advice would repeat it as a command to run.
+fn refused_page(status: Int, reason: Ending, id: String) {
+  let session = case ids.parse_session_id(id) {
+    Ok(parsed) -> ids.session_id_to_string(parsed)
+    Error(_) -> "<id>"
+  }
+  document(status, "text/html; charset=utf-8", page.refusal(reason, session))
 }
 
 fn document(status: Int, content_type: String, body: String) {

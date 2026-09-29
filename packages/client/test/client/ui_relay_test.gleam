@@ -26,6 +26,7 @@ import gleam/time/timestamp
 import runtime/api
 import session_view/connection_event
 import storage/access
+import web_view/ending
 import weft/registry
 
 type Answer =
@@ -79,7 +80,7 @@ fn attach_under(
 fn start(
   attach: ui_relay.Attach,
   inbox: Subject(connection_event.Message),
-  ended: fn(String) -> Nil,
+  ended: fn(ending.Ending) -> Nil,
 ) -> Result(ui_relay.Relay, String) {
   let opened = process.new_subject()
   ui_relay.start(attach, inbox, process.self(), opened, ended)
@@ -337,18 +338,15 @@ pub fn a_revoked_page_is_closed_test() {
   // that met the refusal as closed, or closes the attachment first; either
   // way the relay reports the end, so the page's socket closes.
   ui_relay.transmit(relay, subscribe(harness, 1))
-  let assert Ok(_reason) = process.receive(ended, 5000)
+  let assert Ok(reason) = process.receive(ended, 5000)
     as "the relay reports the end to the page"
+
+  // The gateway does not say why it closed, so the relay asks the check
+  // again. A credential that no longer authenticates is a revoked access,
+  // in the page's words and at the socket, which closes with 1000.
+  assert reason == ending.AccessRevoked
   assert process.receive(inbox, 1000)
-    |> result.map(fn(message) {
-      case message {
-        connection_event.Closed(_) -> True
-        connection_event.Incoming(_)
-        | connection_event.Connected
-        | connection_event.NetworkFault(_) -> False
-      }
-    })
-    == Ok(True)
+    == Ok(connection_event.Closed(ending.reason(ending.AccessRevoked)))
   assert gone(pid)
   assert gateway.attached(harness.hub) == before
 }
@@ -370,8 +368,9 @@ pub fn a_demoted_operators_page_is_closed_test() {
     as "the relay attaches as an operator"
   let pid = relay_pid(relay)
   ui_relay.transmit(relay, subscribe(harness, 1))
-  let assert Ok(_reason) = process.receive(ended, 5000)
+  let assert Ok(reason) = process.receive(ended, 5000)
     as "the demoted page ends"
+  assert reason == ending.AccessRevoked
   assert gone(pid)
 }
 
@@ -395,7 +394,7 @@ pub fn a_gateway_that_goes_away_ends_its_relay_test() {
   process.unlink(hub_pid)
   process.kill(hub_pid)
 
-  assert process.receive(ended, 5000) == Ok("the session ended")
+  assert process.receive(ended, 5000) == Ok(ending.SessionStopped)
   assert gone(pid)
   assert process.receive(inbox, 1000)
     == Ok(connection_event.Closed("the session ended"))
@@ -440,7 +439,7 @@ fn page(
   session: String,
 ) -> #(
   ui_relay.Relay,
-  Subject(String),
+  Subject(ending.Ending),
   Subject(Clock),
   ui_sessions.Sessions,
   String,
@@ -478,8 +477,13 @@ pub fn an_expired_ui_session_ends_an_open_page_test() {
 
   process.send(time, Advance(28_800_000))
   ui_relay.transmit(relay, subscribe(harness, 1))
-  let assert Ok(_reason) = process.receive(ended, 5000)
+  let assert Ok(reason) = process.receive(ended, 5000)
     as "the expired page ends"
+
+  // A page whose UI session is gone says so, and not that access was
+  // revoked: the person's fix is a fresh link, not a conversation with the
+  // owner.
+  assert reason == ending.PageEnded
   assert gone(pid)
 }
 
@@ -496,7 +500,143 @@ pub fn a_replaced_ui_session_ends_an_open_page_test() {
   let assert Ok(_) = ui_sessions.redeem(tables, issued.ticket, session)
     as "the second ticket replaces the first UI session"
   ui_relay.transmit(relay, subscribe(harness, 1))
-  let assert Ok(_reason) = process.receive(ended, 5000)
+  let assert Ok(reason) = process.receive(ended, 5000)
     as "the replaced page ends"
+  assert reason == ending.PageEnded
   assert gone(pid)
+}
+
+// An attach the gateway refuses is reported the way a later end is: the
+// component is told the ending in the fixed words and never the gateway's
+// own, and the page's socket is told to close. A refusal that names no
+// ending is a session that is not open, which the socket retries.
+pub fn a_refused_attach_names_its_ending_and_closes_the_page_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5121))
+  let ended = process.new_subject()
+  let refuse = fn() { Error("the gateway's own words") }
+  let assert Error(refusal) =
+    start(attach(harness, refuse), process.new_subject(), fn(reason) {
+      process.send(ended, reason)
+    })
+    as "the gateway refuses the attach"
+  assert refusal == ending.reason(ending.NotOpen)
+  assert process.receive(ended, 1000) == Ok(ending.NotOpen)
+}
+
+// An attach refused because the page's UI session is already gone, as it is
+// when a newer link replaced the page before its socket opened, says so.
+pub fn an_attach_by_an_ended_page_says_the_page_ended_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5122))
+  let ended = process.new_subject()
+  let check = ui_relay.while_open(operator, fn() { Error(Nil) })
+  let assert Error(refusal) =
+    start(attach(harness, check), process.new_subject(), fn(reason) {
+      process.send(ended, reason)
+    })
+    as "the ended page's attach is refused"
+  assert refusal == ending.reason(ending.PageEnded)
+  assert process.receive(ended, 1000) == Ok(ending.PageEnded)
+}
+
+// The gateway closes an attachment for reasons of its own as well as
+// because the check refused: a failed snapshot reader closes them all and
+// stops the incarnation. When the re-check passes with the authority the
+// attach held, the page says the session stopped, not that access changed.
+// The check answers as an operator, except that once the test arms it, its
+// next answer demotes the page, which closes it at a push without a request,
+// and every answer after that is the original authority again.
+type Toggle {
+  Demote
+  Answer(reply: Subject(Answer))
+}
+
+fn demotable() -> Subject(Toggle) {
+  let assert Ok(started) =
+    actor.new(False)
+    |> actor.on_message(fn(armed, message) {
+      case message {
+        Demote -> actor.continue(True)
+        Answer(reply) -> {
+          case armed {
+            True -> {
+              process.send(
+                reply,
+                Ok(#(alice(), access.Participant(access.Observer))),
+              )
+              actor.continue(False)
+            }
+            False -> {
+              process.send(reply, operator())
+              actor.continue(False)
+            }
+          }
+        }
+      }
+    })
+    |> actor.start
+    as "the demotable check starts"
+  started.data
+}
+
+pub fn a_close_with_an_unchanged_authority_is_a_stopped_session_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5123))
+  let ended = process.new_subject()
+  let inbox = process.new_subject()
+  let toggle = demotable()
+  let check = fn() { process.call(toggle, 1000, Answer) }
+  let assert Ok(relay) =
+    start(attach_under(harness, check, access.Operator), inbox, fn(reason) {
+      process.send(ended, reason)
+    })
+    as "the relay attaches as an operator"
+  ui_relay.transmit(relay, subscribe(harness, 1))
+  let _ = subscribed(inbox)
+
+  // Another page joining is a push to the first, whose check now demotes it.
+  process.send(toggle, Demote)
+  let other = attach_under(harness, operator, access.Operator)
+  let joiner =
+    ui_relay.Attach(
+      ..other,
+      binding: gateway.Binding(..other.binding, connection_id: "page-bob"),
+    )
+  let assert Ok(second) = start(joiner, process.new_subject(), fn(_) { Nil })
+    as "a second page attaches"
+  ui_relay.transmit(second, subscribe(harness, 1))
+  assert process.receive(ended, 5000) == Ok(ending.SessionStopped)
+}
+
+// The same close, with a re-check that answers a different capped
+// authority, is a role change and says so.
+pub fn a_close_with_a_changed_authority_is_revoked_access_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5124))
+  let ended = process.new_subject()
+  let observer = Ok(#(alice(), access.Participant(access.Observer)))
+  let script = scripted([operator(), observer, observer])
+  let check = fn() { process.call(script, 1000, Ask) }
+  let assert Ok(relay) =
+    start(
+      attach_under(harness, check, access.Operator),
+      process.new_subject(),
+      fn(reason) { process.send(ended, reason) },
+    )
+    as "the relay attaches as an operator"
+  ui_relay.transmit(relay, subscribe(harness, 1))
+  assert process.receive(ended, 5000) == Ok(ending.AccessRevoked)
+}
+
+// The page socket's own check answers a refused authorization with the
+// access ending's reason, so an attach it refuses is a revoked access (final)
+// and not a session that is not open (retried).
+pub fn an_attach_refused_for_authorization_is_revoked_access_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5125))
+  let ended = process.new_subject()
+  let refuse = fn() { Error(ending.reason(ending.AccessRevoked)) }
+  let assert Error(refusal) =
+    start(attach(harness, refuse), process.new_subject(), fn(reason) {
+      process.send(ended, reason)
+    })
+    as "the attach is refused"
+  assert refusal == ending.reason(ending.AccessRevoked)
+  assert process.receive(ended, 1000) == Ok(ending.AccessRevoked)
 }

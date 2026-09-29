@@ -111,6 +111,14 @@ for a host with no surfaces.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.
+- `transcript_lines.response_awaited(records, operations, stream)` says
+  whether a live response is still owed to a host that draws only captures:
+  its request's identity names an entry that `records` do not hold and the
+  capture still shows its operation running. The web view keeps drawing the
+  stream it last saw while this holds (`web_view/component.streamed`), since
+  a pushed entry clears the record's streams before the capture that holds
+  the row. `transcript_lines.line_count(text)` is the `2 lines` a live
+  reasoning row says, for a host that draws the elapsed time itself.
 - `transcript.project(cut, view, strand)`: one strand's lines from one
   capture, for a host that keeps no presentation state between cuts.
   `transcript.project_rows` gives the same lines as `Row(key, line)`, each
