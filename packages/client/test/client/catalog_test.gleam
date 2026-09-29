@@ -246,7 +246,8 @@ cache_hit = 0.3
 
 // --- strictness ------------------------------------------------------------
 
-const minimal = "
+const minimal =
+  "
 [models.one]
 dialect = \"anthropic\"
 api_key_env = \"KEY\"

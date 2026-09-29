@@ -389,7 +389,8 @@ type PeerCommand {
   Disconnect
 }
 
-const greeting = "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"controlled\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536}}}"
+const greeting =
+  "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"controlled\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536}}}"
 
 fn controlled_peer(run) {
   peer_listener(Some(greeting), fn(port, peers, incoming, _) {

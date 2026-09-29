@@ -48,7 +48,8 @@ type ClaimAddress {
 }
 
 /// The complete access-command usage, shared with the top-level dispatcher.
-pub const usage = "usage: loomd access [--state-dir PATH] invite SESSION PRINCIPAL ROLE NAME [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | revoke-credentials PRINCIPAL | isolate SESSION --share-existing-transcript"
+pub const usage =
+  "usage: loomd access [--state-dir PATH] invite SESSION PRINCIPAL ROLE NAME [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | revoke-credentials PRINCIPAL | isolate SESSION --share-existing-transcript"
 
 /// Runs one administration request. A claim token is printed only on
 /// standard output, only on explicit success, and never with a bearer.

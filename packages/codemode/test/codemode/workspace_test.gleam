@@ -229,19 +229,20 @@ fn answering_jobs(seen: Subject(Seen)) -> workspace.JobDoor {
 
 const job_id = "01JQ8XZ"
 
-const exit_report = exec.ExecResult(
-  code: 2,
-  signal: 0,
-  stdout_bytes: 3,
-  stderr_bytes: 0,
-  stdout_truncated: False,
-  stderr_truncated: False,
-  enforcement: [],
-  degraded: False,
-  wall_ms: 1100,
-  timed_out: False,
-  cancelled: False,
-)
+const exit_report =
+  exec.ExecResult(
+    code: 2,
+    signal: 0,
+    stdout_bytes: 3,
+    stderr_bytes: 0,
+    stdout_truncated: False,
+    stderr_truncated: False,
+    enforcement: [],
+    degraded: False,
+    wall_ms: 1100,
+    timed_out: False,
+    cancelled: False,
+  )
 
 // A seam whose every closure refuses, with the refusal each arm is meant
 // to translate.

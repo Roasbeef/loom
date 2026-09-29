@@ -44,7 +44,8 @@ import weft/actor
 // A settings file of the ordinary shape: hooks under their own key,
 // beside a key Claude reads for something else, with one handler on
 // each of the three events these tests drive.
-const settings_with_hooks = "{
+const settings_with_hooks =
+  "{
   \"model\": \"opus\",
   \"hooks\": {
     \"PreToolUse\": [

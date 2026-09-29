@@ -11,16 +11,17 @@ import gleam/int
 import gleam/list
 import gleam/string
 
-const pace = Pace(
-  floor_bytes: 512,
-  every_bytes: 4096,
-  every_lines: 40,
-  window_bytes: 32_768,
-  settled_concurrency: 2,
-  settled_backlog: 3,
-  live_concurrency: 2,
-  max_streams: 4,
-)
+const pace =
+  Pace(
+    floor_bytes: 512,
+    every_bytes: 4096,
+    every_lines: 40,
+    window_bytes: 32_768,
+    settled_concurrency: 2,
+    settled_backlog: 3,
+    live_concurrency: 2,
+    max_streams: 4,
+  )
 
 // --- live streams ------------------------------------------------------------
 

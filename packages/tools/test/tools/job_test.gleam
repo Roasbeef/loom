@@ -123,21 +123,22 @@ fn refusing(refusal: job.Refusal) -> job.Jobs {
   )
 }
 
-const finished = job.Exited(
-  result: exec.ExecResult(
-    code: 3,
-    signal: 0,
-    stdout_bytes: 9,
-    stderr_bytes: 0,
-    stdout_truncated: False,
-    stderr_truncated: False,
-    enforcement: [],
-    degraded: False,
-    wall_ms: 4100,
-    timed_out: False,
-    cancelled: False,
-  ),
-)
+const finished =
+  job.Exited(
+    result: exec.ExecResult(
+      code: 3,
+      signal: 0,
+      stdout_bytes: 9,
+      stderr_bytes: 0,
+      stdout_truncated: False,
+      stderr_truncated: False,
+      enforcement: [],
+      degraded: False,
+      wall_ms: 4100,
+      timed_out: False,
+      cancelled: False,
+    ),
+  )
 
 // --- running one tool -------------------------------------------------------
 

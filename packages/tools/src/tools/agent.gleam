@@ -1067,7 +1067,8 @@ fn usable_field_name(name: String) -> Bool {
   })
 }
 
-const field_name_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+const field_name_alphabet =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
 
 fn parse_field_type(
   described: JsonValue,

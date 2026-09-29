@@ -369,7 +369,8 @@ pub fn the_memory_table_decodes_test() {
     |> result_is_ok
 }
 
-const minimal_catalogue = "[models.acme]
+const minimal_catalogue =
+  "[models.acme]
 dialect = \"anthropic\"
 base_url = \"https://acme.test\"
 api_key_env = \"ACME_KEY\"

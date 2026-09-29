@@ -67,7 +67,8 @@ const call_id = "approval-native-call"
 
 // Neither the command nor its destination comes from an external provider.
 // Append makes a duplicate native execution visible instead of overwriting it.
-const shell_command = "printf 'APPROVED-ONCE\\n' >> approval-count.txt; printf 'APPROVED-ONCE\\n'"
+const shell_command =
+  "printf 'APPROVED-ONCE\\n' >> approval-count.txt; printf 'APPROVED-ONCE\\n'"
 
 fn field(value, key) {
   let assert json.Object(fields) = value as "wire value is an object"

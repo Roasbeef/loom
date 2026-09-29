@@ -568,7 +568,8 @@ const startup_wait_ms = 60_000
 // one. A read that outlives the wait is the wait running out, not a fault of
 // the control connection, so it is reported as this rather than as a timeout
 // that asks the operator to reconnect.
-const startup_incomplete = "session startup remains incomplete; no open was retried"
+const startup_incomplete =
+  "session startup remains incomplete; no open was retried"
 
 // Each read is given what is left of the startup wait rather than a fixed
 // budget of its own. A daemon under load can take longer than a couple of

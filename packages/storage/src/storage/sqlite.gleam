@@ -3286,12 +3286,14 @@ fn scan_windows(
 // forces `branch_entries` to be the outer loop so the plan is a covering
 // `ix_be_seq` search plus an `entries` primary-key probe, with no
 // temporary sort. `scan_branch_plan` exposes the plan for CI assertions.
-const segment_sql_desc = "SELECT e.payload
+const segment_sql_desc =
+  "SELECT e.payload
 FROM branch_entries b CROSS JOIN entries e ON e.id = b.entry_id
 WHERE b.branch_id = ?1 AND b.entry_seq > ?2 AND b.entry_seq <= ?3
 ORDER BY b.entry_seq DESC LIMIT ?4"
 
-const segment_sql_asc = "SELECT e.payload
+const segment_sql_asc =
+  "SELECT e.payload
 FROM branch_entries b CROSS JOIN entries e ON e.id = b.entry_id
 WHERE b.branch_id = ?1 AND b.entry_seq > ?2 AND b.entry_seq <= ?3
 ORDER BY b.entry_seq ASC LIMIT ?4"

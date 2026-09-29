@@ -229,19 +229,22 @@ pub fn commit_batch(
 // queries; DDL and pragmas stay out of codegen). Must stay identical to
 // `sql/schema.sql`, which the codegen script loads — the
 // `schema_matches_source_test` pins the two together.
-const create_entry_fts = "CREATE VIRTUAL TABLE IF NOT EXISTS entry_fts USING fts5(
+const create_entry_fts =
+  "CREATE VIRTUAL TABLE IF NOT EXISTS entry_fts USING fts5(
   session_id UNINDEXED,
   entry_id UNINDEXED,
   text
 );"
 
-const create_search_cursor = "CREATE TABLE IF NOT EXISTS search_cursor (
+const create_search_cursor =
+  "CREATE TABLE IF NOT EXISTS search_cursor (
   session_id TEXT NOT NULL PRIMARY KEY,
   generation INTEGER NOT NULL,
   high_water INTEGER NOT NULL
 ) WITHOUT ROWID;"
 
-const create_search_source = "CREATE TABLE IF NOT EXISTS search_source (
+const create_search_source =
+  "CREATE TABLE IF NOT EXISTS search_source (
   session_id TEXT NOT NULL PRIMARY KEY,
   path TEXT NOT NULL
 ) WITHOUT ROWID;"

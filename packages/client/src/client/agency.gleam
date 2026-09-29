@@ -1849,7 +1849,8 @@ fn validate_key(
   }
 }
 
-const key_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_/:"
+const key_alphabet =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_/:"
 
 // --- roster ----------------------------------------------------------------
 

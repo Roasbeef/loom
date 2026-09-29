@@ -527,7 +527,8 @@ type Notes {
 }
 
 /// The note a `Noting` harness answers every cue with.
-const scripted_note = "<extension name=tracer>keep the migration plan</extension>"
+const scripted_note =
+  "<extension name=tracer>keep the migration plan</extension>"
 
 type Rig {
   Rig(

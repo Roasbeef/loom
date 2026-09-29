@@ -1077,7 +1077,8 @@ fn capped() -> List(Capped) {
   ]
 }
 
-const emitted_id = "sha256-0000000000000000000000000000000000000000000000000000000000000000"
+const emitted_id =
+  "sha256-0000000000000000000000000000000000000000000000000000000000000000"
 
 fn production_ceilings() -> List(satellite.CapCeiling) {
   orchestration.ceilings(

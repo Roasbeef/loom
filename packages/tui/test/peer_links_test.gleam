@@ -12,7 +12,8 @@ import tui/peer_links
 import tui/selection
 import tui/session_selector
 
-const inspection = "{\"outgoing\":[{\"session\":\"target-id\",\"target_strand\":\"reviewer\",\"wake\":\"busy_only\",\"metadata\":{\"status\":\"resident\"}}],\"incoming\":[{\"source_session\":\"sender-id\",\"source_strand\":\"builder\",\"target_strand\":\"main\",\"wake\":\"may_wake\",\"metadata\":{\"status\":\"saved\"}}],\"next\":null}"
+const inspection =
+  "{\"outgoing\":[{\"session\":\"target-id\",\"target_strand\":\"reviewer\",\"wake\":\"busy_only\",\"metadata\":{\"status\":\"resident\"}}],\"incoming\":[{\"source_session\":\"sender-id\",\"source_strand\":\"builder\",\"target_strand\":\"main\",\"wake\":\"may_wake\",\"metadata\":{\"status\":\"saved\"}}],\"next\":null}"
 
 pub fn session_link_keeps_target_across_catalogue_refresh_test() {
   let target =

@@ -67,13 +67,14 @@ pub type Pace {
 /// The shipped pacing: a refresh at most every twenty seconds per strand,
 /// three requests at once, failures backing off to five minutes, and a
 /// strand forgotten after ten quiet minutes.
-pub const default_pace = Pace(
-  every_ms: 20_000,
-  retry_ms: 20_000,
-  retry_cap_ms: 300_000,
-  concurrency: 3,
-  retire_after_ms: 600_000,
-)
+pub const default_pace =
+  Pace(
+    every_ms: 20_000,
+    retry_ms: 20_000,
+    retry_cap_ms: 300_000,
+    concurrency: 3,
+    retire_after_ms: 600_000,
+  )
 
 /// Whether a strand has committed anything its last request did not see.
 pub type Activity {

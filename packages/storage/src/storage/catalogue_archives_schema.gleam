@@ -2,4 +2,5 @@
 //// The checked-in SQL file is the schema source of truth.
 
 /// The schema used both at runtime and by sqlc during generation.
-pub const schema = "-- Catalogue v3: archive visibility is independent of initialization state.\nCREATE TABLE catalogue_session_archives(\n  session_id TEXT NOT NULL PRIMARY KEY REFERENCES catalogue_sessions(session_id)\n);\n"
+pub const schema =
+  "-- Catalogue v3: archive visibility is independent of initialization state.\nCREATE TABLE catalogue_session_archives(\n  session_id TEXT NOT NULL PRIMARY KEY REFERENCES catalogue_sessions(session_id)\n);\n"

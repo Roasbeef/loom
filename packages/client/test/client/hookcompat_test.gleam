@@ -26,7 +26,8 @@ const source = Source(label: "test", origin: UserSettings)
 // three classes, three handler kinds, exec form, async, and a
 // timeout. The JSON and TOML fixtures below carry the same hooks in
 // the same order and must decode to the same model.
-const json_fixture = "
+const json_fixture =
+  "
 {
   \"hooks\": {
     \"PreToolUse\": [
@@ -79,7 +80,8 @@ const json_fixture = "
 
 // The same fixture in the Loom TOML shape, written the way `to_toml`
 // renders it.
-const toml_fixture = "
+const toml_fixture =
+  "
 [[hooks.PreToolUse]]
 matcher = \"Bash\"
 

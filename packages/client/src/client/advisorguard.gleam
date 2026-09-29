@@ -111,12 +111,13 @@ pub type Policy {
 /// The shipped bounds: two reviews of silence after a block, a ring of
 /// thirty-two digests, and at most eight nudges or four kilobytes waiting
 /// for the next run start.
-pub const default_policy = Policy(
-  block_cooldown_reviews: 2,
-  recent_ring: 32,
-  pending_cap: 8,
-  pending_bytes: 4096,
-)
+pub const default_policy =
+  Policy(
+    block_cooldown_reviews: 2,
+    recent_ring: 32,
+    pending_cap: 8,
+    pending_bytes: 4096,
+  )
 
 /// The guard's memory: everything `decide` needs beyond the verdict in
 /// front of it.
@@ -173,7 +174,8 @@ const duplicate_reason = "the advisor already delivered this advice"
 
 const empty_reason = "empty advice"
 
-const queue_full_reason = "the nudge queue is full; it drains at the primary's run end or its next run start"
+const queue_full_reason =
+  "the nudge queue is full; it drains at the primary's run end or its next run start"
 
 const decode_where = "client/advisorguard.decode"
 

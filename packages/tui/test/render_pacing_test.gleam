@@ -35,11 +35,8 @@ import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
 
-const policy = pacing.PacePolicy(
-  rows_per_frame: 1,
-  catch_up_threshold: 24,
-  snap_above: 200,
-)
+const policy =
+  pacing.PacePolicy(rows_per_frame: 1, catch_up_threshold: 24, snap_above: 200)
 
 pub fn pace_reveals_one_row_per_frame_test() {
   assert pacing.pace(10, 11, policy) == 11

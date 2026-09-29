@@ -42,7 +42,7 @@ compaction, searchable history, and workspace memory support longer projects.
 ## Get started
 
 Build from source on Linux or macOS. You'll need the
-[maintained Gleam 1.18.1 compiler](scripts/toolchain/gleam/README.md),
+[maintained Gleam 1.19.0-rc2 compiler](scripts/toolchain/gleam/README.md),
 **Erlang/OTP 29+**, **Go 1.26+**, `rebar3`, and native build tools (a C compiler, `make`, and
 `strip`). Linux sandboxing also requires bubblewrap, user namespaces, and
 delegated cgroup v2 resources; see the [sandbox guide](packages/sandbox/README.md)

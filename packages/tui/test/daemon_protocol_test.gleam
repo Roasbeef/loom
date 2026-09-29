@@ -8,7 +8,8 @@ import session_view/command
 import tui
 import tui/daemon/protocol
 
-const hello = "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"epoch-one\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536}}}"
+const hello =
+  "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"epoch-one\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536}}}"
 
 pub fn rename_command_preserves_spaces_and_requires_argument_test() {
   assert command.parse("/rename review auth")

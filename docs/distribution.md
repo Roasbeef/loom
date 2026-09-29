@@ -9,16 +9,19 @@ Erlang/OTP 29.0.5 (ERTS 17.0.5), and Go 1.26.3 by running the targets it
 describes. They are not fresh measurements of the single-daemon implementation.
 Current verification and remaining release gates are recorded in [next.md](next.md).
 
-Ordinary source builds use released Gleam 1.18.1. The `sqlight_loom` and
-`esqlite_loom` Hex packages supply the SQLite repair, including the Rebar
-metadata that builds its C library. The `stock compiler` CI jobs build and
-smoke-test the distribution with unmodified Gleam on Linux and macOS.
+Ordinary source builds use released Gleam, currently the release candidate
+1.19.0-rc2. The `sqlight_loom` and `esqlite_loom` Hex packages supply the
+SQLite repair, including the Rebar metadata that builds its C library. The
+`stock compiler` CI jobs build and smoke-test the distribution with
+unmodified Gleam on Linux and macOS. The tree still compiles with 1.18.1,
+but the 1.19 formatter lays out long constants differently, so
+`make fmt-check` expects 1.19.
 
 Reproducible release jobs use the maintained compiler described in the
-[toolchain instructions](../scripts/toolchain/gleam/README.md). It applies
-the upstream path-dependency freshness fix for issue #248 and the local
-compiler patches, including deterministic cache serialization. Starting from
-the release tag retains its formatter. These jobs and both Docker recipes
+[toolchain instructions](../scripts/toolchain/gleam/README.md). It is the
+release tag, which carries the upstream path-dependency freshness fix for
+issue #248, with the local compiler patches applied, including deterministic
+cache serialization. Starting from the release tag retains its formatter. These jobs and both Docker recipes
 include the patch digest in their compiler cache keys. A release-builder
 image must be rebuilt and its immutable digest updated when its compiler
 inputs change. Ordinary builds are not required to reproduce those bytes.

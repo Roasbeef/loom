@@ -1,29 +1,29 @@
-From 4c7a9605be04dbcd8bdcad76c29a5a789cdf9311 Mon Sep 17 00:00:00 2001
+From 3a9f1f2dfad4c9eae9e46cf43f00355889fb7542 Mon Sep 17 00:00:00 2001
 From: Olaoluwa Osuntokun <laolu32@gmail.com>
-Date: Tue, 15 Sep 2026 10:20:46 -0700
+Date: Mon, 28 Sep 2026 15:54:50 -0700
 Subject: [PATCH] compiler: make cache output reproducible
 
-In this commit, we serialize unordered cache collections in key order and stabilize the traversal that allocates imported type IDs. Equal module interfaces, diagnostic names, Unicode source mappings, and local package manifests can otherwise produce different bytes between clean builds. Inline metadata also carries unordered parameter membership and record labels.
+In this commit, we serialize unordered cache collections in key order and stabilize the traversal that allocates imported type IDs. Equal module interfaces, diagnostic names, Unicode source mappings, and local package manifests can otherwise produce different bytes between clean builds.
 
-We preserve the existing serde wire shapes and runtime hash randomization. The regression tests cover equivalent maps and sets, type-ID remapping, standard-library inlining, diagnostic names, and Git package state. The core and CLI suites pass, and five cold builds of the complete Loom code-mode seed produce identical cache, Erlang, and BEAM files while warm builds reuse the caches.
+We preserve the existing serde wire shapes and runtime hash randomization. The regression tests cover equivalent maps and sets, type-ID remapping, diagnostic names, and Git package state.
+
+This is the Gleam 1.18.1 patch rebased onto v1.19.0-rc2. That release removed the inlining pass, so the inline parameter list and the decision-tree label map are no longer serialized, and their ordering and regression test were dropped. The line-number mapping moved to the src-span crate, which now carries its own ordered serializer, and the cache format moved from bincode to bitcode, which writes maps in iteration order just as bincode did.
 ---
- CHANGELOG.md                           |   7 ++
- compiler-cli/src/dependencies.rs       |   2 +
- compiler-cli/src/dependencies/tests.rs |  27 +++++++
- compiler-core/src/exhaustiveness.rs    |   1 +
- compiler-core/src/inline.rs            |   2 +
- compiler-core/src/io.rs                |  24 ++++++
- compiler-core/src/line_numbers.rs      |   1 +
- compiler-core/src/metadata.rs          |  10 +++
- compiler-core/src/metadata/tests.rs    | 102 +++++++++++++++++++++++++
- compiler-core/src/reference.rs         |   4 +-
- compiler-core/src/type_.rs             |  14 ++++
- compiler-core/src/type_/fields.rs      |   1 +
- compiler-core/src/type_/printer.rs     |  82 ++++++++++++++++++++
- 13 files changed, 276 insertions(+), 1 deletion(-)
+ CHANGELOG.md                           |  7 +++
+ compiler-cli/src/dependencies.rs       |  2 +
+ compiler-cli/src/dependencies/tests.rs | 27 +++++++++
+ compiler-core/src/io.rs                | 24 ++++++++
+ compiler-core/src/metadata.rs          | 10 ++++
+ compiler-core/src/metadata/tests.rs    | 73 ++++++++++++++++++++++++
+ compiler-core/src/reference.rs         |  8 ++-
+ compiler-core/src/type_.rs             | 13 +++++
+ compiler-core/src/type_/fields.rs      |  1 +
+ compiler-core/src/type_/printer.rs     | 79 ++++++++++++++++++++++++++
+ src-span/src/lib.rs                    | 13 +++++
+ 11 files changed, 255 insertions(+), 2 deletions(-)
 
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 5fb87aa..bbe4ffb 100644
+index 95a2343..6c7b21e 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -5,6 +5,13 @@
@@ -37,11 +37,11 @@ index 5fb87aa..bbe4ffb 100644
 +  stable order. Existing cache formats and runtime hash randomization remain
 +  unchanged.
 +
- ## v1.18.1 - 2026-08-01
+ ## 1.19.0-rc2 - 2026-09-26
  
- - Fixed a bug where the Erlang code generator would generate wrong code when
+ ## Compiler
 diff --git a/compiler-cli/src/dependencies.rs b/compiler-cli/src/dependencies.rs
-index ee30bfa..6195c04 100644
+index ee21653..917d155 100644
 --- a/compiler-cli/src/dependencies.rs
 +++ b/compiler-cli/src/dependencies.rs
 @@ -631,11 +631,13 @@ fn write_manifest_to_disc(paths: &ProjectPaths, manifest: &Manifest) -> Result<(
@@ -59,7 +59,7 @@ index ee30bfa..6195c04 100644
  }
  
 diff --git a/compiler-cli/src/dependencies/tests.rs b/compiler-cli/src/dependencies/tests.rs
-index a2ea7a0..a326e76 100644
+index 334d458..b25b775 100644
 --- a/compiler-cli/src/dependencies/tests.rs
 +++ b/compiler-cli/src/dependencies/tests.rs
 @@ -20,6 +20,33 @@ use gleam_core::{
@@ -96,40 +96,11 @@ index a2ea7a0..a326e76 100644
  #[test]
  fn list_manifest_format() {
      let mut buffer = vec![];
-diff --git a/compiler-core/src/exhaustiveness.rs b/compiler-core/src/exhaustiveness.rs
-index a11e408..8557a3b 100644
---- a/compiler-core/src/exhaustiveness.rs
-+++ b/compiler-core/src/exhaustiveness.rs
-@@ -692,6 +692,7 @@ pub enum RuntimeCheck {
-     Variant {
-         match_: VariantMatch,
-         index: usize,
-+        #[serde(serialize_with = "crate::io::ordered_map")]
-         labels: HashMap<usize, EcoString>,
-         fields: Vec<Variable>,
-     },
-diff --git a/compiler-core/src/inline.rs b/compiler-core/src/inline.rs
-index 7eb784f..f53c7b0 100644
---- a/compiler-core/src/inline.rs
-+++ b/compiler-core/src/inline.rs
-@@ -1495,10 +1495,12 @@ pub fn function_to_inlinable(
-     // there is nowhere to inline them to, so it doesn't make sense. We still
-     // need to evaluate them though, as there could be side effects caused by
-     // the values passed to them.
-+    // Sorting keeps this membership list stable in serialized module caches.
-     let inlinable_parameters = converter
-         .parameter_references
-         .into_iter()
-         .filter_map(|((name, _), used)| used.then_some(name))
-+        .sorted()
-         .collect();
- 
-     Some(InlinableFunction {
 diff --git a/compiler-core/src/io.rs b/compiler-core/src/io.rs
-index ac2722d..edc5b8c 100644
+index 2ebff74..15cbd64 100644
 --- a/compiler-core/src/io.rs
 +++ b/compiler-core/src/io.rs
-@@ -468,3 +468,27 @@ where
+@@ -478,3 +478,27 @@ where
      let ordered: std::collections::BTreeMap<_, _> = value.iter().collect();
      ordered.serialize(serializer)
  }
@@ -157,20 +128,8 @@ index ac2722d..edc5b8c 100644
 +        values.iter().map(|value| value.iter().collect()).collect();
 +    ordered.serialize(serializer)
 +}
-diff --git a/compiler-core/src/line_numbers.rs b/compiler-core/src/line_numbers.rs
-index 4f0a688..1f3bc86 100644
---- a/compiler-core/src/line_numbers.rs
-+++ b/compiler-core/src/line_numbers.rs
-@@ -29,6 +29,7 @@ pub struct LineNumbers {
-     ///
-     /// In most programs this will be empty because they will only be using
-     /// ASCII characters.
-+    #[serde(serialize_with = "crate::io::ordered_map")]
-     pub mapping: HashMap<usize, Character>,
- }
- 
 diff --git a/compiler-core/src/metadata.rs b/compiler-core/src/metadata.rs
-index c43de25..ce3ea4a 100644
+index d09d68b..074870c 100644
 --- a/compiler-core/src/metadata.rs
 +++ b/compiler-core/src/metadata.rs
 @@ -7,6 +7,7 @@
@@ -181,8 +140,8 @@ index c43de25..ce3ea4a 100644
  use std::{collections::HashMap, sync::Arc};
  
  use crate::{
-@@ -72,24 +73,31 @@ impl RemapIds {
-             inline_functions,
+@@ -70,24 +71,31 @@ impl RemapIds {
+             references,
          } = module;
  
 +        // Type-variable IDs are allocated during traversal, so map order must
@@ -213,7 +172,7 @@ index c43de25..ce3ea4a 100644
              .map(|(name, type_)| (name, self.type_alias(type_)))
              .collect();
  
-@@ -531,6 +539,7 @@ impl RemapIds {
+@@ -536,6 +544,7 @@ impl RemapIds {
          let type_ = self.type_(type_);
          let shared_accessors = shared_accessors
              .into_iter()
@@ -221,7 +180,7 @@ index c43de25..ce3ea4a 100644
              .map(|(label, accessor)| (label, self.record_accessor(accessor)))
              .collect();
          let variant_specific_accessors = variant_specific_accessors
-@@ -538,6 +547,7 @@ impl RemapIds {
+@@ -543,6 +552,7 @@ impl RemapIds {
              .map(|variant_accessors| {
                  variant_accessors
                      .into_iter()
@@ -230,42 +189,13 @@ index c43de25..ce3ea4a 100644
                      .collect()
              })
 diff --git a/compiler-core/src/metadata/tests.rs b/compiler-core/src/metadata/tests.rs
-index b1c3a4c..fab5a7a 100644
+index 718ce3d..6885862 100644
 --- a/compiler-core/src/metadata/tests.rs
 +++ b/compiler-core/src/metadata/tests.rs
-@@ -35,6 +35,108 @@ fn roundtrip(input: &ModuleInterface) -> ModuleInterface {
+@@ -35,6 +35,79 @@ fn roundtrip(input: &ModuleInterface) -> ModuleInterface {
      decode(buffer.as_slice(), ids).unwrap()
  }
  
-+#[test]
-+fn deterministic_cache_inline_functions() {
-+    // Exercise both the parameter membership list and labelled decision trees.
-+    for source in [
-+        "pub fn guard(when condition: Bool, return consequence: a, otherwise alternative: fn() -> a) -> a { case condition { True -> consequence False -> alternative() } }",
-+        "pub type Thing { Thing(first: Int, second: Int, third: Int) } pub fn guard(value: Thing) -> Thing { case value { Thing(a, b, c) -> Thing(a, b, c) } }",
-+    ] {
-+        let compile = || {
-+            let mut module = type_::tests::compile_module("gleam/bool", source, None, vec![])
-+                .expect("inline fixture must compile");
-+            let function = crate::inline::function_to_inlinable(
-+                "gleam_stdlib",
-+                "gleam/bool",
-+                &module.definitions.functions[0],
-+            )
-+            .expect("fixture must exercise cached inlining");
-+            _ = module
-+                .type_info
-+                .inline_functions
-+                .insert("guard".into(), function);
-+            encode(&module.type_info).unwrap()
-+        };
-+        let expected = compile();
-+        for _ in 0..32 {
-+            assert!(expected == compile(), "inline cache must have stable bytes");
-+        }
-+    }
-+}
-+
 +#[test]
 +fn deterministic_cache_for_equivalent_maps() {
 +    let make_module = || {
@@ -343,25 +273,36 @@ index b1c3a4c..fab5a7a 100644
      ModuleInterface {
          warnings: vec![],
 diff --git a/compiler-core/src/reference.rs b/compiler-core/src/reference.rs
-index 3414390..155cc1b 100644
+index e32e25b..d149f32 100644
 --- a/compiler-core/src/reference.rs
 +++ b/compiler-core/src/reference.rs
-@@ -218,7 +218,9 @@ pub struct LabelDefinition {
+@@ -219,7 +219,9 @@ pub struct LabelDefinition {
+     pub variant: Option<EcoString>,
+ }
  
- /// Identifies a record field label within a custom type, used to look up the
+-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
++#[derive(
++    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
++)]
+ pub enum LabelOwner {
+     /// Labels of record fields
+     Record {
+@@ -248,7 +250,9 @@ impl LabelOwner {
+ 
+ /// Identifies a label within a custom type or function argument, used to look up the
  /// references to that label.
 -#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 +#[derive(
 +    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 +)]
- pub struct RecordLabel {
-     /// The module the type this label belongs to is defined in.
-     pub type_module: EcoString,
+ pub struct LabelKey {
+     pub owner: LabelOwner,
+     pub label: EcoString,
 diff --git a/compiler-core/src/type_.rs b/compiler-core/src/type_.rs
-index 9e08318..575ff6d 100644
+index 61ded98..859a2a5 100644
 --- a/compiler-core/src/type_.rs
 +++ b/compiler-core/src/type_.rs
-@@ -686,7 +686,9 @@ pub fn collapse_links(t: Arc<Type>) -> Arc<Type> {
+@@ -687,7 +687,9 @@ pub fn collapse_links(t: Arc<Type>) -> Arc<Type> {
  pub struct AccessorsMap {
      pub publicity: Publicity,
      pub type_: Arc<Type>,
@@ -371,7 +312,7 @@ index 9e08318..575ff6d 100644
      pub variant_specific_accessors: Vec<HashMap<EcoString, RecordAccessor>>,
      pub variant_positional_accessors: Vec<Vec<Arc<Type>>>,
  }
-@@ -1016,9 +1018,13 @@ pub struct ModuleInterface {
+@@ -1017,9 +1019,13 @@ pub struct ModuleInterface {
      pub name: EcoString,
      pub origin: Origin,
      pub package: EcoString,
@@ -385,7 +326,7 @@ index 9e08318..575ff6d 100644
      pub accessors: HashMap<EcoString, AccessorsMap>,
      /// Used for mapping to original source locations on disk
      pub line_numbers: LineNumbers,
-@@ -1032,12 +1038,14 @@ pub struct ModuleInterface {
+@@ -1033,6 +1039,7 @@ pub struct ModuleInterface {
      pub warnings: Vec<Warning>,
      /// The minimum Gleam version needed to use this module.
      pub minimum_required_version: Version,
@@ -393,14 +334,7 @@ index 9e08318..575ff6d 100644
      pub type_aliases: HashMap<EcoString, TypeAliasConstructor>,
      pub documentation: Vec<EcoString>,
      /// Wether there's any echo in the module.
-     pub contains_echo: bool,
-     pub references: References,
-     /// Functions which can be inlined
-+    #[serde(serialize_with = "crate::io::ordered_map")]
-     pub inline_functions: HashMap<EcoString, InlinableFunction>,
- }
- 
-@@ -1053,11 +1061,17 @@ impl ModuleInterface {
+@@ -1052,11 +1059,17 @@ impl ModuleInterface {
  
  #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
  pub struct References {
@@ -413,16 +347,16 @@ index 9e08318..575ff6d 100644
 +    #[serde(serialize_with = "crate::io::ordered_map")]
      pub module_references: HashMap<EcoString, Vec<ModuleNameReference>>,
 +    #[serde(serialize_with = "crate::io::ordered_map")]
-     pub label_references: HashMap<RecordLabel, Vec<LabelReference>>,
+     pub label_references: HashMap<LabelKey, Vec<LabelReference>>,
 +    #[serde(serialize_with = "crate::io::ordered_map")]
-     pub label_definitions: HashMap<RecordLabel, Vec<LabelDefinition>>,
+     pub label_definitions: HashMap<LabelKey, Vec<LabelDefinition>>,
  }
  
 diff --git a/compiler-core/src/type_/fields.rs b/compiler-core/src/type_/fields.rs
-index 43f3f75..606a29d 100644
+index 78a1df5..297c635 100644
 --- a/compiler-core/src/type_/fields.rs
 +++ b/compiler-core/src/type_/fields.rs
-@@ -15,6 +15,7 @@ pub struct FieldMap {
+@@ -13,6 +13,7 @@ pub struct FieldMap {
      /// Number of accepted arguments, including unlabelled fields.
      pub arity: u32,
      /// Map of labels to argument indices
@@ -431,10 +365,10 @@ index 43f3f75..606a29d 100644
  }
  
 diff --git a/compiler-core/src/type_/printer.rs b/compiler-core/src/type_/printer.rs
-index 4681876..4ca5509 100644
+index 89fcf50..2042d47 100644
 --- a/compiler-core/src/type_/printer.rs
 +++ b/compiler-core/src/type_/printer.rs
-@@ -49,6 +49,7 @@ pub struct Names {
+@@ -46,6 +46,7 @@ pub struct Names {
      /// - key:   `("some/module", "Wibble")`
      /// - value: `"Wobble"`
      ///
@@ -442,7 +376,7 @@ index 4681876..4ca5509 100644
      local_types: BiMap<(EcoString, EcoString), EcoString>,
  
      /// Mapping of imported modules to their locally used named
-@@ -74,6 +75,7 @@ pub struct Names {
+@@ -71,6 +72,7 @@ pub struct Names {
      /// - key:   "mod1"
      /// - value: "mod1"
      ///
@@ -450,7 +384,7 @@ index 4681876..4ca5509 100644
      imported_modules: HashMap<EcoString, (EcoString, SrcSpan)>,
  
      /// Generic type parameters that have been annotated in the current
-@@ -93,6 +95,7 @@ pub struct Names {
+@@ -90,6 +92,7 @@ pub struct Names {
      /// key:   <some id int>
      /// value: `"something"`
      ///
@@ -458,7 +392,7 @@ index 4681876..4ca5509 100644
      type_variables: HashMap<u64, EcoString>,
  
      /// Constructors which are imported in the current module in an
-@@ -119,6 +122,7 @@ pub struct Names {
+@@ -116,6 +119,7 @@ pub struct Names {
      /// - key:   `("wibble", "Wobble")`
      /// - value: `"Woo"`
      ///
@@ -466,7 +400,7 @@ index 4681876..4ca5509 100644
      local_value_constructors: BiMap<(EcoString, EcoString), EcoString>,
  
      /// A map containing information about public alias of internal types in
-@@ -145,6 +149,7 @@ pub struct Names {
+@@ -142,6 +146,7 @@ pub struct Names {
      /// value of `("lustre/element", "Element")`. This can then be used to look
      /// up the alias we want to print based on the type we are printing.
      ///
@@ -474,7 +408,7 @@ index 4681876..4ca5509 100644
      reexport_aliases: HashMap<(EcoString, EcoString), (EcoString, EcoString)>,
  }
  
-@@ -961,3 +966,80 @@ fn test_variable_name_already_in_scope() {
+@@ -958,3 +963,77 @@ fn test_variable_name_already_in_scope() {
      assert_eq!(printer.print_type(&type_(2)), "b");
      assert_eq!(printer.print_type(&type_(3)), "d");
  }
@@ -540,21 +474,45 @@ index 4681876..4ca5509 100644
 +            })
 +            .collect(),
 +    };
-+    let config = bincode::config::legacy();
-+    let expected = bincode::serde::encode_to_vec(make_names(), config).unwrap();
++    let expected = bitcode::serialize(&make_names()).unwrap();
 +    for _ in 0..16 {
 +        let names = make_names();
-+        let bytes = bincode::serde::encode_to_vec(&names, config).unwrap();
++        let bytes = bitcode::serialize(&names).unwrap();
 +        assert!(
 +            expected == bytes,
 +            "cached diagnostic names must have stable bytes"
 +        );
-+        let (decoded, read): (Names, usize) =
-+            bincode::serde::decode_from_slice(&bytes, config).unwrap();
++        let decoded: Names = bitcode::deserialize(&bytes).unwrap();
 +        assert_eq!(names, decoded);
-+        assert_eq!(read, bytes.len());
 +    }
 +}
+diff --git a/src-span/src/lib.rs b/src-span/src/lib.rs
+index 587fa8b..f2f657d 100644
+--- a/src-span/src/lib.rs
++++ b/src-span/src/lib.rs
+@@ -96,9 +96,22 @@ pub struct LineNumbers {
+     ///
+     /// In most programs this will be empty because they will only be using
+     /// ASCII characters.
++    #[serde(serialize_with = "ordered_mapping")]
+     pub mapping: HashMap<usize, Character>,
+ }
+ 
++/// Serialize the character mapping in offset order. Module caches carry
++/// `LineNumbers`, so iteration order of the hash map would otherwise reach
++/// the cache bytes.
++fn ordered_mapping<S>(value: &HashMap<usize, Character>, serializer: S) -> Result<S::Ok, S::Error>
++where
++    S: serde::Serializer,
++{
++    use serde::Serialize;
++    let ordered: std::collections::BTreeMap<_, _> = value.iter().collect();
++    ordered.serialize(serializer)
++}
++
+ /// Information about how a character is encoded in UTF-8 and UTF-16.
+ #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+ pub struct Character {
 -- 
 2.39.5 (Apple Git-154)
 

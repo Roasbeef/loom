@@ -54,7 +54,8 @@ import simplifile
 import tools/tool
 
 /// The usage text every flag error carries.
-pub const usage = "usage: loom ext <command>
+pub const usage =
+  "usage: loom ext <command>
   install <source> [--rev <r>] [--home <dir>] [--helper <path>]
                    [--codemode-seed <dir>] [--best-effort]
   list

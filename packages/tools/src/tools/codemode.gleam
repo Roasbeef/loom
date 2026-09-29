@@ -777,7 +777,8 @@ fn async_text(background: Option(Background), seams: Seams) -> String {
 // name was omitted, and the call it writes next is the labelled form the
 // compiler rejects. Sixty tokens against a wasted submission is the same
 // trade the import lists already won.
-const signature_legend = "Each importable module is indexed here with its public types. A field or parameter written `label: Type` is labelled; a bare type is positional. Read `cap://<module>` with `fs_read` for its full function signatures, constants, and documentation, or `cap://` for the module index."
+const signature_legend =
+  "Each importable module is indexed here with its public types. A field or parameter written `label: Type` is labelled; a bare type is positional. Read `cap://<module>` with `fs_read` for its full function signatures, constants, and documentation, or `cap://` for the module index."
 
 // The description keeps the module index and public types; a virtual read
 // returns full function declarations only for modules the host admits.

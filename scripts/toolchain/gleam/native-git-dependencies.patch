@@ -1,5 +1,5 @@
 diff --git a/compiler-cli/src/dependencies.rs b/compiler-cli/src/dependencies.rs
-index 05c7943..9883cb9 100644
+index 917d155..225fa42 100644
 --- a/compiler-cli/src/dependencies.rs
 +++ b/compiler-cli/src/dependencies.rs
 @@ -18,7 +18,7 @@ use flate2::read::GzDecoder;
@@ -9,9 +9,9 @@ index 05c7943..9883cb9 100644
 -    config::PackageConfig,
 +    config::{PackageBuildTool, PackageConfig},
      dependency::{self, PackageFetchError},
-     error::{FileIoAction, FileKind, ShellCommandFailureReason, StandardIoAction},
+     error::{FileIoAction, FileIoCause, FileKind, ShellCommandFailureReason, StandardIoAction},
      hex::{self, HEXPM_PUBLIC_KEY},
-@@ -648,14 +648,17 @@ struct GitState {
+@@ -650,14 +650,17 @@ struct GitState {
  
  impl LocalPackages {
      pub fn extra_local_packages(&self, manifest: &Manifest) -> Vec<(EcoString, Version)> {
@@ -31,7 +31,7 @@ index 05c7943..9883cb9 100644
              .map(|(n, v)| (n.clone(), v.clone()))
              .collect()
      }
-@@ -876,6 +879,7 @@ fn same_requirements(
+@@ -885,6 +888,7 @@ fn same_requirements(
  #[derive(Clone, Eq, PartialEq, Debug)]
  struct ProvidedPackage {
      version: Version,
@@ -39,7 +39,7 @@ index 05c7943..9883cb9 100644
      source: ProvidedPackageSource,
      requirements: HashMap<EcoString, hexpm::version::Range>,
  }
-@@ -928,7 +932,10 @@ impl ProvidedPackage {
+@@ -939,7 +943,10 @@ impl ProvidedPackage {
              name: name.into(),
              version: self.version.clone(),
              otp_app: None, // Note, this will probably need to be set to something eventually
@@ -51,7 +51,7 @@ index 05c7943..9883cb9 100644
              requirements: self.requirements.keys().cloned().collect(),
              source: self.source.to_manifest_package_source(),
          };
-@@ -1505,6 +1512,18 @@ fn provide_package(
+@@ -1528,6 +1535,20 @@ fn provide_package(
      }
      // Load the package
      let config = crate::config::read(package_path.join("gleam.toml"))?;
@@ -64,13 +64,15 @@ index 05c7943..9883cb9 100644
 +            action: FileIoAction::Parse,
 +            kind: FileKind::File,
 +            path: package_path.join("gleam.toml"),
-+            err: Some("build_tool = rebar3 is supported only for Git dependencies".into()),
++            cause: FileIoCause::Other(
++                "build_tool = rebar3 is supported only for Git dependencies".into(),
++            ),
 +        });
 +    }
      // Check that we are loading the correct project
      if config.name != package_name {
          return Err(Error::WrongDependencyProvided {
-@@ -1587,6 +1606,7 @@ fn provide_package(
+@@ -1610,6 +1631,7 @@ fn provide_package(
          config.name,
          ProvidedPackage {
              version: config.version,
@@ -79,10 +81,10 @@ index 05c7943..9883cb9 100644
              requirements,
          },
 diff --git a/compiler-cli/src/dependencies/tests.rs b/compiler-cli/src/dependencies/tests.rs
-index b3ec7db..207202e 100644
+index b25b775..bda5a8d 100644
 --- a/compiler-cli/src/dependencies/tests.rs
 +++ b/compiler-cli/src/dependencies/tests.rs
-@@ -624,6 +624,7 @@ fn provided_recursive() {
+@@ -651,6 +651,7 @@ fn provided_recursive() {
  #[test]
  fn provided_local_to_hex() {
      let provided_package = ProvidedPackage {
@@ -90,7 +92,7 @@ index b3ec7db..207202e 100644
          version: Version::new(1, 0, 0),
          source: ProvidedPackageSource::Local {
              path: "canonical/path/to/package".into(),
-@@ -682,6 +683,7 @@ fn provided_local_to_hex() {
+@@ -711,6 +712,7 @@ fn provided_local_to_hex() {
  #[test]
  fn provided_git_to_hex() {
      let provided_package = ProvidedPackage {
@@ -98,7 +100,7 @@ index b3ec7db..207202e 100644
          version: Version::new(1, 0, 0),
          source: ProvidedPackageSource::Git {
              repo: "https://github.com/gleam-lang/gleam.git".into(),
-@@ -742,6 +744,7 @@ fn provided_git_to_hex() {
+@@ -773,6 +775,7 @@ fn provided_git_to_hex() {
  #[test]
  fn provided_local_to_manifest() {
      let provided_package = ProvidedPackage {
@@ -106,7 +108,7 @@ index b3ec7db..207202e 100644
          version: Version::new(1, 0, 0),
          source: ProvidedPackageSource::Local {
              path: "canonical/path/to/package".into(),
-@@ -779,6 +782,7 @@ fn provided_local_to_manifest() {
+@@ -810,6 +813,7 @@ fn provided_local_to_manifest() {
  #[test]
  fn provided_git_to_manifest() {
      let provided_package = ProvidedPackage {
@@ -114,7 +116,7 @@ index b3ec7db..207202e 100644
          version: Version::new(1, 0, 0),
          source: ProvidedPackageSource::Git {
              repo: "https://github.com/gleam-lang/gleam.git".into(),
-@@ -1629,6 +1633,7 @@ fn package_config(
+@@ -1701,6 +1705,7 @@ fn package_config(
      PackageConfig {
          name: "the_package".into(),
          version: Version::parse("1.0.0").unwrap(),
@@ -122,7 +124,7 @@ index b3ec7db..207202e 100644
          gleam_version: None,
          licences: vec![],
          description: "".into(),
-@@ -2049,6 +2054,7 @@ fn verified_releases_skips_provided_packages() {
+@@ -2124,6 +2129,7 @@ fn verified_releases_skips_provided_packages() {
      let provided: HashMap<EcoString, ProvidedPackage> = [(
          "wobble".into(),
          ProvidedPackage {
@@ -130,7 +132,7 @@ index b3ec7db..207202e 100644
              version: Version::new(1, 0, 0),
              source: ProvidedPackageSource::Local {
                  path: "path/to/wobble".into(),
-@@ -2107,3 +2113,64 @@ fn hex_manifest_package_uses_verified_checksum_and_requirements() {
+@@ -2182,3 +2188,64 @@ fn hex_manifest_package_uses_verified_checksum_and_requirements() {
          }
      );
  }
@@ -196,10 +198,10 @@ index b3ec7db..207202e 100644
 +    );
 +}
 diff --git a/compiler-core/src/config.rs b/compiler-core/src/config.rs
-index 6396a9d..6d578a9 100644
+index 6c1cbba..d6cbaf7 100644
 --- a/compiler-core/src/config.rs
 +++ b/compiler-core/src/config.rs
-@@ -140,12 +140,31 @@ impl GleamVersion {
+@@ -160,12 +160,31 @@ impl GleamVersion {
      }
  }
  
@@ -231,7 +233,7 @@ index 6396a9d..6d578a9 100644
  
      #[serde(
          default,
-@@ -724,6 +743,7 @@ impl Default for PackageConfig {
+@@ -744,6 +763,7 @@ impl Default for PackageConfig {
          Self {
              name: EcoString::new(),
              version: default_version(),
@@ -239,9 +241,9 @@ index 6396a9d..6d578a9 100644
              gleam_version: None,
              description: EcoString::new(),
              documentation: Docs::default(),
-@@ -1508,3 +1528,18 @@ wibble = ">= 1.0.0 and < 2.0.0"
-     let canonical = deserialise_config("gleam.toml", toml.into()).expect("valid config");
-     assert_eq!(canonical, hyphen_alternative)
+@@ -1581,3 +1601,18 @@ licences = ["MIIT"]
+         .to_string();
+     insta::assert_snapshot!(output);
  }
 +
 +#[test]
@@ -259,7 +261,7 @@ index 6396a9d..6d578a9 100644
 +    );
 +}
 diff --git a/compiler-core/src/package_interface/tests.rs b/compiler-core/src/package_interface/tests.rs
-index 0bb223c..65aaf97 100644
+index 6831c88..25bb0d1 100644
 --- a/compiler-core/src/package_interface/tests.rs
 +++ b/compiler-core/src/package_interface/tests.rs
 @@ -151,6 +151,7 @@ fn package_from_module(module: Module) -> Package {
