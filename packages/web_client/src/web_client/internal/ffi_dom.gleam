@@ -21,6 +21,13 @@
 ////
 //// Nothing here writes HTML. `set_value` writes a form control's text and
 //// `text_content` reads text; no function takes markup.
+////
+//// The one call here that is not the DOM proper is the browser's storage,
+//// `storage_read` and `storage_write`. They are the only way the package
+//// reaches it, each answers a `Result` because storage throws when it is
+//// blocked, and what is stored and how it is read back are decided in
+//// `web_client/layout_rule`. `scripts/web_client_js_check.sh` refuses any
+//// other use of storage in the package.
 
 import gleam/dynamic.{type Dynamic}
 
@@ -534,3 +541,64 @@ pub fn is_content_editable(node: Element) -> Result(Bool, Nil)
 /// ```
 @external(javascript, "./dom.mjs", "prevent_default")
 pub fn prevent_default(event: Dynamic) -> Nil
+
+/// The item the browser's `localStorage` holds under `key`, or `Error` when
+/// there is none or the storage cannot be read. The storage throws when it is
+/// blocked and in some private windows; the export catches that and answers
+/// `Error`, so a caller cannot tell a first visit from a blocked storage and
+/// does not need to. Storage is per origin, so the item is only what a page
+/// of this scheme, host and port wrote.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.storage_read("loom.layout.v1.<digest>")
+/// ```
+@external(javascript, "./dom.mjs", "storage_read")
+pub fn storage_read(key: String) -> Result(String, Nil)
+
+/// Stores `value` under `key` in the browser's `localStorage` (`setItem`), or
+/// answers `Error` when the storage refuses, because it is blocked, full or
+/// private. A caller that cannot save carries on with the value it has.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.storage_write("loom.layout.v1.<digest>", "{}")
+/// ```
+@external(javascript, "./dom.mjs", "storage_write")
+pub fn storage_write(key: String, value: String) -> Result(Nil, Nil)
+
+/// The page's root element, `<html>` (`document.documentElement`). Custom
+/// properties set on it reach every shadow root under the page, which is why
+/// the theme's `data-theme` attribute is written here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let root = ffi_dom.document_element()
+/// ```
+@external(javascript, "./dom.mjs", "document_element")
+pub fn document_element() -> Element
+
+/// Sets an attribute on an element (`setAttribute`). The value is text and is
+/// never parsed as markup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.set_attribute(root, "data-theme", "dark")
+/// ```
+@external(javascript, "./dom.mjs", "set_attribute")
+pub fn set_attribute(element: Element, name: String, value: String) -> Nil
+
+/// Removes an attribute from an element (`removeAttribute`), which is nothing
+/// when it has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.remove_attribute(root, "data-theme")
+/// ```
+@external(javascript, "./dom.mjs", "remove_attribute")
+pub fn remove_attribute(element: Element, name: String) -> Nil

@@ -545,7 +545,10 @@ every shadow root, since a rule on the host beats a value inherited from the
 document. The toggle, if built, has to
 set the attribute where the shadow roots can see it or write the tokens on
 `:root` only and let them inherit. That needs a browser check, and the toggle
-is section 6.5.
+is section 6.5. (Built: the toggle sets `data-theme` on `<html>` and the stylesheet
+sets every token to `inherit` in a `:host` rule so the shadow roots take the
+root's values. A headless Chrome check confirmed both the failure without that
+rule and the fix.)
 
 **Advisor and warning share a value.** A2 uses one amber for the advisor and
 for warnings. The state glyphs are always paired with words, so colour does
@@ -731,6 +734,10 @@ The toggle needs a place for the choice to persist, which is the storage
 decision of section 4, and a way to set the theme that reaches the shadow
 roots (section 5). It is optional for the first build. The page follows the
 operating system's setting, which A2's screenshots also show.
+
+Built as step 12: a Theme button that cycles the page through following the
+system, light and dark, kept per browser under its own storage item
+(`layout_rule`, protocol-change/051, the addendum on the storage decision).
 
 ## 7. Where each piece lives
 

@@ -201,3 +201,37 @@ export function is_content_editable(node) {
 export function prevent_default(event) {
   event.preventDefault();
 }
+
+// The browser's per-origin storage, one item at a time. Storage throws when
+// it is blocked and in some private windows, and even reading the property
+// can throw, so each call answers a Result and never lets the exception out.
+// A missing item and a blocked storage are the same `Error`: what the caller
+// does about either is Gleam's (`web_client/layout_rule`).
+export function storage_read(key) {
+  try {
+    return found(window.localStorage.getItem(key));
+  } catch (_) {
+    return new Error(undefined);
+  }
+}
+
+export function storage_write(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+    return new Ok(undefined);
+  } catch (_) {
+    return new Error(undefined);
+  }
+}
+
+export function document_element() {
+  return document.documentElement;
+}
+
+export function set_attribute(element, name, value) {
+  element.setAttribute(name, value);
+}
+
+export function remove_attribute(element, name) {
+  element.removeAttribute(name);
+}

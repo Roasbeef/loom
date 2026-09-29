@@ -135,7 +135,10 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   transport over `ui_relay` whose `connect` returns at once, and with the
   session's catalogue name and workspace for the page's heading, from the
   registration the route read when it resolved the session
-  (`server.Attachment.registration`). An observer's
+  (`server.Attachment.registration`), and a digest of that workspace path
+  (`component.Start.workspace_digest`, the lower-case SHA-256 in hex) that
+  the browser keys the reader's saved layout by, so a path is never an
+  attribute or a storage key. An observer's
   socket forwards only the "Load older" click at `component.older_path`
   and drops every other browser message (`observer_accepts`,
   protocol-change/051, the addendum on history paging); an operator's

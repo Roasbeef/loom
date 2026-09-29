@@ -414,6 +414,7 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
   component.Start(
     session_id: "A",
     label: None,
+    workspace_digest: "",
     expected: snapshot.Expected("A", "epoch", "incarnation"),
     transport: component.Transport(
       connect: fn(_, _) { Nil },
