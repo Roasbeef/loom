@@ -1040,3 +1040,22 @@ pub fn edited(edits: List(#(String, String))) -> session_channel.Update {
     [],
   )
 }
+
+/// `update`, when it is a capture, with `peers` as the session's presence
+/// rows. Any other update is returned as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.attended(lane_fixture.captured(10, None), [])
+/// ```
+pub fn attended(
+  update: session_channel.Update,
+  peers: List(snapshot_view.Peer),
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, refresh) ->
+      session_channel.Captured(cut, snapshot_view.View(..view, peers:), refresh)
+    other -> other
+  }
+}

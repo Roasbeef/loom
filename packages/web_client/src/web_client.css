@@ -275,7 +275,7 @@
   /* The Changes section (web_view/view/changes): the session's own edits,
      collapsed, below the transcript. Its height is capped and it scrolls on
      its own, so an open diff cannot push the composer off the page. */
-  details.changes{flex:0 0 auto;min-height:0;max-height:30vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box; margin:8px 0 0 0;padding:6px 12px;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:8px; font:12px/1.5 var(--font-mono);}
+  details.changes,details.session-rows{flex:0 0 auto;min-height:0;max-height:30vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box; margin:8px 0 0 0;padding:6px 12px;background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:8px; font:12px/1.5 var(--font-mono);}
   .changes-summary{cursor:pointer;color:var(--color-fg-quiet);}
   .changes-title{color:var(--color-fg);font-weight:600;}
   .changes-label{margin:4px 0;color:var(--color-fg-quiet);}
@@ -288,6 +288,15 @@
   .diff-added{background:var(--color-added-bg);}
   .diff-removed{background:var(--color-removed-bg);}
   .changes-cut{margin:4px 0 0 0;color:var(--color-fg-quiet);}
+  /* The Session section (web_view/view/session_tab): the live jobs and, on an
+     operator's page, the attached viewers. */
+  .session-rows-summary{cursor:pointer;color:var(--color-fg-quiet);}
+  .session-list{margin:4px 0 0 0;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 12px;}
+  .session-term{color:var(--color-fg-quiet);}
+  .session-value{margin:0;min-width:0;overflow-wrap:anywhere;}
+  .session-value p,.session-value ul{margin:0;}
+  ul.session-jobs,ul.session-viewers{list-style:none;padding:0;}
+  .session-quiet{color:var(--color-fg-quiet);}
   .todo-total{margin-left:auto;color:var(--color-fg-quiet);}
   ul.todo-tasks{list-style:none;margin:0;padding:0;}
   li.todo-task{position:relative;padding-left:8px;}

@@ -205,6 +205,22 @@ page keys and nonces, and the relay into the session's gateway.
   memoized on the board, and is `element.none()` with no edit. It reads no
   worktree: the daemon serves worktree bytes to an Owner binding only. The
   tabbed panel of the web design note will move it into a Changes tab.
+- `session_tab.view(jobs, viewers)` draws the Session section: the followed
+  strand's live jobs and, where the page shows them, the attached viewers
+  (`session_view/session_summary`). The component asks for the jobs on a
+  `Ticked` when it has never asked or last asked `jobs_refresh_ms` (10 s) ago
+  and no answer is outstanding: it marks `Shared.jobs_refresh` as requested and
+  the shared step sends the `live_jobs` read once the lane is ready
+  (`surfaces.service_jobs_read`). The read is one of the gateway's
+  `read_only` commands, every role may send it, and its answer is a snapshot
+  the lane folds like any other, so it adds no event and no accepted page
+  event. A refused read is not repeated before the interval passes
+  (`View.jobs_asked_at`), and a board for another strand than the one shown
+  reads as not read yet. Viewers are drawn on the operator's page and never on
+  the observer's, which is handed `None` (a default the design note adopted,
+  open to an owner override). Job commands and viewer names are text nodes.
+  Like the Changes section it is a collapsed `<details>` below the lane until
+  the tabbed panel moves it.
 - `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip

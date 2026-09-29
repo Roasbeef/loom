@@ -131,6 +131,7 @@ import session_view/outbound
 import session_view/protocol
 import session_view/reviewer_status
 import session_view/session_channel
+import session_view/session_summary
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/step
@@ -142,6 +143,7 @@ import session_view/transcript_line.{
 }
 import session_view/transcript_lines
 import session_view/turns
+import session_view/worktree_view
 import web_view/ending.{type Ending}
 import web_view/sessions
 import web_view/view/changes
@@ -151,6 +153,7 @@ import web_view/view/heading
 import web_view/view/lane
 import web_view/view/live
 import web_view/view/nudges
+import web_view/view/session_tab
 import web_view/view/strip
 import web_view/view/todo_panel
 
@@ -224,6 +227,12 @@ pub const strip_path = "0\t1\t0"
 /// once in this long. The read is made on a timer message the lane already
 /// raises (`Ticked`), not on a timer of its own.
 pub const sessions_refresh_ms = 30_000
+
+/// How long a page waits between asks for the strand's live jobs, on the
+/// transport's clock. An ask is made only when the page ticks, so the
+/// interval is a lower bound and an idle page's ticks (five seconds apart)
+/// set the real one.
+pub const jobs_refresh_ms = 10_000
 
 /// The most bytes of prompt text the page submits. The page socket's frame
 /// limit bounds a whole message; this bounds the field inside it, so a
@@ -492,6 +501,11 @@ type View(socket) {
     /// so the next one waits `sessions_refresh_ms`.
     groups: List(sessions.Group),
     listed_at: Option(Int),
+    /// When the page last asked for the strand's live jobs, on the
+    /// transport's clock, so the next ask waits `jobs_refresh_ms` whether or
+    /// not the daemon answered. A refused read is therefore not repeated on
+    /// every tick.
+    jobs_asked_at: Option(Int),
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
     /// What the session said when the page ran the operator's last command:
@@ -626,6 +640,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       status: Connecting,
       groups: [],
       listed_at: None,
+      jobs_asked_at: None,
       refusal: None,
       outcome: "",
       returns: 0,
@@ -765,7 +780,8 @@ pub fn update(
       )
 
     // The lane's due reading passed: its tick acts.
-    Ticked -> stepping(model, [tick_at(at)], at) |> relisted(at)
+    Ticked ->
+      stepping(jobs_wanted(model, at), [tick_at(at)], at) |> relisted(at)
 
     OlderRequested -> older_at(model, at)
 
@@ -805,6 +821,27 @@ fn relisted(
       Model(..model, view: View(..model.view, listed_at: Some(at))),
       effect.batch([effects, listing(model.view.transport)]),
     )
+  }
+}
+
+// Marks the strand's live jobs as wanted when the page has never asked, or
+// last asked `jobs_refresh_ms` or more ago, and no answer is outstanding. The
+// shared step sends the read once the lane is ready for it
+// (`surfaces.service_jobs_read`), so this only says that one is owed. The
+// read is `live_jobs`, a read the gateway allows every role, and its answer
+// is a snapshot the lane folds like any other, so it adds no event.
+fn jobs_wanted(model: Model(socket), at: Int) -> Model(socket) {
+  let due = case model.view.jobs_asked_at {
+    Some(before) -> at - before >= jobs_refresh_ms
+    None -> True
+  }
+  case due, model.shared.jobs_awaiting {
+    True, None ->
+      Model(
+        shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
+        view: View(..model.view, jobs_asked_at: Some(at)),
+      )
+    True, Some(_) | False, _ -> model
   }
 }
 
@@ -2397,6 +2434,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       lane.NoReplies,
     ),
     changes.view(model.view.changes),
+    session_tab.view(jobs(model), None),
     plan(model),
     nudges.view(pending_nudges(model)),
     html.p([attribute.class("observer-bar")], [
@@ -2446,6 +2484,30 @@ pub fn plan(model: Model(socket)) -> Element(message) {
 /// ```
 pub fn changes(model: Model(socket)) -> changes_view.Board {
   model.view.changes
+}
+
+/// The followed strand's live jobs, as the last read of them answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.jobs(model)
+/// ```
+pub fn jobs(model: Model(socket)) -> session_summary.Jobs {
+  session_summary.jobs(model.shared.jobs, model.shared.active_strand)
+}
+
+/// The session's attached viewers, from the presence rows of the last
+/// coherent capture. Only a page that may show them draws them; an
+/// observer's page does not (`web_view/view/session_tab`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.viewers(model)
+/// ```
+pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
+  session_summary.viewers(model.shared.captured)
 }
 
 /// The page's heading, drawn by `web_view/view/heading` from the session's

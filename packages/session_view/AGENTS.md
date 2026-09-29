@@ -360,6 +360,16 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   600, `max_row_characters` 240) and every cut is counted. The web page's
   Changes section draws it; the terminal's `/diff` still reads the worktree.
 
+- `session_summary.jobs(board, strand)` and `session_summary.viewers(captured)`
+  are the Session summary's two rows that a read or the presence roster
+  supplies. Jobs are the `live_jobs` board for the strand asked about, its
+  lines cut to `max_job_rows` with the rest counted, or `Unread` when there is
+  no board or it names another strand (never a count of zero). Viewers are the
+  cut's presence rows, one per attachment, at most `max_viewer_rows`, each
+  with a role word and whether it is the host's own. Whether a host shows the
+  viewers is the host's choice: the web page shows them on an operator's page
+  only.
+
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and
 `advisor_pending`, `block_summary` (summarizer labels), `command` and
