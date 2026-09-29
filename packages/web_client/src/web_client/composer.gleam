@@ -53,6 +53,7 @@
 //// table. Choosing a row writes its command into the editor, followed by a
 //// space when the command takes an argument.
 
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
@@ -67,7 +68,7 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
-import web_client/internal/ffi_composer
+import web_client/internal/ffi_dom
 
 /// The element's tag.
 pub const name = "loom-composer"
@@ -114,10 +115,21 @@ pub type Returns {
   /// The server has not yet said how many there are.
   Unseen
 
-  /// The server has said. `baseline` is the count when this element first
-  /// heard it: the returns up to it were the business of an editor before
-  /// this one. `count` is the latest count.
-  Seen(baseline: Int, count: Int)
+  /// The server has said. Every return numbered up to `taken` is the
+  /// business of an editor before this one, or has been put in this one: the
+  /// first count this element heard, and after it the highest count it has
+  /// acted on.
+  Seen(taken: Int)
+}
+
+/// What a count from the server asks of the editor.
+pub type Taking {
+  /// No return is new.
+  Nothing
+
+  /// The returns numbered above `after` and up to `up_to` are new, and each
+  /// is to be put in the editor once.
+  Take(after: Int, up_to: Int)
 }
 
 /// Which way an arrow key moves the highlight.
@@ -304,25 +316,17 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // The first count is the baseline: an editor the server draws afresh
     // after a send starts with the count as it stands, and that count was
     // handled by the editor before it. Only a count that rises afterwards is
-    // a prompt the daemon has just handed back. The effect is told the
-    // baseline, and takes every returned prompt past it that the editor has
-    // not taken yet, so two returns that reach the page before one frame
-    // paints are each taken once.
-    Returned(count:) ->
-      case model.returns {
-        Unseen -> #(
-          Model(..model, returns: Seen(baseline: count, count:)),
-          effect.none(),
-        )
-        Seen(baseline:, count: before) if count > before -> #(
-          Model(..model, returns: Seen(baseline:, count:)),
-          restoring(baseline),
-        )
-        Seen(baseline:, count: _) -> #(
-          Model(..model, returns: Seen(baseline:, count:)),
-          effect.none(),
-        )
-      }
+    // a prompt the daemon has just handed back. The model advances `taken`
+    // here, in the turn that hears the count, and the effect is told the
+    // range that turn claimed, so two returns that reach the page before one
+    // frame paints are two disjoint ranges and each prompt is taken once.
+    Returned(count:) -> {
+      let #(returns, taking) = hear(model.returns, count)
+      #(Model(..model, returns:), case taking {
+        Nothing -> effect.none()
+        Take(after:, up_to:) -> restoring(after, up_to)
+      })
+    }
 
     // Typing reopens the list and starts it at the top.
     Typed(text:) -> #(
@@ -346,6 +350,99 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Dismissed -> #(Model(..model, palette: Closed), effect.none())
     Sent -> #(model, sending())
     Ignored -> #(model, effect.none())
+  }
+}
+
+/// What a count of returned prompts, as the server states it, changes. The
+/// first count heard is the baseline and asks for nothing; a count above
+/// everything acted on so far asks for the prompts between the two; any other
+/// count, including one that falls, asks for nothing and leaves what was
+/// acted on as it was.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.hear(composer.Unseen, 2)
+///   == #(composer.Seen(2), composer.Nothing)
+/// assert composer.hear(composer.Seen(2), 3)
+///   == #(composer.Seen(3), composer.Take(after: 2, up_to: 3))
+/// assert composer.hear(composer.Seen(3), 1)
+///   == #(composer.Seen(3), composer.Nothing)
+/// ```
+pub fn hear(returns: Returns, count: Int) -> #(Returns, Taking) {
+  case returns {
+    Unseen -> #(Seen(taken: count), Nothing)
+    Seen(taken:) if count > taken -> #(
+      Seen(taken: count),
+      Take(after: taken, up_to: count),
+    )
+    Seen(taken:) -> #(Seen(taken:), Nothing)
+  }
+}
+
+/// The text of the returned prompts a `Take` asks for, oldest first, given
+/// every numbered prompt the page holds. A prompt outside the range, and one
+/// whose number is not above `after`, is left where it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.taken([#(3, "c"), #(1, "a"), #(2, "b")], 1, 3)
+///   == ["b", "c"]
+/// ```
+pub fn taken(
+  held: List(#(Int, String)),
+  after: Int,
+  up_to: Int,
+) -> List(String) {
+  held
+  |> list.filter(fn(prompt) { prompt.0 > after && prompt.0 <= up_to })
+  |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
+  |> list.map(fn(prompt) { prompt.1 })
+}
+
+/// The editor's draft after a returned prompt is put in it. An editor with
+/// nothing in it takes the prompt as its draft. One the operator has typed in
+/// keeps that and takes the prompt below it after a blank line, as the
+/// terminal does: both are theirs, and neither may be lost.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.joined("  ", "again") == "again"
+/// assert composer.joined("draft", "again") == "draft\n\nagain"
+/// ```
+pub fn joined(draft: String, returned: String) -> String {
+  case string.trim(draft) {
+    "" -> returned
+    _ -> draft <> "\n\n" <> returned
+  }
+}
+
+/// Where to scroll the completion list, in pixels from its top, so the row
+/// that starts `row_top` from the list's top edge and is `row_height` tall
+/// is inside a view `viewport` tall, given the list is scrolled `scrolled`
+/// now. A row already inside leaves the list where it is; one above is
+/// brought to the top edge and one below to the bottom edge.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.revealed(30.0, 20.0, 0.0, 100.0) == 0.0
+/// assert composer.revealed(10.0, 20.0, 40.0, 100.0) == 10.0
+/// assert composer.revealed(160.0, 20.0, 40.0, 100.0) == 80.0
+/// ```
+pub fn revealed(
+  row_top: Float,
+  row_height: Float,
+  scrolled: Float,
+  viewport: Float,
+) -> Float {
+  let bottom = row_top +. row_height
+  case row_top <. scrolled, bottom >. scrolled +. viewport {
+    True, _ -> row_top
+    False, True -> bottom -. viewport
+    False, False -> scrolled
   }
 }
 
@@ -389,24 +486,108 @@ fn choose(model: Model, index: Int) -> #(Model, Effect(Msg)) {
   }
 }
 
+// The editor the server drew inside this element, which is in the element's
+// own children and not in its shadow root. The server keys the editor's
+// container by how many drafts have left it, so the element and its textarea
+// are replaced together and never outlive one another.
+fn editor(root: Dynamic) -> Result(ffi_dom.Element, Nil) {
+  ffi_dom.query_selector(ffi_dom.host(ffi_dom.as_element(root)), "textarea")
+}
+
+// Puts `text` in the editor as the whole draft, with the caret after it, and
+// gives it focus, since the operator has just chosen it from a list beside
+// it. A programmatic write fires no `input` event, which is right: the
+// component records the text itself when it writes it.
 fn placing(text: String) -> Effect(Msg) {
   use _, root <- effect.after_paint
-  ffi_composer.place(root, text)
+  let placed = {
+    use area <- result.map(editor(root))
+    let end = ffi_dom.utf16_length(text)
+    ffi_dom.set_value(area, text)
+    ffi_dom.set_selection_range(area, end, end)
+    ffi_dom.focus(area)
+  }
+  result.unwrap(placed, or: Nil)
 }
 
+// Submits the composer's form as a press of its first submit button does:
+// the button is Send while the strand is idle and Queue while it is busy, and
+// the submit that results carries the button's delivery. `requestSubmit`,
+// unlike `submit`, runs the form's own submit listeners, which is where the
+// server component's handler is, and it is the same event that button
+// raises, so the server sees nothing new.
 fn sending() -> Effect(Msg) {
   use _, root <- effect.after_paint
-  ffi_composer.send(root)
+  let submitted = {
+    use form <- result.map(ffi_dom.closest(
+      ffi_dom.host(ffi_dom.as_element(root)),
+      "form",
+    ))
+    case ffi_dom.query_selector(form, "button[type=\"submit\"]") {
+      Ok(button) -> ffi_dom.request_submit_with(form, button)
+      Error(Nil) -> ffi_dom.request_submit(form)
+    }
+  }
+  result.unwrap(submitted, or: Nil)
 }
 
-fn restoring(baseline: Int) -> Effect(Msg) {
+// Brings the prompts the daemon handed back into the editor. The server draws
+// each as a child of this element in the slot named `returned`, which this
+// element's shadow root has no slot for, so none is displayed there; each is
+// read here as text, numbered by its `data-n`. `taken` picks the ones this
+// call was told are new, and `joined` says how each meets the draft.
+fn restoring(after: Int, up_to: Int) -> Effect(Msg) {
   use _, root <- effect.after_paint
-  ffi_composer.restore(root, baseline)
+  let restored = {
+    use area <- result.map(editor(root))
+    let held =
+      ffi_dom.host(ffi_dom.as_element(root))
+      |> ffi_dom.query_selector_all("[slot=\"returned\"]")
+      |> list.filter_map(numbered)
+    case taken(held, after, up_to) {
+      [] -> Nil
+      [_, ..] as prompts ->
+        ffi_dom.set_value(area, list.fold(prompts, ffi_dom.value(area), joined))
+    }
+  }
+  result.unwrap(restored, or: Nil)
 }
 
+// A returned prompt and its number in the server's count. One without a
+// whole-number `data-n` is not a returned prompt.
+fn numbered(held: ffi_dom.Element) -> Result(#(Int, String), Nil) {
+  use n <- result.try(ffi_dom.dataset_get(held, "n"))
+  use n <- result.map(int.parse(n))
+  #(n, ffi_dom.text_content(held))
+}
+
+// Scrolls the completion list, and only the list, so the highlighted row is
+// inside it. The list is positioned, so a row's offset is from the list's
+// top edge. The transcript and the page are left where they are, which
+// `scrollIntoView` would not promise: it scrolls every ancestor that can.
 fn revealing() -> Effect(Msg) {
   use _, root <- effect.after_paint
-  ffi_composer.reveal(root)
+  let root = ffi_dom.as_element(root)
+  let scrolled = {
+    use menu <- result.try(ffi_dom.query_selector(root, "[role=\"listbox\"]"))
+    use row <- result.map(ffi_dom.query_selector(
+      root,
+      "[aria-selected=\"true\"]",
+    ))
+    let before = ffi_dom.scroll_top(menu)
+    let after =
+      revealed(
+        ffi_dom.offset_top(row),
+        ffi_dom.offset_height(row),
+        before,
+        ffi_dom.client_height(menu),
+      )
+    case after == before {
+      True -> Nil
+      False -> ffi_dom.set_scroll_top(menu, after)
+    }
+  }
+  result.unwrap(scrolled, or: Nil)
 }
 
 // The list sits above the editor in the flow, so opening it grows the dock
