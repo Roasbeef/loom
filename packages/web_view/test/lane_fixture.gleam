@@ -22,6 +22,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/composer
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -878,4 +879,49 @@ fn int_cost(tokens: Int, rate: Float) -> Float {
     0 -> 0.0
     _ -> rate *. int.to_float(tokens)
   }
+}
+
+/// The digest lines the memory context below carries. The second holds
+/// markup, so a test can check the expansion arrives as escaped text.
+pub const memory_digest =
+  "- (fact) the gate is make check\n- (decision) keep <b>R6</b> portable"
+
+/// The message the daemon attaches to a run as distilled memory, in the
+/// shape `client/memory.wrapped` writes: the attribution, then the digest
+/// in a `loom-memory` fence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.memory_context()
+/// ```
+pub fn memory_context() -> String {
+  composer.memory_attribution_lead
+  <> "sessions.\n\n"
+  <> composer.memory_fence
+  <> "\n"
+  <> memory_digest
+  <> "\n```"
+}
+
+/// A capture of `main` holding the memory context and then the owner's
+/// prompt and an answer, which is how a run's records read when the
+/// daemon has distilled memory to attach.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.remembered()
+/// ```
+pub fn remembered() -> session_channel.Update {
+  capture_of(
+    [
+      item(1, 10_000, said(memory_context(), None)),
+      item(2, 10_001, said("please run the gate", None)),
+      item(3, 10_002, assistant([message.AssistantText("**done**", None)])),
+    ],
+    None,
+    [],
+    [],
+  )
 }

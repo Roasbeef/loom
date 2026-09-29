@@ -1226,6 +1226,33 @@ pub fn a_single_line_injection_is_left_alone_test() {
     == "[loom] something"
 }
 
+// The daemon attaches distilled memory as a user message of its own, which
+// is not owner text and can run to twenty kilobytes. It folds to a count of
+// its digest lines and reopens to exactly the text it was.
+pub fn a_memory_context_collapses_to_a_line_count_test() {
+  let text =
+    composer.memory_attribution_lead
+    <> "sessions.\n\n"
+    <> composer.memory_fence
+    <> "\n- (fact) one\n- (fact) two\n- (fact) three\n```"
+  let collapsed = composer.transcript_text(text, False)
+
+  assert collapsed == "memory context (3 lines)  [Ctrl+G to expand]"
+  assert composer.transcript_text(text, True) == text
+}
+
+// Recognition needs the attribution to start the message and the fence to
+// follow it, so an owner who quotes either does not lose their own text.
+pub fn a_prompt_that_mentions_memory_is_not_folded_test() {
+  assert composer.memory_context_lines("```loom-memory\n- a\n```") == None
+  assert composer.memory_context_lines(
+      composer.memory_attribution_lead <> "sessions, but no fence",
+    )
+    == None
+  assert composer.transcript_text("what is in my memory?", False)
+    == "what is in my memory?"
+}
+
 pub fn backspace_drops_only_the_newest_paste_test() {
   let first = composer.Attachment("first", 2)
   let second = composer.Attachment("second", 2)

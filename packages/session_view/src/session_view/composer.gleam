@@ -316,6 +316,80 @@ pub fn admit_attachment(
 /// standing instruction fired and let the reader open it if they care.
 pub const harness_injection_prefix = "[loom] "
 
+/// How the memory context the daemon attaches to a run begins.
+///
+/// `client/memory.wrapped` writes this sentence first, then a fenced body
+/// of digest lines. It is a constant here, and `client/memory` builds its
+/// attribution from it, because a client that recognises the injection
+/// by matching prose would break silently the day someone rewords the
+/// prose. Sharing the constant makes the wording and the recognition one
+/// edit.
+pub const memory_attribution_lead =
+  "Distilled memory from this repository's earlier "
+
+/// The fence the memory context's body is wrapped in.
+pub const memory_fence = "```loom-memory"
+
+/// How many digest lines a memory context holds, or `None` when the text
+/// is not one.
+///
+/// The daemon attaches distilled memory to a run as a user message of its
+/// own, ahead of the prompt. The owner did not type it, and it can run to
+/// twenty kilobytes, so a transcript that draws it whole reads as a
+/// prompt that repeats itself every turn. A message is a memory context
+/// when it begins with `memory_attribution_lead` and carries the fence;
+/// the count is the lines between the fence's opening line and its
+/// closing one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let text =
+///   composer.memory_attribution_lead
+///   <> "sessions.\n\n```loom-memory\n- (fact) a\n- (fact) b\n```"
+/// assert composer.memory_context_lines(text) == Some(2)
+/// ```
+///
+/// ```gleam
+/// assert composer.memory_context_lines("ordinary turn") == None
+/// ```
+pub fn memory_context_lines(text: String) -> Option(Int) {
+  use <- bool.guard(
+    when: !string.starts_with(text, memory_attribution_lead),
+    return: None,
+  )
+  case string.split_once(text, memory_fence <> "\n") {
+    Error(Nil) -> None
+    Ok(#(_attribution, body)) -> {
+      let digest = case string.ends_with(body, "\n```") {
+        True -> string.drop_end(body, 4)
+        False -> body
+      }
+      Some(list.length(string.split(digest, "\n")))
+    }
+  }
+}
+
+/// The one line a folded memory context is drawn as.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.memory_summary(1) == "memory context (1 line)"
+/// ```
+///
+/// ```gleam
+/// assert composer.memory_summary(12) == "memory context (12 lines)"
+/// ```
+pub fn memory_summary(lines: Int) -> String {
+  "memory context ("
+  <> int.to_string(lines)
+  <> case lines {
+    1 -> " line)"
+    _ -> " lines)"
+  }
+}
+
 /// The suffix a collapsed transcript row ends with, so the reader knows
 /// the detail toggle will open it.
 ///
@@ -363,8 +437,9 @@ pub fn harness_injection_summary(text: String) -> Option(String) {
 ///
 /// Two different kinds of "too much to read" meet here and are answered
 /// differently. A harness injection has a *structure* — an attribution
-/// line and a fenced body — so it collapses to that line. An ordinary
-/// large paste has none, so it keeps the byte-estimate preview, which is
+/// line and a fenced body — so it collapses to that line. The memory
+/// context the daemon attaches to a run has one too and collapses to
+/// `memory_summary`. An ordinary large paste has none, so it keeps the byte-estimate preview, which is
 /// the honest summary of something whose shape nothing here knows.
 ///
 /// ## Examples
@@ -374,15 +449,23 @@ pub fn harness_injection_summary(text: String) -> Option(String) {
 /// ```
 ///
 /// ```gleam
+/// // a memory context collapses to a count of its digest lines
+/// let memory = composer.memory_attribution_lead <> "x.\n\n```loom-memory\n- a\n```"
+/// assert composer.transcript_text(memory, False)
+///   == "memory context (1 line)  [Ctrl+G to expand]"
+/// ```
+///
+/// ```gleam
 /// // an injection collapses to its attribution line
 /// assert composer.transcript_text("[loom] rule \"r\"\n\nbody", False)
 ///   == "[loom] rule \"r\"  [Ctrl+G to expand]"
 /// ```
 pub fn transcript_text(text: String, details_expanded: Bool) -> String {
   use <- bool.lazy_guard(when: details_expanded, return: fn() { text })
-  case harness_injection_summary(text) {
-    Some(attribution) -> attribution <> expand_hint
-    None -> bounded_paste(text)
+  case harness_injection_summary(text), memory_context_lines(text) {
+    Some(attribution), _ -> attribution <> expand_hint
+    None, Some(lines) -> memory_summary(lines) <> expand_hint
+    None, None -> bounded_paste(text)
   }
 }
 
