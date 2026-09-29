@@ -96,7 +96,12 @@ starting any of it. Items 1 to 3 are in the order that work is running.
    find whether following regressed or covers only some growth (a capture
    against a push, a reader a few pixels above the bottom), then a hand check
    in a browser of the operator page, the observer page and a session with a
-   running strand. S5 did not run that hand check, and it is still owed.
+   running strand. S5's own hand check was run before it merged
+   (2026-09-29, the operator and observer pages over a live session with
+   Kimi K3): `/add-dir` and `/help` are refused with notices, `/compact`
+   reaches the daemon, a prompt round-trips, and the observer page is
+   read-only. It found the composer's "advisor_pending sent" notice, which
+   is item 2's typed notice.
 2. **The composer.** Slash-command autocomplete listing the session commands
    the page can run (not surface commands, not `/add-dir` or `/add-write-dir`),
    with the names and argument hints the terminal's completer draws from
@@ -257,6 +262,6 @@ S6 changed documents only. `make doc-check` is the proof: coverage, the
 checks. No code was built or run for this edition, so the counts and timings
 it relies on are the ones recorded slice by slice in section 5 of
 [the step-extraction note](design-notes/step-extraction.md), measured
-against the trees named there. The hand check in a browser is not run, as
-item 1 says. Where a document and the code disagreed, the code was taken;
+against the trees named there. The browser hand check of S5 is described
+under item 1. Where a document and the code disagreed, the code was taken;
 the note's S6 entry lists the disagreements.
