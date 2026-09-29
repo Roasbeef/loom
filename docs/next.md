@@ -72,8 +72,9 @@ peer rows, rendered Markdown, and the newest 150 rows with paging back to 300
 (`Load older`). An operator's page also has a composer and approval cards,
 and since S5 it runs any session command a draft names, except `/add-dir` and
 `/add-write-dir` (protocol-change/051, the newest addendum). It cannot yet
-draw a live answer, a todo board, an expanded row or a second strand, and its
-composer has no autocomplete. Claim invitations carry no bearer: 053 step 1 is
+draw a live answer, a todo board, an expanded row or a second strand. Its
+composer completes slash commands, sends on Command or Control with Enter and
+takes a returned prompt back into the editor (#624). Claim invitations carry no bearer: 053 step 1 is
 merged, and the owner admin steps still need an implementation decision. Do
 not infer approval from the claim-flow merge.
 
@@ -226,8 +227,6 @@ listing is never permission to activate a saved target.
   trips that hold the lane's command slot, and it reads the context again
   when an operation ends. The owner chose this over choosing which reads a
   host has a surface for. Revisit it if a per-page cost is measured.
-- **A returned prompt is lost on the page** until item 2 above lands: the
-  step drops `returned_drafts`, and the page has no editor to hold it.
 - **The page loads no skills catalogue**, so a skill's slash command is
   refused as unknown there. Reading the catalogue is a follow-up.
 - **Remote access to the page**, protocol-change/052: a TLS proxy at a

@@ -30,7 +30,8 @@ import lustre/component
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
-import web_client/internal/ffi_clock
+import web_client/duration
+import web_client/internal/ffi_dom
 
 /// The element's tag.
 pub const name = "loom-elapsed"
@@ -39,7 +40,7 @@ pub const name = "loom-elapsed"
 /// when it arrived, the browser's clock at the last tick, and its timer
 /// while it is on the page.
 pub type Model {
-  Model(reading: Option(Reading), now: Int, timer: Option(ffi_clock.Timer))
+  Model(reading: Option(Reading), now: Int, timer: Option(ffi_dom.Timer))
 }
 
 /// One reading from the server, anchored to the browser's clock.
@@ -67,7 +68,7 @@ pub type Msg {
   Disconnected
 
   /// The timer started.
-  Started(timer: ffi_clock.Timer)
+  Started(timer: ffi_dom.Timer)
 
   /// A second passed, and this is the browser's clock.
   Ticked(now: Int)
@@ -131,26 +132,27 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
 fn anchor(offset: Int) -> Effect(Msg) {
   use dispatch <- effect.from
-  dispatch(Anchored(Reading(offset:, anchor: ffi_clock.now())))
+  dispatch(Anchored(Reading(offset:, anchor: ffi_dom.now())))
 }
 
 fn read_clock() -> Effect(Msg) {
   use dispatch <- effect.from
-  dispatch(Ticked(ffi_clock.now()))
+  dispatch(Ticked(ffi_dom.now()))
 }
 
 fn start() -> Effect(Msg) {
   use dispatch <- effect.from
-  let timer = ffi_clock.every(1000, fn() { dispatch(Ticked(ffi_clock.now())) })
+  let timer =
+    ffi_dom.set_interval(1000, fn() { dispatch(Ticked(ffi_dom.now())) })
   dispatch(Started(timer))
 }
 
-fn stop(timer: Option(ffi_clock.Timer)) -> Effect(Msg) {
+fn stop(timer: Option(ffi_dom.Timer)) -> Effect(Msg) {
   case timer {
     None -> effect.none()
     Some(timer) -> {
       use _ <- effect.from
-      ffi_clock.cancel(timer)
+      ffi_dom.clear_interval(timer)
     }
   }
 }
@@ -158,35 +160,9 @@ fn stop(timer: Option(ffi_clock.Timer)) -> Effect(Msg) {
 fn view(model: Model) -> Element(Msg) {
   case model.reading {
     Some(reading) ->
-      html.text(duration(
+      html.text(duration.format(
         int.max(0, reading.offset + model.now - reading.anchor) / 1000,
       ))
     None -> element.none()
   }
-}
-
-/// An elapsed duration the way the terminal's strip shows one
-/// (`session_view/agent_roster.duration`): seconds under a minute, minutes
-/// and padded seconds under an hour, then hours and padded minutes.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert elapsed.duration(475) == "7m 55s"
-/// ```
-pub fn duration(seconds: Int) -> String {
-  case seconds >= 3600, seconds >= 60 {
-    True, _ ->
-      int.to_string(seconds / 3600)
-      <> "h "
-      <> pad2({ seconds % 3600 } / 60)
-      <> "m"
-    False, True ->
-      int.to_string(seconds / 60) <> "m " <> pad2(seconds % 60) <> "s"
-    False, False -> int.to_string(int.max(0, seconds)) <> "s"
-  }
-}
-
-fn pad2(value: Int) -> String {
-  string.pad_start(int.to_string(value), to: 2, with: "0")
 }

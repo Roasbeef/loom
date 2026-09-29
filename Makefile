@@ -68,6 +68,13 @@ test: sandbox ## Run tests only (skips format check), all Gleam packages
 		echo "==> $$p"; bash scripts/test.sh $$p; \
 	done
 
+# The browser package targets JavaScript, so its tests need Node, Bun or
+# Deno rather than EUnit and the sandbox helper; scripts/web_client_test.sh
+# finds the runtime. An explicit rule outranks the test-% pattern below.
+.PHONY: test-web_client
+test-web_client: ## Run the browser package's tests (needs Node, Bun or Deno)
+	@bash scripts/web_client_test.sh
+
 .PHONY: test-%
 test-%: sandbox ## Run tests for one package, e.g. make test-core
 	@bash scripts/test.sh $*

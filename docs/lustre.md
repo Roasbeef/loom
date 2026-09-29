@@ -578,9 +578,22 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   submits the composer's form, and while its list shows the arrows, Tab,
   Enter and Escape act on the list. It calls `focus` on the editor once,
   when the operator chooses a row. The approval cards are outside it, in
-  the dock, and none of these keys decides one.
+  the dock, and none of these keys decides one. `<loom-follow>` also hears,
+  passively and without reading them, the wheel, a finger, a pointer press and
+  a key pressed inside itself, to tell the reader's scroll from one the layout
+  made. Only the composer acts on keys; the follower notes that one was
+  pressed, reading nothing from it, so a keyboard scroll counts as the
+  reader's.
 - **No raw HTML.** It renders through Lustre's virtual DOM, as the server
-  component does.
+  component does. Its browser calls are one file, `internal/dom.mjs`, one
+  DOM call per export and no logic, declared in `internal/ffi_dom.gleam`;
+  the components are Gleam over it. `scripts/web_client_js_check.sh` (run by
+  `make lint`) fails if any other JavaScript is added under
+  `packages/web_client/src`, or if that file names `innerHTML`, `outerHTML`,
+  `insertAdjacentHTML`, `eval`, `new Function`, `document.write`, `srcdoc`,
+  `DOMParser`, `createContextualFragment` or a dynamic `import(`. The check is
+  textual; the guarantee is that the file is a short list of one-call exports
+  a reviewer reads.
 - **Nothing the server needs.** A fold's open state, a clock reading and
   whether the reader is following the tail live only in the browser; the
   server never renders them, so its later patches leave them alone, and it
@@ -937,6 +950,9 @@ In a server component the choice is narrower still:
   any element. It holds no session state and sends no command; the rules
   it keeps are in section 3, "Client components inside the server
   component".
+  What each decides is a pure Gleam function with unit tests in
+  `packages/web_client/test` (`make test-web_client`, which needs Node, Bun or
+  Deno); the DOM calls beneath them run only in a browser.
 - **A second server component** is a separate `<lustre-server-component>`
   with its own route, socket, runtime process and relay. It is the right
   unit for a view with its own lifetime and its own session traffic: another
