@@ -140,8 +140,9 @@ pub fn shell(session_id: String) -> String {
 /// ```
 pub fn waiting_notice(session_id: String) -> String {
   "This page is not connected to the session. The daemon may still be "
-  <> "starting, this page may have ended, or this tab may have lost its key "
-  <> "for the page. Reload it. If it stays like this, run `loom ui --session "
+  <> "starting, the session may not be open (open it again), this page may "
+  <> "have ended, or this tab may have lost its key for the page. Reload it. "
+  <> "If it stays like this, run `loom ui --session "
   <> session_id
   <> "` for a fresh link."
 }

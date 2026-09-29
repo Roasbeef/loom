@@ -193,7 +193,9 @@ pub fn advice(ending: Ending, session_id: String) -> String {
     AccessRevoked ->
       "Ask the session's owner to restore your access. Then "
       <> fresh_link(session_id)
-    SessionStopped -> "Open the session again. Then " <> fresh_link(session_id)
+    SessionStopped ->
+      "Open the session again, then reload this page. The page's own link "
+      <> "still works, so a fresh one is not needed."
     NotOpen ->
       "The daemon may still be opening it. Reload this page in a moment. "
       <> "If it stays closed, "

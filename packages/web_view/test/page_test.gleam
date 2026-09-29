@@ -65,6 +65,7 @@ pub fn the_shell_says_why_a_page_that_never_connects_is_empty_test() {
     as "the component closes"
   assert string.contains(waiting, "not connected to the session")
   assert string.contains(waiting, "loom ui --session 0192ab")
+  assert string.contains(waiting, "session may not be open")
   assert !string.contains(waiting, "<script")
 }
 
@@ -81,7 +82,6 @@ pub fn a_refused_page_document_says_the_ending_and_what_to_do_test() {
   list.each(ending.all(), fn(reason) {
     let document = page.refusal(reason, "0192ab")
     assert string.contains(document, ending.headline(reason))
-    assert string.contains(document, "loom ui --session 0192ab")
     assert string.contains(document, "role=\"alert\"")
     assert string.contains(document, "/ui/assets/web_client.css")
     assert !string.contains(document, "<script")

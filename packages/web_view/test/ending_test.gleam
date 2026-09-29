@@ -68,10 +68,26 @@ pub fn only_an_ending_that_may_clear_by_itself_is_retried_test() {
   assert ending.close(ending.SessionStopped) == ending.Final
 }
 
+// A stopped session is the one ending whose page is still good: its UI
+// session lasts eight hours and a reload does not need the session to be
+// open, so a fresh link would end the page for nothing.
 pub fn the_advice_names_the_command_for_the_session_test() {
   list.each(ending.all(), fn(reason) {
     let advice = ending.advice(reason, "0192ab34cd")
-    assert string.contains(advice, "`loom ui --session 0192ab34cd`")
+    case reason {
+      ending.SessionStopped -> {
+        assert string.contains(advice, "reload this page")
+        assert !string.contains(advice, "loom ui")
+      }
+      ending.PageEnded
+      | ending.AccessRevoked
+      | ending.NotOpen
+      | ending.DaemonNotReady
+      | ending.LinkExpired
+      | ending.ConnectionFailed -> {
+        assert string.contains(advice, "`loom ui --session 0192ab34cd`")
+      }
+    }
   })
 }
 
