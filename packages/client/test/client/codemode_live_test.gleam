@@ -2390,10 +2390,21 @@ fn run_deep_workspace(ready: Ready) -> Nil {
   stop_rig(rig)
 }
 
-// Issue #87 with the new placement: two executions of one operation and
-// one step, differing only in source index, run at the same time against
-// one socket root. Each must bind its own directory; a shared one would
-// let the first execution's cleanup remove the second's live socket.
+// Issue #87 with the new placement: two executions run at the same time
+// against one socket root. Each must bind its own directory; a shared one
+// would let the first execution's cleanup remove the second's live socket.
+//
+// The two executions belong to different steps of one operation, not to
+// one step. `code_mode` is `tool.Exclusive`, so a real batch never runs
+// two of its calls at once, and an execution's teardown sweeps its whole
+// step (`broker.abort_step`): two concurrent executions under one
+// `{op_id, step_id}` let whichever finishes first cancel the other's
+// `/bin/echo`, which then exits 143 and fails the assertion below. That
+// was this test's flake, and it depended on one teardown landing while
+// the other's command was in flight. Separate steps are the shape that
+// can occur, and the sweep leaves a sibling step alone. The
+// source-index-only difference is a property of pure paths, so it is
+// asserted before anything runs.
 fn run_concurrent_sockets(ready: Ready) -> Nil {
   let root = ready.root
   let sockets = socket_root_in(root)
@@ -2417,11 +2428,29 @@ fn run_concurrent_sockets(ready: Ready) -> Nil {
       source_index: 1,
     )
 
+  // The directories the two runs actually bind differ as well.
+  assert codemode.socket_directory(
+      config,
+      op_id: ctx.op_id,
+      step_id: ctx.step_id <> "-0",
+      source_index: 0,
+    )
+    != codemode.socket_directory(
+      config,
+      op_id: ctx.op_id,
+      step_id: ctx.step_id <> "-1",
+      source_index: 1,
+    )
+
   let settled = process.new_subject()
   list.each([0, 1], fn(index) {
+    let step = ctx.step_id <> "-" <> int.to_string(index)
     process.spawn(fn() {
       let outcome =
-        code_mode.run(tool.Ctx(..ctx, source_index: index), program_arguments())
+        code_mode.run(
+          tool.Ctx(..ctx, step_id: step, source_index: index),
+          program_arguments(),
+        )
       process.send(settled, #(index, outcome))
     })
   })
