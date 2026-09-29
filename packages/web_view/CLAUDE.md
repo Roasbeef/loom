@@ -31,13 +31,43 @@ page keys and nonces, and the relay into the session's gateway.
   `title`.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
-  and `now()`. All run in the component's process.
+  `now()`, and `sessions()`, the sidebar's read of the principal's sessions
+  (the daemon's authorized catalogue read, `[]` on failure). All run in the
+  component's process.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
-  (the deadline timer fired) and `OlderRequested` (the "Load older"
-  button, a read). It holds no command. `component.older_path` is the
-  button's Lustre event path, the one path the socket admits an
-  observer's click at.
+  (the deadline timer fired), `OlderRequested` (the "Load older" button, a
+  read), `FocusRequested(strand)` (a strip chip, a change of what the page
+  shows) and `SessionsListed(entries)` (the sidebar read's own answer,
+  dispatched by an effect and carried by no handler). It holds no command.
+  `component.older_path` and `component.strip_path` are the Lustre event
+  paths the socket admits an observer's click at: the button, and anything
+  beneath the strip's chip list.
+- **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
+  `step.focus`, the shared step's change of strand, plus what only this host
+  holds: the history read owed for the strand being left is dropped
+  (`history_view.resume`) before its window parks, and paging starts again
+  at `Tail`. The strand must be listed, must not be the active one, and the
+  page must be `Connected`; otherwise nothing changes. Every derived input
+  (`Projected.strand`, `Stripped.followed`) includes the active strand, so
+  the projection and the strip are rebuilt by `refreshed`. `component.strand(model)`
+  is the active strand and `component.primary` (`"main"`) is where a page
+  starts. Prompts, steers, queues, interrupts and commands address it because
+  the shared step's commands read `active_strand`. A prompt the daemon hands
+  back for any strand of the session is kept, and the notice names the
+  strand it was held for when that is not the one on screen.
+- **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
+  (`Live | Saved`), `Group` and `grouped(entries, current)` (the current
+  session's workspace first, then by newest session, sessions newest first,
+  ties by identity and path). `view/sidebar.view(groups, current)` draws it,
+  read-only, as the page's last child (`aside.sidebar`), memoized. The
+  component reads `Transport.sessions` on `Opened` and on a `Ticked` at
+  least `sessions_refresh_ms` (30 s) after the last read, keeps at most
+  `sessions.listed_limit` entries, and `component.session_groups(model)` is
+  what the operator's page draws. The observer's page draws no sidebar:
+  `ui_socket.listed_for` gives it an empty list without making the read
+  (owner, 2026-09-29). The list cannot open a session (protocol-change/051, the
+  addendum on strand focus and the session sidebar, has the proposal).
 - `component.Model(socket)` (opaque): two records, as the terminal's is.
   `shared` is `session_view/model.Shared(socket, Nil, Nil, Nil)`, the
   session state the shared step reads and writes: the lane, the inbox, the
@@ -73,7 +103,7 @@ page keys and nonces, and the relay into the session's gateway.
   last child; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
   `strip.view(strip)` draws the agent strip, memoized on the whole strip;
-  `lane.view(pieces, live, top, load)` draws the transcript lane, memoized per
+  `lane.view(pieces, live, top, load, replies)` draws the transcript lane, memoized per
   line, followed by the live region, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
   exist, and words otherwise.
@@ -103,7 +133,7 @@ page keys and nonces, and the relay into the session's gateway.
 - **The live region.** `component.live(model)` turns the shared record's
   streams for the followed strand (`transcript_lines.display_streams`),
   `Shared.summaries` and the generation clock into `live.Row`s, and
-  `lane.view(pieces, live, top, load)` draws them through `view/live` as the
+  `lane.view(pieces, live, top, load, replies)` draws them through `view/live` as the
   lane's last keyed entry, keyed `live`. `live.Thinking(progress, elapsed_ms,
   headline)` is the reasoning row: `12 lines · <loom-elapsed offset> so far`,
   or with a headline the count and clock and the headline as text beneath
@@ -122,6 +152,27 @@ page keys and nonces, and the relay into the session's gateway.
   size (107 to 268 bytes for a fragment on a page of 150 rows, the same
   within two bytes on a page of one; `delivery_test`: a burst is one patch
   of 576 to 668 bytes on the real runtime).
+- `nudges.view(board)` draws the advisor's pending nudges
+  (`Shared.nudges`, the terminal's "Advisor · pending, not delivered"), every
+  body received oldest first as a text node and a `+n more waiting` line for the
+  ones the server counted and did not send. It is read-only on both pages
+  and holds no handler, because the queue has no accept or dismiss: the only
+  operation on it is the `advisor_pending` read, and the primary's next run
+  start drains it. It is the dock's second child on the operator's page and sits
+  after the todo panel on the observer's.
+- `controls.view(bar)` draws the operator's controls in the dock, above the
+  approvals: Stop (always drawn, disabled while the strand is idle, so nothing
+  moves when it is enabled), the goal row in the terminal's words
+  (`goal_view.row`) with the buttons its status offers (Pause while active,
+  Resume while held or limited, Clear always, nothing to steer once complete)
+  in a `control-actions arming` row keyed by the status, and two `<details>`
+  each holding a one-field form, Fork and Set goal. `controls.Bar` carries the
+  messages each button sends and the forms' submit handlers, since
+  `operator_page` owns the message type. The observer's page draws none of it.
+- `lane.Replies(fn(key) -> message)` or `NoReplies`, the last argument of
+  `lane.view`. A peer card draws a `Reply to
+  this peer` button after its body when the lane has replies, and the button
+  sends the piece's key, never the peer's session or strand.
 - `todo_panel.view(board, reviewers)` draws the terminal's pinned todo
   board and reviewer band on both pages, from plain values;
   `component.plan(model)` reads them: `Shared.todo_boards` at
@@ -145,8 +196,10 @@ page keys and nonces, and the relay into the session's gateway.
   was built), the advisor's chip and the settled count. The component
   builds them and `strip.view` draws them. `strip.hue_class` and
   `strip.ring_class` map a hue and an outlook to literal classes.
-  `strip.followed` is the strand the strip marks as current, and
-  `component.strand` is defined as it.
+  `Strip.followed` is the strand the strip marks as current
+  (`component.strand(model)`). `strip.view(strip, focus)` draws each chip
+  as `li > button.chip-hit` whose click is `focus(name)`, the name the strip
+  was built with; the "settled" chip is not a control.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
   `tui/markdown` also draws. `view/lane` uses it for the speakers the
@@ -174,11 +227,37 @@ page keys and nonces, and the relay into the session's gateway.
   unknown. `Answer` is `AllowOnce | Deny`; a page never offers remembering
   a grant for the session. A decision takes `outbound.mutation_refusal`'s
   refusals like any mutation, and the card stays when it is refused.
+- `component.control(model, Control)` and `component.reply(model, key)`:
+  the page's session controls and its peer reply. A `component.Control` is
+  `Stop`, `PauseGoal`, `ResumeGoal`, `ClearGoal`, `Fork(name)` or
+  `PinGoal(objective)`. Stop is `msg.Interrupt`, the terminal's Escape: it
+  aborts the strand's running operation, holds the input queued behind it, and
+  leaves the session open (ending the session is daemon control, which stays in
+  the terminal). The goal buttons and the two forms are `msg.Control(command)`
+  (`session_view/commands.control`): the same dispatch as a typed draft, with
+  no draft, so the composer's text and `component.drafts` are untouched. A
+  form's text goes after `/fork ` or `/goal ` and through `command.parse`, and
+  `forking` and `pinning` check what came back: the goal form accepts only a
+  goal or the command's own complaint about it, so the word `clear` in its box
+  never unpins the goal. `View.sent_forms` counts forms whose command the lane accepted
+  (`outbound.mutation_refusal` said none and the command mutates, so it went out
+  or was queued behind a read), and the forms are keyed by it, so an accepted
+  form comes back closed and empty and a refused one keeps its text.
+  `component.reply` finds the `turns.Peer` piece by the engine's key, drafts
+  `Reply to the peer message from session S, strand T, with peer_send: `, and
+  appends it to `View.returned` beside the daemon's returned prompts, so
+  `<loom-composer>` puts it in an empty editor or after the draft and never over
+  it. The terminal has no reply command: the model answers a peer under the
+  owner's link with `peer_send`, at the operator's prompt. Nothing is sent by
+  `reply`. `component.pending_nudges(model)` and `component.goal(model)` read
+  `Shared.nudges` and `Shared.goal`.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
-  delivery)` and `Decided(id, seq, answer)`. The lane's "Load older"
+  delivery)`, `Decided(id, seq, answer)`, `Controlled(component.Control)` and
+  `Replying(key)`. The lane's "Load older"
   button sends `Observed(component.OlderRequested)`.
   `composition(fields)` is the total decoder of the composer form's
-  fields.
+  fields, and `control_text(fields)` of a control form's: exactly one
+  `text` field.
 - `completion.rows()` and `completion.table()`: the slash commands the
   composer offers, built from `session_view/command.suggestions` (the
   one-word commands, and the argument rows of every word that has some once
@@ -189,13 +268,19 @@ page keys and nonces, and the relay into the session's gateway.
   `component.returned(model)`: a held prompt the daemon handed back for
   `main` (protocol-change/038), taken from `Shared.returned_drafts` at the
   end of every message (`taken`), numbered, and kept, the latest
-  all of them, for the composer's element. `step.update`
+  all of them, for the composer's element. `component.reply` adds the start
+  of a peer reply to the same list, so the element treats a reply as a
+  returned prompt (put in an empty editor, or after the draft, once, by
+  number), and the notice about returned prompts is the daemon's alone.
+  `step.update`
   leaves `returned_drafts` alone (`forget_surfaces` no longer clears it), so
   the page is the host that empties it. A prompt for another strand or
   session is named in the notice and not kept.
 - `ending.Ending` (`PageEnded`, `AccessRevoked`, `SessionStopped`,
   `NotOpen`, `DaemonNotReady`, `LinkExpired`, `ConnectionFailed`): why a page
-  has no session, as a closed type. `headline` and `advice(ending,
+  has no session, as a closed type. `PageEnded` means eight hours ran out, the
+  daemon restarted, or the page was the oldest of `ending.max_pages` (four)
+  when a newer link opened; a newer link ends nothing below that bound. `headline` and `advice(ending,
   session_id)` are fixed strings, so no peer, session or error text reaches
   the page. `reason` and `from_reason(given, otherwise)` are the two halves
   of the hop through the reason string `connection_event.Closed` carries
@@ -273,8 +358,11 @@ page keys and nonces, and the relay into the session's gateway.
   returned prompts as text-node children in a `returned` slot, numbered by
   `data-n`; the editor stays the uncontrolled textarea, and keeps its place
   when a return arrives.
-- An operator's page also receives Lustre's `EventFired` for its two
-  handlers: a click on an approval button and the composer form's submit.
+- An operator's page also receives Lustre's `EventFired` for its handlers:
+  a click on an approval button, on one of the controls or on a peer card's
+  Reply, and the submit of the composer form or of one of the two control
+  forms. They are the clicks and submits `ui_socket.operator_accepts` admits
+  already, so the page adds no event.
   The composer element's keys and list add no event: the send key calls
   `requestSubmit`, which raises the same submit, and `page_events_test` pins
   that the operator's page registers only clicks and submits.
@@ -339,21 +427,45 @@ page keys and nonces, and the relay into the session's gateway.
   the list, and the composer's element puts it back in the editor.
 - **Which application runs is which commands exist.** An observer's page is
   `component.app()`, whose message type holds no command and whose view
-  attaches one handler, the lane's "Load older" click, whose message
-  (`OlderRequested`) is a read; its bar is a fixed text node. The page
-  socket admits from an observer only that click at `component.older_path`
-  (protocol-change/051, the addendum on history paging), and
-  `page_events_test` pins that the observer's view registers that one
-  handler. An operator's page is
-  `operator_page.app()`. Its two handlers are unchanged, but since S5 the
-  draft one of them carries is parsed as the terminal parses it, so the page
-  sends any session command a draft names (`/fork`, `/model`, `/goal ...`
-  and the rest of `command.Session`), not only a prompt, except adding a
-  directory, which `page_command` refuses (protocol-change/051, the
-  addendum "the operator page runs session commands"); what bounds them is
-  the attachment's role, capped at operator, which the gateway enforces. The daemon's gateway refuses an observer's mutation
-  independently, and the engine refuses one on an observer's attachment as a
-  third layer.
+  attaches the lane's "Load older" click (`OlderRequested`, a read) and one
+  click per strip chip (`FocusRequested`, a change of what the page shows,
+  built from the name the strip was drawn with); its bar is a fixed text
+  node. The page socket admits from an observer only a click at
+  `component.older_path` or beneath `component.strip_path`
+  (protocol-change/051, the addenda on history paging and strand focus), and
+  `page_events_test` pins that the observer's handlers are exactly those.
+  The sidebar and every other region add none, and the sidebar is the last
+  child so no admitted path moves. An operator's page is
+  `operator_page.app()`. Since S5 the draft its composer carries is parsed
+  as the terminal parses it, so the page sends any session command a draft
+  names (`/fork`, `/model`, `/goal ...` and the rest of `command.Session`),
+  not only a prompt, except adding a directory, which `page_command` refuses
+  (protocol-change/051, the addendum "the operator page runs session
+  commands"). Its controls (Stop, the goal's buttons, the Fork and Set goal
+  forms) and its peer Reply button run the same commands, chosen by a click or
+  a submit instead of typed (the addendum "the page's session controls, the
+  pending nudges and the peer reply"), so the page's operations are still
+  exactly `command.Session` less adding a directory, and its events are
+  still the clicks and submits the socket admits. What bounds them is the
+  attachment's role, capped at operator, which the gateway enforces. The
+  daemon's gateway refuses an observer's mutation independently, and the
+  engine refuses one on an observer's attachment as a third layer.
+- **A control never takes the composer's draft, and a form is cleared only
+  when it sent.** A control's command is `msg.Control`, which sets no
+  submission marker and drops `DraftTaken`, so pressing Fork or Clear goal
+  while the operator is typing leaves the composer as it was
+  (`component.drafts` does not move). The two forms hold the command's own
+  text, so they are keyed by `sent_forms`, which rises when the lane accepts
+  the command (sent, or queued behind a read, whose frame moves the request
+  identity only when the reply lands), and a refusal (no name, an observer's attachment, a busy
+  lane) keeps what was typed.
+- **The controls draw at fixed places.** Stop is always in the row and only
+  its `disabled` changes, so a strand starting to run moves nothing under
+  the pointer. The goal's row is keyed by the goal's status and carries
+  `arming`, the 600 ms refusal of clicks the approval card uses, so a status
+  change that swaps Pause for Resume cannot take a click aimed at the old
+  button. The composer stays last in the dock, with the approvals directly
+  above it.
 - **No handler or attribute from session text.** Button messages carry the
   daemon's escalation identity and sequence; cards are keyed by sequence
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever

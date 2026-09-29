@@ -681,29 +681,65 @@ pub fn every_document_and_script_withholds_the_referrer_test() {
   })
 }
 
-// A redemption ends the principal's other pages for the session, because a
-// key-scoped cookie never reaches the exchange to name the page it replaces.
-pub fn a_second_exchange_ends_the_first_page_test() {
+// Protocol-change/051, the addendum on several pages: a second exchange for
+// the same principal and session opens a second page and leaves the first
+// open. Each keeps its own cookie, key and nonce, so neither page's
+// credentials reach the other's socket.
+pub fn a_second_exchange_leaves_the_first_page_open_test() {
   fixture(fn(ready, port, credential) {
-    let session = create_session(ready, "replaced", 911)
+    let session = create_session(ready, "several", 911)
     let first = enter(port, link(port, credential, session))
     assert open_page(port, first).status == 200
     let second = enter(port, link(port, credential, session))
     assert open_page(port, second).status == 200
-    assert open_page(port, first).status == 401
-    assert open_socket(port, first, first.nonce).status == 401
+    assert open_page(port, first).status == 200
+    assert first.cookie != second.cookie
+    assert first.page != second.page
+    assert first.nonce != second.nonce
+
+    // A page's nonce opens no socket for another page's cookie.
+    assert open_socket(port, first, first.nonce).status == 299
+    assert open_socket(port, second, second.nonce).status == 299
+    assert open_socket(port, first, second.nonce).status == 403
+  })
+}
+
+// The fifth link for one principal and session is redeemed, and ends the
+// oldest of the four pages already open. The other three stay open and the
+// ended one is answered as an ended page.
+pub fn a_page_past_the_cap_ends_only_the_oldest_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "capped", 923)
+    let held =
+      list.repeat(Nil, ending.max_pages)
+      |> list.map(fn(_) { enter(port, link(port, credential, session)) })
+    list.each(held, fn(page) {
+      assert open_page(port, page).status == 200
+    })
+
+    let newest = enter(port, link(port, credential, session))
+    assert open_page(port, newest).status == 200
+    let assert [oldest, ..rest] = held
+    let ended = open_page(port, oldest)
+    assert ended.status == 401
+    assert string.contains(ended.body, ending.headline(ending.PageEnded))
+    assert open_socket(port, oldest, oldest.nonce).status == 401
+    list.each(rest, fn(page) {
+      assert open_page(port, page).status == 200
+    })
   })
 }
 
 // The reload of a page that ended answers with the ending and what to do,
 // in the fixed words, not the bare status text it once did. A reload cannot
-// bring the page back, so the words say to ask for a fresh link.
+// bring the page back, so the words say to ask for a fresh link. A cookie
+// that names no live UI session is what an expired or forgotten page sends.
 pub fn an_ended_pages_reload_says_it_ended_test() {
   fixture(fn(ready, port, credential) {
     let session = create_session(ready, "ended", 921)
     let first = enter(port, link(port, credential, session))
-    let _second = enter(port, link(port, credential, session))
-    let reloaded = open_page(port, first)
+    let forgotten = Entered(..first, cookie: string.repeat("0", 64))
+    let reloaded = open_page(port, forgotten)
     assert reloaded.status == 401
     assert string.contains(reloaded.body, ending.headline(ending.PageEnded))
     assert string.contains(reloaded.body, "loom ui --session " <> session)

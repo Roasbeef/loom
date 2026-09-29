@@ -78,6 +78,7 @@ fn start_page(
         transmit: ui_relay.transmit,
         shut: ui_relay.shut,
         now: bootstrap.monotonic_time_ms,
+        sessions: fn() { [] },
       ),
     )
   let assert Ok(runtime) =

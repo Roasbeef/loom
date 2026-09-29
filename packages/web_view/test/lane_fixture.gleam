@@ -22,6 +22,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import session_view/composer
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -492,6 +493,69 @@ pub fn older_page(from: Int, to: Int) -> snapshot.Window {
   snapshot.Window(list.reverse(items), list.length(items) * 100, None)
 }
 
+/// A capture in which three strands have a transcript of their own: `main`
+/// holds the records of `items`, the reviewer forks from `main`'s second
+/// record and holds a question and a reply, and the advisor holds one note
+/// after `main`'s last record. Every string the reviewer and the advisor
+/// wrote holds markup. `main` runs under `operation` when one is given, and
+/// each of `running` runs its operation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.forked(None, [])
+/// ```
+pub fn forked(
+  operation: Option(String),
+  running: List(#(String, String)),
+) -> session_channel.Update {
+  let review = [
+    snapshot.Loaded(
+      entry.MessageEntry(
+        id(11),
+        Some(id(2)),
+        11,
+        62_000,
+        said("check the <patch> twice", None),
+        False,
+      ),
+      100,
+    ),
+    snapshot.Loaded(
+      entry.MessageEntry(
+        id(12),
+        Some(id(11)),
+        12,
+        63_000,
+        assistant([message.AssistantText("reviewer: <b>two</b> nits", None)]),
+        False,
+      ),
+      100,
+    ),
+  ]
+  let advice = [
+    snapshot.Loaded(
+      entry.MessageEntry(
+        id(13),
+        Some(id(10)),
+        13,
+        64_000,
+        assistant([message.AssistantText("advisor: watch the <sweep>", None)]),
+        False,
+      ),
+      100,
+    ),
+  ]
+  capture_leaves(
+    list.flatten([items(), review, advice]),
+    14,
+    [#("main", 10), #(child, 12), #("advisor", 13)],
+    operation,
+    running,
+    [],
+  )
+}
+
 /// A capture of `main` holding the records `from` to `to` of a
 /// conversation that opens with one long turn: a question at 1 and a
 /// working note at every sequence from 2 to 141, 141 rows in all. From 142
@@ -642,6 +706,19 @@ fn capture_of(
     list.fold(items, 0, fn(newest, item) {
       int.max(newest, snapshot.sequence(item))
     })
+  capture_leaves(items, newest, [#("main", newest)], operation, running, extra)
+}
+
+// A capture of `items` whose cursor is after `newest`, with each of `leaves`
+// naming the last record of a strand's ancestry by its sequence.
+fn capture_leaves(
+  items: List(snapshot.Item),
+  newest: Int,
+  leaves: List(#(String, Int)),
+  operation: Option(String),
+  running: List(#(String, String)),
+  extra: List(snapshot_view.Cell),
+) -> session_channel.Update {
   let operations = case operation {
     Some(op) -> [#("main", op), ..running]
     None -> running
@@ -665,7 +742,7 @@ fn capture_of(
   let view =
     snapshot_view.View(
       strands,
-      dict.from_list([#("main", Some(id(newest)))]),
+      dict.from_list(list.map(leaves, fn(leaf) { #(leaf.0, Some(id(leaf.1))) })),
       dict.new(),
       dict.from_list(operations),
       usage(),
@@ -878,4 +955,49 @@ fn int_cost(tokens: Int, rate: Float) -> Float {
     0 -> 0.0
     _ -> rate *. int.to_float(tokens)
   }
+}
+
+/// The digest lines the memory context below carries. The second holds
+/// markup, so a test can check the expansion arrives as escaped text.
+pub const memory_digest =
+  "- (fact) the gate is make check\n- (decision) keep <b>R6</b> portable"
+
+/// The message the daemon attaches to a run as distilled memory, in the
+/// shape `client/memory.wrapped` writes: the attribution, then the digest
+/// in a `loom-memory` fence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.memory_context()
+/// ```
+pub fn memory_context() -> String {
+  composer.memory_attribution_lead
+  <> "sessions.\n\n"
+  <> composer.memory_fence
+  <> "\n"
+  <> memory_digest
+  <> "\n```"
+}
+
+/// A capture of `main` holding the memory context and then the owner's
+/// prompt and an answer, which is how a run's records read when the
+/// daemon has distilled memory to attach.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.remembered()
+/// ```
+pub fn remembered() -> session_channel.Update {
+  capture_of(
+    [
+      item(1, 10_000, said(memory_context(), None)),
+      item(2, 10_001, said("please run the gate", None)),
+      item(3, 10_002, assistant([message.AssistantText("**done**", None)])),
+    ],
+    None,
+    [],
+    [],
+  )
 }

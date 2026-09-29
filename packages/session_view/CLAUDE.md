@@ -248,8 +248,10 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   record.
 - `msg.Stamp(now_ms, transport_ms)`: the instant an input is applied at,
   stored as `Shared.stamp`. `msg.Command` is what an operator does to a
-  session from any host: `Submit(draft, command, delivery)`, `Interrupt`,
-  `Stop(strand)`, `Decide(review, choice)`, `SelectModel(name)`, `Quit`.
+  session from any host: `Submit(draft, command, delivery)`,
+  `Control(command)` (a session command chosen by a button, which has no
+  draft), `Interrupt`, `Stop(strand)`, `Decide(review, choice)`,
+  `SelectModel(name)`, `Quit`.
   `msg.Msg(source)` is what a host with no surfaces hands `step.update`:
   `Arrived(List(Arrival))`, traffic to file (`Arrival` is `Frame(source,
   message)` or `Replayed(event)`), or `Input(at: Stamp, event: Event)`,
@@ -294,7 +296,11 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
 - `commands.act(shared, msg.Command)`: `Submit` runs `submit`, the refusal
   before encoding, the `ComposerSubmission` marker, the image prompt and
   the dispatch exhaustive over `command.Session`, then
-  `release_submission`; the others run `interrupt_active`, `stop_strand`,
+  `release_submission`; `Control` runs `control`, the same refusal and the
+  same dispatch with no marker and no `DraftTaken`, so a lane that sends
+  its frame moves no `drafts_sent` and a host has no editor to empty, which
+  is what a button that fires while the operator is typing needs; the others run
+  `interrupt_active`, `stop_strand`,
   `decide_review`, `select_model` and `quit`. `decide` (by ID) is the
   `/approve` and `/deny` arm, and `focus` and `load_strand` are the second
   and third units of a strand switch, after the lane's `cancel_unsent`.
@@ -326,6 +332,12 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   order. `step.new(strand, session, stamp, inbox, replay_inbox)` builds the
   record such a host starts from, with no lane and `peer: Disconnected`;
   the host adopts a lane with `hold_channel` and sets `peer` to `Attached`.
+  `step.focus(shared, strand, stamp)` is the same host's change of strand:
+  the terminal's `switch_active_strand` less its surfaces (`cancel_unsent`
+  with each update applied, `commands.focus`, `commands.load_strand` with
+  `nothing_shown()`), settled against the record it started from and with
+  the surface facts dropped, returning the effects. The caller checks that
+  the strand is listed and not already active.
   `Shared.ended` is why the adopted lane failed, set by the lane fold; the
   terminal never reads it and clears it when it adopts a lane. The step's
   functions are `@internal`, so they are not in `gleam export
@@ -342,7 +354,10 @@ The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and
 `advisor_pending`, `block_summary` (summarizer labels), `command` and
 `skills`, `composer` (the rules for showing pasted text, and the composer's
-attachment list), `context_view`, `file_read_view`, `goal_view`,
+attachment list; it also recognises the memory context the daemon attaches to
+a run, `memory_context_lines`, and folds it in `transcript_text` to `memory
+context (n lines)` beside the `[loom]` injection collapse, and owns the
+attribution lead and fence `client/memory` builds its text from), `context_view`, `file_read_view`, `goal_view`,
 `live_jobs`, `notes_view`, `pasted_image`, `queued_input`,
 `stream_identity`, `text_hygiene`, `todo_board` and `tool_activity`, and
 `worktree_view`.

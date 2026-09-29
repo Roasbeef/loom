@@ -561,8 +561,9 @@ and each fork's parent are in the cut), collapsed program cards from
 `tool_activity`, folded work (section 3.8), cache rings and cache-miss
 rows (section 3.9), approval cards without buttons for observers, held
 inputs, streams and tool tails, the observer's bar, and the light and dark
-themes. The strand the transcript column shows stays fixed per page until
-strand focus lands (Part 2 of issue #569).
+themes. A chip of the strip focuses its strand and the session sidebar lists
+the principal's sessions read-only (Part 2 of issue #569; opening another
+session from the sidebar is a proposal in protocol-change/051).
 
 **Phase B: interaction.** Part of this phase shipped ahead of the step,
 with the operator addendum to protocol-change/051: an operator's page

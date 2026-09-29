@@ -66,26 +66,33 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
   }
 
   // The first render draws the prompt and every answer.
-  let first_view = lane.rows(pieces(40), [], element.none(), draw)
+  let first_view =
+    lane.rows(pieces(40), [], element.none(), draw, lane.NoReplies)
   let cache = first(first_view)
   assert drawn(lines) == 41
 
   // A render in which the lane did not change draws nothing. This is the
   // render in which an enclosing memo would have hit and dropped the line
   // memos inside it.
-  let same_view = lane.rows(pieces(40), [], element.none(), draw)
+  let same_view =
+    lane.rows(pieces(40), [], element.none(), draw, lane.NoReplies)
   let cache = rerender(cache, first_view, same_view)
   assert drawn(lines) == 0
 
   // A capture that appends one answer draws the answer it moved into the
   // work and the new answer, and no other line.
-  let next_view = lane.rows(pieces(41), [], element.none(), draw)
+  let next_view =
+    lane.rows(pieces(41), [], element.none(), draw, lane.NoReplies)
   let cache = rerender(cache, same_view, next_view)
   assert drawn(lines) == 2
 
   // And the lines are still kept on the render after that.
   let _ =
-    rerender(cache, next_view, lane.rows(pieces(41), [], element.none(), draw))
+    rerender(
+      cache,
+      next_view,
+      lane.rows(pieces(41), [], element.none(), draw, lane.NoReplies),
+    )
   assert drawn(lines) == 0
 }
 
@@ -100,10 +107,12 @@ pub fn a_sliding_window_draws_only_the_new_lines_test() {
     process.send(lines, Nil)
     html.text("line")
   }
-  let first_view = lane.rows(pieces(700), [], element.none(), draw)
+  let first_view =
+    lane.rows(pieces(700), [], element.none(), draw, lane.NoReplies)
   let cache = first(first_view)
   let _ = drawn(lines)
-  let next_view = lane.rows(pieces(701), [], element.none(), draw)
+  let next_view =
+    lane.rows(pieces(701), [], element.none(), draw, lane.NoReplies)
   let _ = rerender(cache, first_view, next_view)
   assert drawn(lines) == 2
 }
@@ -127,7 +136,8 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
   let page =
     page_fixture.ready(process.new_subject(), "operator")
     |> component.apply([lane_fixture.conversation(301, 450)])
-  let first_view = lane.rows(component.pieces(page), [], element.none(), draw)
+  let first_view =
+    lane.rows(component.pieces(page), [], element.none(), draw, lane.NoReplies)
   let cache = first(first_view)
   assert drawn(lines) == 150
 
@@ -140,7 +150,8 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
     component.apply(page, [
       session_channel.HistoryPage(lane_fixture.older_page(201, 300), 301, 200),
     ])
-  let next_view = lane.rows(component.pieces(page), [], element.none(), draw)
+  let next_view =
+    lane.rows(component.pieces(page), [], element.none(), draw, lane.NoReplies)
   let cache = rerender(cache, first_view, next_view)
   assert drawn(lines) == 99
 
@@ -149,7 +160,13 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
     rerender(
       cache,
       next_view,
-      lane.rows(component.pieces(page), [], element.none(), draw),
+      lane.rows(
+        component.pieces(page),
+        [],
+        element.none(),
+        draw,
+        lane.NoReplies,
+      ),
     )
   assert drawn(lines) == 0
 }

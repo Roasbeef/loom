@@ -218,9 +218,10 @@ sequenceDiagram
 ```
 
 1. **The exchange.** `GET /ui/sessions/<id>?ticket=<t>` redeems the ticket
-   inside the actor. A redemption ends every other UI session of the same
-   principal for the same session, then mints three secrets for the new
-   one: the `loom_ui` cookie, the page key, and the page nonce. The
+   inside the actor. A redemption ends no other page, except that a
+   principal already holding `ui_sessions.max_pages` (four) live pages for
+   the session has its oldest ended to make room (protocol-change/051, the
+   addendum on several pages). It mints three secrets for the new page: the `loom_ui` cookie, the page key, and the page nonce. The
    response is a small same-origin page whose body carries the keyed path
    and the nonce as data attributes, and whose script
    (`web_view_enter.js`) stores the nonce in `sessionStorage` and calls
@@ -244,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:370`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:382`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -275,15 +276,18 @@ flowchart LR
 
 - **The observer's page** is `web_view/component`. Its message type is the
   connection's outcome, the timer's subject, batches of arrivals, the
-  timer's fire and `OlderRequested`, a read of older history, and nothing
-  else, so it has no way to express a command. Its view attaches one event
-  handler, the lane's "Load older" click, drawn only while older rows
-  exist (051, the addendum on history paging). Where an operator's page
-  has its composer, it draws a fixed line saying the page is read-only.
-  The socket admits only that click, at its fixed path
-  (`component.older_path`), and drops every other browser frame before it
-  reaches the runtime (`observer_accepts`), which also spares the
-  component a render per dropped frame.
+  timer's fire, `OlderRequested`, a read of older history, `FocusRequested`,
+  a change of the strand the page shows, and the sidebar read's answer
+  `SessionsListed`, and nothing else, so it has no way to express a
+  command. Its view attaches two kinds of event handler: the lane's "Load
+  older" click, drawn only while older rows exist (051, the addendum on
+  history paging), and one click per chip of the agent strip (051, the
+  addendum on strand focus). Where an operator's page has its composer, it
+  draws a fixed line saying the page is read-only. The socket admits only a
+  click at the button's fixed path (`component.older_path`) or beneath the
+  strip's chip list (`component.strip_path`), and drops every other browser
+  frame before it reaches the runtime (`observer_accepts`), which also
+  spares the component a render per dropped frame.
 - **The operator's page** is `web_view/operator_page`. It wraps the
   observer's messages in `Observed` and adds `Submitted(text, delivery)`
   and `Decided(id, seq, answer)`. The lane's "Load older" button sends
@@ -294,9 +298,17 @@ flowchart LR
   and the read through `component.older`. The socket forwards only
   Lustre's `EventFired` for `click` and `submit`, alone or in a batch
   (`operator_accepts`). A draft may be any session command, since the page
-  parses it as the terminal does; the two handlers, the socket's admitted
-  events and the role checks are as they were (protocol-change/051, the
-  addendum "the operator page runs session commands").
+  parses it as the terminal does; the socket's admitted events and the role
+  checks are as they were (protocol-change/051, the addendum "the operator
+  page runs session commands"). The page also has buttons for commands the
+  terminal runs from a typed draft, `Controlled(control)` and
+  `Replying(key)`, which are clicks and submits like the rest (the
+  addendum "the page's session controls, the pending nudges and the peer
+  reply"): Stop, the goal's Pause, Resume and Clear, a Fork form, a Set
+  goal form, and a Reply button on a peer's message. A control's command is
+  `msg.Control`, which has no draft, so it never empties the composer.
+  The advisor's pending nudges are a card on both pages with no button,
+  because the queue has no accept or dismiss command.
 
 The socket's inbound frame limit follows the role: 64 KiB for an
 observer's page, which is the daemon's observer limit, and 1 MiB for an
@@ -579,10 +591,41 @@ observer's binding (`gateway.read_only` lists `History`), and the lane
 sends it on any attachment (`session_channel.history` checks no role).
 Protocol-change/051's addendum on history paging lets the observer's page
 carry this one handler: the button's message is `component.OlderRequested`
-on both pages, and the page socket admits from an observer only a `click`
-at `component.older_path` and drops every other frame
+on both pages, and the page socket admits from an observer a `click` at
+`component.older_path` and drops every other frame
 (`ui_socket.observer_accepts`). `page_events_test` pins that the
-observer's rendered view registers that one handler at that path.
+observer's rendered view registers that handler at that path.
+
+## Strand focus and the session sidebar
+
+**Focus.** Each chip of the agent strip is a button whose message is
+`FocusRequested(name)`, built from the name the strip was drawn with, so a
+browser's click chooses among the chips and cannot name a strand. The
+component runs `step.focus` (the terminal's change of strand less its
+surfaces: cancel the lane's unsent frames, `commands.focus`,
+`commands.load_strand`), drops any history read owed for the strand being
+left, and restarts paging at the newest rows. The projection, strip, todo
+panel and composer then read the active strand instead of `main`. It is a
+change of what the page reads and sends no command, so it is on the
+observer's page as well; the gateway and the lane refuse an observer's
+mutation as before, and an operator's prompt, steer, queue and commands go
+to the strand on screen. The socket admits an observer's click beneath
+`component.strip_path` (051, the addendum on strand focus).
+`focus_test` covers the behaviour and `page_events_test` the paths.
+
+**The sidebar.** `ui_socket` gives the component `Transport.sessions`, the
+authorized catalogue read the terminal's session picker uses
+(`manager.authorized_page`) made with the page's credential digest, so a
+member sees only their own sessions and a revoked credential none. The
+component reads it when the page opens and at most every 30 seconds on a
+tick (an observer's page is given an empty list and draws no sidebar, so a
+stolen observer link does not disclose the principal's other sessions),
+groups it by workspace (`web_view/sessions`), and `view/sidebar`
+draws it read-only as the page's last child, so no admitted event path
+moves. The entry carries name, workspace, creation time and residency, and
+nothing of the registration's path, key or configuration. Opening another
+session is not implemented: a page is bound to one session by its key, and
+051's addendum sets out what minting a ticket from a page would change.
 
 ## Expanding a row
 
@@ -762,11 +805,14 @@ browser goes away, because a runtime outlives its last client.
   [protocol-change/052](../../protocol-change/052-web-view-remote-origin.md),
   proposed and not implemented. Today a remote person reaches the page
   through `ssh -L`, which presents a loopback `Host`.
+- **Accepting or dismissing an advisor nudge.** The card shows the queue and
+  offers no action. The wire has one operation on it, the read-only
+  `advisor_pending`, and the primary's next run start is the drain, so an
+  accept or a dismiss needs a new gateway command and a protocol change.
 - **The rest of the page's features.** The page runs the shared step, and
   what it draws is a small part of what the step knows. Part 2 of
   [issue #569](https://github.com/Roasbeef/loom/issues/569) builds the
-  page out: expandable rows, live streams, strand focus and the session
-  sidebar. History paging is built on the shared record's `scrollback`
+  page out: strand focus and the session sidebar, among others. History paging is built on the shared record's `scrollback`
   (`history_view.State`); the row limit and `Paging` stay the page's view
   state.
 - **One strand, one session.** The page shows and addresses `main`. The
@@ -782,11 +828,15 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/ended.gleam` | The notice a page draws from an `Ending`, inside the heading. |
 | `packages/web_view/src/web_view/view/heading.gleam` | The heading: the session's name, its workspace and the connection's status, drawn from plain values the component hands it. |
 | `packages/web_view/src/web_view/view/strip.gleam` | The agent strip and its `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
+| `packages/web_view/src/web_view/view/sidebar.gleam` | The session sidebar: the principal's sessions by workspace, read-only, memoized, the page's last child. |
+| `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry`, `Residency` and `Group`, and `grouped`, the ordering (current workspace first, newest first). |
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board with the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
+| `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn on both pages and has no handler. |
+| `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: Stop, the goal row with its buttons, and the Fork and Set goal forms. It takes the messages its buttons send and the forms' submit handlers as values. |
 | `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces, folded work, the cards, and each transcript line and card body in its own leaf memo. |
 | `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |
-| `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted` and `Decided`, the uncontrolled composer and its total form decoder, the approval cards. |
+| `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted`, `Decided`, `Controlled` and `Replying`, the uncontrolled composer and its total form decoder, the control forms' decoder, the approval cards. |
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |

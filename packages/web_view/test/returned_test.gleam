@@ -116,15 +116,29 @@ pub fn returns_are_numbered_across_messages_test() {
     == [component.Returned(1, "first"), component.Returned(2, "second")]
 }
 
-// The page composes only for `main`, so text held for another strand has no
-// editor here. It is not put in the composer, and the notice says so rather
-// than claiming it was restored.
-pub fn a_prompt_for_another_strand_is_named_not_restored_test() {
+// The page has one editor, which addresses the strand on screen. A prompt held
+// for another strand of the session is still the prompt's last copy, so it is
+// put in that editor, and the notice names the strand it was held for and the
+// strand the composer addresses, so the operator sees the difference before
+// pressing Send.
+pub fn a_prompt_for_another_strand_is_kept_and_named_test() {
   let model = arrive(page(), [returned("advisor", "not for main")])
-  assert component.returns(model) == 0
-  assert component.returned(model) == []
+  assert component.returns(model) == 1
+  assert component.returned(model) == [component.Returned(1, "not for main")]
   let assert component.Said(text) = component.notice(model)
     as "the return is said"
-  assert string.contains(text, "1 prompt held for another strand")
-  assert string.contains(text, "cannot show")
+  assert string.contains(
+    text,
+    "1 prompt held for advisor (you are addressing main)",
+  )
+}
+
+// A prompt returned for a strand the page is showing is named by that strand
+// alone.
+pub fn a_prompt_for_the_shown_strand_is_named_plainly_test() {
+  let model = arrive(page(), [returned("main", "for main")])
+  let assert component.Said(text) = component.notice(model)
+    as "the return is said"
+  assert string.contains(text, "1 prompt held for main, put back")
+  assert !string.contains(text, "you are addressing")
 }

@@ -62,6 +62,11 @@ pub type Command {
   /// `delivery` is how the host means a prompt to reach a running strand.
   Submit(draft: String, command: command.Session, delivery: operator.Delivery)
 
+  /// A session command chosen by a control, such as a button, instead of
+  /// typed as a draft. It has no draft to consume, so it leaves the
+  /// composer's text alone (`commands.control`). It carries no prompt.
+  Control(command: command.Session)
+
   /// Interrupt the active strand's running operation.
   Interrupt
 

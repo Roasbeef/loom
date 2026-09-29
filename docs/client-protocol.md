@@ -924,7 +924,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:952-996`).
+`control_use` (`client/daemon/server.gleam:1061-1091`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 

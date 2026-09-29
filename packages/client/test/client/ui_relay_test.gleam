@@ -3,7 +3,8 @@
 //// without holding its caller while the gateway attaches, and every one of
 //// its four exits leaves no process and no presence behind
 //// (protocol-change/051, "The relay" and the operator addendum). A page's
-//// check also ends it when its UI session expires or is replaced.
+//// check also ends it when its UI session expires, and a newer link for the
+//// same principal leaves it open.
 ////
 //// Presence is read as `gateway.attached`, which counts every attachment the
 //// hub holds. The harness attaches one test client of its own, so each test
@@ -18,6 +19,7 @@ import client/protocol
 import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{None}
 import gleam/otp/actor
 import gleam/result
@@ -145,11 +147,16 @@ fn is_roster(text: String) -> Bool {
 
 // Whether the process exits within three seconds.
 fn gone(pid: process.Pid) -> Bool {
+  gone_within(pid, 3000)
+}
+
+// Whether the process exits within `ms` milliseconds.
+fn gone_within(pid: process.Pid, ms: Int) -> Bool {
   let watch = process.monitor(pid)
   let answer =
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(_) { True })
-    |> process.selector_receive(3000)
+    |> process.selector_receive(ms)
   answer == Ok(True)
 }
 
@@ -487,21 +494,55 @@ pub fn an_expired_ui_session_ends_an_open_page_test() {
   assert gone(pid)
 }
 
-pub fn a_replaced_ui_session_ends_an_open_page_test() {
+// A newer ticket for the same principal and session adds a page beside the
+// open one (protocol-change/051, the addendum on several pages). The open
+// page's own check still passes, and its next frame does not end it.
+pub fn a_newer_link_leaves_an_open_page_open_test() {
   let harness = gateway_test.reserved_fixture(fixture_id(5107))
+  let session = ids.session_id_to_string(api.session_id(harness.runtime))
+  let #(relay, ended, _, tables, cookie) = page(harness, session)
+  let pid = relay_pid(relay)
+
+  let assert Ok(issued) = ui_sessions.mint(tables, page_grant(session))
+    as "a second ticket"
+  let assert Ok(second) = ui_sessions.redeem(tables, issued.ticket, session)
+    as "the second ticket opens a second page"
+  assert second.cookie != cookie
+  ui_relay.transmit(relay, subscribe(harness, 1))
+
+  // The frame was answered by the open page, so the check that decides
+  // whether it ends has run against the table that now holds both pages.
+  assert ui_sessions.still_open(tables, cookie, page_grant(session))()
+    == Ok(Nil)
+  assert process.receive(ended, 500) == Error(Nil)
+  assert !gone_within(pid, 100)
+}
+
+// The page that a fifth link displaces ends as `PageEnded` at its next
+// frame, like any page whose UI session is gone.
+pub fn a_displaced_page_ends_as_an_ended_page_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5108))
   let session = ids.session_id_to_string(api.session_id(harness.runtime))
   let #(relay, ended, _, tables, _) = page(harness, session)
   let pid = relay_pid(relay)
 
-  // A newer ticket for the same principal and session replaces its UI
-  // session, whichever browser redeems it.
-  let assert Ok(issued) = ui_sessions.mint(tables, page_grant(session))
-    as "a second ticket"
-  let assert Ok(_) = ui_sessions.redeem(tables, issued.ticket, session)
-    as "the second ticket replaces the first UI session"
+  // The relay's page is the principal's first. Three more fill the bound.
+  list.each(list.repeat(Nil, ui_sessions.max_pages - 1), fn(_) {
+    let assert Ok(issued) = ui_sessions.mint(tables, page_grant(session))
+      as "a ticket"
+    let assert Ok(_) = ui_sessions.redeem(tables, issued.ticket, session)
+      as "a page under the bound"
+  })
   ui_relay.transmit(relay, subscribe(harness, 1))
+  assert process.receive(ended, 500) == Error(Nil)
+
+  let assert Ok(issued) = ui_sessions.mint(tables, page_grant(session))
+    as "the displacing ticket"
+  let assert Ok(_) = ui_sessions.redeem(tables, issued.ticket, session)
+    as "the displacing page"
+  ui_relay.transmit(relay, subscribe(harness, 2))
   let assert Ok(reason) = process.receive(ended, 5000)
-    as "the replaced page ends"
+    as "the displaced page ends"
   assert reason == ending.PageEnded
   assert gone(pid)
 }
@@ -524,7 +565,7 @@ pub fn a_refused_attach_names_its_ending_and_closes_the_page_test() {
 }
 
 // An attach refused because the page's UI session is already gone, as it is
-// when a newer link replaced the page before its socket opened, says so.
+// when its eight hours ran out before its socket opened, says so.
 pub fn an_attach_by_an_ended_page_says_the_page_ended_test() {
   let harness = gateway_test.reserved_fixture(fixture_id(5122))
   let ended = process.new_subject()

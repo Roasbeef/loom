@@ -65,7 +65,7 @@ pub fn the_strip_lists_main_then_working_agents_then_the_advisor_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "<nav aria-label=\"Agents\" class=\"agent-strip\">",
-    "<li aria-current=\"true\" class=\"chip following hue-main\">",
+    "<li class=\"chip following hue-main\">",
     ">main<",
     "<li class=\"chip hue-2\">",
     "&lt;b&gt;review",
@@ -85,7 +85,7 @@ pub fn the_strip_lists_main_then_working_agents_then_the_advisor_test() {
   assert !string.contains(drawn, "since=")
   assert string.contains(
     drawn,
-    "<li aria-current=\"true\" class=\"chip following hue-main\">",
+    "<button aria-current=\"true\" class=\"chip-hit\" type=\"button\">",
   )
 
   // Every state has a glyph and a word, never a colour alone.
@@ -254,7 +254,7 @@ pub fn a_delivered_nudge_is_an_advisor_row_test() {
   ])
 }
 
-pub fn a_peer_message_is_stored_never_read_and_has_no_reply_test() {
+pub fn a_peer_message_is_stored_never_read_and_an_observer_cannot_reply_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "class=\"peer-card\">",
@@ -264,10 +264,17 @@ pub fn a_peer_message_is_stored_never_read_and_has_no_reply_test() {
   ])
   assert !string.contains(drawn, ">read<")
 
-  // The operator's page offers no reply: that is the extracted step's.
+  // The observer's page has no message to send, so it draws no Reply.
+  assert !string.contains(drawn, "Reply")
+  assert !string.contains(drawn, "peer-reply")
+
+  // The operator's page draws one, after the body (`page_actions_test`).
   let operator = element.to_string(operator_page.view(settled()))
-  assert !string.contains(operator, "Reply")
-  assert !string.contains(operator, "reply")
+  assert in_order(operator, [
+    "R8 census is &lt;14&gt; &amp; rising",
+    "class=\"peer-reply\"",
+    "Reply to this peer",
+  ])
 }
 
 // Nothing the session wrote reaches the page as markup: each string arrives
@@ -295,9 +302,11 @@ pub fn session_markup_arrives_only_as_text_test() {
     assert string.contains(drawn, "src/&lt;a&gt;.gleam")
   })
 
-  // An observer's page with every piece drawn still holds no control.
+  // An observer's page with every piece drawn holds no control but the
+  // strip's chips, one button each: four strands are listed.
   let observer = html(missed)
-  assert !string.contains(observer, "<button")
+  assert list.length(string.split(observer, "<button")) == 5
+  assert list.length(string.split(observer, "class=\"chip-hit\"")) == 5
   assert !string.contains(observer, "<form")
   assert !string.contains(observer, "\" open")
 }

@@ -52,6 +52,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{Some}
 import gleam/result
+import gleam/string
 import host/bootstrap
 import lustre
 import lustre/server_component
@@ -61,6 +62,7 @@ import storage/access
 import web_view/component
 import web_view/ending
 import web_view/operator_page
+import web_view/sessions
 
 /// The inbound frame limit on an operator's page socket: a text prompt fits,
 /// a pasted image does not, and a browser's events are far smaller than the
@@ -100,13 +102,19 @@ type Phase {
   )
 }
 
-/// The browser messages an observer's page takes: exactly one, Lustre's
-/// `EventFired` for a `click` at `component.older_path`, the lane's "Load
-/// older" button. That button's message asks for a read of older history
-/// and nothing else (protocol-change/051, the addendum on history paging).
-/// Every other message is dropped here, a batch included, so it costs the
-/// component no render; the gateway refuses any mutation from an observer's
-/// binding on its own, whatever reaches it.
+/// The browser messages an observer's page takes: exactly one kind,
+/// Lustre's `EventFired` for a `click`, and only at two places. One is
+/// `component.older_path`, the lane's "Load older" button, whose message asks
+/// for a read of older history and nothing else (protocol-change/051, the
+/// addendum on history paging). The other is any path beneath
+/// `component.strip_path`, the agent strip's chip list, where each handler is
+/// a chip's button and its message moves the page's focus to that chip's
+/// strand, which is a change of what the page reads and sends no command (the
+/// addendum on strand focus). The strand is named by the message the server
+/// drew and not by the frame, so the frame chooses among the chips and cannot
+/// name a strand. Every other message is dropped here, a batch included, so
+/// it costs the component no render; the gateway refuses any mutation from an
+/// observer's binding on its own, whatever reaches it.
 ///
 /// ## Examples
 ///
@@ -114,17 +122,25 @@ type Phase {
 /// assert !ui_socket.observer_accepts("{\"kind\":1,\"name\":\"submit\"}")
 /// ```
 pub fn observer_accepts(frame: String) -> Bool {
-  case json.parse(frame, older_click()) {
+  case json.parse(frame, observer_click()) {
     Ok(accepted) -> accepted
     Error(_) -> False
   }
 }
 
-fn older_click() -> decode.Decoder(Bool) {
+fn observer_click() -> decode.Decoder(Bool) {
   use kind <- decode.field("kind", decode.int)
   use name <- decode.field("name", decode.string)
   use path <- decode.field("path", decode.string)
-  decode.success(kind == 1 && name == "click" && path == component.older_path)
+  decode.success(kind == 1 && name == "click" && observer_path(path))
+}
+
+// The two places an observer's click may fire: the older button, and a chip
+// beneath the strip's list. The list's own path is not a chip, so the prefix
+// includes the separator.
+fn observer_path(path: String) -> Bool {
+  path == component.older_path
+  || string.starts_with(path, component.strip_path <> "\t")
 }
 
 /// The browser messages an operator's page takes: Lustre's `EventFired` for
@@ -301,8 +317,8 @@ pub fn upgrade(
   response
 }
 
-// Whether the admitted page is an observer's or an operator's.
-type Role {
+/// Whether the admitted page is an observer's or an operator's.
+pub type Role {
   Observing
   Operating
 }
@@ -343,6 +359,9 @@ fn admit(
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
+      sessions: fn() {
+        listed_for(role_of(attachment.authority), fn() { listed(attachment) })
+      },
     )
   let start =
     component.Start(
@@ -398,6 +417,80 @@ fn closing(close: ending.Close) -> mist.Next(Phase, Signal) {
     ending.Final -> mist.stop()
     ending.Retry -> mist.stop_abnormal("the page may retry")
   }
+}
+
+// The sessions the page's principal may see, for the sidebar
+// (protocol-change/051, the addendum on the session sidebar): the same
+// authorized read a terminal's session picker makes. It is made with the
+// digest of the credential the page was admitted under, which the registry
+// authenticates again on every call, so a member is listed only the sessions
+// they hold a membership in, an owner every active session, and a revoked
+// credential none. It carries the catalogue's own fields, and never a
+// database path or a configuration, which the entry has no place for. A
+// failed read is an empty list, which the sidebar draws as nothing.
+fn listed(attachment: server.Attachment(instance)) -> List(sessions.Entry) {
+  case
+    manager.authorized_page(attachment.registry, attachment.digest, after: "")
+  {
+    Ok(#(_, views)) -> list.map(views, listed_entry)
+    Error(_) -> []
+  }
+}
+
+/// The sidebar's list for a page of `role`: the read's result for an
+/// operator's page, and an empty list for an observer's, with the read never
+/// made.
+///
+/// An observer's page is the one a person hands to someone who may only watch
+/// one session, and the page's authority is already the smaller of the
+/// membership and the link's ceiling. The names, host paths and residency of
+/// the principal's other sessions are not part of what watching one session
+/// grants, so a stolen observer link must not widen to them
+/// (protocol-change/051, the addendum on strand focus and the session
+/// sidebar). Only an operator's page lists, and only an operator's page will
+/// be offered switching.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.listed_for(Observing, read) == []
+/// ```
+@internal
+pub fn listed_for(
+  role: Role,
+  read: fn() -> List(sessions.Entry),
+) -> List(sessions.Entry) {
+  case role {
+    Observing -> []
+    Operating -> read()
+  }
+}
+
+/// One catalogue view as the sidebar's entry: the identity, name, workspace
+/// and creation time, and whether a process runs the session. The database
+/// path, the request key and the configuration reference the registration
+/// also holds have no place in an entry, so none reaches a page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.listed_entry(manager.View(registration, manager.Saved))
+/// ```
+@internal
+pub fn listed_entry(view: manager.View) -> sessions.Entry {
+  let record = view.registration
+  sessions.Entry(
+    id: record.id,
+    name: record.name,
+    workspace: record.workspace,
+    created_at: record.created_at,
+    residency: case view.status {
+      manager.Opening(..) | manager.Resident(..) | manager.Stopping(..) ->
+        sessions.Live
+      manager.Reserved | manager.Saved | manager.RecoveryBlocked(..) ->
+        sessions.Saved
+    },
+  )
 }
 
 /// A started page, as its socket holds it: how a browser frame reaches the

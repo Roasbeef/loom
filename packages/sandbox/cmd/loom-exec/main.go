@@ -58,6 +58,14 @@ func main() {
 		runStage2(args[1:])
 	case args[0] == "--publish-git-identity":
 		if err := jail.RunGitIdentityPublication(args[1:]); err != nil {
+			// The harness captures stdout and lets stderr pass through to
+			// the daemon log, so the fixed reason goes to both: the log for
+			// the operator, stdout for the session-start error. Errors from
+			// this mode never carry policy, path, or identity values. The
+			// caller receives a single fixed `loom-exec:` reason line on
+			// stdout and treats it as a bounded, sanitised reason, never
+			// as a value.
+			fmt.Fprintf(os.Stdout, "loom-exec: %v\n", err)
 			fmt.Fprintf(os.Stderr, "loom-exec: %v\n", err)
 			os.Exit(1)
 		}

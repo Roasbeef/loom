@@ -624,6 +624,11 @@ keeps either from reaching another origin in a `Referer` header. The page,
 both scripts and the exchange response each carry it, and a test checks
 all three.
 
+**Superseded (2026-09-29, see "Addendum: several pages per principal and
+session"): the exchange no longer ends the principal's other pages.** The
+paragraph below is the rule as first written, kept so the reason for it
+stays findable.
+
 **The exchange ends the principal's other pages for that session.** The
 cookie's path is the key's, so the exchange no longer receives an older
 cookie to replace. The exchange therefore ends every UI session with the
@@ -727,7 +732,8 @@ these rules:
   refused with `401`. The unkeyed page route is `404`. A socket upgrade
   without the nonce, or with a wrong one, is refused.
 - A second exchange for the same principal and session ends the first UI
-  session.
+  session. (Superseded: it leaves the first open, and the fifth ends the
+  oldest; see "Addendum: several pages per principal and session".)
 - `Referrer-Policy: no-referrer` is on the keyed page, the exchange
   response and the enter script.
 - Enter in the composer while an approval card is pending decides nothing
@@ -1356,8 +1362,9 @@ connection's state, and the word was read as the scroll state, which only
 ## Addendum: a page with no session says why (2026-09-29)
 
 A page can lose its session in several ways, and until now none of them told
-the person anything (issue #569, part 2). Redeeming a new link ends the
-principal's other page for the session (the ticket section above), but the
+the person anything (issue #569, part 2). Redeeming a new link ended the
+principal's other page for the session (the ticket section above; the
+addendum on several pages, below, replaces that rule), but the
 ended page kept a stale transcript under a small header word, and reloading it
 answered "no page session under this key". A page whose socket the daemon
 refused stayed empty, because Lustre's client runtime reconnects after any
@@ -1386,7 +1393,7 @@ text from a peer, a session or an error message reaches a browser.
 
 | Ending | Cause | Says | Socket close |
 |---|---|---|---|
-| `PageEnded` | The page's UI session is gone: a newer link for the same principal and session replaced it, its eight hours ran out, or the daemon restarted. The daemon keeps no record of which. | "This page has ended." A new link ends the page you had open before it, and a page lasts eight hours. Run `loom ui --session <id>` for a fresh link. | 1000 |
+| `PageEnded` | The page's UI session is gone: its eight hours ran out, the daemon restarted, or it was the oldest of the principal's four pages for the session and a newer link took its place. The daemon keeps no record of which. | "This page has ended." A page lasts eight hours, and the daemon forgets every page when it restarts. You can also have 4 pages open for a session at once; opening another ends the oldest. Run `loom ui --session <id>` for a fresh link. | 1000 |
 | `AccessRevoked` | The credential behind the page, or the membership under it, was revoked, or the capped role changed. The socket's own check answers this reason when it refuses. | "Your access to this session was revoked or changed." Ask the owner to restore it, then run `loom ui --session <id>`. | 1000 |
 | `SessionStopped` | The gateway exited (the session stopped, or the daemon shut it down), or closed the attachment while the page's check still passes with the authority it attached with (its snapshot reader failed and the incarnation is stopping). | "The session stopped." Open it again, then reload this page; the page's own link still works, so a fresh one is not needed. | 1000 |
 | `NotOpen` | The gateway refused the relay's attach. | "The session is not open." The daemon may still be opening it: reload, and if it stays closed run `loom ui --session <id>`. | 4000 |
@@ -1514,7 +1521,7 @@ command with the session. `component_test` and `operator_page_test` draw
 each ending on both pages, draw a reason that names none as
 `ConnectionFailed` with none of its words, and keep the heading's children in
 place. `page_test` pins the waiting paragraph inside the component and the
-refusal document's escaping. `ui_relay_test` shows a replaced or expired UI
+refusal document's escaping. `ui_relay_test` shows a displaced or expired UI
 session ending the page as `PageEnded`, a revoked credential as
 `AccessRevoked`, and a refused attach naming `NotOpen` to both the component
 and the socket. `ui_route_test` reloads an ended page and a used link and
@@ -1525,3 +1532,443 @@ running: the notice is in the frames the browser gets, and the close code is
 paragraph when it mounts, and retries after 4000 and not after 1000, was read
 in its source (`docs/lustre.md`) and is left to the hand check on a live
 daemon.
+
+## Addendum: several pages per principal and session (2026-09-29)
+
+The owner ruled on issue #569 that a principal may hold more than one page on
+a session: an observer's tab beside an operator's, or two devices. The ticket
+section above did the opposite, and this addendum replaces that rule. It adds
+no route, no event and no field to the wire, and does not touch the content
+security policy.
+
+### The problem
+
+A page's cookie is scoped to its key's path, so the exchange never receives an
+older cookie to say which page a new link replaces. The first answer was to
+end every UI session of the same principal and session at each redemption,
+which kept one live page per pair and needed no other bookkeeping. It made
+these ordinary uses fail without a word: running `loom ui --operate` while an
+observer tab was open ended the observer tab, and a second device ended the
+first. The ended page said only that a new link had ended it.
+
+### What was decided
+
+- **A redemption adds a page and ends none.** Every page keeps its own cookie,
+  page key and nonce, and lives eight hours from its own exchange. Redemption
+  is still one message to the actor, so a ticket is still redeemed once.
+- **A principal holds at most four live pages per session.** The bound is
+  `ui_sessions.max_pages`, and `ending.max_pages` is the same number, because
+  the words a page shows name it. The bound is on pages in the actor's table, not on
+  sockets: one page's secrets can open several sockets, as before this change,
+  and the root's admission capacity bounds those. While its browser is
+  connected a page holds a socket, a relay process and a lane of up to 300
+  rows. A page that ends, by its deadline or by displacement, has them torn
+  down at its next frame, when the gateway revalidates it (`check_binding`),
+  so displacement frees them as late as expiry does. Four is an observer tab, an operator tab, a second device and a spare. Pages of another
+  principal or of another session are not counted. An expired page is not
+  counted either, at its deadline rather than at the next sweep.
+- **At the bound, the oldest page ends and the new one opens.** The daemon
+  never learns that a tab was closed: a reload closes the page's socket and
+  reopens it with the same cookie, key and nonce, so a closed tab's page stays
+  live until its eight hours end. A refusal at the bound would lock a person
+  out of a long-running daemon after their fifth `loom ui` of the day with
+  nothing to close. Ending the oldest keeps the newest four, which are the ones
+  a person can still be using. Order is by a serial the actor assigns, not by
+  time, since two pages can open in one millisecond.
+- **"Ended" now means one of three things**, and the daemon still cannot say
+  which: the page's eight hours ran out, the daemon restarted, or it was the
+  oldest at the bound. `PageEnded`'s advice says all three and names the bound;
+  the table under "The endings" carries the new words. No ending was added, and
+  a refused redemption still answers `LinkExpired` as before.
+- **Unchanged:** the 60 second single-use ticket, the eight hour lifetime, and
+  the Operator cap. Each page's ceiling comes from its own link, so an observer
+  page and an operator page of one principal stay what they were minted as, and
+  the ceiling still caps the membership role and never grants one. Every frame
+  still re-authenticates the credential that minted the page, so revoking that
+  credential ends all of its pages at once.
+
+### What a key can do
+
+A stolen key gets exactly one page, and this change does not widen that. What
+one page's cookie, key and nonce admit is unchanged: the cookie is `HttpOnly`
+and scoped to its key's path, `keyed` and `admits` compare that page's own
+digests in constant time, and another page's key or nonce is refused
+(`a_page_admits_only_its_own_key_and_nonce_test`, and the two-page route test
+under Verification). Holding several pages gives no page a reach into another. Nor
+does a stolen page mint pages: a ticket comes only from the principal's own
+control connection, so the number of pages an attacker can hold is the number
+of secrets they stole, at most the pages the person opened.
+
+What changes is one incidental property of the old rule. Redeeming a fresh link
+used to cut off a page the person suspected was copied. It no longer does.
+Revoking the credential ends every page it minted, and a page expires in eight
+hours; a person who suspects theft revokes.
+
+### What was considered
+
+- **Keep replacement, and add a flag to keep the others.** It leaves the
+  surprising behaviour as the default and is not what the owner ruled.
+- **Refuse the redemption at the bound, with its own ending.** Built first and
+  dropped for the lockout above: no signal frees a place before eight hours, so
+  the advice to close a page would be untrue.
+- **Free a place when its socket closes.** It needs a grace period to tell a
+  reload from a closed tab, and a timer and a pending-close entry per page in
+  the actor. A page outliving its tab is the common case, and its cost is a
+  place among four that the next link takes over, which is cheap.
+- **A bound per principal across sessions, or per daemon.** A principal's
+  sessions are already limited by its memberships, and a per-session bound is
+  the one a person can predict.
+- **A configurable bound.** No case has been made for another number, and a
+  setting would need documenting and testing at its extremes.
+- **Ending the oldest by time.** Two redemptions in one millisecond would tie.
+
+### Cost
+
+- A fifth page ends the oldest without asking. A person with five useful tabs
+  loses one, and that tab shows `PageEnded`, which says why in general and not
+  which cause it was.
+- A page can outlive its tab by up to eight hours and hold a place until
+  displaced. Its socket is gone; the table entry is a few hundred bytes.
+- Several operator pages of one principal can each send a prompt or decide an
+  approval. The gateway already admits several attachments of one principal,
+  as several terminals do, and orders their commands as it does theirs.
+- A stolen page cannot be cut off by opening a new link.
+
+### Verification
+
+`ui_sessions_test` shows that a redemption ends no other page, that a principal
+holds four and the fifth ends only the oldest, one at a time, without touching
+another principal's or session's pages, and that a page expires alone at its
+deadline and frees its place before any sweep. `ui_relay_test` shows an open
+page staying open when a newer link arrives, and the displaced page ending as
+`PageEnded` at its next frame. `ui_route_test` opens two pages of one principal
+and reads both, then a fifth, and reads the first as an ended page with the
+others open, checks that the second page's nonce does not open the first
+page's socket, and reloads a page whose cookie names no live page.
+`ending_test` pins the advice to the bound and to the eight hours.
+
+## Addendum: strand focus and the session sidebar (2026-09-29)
+
+**Status**: strand focus and the read-only list ACCEPTED under the owner's
+brief for issue #569, part 2, and IMPLEMENTED in the same change; opening
+another session from the sidebar is a **PROPOSAL** and is not implemented ·
+**Raised by**: issue #569
+
+### Strand focus
+
+**What it is.** Each chip of the agent strip is a button. Pressing it makes
+the page show that strand's transcript and address it: the page's
+projection, strip, todo panel and composer all read the shared record's
+active strand, which the shared step's change of strand moves
+(`step.focus`, the terminal's `switch_active_strand` less its surfaces).
+The change sends no command. The frames it may queue are reads (a strand's
+configuration, the context, the nudges and the goal), which the gateway
+already admits from an observer's binding.
+
+**What is admitted.** The observer's message type gains one constructor,
+`component.FocusRequested(strand)`. Its message is built by the strip's
+view from the strand name the strip was drawn with, so a browser's click
+chooses among the chips that exist and cannot name a strand. The observer's
+socket (`ui_socket.observer_accepts`) now admits a Lustre `EventFired`
+frame of kind 1 and name `click` at `component.older_path`, as before, or at
+any path beneath `component.strip_path` (`0\t1\t0\t`, the strip's chip
+list). A path beneath the list that names no button finds no handler in the
+runtime and does nothing. Every other frame is dropped as before: another
+event name at a chip's path, a click elsewhere, a batch, a frame of another
+kind. `page_events_test` pins that the observer's chips are beneath that
+prefix and that the operator's page draws them at the same paths.
+
+**Observers can focus and cannot act.** An observer's page still has no
+composer and no command constructor. After a focus it follows the chosen
+strand read-only, and the gateway's refusal of an observer's mutation and
+the lane's own (`session_channel.can_mutate`) stand as before. An
+operator's prompt, steer, queue, interrupt and slash commands address the
+strand on screen, since the shared step's commands read the active strand.
+Nothing new is sendable: an operator could already address any strand the
+terminal can.
+
+**Approval cards follow focus.** The cards are drawn for the strand on
+screen, so focusing strand B hides strand A's pending cards. A's chip still
+shows that it is waiting for input, and focusing A brings the cards back. A
+decision travels with the escalation's identity and the sequence the card
+was drawn at, and is sent only for the record still pending there
+(`operator.drawn`), so no decision lands on the wrong strand.
+
+**A queued send is cancelled.** A focus cancels the lane's unsent frames, as
+the terminal's `cancel_pending` does, so a submit or decision still queued
+behind the lane is not sent to the new strand. The draft stays in the
+composer, now addressed to the new strand, and the "Not sent" line goes to
+the shared record's transcript, which the page does not draw.
+
+**A returned prompt.** A prompt the daemon hands back
+(protocol-change/038) for another strand of the session is put in the
+composer and named in the notice with the strand it was held for and the
+strand the composer addresses. It was dropped before, on the reasoning that
+the page composed only for `main`; with focus that no longer holds and the
+text is its last copy.
+
+**Cost.** The observer's socket admits a second read-only click and parses
+it as it parses the first. A press costs a projection of the chosen
+strand's window and a re-render of the strip, the lane and the composer's
+address, and the strand's first capture may need its history read (the
+"Load older" button offers it). A strand that settled and left the strip
+cannot be focused from the page; the "settled" chip is not a control.
+
+### The session sidebar, read-only
+
+**Ruling (owner, 2026-09-29).** The list is shown to operator pages only.
+An observer's page lists nothing and draws no sidebar. Switching, the
+follow-up below, will be offered to operator pages only.
+
+**What it is.** An operator's page lists the principal's sessions, grouped by
+workspace and newest first, with the session on screen marked and each
+session's residency (resident or saved). The daemon supplies the list with
+the read a terminal's session picker uses, `manager.authorized_page`,
+called with the digest of the credential the page was admitted under,
+which the registry authenticates again on each call. A member therefore
+sees only the sessions they hold a membership in, an owner every active
+session, and a revoked credential none. The page reads the list when it
+opens and again at most every 30 seconds, on a tick the lane already
+raises, and draws at most the first hundred.
+
+**What reaches the browser.** For each session: its name, its workspace
+path, its creation time (used only to order) and whether it is resident,
+drawn as text nodes and a `title`. The entry type has no field for the
+database path, the request key or the configuration reference, so none
+reaches a page. Session identities stay on the server: they mark the
+session on screen and name an unnamed session by its first eight
+characters. The sidebar has no link, button or handler, adds no event to
+either page, and is the page's last child so that no admitted path moves.
+
+**An observer's page is given no list.** An observer page is the one a
+person hands to someone who may only watch one session. Its authority is the
+smaller of the membership and the link's ceiling, and the names, host paths
+and residency of the principal's other sessions are not part of watching
+one session. Listing them would widen a stolen observer link from one
+transcript to the owner's project list, which the ceiling exists to bound.
+`ui_socket.listed_for` returns an empty list for an observer's page without
+making the read, and the observer's view has no sidebar. The role tested is
+the page's admitted authority, which the router has already capped by the
+link's ceiling, so both an observer membership and an observer ceiling
+produce an observer page. The component's read on open still runs and
+returns at once.
+
+**Cost.** One catalogue query per page per 30 seconds, made in the
+component's process, which waits for it (the manager call is bounded at
+five seconds and a failure is an empty list). A browser holding an
+operator's page sees the names and workspace paths of sessions other than
+the one it opened, within the principal's own entitlement; a holder of an
+observer's page sees none.
+
+### Opening another session from the sidebar: proposal, not implemented
+
+**Why it is not a change to make in passing.** A page is bound to one
+session by its key. Its cookie is scoped to a path that names that session,
+so the cookie cannot reach another session's exchange, and the UI session
+behind it grants exactly one session (`ui_sessions.Grant.session_id`).
+Switching therefore means the page obtaining a way into another session,
+and every way to do that mints a credential from inside a page.
+
+**The smallest design that would work.**
+
+1. A row of the sidebar becomes a button on an operator's page only (the
+   owner's ruling of 2026-09-29; an observer's page has no list), with one
+   handler whose message names the listed
+   session. The socket admits a click beneath a fixed sidebar path, as it
+   does for the strip.
+2. The handler asks the daemon for a ticket for that session with the
+   principal's own credential, exactly as `loom ui` does over the control
+   socket (`ui.link`), and with a ceiling no higher than the current
+   page's. The ticket is single use and expires in 60 seconds. This is
+   the new capability: the component gains a `link(session)` function
+   beside `sessions()`, and the daemon side calls `ui_sessions.mint` after
+   re-authorizing the digest against that session.
+3. The component tells the browser to navigate to
+   `/ui/sessions/<id>?ticket=<ticket>`. Lustre's server component can
+   emit an event to the client, and a small client element (in
+   `web_client`, through the DOM binding) would perform
+   `location.assign` for a path that matches `/ui/sessions/<id>` only.
+   The ticket is in the URL as it is when `loom ui` opens the browser,
+   and is never logged.
+4. The redemption creates a new UI session for the target session. It
+   ends the principal's other page for that session under the current
+   one-page rule, which is why this wants the ruling that several pages
+   per principal are allowed before it lands: with that rule the new page
+   coexists with any page already open there.
+
+**What it changes in the threat model.** A stolen operator page could mint
+a ticket for every session of the principal, not only its own, so the page's
+one-session bound stops being a bound. An observer page could do it too,
+unless the handler is refused for an observer ceiling, which is the
+conservative choice and would leave observers with the read-only list. The
+ticket would travel through the browser's history and the client's
+navigation, and the client element that navigates is the first script that
+acts on a value the server chose. None of this is new authority for the
+credential's holder, who can run `loom ui` for any session, but it is new
+authority for the page.
+
+**Alternatives.** Keep the list read-only and let a row show the command to
+run (`loom ui <name>`), which changes nothing in the model and costs a
+copy. Or make the row a link to a daemon route that mints a ticket and
+redirects, which needs an authenticated request the page's key-scoped
+cookie cannot make, so it would need a cookie for the whole `/ui` prefix.
+Neither was taken; the second widens the cookie, which the operator
+addendum narrowed on purpose.
+
+**Decision needed.** Whether a page may mint tickets for its principal's
+other sessions, whether an observer ceiling may, and whether the several
+pages ruling lands first.
+
+### Verification
+
+`focus_test` shows a chip moving the page to the advisor and to a reviewer
+and back with `main`'s rows restored, the strip marking one strand, an
+unlisted or shown strand changing nothing, a focus sending no command, an
+observer's focused page still having no composer, chips pressed through
+the simulator on both pages, and an operator's prompt, steer and queue
+addressing the focused strand. `ui_socket_test` admits a click beneath the
+strip's list and drops the list's own path, its siblings, other events at a
+chip's path and a batch. `sidebar_test` pins the grouping and its ties, the
+read on open and its 30-second spacing, escaping, that the sidebar holds no
+handler and adds none to either page, and that an empty list draws
+nothing. `ui_socket_test` also shows the catalogue entry carrying none of
+the registration's private fields. No browser was in the loop.
+
+## Addendum: the page's session controls, the pending nudges and the peer reply (2026-09-29)
+
+**Status**: PROPOSED, IMPLEMENTED with issue #569, part 2 · **Raised by**:
+issue #569 (advisor nudges, peer reply, session actions)
+
+The operator page gains buttons for commands the terminal already runs from a
+typed draft, a card for the advisor's pending nudges, and a Reply button on a
+peer's message. It adds no event to the socket's accepted list and no
+operation to what an operator page may do. The earlier addendum, "the
+operator page runs session commands", already let a draft name `/fork`,
+`/abort` and `/goal ...`. This addendum only lets a click or a small form
+choose them.
+
+### What the page shows and sends
+
+- **Stop.** A button in the dock, always drawn and disabled while the strand
+  is idle. It sends `msg.Interrupt`, which is the terminal's Escape
+  (`commands.interrupt_active`): the strand's running operation is aborted,
+  input queued behind it is held until it settles, and the session stays
+  open. The terminal distinguishes stopping an operation from ending the
+  session, and the page offers only the first. Ending or closing a session is
+  daemon control, which stays in the terminal (the owner's ruling of
+  2026-09-27, recorded in `docs/design-notes/step-extraction.md`). The command is not
+  `/abort`: `/abort` sends the abort frame and nothing else, and Escape also
+  records the interrupt so the composer's queue is held, which is what an
+  operator who presses a button wants.
+- **The goal.** When the session has a goal, the dock shows the terminal's own
+  row for it (`goal_view.row`) and the buttons its status offers: Pause while
+  it is active, Resume while it is held or has hit a limit, Clear in every
+  state. They send `/goal pause`, `/goal resume` and `/goal clear`.
+- **Two forms.** A `<details>` for Fork and one for Set goal, each with one
+  text field. The text goes after `/fork ` or `/goal ` and is parsed with
+  `command.parse`, as a draft is, so the name, `--budget N` and every limit
+  are the command's. The page checks what the parse returned against what the
+  form is for: the goal form accepts only a goal or the command's own complaint
+  about one, so typing `clear` in it does not unpin the goal.
+- **Peer reply.** A peer card in the transcript gets a `Reply to this peer`
+  button. The terminal has no command that answers a peer: the model answers
+  under the owner's link (protocol 048) by calling `peer_send`, at the
+  operator's prompt. So the button drafts the start of that prompt, naming the
+  peer, in the composer, through the channel a returned prompt uses (put in an
+  empty editor, or after the draft, and never over it), and sends nothing. The
+  operator completes it and sends it with Send or Steer.
+- **Pending nudges.** A card for what the advisor has queued for the primary
+  (the `advisor_pending` observation the terminal draws beside its composer),
+  every body received, on both pages. It has no button. The queue has no
+  accept or dismiss command: the only operation on it is the read-only
+  `advisor_pending`, and the primary's next run start drains it, so seeing a
+  nudge neither delivers nor discards it. An accept or a dismiss would be a new
+  gateway command and its own protocol change, which this addendum does not
+  make.
+
+### Which events the socket carries
+
+None is new. The controls and the Reply button are `click` handlers and the
+two forms are `submit` handlers, and `ui_socket.operator_accepts` already
+forwards both events for an operator's page. `page_events_test` and
+`page_actions_test` pin that the operator page registers only clicks and
+submits. An observer's page is unchanged: its message type has no
+`Controlled` or `Replying`, it draws no control, no Reply and no form, and its
+one handler is still the "Load older" click at `component.older_path`. It does
+draw the nudge card, which is text only.
+
+A control's command reaches the shared step as `msg.Control`
+(`session_view/commands.control`) and not as `msg.Submit`. `submit` marks a
+mutating command as the composer's own, so the lane counts the frame it sends
+as a consumed draft and the page empties the editor, and a command that is
+consumed at dispatch records `DraftTaken`, which has the same effect. A Fork or a
+Clear goal pressed while the operator is typing would discard the
+draft. `control` runs the same refusal and the same dispatch, sets no marker
+and drops that fact, and the terminal does not call it.
+
+### What a stolen page is worth
+
+Nothing more than the earlier addendum priced it at. A holder of the cookie,
+the page key and the nonce could already send `/fork`, `/abort` and
+`/goal pause|resume|clear|<objective>` in a draft, and the buttons are the same
+commands. `/add-dir` and `/add-write-dir` are still refused, and no control
+builds one. Every label on the controls is fixed. The one piece of session
+content among them, the goal's row, is a text node. A button's message carries
+no session text: the goal buttons and Stop carry nothing, and the Reply button
+carries the transcript piece's key, which is the engine's.
+
+### What was considered
+
+- **Accept and dismiss buttons on the nudge card.** The issue asked for them
+  "matching the terminal's semantics", and the terminal's semantics are
+  read-only. Building them needs a gateway command that removes or delivers a
+  queued nudge, which is a change to the frozen wire. Not taken here.
+- **Stop as `/abort`.** The same words the composer already accepts. Not taken
+  for the reason above: Escape is the terminal's stop, and it holds the queue.
+- **Run the controls through `msg.Submit`.** It would clear the composer's
+  draft. Not taken.
+- **Prefill Fork and Set goal in the composer instead of forms.** The
+  composer's element joins a prefill after an occupied draft, so the slash
+  command would become the second paragraph of a prompt and be sent to the
+  model as text. The two small forms cannot do that.
+- **A reply form on the peer card that sends at once.** It would send a prompt
+  the operator wrote in a one-line field, without the composer's editor.
+  Drafting in the composer keeps the send in one place.
+- **A new command that sends a message to a peer.** The peer link is directional
+  and owner-granted, and the model holds the tool. An operator command would be
+  a second path around that grant. Not taken.
+
+### Cost
+
+- The dock has one more row (the controls), and the nudge card when a nudge is
+  queued. Both are capped or drawn at fixed places, and the composer is still
+  the dock's last child.
+- A reply's draft is appended to the list the composer's element reads, which
+  keeps every entry for the page's life. A press adds one short string, and
+  the list grows by presses.
+- The composer's element decides where a reply goes and the server cannot see
+  the editor, so it cannot say whether the reply landed in an empty editor or
+  after a draft.
+- The page cannot accept or dismiss a nudge, so an operator who wants a nudge
+  gone must send a prompt, which drains the queue into the run it starts.
+
+### Verification
+
+`page_actions_test` shows: a pending nudge drawn in the dock above the composer
+with every body as escaped text and no button, the same card on an observer's
+page with no handler, and the count of nudges the server left out; Reply
+putting the drafted prompt in the composer's channel, once per press, escaping
+it, sending nothing and refusing a key no piece has, with no Reply button on
+an observer's page; the goal's buttons by status, in an arming row; Pause,
+Resume, Clear, Stop, Fork and Set goal each sending the frame the same words
+typed send, leaving `component.drafts` where it was; Stop disabled while idle
+and a second press refused; the Fork form refusing a missing name and keeping
+its text, an observer's attachment sending no control, and the goal form
+refusing `clear`, `pause`, `resume`, `check ...` and nothing; a form with a
+field it does not offer refused; and the operator page's handlers being only
+clicks and submits. `step_test` shows a command chosen by a control leaving no
+draft fact and moving no draft count.
+
+The visual result, the arming delay on the goal row, the disclosure's open
+state and the composer's element taking a reply are left to a hand check in a
+browser.

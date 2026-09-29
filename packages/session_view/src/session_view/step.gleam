@@ -19,7 +19,8 @@
 //// second host's tick runs the same ones.
 ////
 //// `update` is the entry point for a host with no surfaces of its own, the
-//// web view: one call for a whole event. It composes the units above with
+//// web view: one call for a whole event. `focus` is its other one, the change
+//// of strand, which is not an event of the lane's and so not a message. It composes the units above with
 //// the lane's, in the order the terminal's tick runs them, and it drops the
 //// facts such a host has no surface for. The terminal does not call it. Its
 //// tick applies its own surfaces' facts between the drain's updates and
@@ -387,6 +388,55 @@ pub fn update(
       settle(started, commands.act(started, command))
     }
   }
+  #(Shared(..reduced, outbox: []), list.reverse(reduced.outbox))
+}
+
+/// Makes `strand` the active strand for a host with no surfaces of its own,
+/// and returns the effects it decided, oldest first.
+///
+/// This is the terminal's change of strand (`tui/submit.switch_active_strand`)
+/// with the terminal's parts left out. The session's half is three units, run
+/// in the terminal's order: the lane's unsent frames are cancelled, so none of
+/// them can reach the new target (`lane_fold.cancel_unsent`, each update it
+/// produces applied on its own), the record moves to the strand
+/// (`commands.focus`), and the captured cut is shown for it, or its
+/// configuration is asked for when nothing is captured
+/// (`commands.load_strand`). The settle then compares the record with the one
+/// the change started from, so the context read, the pending-nudge read and
+/// the goal read follow the strand as they follow an event, and the facts such
+/// a host has no surface for are dropped (`forget_surfaces`).
+///
+/// The strand must be one the session lists, and it must not be the active
+/// one; a host checks both before it calls, because a refusal is worded for
+/// its own surface. A change to the strand already shown would cancel the
+/// lane's unsent frames for a target that did not change.
+///
+/// The change is a page-side focus and nothing else: it sends no command, and
+/// the frames it may queue are reads (a strand's configuration), which the
+/// gateway admits from an observer's attachment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(shared, effects) = step.focus(shared, "advisor", msg.Stamp(now, now))
+/// ```
+@internal
+pub fn focus(
+  shared: Shared(socket, recorder, source, replay_source),
+  strand: String,
+  at: msg.Stamp,
+) -> #(
+  Shared(socket, recorder, source, replay_source),
+  List(step_effect.Effect(socket, recorder)),
+) {
+  let started = Shared(..shared, stamp: at)
+  let #(cancelled, updates) =
+    lane_fold.cancel_unsent(started, "target change from " <> shared.session)
+  let focused =
+    list.fold(updates, cancelled, apply_update)
+    |> commands.focus(strand)
+    |> commands.load_strand(strand, lane_fold.nothing_shown())
+  let reduced = settle(started, focused) |> forget_surfaces
   #(Shared(..reduced, outbox: []), list.reverse(reduced.outbox))
 }
 
