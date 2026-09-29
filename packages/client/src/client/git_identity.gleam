@@ -81,7 +81,7 @@ pub fn prepare(
       }),
     )
     |> json.to_string
-  use #(code, _) <- result.try(
+  use #(code, output) <- result.try(
     ffi_os.run_capture(
       helper,
       [
@@ -96,7 +96,56 @@ pub fn prepare(
   )
   case code {
     0 -> Ok(warning)
-    _ -> Error("could not publish the sandbox Git identity defaults")
+    _ -> Error(publication_failure(output))
+  }
+}
+
+/// The session-start error for a refused publication.
+///
+/// The helper reports its reason as one fixed `loom-exec: ...` line on
+/// stdout and never includes policy, path, or identity values. The line is
+/// still treated as untrusted text here: only a line with that prefix is
+/// kept, control characters and non-ASCII are dropped, and its length is
+/// bounded, so no other output can reach the operator's screen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // publication_failure("loom-exec: outside the writable policy\n")
+/// // -> "could not publish the sandbox Git identity defaults (outside the writable policy)"
+/// ```
+pub fn publication_failure(output: String) -> String {
+  let base = "could not publish the sandbox Git identity defaults"
+  let line = case string.split(output, "\n") {
+    [first, ..] -> first
+    [] -> ""
+  }
+  use <- bool.guard(!string.starts_with(line, helper_prefix), base)
+  let printable =
+    line
+    |> string.drop_start(string.length(helper_prefix))
+    |> string.to_graphemes
+    |> list.filter(is_printable_ascii)
+    |> list.take(reason_limit)
+    |> string.concat
+    |> string.trim
+  case printable {
+    "" -> base
+    reason -> base <> " (" <> reason <> ")"
+  }
+}
+
+const helper_prefix = "loom-exec: "
+
+const reason_limit = 160
+
+fn is_printable_ascii(grapheme: String) -> Bool {
+  case string.to_utf_codepoints(grapheme) {
+    [point] -> {
+      let code = string.utf_codepoint_to_int(point)
+      code >= 0x20 && code < 0x7f
+    }
+    _ -> False
   }
 }
 

@@ -142,9 +142,10 @@ func unsupportedPlatformReport(p jail.PlatformSupport) string {
 // jail's scratch mount.
 //
 // This is load-bearing, not hygiene. A "tmpfs" scratch policy mounts a
-// fresh tmpfs at jail.ScratchMount ("/tmp") *after* the writable binds,
-// so a writable root underneath it is shadowed by the jail's own
-// scratch and every write to it fails. os.MkdirTemp("") lands exactly
+// fresh tmpfs at jail.ScratchMount ("/tmp"), and protocol 043 does not
+// let a path spelled beneath it anchor a host write even when a deeper
+// writable bind restores it, so a probe root there is not a reliable
+// host location. os.MkdirTemp("") lands exactly
 // there on a host with no TMPDIR set, which is most CI runners — and
 // the probe would then report "jail broken, not tight" for a jail that
 // is neither. The confinement is fail-closed either way (the root

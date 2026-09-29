@@ -302,6 +302,46 @@ pub fn planted_tool_home_symlink_cannot_write_outside_the_workspace_test() {
   assert read(target) == "untouched\n"
 }
 
+// macOS spells /tmp as a symlink to /private/tmp, and Seatbelt mounts nothing
+// over it. A workspace there is an ordinary host path, so the session must
+// open. Linux hides /tmp behind the private scratch tmpfs, where a workspace
+// cannot exist at all, so the fixture applies to macOS only.
+pub fn workspace_under_tmp_publishes_identity_on_macos_test() {
+  case ffi_os.platform().0 {
+    "darwin" -> {
+      use wiring, home <- with_fixture_under("/tmp")
+      assert git_identity.prepare(
+          wiring,
+          Some(home),
+          helper: helper_path(),
+          reading: absent,
+        )
+        == Ok(None)
+      assert string.contains(
+        read(serve.tool_home_directory(wiring.workspace) <> "/gitconfig"),
+        "useConfigOnly",
+      )
+    }
+    _ -> Nil
+  }
+}
+
+pub fn publication_failure_reports_only_the_bounded_helper_reason_test() {
+  let base = "could not publish the sandbox Git identity defaults"
+  assert git_identity.publication_failure("") == base
+  assert git_identity.publication_failure("unrelated output\n") == base
+  assert git_identity.publication_failure("loom-exec: \n") == base
+  assert git_identity.publication_failure(
+      "loom-exec: outside the writable policy\nsecond line\n",
+    )
+    == base <> " (outside the writable policy)"
+  assert git_identity.publication_failure("loom-exec: a\u{1b}[31mb\u{e9}\n")
+    == base <> " (a[31mb)"
+  let long =
+    git_identity.publication_failure("loom-exec: " <> string.repeat("x", 500))
+  assert string.length(long) == string.length(base) + 3 + 160
+}
+
 fn helper_path() -> String {
   let assert Ok(here) = simplifile.current_directory()
     as "the package has a working directory"
@@ -315,9 +355,18 @@ fn absent(_name: String) -> Result(String, Nil) {
 fn with_fixture(run: fn(worktree_diff.Wiring, String) -> Nil) -> Nil {
   let assert Ok(here) = simplifile.current_directory()
     as "the package has a working directory"
+  with_fixture_under(here <> "/build", run)
+}
+
+fn with_fixture_under(
+  parent: String,
+  run: fn(worktree_diff.Wiring, String) -> Nil,
+) -> Nil {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the package has a working directory"
   let root =
-    here
-    <> "/build/git-identity-"
+    parent
+    <> "/git-identity-"
     <> int.to_string(ffi_os.unique_positive_integer())
   let workspace = root <> "/workspace"
   let home = root <> "/operator"

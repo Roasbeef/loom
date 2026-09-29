@@ -340,7 +340,7 @@ func TestGitIdentityPublicationPrivateScratchIsNotHostAuthority(t *testing.T) {
 		Network:       policy.Network{Mode: policy.NetworkOff},
 		Scratch:       "tmpfs",
 	}
-	if _, _, err := gitIdentityAuthority(pol, "/tmp", ".gitconfig-test-owned"); err == nil {
+	if _, _, err := gitIdentityAuthority(pol, "/tmp", ".gitconfig-test-owned", "linux"); err == nil {
 		t.Fatal("private scratch was treated as a host write grant")
 	}
 }
