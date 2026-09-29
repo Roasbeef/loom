@@ -60,7 +60,7 @@ fn in_order(html: String, parts: List(String)) -> Bool {
 pub fn an_operators_frame_names_its_slots_in_order_test() {
   let html = element.to_string(operator_page.view(listed(listing())))
   assert in_order(html, [
-    "<loom-shell class=\"loom-session operator\" sidebar=\"listed\">",
+    "<loom-shell class=\"loom-session operator\" needing=\"0\" sidebar=\"listed\">",
     "<header class=\"session-head\" slot=\"bar\">",
     "<aside aria-label=\"Sessions\" class=\"sidebar\" slot=\"left\">",
     "<main class=\"centre\">",
@@ -81,7 +81,7 @@ pub fn an_observers_frame_has_no_sidebar_test() {
   let html = element.to_string(component.view(listed(listing())))
   assert string.contains(
     html,
-    "<loom-shell class=\"loom-session\" sidebar=\"none\">",
+    "<loom-shell class=\"loom-session\" needing=\"0\" sidebar=\"none\">",
   )
   assert !string.contains(html, "slot=\"left\"")
   assert string.contains(html, "slot=\"bar\"")

@@ -1,10 +1,23 @@
-//// The transcript lane: the page strand's turns, drawn between the agent
-//// strip and the page's bottom bar or dock on both pages.
+//// The transcript lane: the page strand's turns, drawn above the page's
+//// bottom bar or dock on both pages, as a timeline with a dot in the hue of
+//// the strand each piece belongs to.
 ////
 //// The component projects a capture once into `turns.Piece`s
 //// (`component.relaned`), and this module only draws them. How the lines
 //// fold into turns, which rows a capture becomes and what each line says
 //// are `session_view`'s. Nothing here decides anything about the session.
+////
+//// Each piece is a row of the timeline: a dot, and the piece beside it. The
+//// dot is a decoration hidden from assistive technology. Where the piece
+//// belongs to another strand the page lists (a spawn, a result, a nudge), the
+//// dot and the strand's tag in the piece carry `data-loom-focus`, the
+//// position of that strand's card, and no handler: `<loom-shell>` hears the
+//// click and clicks the card, so the observer's socket admits nothing new
+//// (protocol-change/051, the addendum on the marker relay). A piece of the
+//// strand on screen carries no marker, since focusing the strand already
+//// shown does nothing, and a strand the page does not list has none to focus.
+//// The marker is a number from `strip.positions`; the strand's identity and
+//// name never reach an attribute.
 ////
 //// Almost every string this region draws was written by the session: a
 //// prompt, an answer, a tool's output, a child's report, a peer's message.
@@ -23,7 +36,7 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -85,7 +98,7 @@ import web_view/view/strip
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested, lane.NoReplies)
+/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested, lane.NoReplies, component.marks(model))
 /// ```
 pub fn view(
   pieces: List(turns.Piece),
@@ -93,8 +106,38 @@ pub fn view(
   top: Top,
   load: message,
   replies: Replies(message),
+  marks: Marks,
 ) -> Element(message) {
-  rows(pieces, live, boundary(top, load), line_element, replies)
+  rows(pieces, live, boundary(top, load), line_element, replies, marks)
+}
+
+/// What the lane needs to mark a piece as belonging to a strand: which strand
+/// is on screen and its hue, and the position of each strand the panel lists.
+///
+/// The positions are `strip.positions`, so a dot's marker and a card's are
+/// numbered in one place. A strand with no position is not listed, and its
+/// dot and tag are not controls.
+pub type Marks {
+  Marks(
+    /// The strand on screen, whose own pieces carry no marker.
+    active: String,
+    /// The hue of that strand's dots.
+    hue: turns.Hue,
+    /// The position of each listed strand's card, by the strand's identity.
+    positions: Dict(String, Int),
+  )
+}
+
+/// Marks for a lane that lists no strand: every dot is decoration and no tag
+/// is a control. `main` is on screen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lane.view(pieces, [], lane.Beginning, load, lane.NoReplies, lane.no_marks())
+/// ```
+pub fn no_marks() -> Marks {
+  Marks(active: "main", hue: turns.Primary, positions: dict.new())
 }
 
 /// Whether the lane offers a reply to a peer's message, and what pressing it
@@ -147,7 +190,7 @@ pub const older_marker = "loom-older"
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.rows(pieces, [], element.none(), fn(line) { html.text(line.text) }, lane.NoReplies)
+/// // lane.rows(pieces, [], element.none(), fn(line) { html.text(line.text) }, lane.NoReplies, lane.no_marks())
 /// ```
 @internal
 pub fn rows(
@@ -156,6 +199,7 @@ pub fn rows(
   top: Element(message),
   draw: fn(Line) -> Element(message),
   replies: Replies(message),
+  marks: Marks,
 ) -> Element(message) {
   element.element("loom-follow", [attribute.class("follow")], [
     top,
@@ -163,7 +207,7 @@ pub fn rows(
       [attribute.class("transcript lane"), attribute.role("log")],
       list.append(
         list.map(pieces, fn(piece) {
-          #(piece_key(piece), piece_element(piece, draw, replies))
+          #(piece_key(piece), timeline_row(piece, draw, replies, marks))
         }),
         live_entry(live, draw),
       ),
@@ -245,10 +289,87 @@ fn piece_key(piece: turns.Piece) -> String {
   }
 }
 
+// One row of the timeline: the dot in the hue of the strand the piece belongs
+// to, and the piece. The dot is drawn for every piece so the line reads as one,
+// and is a control only where the piece belongs to another strand the page
+// lists. Its marker is the position of that strand's card, a number.
+fn timeline_row(
+  piece: turns.Piece,
+  draw: fn(Line) -> Element(message),
+  replies: Replies(message),
+  marks: Marks,
+) -> Element(message) {
+  let #(hue, target) = belongs_to(piece, marks)
+  html.div([attribute.class("tl-row"), strip.hue_class(hue)], [
+    html.span(
+      [attribute.class("dot"), attribute.aria_hidden(True), ..marker(target)],
+      [],
+    ),
+    html.div([attribute.class("tl-body")], [
+      piece_element(piece, draw, replies, marks),
+    ]),
+  ])
+}
+
+// The hue a piece's dot is drawn in and the card it focuses, if any. A piece
+// of the strand on screen is that strand's; a spawn and a result are the
+// child's; a nudge and the advisor's commentary are the advisor's; another
+// session's message is nobody's here.
+fn belongs_to(piece: turns.Piece, marks: Marks) -> #(turns.Hue, Option(Int)) {
+  case piece {
+    turns.Plain(..) | turns.Work(..) | turns.Missed(..) -> #(marks.hue, None)
+    turns.Spawned(child:, hue:, ..) -> #(
+      hue,
+      option.then(child, position(marks, _)),
+    )
+    turns.Returned(child:, hue:, ..) -> #(hue, position(marks, child))
+    turns.Nudged(..) | turns.Commentary(..) -> #(
+      turns.Advisor,
+      position(marks, agent_roster.advisor),
+    )
+    turns.Peer(..) -> #(turns.Unplaced, None)
+  }
+}
+
+// The position of a strand's card, when the strand is listed and is not the
+// one on screen.
+fn position(marks: Marks, strand: String) -> Option(Int) {
+  case strand == marks.active {
+    True -> None
+    False -> option.from_result(dict.get(marks.positions, strand))
+  }
+}
+
+fn marker(target: Option(Int)) -> List(attribute.Attribute(message)) {
+  case target {
+    Some(position) -> [strip.focus_attribute(position)]
+    None -> []
+  }
+}
+
+// A strand's tag in a piece: a real button carrying the marker where the
+// strand can be focused, and plain text where it cannot, so the words read the
+// same either way.
+fn tag(label: String, target: Option(Int)) -> Element(message) {
+  case target {
+    Some(position) ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("tag"),
+          strip.focus_attribute(position),
+        ],
+        [html.text(label)],
+      )
+    None -> html.text(label)
+  }
+}
+
 fn piece_element(
   piece: turns.Piece,
   draw: fn(Line) -> Element(message),
   replies: Replies(message),
+  marks: Marks,
 ) -> Element(message) {
   case piece {
     turns.Plain(block:, thoughts:) -> block_element(block, thoughts, draw)
@@ -279,13 +400,15 @@ fn piece_element(
     turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
       html.div([attribute.class("spawn"), strip.hue_class(hue)], [
         html.span([attribute.class("spawn-head")], [
-          html.text(
-            "↳ agent_spawn · "
-            <> case child {
-              Some(child) -> "sub:" <> agent_roster.short_name(child)
-              None -> standing_text(standing)
-            },
-          ),
+          html.text("↳ agent_spawn · "),
+          case child {
+            Some(child) ->
+              tag(
+                "sub:" <> agent_roster.short_name(child),
+                position(marks, child),
+              )
+            None -> html.text(standing_text(standing))
+          },
         ]),
         html.span([attribute.class("spawn-purpose")], [html.text(purpose)]),
       ])
@@ -293,12 +416,9 @@ fn piece_element(
     turns.Returned(child:, outcome:, report:, hue:, ..) ->
       html.article([attribute.class("result-card"), strip.hue_class(hue)], [
         html.p([attribute.class("card-head")], [
-          html.text(
-            "from sub:"
-            <> agent_roster.short_name(child)
-            <> " · result · "
-            <> outcome,
-          ),
+          html.text("from "),
+          tag("sub:" <> agent_roster.short_name(child), position(marks, child)),
+          html.text(" · result · " <> outcome),
         ]),
         card_body(report),
       ])
@@ -306,9 +426,10 @@ fn piece_element(
     turns.Nudged(frame:, body:, ..) ->
       html.article([attribute.class("nudge")], [
         html.p([attribute.class("card-head")], [
+          tag("advisor", position(marks, agent_roster.advisor)),
           html.text(case frame {
-            turns.Nudges -> "advisor · nudge · delivered"
-            turns.Advice -> "advisor · advice · delivered"
+            turns.Nudges -> " · nudge · delivered"
+            turns.Advice -> " · advice · delivered"
           }),
         ]),
         card_body(body),

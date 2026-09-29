@@ -154,6 +154,44 @@ pub fn an_observer_socket_accepts_a_chip_click_test() {
   )
 }
 
+// Protocol-change/051, the addendum on the marker relay: the transcript's dots
+// and tags, the breadcrumb's link and a strand view's back link carry a marker
+// and no handler, and the socket admits a click at none of them. A click at a
+// path in the lane's rows, in the centre before the lane, or in the panel
+// after the list is dropped, so a forged click at a marker's place asks for
+// nothing, and the cards the shell presses in their place are the only clicks
+// that focus a strand.
+pub fn an_observer_socket_drops_a_click_on_a_marker_test() {
+  let click_at = fn(path) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\"click\",\"event\":{}}"
+  }
+  list.each(
+    [
+      // A dot, and a tag inside a spawn card, under the lane's rows.
+      "0\t2\t1\t1\t2.0/0\t0",
+      "0\t2\t1\t1\t2.0/0\t1\t0\t0\t1",
+
+      // The breadcrumb's link (its child 4; child 5 is the key hint), before
+      // the lane in the centre.
+      "0\t2\t0\t4",
+
+      // A strand view's back link, after the list in the Strands pane, and a
+      // path in the panes after it.
+      "0\t3\t0\t2\t0",
+      "0\t3\t1\t3\t0",
+      "0\t3\t2\t1",
+    ],
+    fn(path) {
+      assert !ui_socket.observer_accepts(click_at(path))
+    },
+  )
+
+  // What the shell presses instead is a card, which is admitted.
+  assert ui_socket.observer_accepts(click_at(component.strip_path <> "\t3\t0"))
+}
+
 pub fn an_operator_socket_accepts_only_its_two_events_test() {
   assert ui_socket.operator_accepts("{\"kind\":1,\"name\":\"click\"}")
   assert ui_socket.operator_accepts("{\"kind\":1,\"name\":\"submit\"}")

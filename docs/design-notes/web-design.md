@@ -876,6 +876,31 @@ From the mockup:
 - The mockup's session switch left the Changes, Trace and Session tabs showing
   the old session; here every region follows (section 3.4).
 
+As built in steps 4 and 5 (the tabbed panel, the timeline and the strand's
+view), where the build differs from the text above:
+
+- The panel has Strands, Changes and Session tabs. Trace is not built, as
+  section 6.3 rules. The Changes tab is always present: with no edit it holds
+  its heading and a line saying so.
+- The Session tab shows the goal, the jobs, the viewers (operator pages only)
+  and the estimated cost. It has no schedules row, because the shared record
+  keeps a schedule listing only as transcript lines the page does not draw.
+- A marker's number is the card's position among the cards as drawn: the
+  listed strands in order, then the advisor. `main` is always zero. Section
+  3.1's "1 for the advisor" would have made the advisor's number depend on
+  whether the strip held other strands; the position as drawn is one function
+  for the cards and the lane (`strip.positions`).
+- A card is a ring, a name and one status line. The figures moved to the
+  strand's view: Model, Context, Cache (the words `cache_miss` allows, drawn
+  where a card once drew them beside its ring) and Running. There is no Cost
+  row, since the session keeps its cost as one total and no ledger of a
+  strand's own. `Recent` lists the tools the strand ran lately, without ages,
+  since `agent_view` keeps the names only.
+- Dots and tags are drawn for the strands the transcript names (a spawn, a
+  result, a nudge) and for the strand on screen as decoration. A piece that
+  belongs to the strand on screen carries no marker, and a strand the page
+  does not list is words and not a control.
+
 From `web-ui.md`: the 280 px sidebar and the 56 px rail (section 2) become the
 232 px sidebar; the 56 px agent strip and the warp margin (sections 2 and 3.1)
 become the panel's strand cards and the single timeline; the right pane's

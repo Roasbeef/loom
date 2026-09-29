@@ -137,6 +137,7 @@ import session_view/snapshot
 import session_view/snapshot_view
 import session_view/step
 import session_view/step_effect
+import session_view/strand_card
 import session_view/text_hygiene
 import session_view/transcript
 import session_view/transcript_line.{
@@ -148,6 +149,7 @@ import session_view/worktree_view
 import web_view/ending.{type Ending}
 import web_view/sessions
 import web_view/view/changes
+import web_view/view/crumb
 import web_view/view/ended
 import web_view/view/expansion
 import web_view/view/heading
@@ -157,6 +159,7 @@ import web_view/view/nudges
 import web_view/view/panel
 import web_view/view/session_tab
 import web_view/view/shell
+import web_view/view/strand_detail
 import web_view/view/strip
 import web_view/view/todo_panel
 
@@ -204,27 +207,29 @@ pub const live_rows = 150
 pub const held_rows = 300
 
 /// The Lustre event path of the lane's "Load older" button, on both pages:
-/// the lane is the first child of the centre column, which is the third
-/// child of the page's frame (`view/shell`), the line above its oldest row
-/// the lane's first child, and the button that line's first child. The page
-/// socket admits a `click` from an observer at this path and no other event
+/// the lane is the second child of the centre column, which is the third
+/// child of the page's frame (`view/shell`), after the breadcrumb or the empty
+/// node in its place; the line above its oldest row is the lane's first
+/// child, and the button that line's first child. The page socket admits a
+/// `click` from an observer at this path and no other event
 /// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the
 /// addendum on history paging). `page_events_test` fails if the view moves
 /// the button, so the two cannot drift apart.
-pub const older_path = "0\t2\t0\t0\t0"
+pub const older_path = "0\t2\t1\t0\t0"
 
 /// The Lustre event path of the strand panel's card list, on both pages: the
 /// panel is the fourth and last child of the page's frame (`view/shell`); its
-/// title is the panel's first child, the strip's `nav` its second, and the
-/// `ul` of cards the `nav`'s first child. Every handler under it
-/// is one card's button, which focuses that card's strand, so the page
-/// socket admits a `click` from an observer at any path beneath it and no
-/// other path but `older_path` (`client/daemon/ui_socket.observer_accepts`,
-/// protocol-change/051, the addendum on strand focus). A path beneath the
-/// list that names no button finds no handler in the runtime and does
-/// nothing. `page_events_test` fails if the view moves the panel or the
-/// buttons leave the list.
-pub const strip_path = "0\t3\t1\t0"
+/// first child is the Strands pane, whose title is the pane's first child, the
+/// strip's `nav` its second, and the `ul` of cards the `nav`'s first child.
+/// The Changes and Session panes come after the Strands pane and hold no
+/// handler. Every handler under the list is one card's button, which focuses
+/// that card's strand, so the page socket admits a `click` from an observer at
+/// any path beneath it and no other path but `older_path`
+/// (`client/daemon/ui_socket.observer_accepts`, protocol-change/051, the
+/// addendum on strand focus). A path beneath the list that names no button
+/// finds no handler in the runtime and does nothing. `page_events_test` fails
+/// if the view moves the panel or the buttons leave the list.
+pub const strip_path = "0\t3\t0\t1\t0"
 
 /// How long the sidebar's list stands before the page reads it again, in
 /// milliseconds of the transport's clock. The list changes when a session is
@@ -1436,11 +1441,14 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
   let chips =
     agent_roster.chips(shared.roster, shared.agent_rows, shared.active_strand)
   let chip = fn(line: agent_roster.Line) {
+    let row = agent_row(shared, line.id)
     strip.Chip(
       line:,
       hue: turns.hue(shared.strands, line.id),
       cache: outlook(shared, line.id),
       running_ms: running_ms(shared, line.id),
+      model: option.map(row, fn(row) { row.model }) |> option.unwrap(""),
+      recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
     )
   }
   strip.Strip(
@@ -1449,6 +1457,14 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
     settled: chips.settled,
     followed: shared.active_strand,
   )
+}
+
+// A strand's agent row, which carries what its own view shows beyond the
+// roster's line: the model it runs on and the tools it ran lately.
+fn agent_row(shared: Session(socket), id: String) -> Option(agent_view.Row) {
+  shared.agent_rows
+  |> list.find(fn(row) { row.id == id })
+  |> option.from_result
 }
 
 // How long a strand's current operation has run, on the roster's clock.
@@ -2419,9 +2435,10 @@ pub fn session_id(model: Model(socket)) -> String {
 }
 
 /// The observer's page: the top bar, no sidebar, a centre column holding the
-/// lane, the todo panel when the strand has a board or a reviewer is
-/// running, the advisor's pending nudges when any are queued and a fixed line
-/// saying the page is read-only, and the strand panel. Its event handlers are
+/// breadcrumb while another strand is in focus, the lane, the todo panel when
+/// the strand has a board or a reviewer is running, the advisor's pending
+/// nudges when any are queued and a fixed line saying the page is read-only,
+/// and the strand panel. Its event handlers are
 /// the lane's "Load older" button, whose message asks for a read and nothing
 /// else, and one focus click per card of the strand panel; the page socket
 /// admits those from an observer and drops every other frame
@@ -2442,15 +2459,15 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     heading(model),
     shell.Unlisted,
     [
+      crumb(model),
       lane.view(
         model.view.pieces,
         live(model),
         top(model),
         OlderRequested,
         lane.NoReplies,
+        marks(model),
       ),
-      changes.view(model.view.changes),
-      session_tab.view(jobs(model), None),
       plan(model),
       nudges.view(pending_nudges(model)),
       html.p([attribute.class("observer-bar")], [
@@ -2459,25 +2476,120 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         ),
       ]),
     ],
-    strands(model, FocusRequested),
+    panel(model, FocusRequested, None),
+    needing(model),
   )
 }
 
-/// The strand panel both pages draw: a card for each strand the page lists,
-/// each a button whose click is `focus` applied to the strand's name. A
-/// page's message type decides what a press means, so the operator's page
-/// passes its own wrapper.
+/// The strand panel both pages draw: the Strands pane with a card for each
+/// strand the page lists, each a button whose click is `focus` applied to the
+/// strand's name, then the Changes and Session panes. A page's message type
+/// decides what a press means, so the operator's page passes its own wrapper.
+///
+/// `viewers` is the attached viewers the Session pane draws, or `None` on a
+/// page that does not show them: the observer's, on the ruling that a link
+/// handed to someone who may only watch does not tell them who else is
+/// watching.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.strands(model, FocusRequested)
+/// // component.panel(model, FocusRequested, None)
 /// ```
-pub fn strands(
+pub fn panel(
   model: Model(socket),
   focus: fn(String) -> message,
+  viewers: Option(session_summary.Viewers),
 ) -> Element(message) {
-  panel.view(strip.count(model.view.strip), strip.view(model.view.strip, focus))
+  panel.view(
+    strip.count(model.view.strip),
+    strip.view(model.view.strip, focus),
+    detail(model),
+    changes.view(model.view.changes),
+    session_tab.view(
+      option.map(goal(model), goal_view.row) |> option.unwrap([]),
+      cost_text(model),
+      jobs(model),
+      viewers,
+    ),
+  )
+}
+
+/// The strand on screen's own view for the Strands tab, when there is one: a
+/// strand other than `main`, which has none, since focusing `main` is `All
+/// strands` and shows the list.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.detail(model) == None
+/// ```
+pub fn detail(model: Model(socket)) -> Option(Element(message)) {
+  case model.shared.active_strand == primary {
+    True -> None
+    False ->
+      strip.followed_card(model.view.strip)
+      |> option.map(strand_detail.view)
+  }
+}
+
+/// The breadcrumb above the transcript while a strand other than `main` is in
+/// focus, or the empty node that keeps its place otherwise, so the
+/// transcript's path is the same in both.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.crumb(model)
+/// ```
+pub fn crumb(model: Model(socket)) -> Element(message) {
+  case model.shared.active_strand == primary {
+    True -> element.none()
+    False ->
+      case strip.followed_card(model.view.strip) {
+        Some(card) ->
+          crumb.view(
+            heading.session_name(
+              model.shared.session,
+              option.map(model.view.label, fn(label) { label.name }),
+            ),
+            card.line.name,
+          )
+        None -> element.none()
+      }
+  }
+}
+
+/// What the lane needs to mark its rows as belonging to a strand: the strand
+/// on screen and its hue, and the position of each strand the panel lists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.marks(model).active == "main"
+/// ```
+pub fn marks(model: Model(socket)) -> lane.Marks {
+  lane.Marks(
+    active: model.shared.active_strand,
+    hue: turns.hue(model.shared.strands, model.shared.active_strand),
+    positions: strip.positions(model.view.strip),
+  )
+}
+
+/// How many strands are waiting on a decision, the number on the Strands tab's
+/// badge. It counts the strip's cards, so a strand the page does not list is
+/// not counted, and `session_view/strand_card` is what decides which state
+/// counts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.needing(model) == 0
+/// ```
+pub fn needing(model: Model(socket)) -> Int {
+  chips(model.view.strip)
+  |> list.map(fn(chip) { chip.line })
+  |> strand_card.needing
 }
 
 /// The todo panel both pages draw above their bottom bar: the followed
@@ -2569,9 +2681,15 @@ pub fn heading(model: Model(socket)) -> Element(message) {
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
     status: status_text(model.view.status),
     context: context_view.footer(model.shared.context),
-    cost: "est $" <> transcript_lines.money(model.shared.usage.cost.total),
+    cost: cost_text(model),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )
+}
+
+// The session's running cost as the top bar and the Session tab word it,
+// which is the terminal's footer's own words.
+fn cost_text(model: Model(socket)) -> String {
+  "est $" <> transcript_lines.money(model.shared.usage.cost.total)
 }
 
 // The ending a page that has ended draws a notice for.
