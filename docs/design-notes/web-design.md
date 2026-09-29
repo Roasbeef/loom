@@ -113,6 +113,12 @@ This is the read-only list of #636, with the mockup's styling. A row shows the
 session's name, and, for the session on screen only, one thin bar per live
 strand in the strand's hue, pulsing while the strand works.
 
+Each workspace's heading is drawn as a small, muted, uppercase,
+letter-spaced label (an eyebrow) above its group, and a one-pixel hairline in
+the `divider` token, with space above and below it, separates one group from
+the next, so that it is clear where one group ends and the next begins; a
+group has no box or background of its own (team feedback, 2026-09-29).
+
 Collapsed by default: nothing in it is collapsed. The whole sidebar can be
 hidden (section 4).
 
