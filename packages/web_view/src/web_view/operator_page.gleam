@@ -53,6 +53,7 @@ import session_view/operator
 import session_view/snapshot
 import web_view/completion
 import web_view/component
+import web_view/view/changes
 import web_view/view/controls
 import web_view/view/lane
 import web_view/view/nudges
@@ -180,6 +181,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       Observed(component.OlderRequested),
       lane.Replies(Replying),
     ),
+    changes.view(component.changes(model)),
     html.footer([attribute.class("dock")], [
       component.plan(model),
       nudges.view(component.pending_nudges(model)),

@@ -194,6 +194,17 @@ page keys and nonces, and the relay into the session's gateway.
   between the lane and the bar on the observer's, so the lane's
   `older_path` is unchanged. The terminal's idle-advisor placeholder is not
   drawn.
+- `changes.view(board)` draws the Changes section on both pages from
+  `component.changes(model)`, the board `session_view/changes_view` folds from
+  the records of the window the page projects (`relaned` builds it with the
+  transcript, so a message that moved neither costs no fold). It is a
+  collapsed `<details>` below the lane on both pages, `Changes · 2 files · +14
+  -2` with `from this session's edits` under it, then one `<details>` per file
+  with the first open. Paths and diff rows are text nodes; a row's class is
+  one of four literals chosen from the fold's `Kind`. It has no handler, is
+  memoized on the board, and is `element.none()` with no edit. It reads no
+  worktree: the daemon serves worktree bytes to an Owner binding only. The
+  tabbed panel of the web design note will move it into a Changes tab.
 - `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip

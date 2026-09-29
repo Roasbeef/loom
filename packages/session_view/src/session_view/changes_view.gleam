@@ -1,0 +1,326 @@
+//// Changes from the session's own edits: the files the agent edited and the
+//// diff each edit reported, folded into a bounded board.
+////
+//// A page cannot read the worktree. The daemon serves worktree bytes to an
+//// Owner binding only, and a page is capped at Operator, so a git diff is not
+//// available to it and this module does not ask for one (owner ruling,
+//// 2026-09-29, issue #569). What a page does hold is the strand's records,
+//// and a successful `fs_edit` result carries the `path` it changed and the
+//// `diff` of the change as headerless unified hunks. `fold` reads those and
+//// nothing else. The board is therefore what the agent wrote, not what is in
+//// the tree: it omits a change made outside the session (a shell command, an
+//// editor) and keeps an edit the tree has since reverted. A host that shows
+//// it says so, with `label`.
+////
+//// The fold works over the records a host holds, which is a window of the
+//// strand and not necessarily all of it, so an edit older than the window is
+//// not counted. That is the same limit the transcript itself has.
+////
+//// Everything here is bounded, because the board is drawn into every
+//// viewer's document. A board holds at most `max_files` files, a file at most
+//// `max_file_rows` rows, and the board at most `max_rows` rows in all, and a
+//// row's text is cut to `max_row_characters` characters. A cut is counted and
+//// never silent: the file says how many rows it left out, and the board says
+//// how many files. The `+` and `-` totals count every edit's lines, cut or
+//// not, so a bound changes what is drawn and never what is reported.
+////
+//// A row's `Kind` is computed here from the row's first characters and is a
+//// closed type, so a host chooses a style from the type and never from the
+//// text. The text is session text and is meant to be drawn as a text node.
+//// The module is portable: it imports `core`, other `session_view`
+//// modules and the standard library, holds no `@external`, and performs no
+//// I/O, so the terminal can draw the same board.
+
+import core/json
+import core/message
+import gleam/dict.{type Dict}
+import gleam/int
+import gleam/list
+import gleam/option.{Some}
+import gleam/result
+import gleam/string
+import session_view/protocol
+import session_view/text_hygiene
+import session_view/tool_activity
+
+/// The most files a board holds. A further file is counted and not held.
+pub const max_files = 24
+
+/// The most rows one file holds.
+pub const max_file_rows = 200
+
+/// The most rows the whole board holds, across its files.
+pub const max_rows = 600
+
+/// The most characters one row's text keeps. A longer row ends in `…`.
+pub const max_row_characters = 240
+
+/// The most characters a path keeps. A longer path keeps its end.
+pub const max_path_characters = 160
+
+/// What a diff row is, decided from its first characters.
+pub type Kind {
+  /// A hunk header, `@@ -9,6 +9,12 @@`.
+  Hunk
+
+  /// A line the edit added.
+  Added
+
+  /// A line the edit removed.
+  Removed
+
+  /// An unchanged line shown for context.
+  Context
+}
+
+/// One line of a diff.
+pub type Row {
+  Row(
+    /// What the line is, which decides how a host styles it.
+    kind: Kind,
+    /// The line as the edit reported it, marker included, on one line and
+    /// free of control characters. Session text.
+    text: String,
+  )
+}
+
+/// One file the session edited.
+pub type File {
+  File(
+    /// The path as the edit named it, cut to `max_path_characters`. Session
+    /// text.
+    path: String,
+    /// Lines the file's edits added, all of them, held or not.
+    added: Int,
+    /// Lines the file's edits removed, all of them, held or not.
+    removed: Int,
+    /// The diff rows held, oldest edit first, each edit's hunks in order.
+    rows: List(Row),
+    /// How many rows the bounds left out of `rows`.
+    cut: Int,
+  )
+}
+
+/// The session's edits, folded.
+pub type Board {
+  Board(
+    /// The files held, in the order the session first edited them.
+    files: List(File),
+    /// Every file the session edited, held or not.
+    file_count: Int,
+    /// Lines added across every edit, in every file.
+    added: Int,
+    /// Lines removed across every edit, in every file.
+    removed: Int,
+  )
+}
+
+/// A board with no edit in it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert changes_view.empty().file_count == 0
+/// ```
+pub fn empty() -> Board {
+  Board(files: [], file_count: 0, added: 0, removed: 0)
+}
+
+/// What a host calls the board, so a reader is not led to take it for the
+/// state of the tree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert changes_view.label() == "from this session's edits"
+/// ```
+pub fn label() -> String {
+  "from this session's edits"
+}
+
+/// The board's one-line total, `2 files · +14 -2`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert changes_view.totals(changes_view.empty()) == "0 files · +0 -0"
+/// ```
+pub fn totals(board: Board) -> String {
+  int.to_string(board.file_count)
+  <> case board.file_count {
+    1 -> " file"
+    _ -> " files"
+  }
+  <> " · +"
+  <> int.to_string(board.added)
+  <> " -"
+  <> int.to_string(board.removed)
+}
+
+/// Folds a strand's records, newest first, as a branch holds them, into the
+/// board of the edits they carry.
+///
+/// A call counts when its result is in the records, succeeded, and named a
+/// path and a diff. A call whose result is outside the window, a failed edit,
+/// and a result with no diff (an older record) add nothing. Two edits of one
+/// path are one file, with the second edit's hunks after the first's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert changes_view.fold([]) == changes_view.empty()
+/// ```
+pub fn fold(records: List(protocol.EntryRecord)) -> Board {
+  let edits =
+    records
+    |> list.reverse
+    |> list.map(fn(record) { record.entry })
+    |> tool_activity.project
+    |> list.flat_map(calls)
+    |> list.filter_map(edit)
+  let #(order, diffs) = group(edits)
+  let files =
+    list.map(order, fn(path) {
+      file(path, result.unwrap(dict.get(diffs, path), []))
+    })
+
+  Board(
+    files: bound_rows(list.take(files, max_files), max_rows),
+    file_count: list.length(files),
+    added: list.fold(files, 0, fn(total, file) { total + file.added }),
+    removed: list.fold(files, 0, fn(total, file) { total + file.removed }),
+  )
+}
+
+// The calls of a tool group. Prose, and a result whose call is outside the
+// window, hold none.
+fn calls(item: tool_activity.Item) -> List(tool_activity.Call) {
+  case item {
+    tool_activity.Tools(calls:) -> calls
+    tool_activity.Narrative(_) -> []
+  }
+}
+
+// One successful `fs_edit` as its path and diff, or nothing.
+fn edit(call: tool_activity.Call) -> Result(#(String, String), Nil) {
+  case call.invocation.name, call.outcome {
+    "fs_edit",
+      Some(message.ToolResultMessage(
+        is_error: False,
+        details: Some(json.Object(fields)),
+        ..,
+      ))
+    -> {
+      use path <- result.try(text(fields, "path"))
+      use diff <- result.try(text(fields, "diff"))
+      Ok(#(path, diff))
+    }
+    _, _ -> Error(Nil)
+  }
+}
+
+fn text(
+  fields: List(#(String, json.JsonValue)),
+  name: String,
+) -> Result(String, Nil) {
+  case list.key_find(fields, name) {
+    Ok(json.String(value)) -> Ok(value)
+    Ok(_) | Error(Nil) -> Error(Nil)
+  }
+}
+
+// The paths in the order they were first edited, and each path's diffs,
+// oldest first.
+fn group(
+  edits: List(#(String, String)),
+) -> #(List(String), Dict(String, List(String))) {
+  let #(order, diffs) =
+    list.fold(edits, #([], dict.new()), fn(seen, edit) {
+      let #(order, diffs) = seen
+      let #(path, diff) = edit
+
+      case dict.get(diffs, path) {
+        Ok(earlier) -> #(order, dict.insert(diffs, path, [diff, ..earlier]))
+        Error(Nil) -> #([path, ..order], dict.insert(diffs, path, [diff]))
+      }
+    })
+
+  #(
+    list.reverse(order),
+    dict.map_values(diffs, fn(_, later) { list.reverse(later) }),
+  )
+}
+
+// One file: every diff's rows, counted whole and then cut to the file's
+// bound.
+fn file(path: String, diffs: List(String)) -> File {
+  let rows = list.flat_map(diffs, diff_rows)
+  let #(added, removed) = counts(rows)
+
+  File(
+    path: text_hygiene.fit_tail(
+      text_hygiene.single_line(path),
+      max_path_characters,
+    ),
+    added:,
+    removed:,
+    rows: list.take(list.map(rows, clipped), max_file_rows),
+    cut: int.max(0, list.length(rows) - max_file_rows),
+  )
+}
+
+// A diff's lines, each with its kind.
+fn diff_rows(diff: String) -> List(#(Kind, String)) {
+  text_hygiene.multiline(diff)
+  |> string.split("\n")
+  |> list.map(fn(line) { #(kind(line), line) })
+}
+
+// A line's kind, from its first characters. A line that begins `+++` or
+// `---` is an added or removed line like any other: the hunks are headerless,
+// so no file header can be mistaken for one.
+fn kind(line: String) -> Kind {
+  case string.starts_with(line, "@@"), string.first(line) {
+    True, _ -> Hunk
+    False, Ok("+") -> Added
+    False, Ok("-") -> Removed
+    False, Ok(_) | False, Error(Nil) -> Context
+  }
+}
+
+fn counts(rows: List(#(Kind, String))) -> #(Int, Int) {
+  list.fold(rows, #(0, 0), fn(total, row) {
+    case row.0 {
+      Added -> #(total.0 + 1, total.1)
+      Removed -> #(total.0, total.1 + 1)
+      Hunk | Context -> total
+    }
+  })
+}
+
+// A row with its text cut to the row bound.
+fn clipped(row: #(Kind, String)) -> Row {
+  let line = text_hygiene.single_line(row.1)
+
+  case string.length(line) > max_row_characters {
+    True -> Row(row.0, string.slice(line, 0, max_row_characters - 1) <> "…")
+    False -> Row(row.0, line)
+  }
+}
+
+// Cuts the files' rows so that all of them together fit `budget`, taking
+// from the first file on, and records what each file lost.
+fn bound_rows(files: List(File), budget: Int) -> List(File) {
+  case files {
+    [] -> []
+    [first, ..rest] -> {
+      let held = list.take(first.rows, budget)
+      let lost = list.length(first.rows) - list.length(held)
+
+      [
+        File(..first, rows: held, cut: first.cut + lost),
+        ..bound_rows(rest, budget - list.length(held))
+      ]
+    }
+  }
+}

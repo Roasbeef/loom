@@ -1001,3 +1001,42 @@ pub fn remembered() -> session_channel.Update {
     [],
   )
 }
+
+/// A capture of `main` holding one prompt and then one successful `fs_edit`
+/// call and result per edit, each edit a path and the unified diff its result
+/// reports, which is how a page's records read when the agent has edited
+/// files.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.edited([#("src/a.gleam", "@@ -1 +1 @@\n-a\n+b")])
+/// ```
+pub fn edited(edits: List(#(String, String))) -> session_channel.Update {
+  let calls =
+    list.index_map(edits, fn(edit, index) {
+      let call_id = "edit-" <> int.to_string(index)
+      let details =
+        json.Object([
+          #("path", json.String(edit.0)),
+          #("diff", json.String(edit.1)),
+        ])
+      let seq = 2 + index * 2
+
+      [
+        item(
+          seq,
+          11_000 + seq,
+          assistant([call(call_id, "fs_edit", json.Object([]))]),
+        ),
+        item(seq + 1, 11_000 + seq + 1, result(call_id, "fs_edit", details, 0)),
+      ]
+    })
+
+  capture_of(
+    [item(1, 10_000, said("edit it", None)), ..list.flatten(calls)],
+    None,
+    [],
+    [],
+  )
+}

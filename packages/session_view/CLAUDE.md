@@ -350,6 +350,16 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   evidence) are the pieces the record holds that came with it from the
   terminal.
 
+- `changes_view.fold(records)` folds a strand's records, as a branch holds
+  them newest first, into the board of the session's own edits: the files
+  the successful `fs_edit` results named, each with the diff the result
+  reported as rows of a closed `Kind` (`Hunk`, `Added`, `Removed`,
+  `Context`) and the `+` and `-` totals. It reads no worktree, so it is what
+  the agent wrote in the window and not the state of the tree, and it says so
+  (`label`). It is bounded (`max_files` 24, `max_file_rows` 200, `max_rows`
+  600, `max_row_characters` 240) and every cut is counted. The web page's
+  Changes section draws it; the terminal's `/diff` still reads the worktree.
+
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and
 `advisor_pending`, `block_summary` (summarizer labels), `command` and

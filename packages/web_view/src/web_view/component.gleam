@@ -117,6 +117,7 @@ import session_view/approval
 import session_view/block_summary
 import session_view/cache_miss
 import session_view/cache_watch
+import session_view/changes_view
 import session_view/command
 import session_view/connection_event
 import session_view/goal_view
@@ -143,6 +144,7 @@ import session_view/transcript_lines
 import session_view/turns
 import web_view/ending.{type Ending}
 import web_view/sessions
+import web_view/view/changes
 import web_view/view/ended
 import web_view/view/expansion
 import web_view/view/heading
@@ -470,6 +472,10 @@ type View(socket) {
     pieces: List(turns.Piece),
     /// The inputs `blocks` and `pieces` were derived from.
     projected: Projected,
+    /// The edits the held window carries (`session_view/changes_view`),
+    /// folded when the projection is built, so a message that changed none
+    /// of its inputs costs the Changes section no fold.
+    changes: changes_view.Board,
     /// The live answers the page draws (`live`): the shared record's
     /// streams for the followed strand, and after a pushed entry clears
     /// them, the last ones until a capture holds the entry
@@ -608,6 +614,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       blocks: [],
       pieces: [],
       projected: projected_of(shared, Tail),
+      changes: changes_view.empty(),
       streams: [],
       strip: strip.Strip(
         chips: [],
@@ -1200,7 +1207,14 @@ fn relaned(model: Model(socket)) -> Model(socket) {
       }
       settled_projection(Model(
         shared: Shared(..shared, scrollback:),
-        view: View(..model.view, blocks:, pieces:, earlier:, paging:),
+        view: View(
+          ..model.view,
+          blocks:,
+          pieces:,
+          earlier:,
+          paging:,
+          changes: changes_view.fold(branch.records),
+        ),
       ))
     }
   }
@@ -2382,6 +2396,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       OlderRequested,
       lane.NoReplies,
     ),
+    changes.view(model.view.changes),
     plan(model),
     nudges.view(pending_nudges(model)),
     html.p([attribute.class("observer-bar")], [
@@ -2416,6 +2431,21 @@ pub fn plan(model: Model(socket)) -> Element(message) {
     option.from_result(dict.get(model.shared.todo_boards, strand)),
     reviewer_status.lines(model.shared.reviewer_rows, strand),
   )
+}
+
+/// The edits of the session the page holds, from the records the page
+/// projects, for the Changes section.
+///
+/// It is derived with the transcript, not read from the worktree, so it is
+/// what the agent wrote in this window and not the state of the tree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.changes(model)
+/// ```
+pub fn changes(model: Model(socket)) -> changes_view.Board {
+  model.view.changes
 }
 
 /// The page's heading, drawn by `web_view/view/heading` from the session's
