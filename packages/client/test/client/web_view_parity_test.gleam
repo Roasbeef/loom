@@ -157,6 +157,7 @@ fn start() -> component.Start(process.Subject(String)) {
       transmit: fn(wire, frame) { process.send(wire, frame) },
       shut: fn(_) { Nil },
       now: fn() { 0 },
+      sessions: fn() { [] },
     ),
   )
 }

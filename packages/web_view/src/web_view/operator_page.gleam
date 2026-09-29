@@ -50,6 +50,7 @@ import session_view/snapshot
 import web_view/completion
 import web_view/component
 import web_view/view/lane
+import web_view/view/sidebar
 import web_view/view/strip
 
 /// Everything an operator's page can be told.
@@ -144,7 +145,9 @@ pub fn update(
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
-    strip.view(component.strip(model)),
+    strip.view(component.strip(model), fn(strand) {
+      Observed(component.FocusRequested(strand))
+    }),
     lane.view(
       component.pieces(model),
       component.live(model),
@@ -156,6 +159,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       approvals(component.pending(model)),
       composer(model),
     ]),
+    sidebar.view(component.session_groups(model), component.session_id(model)),
   ])
 }
 
@@ -329,8 +333,8 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
         [
           attribute.name("draft"),
           attribute.rows(3),
-          attribute.aria_label("Message to " <> component.strand),
-          attribute.placeholder("Message " <> component.strand),
+          attribute.aria_label("Message to " <> component.strand(model)),
+          attribute.placeholder("Message " <> component.strand(model)),
         ],
         "",
       ),
@@ -366,7 +370,7 @@ fn identity(model: component.Model(socket)) -> Element(Msg(socket)) {
     [attribute.class("identity")],
     list.append(who, [
       html.span([attribute.class("addressed")], [
-        html.text("→ " <> component.strand),
+        html.text("→ " <> component.strand(model)),
       ]),
       outlook(component.addressed(model)),
     ]),

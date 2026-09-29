@@ -13,8 +13,16 @@
 //// attribute, a class or a key. The chips are listed by position rather
 //// than keyed by name, and a chip's hue comes from its position among the
 //// captured strands, never from its name. Every class is a complete
-//// literal, so Tailwind finds it. No chip carries a handler or takes
-//// focus: switching the strand the lane follows is the extracted step's.
+//// literal, so Tailwind finds it.
+////
+//// A chip is a button that focuses its strand: the page shows that strand's
+//// transcript and addresses it (`component.focus`). Its handler's message is
+//// made by the function `view` is given, from the strand's name as the strip
+//// was built, so the browser's event names only a path. The chips are the
+//// strip's `ul`'s children, which is what `component.strip_path` counts on
+//// and the observer's socket admits clicks under
+//// (protocol-change/051, the addendum on strand focus). The strip that says
+//// "settled" is not a control.
 ////
 //// The types live here rather than in `web_view/component` because the
 //// component imports this module to lay the page out, and a module the
@@ -28,15 +36,11 @@ import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/event
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/cache_miss
 import session_view/turns
-
-/// The strand the page follows, whose chip the strip marks as the current
-/// one. `component.strand` is this constant: the page shows and addresses
-/// the same strand.
-pub const followed = "main"
 
 /// One agent chip: the roster's line for a strand, the hue its position
 /// gives it, and what may be said about its prompt cache.
@@ -66,23 +70,29 @@ pub type Strip {
     advisor: Option(Chip),
     /// How many strands settled and left the strip.
     settled: Int,
+    /// The strand the page shows and addresses, whose chip the strip marks
+    /// as the current one (`aria-current`, the `following` class). It is
+    /// part of the strip so that moving focus redraws the strip, whose
+    /// memo is keyed on the whole value.
+    followed: String,
   )
 }
 
 /// The agent strip: one chip per listed strand, the advisor's chip last,
 /// and one chip counting the strands that settled.
 ///
-/// The chips are drawn and not operated: switching the strand the lane
-/// follows needs the extracted step, so no chip is a control, none takes
-/// focus, and none carries a handler. The list is memoized on the strip,
-/// which the component rebuilds only when something it draws changed.
+/// Each chip is a button whose click is `focus` applied to the strand's
+/// name, so a page's message type decides what a press means. The list is
+/// memoized on the strip, which the component rebuilds only when something
+/// it draws changed; `focus` is a function of the page and not of the
+/// session, so it does not key the memo.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // strip.view(component.strip(model))
+/// // strip.view(component.strip(model), FocusRequested)
 /// ```
-pub fn view(strip: Strip) -> Element(message) {
+pub fn view(strip: Strip, focus: fn(String) -> message) -> Element(message) {
   use <- element.memo([element.ref(strip)])
   case strip.chips, strip.advisor {
     [], None -> element.none()
@@ -97,6 +107,7 @@ pub fn view(strip: Strip) -> Element(message) {
           ]),
         ]
       }
+      let chip_element = chip_element(_, strip.followed, focus)
       let advisor = case strip.advisor {
         Some(chip) -> [chip_element(chip)]
         None -> []
@@ -117,7 +128,11 @@ pub fn view(strip: Strip) -> Element(message) {
   }
 }
 
-fn chip_element(chip: Chip) -> Element(message) {
+fn chip_element(
+  chip: Chip,
+  followed: String,
+  focus: fn(String) -> message,
+) -> Element(message) {
   let line = chip.line
   let figures =
     option.map(line.tokens, fn(count) {
@@ -126,37 +141,64 @@ fn chip_element(chip: Chip) -> Element(message) {
     |> option.to_result(Nil)
     |> result.map(list.wrap)
     |> result.unwrap([])
-  html.li(chip_attributes(chip), [
+  html.li(chip_attributes(chip, followed), [
     html.span([attribute.class("swatch"), attribute.aria_hidden(True)], []),
-    html.span([attribute.class("chip-head")], [
-      html.span([attribute.class("chip-name")], [html.text(line.name)]),
-      html.span([attribute.class("state"), status_class(line.status)], [
-        html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
-          html.text(status_glyph(line.status)),
+    html.button(
+      [
+        attribute.type_("button"),
+        attribute.class("chip-hit"),
+        ..press_attributes(chip.line.id, followed, focus)
+      ],
+      [
+        html.span([attribute.class("chip-head")], [
+          html.span([attribute.class("chip-name")], [html.text(line.name)]),
+          html.span([attribute.class("state"), status_class(line.status)], [
+            html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
+              html.text(status_glyph(line.status)),
+            ]),
+            html.text(agent_view.label(line.status)),
+          ]),
         ]),
-        html.text(agent_view.label(line.status)),
-      ]),
-    ]),
-    html.span([attribute.class("chip-activity")], [html.text(line.text)]),
-    html.span([attribute.class("chip-figures")], [
-      elapsed(chip),
-      html.text(string.join(figures, " · ")),
-      ring(chip.cache),
-    ]),
+        html.span([attribute.class("chip-activity")], [html.text(line.text)]),
+        html.span([attribute.class("chip-figures")], [
+          elapsed(chip),
+          html.text(string.join(figures, " · ")),
+          ring(chip.cache),
+        ]),
+      ],
+    ),
   ])
 }
 
-// The chip of the strand the lane follows is marked as the current one, for
-// a screen reader in words as well as by its ring.
-fn chip_attributes(chip: Chip) -> List(attribute.Attribute(message)) {
+// The chip of the strand the page shows is marked as the current one by its
+// ring and, on its button, in words for a screen reader.
+fn chip_attributes(
+  chip: Chip,
+  followed: String,
+) -> List(attribute.Attribute(message)) {
   case chip.line.id == followed {
     True -> [
       attribute.class("chip"),
       attribute.class("following"),
-      attribute.attribute("aria-current", "true"),
       hue_class(chip.hue),
     ]
     False -> [attribute.class("chip"), hue_class(chip.hue)]
+  }
+}
+
+// The button's handler and its state. The current chip is pressed and still
+// carries the handler: focusing the strand already shown changes nothing,
+// which is `component.focus`'s to say and cheaper than a second view for a
+// chip that a stale browser may still press.
+fn press_attributes(
+  strand: String,
+  followed: String,
+  focus: fn(String) -> message,
+) -> List(attribute.Attribute(message)) {
+  let press = event.on_click(focus(strand))
+  case strand == followed {
+    True -> [attribute.attribute("aria-current", "true"), press]
+    False -> [press]
   }
 }
 

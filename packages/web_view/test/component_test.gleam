@@ -221,8 +221,10 @@ pub fn a_refused_open_ends_the_page_test() {
 
 // Protocol-change/051, the operator addendum: an observer's page is a fixed
 // line with no composer, and a pending escalation draws no card and no
-// button. Its one handler, "Load older", is drawn only when older rows
-// exist, which this empty session has none of (`paging_test` covers it).
+// approval button. Its handlers are the agent strip's chips, which focus a
+// strand (the addendum on strand focus), and "Load older", which is drawn only
+// when older rows exist, which this empty session has none of (`paging_test`
+// covers it).
 pub fn an_observer_page_has_no_handler_and_no_card_test() {
   let page =
     simulate.message(simulation(), component.Opened(wire()))
@@ -234,15 +236,22 @@ pub fn an_observer_page_has_no_handler_and_no_card_test() {
     |> simulate.message(component.Ticked)
   let html = element.to_string(simulate.view(page))
   assert string.contains(html, "Observer · read-only")
-  assert !string.contains(html, "<button")
+  assert !string.contains(html, "approval")
   assert !string.contains(html, "<form")
   assert !string.contains(html, "<textarea")
+
+  // Every button on the page is a strip chip, of which this session has one.
+  assert list.length(string.split(html, "<button")) == 2
+  assert string.contains(
+    html,
+    "<button aria-current=\"true\" class=\"chip-hit\"",
+  )
 
   let clicked =
     simulate.click(page, on: query.element(query.class("observer-bar")))
   let assert Ok(simulate.Problem(name: "EventHandlerNotFound", ..)) =
     list.last(simulate.history(clicked))
-    as "an observer page holds no click handler"
+    as "the observer's bar holds no click handler"
 
   let submitted =
     simulate.submit(page, on: query.element(query.tag("main")), fields: [

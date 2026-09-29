@@ -326,6 +326,12 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   order. `step.new(strand, session, stamp, inbox, replay_inbox)` builds the
   record such a host starts from, with no lane and `peer: Disconnected`;
   the host adopts a lane with `hold_channel` and sets `peer` to `Attached`.
+  `step.focus(shared, strand, stamp)` is the same host's change of strand:
+  the terminal's `switch_active_strand` less its surfaces (`cancel_unsent`
+  with each update applied, `commands.focus`, `commands.load_strand` with
+  `nothing_shown()`), settled against the record it started from and with
+  the surface facts dropped, returning the effects. The caller checks that
+  the strand is listed and not already active.
   `Shared.ended` is why the adopted lane failed, set by the lane fold; the
   terminal never reads it and clears it when it adopts a lane. The step's
   functions are `@internal`, so they are not in `gleam export

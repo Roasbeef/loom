@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:370`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:382`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -276,15 +276,18 @@ flowchart LR
 
 - **The observer's page** is `web_view/component`. Its message type is the
   connection's outcome, the timer's subject, batches of arrivals, the
-  timer's fire and `OlderRequested`, a read of older history, and nothing
-  else, so it has no way to express a command. Its view attaches one event
-  handler, the lane's "Load older" click, drawn only while older rows
-  exist (051, the addendum on history paging). Where an operator's page
-  has its composer, it draws a fixed line saying the page is read-only.
-  The socket admits only that click, at its fixed path
-  (`component.older_path`), and drops every other browser frame before it
-  reaches the runtime (`observer_accepts`), which also spares the
-  component a render per dropped frame.
+  timer's fire, `OlderRequested`, a read of older history, `FocusRequested`,
+  a change of the strand the page shows, and the sidebar read's answer
+  `SessionsListed`, and nothing else, so it has no way to express a
+  command. Its view attaches two kinds of event handler: the lane's "Load
+  older" click, drawn only while older rows exist (051, the addendum on
+  history paging), and one click per chip of the agent strip (051, the
+  addendum on strand focus). Where an operator's page has its composer, it
+  draws a fixed line saying the page is read-only. The socket admits only a
+  click at the button's fixed path (`component.older_path`) or beneath the
+  strip's chip list (`component.strip_path`), and drops every other browser
+  frame before it reaches the runtime (`observer_accepts`), which also
+  spares the component a render per dropped frame.
 - **The operator's page** is `web_view/operator_page`. It wraps the
   observer's messages in `Observed` and adds `Submitted(text, delivery)`
   and `Decided(id, seq, answer)`. The lane's "Load older" button sends
@@ -580,10 +583,41 @@ observer's binding (`gateway.read_only` lists `History`), and the lane
 sends it on any attachment (`session_channel.history` checks no role).
 Protocol-change/051's addendum on history paging lets the observer's page
 carry this one handler: the button's message is `component.OlderRequested`
-on both pages, and the page socket admits from an observer only a `click`
-at `component.older_path` and drops every other frame
+on both pages, and the page socket admits from an observer a `click` at
+`component.older_path` and drops every other frame
 (`ui_socket.observer_accepts`). `page_events_test` pins that the
-observer's rendered view registers that one handler at that path.
+observer's rendered view registers that handler at that path.
+
+## Strand focus and the session sidebar
+
+**Focus.** Each chip of the agent strip is a button whose message is
+`FocusRequested(name)`, built from the name the strip was drawn with, so a
+browser's click chooses among the chips and cannot name a strand. The
+component runs `step.focus` (the terminal's change of strand less its
+surfaces: cancel the lane's unsent frames, `commands.focus`,
+`commands.load_strand`), drops any history read owed for the strand being
+left, and restarts paging at the newest rows. The projection, strip, todo
+panel and composer then read the active strand instead of `main`. It is a
+change of what the page reads and sends no command, so it is on the
+observer's page as well; the gateway and the lane refuse an observer's
+mutation as before, and an operator's prompt, steer, queue and commands go
+to the strand on screen. The socket admits an observer's click beneath
+`component.strip_path` (051, the addendum on strand focus).
+`focus_test` covers the behaviour and `page_events_test` the paths.
+
+**The sidebar.** `ui_socket` gives the component `Transport.sessions`, the
+authorized catalogue read the terminal's session picker uses
+(`manager.authorized_page`) made with the page's credential digest, so a
+member sees only their own sessions and a revoked credential none. The
+component reads it when the page opens and at most every 30 seconds on a
+tick (an observer's page is given an empty list and draws no sidebar, so a
+stolen observer link does not disclose the principal's other sessions),
+groups it by workspace (`web_view/sessions`), and `view/sidebar`
+draws it read-only as the page's last child, so no admitted event path
+moves. The entry carries name, workspace, creation time and residency, and
+nothing of the registration's path, key or configuration. Opening another
+session is not implemented: a page is bound to one session by its key, and
+051's addendum sets out what minting a ticket from a page would change.
 
 ## Expanding a row
 
@@ -783,6 +817,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/ended.gleam` | The notice a page draws from an `Ending`, inside the heading. |
 | `packages/web_view/src/web_view/view/heading.gleam` | The heading: the session's name, its workspace and the connection's status, drawn from plain values the component hands it. |
 | `packages/web_view/src/web_view/view/strip.gleam` | The agent strip and its `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
+| `packages/web_view/src/web_view/view/sidebar.gleam` | The session sidebar: the principal's sessions by workspace, read-only, memoized, the page's last child. |
+| `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry`, `Residency` and `Group`, and `grouped`, the ordering (current workspace first, newest first). |
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board with the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces, folded work, the cards, and each transcript line and card body in its own leaf memo. |

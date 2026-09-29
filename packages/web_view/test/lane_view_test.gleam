@@ -65,7 +65,7 @@ pub fn the_strip_lists_main_then_working_agents_then_the_advisor_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "<nav aria-label=\"Agents\" class=\"agent-strip\">",
-    "<li aria-current=\"true\" class=\"chip following hue-main\">",
+    "<li class=\"chip following hue-main\">",
     ">main<",
     "<li class=\"chip hue-2\">",
     "&lt;b&gt;review",
@@ -85,7 +85,7 @@ pub fn the_strip_lists_main_then_working_agents_then_the_advisor_test() {
   assert !string.contains(drawn, "since=")
   assert string.contains(
     drawn,
-    "<li aria-current=\"true\" class=\"chip following hue-main\">",
+    "<button aria-current=\"true\" class=\"chip-hit\" type=\"button\">",
   )
 
   // Every state has a glyph and a word, never a colour alone.
@@ -295,9 +295,11 @@ pub fn session_markup_arrives_only_as_text_test() {
     assert string.contains(drawn, "src/&lt;a&gt;.gleam")
   })
 
-  // An observer's page with every piece drawn still holds no control.
+  // An observer's page with every piece drawn holds no control but the
+  // strip's chips, one button each: four strands are listed.
   let observer = html(missed)
-  assert !string.contains(observer, "<button")
+  assert list.length(string.split(observer, "<button")) == 5
+  assert list.length(string.split(observer, "class=\"chip-hit\"")) == 5
   assert !string.contains(observer, "<form")
   assert !string.contains(observer, "\" open")
 }
