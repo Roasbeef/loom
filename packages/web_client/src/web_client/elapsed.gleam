@@ -30,6 +30,7 @@ import lustre/component
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
+import web_client/duration
 import web_client/internal/ffi_dom
 
 /// The element's tag.
@@ -159,35 +160,9 @@ fn stop(timer: Option(ffi_dom.Timer)) -> Effect(Msg) {
 fn view(model: Model) -> Element(Msg) {
   case model.reading {
     Some(reading) ->
-      html.text(duration(
+      html.text(duration.format(
         int.max(0, reading.offset + model.now - reading.anchor) / 1000,
       ))
     None -> element.none()
   }
-}
-
-/// An elapsed duration the way the terminal's strip shows one
-/// (`session_view/agent_roster.duration`): seconds under a minute, minutes
-/// and padded seconds under an hour, then hours and padded minutes.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert elapsed.duration(475) == "7m 55s"
-/// ```
-pub fn duration(seconds: Int) -> String {
-  case seconds >= 3600, seconds >= 60 {
-    True, _ ->
-      int.to_string(seconds / 3600)
-      <> "h "
-      <> pad2({ seconds % 3600 } / 60)
-      <> "m"
-    False, True ->
-      int.to_string(seconds / 60) <> "m " <> pad2(seconds % 60) <> "s"
-    False, False -> int.to_string(int.max(0, seconds)) <> "s"
-  }
-}
-
-fn pad2(value: Int) -> String {
-  string.pad_start(int.to_string(value), to: 2, with: "0")
 }

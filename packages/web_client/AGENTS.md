@@ -55,24 +55,25 @@ time builds anything.
   had run, in milliseconds, by the server (`agent_roster.running_ms`), and
   is the only attribute the element reads; `anchor` is the browser's clock
   when it arrived. The element never subtracts a daemon instant from the
-  browser's clock. `elapsed.duration` is the terminal strip's format.
+  browser's clock. `duration.format` is the terminal strip's format.
 - `fold.Model` (`Closed` | `Opened`) and `fold.Msg` (`Toggled`): the fold's
   shadow root holds one button carrying the `summary` slot and, while open,
   the default slot. Each toggle emits `fold.toggled_event`
   (`loom-fold-toggled`, bubbling and composed, no data).
-- `follow.Model(position, gap, top, extent, touched, watching, anchor)`,
-  `follow.Position` (`Following` | `Reading`) and `follow.Msg` (`Connected`,
+- `follow.Model(reader, watching, anchor)` (`follow_rule.Reader` holds
+  position, gap, top, extent and touched, and `follow_rule` moves it),
+  `follow_rule.Position` (`Following` | `Reading`) and `follow.Msg` (`Connected`,
   `Disconnected`, `Watched`, `Touched`, `Scrolled(top, extent, at)`,
   `Resized`, `Measured`, `Folded`, `Paged`, `Jumped`, `Held`, `Released`):
   a scroll sets the position from where it ended, which way it moved and who
-  moved it (`follow.after_scroll(current, gap, moved, origin)`). Within
-  `follow.slack` pixels of the bottom is `Following`. A move up that ends
+  moved it (`follow_rule.after_scroll(current, gap, moved, origin)`). Within
+  `follow_rule.slack` pixels of the bottom is `Following`. A move up that ends
   further away is `Reading` only when the reader made it; a move down that
   ends further away changes nothing, because that is either the reader
   coming back or the element's own scroll to the bottom reported after more
-  rows landed. `follow.origin` tells who made a scroll: `Input` when a
+  rows landed. `follow_rule.origin` tells who made a scroll: `Input` when a
   `wheel`, `touchstart`, `touchmove`, `pointerdown` or `keydown` on the element was heard
-  within `follow.touch_window` (`Touched`, passive listeners that read
+  within `follow_rule.touch_window` (`Touched`, passive listeners that read
   nothing from the event), `Steady` when nothing was heard but the
   transcript's `Extent` (content and view height) is what it was at the
   last scroll (find-in-page, a key pressed outside the transcript, a
@@ -89,8 +90,8 @@ time builds anything.
   lane's first row and its place on screen (`follow.Anchor`, `None` when
   the page has no lane row); a scroll by the reader measures it again, and
   the first resize after which that row is no longer the lane's first
-  scrolls the transcript to put it back and releases it (`follow.keeping`
-  over a `follow.Standing`: `Detached`, `Leading`, `Displaced(top)`). The
+  scrolls the transcript to put it back and releases it (`follow_rule.keeping`
+  over a `follow_rule.Standing`: `Detached`, `Leading`, `Displaced(top)`). The
   watch (`follow.Watching`) is the element, its scroll listener and input
   listeners, a `ResizeObserver` on the element and on each of its
   children, and a `MutationObserver` that keeps those current: the
@@ -102,25 +103,25 @@ time builds anything.
 - `composer.Model(entries, draft, selected, palette, returns)` and
   `composer.Msg` (`Configured`, `Returned`, `Typed`, `Moved`, `Accepted`,
   `Picked`, `Dismissed`, `Sent`, `Ignored`): `commands` is the table the
-  server built from the terminal's suggestions (`composer.entries` decodes
-  it, and decodes to no table if it is not one); `composer.matching(entries,
+  server built from the terminal's suggestions (`composer_rule.entries` decodes
+  it, and decodes to no table if it is not one); `composer_rule.matching(entries,
   draft)` is `command.suggestions`' rule over that table, one-word commands
   by prefix and a word with a closed vocabulary (`/effort `, `/goal `) by
-  its argument rows past the space. `composer.intent(key, chord, phase,
+  its argument rows past the space. `composer_rule.intent(key, chord, phase,
   palette)` says what a key does: Command or Control with Enter is `Sent`
   and its default cancelled; while the list shows, the arrows are `Moved`,
   Tab and Enter are `Accepted` and Escape is `Dismissed`; everything else,
   and every key during composition, is the browser's. `Returns` is `Unseen`
   or `Seen(taken)`: the first `returned` count is the baseline, so an editor
-  drawn afresh takes none of the returns before it. `composer.hear` turns
+  drawn afresh takes none of the returns before it. `composer_rule.hear` turns
   each later count into `Take(after, up_to)` when it is above `taken` and
   advances `taken` in the same turn, so two returns that arrive before one
   frame paints claim disjoint ranges and each prompt is taken once. The
   effect reads the numbered children of the `returned` slot, and
-  `composer.taken` picks the ones in the range, oldest first, and
-  `composer.joined` puts each in the draft (an empty editor takes it as its
+  `composer_rule.taken` picks the ones in the range, oldest first, and
+  `composer_rule.joined` puts each in the draft (an empty editor takes it as its
   draft; a typed one keeps its text and takes it after a blank line).
-  `composer.revealed` says where the list scrolls to keep the highlighted
+  `composer_rule.revealed` says where the list scrolls to keep the highlighted
   row in view. The shadow root holds the
   list, above one default slot; the list is `role="listbox"` and its rows
   `role="option"`.
@@ -144,10 +145,21 @@ time builds anything.
 
 ## Tests
 
+What the components decide is in three modules that import neither Lustre nor
+`ffi_dom`: `follow_rule` (the scroll rule, `Reader` and its transitions,
+`keeping`), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,
+`joined`, `revealed`) and `duration`. `follow`, `composer` and `elapsed` are
+the elements over them. The split is enforced, not just conventional: Lustre's
+client runtime declares `class LustreEvent extends CustomEvent` at load, Node
+18 (the signoff container's) has no global `CustomEvent`, and a test that
+imports an element throws before any test runs. `scripts/web_client_test.sh`
+walks the imports reachable from `test/` and fails if one reaches `lustre` or
+`web_client/internal/`.
+
 `test/` holds gleeunit tests for what the components decide: `follow`'s
 scroll rules and the sequences of messages the page sends, `composer`'s
 `matching`, `intent`, `hear`, `taken`, `joined` and `revealed`, and
-`elapsed.duration`. They run on the JavaScript target, so they need Node,
+`duration.format`. They run on the JavaScript target, so they need Node,
 Bun or Deno: `make test-web_client` (`scripts/web_client_test.sh`, which
 `scripts/check.sh` runs after the compile). The container the signoff runs in
 installs Node for this; a machine with no runtime prints a `SKIP` line that
@@ -218,9 +230,9 @@ it sends is the form's submit, which the server already accepts.
 - **Only a scroll the reader made leaves the tail.** A browser moves the
   scroll position up by itself when content shrinks or the box grows, and the
   event is heard after the rows that landed since, so by geometry alone it is
-  the reader leaving. `follow.origin` refuses that (see `follow.Model`
-  above). Keep any change to the follow rule inside `follow.after_scroll` and
-  `follow.origin`, and add a sequence to `test/follow_test.gleam`.
+  the reader leaving. `follow_rule.origin` refuses that (see `follow.Model`
+  above). Keep any change to the follow rule inside `follow_rule.after_scroll` and
+  `follow_rule.origin`, and add a sequence to `test/follow_test.gleam`.
 - **The committed bundle is generated.** Change this package and run `make
   gen-client`; `make client-check` (part of `make check`) fails on drift,
   by digests, without Node, Bun or a network.
