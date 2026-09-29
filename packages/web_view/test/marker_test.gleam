@@ -11,6 +11,7 @@
 //// has a handler. That no handler is drawn is also pinned from the runtime's
 //// side, in `page_events_test`.
 
+import gleam/dict
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -137,6 +138,14 @@ pub fn a_marker_names_the_card_of_the_same_strand_test() {
   assert string.contains(from_last, ">advisor<")
 }
 
+// Position zero is `main`, wherever `main` is listed: the marker of `All
+// strands` is the constant zero and the shell treats it so.
+pub fn position_zero_is_main_test() {
+  let positions = strip.positions(component.strip(settled()))
+  assert dict.get(positions, "main") == Ok(0)
+  assert dict.get(positions, "advisor") == Ok(3)
+}
+
 // A marker is a number and nothing else: no identity the daemon minted, no
 // name the session wrote, whatever the strand is called. The fixture's names
 // hold markup and a minted slug, which reach the page as text and never as
@@ -189,9 +198,7 @@ pub fn a_strand_the_page_does_not_list_is_not_a_control_test() {
 // are buttons.
 pub fn a_dot_is_a_span_and_never_a_button_test() {
   let html = observer(settled())
-  let dots = string.split(html, "class=\"dot\"") |> list.drop(1)
-  assert dots != []
-  list.each(dots, fn(_) { Nil })
+  assert count(html, "class=\"dot\"") > 0
   assert !string.contains(html, "<button aria-hidden")
   assert !string.contains(html, "tabindex")
   assert count(html, "<span aria-hidden=\"true\" class=\"dot\"")

@@ -456,3 +456,121 @@ pub fn the_toggles_name_their_shortcuts_test() {
 pub fn escape_clicks_the_breadcrumbs_link_test() {
   assert shell_rule.crumb_link() == "[data-loom-crumb] [data-loom-focus]"
 }
+
+// --- where a key was pressed, from the event's composed path ---------------
+
+fn node(tag: String) -> shell_rule.Step {
+  shell_rule.Step(
+    tag:,
+    approvals: shell_rule.Unmarked,
+    editing: shell_rule.Fixed,
+  )
+}
+
+fn region() -> shell_rule.Step {
+  shell_rule.Step(..node("section"), approvals: shell_rule.Marked)
+}
+
+// The document's listener sees the target retargeted to the outermost shadow
+// host, so the rule reads the whole path: from the focused node outward,
+// through shadow roots (which have no tag), up to the window.
+pub fn a_path_through_the_approval_region_is_approvals_test() {
+  // A card's button, its card, the region, then the dock and the page.
+  let path = [
+    node("button"),
+    node("article"),
+    region(),
+    node("footer"),
+    node("main"),
+    node("loom-shell"),
+    node(""),
+    node("body"),
+    node("html"),
+    node(""),
+  ]
+  assert shell_rule.target(path) == shell_rule.Approvals
+}
+
+// The region wins over anything that would make the path an editor: a
+// textarea inside a card is still inside the region, where no key acts.
+pub fn the_approval_region_wins_over_an_editor_test() {
+  assert shell_rule.target([node("textarea"), region(), node("body")])
+    == shell_rule.Approvals
+  assert shell_rule.target([region(), node("loom-composer")])
+    == shell_rule.Approvals
+}
+
+// A path through the composer's shadow root: the focused node is inside the
+// composer's own tree, shadow roots in the path have no tag, and the
+// composer's tag is further out.
+pub fn a_path_through_the_composers_shadow_root_is_the_editor_test() {
+  let path = [
+    node("li"),
+    node("ul"),
+    node(""),
+    node("loom-composer"),
+    node("form"),
+    node("footer"),
+    node("body"),
+  ]
+  assert shell_rule.target(path) == shell_rule.Editor
+
+  // The editor slotted into the composer, seen from its textarea.
+  assert shell_rule.target([
+      node("textarea"),
+      node("loom-composer"),
+      node("form"),
+    ])
+    == shell_rule.Editor
+}
+
+// A field that takes text is the editor wherever it is: the Fork and Set goal
+// forms are not the composer, and what is typed in them is theirs.
+pub fn a_text_field_anywhere_is_the_editor_test() {
+  list.each(["input", "textarea", "select"], fn(tag) {
+    assert shell_rule.target([node(tag), node("form"), node("details")])
+      == shell_rule.Editor
+  })
+}
+
+// An element whose text can be edited is the editor whatever its tag.
+pub fn editable_text_anywhere_is_the_editor_test() {
+  let editable = shell_rule.Step(..node("div"), editing: shell_rule.Editable)
+  assert shell_rule.target([editable, node("main"), node("body")])
+    == shell_rule.Editor
+}
+
+// Focus on `body`, the page's usual state, is neither: the shortcuts act. So
+// is a click's leftovers on a span, a button, or no path at all.
+pub fn body_and_the_rest_of_the_page_are_elsewhere_test() {
+  assert shell_rule.target([node("body"), node("html"), node("")])
+    == shell_rule.Elsewhere
+  assert shell_rule.target([node("span"), node("button"), node("aside")])
+    == shell_rule.Elsewhere
+  assert shell_rule.target([]) == shell_rule.Elsewhere
+}
+
+// The rule's answer feeds the intent: on `body` the toggles act, in a field
+// `Escape` does not, and in the region nothing does.
+pub fn the_path_decides_what_a_key_does_test() {
+  let with = fn(path, base: shell_rule.Keystroke) {
+    shell_rule.Keystroke(..base, target: shell_rule.target(path))
+  }
+  let toggle = stroke("b", "KeyB", command())
+  let escape = stroke("Escape", "Escape", free)
+
+  assert shell_rule.intent(with([node("body")], toggle), Listed)
+    == Some(shell_rule.ToggleSidebar)
+  assert shell_rule.intent(with([node("body")], escape), Listed)
+    == Some(shell_rule.LeaveStrand)
+
+  assert shell_rule.intent(with([node("input"), node("body")], escape), Listed)
+    == None
+  assert shell_rule.intent(with([node("input"), node("body")], toggle), Listed)
+    == Some(shell_rule.ToggleSidebar)
+
+  assert shell_rule.intent(with([node("button"), region()], toggle), Listed)
+    == None
+  assert shell_rule.intent(with([node("button"), region()], escape), Listed)
+    == None
+}

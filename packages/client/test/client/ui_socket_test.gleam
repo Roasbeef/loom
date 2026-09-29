@@ -173,8 +173,9 @@ pub fn an_observer_socket_drops_a_click_on_a_marker_test() {
       "0\t2\t1\t1\t2.0/0\t0",
       "0\t2\t1\t1\t2.0/0\t1\t0\t0\t1",
 
-      // The breadcrumb's link, before the lane in the centre.
-      "0\t2\t0\t5",
+      // The breadcrumb's link (its child 4; child 5 is the key hint), before
+      // the lane in the centre.
+      "0\t2\t0\t4",
 
       // A strand view's back link, after the list in the Strands pane, and a
       // path in the panes after it.

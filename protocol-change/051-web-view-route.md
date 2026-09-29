@@ -2142,12 +2142,12 @@ argument that the departure is safe:
   `shell_rule.Intent` is a closed type of three constructors, and
   `shell_test` walks all of them.
 - **Inside the region of approval cards the rule takes no key at all.** The
-  server marks the region `data-loom-approvals`. The listener reads the event's
-  target, and a key whose target is inside that region is dropped by
-  `shell_rule.intent` before it is matched, whatever the key and the
-  modifiers, so not even a toggle acts with focus in a card. The tests pass
-  every key of the set and several others, in every modifier set, with the
-  target inside the region.
+  server marks the region `data-loom-approvals`. The listener reads the nodes the
+  event passed through, its composed path, and a key whose path includes that
+  region is dropped by `shell_rule.intent` before it is matched, whatever the
+  key and the modifiers, so not even a toggle acts with focus in a card. The
+  tests pass every key of the set and several others, in every modifier set,
+  with the region in the path.
 - **The listener sends the server nothing and there is no server handler for a
   key.** The operator's tree registers clicks and submits and no key event
   (`page_events_test`, with an approval pending), the operator's socket admits
@@ -2164,10 +2164,38 @@ argument that the departure is safe:
 
 ### What was decided
 
-**Scope.** The listener is on the shell's own frame, the element every region
-of the page is in, and not on `document`. It hears a key with focus anywhere in
-the page, which is everything the page has; a listener on `document` would hear
-keys from nothing the page draws and is a larger claim for no gain.
+**Scope.** The listener is on the document, added when the element connects
+and removed when it disconnects, so a page that replaces the element leaves
+nothing listening. An earlier draft put it on the shell's own frame, on the
+reasoning that the page has no content outside the shell. That hears nothing
+while focus is on `body`, which is the page's usual state: after a load, after
+a click on transcript text or on a dot, and in browsers that do not focus a
+button when it is clicked. A listener that hears nothing there would make the
+shortcuts work only after the reader had tabbed into the page. The document
+hears every key pressed in the page whatever has focus.
+
+The document is a larger claim than the frame, and it is safe for the reasons
+above, which do not depend on where the listener is: no intent sends anything
+to the session, decides anything or takes focus, the server has no key handler,
+and the two places where a key belongs to something else are excluded by where
+the key was pressed. That is read from the event's composed path and not from
+its target. At the document an event's target is retargeted to the outermost
+shadow host, so the composer's editor, which is inside a shadow tree, and a
+card inside the page's own tree would both look like the same host. The path
+holds every node from the focused one outward, shadow roots included. The
+shell reads three facts of each node (its tag, whether it is the approval
+region, whether its text can be edited) and `shell_rule.target` decides:
+inside the region is `Approvals`, which wins; in the composer, or in any
+input, textarea, select or editable text, wherever it is (the Fork and Set goal
+forms too), is `Editor`; anything else, `body` included, is `Elsewhere`. The
+DOM calls are single-call exports in `internal/dom.mjs` (`get_document`,
+`add_listener`, `composed_path`, `tag_name`, `attribute`,
+`is_content_editable` and `prevent_default`), and the classification is Gleam,
+tested on Node with a path through the region, through the composer's shadow
+root, through a field and through `body`. Whether the page has a sidebar is
+read from the host's `sidebar` attribute when the key is pressed, since the
+browser's action is cancelled or not in the event, before a message could be
+reduced.
 
 **The key set.** Exactly these three, and no other key is read. The letter is
 matched by `code`, `KeyB`, in both toggles, because Option changes `key` on a
@@ -2199,7 +2227,8 @@ keyboard-only.
 
 ### What was considered
 
-- **A listener on `document`.** See scope.
+- **A listener on the shell's frame.** It never hears a key with focus on
+  `body`, which is where the page usually is. See scope.
 - **Leaving the toggles out while focus is in the composer.** The design note
   proposed that they act there and this follows it.
 - **`Escape` sending a focus event of its own.** A key that changes server
@@ -2208,8 +2237,10 @@ keyboard-only.
 
 ### Cost
 
-- One `keydown` listener on the frame, whose decoder reads two strings for
-  every key press and the rest only for the two the rule may read.
+- One `keydown` listener on the document while the element is connected, whose
+  callback decodes eight fields of every key press and reads the path only for
+  the two keys the rule may read. Other listeners on the page (the composer's,
+  the follower's) run before it and are not affected.
 - `<loom-shell>` and the composer both act on keys in the composer's editor:
   the composer on its own keys, the shell on `B` with a command key. They do not
   overlap: the composer's keys are Command or Control with Enter, the arrows,

@@ -492,8 +492,9 @@ pub type Repetition {
 
 /// Where a key was pressed, as far as the shell needs to know.
 pub type Target {
-  /// In the composer, whose editor and list belong to the composer's own
-  /// keys.
+  /// In the composer, or in any field that takes text: an input, a
+  /// textarea, a select or an element whose text can be edited. What is typed
+  /// there is the field's own.
   Editor
 
   /// Inside the region of approval cards, where no shortcut acts.
@@ -688,4 +689,73 @@ pub fn crumb_link() -> String {
 /// ```
 pub fn candidate(key: String, code: String) -> Bool {
   key == "Escape" || code == "KeyB"
+}
+
+/// Whether a node of an event's path carries the marker of the approval
+/// cards' region.
+pub type Marker {
+  /// The node is the region, so the event is inside it.
+  Marked
+
+  /// It is not.
+  Unmarked
+}
+
+/// Whether a node's text can be edited by typing.
+pub type Editing {
+  /// The node is an element whose text can be edited.
+  Editable
+
+  /// It is not, or it is not an element.
+  Fixed
+}
+
+/// What the shell reads of one node an event passed through.
+pub type Step {
+  Step(
+    /// The node's tag in lower case, or empty for a node with none: the window,
+    /// the document and a shadow root.
+    tag: String,
+    /// Whether the node is the approval region.
+    approvals: Marker,
+    /// Whether the node's text can be edited.
+    editing: Editing,
+  )
+}
+
+/// Where a key was pressed, from the nodes its event passed through, from the
+/// target outward and through shadow trees. Any node that is the approval
+/// region makes it `Approvals`, which wins over every other. Otherwise any
+/// node that is the composer, a text field of any kind or editable text makes
+/// it `Editor`. Anything else, including a path with no nodes, is `Elsewhere`.
+///
+/// The path is what the shell reads at the document, where an event's target
+/// has been retargeted to the outermost shadow host and would hide both the
+/// composer's editor and the cards.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.target([]) == shell_rule.Elsewhere
+/// ```
+pub fn target(path: List(Step)) -> Target {
+  case list.any(path, fn(step) { step.approvals == Marked }) {
+    True -> Approvals
+    False ->
+      case list.any(path, fn(step) { editable(step) }) {
+        True -> Editor
+        False -> Elsewhere
+      }
+  }
+}
+
+fn editable(step: Step) -> Bool {
+  case step.tag, step.editing {
+    "loom-composer", _ -> True
+    "textarea", _ -> True
+    "input", _ -> True
+    "select", _ -> True
+    _, Editable -> True
+    _, Fixed -> False
+  }
 }

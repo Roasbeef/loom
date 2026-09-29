@@ -165,9 +165,10 @@ time builds anything.
   `Prevention`, `Repetition`), `intent` (`ToggleSidebar | TogglePanel |
   LeaveStrand`, or nothing), `cancels`, `candidate`, `title`, `shortcuts` and
   `crumb_link`, and
-  `shell.Model(layout, sidebar, needing)` and `shell.Msg` (`Toggled(region)`,
+  `shell.Model(layout, sidebar, needing, keys)` and `shell.Msg` (`Toggled(region)`,
   `Chosen(tab)`, `SidebarChanged(presence)`, `NeedingChanged(count)`,
-  `Relayed(relay)`, `Pressed(intent)`): the
+  `Relayed(relay)`, `Pressed(intent)`, `Connected`, `Disconnected`,
+  `Listening(listener)`): the
   shadow root holds the bar (the two buttons around the `bar` slot) and the
   body (a wrapper per side column around its slot, and the default slot in the
   centre; the panel's wrapper holds the tab bar above the slot). A closed
@@ -207,7 +208,9 @@ time builds anything.
   `children`, `closest`, `query_selector`, `query_selector_all`, `dataset_get`,
   `text_content`, `scroll_top`, `set_scroll_top`, `scroll_by`,
   `scroll_height`, `client_height`, `offset_top`, `offset_height`,
-  `bounding_top`, `add_passive_listener`, `remove_listener`,
+  `bounding_top`, `add_passive_listener`, `add_listener` (called with the
+  event, and may cancel it), `remove_listener`, `get_document`, `composed_path`,
+  `tag_name`, `attribute`, `is_content_editable`, `prevent_default`,
   `resize_observer`, `observe`, `mutation_observer`, `observe_child_list`,
   `disconnect`, `value`, `set_value`, `utf16_length`, `set_selection_range`,
   `focus`, `click`, `request_submit`, `request_submit_with`, `now`,
@@ -266,6 +269,9 @@ scroll position, observes the size of itself and its children, and hears
 a pointer press and a key pressed inside itself; it reads no content. `<loom-composer>` listens to its own
 editor's `input` and `keydown`, and writes the editor's value; the one thing
 it sends is the form's submit, which the server already accepts.
+`<loom-shell>` listens to `keydown` on the document while connected, reads the
+event's key fields and, for `Escape` and `B` only, its composed path, and
+sends the server nothing.
 
 ## Invariants
 
@@ -282,11 +288,16 @@ it sends is the form's submit, which the server already accepts.
   subtree, as the page's frame, and is the one other element that acts on a
   key, on three (protocol-change/051, the addendum on the keyboard): Command or
   Control with `B` hides or shows the sidebar, with Alt too the panel, and
-  `Escape` presses the breadcrumb's `All strands` link. It listens on its own
-  frame, decodes the keystroke into plain values and lets
-  `shell_rule.intent` decide; a key that is neither `Escape` nor `KeyB` is
-  dropped before its target is looked at. The rule takes no key at all when
-  the target is inside an element marked `data-loom-approvals`, and none while
+  `Escape` presses the breadcrumb's `All strands` link. It listens on the
+  document while connected (removed on disconnect), since the page's usual
+  focus is `body`; decodes the keystroke into plain values; reads where it was
+  pressed from the event's composed path (`shell_rule.Step` per node,
+  `shell_rule.target`), because at the document the target is retargeted to
+  the outermost shadow host; and lets `shell_rule.intent` decide. A key that is
+  neither `Escape` nor `KeyB` is dropped before its path is looked at. The rule
+  takes no key at all when the path includes an element marked
+  `data-loom-approvals`, treats the composer and any input, textarea, select or
+  editable text as the editor, and takes none while
   composing, when the default was cancelled, or while a key repeats; `Escape`
   does nothing in the composer, and the sidebar shortcut nothing on a page with
   no sidebar. The toggles cancel the browser's action, `Escape` does not.

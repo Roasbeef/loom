@@ -36,10 +36,13 @@
 //// The element acts on three keys (protocol-change/051, the addendum on the
 //// keyboard): Command or Control with `B` hides or shows the sessions
 //// sidebar, with Alt too the strand panel, and `Escape` puts the page back on
-//// `main`. It listens for `keydown` on its own frame, which every region of the
-//// page is in, decodes the keystroke into plain values, and lets
-//// `shell_rule.intent` say whether it counts. Any other key is dropped by the
-//// decoder before the element looks at where it was pressed. The toggles
+//// `main`. It listens for `keydown` on the document while it is connected,
+//// because the page's usual state has focus on `body`, where a listener on the
+//// frame would hear nothing. It decodes the keystroke into plain values, reads
+//// where the key was pressed from the event's composed path, and lets
+//// `shell_rule.intent` say whether it counts. Any other key is dropped before
+//// the element looks at where it was pressed, and the listener is removed when
+//// the element disconnects. The toggles
 //// change the element's own layout and nothing the server holds. `Escape`
 //// clicks the breadcrumb's `All strands` link, the click a pointer makes, so it
 //// goes through the relay below and does nothing when there is no breadcrumb.
@@ -73,7 +76,8 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import lustre
 import lustre/attribute
 import lustre/component
@@ -81,7 +85,7 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
-import web_client/internal/ffi_dom
+import web_client/internal/ffi_dom.{type Listener}
 import web_client/shell_rule.{
   type Intent, type Layout, type Presence, type Region, type Relay, type Tab,
 }
@@ -92,7 +96,13 @@ pub const name = "loom-shell"
 /// What the element knows: which columns are open and which tab shows,
 /// whether the page has a sidebar, and how many strands wait on a decision.
 pub type Model {
-  Model(layout: Layout, sidebar: Presence, needing: Int)
+  Model(
+    layout: Layout,
+    sidebar: Presence,
+    needing: Int,
+    /// The listener on the document while the element is connected.
+    keys: Option(Listener),
+  )
 }
 
 /// Everything the element can be told.
@@ -116,6 +126,15 @@ pub type Msg {
 
   /// A key was pressed that `shell_rule.intent` took as a shortcut.
   Pressed(intent: Intent)
+
+  /// The element joined the page.
+  Connected
+
+  /// The element left the page.
+  Disconnected
+
+  /// The document's key listener is in place.
+  Listening(listener: Listener)
 }
 
 /// Registers the element with the browser.
@@ -129,6 +148,8 @@ pub fn register() -> Result(Nil, lustre.Error) {
   lustre.component(init, update, view, [
     component.on_attribute_change("sidebar", sidebar),
     component.on_attribute_change("needing", needing),
+    component.on_connect(Connected),
+    component.on_disconnect(Disconnected),
   ])
   |> lustre.register(name)
 }
@@ -153,7 +174,7 @@ fn needing(value: String) -> Result(Msg, Nil) {
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   let layout = shell_rule.initial()
   #(
-    Model(layout:, sidebar: shell_rule.Unlisted, needing: 0),
+    Model(layout:, sidebar: shell_rule.Unlisted, needing: 0, keys: None),
     component.set_pseudo_state(shell_rule.tab_state(layout.tab)),
   )
 }
@@ -169,16 +190,23 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // added in the same turn, so the stylesheet never sees two tabs showing.
     Chosen(tab:) -> #(
       Model(..model, layout: shell_rule.chosen(model.layout, tab)),
-      effect.batch([
-        component.remove_pseudo_state(shell_rule.tab_state(model.layout.tab)),
-        component.set_pseudo_state(shell_rule.tab_state(tab)),
-      ]),
+      tab_changed(model.layout.tab, tab),
     )
     SidebarChanged(presence:) -> #(
       Model(..model, sidebar: presence),
       effect.none(),
     )
     NeedingChanged(count:) -> #(Model(..model, needing: count), effect.none())
+
+    // One listener per connection: moving the element stops the old one
+    // before it starts another, so a page that replaced the element leaves
+    // nothing listening on the document.
+    Connected -> #(model, effect.batch([stop_keys(model.keys), listen()]))
+    Listening(listener:) -> #(
+      Model(..model, keys: Some(listener)),
+      effect.none(),
+    )
+    Disconnected -> #(Model(..model, keys: None), stop_keys(model.keys))
 
     // The two toggles are the buttons' own turn, so a shortcut and a press
     // cannot differ. `Escape` presses the breadcrumb's link, which is the
@@ -245,7 +273,7 @@ fn press_card(card: Int) -> Effect(Msg) {
 }
 
 fn view(model: Model) -> Element(Msg) {
-  html.div([attribute.class("shell"), keys(model.sidebar)], [
+  html.div([attribute.class("shell")], [
     html.div([attribute.class("shell-bar")], [
       button(model, shell_rule.Sidebar),
       component.named_slot("bar", [], []),
@@ -261,62 +289,121 @@ fn view(model: Model) -> Element(Msg) {
   ])
 }
 
-// The frame's key listener. It hears every `keydown` that reaches the frame,
-// which is every key pressed in the page, and drops all but the few the rule
-// may read before it looks at where they were pressed. A shortcut it takes
-// has its browser action cancelled where the rule says. The event is never
-// stopped, and the listener reads no key it does not act on.
-fn keys(presence: Presence) -> attribute.Attribute(Msg) {
-  event.advanced("keydown", {
-    use key <- decode.field("key", decode.string)
-    use code <- decode.field("code", decode.string)
-    case shell_rule.candidate(key, code) {
-      False -> decode.failure(no_shortcut(), "a shortcut key")
-      True -> {
-        use meta <- decode.field("metaKey", modifier())
-        use ctrl <- decode.field("ctrlKey", modifier())
-        use alt <- decode.field("altKey", modifier())
-        use shift <- decode.field("shiftKey", modifier())
-        use composing <- decode.field("isComposing", composition())
-        use handled <- decode.field("defaultPrevented", prevention())
-        use repeating <- decode.field("repeat", repetition())
-        use target <- decode.field(
-          "target",
-          decode.map(decode.dynamic, target_of),
-        )
-        let keystroke =
-          shell_rule.Keystroke(
-            key:,
-            code:,
-            modifiers: shell_rule.Modifiers(meta:, ctrl:, alt:, shift:),
-            target:,
-            composition: composing,
-            prevention: handled,
-            repetition: repeating,
-          )
-        case shell_rule.intent(keystroke, presence) {
-          Some(intent) ->
-            decode.success(event.handler(
-              Pressed(intent),
-              prevent_default: shell_rule.cancels(intent)
-                == shell_rule.Cancelled,
-              stop_propagation: False,
-            ))
-          None -> decode.failure(no_shortcut(), "a shortcut")
-        }
-      }
-    }
-  })
+// Listens for `keydown` on the document. The document hears every key pressed
+// in the page whatever has focus, `body` included, which is the usual state
+// after a load or after a click on text or on a button in a browser that does
+// not focus buttons. The callback runs in the event, so it can cancel the
+// browser's action, and it drops every key but the two the rule may read
+// before it looks at where the key was pressed. The event is never stopped.
+fn listen() -> Effect(Msg) {
+  use dispatch, root <- effect.after_paint
+  let host = ffi_dom.host(ffi_dom.as_element(root))
+  let listener =
+    ffi_dom.add_listener(ffi_dom.get_document(), "keydown", fn(event) {
+      hear(host, event, dispatch)
+    })
+  dispatch(Listening(listener))
 }
 
-// The handler a failed decode names, which is never run: a decode that fails
-// dispatches nothing.
-fn no_shortcut() -> event.Handler(Msg) {
-  event.handler(
-    Pressed(shell_rule.LeaveStrand),
-    prevent_default: False,
-    stop_propagation: False,
-  )
+// Removes the document's listener, if one is in place.
+fn stop_keys(keys: Option(Listener)) -> Effect(Msg) {
+  case keys {
+    None -> effect.none()
+    Some(listener) -> {
+      use _ <- effect.from
+      ffi_dom.remove_listener(ffi_dom.get_document(), "keydown", listener)
+    }
+  }
+}
+
+// One keydown. A key that is not one the rule may read is dropped here,
+// before the path is looked at.
+fn hear(
+  host: ffi_dom.Element,
+  event: Dynamic,
+  dispatch: fn(Msg) -> Nil,
+) -> Nil {
+  case decode.run(event, heard()) {
+    Ok(#(key, code, modifiers, composition, prevention, repetition)) ->
+      case shell_rule.candidate(key, code) {
+        True ->
+          respond(
+            host,
+            event,
+            dispatch,
+            shell_rule.Keystroke(
+              key:,
+              code:,
+              modifiers:,
+              target: target_of(event),
+              composition:,
+              prevention:,
+              repetition:,
+            ),
+          )
+        False -> Nil
+      }
+    Error(_) -> Nil
+  }
+}
+
+// What a keystroke the rule may read asks for. Whether the page has a
+// sidebar is read from the host's own attribute, since the event cannot wait
+// for a message to be reduced before the browser's action is cancelled or
+// not.
+fn respond(
+  host: ffi_dom.Element,
+  event: Dynamic,
+  dispatch: fn(Msg) -> Nil,
+  keystroke: shell_rule.Keystroke,
+) -> Nil {
+  let presence =
+    shell_rule.presence(result.unwrap(ffi_dom.attribute(host, "sidebar"), ""))
+  case shell_rule.intent(keystroke, presence) {
+    None -> Nil
+    Some(intent) -> {
+      cancel(event, intent)
+      dispatch(Pressed(intent))
+    }
+  }
+}
+
+// Cancels the browser's action for the two toggles.
+fn cancel(event: Dynamic, intent: Intent) -> Nil {
+  case shell_rule.cancels(intent) {
+    shell_rule.Cancelled -> ffi_dom.prevent_default(event)
+    shell_rule.Untouched -> Nil
+  }
+}
+
+// What a `keydown` says, but where it was pressed.
+fn heard() -> decode.Decoder(
+  #(
+    String,
+    String,
+    shell_rule.Modifiers,
+    shell_rule.Composition,
+    shell_rule.Prevention,
+    shell_rule.Repetition,
+  ),
+) {
+  use key <- decode.field("key", decode.string)
+  use code <- decode.field("code", decode.string)
+  use meta <- decode.field("metaKey", modifier())
+  use ctrl <- decode.field("ctrlKey", modifier())
+  use alt <- decode.field("altKey", modifier())
+  use shift <- decode.field("shiftKey", modifier())
+  use composing <- decode.field("isComposing", composition())
+  use handled <- decode.field("defaultPrevented", prevention())
+  use repeating <- decode.field("repeat", repetition())
+  decode.success(#(
+    key,
+    code,
+    shell_rule.Modifiers(meta:, ctrl:, alt:, shift:),
+    composing,
+    handled,
+    repeating,
+  ))
 }
 
 fn modifier() -> decode.Decoder(shell_rule.Modifier) {
@@ -355,21 +442,29 @@ fn repetition() -> decode.Decoder(shell_rule.Repetition) {
   })
 }
 
-// Where the key was pressed: inside the approval cards' region, in the
-// composer, or elsewhere. The region and the composer are found by the
-// server's fixed marker and tag, from the event's own target, and the region
-// wins. A target that is not an element is elsewhere, and the rule reads it as
-// any other page key.
-fn target_of(target: Dynamic) -> shell_rule.Target {
-  let element = ffi_dom.as_element(target)
-  case
-    ffi_dom.closest(element, "[data-loom-approvals]"),
-    ffi_dom.closest(element, "loom-composer")
-  {
-    Ok(_), _ -> shell_rule.Approvals
-    Error(Nil), Ok(_) -> shell_rule.Editor
-    Error(Nil), Error(Nil) -> shell_rule.Elsewhere
-  }
+// Where the key was pressed, from the nodes the event passed through. At the
+// document an event's target is the outermost shadow host, so the page's own
+// composer and approval cards would look like one element; the composed path
+// has every node from the focused one outward, shadow trees included. Each is
+// read for the three facts the rule needs, and the rule decides.
+fn target_of(event: Dynamic) -> shell_rule.Target {
+  ffi_dom.composed_path(event)
+  |> list.map(step)
+  |> shell_rule.target
+}
+
+fn step(node: ffi_dom.Element) -> shell_rule.Step {
+  shell_rule.Step(
+    tag: result.unwrap(ffi_dom.tag_name(node), ""),
+    approvals: case ffi_dom.attribute(node, "data-loom-approvals") {
+      Ok(_) -> shell_rule.Marked
+      Error(Nil) -> shell_rule.Unmarked
+    },
+    editing: case ffi_dom.is_content_editable(node) {
+      Ok(True) -> shell_rule.Editable
+      Ok(False) | Error(Nil) -> shell_rule.Fixed
+    },
+  )
 }
 
 // A click on a control that carries the server's strand marker. The marker's
