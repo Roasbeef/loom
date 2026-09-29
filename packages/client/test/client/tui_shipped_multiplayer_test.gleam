@@ -54,6 +54,7 @@ import support/enforcement
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import support/provider_http
+import support/shipped_server
 import support/tui_driver
 import tui/attachment
 import tui/bootstrap
@@ -186,7 +187,7 @@ pub fn tui_shipped_multiplayer_configuration_fans_out_with_author_test_() -> Eun
   // seconds around the native body's 90-second budget and its cleanup. Leave
   // both original listener witnesses inside this 150-second outer deadline.
   Timeout(15, fn() {
-    case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+    case shipped_server.from_environment() {
       Error(Nil) ->
         io.println_error(
           "SKIP shipped multiplayer: LOOM_BOOTSTRAP_E2E_SERVER is unset",
@@ -234,7 +235,7 @@ pub fn tui_shipped_multiplayer_configuration_fans_out_with_author_test_() -> Eun
 
 pub fn tui_shipped_peer_links_deliver_and_revoke_test_() -> EunitTest {
   Timeout(12, fn() {
-    case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+    case shipped_server.from_environment() {
       Error(Nil) ->
         io.println_error(
           "SKIP shipped peer links: LOOM_BOOTSTRAP_E2E_SERVER is unset",

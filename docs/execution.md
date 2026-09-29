@@ -436,6 +436,16 @@ tree and that it must not write anything.
 - **`git checkout <file>` has destroyed uncommitted work here.** Never use it
   to clean up during a wave. Say so in every brief.
 - **Verification worktrees under `/tmp` break code mode** (see §4).
+- **A daemon a test launches reads the operator's home.** `loomd` loads
+  `~/.claude/settings.json` hooks, home skills, `~/.loom/extensions`, home
+  guidance files and the global Git identity from `HOME`. The shipped
+  fixtures once inherited the developer's `HOME`, so their sessions ran the
+  developer's Claude Code hooks and went red on macOS while
+  `signoff/linux`, whose container has no `~/.claude`, stayed green. They
+  now launch the daemon through `test/support/shipped_server`, which gives
+  it an empty private home and a generated Git identity, so they need no
+  special `HOME` from whoever runs them. Anything new that launches
+  `bin/loomd` from a test needs the same isolation.
 - **Two generated artifacts go stale from one change.** Touching
   `packages/cap`'s public surface stales both `tools/prelude.gleam`
   (`make gen-prelude`) and the code-mode build seed (`make codemode-seed`),

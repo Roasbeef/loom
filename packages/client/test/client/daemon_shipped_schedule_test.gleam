@@ -35,6 +35,7 @@ import storage/internal/snapshot_sqlite
 import storage/snapshot
 import support/daemon_observation
 import support/provider_http as provider
+import support/shipped_server
 import support/tui_driver
 import tui/bootstrap
 import tui/daemon
@@ -54,7 +55,7 @@ pub fn daemon_shipped_schedule_defers_saved_and_never_replays_test_() -> EunitTe
   // The runner scales this EUnit timeout by ten. The 90-second body and
   // independent native cleanup remain inside the 150-second test deadline.
   Timeout(15, fn() {
-    case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+    case shipped_server.from_environment() {
       Error(Nil) ->
         io.println_error(
           "SKIP shipped schedule: LOOM_BOOTSTRAP_E2E_SERVER is unset",

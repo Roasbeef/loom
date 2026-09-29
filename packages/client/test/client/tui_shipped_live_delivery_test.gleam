@@ -90,6 +90,7 @@ import simplifile
 import support/daemon_observation
 import support/internal/ffi_ws.{type Socket}
 import support/provider_http
+import support/shipped_server
 import support/tui_driver
 import tui/bootstrap
 import tui/daemon
@@ -159,7 +160,7 @@ pub fn tui_shipped_live_delivery_pushes_both_answers_test_() -> EunitTest {
   // seconds around the native body's 90-second budget and its cleanup, so
   // 150 seconds leaves both listener witnesses inside this outer deadline.
   Timeout(15, fn() {
-    case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+    case shipped_server.from_environment() {
       Error(Nil) ->
         io.println_error(
           "SKIP shipped live delivery: LOOM_BOOTSTRAP_E2E_SERVER is unset",

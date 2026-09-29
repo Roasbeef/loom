@@ -23,6 +23,7 @@ import session_view/snapshot
 import simplifile
 import support/provider_held_http as held
 import support/provider_http as provider
+import support/shipped_server
 import support/tui_driver
 import tui/bootstrap
 import tui/daemon
@@ -42,7 +43,7 @@ pub fn daemon_shipped_stop_preserves_peer_and_recovers_operation_test_() -> Euni
   // The runner scales EUnit timeouts by ten. Keep the 90-second native body,
   // its independent cleanup, and the 110/120-second peers inside 150 seconds.
   Timeout(15, fn() {
-    case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+    case shipped_server.from_environment() {
       Error(Nil) ->
         io.println_error(
           "SKIP shipped stop: LOOM_BOOTSTRAP_E2E_SERVER is unset",
