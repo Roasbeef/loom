@@ -8,18 +8,18 @@
 //// or paints the record.
 ////
 //// The model is two records, `Model(shared: TerminalShared, view: View)`.
-//// `Shared`, defined in `tui/session_model` with the types it names, is the
+//// `Shared`, defined in `session_view/model` with the types it names, is the
 //// session state: what the daemon said, what this client has sent and not
 //// yet seen committed, the reads in flight, and the revision
 //// counters that tell a host its projection is stale. `View` is the
 //// terminal's own state: the screen size, the composer and its history, the
 //// panels, overlays and their cursors, the row projection's outputs, frame
 //// pacing, the host clocks, the daemon-control and attachment job slots, and
-//// the etui render caches. The terminal owns both today. The split is there
-//// because the web view shows the same sessions and should run the same
-//// reducers rather than its own copies (issue #569): a second host holds a
-//// `Shared` beside a view record of its own, and nothing in `Shared` names an
-//// etui type, a terminal surface or a job slot. Three records held both
+//// the etui render caches. The split is there because the web view shows the
+//// same sessions and should run the same reducers rather than its own copies
+//// (issue #569): a second host holds a `Shared` beside a view record of its
+//// own, and nothing in `Shared` names an etui type, a terminal surface or a
+//// job slot. Three records held both
 //// kinds of state and are cut in two: a parked strand's history window is
 //// `Shared.parked_scrollback` beside the editor in `View.strand_workspaces`,
 //// the agent strip's roster is `Shared.roster` beside its keyboard focus
@@ -31,19 +31,18 @@
 //// returns waits in `Shared.returned_drafts` until the terminal moves it into
 //// an editor.
 ////
-//// The record is shaped by the first two slices of moving the client
-//// step into `session_view` (`docs/design-notes/step-extraction.md`).
-//// `Shared` holds four host handles, the adopted lane (`channel`), the
-//// connection and replay inboxes (`inbox`, `replay_inbox`) and the
-//// recorder, and names none of them with a terminal type: it is
-//// `Shared(socket, recorder, source, replay_source)`. The terminal binds
-//// the parameters to its connection, its recording and the two subjects it
-//// reads in `TerminalShared`, which is the type of `Model.shared`. Most
-//// reducers still take the whole `Model` and read a field through the half
-//// that holds it. The reducer cut (issue #569, S3) moves them one layer at a
-//// time, from the helpers they call upward, to functions over `Shared`
-//// alone, which a later slice moves into `session_view`, where the web view
-//// can drive them with its own bindings.
+//// The record is shaped by moving the client step into `session_view`
+//// (`docs/design-notes/step-extraction.md`). `Shared` holds four host
+//// handles, the adopted lane (`channel`), the connection and replay inboxes
+//// (`inbox`, `replay_inbox`) and the recorder, and names none of them with a
+//// terminal type: it is `Shared(socket, recorder, source, replay_source)`.
+//// The terminal binds the parameters to its connection, its recording and
+//// the two subjects it reads in `TerminalShared`, which is the type of
+//// `Model.shared`. The session's reducers are in `session_view` over
+//// `Shared` alone, where the web view can drive them with its own bindings.
+//// The terminal's reducers take the whole `Model`, call those through
+//// `hold_shared` and `run_shared`, and apply what each call recorded for
+//// the terminal's surfaces (`inbound.settle_surfaces`).
 ////
 //// The step's effect queue is `View.outbox`. It holds the terminal's
 //// effects, jobs and the attachment among them, in one order with the
@@ -58,7 +57,7 @@
 //// every reducer needs. Those that change only session state (appending a
 //// system or error line, the transcript and frame revisions, the activity
 //// mark, storing the lane, recording a channelless arrival) are defined
-//// over `Shared` in `tui/session_model`; the functions of the same names
+//// over `Shared` in `session_view/model`; the functions of the same names
 //// here are their forms over the whole model, each a `hold_shared` of the
 //// shared call, for the reducers that still take the whole model. The
 //// terminal's own operations, queuing a terminal effect, starting a job and

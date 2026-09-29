@@ -55,7 +55,7 @@ pub type Correlation {
 
 /// Answers that question for one frame, without decoding its body.
 ///
-/// `tui/attempt_replay` is the caller: it enforces issued-request ordering
+/// `attempt_replay` is the caller: it enforces issued-request ordering
 /// over a recording, and a pushed frame is outside that ordering entirely.
 /// A frame this cannot parse is `NamesARequest`, so an undecodable
 /// recording still fails on the credit rule it used to fail on rather than

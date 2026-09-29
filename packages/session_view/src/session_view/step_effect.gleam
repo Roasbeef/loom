@@ -22,9 +22,10 @@
 //// in the order the step decided them. A web host would perform the same values against
 //// its own relay and a `Nil` recorder.
 ////
-//// The module imports only `session_view`, so it moves into
-//// `session_view/step` unchanged when the reducers that decide these
-//// effects move there.
+//// The type is in a module of its own, rather than in `session_view/step`
+//// beside the step's entry points, because the shared record holds a queue
+//// of these values (`Shared.outbox`) and the step imports the record, so a
+//// type in the step would make the two modules import each other.
 
 import session_view/connection_event
 import session_view/session_channel

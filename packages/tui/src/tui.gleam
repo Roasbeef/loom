@@ -11,13 +11,20 @@
 //// This module holds the entry points (`main` and the launch parsing,
 //// `new_model`, `loop`, `run_script`, `replay_steps`, `connect_remote`) and
 //// the event dispatch (`update`, `apply_input`, `settle_update`). The work
-//// each event does lives in the modules under `tui/`, which form a strict
-//// import order because Gleam forbids cycles and none of them may import
-//// this one: `tui/model` holds the `Model` record and its types;
-//// `session_view/transcript_lines` builds transcript lines; `tui/layout` computes
-//// screen geometry and `tui/render` paints it; `tui/outbound` sends command
-//// frames; `tui/surfaces` services the side-surface reads; `tui/inbound`
-//// applies channel traffic; `tui/session_control` runs daemon control
+//// each event does lives in the modules under `tui/` and, for the session's
+//// half of it, in `session_view`, which form a strict import order because
+//// Gleam forbids cycles and none of them may import this one. The shared
+//// step is in `session_view`: `session_view/model` holds the session state,
+//// `session_view/outbound` sends command frames, `session_view/surfaces`
+//// services the side-surface reads, `session_view/event_fold` and
+//// `session_view/lane_fold` fold pushed events and lane updates,
+//// `session_view/commands` carries out an operator's commands, and
+//// `session_view/transcript_lines` builds transcript lines. The terminal's
+//// half is under `tui/`: `tui/model` holds the `Model` record, its `View`
+//// and the binding of the shared record's handles; `tui/layout` computes
+//// screen geometry and `tui/render` paints it; `tui/inbound` runs the loop
+//// over the lane's updates and applies what each recorded for the
+//// terminal's surfaces; `tui/session_control` runs daemon control
 //// requests; `tui/projection` maintains the transcript row caches;
 //// `tui/submit` handles composer submission; `tui/interaction` handles keys,
 //// pastes and the mouse; and `tui/tick` drains the inboxes on each tick.

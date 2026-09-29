@@ -15,14 +15,14 @@
 //// strand switch is dropped rather than shown against the wrong target.
 //// The `sync_*` functions compare the session state before and after an
 //// event and decide whether that event makes a surface's data stale; the
-//// three together are the shared step's settle (`tui/session_step`).
+//// three together are the shared step's settle (`session_view/step`).
 ////
 //// The reads (`service_*`), the receivers (`receive_jobs`,
 //// `receive_goal`, `receive_advisor_nudges`, `retire_delivered_nudges` and
 //// `refuse_goal`), the `sync_*` edges and the goal commands
 //// (`submit_goal_action`, `confirming`) take and return the shared record
 //// alone
-//// (`tui/session_model`), so a second host of the session can run them with
+//// (`session_view/model`), so a second host of the session can run them with
 //// its own handle bindings. The surfaces they feed are the terminal's, and
 //// what a read or a reply means for them is recorded rather than written: a
 //// dropped queued-input read appends a `queue_request.Dropped` notice, and a

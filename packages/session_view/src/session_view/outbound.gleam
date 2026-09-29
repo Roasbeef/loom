@@ -8,15 +8,15 @@
 //// as a sent draft only once it was sent, and a frame that was definitely
 //// not sent restores the draft with an error. Without a channel the frame
 //// goes nowhere: only the channel holds a socket. The write itself happens
-//// after the step, in `tui/runtime`.
+//// after the step, in the host (the terminal's `tui/runtime`).
 ////
 //// `mutation_refusal` is the check made before encoding a command that
 //// changes session state, so a read-only or unsynchronized attachment
 //// keeps the draft rather than losing it to a refusal.
 ////
 //// Every function here takes and returns the shared record alone
-//// (`tui/session_model`), so a second host of the session can send through
-//// it with its own handle bindings. What a send means for a host's editors
+//// (`session_view/model`), so any host of the session can send through it
+//// with its own handle bindings. What a send means for a host's editors
 //// is recorded rather than written: a sent composer draft bumps
 //// `Shared.drafts_sent`, and a refusal appends a `queue_request.Refused`
 //// notice for the queue editor. The terminal stores each result through

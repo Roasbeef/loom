@@ -16,7 +16,8 @@
 //// after each it applies the `SurfaceFact` values the update recorded, so an
 //// update sees every host write an earlier one caused, as it did when the
 //// fold wrote the host's state itself (`docs/design-notes/step-extraction.md`,
-//// question 11). The terminal's loop is in `tui/inbound`.
+//// question 11). The terminal's loop is in `tui/inbound`, and a host with no
+//// surfaces of its own runs the same loop with no facts to apply.
 
 import core/message
 import core/origin

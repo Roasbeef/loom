@@ -10,8 +10,9 @@
 //// every event, as the terminal's `settle_update` does
 //// (`docs/design-notes/step-extraction.md`, section 3, the seventh cut).
 ////
-//// The module holds that settle alone for now. A later slice moves it into
-//// `session_view/step` beside the step's entry points.
+//// The module holds that settle alone for now. The step's entry points,
+//// which a host with no surfaces of its own can drive whole, are to join it
+//// here (`docs/design-notes/step-extraction.md`, section 2).
 
 import session_view/model.{type Shared}
 import session_view/surfaces

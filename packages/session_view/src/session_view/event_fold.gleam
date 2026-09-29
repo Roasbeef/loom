@@ -3,8 +3,8 @@
 //// `apply_event` handles each event the daemon pushes: stream fragments,
 //// tool output tails, durable entries, strand phases, usage and the prompt
 //// cache it reveals, and the replies to side-surface reads. It takes and
-//// returns the shared record alone (`tui/session_model`), so a second host
-//// of the session can run the same fold, and it reads no terminal state.
+//// returns the shared record alone (`session_view/model`), so any host of
+//// the session can run the same fold, and it reads no host state.
 ////
 //// Live streams stay separate from durable entries because the server may
 //// replay the settled entry after its fragments; the stream is dropped when
@@ -17,8 +17,9 @@
 //// `SurfaceFact` in `Shared.surface_facts` instead, in the order it
 //// happened, and the terminal applies them after the call that recorded
 //// them (`inbound.settle_surfaces`), so its writes land where they did. The
-//// lane fold in `tui/inbound` calls this module once per event, through the
-//// terminal's `inbound.run_event`.
+//// lane fold calls this module once per pushed event, and the terminal's
+//// strand switch and model selector call `select_workspace` and
+//// `select_model` directly.
 ////
 //// The functions here call `outbound`'s and `surfaces`' functions over the
 //// shared record and no other function of either module.

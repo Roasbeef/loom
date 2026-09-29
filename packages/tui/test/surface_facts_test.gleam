@@ -1,6 +1,6 @@
 //// The terminal's surfaces follow what the event fold records for them.
 ////
-//// The event fold (`tui/event_fold`) takes the session state alone, so a
+//// The event fold (`session_view/event_fold`) takes the session state alone, so a
 //// pushed event that changes a terminal surface records a surface fact and
 //// `inbound.settle_surfaces` applies it after the event. Most facts are
 //// observed by the tests of the surface they change. These two cover the
@@ -13,7 +13,7 @@
 //// editor. So do two of the three things the lane fold reads from its
 //// `Surroundings`: whether a notes surface is open when a notes read is
 //// refused, and whether a diff is shown when a new cut arrives. The
-//// commands (`tui/commands`) record facts too; those no other test reached
+//// commands (`session_view/commands`) record facts too; those no other test reached
 //// are an interrupt returning a steering composer to prompting, a
 //// dispatched prompt returning it too while a dispatched command leaves it
 //// alone, `/clear` dropping the gutters, and `/approvals <id>` naming the

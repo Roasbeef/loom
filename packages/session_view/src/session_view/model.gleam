@@ -1,14 +1,20 @@
-//// The session state the terminal shares with any other host of a
-//// session, and the types that record names.
+//// The session state every host of a session holds, and the types that
+//// record names.
 ////
-//// `Shared` is the half of the terminal's model that a second host showing
-//// the same session would need (`docs/design-notes/step-extraction.md`,
-//// section 1). It sits in its own module, below `tui/model`, because the
-//// reducers being cut down to it (issue #569) need functions over `Shared`
-//// alone, and those functions cannot live beside the terminal's own
-//// helpers of the same names in `tui/model`. This module imports nothing of
-//// the terminal: no etui type, no job slot, no `Subject`. A later slice
-//// moves it into `session_view` as `session_view/model`.
+//// `Shared` is what a host showing a session needs to show it and act on it
+//// correctly: what the daemon said, what this client has sent and not yet
+//// seen committed, and the reads in flight
+//// (`docs/design-notes/step-extraction.md`, section 1). The shared step's
+//// reducers, the folds in `session_view/event_fold` and
+//// `session_view/lane_fold`, the commands in `session_view/commands` and the
+//// reads in `session_view/surfaces`, take and return it alone, so any host
+//// can run them. The record lives in `session_view`, the package lint's R6
+//// holds to the portable subset, so it names no etui type, no job slot and
+//// no `Subject`: the four host handles it carries, the adopted lane's socket
+//// and recorder and the sources of its two inboxes, are type parameters.
+//// The terminal binds them in `tui/model` (`TerminalShared`) and holds the
+//// record beside its own `View`; the web view will bind them to its relay
+//// and `Nil`.
 
 import core/entry
 import core/json
@@ -536,8 +542,8 @@ pub type GoalObservation {
 /// Something the event fold, the lane fold or a command did that a host's
 /// own surfaces have to follow.
 ///
-/// The folds (`tui/event_fold`, `tui/lane_fold`) and the commands
-/// (`tui/commands`) take the shared record alone, so they cannot write the
+/// The folds (`event_fold`, `lane_fold`) and the commands (`commands`) take
+/// the shared record alone, so they cannot write the
 /// terminal's editor, overlays or footer. Where an event, an update or a
 /// command used to write them at the point it was applied, the shared
 /// function records one of these in `Shared.surface_facts`, and the terminal

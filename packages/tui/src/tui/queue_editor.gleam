@@ -4,7 +4,7 @@
 //// The terminal owns this state; the existing session channel owns delivery.
 //// The requests the editor has on that channel, the wanted read, the issued
 //// read and the last request ID, are session state and live in
-//// `tui/queue_request`, held by `Shared`; this module holds only the editor.
+//// `session_view/queue_request`, held by `Shared`; this module holds only the editor.
 
 import etui/widgets/textarea
 import gleam/option.{type Option, None, Some}

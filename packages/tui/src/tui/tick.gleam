@@ -140,7 +140,7 @@ pub fn update_tick(model: Model) -> Model {
 // Keep the read-service chain on a parameter, as `settle_update` does for
 // event dispatch. Otherwise each inlining attempt revisits the entire drain
 // expression; adding another service can double compilation time. The
-// services now live in `tui/surfaces` and `tui/inbound`, and a cross-module
+// services now live in `session_view/surfaces` and `tui/inbound`, and a cross-module
 // call is never inlined, but the drains in `update_tick` and
 // `advance_cache_outlook` are still local calls, so the parameter boundary
 // is what keeps a new local step from revisiting the drain expression.

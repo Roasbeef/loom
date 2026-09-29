@@ -16,7 +16,7 @@
 //// same vocabulary against its own transport.
 ////
 //// The effects the session reducers decide, a lane's outputs and the
-//// recording line for a message no lane noted, are `tui/step_effect` values
+//// recording line for a message no lane noted, are `session_view/step_effect` values
 //// generic over the socket and recorder, and reach this type through
 //// `Step`. Everything else here is the terminal's own: the provisional
 //// attachment, the control connection, jobs, inboxes the terminal created,
