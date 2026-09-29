@@ -87,6 +87,7 @@
 //// heading, the agent strip and the transcript lane. This module derives
 //// what they draw, when a message changes it, and `view` lays them out.
 
+import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -112,6 +113,7 @@ import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
 import session_view/operator
 import session_view/protocol
+import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
@@ -124,6 +126,7 @@ import session_view/turns
 import web_view/view/heading
 import web_view/view/lane
 import web_view/view/strip
+import web_view/view/todo_panel
 
 /// The most frames one `Arrived` carries: the frame the selector matched
 /// and up to this many less one already waiting behind it.
@@ -1656,7 +1659,8 @@ pub fn session_id(model: Model(socket)) -> String {
   model.shared.session
 }
 
-/// The observer's page: the heading, the agent strip, the lane, and a fixed
+/// The observer's page: the heading, the agent strip, the lane, the todo
+/// panel when the strand has a board or a reviewer is running, and a fixed
 /// line saying the page is read-only. Its one event handler is the lane's
 /// "Load older" button, whose message asks for a read and nothing else; the
 /// page socket admits that one event from an observer and drops every other
@@ -1676,12 +1680,39 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     heading(model),
     strip.view(model.view.strip),
     lane.view(model.view.pieces, top(model), OlderRequested),
+    plan(model),
     html.p([attribute.class("observer-bar")], [
       html.text(
         "Observer · read-only · you can follow this session; ask the owner for operator access",
       ),
     ]),
   ])
+}
+
+/// The todo panel both pages draw above their bottom bar: the followed
+/// strand's newest board and the reviewer band, from the same shared state
+/// the terminal draws them from.
+///
+/// The board is `Shared.todo_boards` at the strand the page follows
+/// (`Shared.active_strand`), which the shared step keeps from the transcript
+/// and a notes read. The band's lines are `reviewer_status.lines`, the
+/// terminal's, for the reviewers other than that strand. The terminal's
+/// idle-advisor placeholder is not drawn: it exists to hold a row's place
+/// under a cursor, and the page has no cursor to keep still. Nothing is
+/// drawn when there is neither a board nor a reviewer line.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.plan(model)
+/// ```
+pub fn plan(model: Model(socket)) -> Element(message) {
+  let strand = model.shared.active_strand
+
+  todo_panel.view(
+    option.from_result(dict.get(model.shared.todo_boards, strand)),
+    reviewer_status.lines(model.shared.reviewer_rows, strand),
+  )
 }
 
 /// The page's heading, drawn by `web_view/view/heading` from the session's
