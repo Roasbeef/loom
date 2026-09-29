@@ -815,6 +815,50 @@ The first is reasoned, not yet observed: the development container has
 no bubblewrap, so no run so far has actually connected through a
 `--ro-bind`.
 
+### Where the socket is bound
+
+An AF_UNIX path is limited to 104 bytes on macOS and 108 on Linux, and
+the harness refuses anything over 100. The execution directory is inside
+the workspace (`<workspace>/.codemode/<16 hex>`), so a socket there failed
+in any workspace deeper than about 60 bytes, which includes an ordinary
+`~/gocode/src/github.com/<org>/<repo>` checkout (issue #611).
+
+So the socket has a directory of its own, and only the socket is moved.
+Under the daemon it is `<state root>/run/<16 hex>/s`, where the name is a
+digest of the execution's `{op_id, step_id, source_index}` and its work
+root (`client/codemode.socket_directory`). Its length is the state root
+plus 23 bytes, whatever the workspace is. The build root and the token
+file stay in the execution directory. Both directories are unique per
+execution, which is what keeps the janitor race of issue #87 closed, and
+both are removed when the execution settles.
+
+What each jail can reach:
+
+- **Before.** The socket and the token sat under `<workspace>/.codemode`,
+  which every jail on a host-reads session could read, and which every
+  jail on the same workspace could read under workspace reads.
+- **After, every jail except a satellite.** The daemon creates
+  `<state root>/run` mode 0700 at startup and every session base masks it
+  (`client/serve.established_masks`), so `bash`, the hermetic build and
+  an extension invocation cannot list it or connect to a socket in it.
+  The token files are where they were.
+- **After, a satellite.** `client/codemode.reaching_socket` derives the
+  satellite's base from the session base: its own socket directory
+  becomes a readable root, and the mask on `<state root>/run` is dropped.
+  `protected` is the policy's only subtractive verb and nothing can reopen
+  a path under it, so dropping the one mask is the only way to reach a
+  directory beneath it. Under workspace reads the satellite reads exactly
+  its own directory there. Under host reads it can also list the other
+  executions' socket directories; they hold sockets only, and a socket
+  accepts a connection only with its execution's token, which stays in
+  that execution's workspace. A mask above the socket root, such as an
+  operator masking the whole state root, is kept, and the launch then
+  refuses because the socket is unreachable.
+
+When the socket root itself is too deep, the launch is refused in band
+with a message naming the root. A host without a daemon binds under
+`work_root`, as before.
+
 ## The hermetic build
 
 Compilation is sandboxed too, and it carries security weight. The
