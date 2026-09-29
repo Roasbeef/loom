@@ -89,9 +89,11 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   the secret. A `Grant` carries the session, the minting credential's
   digest, the principal and the page's `ceiling` (`Observer` unless
   `ui.link` named `page:"operator"`). Redemption is one message: it spends
-  the ticket, answers `UnknownTicket` or `OtherSession`, ends every other
-  UI session of the same principal for the same session, and mints three
-  secrets, the cookie, the page key and the nonce, keeping only their
+  the ticket, answers `UnknownTicket` or `OtherSession`, and mints three
+  secrets, ending no other page except the principal's oldest when it
+  already holds `max_pages` (four, `ending.max_pages`) live pages for the
+  session (each `Page` carries a serial for the order, since the clock can
+  tie; an expired page is not counted), the cookie, the page key and the nonce, keeping only their
   digests in an opaque `Page`. `keyed` and `admits` compare a presented
   key or nonce by digest in constant time. `still_open` is the check an
   open page runs with every frame. `actor.periodic` sweeps; every read
@@ -161,6 +163,7 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `web_view/ending` strings: the gateway's exit is `SessionStopped`; a
   `close` (or a request the gateway answered as closed) makes the relay ask
   the attachment's check again, and a UI session that is gone is `PageEnded`
+  (expired, or displaced as the oldest at the page bound)
   where any other refusal or a changed capped authority is `AccessRevoked`,
   and a check that passes unchanged is `SessionStopped` (the gateway closed
   for its own reason; a failed request with an unchanged check is
