@@ -1651,7 +1651,8 @@ page's socket, and reloads a page whose cookie names no live page.
 
 **Status**: strand focus and the read-only list ACCEPTED under the owner's
 brief for issue #569, part 2, and IMPLEMENTED in the same change; opening
-another session from the sidebar is a **PROPOSAL** and is not implemented ·
+another session from the sidebar was a **PROPOSAL** here and is now
+IMPLEMENTED, as the rule "Addendum: switching sessions" (2026-09-29) states ·
 **Raised by**: issue #569
 
 ### Strand focus
@@ -1741,6 +1742,9 @@ reaches a page. Session identities stay on the server: they mark the
 session on screen and name an unnamed session by its first eight
 characters. The sidebar has no link, button or handler, adds no event to
 either page, and is the page's last child so that no admitted path moves.
+(**Superseded, 2026-09-29:** the sidebar is the frame's second child since the
+redesign, and an operator page's rows for running sessions are buttons since
+"Addendum: switching sessions". The observer page still has no sidebar.)
 
 **An observer's page is given no list.** An observer page is the one a
 person hands to someone who may only watch one session. Its authority is the
@@ -1763,6 +1767,12 @@ the one it opened, within the principal's own entitlement; a holder of an
 observer's page sees none.
 
 ### Opening another session from the sidebar: proposal, not implemented
+
+**Superseded (2026-09-29, see "Addendum: switching sessions"): the owner
+ruled on the decision below, and the addendum records what was built.** The
+section is kept as written so the reasons behind it stay findable. In
+particular the sidebar is no longer without a handler: an operator page's
+session rows are buttons, and its sidebar has one.
 
 **Why it is not a change to make in passing.** A page is bound to one
 session by its key. Its cookie is scoped to a path that names that session,
@@ -2436,3 +2446,250 @@ the system, the round trip, the cycle, and the root attribute each theme sets.
 The element's read and write, the button, and the storage's behaviour in a
 private window run only in a browser and were not run; the shadow-root token
 check above ran in Chrome on a reduced page and not on the served page.
+
+## Addendum: switching sessions (2026-09-29)
+
+**Status**: ACCEPTED under the owner's rulings of 2026-09-29 on issue #569, and
+IMPLEMENTED in the same change · **Raised by**: issue #569, step 11 of the web
+UI redesign (`docs/design-notes/web-design.md`, section 3.4)
+
+This turns the proposal in "Opening another session from the sidebar" (the
+addendum on strand focus and the session sidebar) into a rule. The owner
+ruled that an operator page may open another session that its principal
+already holds, from the sidebar, and that an observer page lists nothing and
+switches nothing. The addendum on several pages per principal, which the
+proposal named as a precondition, has landed. The rulings answer the three
+questions the proposal left open: a page may mint tickets for its principal's
+other sessions, an observer page may not, and several pages come first.
+
+The change adds no route, no kind of socket event and no frozen interface. It
+adds one question a page socket can put to the daemon (may this page's
+principal open session S, and if so, a ticket), one field on
+`component.Transport` that carries it, one client element, and one argument to
+`ui_socket.upgrade`, the ticket table's handle.
+
+### What the page sends
+
+A **switch** is a navigation to a new page, so the page asks the daemon for a
+ticket and the browser goes to the ticket's exchange. Two controls ask, and
+both are `click` handlers on the operator's page:
+
+- **A sidebar row.** The sessions sidebar is the second child of the page's
+  frame, so a row's button is at a path beneath `component.sidebar_path`
+  (`0\t1`). A row is a button only for a session that a process runs and that
+  is not the one on screen. The session on screen and a saved session are
+  text, so the page never offers a press that would do nothing or that the
+  daemon would refuse. The button's message is `operator_page.Opening(id)`,
+  where `id` is the catalogue's identity, drawn into the tree by the server.
+- **A peer message's Open button.** A peer message in the transcript names its
+  source session. The page draws `Open <name>` beside Reply only when that
+  identity is one of the principal's listed running sessions
+  (`component.openable`), and then the button's message and its label are the
+  catalogue's entry for it. The peer's own words are the card's head and body
+  and are not used for either. A peer that names a session the principal does
+  not hold, or a saved one, or that names nothing in the list, keeps the card
+  as text. On an observer page the card is text.
+
+Neither control gives the browser a way to name a session. A handler's message
+is fixed when the tree is drawn, and the browser's event names only the path
+it fired at. Pressing the row of the session on screen, which a forged message
+could name, asks for nothing.
+
+**Which sockets admit it.** `ui_socket.operator_accepts` admits a `click` at
+any path, as it did, and is not narrowed to the sidebar's path: Lustre
+dispatches the event only to a handler the operator page drew there, and a
+second list of admitted paths would have to be kept equal to the view. An
+observer's socket is unchanged. `observer_accepts` admits a click at
+`component.older_path` and beneath `component.strip_path` and nowhere else, so
+a click beneath `component.sidebar_path` is dropped. Three layers keep an
+observer from switching, and each alone is enough: the observer component has
+no message that asks and its view draws no sidebar and no Open button;
+its socket drops the click; and the daemon refuses an observer page's request
+whatever reached it (`ui_socket.opened_for`).
+
+### What the daemon now admits
+
+For an operator page, `component.Transport.open` runs in the component's
+process, and `ui_socket.ticket_for` answers it. Each step is made afresh with
+the digest of the credential the page was admitted under, and none is read
+from the page:
+
+1. The identity must parse as a canonical session identity.
+2. `manager.session_authority` must find a membership of the page's principal
+   in that session (an owner holds every active session). It is the check
+   `ui.link` makes, so a page can open exactly the sessions its principal could
+   already ask `loom ui` for, and a revoked credential or a removed
+   membership opens none.
+3. `manager.get` must report the session resident. A ticket for a session no
+   process runs would end at a socket that is refused with nothing to say why.
+4. `ui_sessions.mint_before` issues the ticket with the page's own credential
+   digest, its own principal, its own ceiling and its own deadline, and the
+   page must still be open when it is asked (below). The ceiling caps the role the new
+   page is admitted with and never grants one, so a switch cannot raise what a
+   link allowed: a page minted from an operator page is an operator page for a
+   session the principal operates and an observer page for one it only
+   observes.
+
+The ticket is the existing one: 32 random bytes, single use, valid for 60
+seconds, redeemed by the exchange under the same checks. It is minted into the
+same table, so `max_pages` and every rule about redemption apply unchanged. The
+daemon still writes no record of a switch.
+
+The daemon answers with the ticket's exchange path,
+`/ui/sessions/<id>?ticket=<ticket>` (`page.exchange_path`, which `ui.link` now
+uses as well), or with one of three reasons.
+
+### What the browser does
+
+The component keeps the address in its model (`component.departure`), and the
+operator page always draws `<loom-switch hidden>` as the centre column's last
+child, so no path an event names moves for it. The element gets a `to`
+attribute once a ticket is minted. Loom's page has no script that hears an
+event the server emits (`docs/lustre.md`), so the attribute is the interface,
+as `sidebar` and `needing` are the shell's.
+
+`<loom-switch>` (`packages/web_client`) is the one script that acts on a value
+the server chose, so it accepts one shape. `switch_rule.target` passes exactly
+`/ui/sessions/<canonical session identity>?ticket=<64 hexadecimal digits>` and
+refuses an absolute URL, another path, a second parameter, a fragment and a
+scheme, and the element does nothing with a value it refuses. On a value it
+accepts it calls `location.assign`, one new single-call export in `dom.mjs`. The
+navigation is same-origin, so it carries `Sec-Fetch-Site: same-origin`, which
+the exchange already allows. The exchange page then replaces itself with the
+keyed page (`web_view_enter.js`), so the ticket's address is not left in the
+history. The address stays in the attribute until the next switch replaces it.
+It is spent after one use and dead after 60 seconds.
+
+The page left behind is not ended. The new page is a new UI session with its
+own cookie, key and nonce for the target session, and the cap of four is per
+principal and per session, so a switch to B adds a B page and can end only the
+oldest of four earlier B pages, never a page of A. Going back adds a page of A
+in the same way, so a person who moves between two sessions repeatedly ends
+the oldest page of a session only after four more pages of that same session.
+The sidebar is drawn on the new page too, and its row for the session left is
+the way back.
+
+### What is refused, and how it reads
+
+A refused request mints nothing and changes nothing on either page. The page
+words the reason in the composer's notice, in fixed sentences chosen by the
+reason (`sessions.reason_words`). Nothing the daemon or a session wrote reaches
+the browser.
+
+| Reason | Cause | Says |
+|---|---|---|
+| `NotHeld` | The identity is not a session's, or the principal holds no membership in it, or the session does not exist, or the page is an observer's. One answer for all of them, so a page learns nothing about sessions it cannot open. | "That session is not available to you." |
+| `NotRunning` | The principal holds the session and no process runs it. The row was drawn from a list at most 30 seconds old. | "That session is not running. Resume it from a terminal, then open it here." |
+| `Unavailable` | The daemon could not answer: it was starting, stopping or slow. | "The daemon could not open that session. Try again." |
+
+Opening a saved session is not done from the page. It would be a new
+capability, the daemon starting a session at a browser's request, and the
+owner's rulings do not include it.
+
+### What a stolen operator page is worth now
+
+Before this change a stolen page reached the one session it was minted for. Now
+a holder of an operator page's cookie, key and nonce can send the click for any
+row the page draws, receive the ticket in the tree the page sends back, and exchange it, so
+it reaches every running session its principal holds, at the role the principal
+holds there, capped by the page's own ceiling. That is what the credential's
+holder could already do with `loom ui --session`, and the ceiling is still opt-in
+(`--operate`), and revoking the credential ends every page it minted and stops
+every later mint. An observer page cannot mint.
+
+**A chain of switches ends with the page it began from.** A ticket that a
+page mints for a switch carries that page's deadline
+(`ui_sessions.mint_before`), and the page its exchange creates ends at the
+earlier of that deadline and `session_ms` from its own exchange. Without this
+a page could renew itself by switching, A to B to A, each exchange giving a
+fresh eight hours, and the deadline that keeps a copied cookie from working
+past the day would not hold. A ticket from `ui.link` keeps today's rule: eight
+hours from its exchange. The daemon also refuses to mint for a page that is no
+longer open, so a page that ended but whose socket is still up mints nothing
+(`ticket_for`'s first step, answered `NotHeld`). The page never gets a role or a session beyond the principal's
+memberships, and a switch adds no authority to the principal. It does remove the
+page's one-session bound, which the proposal said it would, and the owner
+accepted that for operator pages.
+
+### What was considered
+
+- **A daemon route that mints and redirects.** It needs an authenticated request
+  and the page's cookie is scoped to one key's path, so it would need a cookie
+  for the whole `/ui` prefix, which the operator addendum narrowed on purpose.
+  Not taken.
+- **The server emits an event and a script listens.** `docs/lustre.md` records
+  that the page has no such script. It would need a listener on the document or
+  the server component's element. An attribute needs no listener and follows the
+  pattern the shell already uses. Not taken.
+- **Re-attaching the lane in the same component.** The design note's section 3.4
+  rejects it: each region becomes a reset a change can forget, and it puts a
+  second session's authority inside a page whose grant names one.
+- **Opening the session in a new window.** A script may open one only from a
+  user's gesture, and the press reaches the script through the server, so a
+  browser may block it. Not taken.
+- **Narrowing the operator socket to the sidebar's path.** Named above.
+- **A nonce item per page key, so history Back works.** See the cost. It would
+  change both bootstrap scripts and the item name that the daemon's tests pin.
+  Not taken here.
+- **A per-session sharing permission.** The owner ruled that comes later, and it
+  is not built.
+
+### Cost
+
+- One more question a page socket can put to the daemon, and one more use of
+  `ui_sessions.mint`: a page that presses many rows mints a ticket for each,
+  and the table's `actor.periodic` sweep reclaims them at 60 seconds.
+- The tab keeps one nonce in `sessionStorage`, and a switch in the same tab
+  replaces it with the new page's. Reloading the page left behind, by history
+  Back, shows the waiting paragraph and does not reconnect, because its nonce is
+  gone. The sidebar row of that session opens a new page, and the left page's
+  daemon-side page is unaffected and is reclaimed at its own deadline.
+- A saved session is text in the sidebar, marked "saved", so a person who wants
+  to open it resumes it from a terminal first.
+- The list is read every 30 seconds, so a row can name a session stopped since.
+  The refusal says so.
+- The stale ticket sits in the page's attribute until the next switch or the
+  page's end.
+
+### Also in this change
+
+`<loom-shell>` drew its default layout first and the saved one a frame later,
+with the column width transition running, so a sidebar saved as closed slid
+shut on every load. The frame now carries a `still` class until the restored
+layout has been painted, which the stylesheet reads to turn the transition off
+(`shell_rule.Motion`), and a `Settled` message removes it, so the reader's own
+presses animate as before. This is browser-only and adds nothing to the wire.
+The one-frame flash from the default layout, in the storage addendum's cost, is
+unchanged.
+
+### Verification
+
+`switch_test` (`packages/web_client`) holds the address shape: a ticket exchange
+for a canonical identity is accepted, in either case of hexadecimal digit, and
+an absolute URL, a scheme-relative one, a `javascript:` URL, a second parameter,
+a fragment, a wrong-length ticket, a non-hexadecimal ticket, a malformed
+identity and a path elsewhere on the origin are refused. `shell_test` covers the
+frame's classes. `session_switch_test` (`packages/web_view`) shows a row is a
+button only for a running session other than the one on screen and that these
+are the only handlers beneath `component.sidebar_path`, that a press asks the
+transport for the row's session and a ticket becomes the `to` address on the
+hidden element, that each refusal is worded in its own fixed sentence and draws
+no address, that the session on screen asks nothing, that a peer message offers
+Open only for a listed running session and labels it with the catalogue's
+escaped name, and that an observer page draws no sidebar, no Open button, no
+switch element and no handler beneath the sidebar's path. `sidebar_test` pins the
+sidebar's added handlers. `session_isolation_test` builds a page for one session
+and then a page for another in one process, each from a capture holding its own
+marker in the top bar, transcript, peer message, todo line, Changes and Trace
+tabs, approval card, viewers and strand glances, and shows the second page holds
+nothing of the first on either page. `ui_socket_test` shows the observer's
+socket dropping a click beneath the sidebar's path and at its neighbours, the
+operator's socket admitting one, and `opened_for` refusing an observer without
+asking. `ui_route_test`, on a real listener and registry, shows an operator page
+getting a ticket for a session its principal holds that exchanges into a page
+carrying the page's ceiling while the page left behind stays open, a
+principal's missing membership, a session that does not exist, text that is not
+an identity, an observer page, and a saved session each refused in the reason's
+own word. No browser was in the loop: `<loom-switch>` navigating, the
+exchange landing on the new page and the layout restoring without a slide run
+only in one and were not run.

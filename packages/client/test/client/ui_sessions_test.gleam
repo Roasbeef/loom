@@ -154,6 +154,34 @@ pub fn a_ui_session_expires_after_eight_hours_test() {
   assert looked_up(sessions, redeemed.cookie) == Error(Nil)
 }
 
+// A page opened by a ticket another page minted ends at the earlier of that
+// page's deadline and its own eight hours, so a chain of switches cannot
+// renew a page; a ticket minted with no bound keeps its own eight hours.
+pub fn a_switched_page_ends_no_later_than_the_page_it_left_test() {
+  let time = clock()
+  let sessions = table(time)
+  process.send(time, Advance(1000))
+  let assert Ok(issued) = ui_sessions.mint_before(sessions, grant("s2"), 5000)
+    as "a switch ticket is minted"
+  let assert Ok(redeemed) = ui_sessions.redeem(sessions, issued.ticket, "s2")
+    as "the ticket is redeemed"
+  process.send(time, Advance(3999))
+  assert looked_up(sessions, redeemed.cookie) == Ok(grant("s2"))
+  process.send(time, Advance(1))
+  assert looked_up(sessions, redeemed.cookie) == Error(Nil)
+
+  // A bound past the page's own eight hours does not extend it.
+  let assert Ok(far) =
+    ui_sessions.mint_before(sessions, grant("s3"), 9_000_000_000)
+    as "a switch ticket is minted"
+  let assert Ok(page) = ui_sessions.redeem(sessions, far.ticket, "s3")
+    as "the ticket is redeemed"
+  process.send(time, Advance(28_800_000 - 1))
+  assert looked_up(sessions, page.cookie) == Ok(grant("s3"))
+  process.send(time, Advance(1))
+  assert looked_up(sessions, page.cookie) == Error(Nil)
+}
+
 fn redeem(sessions, principal: String, session: String) {
   let assert Ok(issued) =
     ui_sessions.mint(sessions, grant_for(principal, session))

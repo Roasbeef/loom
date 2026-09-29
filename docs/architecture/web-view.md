@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:399`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:687`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -277,9 +277,11 @@ flowchart LR
 - **The observer's page** is `web_view/component`. Its message type is the
   connection's outcome, the timer's subject, batches of arrivals, the
   timer's fire, `OlderRequested`, a read of older history, `FocusRequested`,
-  a change of the strand the page shows, and the sidebar read's answer
-  `SessionsListed`, and nothing else, so it has no way to express a
-  command. Its view attaches two kinds of event handler: the lane's "Load
+  a change of the strand the page shows, the sidebar read's answer
+  `SessionsListed` and the daemon's answer to a request to open a session,
+  `Linked` (both dispatched by effects and carried by no handler), and
+  nothing else, so it has no way to express a command or to ask for a
+  session. Its view attaches two kinds of event handler: the lane's "Load
   older" click, drawn only while older rows exist (051, the addendum on
   history paging), and one click per chip of the agent strip (051, the
   addendum on strand focus). Where an operator's page has its composer, it
@@ -625,11 +627,39 @@ component reads it when the page opens and at most every 30 seconds on a
 tick (an observer's page is given an empty list and draws no sidebar, so a
 stolen observer link does not disclose the principal's other sessions),
 groups it by workspace (`web_view/sessions`), and `view/sidebar`
-draws it read-only as the frame's second child (the left column), which
-holds no handler, so it adds no admitted event path. The entry carries name, workspace, creation time and residency, and
-nothing of the registration's path, key or configuration. Opening another
-session is not implemented: a page is bound to one session by its key, and
-051's addendum sets out what minting a ticket from a page would change.
+draws it as the frame's second child (the left column). The entry carries
+name, workspace, creation time and residency, and nothing of the registration's
+path, key or configuration.
+
+## Switching sessions
+
+A page is bound to one session by its key, cookie and nonce, so opening another
+session is a navigation to a new page (051, the addendum on switching
+sessions). Only an operator page does it.
+
+- **The request.** On an operator page a sidebar row for a running session
+  other than the one on screen is a button (`view/sidebar`, beneath
+  `component.sidebar_path`), and a peer message in the lane has an `Open <name>`
+  button when the session it names is one of the principal's listed running
+  sessions (`component.openable`, `lane.Replies.open`). Both send
+  `operator_page.Opening(id)` with the catalogue's identity.
+  `component.switch_to` calls `Transport.open`, and the daemon's answer returns
+  as `Linked`.
+- **The daemon.** `ui_socket.ticket_for` runs the checks afresh with the page's
+  credential digest: a canonical identity, `manager.session_authority`
+  (membership), `manager.get` (resident), then `ui_sessions.mint` with the
+  page's principal and its own ceiling. `ui_socket.opened_for` refuses an
+  observer page without asking. The answer is `sessions.Ticketed(path)` or
+  `sessions.Declined(reason)` with the fixed words of `sessions.reason_words`.
+- **The browser.** A ticket becomes `component.departure`, which the operator
+  page writes into the `to` attribute of the hidden `<loom-switch>`, the
+  centre's last child. The element accepts only
+  `/ui/sessions/<identity>?ticket=<64 hex digits>` (`switch_rule.target`) and
+  calls `location.assign`. The exchange, the keyed page and the nonce are the
+  ones `loom ui` already uses, and the page left behind is not ended.
+- **What holds.** A page for one session holds no text of another
+  (`session_isolation_test`); the sidebar is the one region that lists the
+  others. The observer's socket drops a click beneath `component.sidebar_path`.
 
 ## Expanding a row
 
@@ -836,8 +866,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/strip.gleam` | The strand cards (the agent strip's old name) and their `Strip` and `Chip` types: each card a ring, a name and one status line, with `data-loom-card` for its position (`positions` numbers the cards for the cards and the lane), and the hue, ring and status classes. |
 | `packages/web_view/src/web_view/view/strand_detail.gleam` | A strand's own view in the Strands tab, while a strand other than `main` is in focus: the back link (a marker, no handler), the ring, name and status line, the figures a card leaves out (model, context, cache, running) and the tools it ran lately. |
 | `packages/web_view/src/web_view/view/crumb.gleam` | The breadcrumb above the transcript while a strand other than `main` is in focus: the session and strand names and an `All strands` link that is a marker, with no handler, and an `Esc` hint for the shell's key. |
-| `packages/web_view/src/web_view/view/sidebar.gleam` | The session sidebar: the principal's sessions by workspace, read-only, memoized, the frame's second child. |
-| `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry`, `Residency` and `Group`, and `grouped`, the ordering (current workspace first, newest first). |
+| `packages/web_view/src/web_view/view/sidebar.gleam` | The session sidebar: the principal's sessions by workspace, memoized, the frame's second child. A row for a running session other than the one on screen is a button that asks to open it. |
+| `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry`, `Residency` and `Group`, `grouped`, the ordering (current workspace first, newest first), `label`, and `Answer` and `Reason` with their fixed words, which a switch request and its refusal are made of. |
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board as one line (`Todo · n of m done · <active task>`, a `<loom-fold>` summary) which opens to the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/changes.gleam` | The Changes pane: the files the session's own `fs_edit` results named and their diffs (`session_view/changes_view`), the panel's second pane on both pages, bounded and drawn as text nodes with a class from a closed row kind. It reads no worktree. |
 | `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane: the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |

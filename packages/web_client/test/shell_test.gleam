@@ -43,6 +43,14 @@ pub fn a_closed_column_cannot_be_reached_and_an_open_one_can_test() {
   assert shell_rule.reach(Open) == Reachable
 }
 
+// The frame starts still, so the layout restored from storage is drawn
+// without the width transition, and carries no `still` class once the
+// restore has been painted and motion is on.
+pub fn the_frame_is_still_until_the_restore_is_drawn_test() {
+  assert shell_rule.frame_classes(shell_rule.Still) == ["shell", "still"]
+  assert shell_rule.frame_classes(shell_rule.Animated) == ["shell"]
+}
+
 pub fn each_button_says_what_pressing_it_does_test() {
   assert shell_rule.label(Sidebar, Open) == "Hide sessions"
   assert shell_rule.label(Sidebar, Closed) == "Show sessions"

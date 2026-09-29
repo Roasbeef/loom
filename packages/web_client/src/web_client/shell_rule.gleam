@@ -110,6 +110,34 @@ pub type Reach {
   Unreachable
 }
 
+/// Whether a change of layout is drawn as an animation.
+pub type Motion {
+  /// The columns change at once. The frame starts here and stays here until
+  /// the saved layout has been read and drawn, so a column saved as closed is
+  /// closed on the frame that shows it and does not visibly slide shut on
+  /// every load.
+  Still
+
+  /// A column's width animates when the reader opens or closes it.
+  Animated
+}
+
+/// The classes the frame carries for `motion`. `still` is the class the
+/// stylesheet reads to turn the width transition off
+/// (`.shell.still .region`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.frame_classes(shell_rule.Still) == ["shell", "still"]
+/// ```
+pub fn frame_classes(motion: Motion) -> List(String) {
+  case motion {
+    Still -> ["shell", "still"]
+    Animated -> ["shell"]
+  }
+}
+
 /// Both columns open on the Strands tab, which is how every page starts.
 ///
 /// ## Examples

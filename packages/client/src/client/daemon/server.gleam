@@ -75,13 +75,14 @@ pub type Ui(instance) {
     assets: ui_assets.Assets,
     /// Upgrades a checked page request to the component's socket; like
     /// `session_upgrade`, it transfers the attachment's permit. The third
-    /// argument says whether the page's UI session is still live, which the
-    /// socket checks with every authorization; the fourth is the page's
+    /// argument answers the page's deadline while its UI session is still
+    /// live, which the socket checks with every authorization and carries onto
+    /// a ticket it mints for a switch; the fourth is the page's
     /// ceiling, which the relay caps every authorization with.
     upgrade: fn(
       Request(mist.Connection),
       Attachment(instance),
-      fn() -> Result(Nil, Nil),
+      fn() -> Result(Int, Nil),
       access.Role,
     ) -> Response(mist.ResponseData),
   )
@@ -229,7 +230,7 @@ fn web_socket(
   case checked {
     Error(response) -> ui_http.secured(response, host)
     Ok(#(state, grant, cookie)) -> {
-      let open = ui_sessions.still_open(ui.sessions, cookie, grant)
+      let open = ui_sessions.open_until(ui.sessions, cookie, grant)
       resident_upgrade(
         config,
         request,
@@ -1396,12 +1397,7 @@ fn dispatch_class(
       Ok(#(
         "ui.link",
         json.Object([
-          #(
-            "path",
-            json.String(
-              page.prefix <> "/sessions/" <> id <> "?ticket=" <> issued.ticket,
-            ),
-          ),
+          #("path", json.String(page.exchange_path(id, issued.ticket))),
           #("expires_in_ms", json.Int(issued.expires_in_ms)),
         ]),
       ))

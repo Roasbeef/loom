@@ -26,6 +26,7 @@ import lustre/effect.{type Effect}
 import session_view/connection_event
 import session_view/snapshot
 import web_view/component
+import web_view/sessions
 
 /// The socket a test page writes to: every transmitted frame arrives on it.
 pub type Wire =
@@ -422,6 +423,7 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       shut: fn(_) { Nil },
       now:,
       sessions: fn() { [] },
+      open: fn(_) { sessions.Declined(sessions.NotHeld) },
     ),
   )
 }

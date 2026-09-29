@@ -18,7 +18,12 @@
 //// for it is; the rule answers the default for a missing, blocked or
 //// malformed item. Every change the reader makes writes the layout back. The
 //// page draws its default first and the stored layout a frame later, since
-//// the read runs after the paint. Nothing session-derived is kept: the focused
+//// the read runs after the paint. The frame carries the class `still` until
+//// that later frame has been painted (`shell_rule.Motion`), and the
+//// stylesheet turns the columns' width transition off while it does, so a
+//// sidebar saved as closed is closed on the frame that shows it and does not
+//// visibly slide shut on every load. The reader's own presses animate as
+//// before. Nothing session-derived is kept: the focused
 //// strand is not, and a reload shows `main`. A page with no `workspace`
 //// attribute keeps nothing, reads nothing and never touches another
 //// workspace's layout. The server never learns the layout.
@@ -111,7 +116,8 @@ import lustre/event
 import web_client/internal/ffi_dom.{type Listener}
 import web_client/layout_rule.{type Theme, type Workspace}
 import web_client/shell_rule.{
-  type Intent, type Layout, type Presence, type Region, type Relay, type Tab,
+  type Intent, type Layout, type Motion, type Presence, type Region, type Relay,
+  type Tab,
 }
 
 /// The element's tag.
@@ -132,6 +138,9 @@ pub type Model {
     theme: Theme,
     /// The listener on the document while the element is connected.
     keys: Option(Listener),
+    /// Whether a change of layout animates. It is `Still` until the saved
+    /// layout has been drawn, so the restore is not seen as a slide.
+    motion: Motion,
   )
 }
 
@@ -174,6 +183,10 @@ pub type Msg {
   /// the layout it has. `theme` is the browser's saved theme, which does not
   /// depend on the workspace.
   Restored(workspace: Workspace, saved: Option(Layout), theme: Theme)
+
+  /// The frame that drew the restored layout has been painted, so later
+  /// changes of layout may animate.
+  Settled
 }
 
 /// Registers the element with the browser.
@@ -220,6 +233,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
       workspace: layout_rule.Anonymous,
       theme: layout_rule.System,
       keys: None,
+      motion: shell_rule.Still,
     ),
     component.set_pseudo_state(shell_rule.tab_state(layout.tab)),
   )
@@ -293,17 +307,26 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // custom state moves with it, so the stylesheet shows the pane the
     // restored tab names. The saved theme is applied to the root in the same
     // turn, and is not written back: it is what the storage already holds.
+    // The frame is still while the restored layout is drawn, so the width
+    // transition does not run for it, and the settle that follows the paint
+    // turns motion on for the reader's own changes.
     Restored(workspace:, saved:, theme:) ->
       case saved {
-        None -> #(Model(..model, workspace:, theme:), apply_theme(theme))
+        None -> #(
+          Model(..model, workspace:, theme:),
+          effect.batch([apply_theme(theme), settle()]),
+        )
         Some(layout) -> #(
           Model(..model, workspace:, layout:, theme:),
           effect.batch([
             tab_changed(model.layout.tab, layout.tab),
             apply_theme(theme),
+            settle(),
           ]),
         )
       }
+
+    Settled -> #(Model(..model, motion: shell_rule.Animated), effect.none())
 
     // The next theme is applied to the root and written to the storage in the
     // same turn, so a reload after the press shows the theme the reader chose.
@@ -315,6 +338,16 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       )
     }
   }
+}
+
+// Reports that the frame just drawn has been painted. The effect runs after
+// the paint that follows the update returning it, and the update is the one
+// that applied the restored layout, so by the time `Settled` arrives the
+// browser has already computed the closed column's width without a
+// transition.
+fn settle() -> Effect(Msg) {
+  use dispatch, _ <- effect.after_paint
+  dispatch(Settled)
 }
 
 // Sets `data-theme` on the document's root, or removes it where the theme
@@ -429,7 +462,7 @@ fn press_card(card: Int) -> Effect(Msg) {
 }
 
 fn view(model: Model) -> Element(Msg) {
-  html.div([attribute.class("shell")], [
+  html.div(list.map(shell_rule.frame_classes(model.motion), attribute.class), [
     html.div([attribute.class("shell-bar")], [
       button(model, shell_rule.Sidebar),
       component.named_slot("bar", [], []),

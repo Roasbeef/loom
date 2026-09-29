@@ -23,6 +23,9 @@
 //// - `<loom-shell sidebar="listed">` (`web_client/shell`) is the page's
 ////   frame. It lays the server's regions out in its slots and draws the two
 ////   buttons that hide and show the sidebar and the strand panel.
+//// - `<loom-switch to="...">` (`web_client/switch`) moves the browser to
+////   another session's page when the server writes a ticket exchange's
+////   address into its attribute.
 ////
 //// Every element keeps the page's rules (protocol-change/051): it renders
 //// only what its own attributes say, and those hold daemon identities or
@@ -40,6 +43,7 @@ import web_client/expand
 import web_client/fold
 import web_client/follow
 import web_client/shell
+import web_client/switch
 
 /// Registers every element. The bundle calls this once when the page loads
 /// it; an element already registered is left as it is.
@@ -56,5 +60,6 @@ pub fn main() -> Nil {
   let _ = fold.register()
   let _ = follow.register()
   let _ = shell.register()
+  let _ = switch.register()
   Nil
 }

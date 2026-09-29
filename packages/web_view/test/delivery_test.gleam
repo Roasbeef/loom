@@ -30,6 +30,7 @@ import session_view/connection_event
 import session_view/session_channel
 import session_view/snapshot
 import web_view/component
+import web_view/sessions
 
 // A monotonic clock for the transport, as the daemon's relay supplies. A
 // frozen clock would leave the lane never due at the timer's fire.
@@ -70,6 +71,7 @@ fn started() -> Page {
       shut: fn(_) { Nil },
       now:,
       sessions: fn() { [] },
+      open: fn(_) { sessions.Declined(sessions.NotHeld) },
     )
   let start =
     component.Start(
