@@ -46,7 +46,7 @@ renders again just for it:
   with no digest keeps nothing. A Theme button in the bar cycles the page
   through following the system, light and dark (`layout_rule.next_theme`) by
   setting or removing `data-theme` on `<html>`, which the stylesheet reads;
-  the choice is kept per browser under its own item. The server never learns
+  the choice is kept per browser under its own item, and `assets/web_view_page.js` applies it from that item before first paint, since the shell connects only after the socket opens (`js_check` pins the item name to `layout_rule.theme_key`). The server never learns
   the layout
   (protocol-change/051, the addendum on the storage decision). A hidden column takes no width and is `inert`, so
   its content leaves the tab order. The `sidebar` attribute is a fixed word

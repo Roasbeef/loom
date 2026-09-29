@@ -46,6 +46,16 @@
 #      page's own scripts in `assets/` are outside `src` and keep the tab's
 #      nonce in `sessionStorage`; they are not the components.
 #
+# This is a line- and token-scoped reviewer aid, not hardening. It matches
+# text, so a line that pairs `window.localStorage.getItem(` with another
+# storage call, or a computed property name (`window["local" + "Storage"]`),
+# passes it. What it does is make the obvious way to break the boundary fail
+# the build and leave anything cleverer to the reviewer of a small file.
+#
+# It also pins the theme's storage item name: `assets/web_view_page.js` applies
+# the saved theme before first paint and repeats the name that
+# `layout_rule.theme_key` holds, so the two must match.
+#
 # The match is on the token anywhere in the file, comments included, so a
 # comment that must discuss one spells it differently.
 #
@@ -236,12 +246,27 @@ self_test() {
 	done
 }
 
+# check_theme_key: the page script and the layout rule name one item.
+check_theme_key() {
+	local key
+	key=$(sed -n 's/^pub const theme_key = "\(.*\)"$/\1/p' \
+		"$root/packages/web_client/src/web_client/layout_rule.gleam")
+	if [ -z "$key" ] ||
+		! grep -qF "getItem(\"$key\")" "$root/packages/web_client/assets/web_view_page.js"; then
+		echo "web_client_js_check: assets/web_view_page.js does not read the theme item '$key' that layout_rule.theme_key names" >&2
+		return 1
+	fi
+}
+
 case "${1-}" in
 --self-test) self_test ;;
 -*)
 	echo "usage: $self [dir | --self-test]" >&2
 	exit 2
 	;;
-"") check "$root/packages/web_client/src" ;;
+"")
+	check "$root/packages/web_client/src"
+	check_theme_key
+	;;
 *) check "$1" ;;
 esac

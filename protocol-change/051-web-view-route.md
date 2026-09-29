@@ -2302,7 +2302,7 @@ since the page's address names it. **Nothing session-derived is stored.** No
 strand name, session identity, path, transcript text or count reaches storage,
 and the values the two records hold are words from fixed sets.
 
-**Where.** Only in `internal/dom.mjs`, through two exports, `storage_read` and
+**Where.** In `internal/dom.mjs`, through two exports, `storage_read` and
 `storage_write`, which each make one call on `window.localStorage` inside a
 `try` and answer a `Result`, because storage throws when it is blocked and in
 some private windows. They are bound in `internal/ffi_dom.gleam` beside the
@@ -2313,7 +2313,7 @@ decoding is total. It accepts any string and answers a layout, the default
 and the default for one field that names a word this release does not know, so
 a tab a later release removes does not discard the columns saved beside it.
 The module imports neither Lustre nor the DOM binding, and its tests run on
-Node.
+Node. The one other read is the saved theme's, in the page script before first paint (see "What the reader sees").
 
 `scripts/web_client_js_check.sh` holds the boundary, as it already holds the
 rule that `dom.mjs` is the only JavaScript in the package. It fails on any
@@ -2355,10 +2355,19 @@ nonce relies on for `sessionStorage`. The content security policy does not
 restrict storage. Tabs of one workspace share the item, and one tab's change
 reaches another only when that tab loads.
 
-**What the reader sees.** The page draws its default, and the stored layout
-and theme replace it a frame later, because the read runs after the paint. A
-reader whose columns are stored closed sees them open for that frame, and one
-who chose the other theme than the system's sees the system's for that frame.
+**What the reader sees.** The layout is applied a frame after the shell
+connects: the read runs after the paint, so a reader whose columns are stored
+closed sees them open for that frame. The theme is applied earlier, before the
+first paint, by `assets/web_view_page.js`. The page's first document holds only
+the server component, so the shell does not exist until the socket has opened
+and the first render has come back, and a shell-only read would show the system's
+theme for that whole wait on every load to a reader who chose the other. The page
+script already runs before the shell and before paint, so this one read of
+`loom.theme.v1` lives there, in a `try`, and sets `data-theme` only to the
+fixed words `light` or `dark`, never to the stored text. It is the one use of
+`localStorage` outside `dom.mjs`, and it is outside the package the JavaScript
+check scans, like the nonce's `sessionStorage`; the check fails if its item name
+differs from `layout_rule.theme_key`. The shell owns every later change.
 
 **How the theme reaches every shadow root.** The attribute goes on the
 document's root, because custom properties inherit through a shadow boundary
@@ -2409,7 +2418,7 @@ before, when any text token is under 4.5 to 1 in either theme.
   supply.
 - The layout is lost when the daemon's origin changes, and it is not shared
   between a browser's profiles or machines.
-- The one-frame flash from the default to the stored layout and theme.
+- The one-frame flash from the default to the stored layout.
 - The stylesheet lists each token three times (the dark palette, the light
   palette twice) and once more for `inherit`. The contrast check holds the
   copies together, and a new token must be added to each.
