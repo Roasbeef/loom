@@ -96,9 +96,11 @@ why" addendum requires, so that no region after it changes its path.
 The context figure is the engine's own estimate for the strand on screen
 (`session_view/context_view.footer`, which reads `ctx ~41%`). The tilde stays:
 the figure is an estimate and the mockup's `ctx 41%` would overstate it. The
-cost is the session total the terminal's footer shows as `est $`. The pull
-request that draws it must first confirm whether `shared.usage.cost.total` is
-the session's total or the active strand's, and label it accordingly.
+cost is the figure the terminal's footer shows as `est $`. It is the
+session's running total across strands: `event_fold.receive_usage` folds every
+`UsageChanged` event, for any strand, into `shared.usage`, seeded by the full
+snapshot's usage, and a usage report carries no strand. The bar labels it
+"session".
 
 Nothing in the bar expands. The two toggles are the only controls.
 
@@ -201,8 +203,8 @@ shows its status line in the attention colour and nothing else; a click
 focuses it, which draws its approval card in the dock.
 
 The ring is the cache ring the page draws today. The mockup fills it with a
-hit-rate percentage, which the page does not compute; whether to add it is
-open question 6.
+hit-rate percentage, which `cache_watch` does not compute, so the ring keeps
+the outlook the page computes today.
 
 Clicking a card, or any other strand control, focuses the strand and shows the
 **detail view** in the same tab: a `← Strands` link, a larger ring with the
@@ -280,10 +282,12 @@ with a label; on a page with hundreds of rows that is hundreds of tab stops.
 **Settled strands.** #636 lists only strands the strip lists and says a
 settled strand "cannot be focused from the page". A2 lists finished strands
 as cards and lets them be focused (`sub:docs`, `Finished 1m 12s`). The
-redesign therefore needs the strand list to include settled strands, up to a
-bound (the design suggests the newest six, with `+n earlier` as text), each
-with its own card handler. This is a change to #636's model and to its
-admitted-path rule, and it is open question 4.
+redesign would therefore need the strand list to include settled strands, up
+to a bound (the design suggests the newest six, with `+n earlier` as text),
+each with its own card handler. `agent_roster` keeps only a count of settled
+strands, so this is a retention change in `session_view` that the terminal's
+strip also feels, as well as a change to #636's admitted-path rule. It is open
+question 4 and is not scheduled until the owner answers.
 
 ### 3.2 The breadcrumb, `Esc` and the way back
 
@@ -323,17 +327,18 @@ on that session's page. The follow-up PR owns the mechanism and its 051
 addendum (#636 sketches it). The redesign needs three things from it:
 
 - **Several pages per principal** (#635). A switch adds a page and does not
-  end the page left behind, except when it is the oldest of four, so
-  switching back does not cost the page the person came from.
+  end the page left behind. The cap of four is per principal and per session,
+  so a switch to session B never displaces the page left on session A.
 - **The ceiling.** A ticket minted from a page carries a ceiling no higher
   than the page's own.
 - **A route back.** The sidebar row of the session the person came from is
   how they return, so the sidebar is drawn on the new page as well.
 
 **Every session-scoped region follows a switch.** The mockup swapped the
-path, the strand list and the cost when the person opened another session,
-and left the todo, the Changes and Trace tabs, and the Session tab showing the
-old session's content. That must not happen here, and the design makes it a
+path, context, cost, breadcrumb, strand list and composer target when the
+person opened another session, and hid the todo and the badge. Its Changes,
+Trace and Session tabs kept showing the old session's content. That must not
+happen here, and the design makes it a
 property of the construction and a tested invariant, not a list of things a
 script remembers to update. Because a switch is a navigation, the new page
 runs a new component over a new lane, and every region below is drawn from
@@ -399,8 +404,8 @@ viewed session in it. Two of those do not carry over.
 - **The viewed session is not stored.** A page's address names its session,
   and `loom ui --session <id>` opens that one. Restoring another session on
   load would override the link the person just opened and would need a ticket
-  minted at load. The design drops it. This departs from the mockup and is
-  open question 9.
+  minted at load, and tickets are single use. The design drops it. This departs
+  from the mockup.
 - **The focused strand is stored per session, not per workspace.** `main` and
   the advisor exist in every session, but `sub:tests` exists in one.
   Restoring a strand name against another session would name nothing.
@@ -565,7 +570,7 @@ through each new behaviour and says what covers it.
 |---|---|---|
 | Restyle: tokens, rows, cards | CSS only | nothing |
 | Three-column shell, top bar, sidebar and panel drawn by the server | "Nothing from the session becomes markup"; the sidebar rules of #636 (operator pages only) | nothing, but see paths below |
-| Moved event paths | the strand-focus addendum of #636 names `strip_path`; the history addendum names `older_path` | a short 051 addendum recording the new values, as both are constants the socket filter and the tests pin |
+| Moved event paths | 051 names the paths by constant (`strip_path`, `older_path`), not by value; `page_events_test` and `ui_socket_test` pin the values | nothing, at most a one-line edit to #636's parenthetical that quotes `strip_path`'s value |
 | Sidebar and panel toggles, tab choice | client-component rules in `lustre.md` ("Nothing the server needs"); real buttons | nothing, if the element holds no key handling |
 | Strand focus from cards | #636's addendum, admitted for observers at one prefix | nothing, once the cards keep that prefix |
 | Focus from dots, tags, breadcrumb and links | none | a 051 addendum: a client element that hears a click on a fixed marker and clicks a server-drawn strand card |
@@ -598,8 +603,8 @@ observer's tree must be one the strand-focus addendum already admits, or its
 own addendum widens the observer filter. The design adds none.
 
 **The mockup's advisor buttons.** The nudge card in the mockup has `Deliver to
-main` and `Dismiss`. The owner ruled on 2026-09-29 that nudges are shown
-read-only, with no accept or dismiss, and are delivered by the primary's next
+main` and `Dismiss`. The owner ruled (2026-09-29, recorded on issue #569)
+that nudges are shown read-only, with no accept or dismiss, and are delivered by the primary's next
 run. The buttons are not built.
 
 **Paths.** The shell moves the heading into the top bar and the strand chips
@@ -607,7 +612,7 @@ from the strip to the panel, so `component.older_path` (`0\t2\t0\t0` today),
 `component.strip_path` (in #636), the composer's form path and the pinned
 order of the page's children all change. `ui_socket.observer_accepts`,
 `page_events_test` and the route tests pin them. The shell pull request
-updates each and records the new values in the addendum above. The panel
+updates each; no addendum is needed. The panel
 should be drawn as the last child of the page, as #636 does with the sidebar,
 so a later addition does not move an admitted path again.
 
@@ -636,10 +641,15 @@ The addendum for these keys must decide:
 - **Scope.** A listener on `document` hears keys with focus anywhere. A
   listener on the shell element hears only keys with focus inside it, which is
   everything on the page but is a smaller claim. The design proposes the shell
-  element, because the page has no content outside it.
-- **The key set.** Exactly these three, matched by `code` for the letter (an
-  Alt combination changes `key` on macOS, so the mockup matches `KeyB`), and
-  by `key` for `Escape`. Any other key is not read.
+  element, because the page has no content outside it. That choice has a
+  consequence the addendum must argue: the shell's slot contains the dock, so
+  a key listener on `<loom-shell>` is the first client element with an
+  approval card in its subtree. `docs/lustre.md` says "No key handling and no
+  focus near an approval card", and this is a departure from it.
+- **The key set.** Exactly these three. The mockup matches `e.key` `b` for
+  `⌘B` and `e.code` `KeyB` only for the Alt combination, since Alt changes
+  `key` on macOS. The design matches `code` for the letter in both, and `key`
+  for `Escape`. Any other key is not read.
 - **Where they do not act.** Not while an input method is composing. Not when
   the event was already handled (`defaultPrevented`), which is how the
   composer's own `Esc` for closing its list wins. Not when the target is in
@@ -692,20 +702,20 @@ never from a string built from the text.
 `cap/proc.run`, with durations) and a budget. The page has the program's
 source and its result, drawn by `code_mode_program` in
 `session_view/transcript_lines`. A search of `session_view` and
-`tools/codemode` found no record of per-capability-call timing in the
-session's entries or on the wire the page receives. The search may have
-missed one, so this needs confirming before anything is built. If the daemon does not record it,
-the bars need the daemon to record and publish it, which is a protocol change
-and a `protocol-change/NNN.md`, not a page change. Until then the Trace tab
-shows what exists: the latest program, its state and its result, and the
-budget the call named. This is open question 7's companion.
+`tools/codemode` found no per-capability-call timing recorded in core events,
+`session_view/tool_activity`, the code-mode result or `cap`, and the terminal
+has no Calls tab. The bars therefore need the daemon to record and publish
+per-call timing, which is a protocol change and needs a
+`protocol-change/NNN.md`, not a page change. Until then the Trace tab shows
+what exists: the latest program, its state and its result, and the budget the
+call named.
 
 ### 6.4 The Session tab
 
 | Row | Source today |
 |---|---|
 | Goal | the page's goal read (`goal_view`), already sent |
-| Jobs | `live_jobs`, a read the page does not send yet; it is read-only |
+| Jobs | `live_jobs`, a read the page does not send yet; it is read-only (`LiveJobsGet` is in the gateway's `read_only` list). `next.md`'s "attachment jobs stay terminal-only" is about the terminal's attach and relaunch jobs, not this read |
 | Schedules | the schedule events the shared fold already keeps |
 | Viewers | the presence roster in the cut |
 | Estimated cost | `shared.usage`, see 2.1 |
@@ -778,8 +788,7 @@ The order assumes #635 and #636 have landed.
 2. **The three-column shell.** The top bar, the left column (the #636
    sidebar), the centre and the right column holding the strand cards where
    the strip was, with no collapse and no tabs. The panel is the page's last
-   child. Updates every pinned path. Addendum: a short one recording the new
-   paths. Proof: the updated `page_events_test`, `ui_socket_test` and
+   child. Updates every pinned path. Addendum: none. Proof: the updated `page_events_test`, `ui_socket_test` and
    `focus_test`; a drive showing focus works from the moved cards on both
    pages; screenshots.
 
@@ -798,8 +807,7 @@ The order assumes #635 and #636 have landed.
 
 5. **The timeline and strand detail.** Dots, tags, the breadcrumb and links as
    marker controls; the relay in `<loom-shell>`; the detail view in the Strands
-   tab; the settled strands in the list. Addendum: the marker relay, and the
-   settled-strand change to #636's admitted paths. Proof: `focus_test` for the
+   tab. Addendum: the marker relay. Proof: `focus_test` for the
    list and detail; a socket test that an observer's click at any other path
    is dropped; a drive focusing each strand from each of the five places.
 
@@ -838,10 +846,14 @@ The order assumes #635 and #636 have landed.
 13. **The theme toggle.** After the decisions of sections 5 and 6.5. Proof: a
     drive in both themes and inside each shadow root.
 
+The 051 addenda in this series are those of steps 5, 6 and 7, plus the one the
+session-switching follow-up already carries.
+
 The remaining items wait on a ruling or on data, and are not scheduled:
-Changes from the worktree and Trace bars (section 6.3), the hit-rate ring
-(open question 6), the other sessions' activity bars in the sidebar, and the
-composer target menu of section 3.3.
+settled strands in the list (open question 4), Changes from the worktree
+(open question 7), Trace bars (which need a `protocol-change/NNN.md`), the
+other sessions' activity bars in the sidebar, and the composer target menu of
+section 3.3.
 
 ## 9. Where this note departs from the mockup and from earlier notes
 
@@ -849,8 +861,8 @@ From the mockup:
 
 - The approval card stays in the dock (sections 2.3 and 6.1). The panel has no
   decision control.
-- The advisor card has no `Deliver` or `Dismiss` buttons (the 2026-09-29
-  ruling).
+- The advisor card has no `Deliver` or `Dismiss` buttons (owner, 2026-09-29,
+  recorded on issue #569).
 - Dots are not buttons or tab stops (section 3.1).
 - Focusing `main` is `All strands`, and `main` has no detail view (section
   3.2).
@@ -862,8 +874,8 @@ From the mockup:
   (section 4).
 - The `ctx` figure keeps its tilde (section 2.1).
 - The approval arming delay is 600 ms, not the mockup's 2 s.
-- The mockup's session switch updated only the Strands tab; here every region
-  follows (section 3.4).
+- The mockup's session switch left the Changes, Trace and Session tabs showing
+  the old session; here every region follows (section 3.4).
 
 From `web-ui.md`: the 280 px sidebar and the 56 px rail (section 2) become the
 232 px sidebar; the 56 px agent strip and the warp margin (sections 2 and 3.1)
@@ -881,24 +893,22 @@ folded work, the cache semantics and the multiplayer model stand.
 2. **Restoring the focused strand.** It needs the browser to name a strand to
    the server, by an event or a socket query parameter, which #636 avoided.
    Should it persist at all, or is a reload allowed to return to `main`?
-3. **What "All strands" shows.** `main`'s transcript with the rows where other
-   strands crossed in (recommended, no new projection), or an interleaving of
-   several strands' work, which needs a new projection and costs a larger
-   page.
+3. **Closed: what "All strands" shows.** It is `main`'s rows plus the rows where
+   other strands crossed in, which is today's projection. No new projection.
 4. **Focusing settled strands.** A2 lists finished strands and lets them be
    focused, and #636 does not. Should the strand list include settled strands,
-   up to a bound?
+   up to a bound? `agent_roster` keeps only a count of them, so this is a
+   retention change in `session_view` that the terminal's strip also feels.
 5. **A detail view for `main`.** A2 shows one; the engine has only the active
    strand. It needs a second state on the server.
-6. **The cache ring's number.** A2 fills it with a hit rate that the page does
-   not compute; the ring today shows the honest outlook. Add a hit rate, or
-   keep the outlook?
-7. **Changes and Trace data.** May an Operator page read a bounded worktree
-   diff, and does the daemon record per-call timing for programs anywhere a
-   page could read?
+6. **Closed: the cache ring's number.** `cache_watch` computes no hit rate, so
+   the ring keeps the outlook the page computes today.
+7. **Changes from the worktree.** May an Operator page read a bounded worktree
+   diff? (The timing half of this question is closed: no per-call timing is
+   recorded, so the Trace bars need a `protocol-change/NNN.md`.)
 8. **Narrow windows.** The overlay behaviour of section 4 is a proposal.
-9. **The viewed session.** The mockup persists it, and the design does not
-   restore another session over the link the person opened.
+9. **Closed: the viewed session.** A page's address names its session and
+   tickets are single use, so it is not restored.
 10. **Viewers on observer pages.** Shown, or operator pages only until ruled.
 
 ## 11. Out of scope
