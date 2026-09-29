@@ -561,16 +561,24 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   identities or numbers.** `<loom-elapsed offset>` is a duration in
   milliseconds, which the element anchors to the browser's clock, since a
   browser's clock need not agree with the daemon's. No attribute carries
-  session text.
+  session text. `<loom-composer commands>` is the one attribute of another
+  kind: the static table of slash-command names and hints, written in
+  `session_view` and built for the page by `web_view/completion`.
 - **Session text reaches it only as the server's children.** `<loom-fold>`
   shows the divider and the work through a named and a default slot, and
   `<loom-follow>` shows the lane through a default slot; the words are
   light-DOM nodes the server rendered and escaped.
 - **No key handling and no focus near an approval card.** A client
-  component's button is a real button, which the browser activates; no
-  element listens for a key or calls `focus`. `<loom-follow>` scrolls the
-  page and observes the lane's size; the approval cards and the composer
-  are outside it, in the dock, and it reads nothing inside either.
+  component's button is a real button, which the browser activates.
+  `<loom-follow>` is the transcript's scroll container: it scrolls itself
+  and observes the size of itself and of the lane; the approval cards and
+  the composer are outside it, in the dock, and it reads nothing inside
+  either. `<loom-composer>` is the one element that listens for a key, and
+  only on its own editor, through its slot: Command or Control with Enter
+  submits the composer's form, and while its list shows the arrows, Tab,
+  Enter and Escape act on the list. It calls `focus` on the editor once,
+  when the operator chooses a row. The approval cards are outside it, in
+  the dock, and none of these keys decides one.
 - **No raw HTML.** It renders through Lustre's virtual DOM, as the server
   component does.
 - **Nothing the server needs.** A fold's open state, a clock reading and
@@ -1165,8 +1173,9 @@ All apply to 5.7.1. Re-check each when the pin moves.
       run after changing a class, `packages/web_client` or its stylesheet
       input (`make client-check` passes).
 - [ ] A client component renders only its own numeric or identity
-      attributes and the server's slotted children, handles no key and
-      takes no focus.
+      attributes and the server's slotted children, and handles no key and
+      takes no focus, except `<loom-composer>` in its own editor (see
+      section 3, "Client components inside the server component").
 - [ ] Controls are real buttons with labels; the transcript is a `log` and
       the status a `status`; nothing uses `autofocus`; the approval card
       never takes focus and defaults to Deny.

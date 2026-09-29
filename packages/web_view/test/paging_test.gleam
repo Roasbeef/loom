@@ -192,7 +192,8 @@ pub fn a_full_page_loads_no_more_test() {
 }
 
 // A refused read retires the demand: the page follows the session again,
-// says what happened, and offers the older rows once more.
+// says nothing (the page's own read is no command's outcome), and offers the
+// older rows once more.
 pub fn a_refused_read_can_be_asked_again_test() {
   let wire = process.new_subject()
   let page =
@@ -202,9 +203,7 @@ pub fn a_refused_read_can_be_asked_again_test() {
   let assert [read] = reads(wire) as "one history read"
   let page = refuse(page, read)
   assert component.top(page) == lane.Earlier
-  let assert component.Said(text) = component.notice(page)
-    as "the refusal is stated"
-  assert string.contains(text, "unavailable")
+  assert component.notice(page) == component.Quiet
 
   let _ = press(page)
   let assert [_] = reads(wire) as "the read is asked again"

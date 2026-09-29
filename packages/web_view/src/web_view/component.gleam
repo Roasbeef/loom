@@ -252,21 +252,33 @@ pub type Status {
 
 /// What the page last told an operator about their own input.
 ///
-/// The text is the component's own or the engine's, never the session's.
-/// The engine's is the shared record's `notice`, which the terminal shows in
-/// its footer and which any event can replace, so it states the latest thing
-/// the session did as often as the outcome of a command. The component's own
-/// is a refusal of an input before it became a command, and it stays until
-/// the operator's next input.
+/// The page draws outcomes only: what the session said when it ran the
+/// operator's command, the daemon's reply to it, a prompt the daemon handed
+/// back, and the page's own refusals. It does not draw the shared record's
+/// `notice`, which the terminal shows in its footer and which any event
+/// replaces, so a background read ("notes sent") or a stream ("streaming
+/// text") would have spoken over the operator's own command. The words
+/// stay until the operator's next input.
 pub type Notice {
   /// Nothing to say.
   Quiet
 
-  /// What the session last said.
+  /// The outcome of the operator's last command, or of what became of it.
   Said(text: String)
 
   /// The page refused an input before it reached the session.
   Warned(text: String)
+}
+
+/// A prompt the daemon handed back unsent (protocol-change/038), which the
+/// composer puts back in its editor.
+pub type Returned {
+  Returned(
+    /// Its place in the order the daemon handed prompts back, from one.
+    number: Int,
+    /// What the operator had sent. Attachments do not come back with it.
+    text: String,
+  )
 }
 
 /// Whether the page's strand is running an operation.
@@ -372,6 +384,23 @@ type View(socket) {
     status: Status,
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
+    /// What the session said when the page ran the operator's last command:
+    /// the notice the shared step left, read at once because any later event
+    /// may write it over. Empty when the command said nothing. The daemon's
+    /// later reply to that command is `Shared.answer`, and the two are what
+    /// `notice` draws.
+    outcome: String,
+    /// How many prompts the daemon has handed back to this page's strand
+    /// since the page opened, and all of them, oldest
+    /// first. None is dropped: each is the prompt's last copy, and the element
+    /// takes them in a frame that does not run in a background tab, so any cap
+    /// could lose one before it is read. The list is bounded by the daemon's
+    /// held queue. The composer's element puts each in the editor once, by its
+    /// number. The shared record holds a returned prompt only until the next
+    /// step forgets it (`step.forget_surfaces`), so it is taken here at the
+    /// end of every message.
+    returns: Int,
+    returned: List(Returned),
     /// How many drafts a command consumed at dispatch. A draft a prompt
     /// carries is consumed when the lane sends it, which the shared record
     /// counts as `drafts_sent`; the composer's editor is keyed by the sum,
@@ -460,6 +489,9 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       stripped: stripped_of(shared),
       status: Connecting,
       refusal: None,
+      outcome: "",
+      returns: 0,
+      returned: [],
       consumed: 0,
       timer: None,
       armed: None,
@@ -625,8 +657,86 @@ fn finished(
   effects: List(step_effect.Effect(socket, Nil)),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  let model = refreshed(model) |> rearm(at)
+  let model = settled(model) |> refreshed |> rearm(at)
   #(model, perform(model.view.transport, effects))
+}
+
+// Takes the prompts the daemon handed back out of the shared record, which
+// keeps them only until a step forgets them. The daemon held each prompt
+// only in memory, so this is its last copy (protocol-change/038); the page
+// keeps it for the composer's element to put in the editor, and says what
+// came back. A prompt for a strand the page does not compose for, or for
+// another session, has no editor here, and the notice says so instead of
+// pretending it was restored.
+fn taken(model: Model(socket)) -> Model(socket) {
+  case model.shared.returned_drafts {
+    [] -> model
+    drafts -> {
+      let mine =
+        list.filter(drafts, fn(draft) {
+          draft.session == model.shared.session && draft.strand == strand
+        })
+      let numbered =
+        list.index_map(mine, fn(draft, index) {
+          Returned(number: model.view.returns + index + 1, text: draft.text)
+        })
+      let returned = list.append(model.view.returned, numbered)
+      Model(
+        shared: Shared(..model.shared, returned_drafts: [], answer: ""),
+        view: View(
+          ..model.view,
+          refusal: None,
+          outcome: returned_words(drafts, mine),
+          returns: model.view.returns + list.length(mine),
+          returned:,
+        ),
+      )
+    }
+  }
+}
+
+// The end of every step over the record: the returned prompts are taken
+// first, since forgetting the step's leftovers would not drop them but a host
+// must not leave them behind, and then the facts a host has no surface for
+// are forgotten.
+fn settled(model: Model(socket)) -> Model(socket) {
+  let held = taken(model)
+  Model(..held, shared: step.forget_surfaces(held.shared))
+}
+
+// What the page says when prompts come back: how many, for which strand, and
+// whether they are in the composer.
+fn returned_words(
+  drafts: List(session_model.ReturnedDraft),
+  mine: List(session_model.ReturnedDraft),
+) -> String {
+  let elsewhere = list.length(drafts) - list.length(mine)
+  let here = case mine {
+    [] -> []
+    [_, ..] -> [
+      counted(list.length(mine))
+      <> " held for "
+      <> strand
+      <> ", put back in the composer",
+    ]
+  }
+  let there = case elsewhere {
+    0 -> []
+    count -> [
+      counted(count)
+      <> " held for another strand or session, which the page cannot show",
+    ]
+  }
+  "The daemon handed back "
+  <> string.join(list.append(here, there), "; ")
+  <> "."
+}
+
+fn counted(count: Int) -> String {
+  case count {
+    1 -> "1 prompt"
+    _ -> int.to_string(count) <> " prompts"
+  }
 }
 
 /// Folds lane updates into the component as the shared step's lane fold
@@ -648,12 +758,16 @@ pub fn apply(
   model: Model(socket),
   updates: List(session_channel.Update),
 ) -> Model(socket) {
-  let shared =
-    list.fold(updates, model.shared, fn(shared, update) {
-      lane_fold.apply_channel_update(shared, update, lane_fold.nothing_shown())
-      |> step.forget_surfaces
-    })
-  refreshed(Model(..model, shared:))
+  list.fold(updates, model, fn(model, update) {
+    let shared =
+      lane_fold.apply_channel_update(
+        model.shared,
+        update,
+        lane_fold.nothing_shown(),
+      )
+    settled(Model(..model, shared:))
+  })
+  |> refreshed
 }
 
 // --- what the page draws ---------------------------------------------------
@@ -1175,19 +1289,25 @@ fn commanded(
   command: msg.Command,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let at = model.view.transport.now()
+
+  // The step words the outcome into the shared notice, and any later event
+  // may replace it, so it is read at once. The notice and the last reply are
+  // emptied first so that a command which says nothing leaves nothing to
+  // read, and not the words of whatever the session said before it.
   let #(shared, effects) =
     step.update(
-      model.shared,
+      Shared(..model.shared, notice: "", answer: ""),
       msg.Input(at: stamp(at), event: msg.Acted(command)),
     )
   let consumed = case list.any(shared.surface_facts, took_draft) {
     True -> model.view.consumed + 1
     False -> model.view.consumed
   }
+
   finished(
     Model(
-      shared: step.forget_surfaces(shared),
-      view: View(..model.view, refusal: None, consumed:),
+      shared:,
+      view: View(..model.view, refusal: None, outcome: shared.notice, consumed:),
     ),
     effects,
     at,
@@ -1417,7 +1537,8 @@ pub fn pending(model: Model(socket)) -> List(approval.Review) {
 }
 
 /// What the page last told the operator: its own refusal of an input if
-/// there is one, otherwise what the session last said.
+/// there is one, otherwise the daemon's reply to the last command, otherwise
+/// what the session said when that command ran.
 ///
 /// ## Examples
 ///
@@ -1425,10 +1546,11 @@ pub fn pending(model: Model(socket)) -> List(approval.Review) {
 /// // component.notice(model) == component.Quiet
 /// ```
 pub fn notice(model: Model(socket)) -> Notice {
-  case model.view.refusal, model.shared.notice {
-    Some(text), _ -> Warned(text)
-    None, "" -> Quiet
-    None, text -> Said(text)
+  case model.view.refusal, model.shared.answer, model.view.outcome {
+    Some(text), _, _ -> Warned(text)
+    None, "", "" -> Quiet
+    None, "", text -> Said(text)
+    None, text, _ -> Said(text)
   }
 }
 
@@ -1442,6 +1564,31 @@ pub fn notice(model: Model(socket)) -> Notice {
 /// ```
 pub fn drafts(model: Model(socket)) -> Int {
   model.shared.drafts_sent + model.view.consumed
+}
+
+/// How many prompts the daemon has handed back to the page's strand since
+/// the page opened. The composer's element compares it with the count it
+/// last saw, so a number that rises is a return to put in the editor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.returns(model)
+/// ```
+pub fn returns(model: Model(socket)) -> Int {
+  model.view.returns
+}
+
+/// The latest prompts the daemon handed back, oldest first, each numbered
+/// by its place in `returns`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.returned(model)
+/// ```
+pub fn returned(model: Model(socket)) -> List(Returned) {
+  model.view.returned
 }
 
 /// The attachment the last capture was taken for: who the page acts as.
