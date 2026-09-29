@@ -62,6 +62,18 @@ pub fn a_malformed_value_gets_the_default_layout_test() {
   assert layout_rule.restore(Ok("{\"tab\":3}")) == default
 }
 
+// A field of the wrong type fails the whole decoder, sibling fields
+// included, as `restore` documents: the record is untrustworthy, so the
+// default stands rather than half of it.
+pub fn a_field_of_the_wrong_type_discards_the_whole_record_test() {
+  assert layout_rule.restore(Ok("{\"sidebar\":\"closed\",\"panel\":false}"))
+    == shell_rule.initial()
+  assert layout_rule.restore(Ok(
+      "{\"sidebar\":\"closed\",\"panel\":\"closed\",\"tab\":3}",
+    ))
+    == shell_rule.initial()
+}
+
 // A tab that a later release removed, or a word nothing wrote, is the
 // default for that field alone: the columns the same object names are kept.
 pub fn an_unknown_tab_is_the_default_tab_and_keeps_the_columns_test() {
