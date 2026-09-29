@@ -55,3 +55,16 @@ pub fn styled_rows_colour_state_and_reset_test() {
   assert string.ends_with(row, "  n")
   assert !list.any([header, row], string.contains(_, "H\u{001B}"))
 }
+
+// A saved registration and a bare reservation are the idle remainder `loom
+// sessions list` hides by default; every other lifecycle — including a
+// transition and a blocked recovery, not only a settled `Resident` — still
+// occupies the daemon and stays in the resident track.
+pub fn resident_track_hides_only_saved_and_reserved_test() {
+  assert !session_table.resident_track(control_protocol.Saved)
+  assert !session_table.resident_track(control_protocol.Reserved)
+  assert session_table.resident_track(control_protocol.Resident("i"))
+  assert session_table.resident_track(control_protocol.Opening("op"))
+  assert session_table.resident_track(control_protocol.Stopping("op"))
+  assert session_table.resident_track(control_protocol.RecoveryBlocked)
+}
