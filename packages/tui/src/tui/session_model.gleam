@@ -639,6 +639,11 @@ pub type SurfaceFact {
   /// the lane sends it: the submission was not locked behind the lane, so
   /// nothing later will move `drafts_sent` for it. `taking` says what the
   /// draft became, and so what a host's editor keeps.
+  ///
+  /// The two records exclude each other, which is what clears a draft once
+  /// and never twice: `commands.take_draft` records no `DraftTaken` for a
+  /// submission marked `ComposerSubmission`, and `outbound.apply_submission`
+  /// moves `drafts_sent` only for one so marked.
   DraftTaken(taking: DraftTaking)
 
   /// `/clear` emptied this client's transcript; a host's gutters describe
