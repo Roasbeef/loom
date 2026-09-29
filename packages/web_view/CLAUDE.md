@@ -177,7 +177,11 @@ page keys and nonces, and the relay into the session's gateway.
   board and reviewer band on both pages, from plain values;
   `component.plan(model)` reads them: `Shared.todo_boards` at
   `Shared.active_strand`, and `reviewer_status.lines` over
-  `Shared.reviewer_rows`, the terminal's own lines. The phase holding the
+  `Shared.reviewer_rows`, the terminal's own lines. The board is one line
+  until the reader opens it, `Todo · 3 of 5 done · <active task>`, the
+  summary of a `<loom-fold>` (the browser keeps its open state, so a patch
+  leaves it alone and an observer's page has it too); the line follows the
+  strand the page shows because the board is that strand's. Opened, the phase holding the
   active task (`todo_list.focus`) is expanded with every task, each with the
   terminal's glyph (`✓ ▸ ○ ⊘ –`, hidden from assistive technology, with the
   status as a visually hidden word) and a blocked task's reason; the other

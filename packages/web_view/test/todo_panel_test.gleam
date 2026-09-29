@@ -98,6 +98,54 @@ pub fn the_counts_are_the_terminals_test() {
   ])
 }
 
+pub fn the_board_is_one_collapsed_line_over_a_fold_test() {
+  let html = drawn(Some(board()), [])
+
+  // The line is the fold's summary: the label, the closed count over every
+  // phase, and the active task's text. The board is the fold's other child,
+  // so a closed fold shows the line alone.
+  assert in_order(html, [
+    "<loom-fold class=\"todo-fold\">",
+    "slot=\"summary\"",
+    "Todo",
+    " · 3 of 8 done",
+    "<span class=\"todo-current\">Wire the dock</span>",
+    "<div class=\"todo-detail\">",
+    "todo-tasks",
+    "</loom-fold>",
+  ])
+}
+
+pub fn a_board_with_no_active_task_says_only_the_count_test() {
+  let html =
+    drawn(
+      Some(Board([Phase("Later", [Task("a", Pending), Task("b", Done)])])),
+      [],
+    )
+  assert string.contains(html, " · 1 of 2 done")
+  assert !string.contains(html, "todo-current")
+}
+
+pub fn the_active_task_in_the_line_is_text_only_test() {
+  let html =
+    drawn(Some(Board([Phase("P", [Task("Fix <b>it</b>", Active)])])), [])
+  assert string.contains(
+    html,
+    "<span class=\"todo-current\">Fix &lt;b&gt;it&lt;/b&gt;</span>",
+  )
+  assert !string.contains(html, "<b>")
+}
+
+pub fn a_finished_board_and_the_band_are_not_folded_test() {
+  let finished =
+    drawn(Some(Board([Phase("One", [Task("a", Done)])])), ["Reviewer x"])
+  assert !string.contains(finished, "loom-fold")
+
+  let banded = drawn(Some(board()), ["Reviewer x"])
+  let assert Ok(#(_, band)) = string.split_once(banded, "</loom-fold>")
+  assert string.contains(band, "todo-reviewers")
+}
+
 pub fn the_other_phases_fold_into_one_row_test() {
   let html = drawn(Some(board()), [])
   assert string.contains(
@@ -266,6 +314,26 @@ pub fn a_later_capture_without_a_todo_call_keeps_the_board_test() {
       ]),
     )
   assert has(html, ["Wire the dock", "3/8 done"])
+}
+
+pub fn the_line_follows_the_strand_the_page_shows_test() {
+  let model = page([lane_fixture.planned([board()], [])])
+  assert string.contains(operator(model), "3 of 8 done")
+  assert string.contains(observer(model), "3 of 8 done")
+
+  // The board belongs to `main`. Focusing the strand that has none draws no
+  // line, and focusing `main` again draws it.
+  let away =
+    page_fixture.run(model, component.update, [
+      component.FocusRequested(lane_fixture.child),
+    ])
+  assert component.strand(away) == lane_fixture.child
+  assert !string.contains(operator(away), "todo-line")
+  let back =
+    page_fixture.run(away, component.update, [
+      component.FocusRequested(component.primary),
+    ])
+  assert string.contains(operator(back), "3 of 8 done")
 }
 
 fn in_order(haystack: String, needles: List(String)) -> Bool {

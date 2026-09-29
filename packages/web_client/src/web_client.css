@@ -269,6 +269,9 @@
   .todo-label{color:var(--color-signal);font-weight:700;}
   .todo-phase{color:var(--color-fg);font-weight:700;}
   .todo-quiet{color:var(--color-fg-quiet);}
+  loom-fold.todo-fold{display:block;}
+  .todo-current{color:var(--color-signal);font-weight:700;}
+  .todo-detail{padding-top:4px;}
   .todo-total{margin-left:auto;color:var(--color-fg-quiet);}
   ul.todo-tasks{list-style:none;margin:0;padding:0;}
   li.todo-task{position:relative;padding-left:8px;}
