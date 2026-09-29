@@ -1082,3 +1082,59 @@ prompt, an unknown command refused and sending nothing, a terminal surface
 command (`/models`, `/sessions`, `/details`) refused with a notice, and
 `/add-dir`, `/add-write-dir` and `/add-dir --write` refused with a notice and
 no frame.
+
+## Addendum: the page's frame is pinned and only the transcript scrolls (2026-09-29)
+
+**Status**: ACCEPTED · **Raised by**: issue #569, phase B (owner,
+2026-09-28: new rows landed below the viewport)
+
+The pinned-composer addendum above pinned the dock with `position: sticky`
+inside a page that scrolled as a whole. This addendum replaces that with a
+fixed frame on both pages: the page is one viewport tall and never
+scrolls; the heading and the agent strip are at its top; the dock (the
+operator's approvals and composer) or the observer's bar is at its bottom;
+and the transcript, which takes the height between them, is a scroll
+container of its own. The dock is no longer sticky. It is the last item of
+the page's column, so a card appearing or the editor growing shrinks the
+transcript rather than covering its last row. Everything the earlier
+addendum says about the card (above the composer, capped at 35% of the
+viewport, the arming delay) is unchanged.
+
+**The client component is the scroller.** `<loom-follow>`, which wraps the
+lane, becomes the transcript's scroll container. It scrolls itself, so it
+takes no new event and adds nothing to the socket's accepted list: scrolling
+is client-side only, as it was. Its shadow root gains one button, "Jump to
+latest", drawn only while the reader has scrolled up more than 40 pixels
+from the bottom. The button's label is fixed in the component; it takes no
+session text, no attribute and no key handling. The approval cards and the
+composer are still outside it, in the dock. The content security policy,
+the served documents and the session's text nodes are unchanged.
+
+**Why following failed before.** `<loom-follow>` decided between following
+and reading from the distance to the bottom at each scroll event. Its own
+scroll to the bottom is reported on the next frame, and rows that landed in
+between made that distance more than 40 pixels, which it read as the reader
+scrolling up. It then stopped following for the rest of the page's life. A
+burst of rows, which a busy session produces constantly, was enough. The
+component now reads which way a scroll moved as well: only a move up that
+ends away from the bottom is the reader leaving the tail.
+
+**What was considered.**
+
+- **Keep the page as the scroller and only fix the decision.** That fixes
+  the loss of following but leaves the dock overlaying the last rows and the
+  header scrolling away. Not taken.
+- **Draw "Jump to latest" from the server.** It would need the reader's
+  scroll position on the server, a render per scroll, or a new event on the
+  socket's accepted list. Not taken.
+
+**Cost.** Scroll anchoring is turned off for the transcript, so the
+component keeps the reader's place itself in every browser, including when
+older rows load above them. The transcript is shorter on a short window,
+by the height of the dock and the strip.
+
+### Verification
+
+`operator_page_test` and `component_test` pin the order of the page's
+children (heading, strip, transcript, dock or bar). The scroll behaviour is
+in the browser, where the tests cannot reach it, and is checked by hand.

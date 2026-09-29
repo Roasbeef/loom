@@ -561,9 +561,10 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   light-DOM nodes the server rendered and escaped.
 - **No key handling and no focus near an approval card.** A client
   component's button is a real button, which the browser activates; no
-  element listens for a key or calls `focus`. `<loom-follow>` scrolls the
-  page and observes the lane's size; the approval cards and the composer
-  are outside it, in the dock, and it reads nothing inside either.
+  element listens for a key or calls `focus`. `<loom-follow>` is the
+  transcript's scroll container: it scrolls itself and observes the size of
+  itself and of the lane; the approval cards and the composer are outside
+  it, in the dock, and it reads nothing inside either.
 - **No raw HTML.** It renders through Lustre's virtual DOM, as the server
   component does.
 - **Nothing the server needs.** A fold's open state, a clock reading and
