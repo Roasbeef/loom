@@ -12,18 +12,24 @@
 ////   operation's elapsed time.
 //// - `<loom-fold>` (`web_client/fold`) opens and closes a turn's folded
 ////   work.
-//// - `<loom-follow>` (`web_client/follow`) keeps the lane's newest row in
-////   view while the reader is at the bottom of the page.
+//// - `<loom-follow>` (`web_client/follow`) is the transcript's scroll
+////   container. It keeps the lane's newest row in view while the reader is
+////   at the bottom, and offers a way back to it while they are not.
+//// - `<loom-composer>` (`web_client/composer`) wraps the operator's editor:
+////   it lists slash commands as the draft grows, sends the draft on Command
+////   or Control with Enter, and puts a returned prompt back in the editor.
 ////
 //// Every element keeps the page's rules (protocol-change/051): it renders
 //// only what its own attributes say, and those hold daemon identities or
-//// numbers, never session text; text inside a fold is the server's
-//// children, projected through a slot; nothing handles a key or takes focus
-//// near an approval card; and Lustre renders through its virtual DOM, never
-//// raw HTML. `make gen-client` bundles this package into one module in
+//// numbers (or, for the composer, the static table of command names), never
+//// session text; text inside a fold is the server's children, projected
+//// through a slot; nothing handles a key or takes focus near an approval
+//// card, and the composer handles keys only in its own editor; and Lustre
+//// renders through its virtual DOM, never raw HTML. `make gen-client` bundles this package into one module in
 //// `web_view`'s `priv/static`, which the page loads under the unchanged
 //// policy (`script-src 'self'`).
 
+import web_client/composer
 import web_client/elapsed
 import web_client/fold
 import web_client/follow
@@ -37,6 +43,7 @@ import web_client/follow
 /// // web_client.main()
 /// ```
 pub fn main() -> Nil {
+  let _ = composer.register()
   let _ = elapsed.register()
   let _ = fold.register()
   let _ = follow.register()

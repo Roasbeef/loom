@@ -387,6 +387,19 @@ command recorded on the record; the component reads `DraftTaken` to know
 the command consumed the composer's draft, then drops them
 (`step.forget_surfaces`).
 
+**The composer and its notice.** The editor is drawn inside
+`<loom-composer>` (`packages/web_client`), which lists the slash commands as
+the draft grows (`web_view/completion` builds its table from the terminal's
+suggestions, less what `component.page_command` refuses), sends the draft on
+Command or Control with Enter by submitting the form, and puts a prompt the
+daemon handed back into the editor. None adds a handler or a socket event.
+The page's notice is an outcome, not the shared record's notice: the
+refusal the page made, else the daemon's reply to the last command
+(`Shared.answer`), else what the step worded when the page ran it. A
+returned prompt is taken from `Shared.returned_drafts` at the end of every
+message and kept, with a number, for the element (protocol-change/051, the
+addendum on the composer's element).
+
 **Effects.** The step returns the effects it decided, and the component
 performs them through the transport inside one `effect.from`, in the
 order the step decided them: `Transmit(socket, frame)` writes a frame and
@@ -428,10 +441,10 @@ branch scan on each operation, for every open page. Ruling 12 of the step
 extraction design chose that over choosing which reads a host has a
 surface for. The step's tick leaves out the block-summary read, because
 the daemon may run a summarizer for a label it is asked for and the page
-draws no labels. The composer's notice line shows the shared record's
-`notice`, so it says what the session last said ("notes sent" after that
-first read, "streaming text" during an answer) as often as the outcome of a
-command; only the page's own refusals are drawn as warnings. The facts a
+draws no labels. The composer's notice line shows the outcome of the
+last command, not the shared record's `notice`, so "notes sent" after that
+first read and "streaming text" during an answer do not appear there; only
+the page's own refusals are drawn as warnings. The facts a
 fold records for surfaces the page lacks are dropped with
 `step.forget_surfaces`. That includes a held prompt the daemon hands back
 (protocol-change/038's custody return): the page has no editor to put it
@@ -490,15 +503,15 @@ session and need a second mode to return to the tail, which the terminal
 has and the page does not.
 
 **Keeping the reader's place.** Rows loaded above the reader would move
-everything they are reading down by the height of what arrived, in a
-browser that does not anchor scrolling. `<loom-follow>` hears the click on
+everything they are reading down by the height of what arrived. The
+stylesheet turns the browser's scroll anchoring off for the transcript, so
+the page keeps the reader's place itself. `<loom-follow>` hears the click on
 the button (it carries a fixed `data-loom-older` marker) as it hears a
 fold's toggle: it becomes `Reading`, so the growth that follows does not
 scroll to the tail, and it holds the lane's first row and its position on
 screen. When that row stops being the lane's first, the older rows have
-arrived, and it scrolls the page by however far the row moved. A browser
-that anchors scrolling itself has already kept the row in place, and the
-scroll is zero.
+arrived, and it scrolls the transcript by however far the row moved. This
+is the one place the reader's place is kept.
 
 **Observers.** A `history` read is a read. The gateway admits it for an
 observer's binding (`gateway.read_only` lists `History`), and the lane
@@ -546,18 +559,19 @@ would try to trick the person into approving:
   (`approval.presentation`), never from transcript text, in a region
   that transcript content cannot occupy, and in a style no transcript
   line uses. The region sits directly above the composer in the dock, the
-  footer pinned to the bottom of the viewport, so a pending card is on
-  screen wherever the operator has scrolled. The dock is pinned by its
-  bottom edge, so a card appearing grows it upward and leaves the
-  composer's controls where they were. For 600 ms after a card is
+  footer at the bottom of the page's pinned frame, so a pending card is on
+  screen wherever the operator has scrolled the transcript. A card
+  appearing grows the dock upward, shrinks the transcript by as much, and
+  leaves the composer's controls where they were. For 600 ms after a card is
   inserted its buttons refuse clicks and are drawn dimmed (a CSS
   animation on the action row's `arming` class), so a click already
   heading for the bottom of the transcript cannot land on Allow (051, the
   addendum on the pinned composer).
 - Deny comes first, each button names the tool ("Deny bash", "Allow bash
   once"), nothing has `autofocus`, and a new card never takes focus.
-- Enter in the composer is a newline. A draft is sent only by the form's
-  own Send, Queue or Steer button, and the form's submit never carries a
+- Enter in the composer is a newline. A draft is sent by the form's own
+  Send, Queue or Steer button, or by Command or Control with Enter in the
+  editor, which submits that same form; the form's submit never carries a
   decision.
 - The page offers allow once and deny. Allow for the session is left out,
   because a remembered grant outlives the page that gave it.
@@ -626,10 +640,7 @@ browser goes away, because a runtime outlives its last client.
 - **The rest of the page's features.** The page runs the shared step, and
   what it draws is a small part of what the step knows. Part 2 of
   [issue #569](https://github.com/Roasbeef/loom/issues/569) builds the
-  page out: a pinned frame that scrolls only the transcript, following the
-  tail, slash-command autocomplete and Cmd/Ctrl+Enter in the composer,
-  a typed notice, returned prompts put back in the composer, expandable
-  rows, the todo panel, live streams, strand focus and the session
+  page out: expandable rows, the todo panel, live streams, strand focus and the session
   sidebar. History paging is built on the shared record's `scrollback`
   (`history_view.State`); the row limit and `Paging` stay the page's view
   state.

@@ -533,6 +533,7 @@ pub fn new_model_with_clock(
       cache_notices: [],
       scrollback: history_view.empty(),
       notice: "interactive design preview",
+      answer: "",
       worktree: worktree_view.new(),
       context: context_view.new(),
       completion: completion_summary.new(),

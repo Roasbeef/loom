@@ -68,18 +68,21 @@
 @media (prefers-color-scheme: light) { :root { color-scheme: light; } }
 
 @layer base {
-  body { margin: 0; background: var(--color-bg); color: var(--color-fg); font: 14px/1.5 var(--font-sans); overflow-x: hidden; }
+  body { margin: 0; background: var(--color-bg); color: var(--color-fg); font: 14px/1.5 var(--font-sans); overflow: hidden; }
+  lustre-server-component { display: block; }
   button, textarea { font: inherit; }
 }
 
 /* The page's parts. Each class here is one the view spells literally. */
 @layer components {
-  /* The page is at least one viewport tall and the lane takes the height
-     that is left, so the dock rests on the viewport's bottom edge even when
-     the transcript is short. The page has no bottom padding: the dock
-     carries its own, so it sits flush with the edge it is pinned to. */
-  main.loom-session{max-width:1100px;margin:0 auto;padding:16px 16px 0;min-width:0;min-height:100dvh;box-sizing:border-box; display:flex;flex-direction:column;}
-  .session-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;margin-bottom:12px; padding-bottom:8px;border-bottom:1px solid var(--color-divider);}
+  /* The page is exactly one viewport tall and does not scroll. Its frame is
+     pinned: the heading and the agent strip at the top, the dock (or the
+     observer's bar) at the bottom, and the transcript, which takes the
+     height between them, scrolls on its own (loom-follow.follow below). The
+     page has no bottom padding: the dock carries its own, so it sits flush
+     with the edge it is pinned to. */
+  main.loom-session{max-width:1100px;margin:0 auto;padding:16px 16px 0;min-width:0;height:100dvh;box-sizing:border-box; display:flex;flex-direction:column;overflow:hidden;}
+  .session-head{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;margin-bottom:12px; padding-bottom:8px;border-bottom:1px solid var(--color-divider);}
   .session-head h1{font:600 14px/1.4 var(--font-mono);margin:0;min-width:0;overflow-wrap:anywhere;}
   .session-head .status{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
   .session-head .workspace{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);min-width:0;overflow-wrap:anywhere;}
@@ -91,7 +94,7 @@
   .hue-5{--hue:var(--color-strand-5);}
   .hue-6{--hue:var(--color-strand-6);}
   .hue-none{--hue:var(--color-fg-quiet);}
-  nav.agent-strip{margin:0 0 16px 0;overflow-x:auto;scrollbar-width:thin;}
+  nav.agent-strip{flex:0 0 auto;margin:0 0 16px 0;overflow-x:auto;scrollbar-width:thin;}
   ul.chips{list-style:none;margin:0;padding:0 0 4px 0;display:flex;gap:8px;}
   li.chip{position:relative;flex:0 0 auto;width:232px;min-width:0;padding:8px 10px 8px 14px; background:var(--color-bg-raised);border:1px solid var(--color-divider);border-radius:8px; display:grid;grid-template-columns:minmax(0,1fr);row-gap:2px;font-size:12px;}
   li.chip .swatch{position:absolute;left:0;top:0;bottom:0;width:4px;border-radius:8px 0 0 8px; background:var(--hue,var(--color-fg-quiet));}
@@ -116,7 +119,22 @@
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
   .ring.ring-idle{border-color:var(--color-fg-quiet);}
   .ring.ring-elapsed{border:2px dashed var(--color-fg-quiet);}
-  loom-follow.follow{display:flex;flex-direction:column;flex:1 0 auto;min-width:0;}
+  /* The transcript's scroll container: the client component draws the lane
+     inside it and scrolls it (web_client/follow). Its height is what the
+     frame leaves, so it never grows with the rows. Scroll anchoring is off
+     so that the component alone keeps the reader's place, the same way in
+     every browser; a browser that also anchored would move the view under
+     the reader and the move would be read as the reader's scroll. Its
+     children do not shrink, so a short viewport scrolls them rather than
+     squeezing rows. */
+  loom-follow.follow{display:flex;flex-direction:column;flex:1 1 0;min-height:0;min-width:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;scrollbar-width:thin;}
+  loom-follow.follow > *{flex-shrink:0;}
+  /* The "Jump to latest" button, drawn inside the client component while
+     the reader is away from the bottom. Its wrapper has no height and
+     sticks to the bottom edge of the scroller, so the button floats over
+     the last rows and the content's size does not change when it appears. */
+  .jump-anchor{position:sticky;bottom:0;z-index:1;flex:0 0 0;height:0;align-self:stretch;display:flex;justify-content:center;}
+  .jump-latest{position:absolute;bottom:12px;padding:5px 14px;border:1px solid var(--color-current);border-radius:999px;background:var(--color-bg-raised);color:var(--color-current);font:12px/1.4 var(--font-mono);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.35);}
   /* The line above the lane's oldest row: the "Load older" button, or
      words saying why there is none. Each fits the same minimum height, so
      the change from one to the other does not move the rows below. */
@@ -199,7 +217,7 @@
   .block.commentary{padding-left:10px;border-left:2px solid var(--color-advisor);}
   .block.commentary .line{color:var(--color-advisor);font-size:12px;}
   p.cache-miss{margin:0;padding:6px 10px;border:1px dashed var(--color-signal);border-radius:6px; color:var(--color-signal);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
-  .observer-bar{margin:16px 0 0 0;padding:12px 16px;border-top:1px solid var(--color-divider); color:var(--color-fg-quiet);font-size:13px;}
+  .observer-bar{flex:0 0 auto;margin:16px 0 0 0;padding:12px 16px;border-top:1px solid var(--color-divider); color:var(--color-fg-quiet);font-size:13px;}
   .page-note{margin:16px;color:var(--color-fg-quiet);}
   /* The approvals sit in the dock above the composer. Their height is
      capped and they scroll on their own, so a long action preview or
@@ -223,12 +241,11 @@
   .approval-actions.arming button{animation:loom-arm-look 600ms steps(1,end);}
   @keyframes loom-arm{from{pointer-events:none;}to{pointer-events:none;}}
   @keyframes loom-arm-look{from{opacity:.45;}to{opacity:.45;}}
-  /* The dock: the operator's composer, pinned to the bottom of the viewport.
-     It is sticky rather than fixed, so it keeps its own place in the flow:
-     at the end of the page it sits below the last row, never over it, and no
-     padding has to guess its height. Its background is opaque, so rows that
-     scroll behind it do not show through. */
-  footer.dock{position:sticky;bottom:0;z-index:1;margin-top:16px;padding:8px 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
+  /* The dock: the operator's approvals and composer, pinned to the bottom of
+     the frame. It is the last item of the page's column and the transcript
+     takes what is left above it, so a card appearing or the editor growing
+     shrinks the transcript and never covers its last row. */
+  footer.dock{flex:0 0 auto;margin-top:8px;padding:8px 0 max(12px,env(safe-area-inset-bottom)); background:var(--color-bg);}
   form.composer{margin:0;background:var(--color-bg-raised);border:1px solid var(--color-divider); border-radius:8px;padding:12px;}
   .identity{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;font-size:12px;margin-bottom:8px;}
   .identity-name{color:var(--color-fg);}
@@ -242,6 +259,16 @@
   .outlook.ring-idle::before{border-color:var(--color-fg-quiet);}
   .outlook.ring-elapsed::before{border-style:dashed;border-color:var(--color-fg-quiet);}
   .editor textarea{field-sizing:content;min-height:4.5em;max-height:30vh;width:100%;background:var(--color-bg);color:var(--color-fg);border:1px solid var(--color-divider); border-radius:4px;padding:8px;font:14px/1.5 var(--font-sans);resize:vertical;}
+  /* The composer's element and its list of commands. The list is drawn in
+     the element's shadow root, above the editor in the flow, so opening it
+     grows the dock upward and leaves the editor and its buttons where they
+     were. It is capped and scrolls on its own. */
+  loom-composer{display:block;}
+  ul.completions{position:relative;list-style:none;margin:0 0 6px 0;padding:4px;max-height:min(16em,30vh); overflow-y:auto;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:6px;}
+  li.completion{display:flex;flex-wrap:wrap;gap:0 12px;align-items:baseline;padding:4px 8px;border-radius:4px;cursor:pointer;}
+  li.completion.current{background:var(--color-bg-raised);box-shadow:inset 2px 0 0 var(--color-current);}
+  .completion-command{font:13px/1.4 var(--font-mono);color:var(--color-current);}
+  .completion-hint{color:var(--color-fg-quiet);font-size:12px;}
   .composer-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;}
   .notice{margin:0 auto 0 0;color:var(--color-fg-quiet);font-size:13px;min-width:0;}
   .notice.warned{color:var(--color-danger);}

@@ -1626,23 +1626,43 @@ fn outbound(frame: String) {
   )
   case name {
     json.String(name) -> {
-      let intent = case name {
-        "models"
-        | "skills"
-        | "schedules"
-        | "notes"
-        | "queued_input"
-        | "context"
-        | "worktree_diff"
-        | "live_jobs"
-        | "advisor_pending"
-        | "block_summaries"
-        | "goal_get" -> Read
-        _ -> Mutation
+      let intent = case is_read(name) {
+        True -> Read
+        False -> Mutation
       }
       Ok(Outbound(name, suffix, intent))
     }
     _ -> Error("invalid generated command name")
+  }
+}
+
+/// Whether a command name is one of the auxiliary reads, which a host
+/// issues on its own account and which answer with a snapshot, rather than
+/// a command an operator asked for.
+///
+/// The history read is not among them: it has its own request and its own
+/// window.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session_channel.is_read("notes")
+/// assert !session_channel.is_read("prompt")
+/// ```
+pub fn is_read(command: String) -> Bool {
+  case command {
+    "models"
+    | "skills"
+    | "schedules"
+    | "notes"
+    | "queued_input"
+    | "context"
+    | "worktree_diff"
+    | "live_jobs"
+    | "advisor_pending"
+    | "block_summaries"
+    | "goal_get" -> True
+    _ -> False
   }
 }
 

@@ -242,3 +242,31 @@ pub fn the_lane_is_drawn_inside_the_follower_test() {
     as "the follower is closed"
   assert string.contains(lane, "class=\"transcript lane\"")
 }
+
+// The observer's frame is pinned as the operator's is: the heading and the
+// agent strip above the transcript, the read-only bar below it. The
+// stylesheet scrolls only the transcript between them.
+pub fn the_observers_frame_is_heading_strip_transcript_bar_test() {
+  let page =
+    simulate.message(simulation(), component.Opened(wire()))
+    |> arrive(page_fixture.transfer("observer", []))
+  let html = element.to_string(simulate.view(page))
+  assert in_order(html, [
+    "class=\"session-head\"",
+    "class=\"agent-strip\"",
+    "<loom-follow class=\"follow\">",
+    "class=\"observer-bar\"",
+  ])
+}
+
+// Whether each part appears in `html` after the one before it.
+fn in_order(html: String, parts: List(String)) -> Bool {
+  case parts {
+    [] -> True
+    [part, ..rest] ->
+      case string.split_once(html, part) {
+        Ok(#(_, after)) -> in_order(after, rest)
+        Error(Nil) -> False
+      }
+  }
+}

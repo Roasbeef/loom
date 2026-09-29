@@ -207,7 +207,13 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   `QueueRowsCaptured`, `HistoryReleased`, `AgentMessagesCaptured`,
   `GoalReleased`, `ConnectionLost`, `ReplayAdopted`, `InterruptRequested`,
   `ReviewAnswered`, `DraftTaken`, `TranscriptCleared`, `LookupRequested`).
-  The three lists are empty between calls. `build_notice` is the
+  The three lists are empty between calls. `Shared.answer` is the words of
+  the daemon's latest reply to a command the lane sent (an acknowledgement,
+  a refusal, a lost reply), which `lane_fold.apply_channel_update` writes
+  beside `notice`; `notice` is replaced by any event and `answer` only by
+  another reply, and a refusal of a read the host issued itself (`session_channel.is_read`,
+  `history`, `escalations_get`) is not one. The terminal reads `notice`; the web page reads `answer`.
+  `build_notice` is the
   build-mismatch lines the host computed when it adopted a daemon, which a
   cut splices in; the builds themselves are the host's, because
   `host/build_identity` reads the environment. The writers are
@@ -293,7 +299,9 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   its own with `nothing_shown()`), `service_reads`, and the lane's tick with
   its history read; it then settles against the record it started from and
   drops the facts such a host has no surface for (`forget_surfaces`: the
-  surface facts, queue notices, goal observations and returned drafts). The
+  surface facts, queue notices and goal observations; a returned prompt is
+  the prompt's last copy, so it stays in `returned_drafts` for the host to
+  take and empty, as the web view does for the composer's element). The
   terminal's block-summary read is left out, because the daemon may run a
   summarizer for a label. `Input(stamp, Acted(command))` runs `commands.act`
   and settles, and leaves the command's facts for the host to read

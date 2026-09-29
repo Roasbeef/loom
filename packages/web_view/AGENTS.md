@@ -47,10 +47,12 @@ page keys and nonces, and the relay into the session's gateway.
   and its deadline timer, how much history the page holds (`Paging`), the
   transcript blocks it holds and the turns laid out from them
   (`turns.Piece`), the agent `Strip`, the inputs each was built from, the
-  connection `Status`, the page's own refusal and the count of drafts a
-  command consumed. The component writes `shared` in two places only: it
-  trims the history window to the rows the page draws, and it marks the
-  window as wanting older rows.
+  connection `Status`, the page's own refusal, the outcome of the last
+  command, the returned prompts and the count of drafts a command consumed.
+  The component writes `shared` in four places only: it trims the history
+  window to the rows the page draws, it marks the window as wanting older
+  rows, it empties `returned_drafts` once it has taken them, and it empties
+  the notice and `answer` before it runs a command.
 - `component.live_rows` (150) and `component.held_rows` (300): the page
   holds the newest `live_rows` rows of `main`, cut between turns
   (`turns.grouped`); once the reader loads older rows its limit is
@@ -111,6 +113,20 @@ page keys and nonces, and the relay into the session's gateway.
   button sends `Observed(component.OlderRequested)`.
   `composition(fields)` is the total decoder of the composer form's
   fields.
+- `completion.rows()` and `completion.table()`: the slash commands the
+  composer offers, built from `session_view/command.suggestions` (the
+  one-word commands, and the argument rows of every word that has some once
+  its space is typed) less the rows `component.page_command` refuses, as one
+  JSON string for the composer element's `commands` attribute. The names and
+  hints are the terminal's and no session text is in it.
+- `component.Returned(number, text)`, `component.returns(model)` and
+  `component.returned(model)`: a held prompt the daemon handed back for
+  `main` (protocol-change/038), taken from `Shared.returned_drafts` at the
+  end of every message (`taken`), numbered, and kept, the latest
+  all of them, for the composer's element. `step.update`
+  leaves `returned_drafts` alone (`forget_surfaces` no longer clears it), so
+  the page is the host that empties it. A prompt for another strand or
+  session is named in the notice and not kept.
 - `page`: the shell, the exchange page (`enter(next, nonce)`), the asset
   names (`stylesheet_asset`, `enter_asset`, `page_asset`, `client_asset`,
   `runtime_asset`) and where each is on disk (`static_file`,
@@ -142,10 +158,13 @@ page keys and nonces, and the relay into the session's gateway.
   update into `shared` (captures, history pages, usage and the cache
   ledger, streams, refusals, acknowledgements), as it does for the
   terminal. The page then derives what it draws from `shared` (see the
-  invariants). The notice is the shared record's `notice`, drawn as `Said`,
-  so it states the latest thing the session said (a stream's "streaming
-  text", a read's "notes sent") as often as the outcome of a command; only
-  the page's own refusals are `Warned`.
+  invariants). The notice is an outcome and never the shared record's `notice`, which any
+  event replaces and which would say "advisor_pending sent" on every page
+  load. `Said` is what the shared step worded when the page ran the
+  operator's command (`View.outcome`, read at once, after the notice and
+  `Shared.answer` were emptied so that a silent command leaves nothing) or
+  the daemon's reply to it (`Shared.answer`, which only another reply
+  writes); the page's own refusals are `Warned`.
 - Out on the lane, besides the lane's own snapshot requests and the
   operator's commands: at most one request at a time. The shared step's
   reads go out as the terminal's do, one after another and each when the
@@ -157,12 +176,26 @@ page keys and nonces, and the relay into the session's gateway.
   record the page holds. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in each chip, `<loom-fold>` around a settled
-  turn's work, and `<loom-follow>` around the lane, which keeps the newest
-  row in view while the reader is at the bottom, and keeps the reader's
-  place when a press of "Load older" brings rows in above them. They run
-  in the browser and send the server nothing.
+  turn's work, and `<loom-follow>` around the lane. The stylesheet pins the
+  page's frame (the heading and the agent strip at the top, the dock or
+  the observer's bar at the bottom, the page itself never scrolling) and
+  makes `<loom-follow>` the scroll container between them. It keeps the
+  newest row in view while the reader is at the bottom, shows a "Jump to
+  latest" button while they are not, and keeps the reader's place when a
+  press of "Load older" brings rows in above them. They run in the browser
+  and send the server nothing. The operator's editor is drawn inside
+  `<loom-composer commands returned>`, which lists the slash commands as
+  the draft grows, sends the draft on Command or Control with Enter (by
+  submitting the composer form), and puts a returned prompt in the editor.
+  Its inputs are the `commands` table, the `returned` count and the
+  returned prompts as text-node children in a `returned` slot, numbered by
+  `data-n`; the editor stays the uncontrolled textarea, and keeps its place
+  when a return arrives.
 - An operator's page also receives Lustre's `EventFired` for its two
   handlers: a click on an approval button and the composer form's submit.
+  The composer element's keys and list add no event: the send key calls
+  `requestSubmit`, which raises the same submit, and `page_events_test` pins
+  that the operator's page registers only clicks and submits.
 - Outputs leave through the transport only: `Transmit` and `Shut`, in the
   lane's order, inside one `effect.from`.
 
@@ -217,9 +250,10 @@ page keys and nonces, and the relay into the session's gateway.
   step's tick drops them itself; the component drops the ones a command
   recorded (`step.forget_surfaces`) after it has read `DraftTaken`, the only
   one it reads, and the ones `apply` folds. A list that nothing empties
-  would grow for the life of the page. The cost is that a held prompt the
-  daemon hands back (`returned_drafts`) is dropped with them, which is the
-  prompt's last copy; putting it back in the composer is Part 2 work.
+  would grow for the life of the page. `step.forget_surfaces` leaves
+  `returned_drafts` alone, because a held prompt the daemon hands back is
+  its last copy: the page takes it into `component.returned` and empties
+  the list, and the composer's element puts it back in the editor.
 - **Which application runs is which commands exist.** An observer's page is
   `component.app()`, whose message type holds no command and whose view
   attaches one handler, the lane's "Load older" click, whose message
@@ -246,9 +280,10 @@ page keys and nonces, and the relay into the session's gateway.
   and a fence's language are text; classes come from closed types.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
   in its own region outside the transcript, directly above the composer in
-  the dock, the footer pinned to the viewport's bottom edge. A card
-  appearing grows the dock upward and never moves the composer, and the
-  region's height is capped so it scrolls on its own. With nothing pending
+  the dock, the footer at the bottom of the pinned frame. A card
+  appearing grows the dock upward and never moves the composer, the
+  transcript above it shrinks by as much, and the region's height is
+  capped so it scrolls on its own. With nothing pending
   the region is `element.none()`, so the composer's path does not change
   when a card appears. The action row carries `arming`: for 600 ms after
   a card is inserted the stylesheet refuses clicks on it and dims the
@@ -257,6 +292,13 @@ page keys and nonces, and the relay into the session's gateway.
   names the tool; nothing has `autofocus`; the composer's submit never
   decides an approval; a decision is sent only for the record still pending
   at the drawn sequence (`operator.drawn`).
+- **The list offers only what Send would run.** `completion` drops a row
+  exactly when `component.page_command` refuses the command it names, so
+  there is no second list of what the page refuses; a row that takes an
+  argument is judged with one, since the command alone is a usage message.
+- **A returned prompt is never dropped and never replaces a draft.** The
+  editor is not keyed by returns, so a return leaves what the operator is
+  typing; the element decides whether the text is the draft or follows it.
 - **The composer form is decoded totally.** One `draft`, at most one
   `delivery` of `prompt` or `steer`, nothing else; anything more refuses
   the event.
