@@ -160,10 +160,14 @@ time builds anything.
   attribute), `needing` (a total decoder of the `needing` attribute: a plain
   number of at most four digits, else none), `badge` and `strands_words`,
   `relay` (a total decoder of a marker: `Relay(card, reveal)` with `Show` or
-  `Keep`), `relayed` and `card_selector`, and
+  `Keep`), `relayed` and `card_selector`, the keyboard's `Keystroke`
+  (`Modifiers`, `Target` as `Editor | Approvals | Elsewhere`, `Composition`,
+  `Prevention`, `Repetition`), `intent` (`ToggleSidebar | TogglePanel |
+  LeaveStrand`, or nothing), `cancels`, `candidate`, `title`, `shortcuts` and
+  `crumb_link`, and
   `shell.Model(layout, sidebar, needing)` and `shell.Msg` (`Toggled(region)`,
   `Chosen(tab)`, `SidebarChanged(presence)`, `NeedingChanged(count)`,
-  `Relayed(relay)`): the
+  `Relayed(relay)`, `Pressed(intent)`): the
   shadow root holds the bar (the two buttons around the `bar` slot) and the
   body (a wrapper per side column around its slot, and the default slot in the
   centre; the panel's wrapper holds the tab bar above the slot). A closed
@@ -272,13 +276,26 @@ it sends is the form's submit, which the server already accepts.
   The one exception in kind is `<loom-composer commands>`, the static table
   of command names and hints written in `session_view`; the returned
   prompts it takes arrive as text-node children, never as attributes.
-- **No key handling and no focus near an approval card.** Only
-  `<loom-composer>` acts on a key, and only on its own editor, through its
-  slot. `<loom-shell>` holds the dock in its subtree, as the page's frame,
-  but listens for no key, moves no focus, and acts only on the clicks of its
-  own buttons and tabs and on a click whose own target carries a strand marker
-  (which presses a strand card and nothing else); the centre column, where the
-  dock is, has no button, and no approval card carries a marker. `<loom-follow>` may note that a key was pressed inside the transcript
+- **No key acts inside an approval card, and no key decides, dismisses or
+  focuses one; no focus near an approval card.** `<loom-composer>` acts on a
+  key on its own editor, through its slot. `<loom-shell>` holds the dock in its
+  subtree, as the page's frame, and is the one other element that acts on a
+  key, on three (protocol-change/051, the addendum on the keyboard): Command or
+  Control with `B` hides or shows the sidebar, with Alt too the panel, and
+  `Escape` presses the breadcrumb's `All strands` link. It listens on its own
+  frame, decodes the keystroke into plain values and lets
+  `shell_rule.intent` decide; a key that is neither `Escape` nor `KeyB` is
+  dropped before its target is looked at. The rule takes no key at all when
+  the target is inside an element marked `data-loom-approvals`, and none while
+  composing, when the default was cancelled, or while a key repeats; `Escape`
+  does nothing in the composer, and the sidebar shortcut nothing on a page with
+  no sidebar. The toggles cancel the browser's action, `Escape` does not.
+  Nothing takes focus and the element sends the server nothing: no intent
+  decides, sends or focuses, and the server registers no key handler (the
+  socket admits none). Its clicks are its own buttons and tabs and a click
+  whose own target carries a strand marker (which presses a strand card and
+  nothing else); the centre column, where the dock is, has no button, and no
+  approval card carries a marker. `<loom-follow>` may note that a key was pressed inside the transcript
   (a passive `keydown` that reads nothing from the event, never cancels it and
   sends nothing), so a keyboard scroll counts as the reader's. It calls `focus` once, on that editor, when the operator chooses
   a row. The approval cards are outside it, in the dock, and no key it

@@ -189,3 +189,72 @@ pub fn an_observers_panel_names_the_wait_and_holds_no_card_test() {
   assert string.contains(panel, "Needs approval")
   assert count(panel, "<button") == count(panel, "chip-hit")
 }
+
+// --- keys and the approval cards ----------------------------------------------
+
+@external(erlang, "page_events_ffi", "handlers")
+fn handlers(view: element.Element(message)) -> List(String)
+
+// The shell's key listener drops every key pressed inside the region of
+// approval cards, and finds the region by this marker. It is drawn on that
+// region alone, on the operator's page and only while a card is pending, so
+// the words the shell looks for exist exactly where the rule needs them.
+pub fn the_approval_region_carries_the_marker_the_shell_drops_keys_by_test() {
+  let html = operator(main_waiting())
+  assert string.contains(
+    html,
+    "<section aria-label=\"Approvals waiting\" class=\"approvals\" data-loom-approvals>",
+  )
+  assert count(html, "data-loom-approvals") == 1
+
+  // No card pending, no region, no marker; and the observer has none.
+  assert !string.contains(operator(quiet()), "data-loom-approvals")
+  assert !string.contains(observer(main_waiting()), "data-loom-approvals")
+}
+
+// No approval card carries a strand marker, so the shell's relay, which reads
+// one property of a click's own target, cannot be aimed at a control inside a
+// card, and the card holds nothing the shell would press.
+pub fn no_approval_card_carries_a_strand_marker_test() {
+  let html = operator(main_waiting())
+  let assert Ok(#(_, from)) = string.split_once(html, "data-loom-approvals>")
+    as "the region is drawn"
+  let assert Ok(#(region, _)) = string.split_once(from, "</section>")
+    as "the region is closed"
+  assert string.contains(region, "approval-card")
+  assert !string.contains(region, "data-loom-focus")
+  assert !string.contains(region, "data-loom-card")
+  assert !string.contains(region, "data-loom-crumb")
+}
+
+// The composer is the tag the shell's key rule reads as the editor, and the
+// approval region is not inside it or it inside the region, so `Escape` in a
+// draft is the composer's and a key in a card is nobody's.
+pub fn the_composer_and_the_approvals_are_separate_places_test() {
+  let html = operator(main_waiting())
+  assert string.contains(html, "<loom-composer")
+  let assert Ok(#(_, from)) = string.split_once(html, "data-loom-approvals>")
+  let assert Ok(#(region, after)) = string.split_once(from, "</section>")
+  assert !string.contains(region, "loom-composer")
+  assert string.contains(after, "<loom-composer")
+}
+
+// A page with an approval pending registers no handler for a key, of any
+// kind: the operator's tree holds clicks and submits only, and the key
+// listener is the shell's, in the browser, which sends the server nothing. So
+// no keystroke reaches the server as a decision, or as anything.
+pub fn no_key_handler_exists_on_a_page_with_an_approval_pending_test() {
+  let names =
+    handlers(operator_page.view(main_waiting()))
+    |> list.map(fn(key) {
+      let assert Ok(name) = list.last(string.split(key, "\n"))
+        as "a handler key ends in its event name"
+      name
+    })
+    |> list.unique
+    |> list.sort(string.compare)
+  assert names == ["click", "submit"]
+  assert list.all(handlers(component.view(main_waiting())), fn(key) {
+    string.ends_with(key, "\nclick")
+  })
+}

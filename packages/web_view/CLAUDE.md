@@ -161,8 +161,9 @@ page keys and nonces, and the relay into the session's gateway.
   is the breadcrumb, `component.crumb(model)` the centre's first child while a
   strand other than `main` is in focus and an empty node otherwise, so the
   transcript's path is the same either way (`older_path` is `0\t2\t1\t0\t0`);
-  its `All strands` link is the marker `0` and the whole element carries
-  `data-loom-crumb`. `strand_detail.view(chip)` is a strand's own view, the
+  its `All strands` link is the marker `0`, the whole element carries
+  `data-loom-crumb` (which the shell's `Escape` looks for) and a `kbd` hint
+  says `Esc`. `strand_detail.view(chip)` is a strand's own view, the
   Strands pane's third child after the list while a strand other than `main`
   is in focus (`component.detail`): a `← Strands` link (the marker `0`), the
   ring, the name and status line, the figures the card leaves out (Model,
@@ -601,7 +602,10 @@ page keys and nonces, and the relay into the session's gateway.
   the dock, the footer at the bottom of the pinned frame. A card
   appearing grows the dock upward and never moves the composer, the
   transcript above it shrinks by as much, and the region's height is
-  capped so it scrolls on its own. With nothing pending
+  capped so it scrolls on its own. The region carries
+  `data-loom-approvals` (`operator_page.approvals_marker`), which
+  `<loom-shell>`'s key rule reads: no key acts with its target inside it. No
+  card carries a strand marker. With nothing pending
   the region is `element.none()`, so the composer's path does not change
   when a card appears. The action row carries `arming`: for 600 ms after
   a card is inserted the stylesheet refuses clicks on it and dims the

@@ -266,6 +266,12 @@ pub fn control_text(fields: List(#(String, String))) -> Result(String, Nil) {
   }
 }
 
+/// The attribute that marks the region of approval cards. `<loom-shell>`'s key
+/// listener drops every key pressed inside a region that carries it, so no
+/// shortcut acts near a card (protocol-change/051, the addendum on the
+/// keyboard). The word is fixed here and never comes from the session.
+pub const approvals_marker = "loom-approvals"
+
 // The approvals region sits outside the transcript, so nothing the session
 // writes can appear inside it, and it is styled unlike any transcript line.
 // A card is keyed by the sequence its record was drawn at, which is the
@@ -288,6 +294,7 @@ fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
         [
           attribute.class("approvals"),
           attribute.aria_label("Approvals waiting"),
+          attribute.data(approvals_marker, ""),
         ],
         [
           keyed.div(

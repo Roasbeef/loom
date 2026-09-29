@@ -221,6 +221,7 @@ pub fn a_focused_strand_has_a_breadcrumb_and_a_view_test() {
     "Session A",
     "&lt;b&gt;review",
     "<button class=\"crumb-all\" data-loom-focus=\"0\" type=\"button\">All strands</button>",
+    "<kbd class=\"crumb-hint\">Esc</kbd>",
     "<loom-follow class=\"follow\">",
   ])
 

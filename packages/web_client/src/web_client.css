@@ -324,6 +324,7 @@
   .crumb-session{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .crumb-strand{color:var(--color-fg);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .crumb-spacer{flex:1 1 auto;}
+  kbd.crumb-hint{margin:0;padding:0 4px;border:1px solid var(--color-divider);border-radius:4px;color:var(--color-fg-quiet);font:11px/1.5 var(--font-mono);}
   .block{min-width:0;}
   .line{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
   .line.user,.line.assistant{font:14px/1.5 var(--font-sans);}

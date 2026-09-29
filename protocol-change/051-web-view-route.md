@@ -2101,3 +2101,138 @@ drawn with the list still in the page, and no handler on any of them.
 holding only the cards' clicks with markers drawn, and `ui_socket_test` shows a
 click at a dot's, a tag's, the breadcrumb's and the back link's paths dropped
 and a click at a card's admitted. No browser was in the loop.
+
+## Addendum: the keyboard (2026-09-29)
+
+**Status**: PROPOSED, IMPLEMENTED with issue #569, step 6 of the web UI
+redesign (`docs/design-notes/web-design.md`, section 6.2) · **Raised by**:
+issue #569
+
+`<loom-shell>` now acts on three keys: Command or Control with `B` hides or
+shows the sessions sidebar, Command or Control with Alt and `B` hides or shows
+the strand panel, and `Escape` puts the page back on `main`. This addendum
+approves that, and it changes a rule the earlier addenda state, so it says
+which and why the change is safe. It adds no event to the socket's accepted
+list, no operation to what a page may do, and no frozen interface.
+
+### The rule this departs from
+
+`docs/lustre.md` and the addenda before this one say: no key handling and no
+focus near an approval card. Only `<loom-composer>` acts on a key, and only on
+its own editor. `<loom-follow>` hears a key passively and reads nothing from
+it, and its subtree holds no approval card. `<loom-shell>` holds the dock in
+its subtree, because the dock is the centre column's footer and the centre is
+in the shell's default slot. A key listener on the shell is therefore the first
+client element that acts on a key and has an approval card in its subtree. That
+is the departure.
+
+The reason for the rule is that no keystroke may decide an approval, dismiss
+it, hide it, or take focus from it. The rule is restated so that it says that
+directly: **no key acts inside an approval card, and no key decides, dismisses
+or focuses one.** A client element may act on a key elsewhere in the page. The
+argument that the departure is safe:
+
+- **What the listener can do is three things, and none reaches a card.** The
+  two toggles change the element's own layout: a column's width and whether its
+  content is inert. Neither column is the centre, where the dock is. `Escape`
+  presses the breadcrumb's `All strands` link, which is the click a pointer
+  makes, and that changes which strand is on screen and so which approval cards
+  are drawn, as pressing the strand's card does (protocol-change/051, the
+  addendum on strand focus). It decides nothing. There is no fourth intent:
+  `shell_rule.Intent` is a closed type of three constructors, and
+  `shell_test` walks all of them.
+- **Inside the region of approval cards the rule takes no key at all.** The
+  server marks the region `data-loom-approvals`. The listener reads the event's
+  target, and a key whose target is inside that region is dropped by
+  `shell_rule.intent` before it is matched, whatever the key and the
+  modifiers, so not even a toggle acts with focus in a card. The tests pass
+  every key of the set and several others, in every modifier set, with the
+  target inside the region.
+- **The listener sends the server nothing and there is no server handler for a
+  key.** The operator's tree registers clicks and submits and no key event
+  (`page_events_test`, with an approval pending), the operator's socket admits
+  only those two names, and the observer's socket admits a click at two paths.
+  A key, however the listener were misused, cannot arrive at the daemon as a
+  decision or as anything.
+- **The listener never takes focus.** No intent calls `focus`. A hidden column
+  becomes inert, which takes its content out of the tab order, as pressing the
+  button does.
+- **The card is not a target of the relay.** The relay presses a strand card
+  chosen by a fixed selector, and no approval card carries a strand marker
+  (the addendum on the marker relay). `Escape` reaches the breadcrumb's link
+  by a fixed selector too.
+
+### What was decided
+
+**Scope.** The listener is on the shell's own frame, the element every region
+of the page is in, and not on `document`. It hears a key with focus anywhere in
+the page, which is everything the page has; a listener on `document` would hear
+keys from nothing the page draws and is a larger claim for no gain.
+
+**The key set.** Exactly these three, and no other key is read. The letter is
+matched by `code`, `KeyB`, in both toggles, because Option changes `key` on a
+Mac; `Escape` is matched by `key`. Shift is never part of a shortcut, and
+`Escape` takes no modifier. A key that is neither `Escape` nor `KeyB` is
+dropped by the decoder before the listener looks at where it was pressed, so
+typing in the composer costs the shell nothing and the shell reads none of it.
+
+**Where they do not act.** Not while an input method is composing. Not when
+the event's default was already cancelled, which is how a handler nearer the
+target that took a key keeps it. (The composer cancels the default of the keys
+it consumes; its `Escape` that closes the list it only observes, and that key
+stays the composer's by the next exclusion.) Not while the browser
+repeats a held key, so holding a shortcut does not flicker a column. Not
+`Escape` in the composer, so that `Escape` in a draft never changes the focus
+of the strand being addressed. Not any key inside an approval card. Not the
+sidebar shortcut on a page that has no sidebar, so an observer's page leaves
+the browser its own `Ctrl+B`. The toggles do act with focus in the composer's
+editor: `B` with a command key means nothing in a plain text field.
+
+**The browser's own action.** The two toggles cancel the event's default,
+because browsers bind `Ctrl+B` and `Command+Option+B` to bookmarks. `Escape` is
+left alone: the page has no default of it to stop.
+
+**Every control the keys reach is a real button.** The toggles carry their
+shortcut in `title` and in `aria-keyshortcuts`, and the breadcrumb says `Esc`.
+A shortcut a browser keeps still works as its button, so nothing is
+keyboard-only.
+
+### What was considered
+
+- **A listener on `document`.** See scope.
+- **Leaving the toggles out while focus is in the composer.** The design note
+  proposed that they act there and this follows it.
+- **`Escape` sending a focus event of its own.** A key that changes server
+  state would then need a socket event and an admission rule. Pressing the
+  breadcrumb's link needs neither, and is the same click a pointer makes.
+
+### Cost
+
+- One `keydown` listener on the frame, whose decoder reads two strings for
+  every key press and the rest only for the two the rule may read.
+- `<loom-shell>` and the composer both act on keys in the composer's editor:
+  the composer on its own keys, the shell on `B` with a command key. They do not
+  overlap: the composer's keys are Command or Control with Enter, the arrows,
+  Tab and Enter, which cancel the default and so are dropped by the shell, and
+  `Escape` with its list open, which the composer observes and the shell drops
+  because it is pressed in the composer.
+- The three keys in each browser are not checked here. `Ctrl+B` is bound to
+  bookmarks in some browsers, and a page cannot override every reserved
+  shortcut. The design note asks for a hand check of Firefox, Chrome and
+  Safari, and it is not done: no browser was in the loop. The button is the
+  fallback for any key a browser keeps.
+
+### Verification
+
+`shell_test` (`packages/web_client`) walks the key set and every exclusion:
+each of the three keys in each modifier set that counts, every other key in
+every modifier set as nothing, the exact modifiers (Shift, a lone Alt, `B`
+alone), composition, a cancelled default, a repeating key, the composer's
+`Escape`, the sidebar's shortcut with no sidebar, every key inside the
+approval region, and that the intents are the three and none decides.
+`panel_test` (`packages/web_view`) shows the marker on the approval region and
+nowhere else, no strand marker inside a card, the composer and the region as
+separate places, and no key handler in the operator's or the observer's tree
+with an approval pending. `ui_socket_test` drops a `keydown` frame on the
+operator's socket. The listener, the decoder over a real event and the target
+lookup run only in a browser and were not run.

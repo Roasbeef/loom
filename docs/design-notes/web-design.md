@@ -896,7 +896,6 @@ view), where the build differs from the text above:
   row, since the session keeps its cost as one total and no ledger of a
   strand's own. `Recent` lists the tools the strand ran lately, without ages,
   since `agent_view` keeps the names only.
-- The breadcrumb has no `Esc` hint until step 6 adds the key.
 - Dots and tags are drawn for the strands the transcript names (a spawn, a
   result, a nudge) and for the strand on screen as decoration. A piece that
   belongs to the strand on screen carries no marker, and a strand the page

@@ -12,8 +12,10 @@
 //// focus (docs/design-notes/web-design.md, section 3.2).
 ////
 //// The whole breadcrumb carries `data-loom-crumb`, which the shell's `Esc`
-//// looks for so that a key does nothing when there is no strand to leave.
-//// Both are fixed here.
+//// looks for so that a key does nothing when there is no strand to leave, and
+//// a hint after the link says that `Esc` does the same. The key is the
+//// shell's (protocol-change/051, the addendum on the keyboard); the hint is a
+//// word and holds nothing. Both are fixed here.
 ////
 //// The session's name is the catalogue's label, worded as the top bar words
 //// it, and the strand's name is the roster's; each is drawn as a text node
@@ -58,6 +60,7 @@ pub fn view(session: String, strand: String) -> Element(message) {
         ],
         [html.text("All strands")],
       ),
+      html.kbd([attribute.class("crumb-hint")], [html.text("Esc")]),
     ],
   )
 }

@@ -2,6 +2,7 @@
 //// are open, which tab the panel shows, what each button and tab says, and
 //// what a closed column lets the keyboard reach.
 
+import gleam/list
 import gleam/option.{None, Some}
 import web_client/shell_rule.{
   Changes, Closed, Layout, Listed, Open, Panel, Reachable, Session, Sidebar,
@@ -205,4 +206,253 @@ pub fn all_strands_leaves_the_layout_as_it_is_test() {
 pub fn a_card_is_named_by_its_position_test() {
   assert shell_rule.card_selector(0) == "[data-loom-card=\"0\"]"
   assert shell_rule.card_selector(14) == "[data-loom-card=\"14\"]"
+}
+
+// --- the keyboard ---------------------------------------------------------
+
+const free =
+  shell_rule.Modifiers(
+    meta: shell_rule.Free,
+    ctrl: shell_rule.Free,
+    alt: shell_rule.Free,
+    shift: shell_rule.Free,
+  )
+
+// A keystroke pressed with nothing else going on, in the page and not in
+// the composer or an approval card, with no input method composing.
+fn stroke(
+  key: String,
+  code: String,
+  modifiers: shell_rule.Modifiers,
+) -> shell_rule.Keystroke {
+  shell_rule.Keystroke(
+    key:,
+    code:,
+    modifiers:,
+    target: shell_rule.Elsewhere,
+    composition: shell_rule.Settled,
+    prevention: shell_rule.Unhandled,
+    repetition: shell_rule.Fresh,
+  )
+}
+
+fn command() -> shell_rule.Modifiers {
+  shell_rule.Modifiers(..free, meta: shell_rule.Held)
+}
+
+fn control() -> shell_rule.Modifiers {
+  shell_rule.Modifiers(..free, ctrl: shell_rule.Held)
+}
+
+fn command_alt() -> shell_rule.Modifiers {
+  shell_rule.Modifiers(..free, meta: shell_rule.Held, alt: shell_rule.Held)
+}
+
+fn control_alt() -> shell_rule.Modifiers {
+  shell_rule.Modifiers(..free, ctrl: shell_rule.Held, alt: shell_rule.Held)
+}
+
+// The key set is exactly three, and the two toggles are read from `code`:
+// Option changes `key` on a Mac, so the letter is the physical key.
+pub fn the_key_set_is_exactly_three_test() {
+  let intent = fn(stroke) { shell_rule.intent(stroke, Listed) }
+
+  assert intent(stroke("b", "KeyB", command()))
+    == Some(shell_rule.ToggleSidebar)
+  assert intent(stroke("b", "KeyB", control()))
+    == Some(shell_rule.ToggleSidebar)
+  assert intent(stroke("∫", "KeyB", command_alt()))
+    == Some(shell_rule.TogglePanel)
+  assert intent(stroke("b", "KeyB", control_alt()))
+    == Some(shell_rule.TogglePanel)
+  assert intent(stroke("Escape", "Escape", free))
+    == Some(shell_rule.LeaveStrand)
+
+  // The toggles are read by the physical key, not by what it typed, so a
+  // layout where `KeyB` types another letter still toggles and a `b` typed
+  // from another key does not.
+  assert intent(stroke("x", "KeyB", command()))
+    == Some(shell_rule.ToggleSidebar)
+  assert intent(stroke("b", "KeyN", command())) == None
+}
+
+// Any other key is not read, whatever the modifiers: the listener never acts
+// on a key outside the set, and the candidate test drops it before the target
+// is looked at.
+pub fn any_other_key_is_not_read_test() {
+  let others = [
+    #("a", "KeyA"),
+    #("Enter", "Enter"),
+    #("Tab", "Tab"),
+    #("ArrowLeft", "ArrowLeft"),
+    #(" ", "Space"),
+    #("Delete", "Delete"),
+    #("F5", "F5"),
+    #("B", "KeyC"),
+    #("]", "BracketRight"),
+  ]
+  list.each(others, fn(pair) {
+    let #(key, code) = pair
+    assert !shell_rule.candidate(key, code)
+    list.each([free, command(), control(), command_alt(), control_alt()], fn(m) {
+      assert shell_rule.intent(stroke(key, code, m), Listed) == None
+    })
+  })
+  assert shell_rule.candidate("Escape", "Escape")
+  assert shell_rule.candidate("b", "KeyB")
+  assert shell_rule.candidate("∫", "KeyB")
+}
+
+// The exact modifier sets: `B` alone is a letter, Shift is never part of a
+// shortcut, and `Escape` with any modifier is not the shortcut.
+pub fn the_modifiers_are_exact_test() {
+  let intent = fn(stroke) { shell_rule.intent(stroke, Listed) }
+  let shift = shell_rule.Modifiers(..free, shift: shell_rule.Held)
+  let alt_only = shell_rule.Modifiers(..free, alt: shell_rule.Held)
+  let command_shift = shell_rule.Modifiers(..command(), shift: shell_rule.Held)
+  let command_alt_shift =
+    shell_rule.Modifiers(..command_alt(), shift: shell_rule.Held)
+  let both = shell_rule.Modifiers(..command(), ctrl: shell_rule.Held)
+
+  assert intent(stroke("b", "KeyB", free)) == None
+  assert intent(stroke("B", "KeyB", shift)) == None
+  assert intent(stroke("b", "KeyB", alt_only)) == None
+  assert intent(stroke("b", "KeyB", command_shift)) == None
+  assert intent(stroke("b", "KeyB", command_alt_shift)) == None
+  assert intent(stroke("b", "KeyB", both)) == Some(shell_rule.ToggleSidebar)
+
+  assert intent(stroke("Escape", "Escape", shift)) == None
+  assert intent(stroke("Escape", "Escape", command())) == None
+  assert intent(stroke("Escape", "Escape", alt_only)) == None
+  assert intent(stroke("Escape", "Escape", control())) == None
+}
+
+// Not while an input method is composing, when the event's default was
+// already cancelled, or while a held key repeats: for every key of the set.
+pub fn a_key_does_nothing_while_composing_prevented_or_repeating_test() {
+  let keys = [
+    stroke("b", "KeyB", command()),
+    stroke("b", "KeyB", command_alt()),
+    stroke("Escape", "Escape", free),
+  ]
+  list.each(keys, fn(base) {
+    assert shell_rule.intent(base, Listed) != None
+    assert shell_rule.intent(
+        shell_rule.Keystroke(..base, composition: shell_rule.Composing),
+        Listed,
+      )
+      == None
+    assert shell_rule.intent(
+        shell_rule.Keystroke(..base, prevention: shell_rule.Prevented),
+        Listed,
+      )
+      == None
+    assert shell_rule.intent(
+        shell_rule.Keystroke(..base, repetition: shell_rule.Repeating),
+        Listed,
+      )
+      == None
+  })
+}
+
+// Inside the approval cards' region no key acts: none of the three, in any
+// modifier set. This is the rule that no key may decide an approval, and no
+// key may reach one through the shell either: nothing happens there at all.
+pub fn no_key_acts_inside_an_approval_card_test() {
+  let keys = [
+    stroke("b", "KeyB", command()),
+    stroke("b", "KeyB", control()),
+    stroke("b", "KeyB", command_alt()),
+    stroke("b", "KeyB", control_alt()),
+    stroke("Escape", "Escape", free),
+    stroke("Enter", "Enter", free),
+    stroke("y", "KeyY", free),
+    stroke(" ", "Space", free),
+  ]
+  list.each(keys, fn(base) {
+    assert shell_rule.intent(
+        shell_rule.Keystroke(..base, target: shell_rule.Approvals),
+        Listed,
+      )
+      == None
+    assert shell_rule.intent(
+        shell_rule.Keystroke(..base, target: shell_rule.Approvals),
+        Unlisted,
+      )
+      == None
+  })
+}
+
+// `Escape` in the composer never changes the focus of a draft, so a person
+// typing and closing a list does not leave the strand they are addressing;
+// the two toggles act there, since `B` with a command key means nothing in a
+// plain text field.
+pub fn escape_in_the_composer_is_the_composers_and_the_toggles_are_not_test() {
+  let in_editor = fn(base) {
+    shell_rule.Keystroke(..base, target: shell_rule.Editor)
+  }
+  assert shell_rule.intent(in_editor(stroke("Escape", "Escape", free)), Listed)
+    == None
+  assert shell_rule.intent(in_editor(stroke("b", "KeyB", command())), Listed)
+    == Some(shell_rule.ToggleSidebar)
+  assert shell_rule.intent(
+      in_editor(stroke("b", "KeyB", command_alt())),
+      Listed,
+    )
+    == Some(shell_rule.TogglePanel)
+}
+
+// An observer's page has no sidebar, so its shortcut has nothing to toggle
+// and is not taken: the browser keeps its own `Ctrl+B`.
+pub fn the_sidebar_shortcut_needs_a_sidebar_test() {
+  assert shell_rule.intent(stroke("b", "KeyB", command()), Unlisted) == None
+  assert shell_rule.intent(stroke("b", "KeyB", command_alt()), Unlisted)
+    == Some(shell_rule.TogglePanel)
+  assert shell_rule.intent(stroke("Escape", "Escape", free), Unlisted)
+    == Some(shell_rule.LeaveStrand)
+}
+
+// A key it takes as a toggle has its browser action cancelled, since the
+// browser binds the toggles to bookmarks and the like; `Escape` is left alone.
+pub fn the_toggles_cancel_the_browsers_action_and_escape_does_not_test() {
+  assert shell_rule.cancels(shell_rule.ToggleSidebar) == shell_rule.Cancelled
+  assert shell_rule.cancels(shell_rule.TogglePanel) == shell_rule.Cancelled
+  assert shell_rule.cancels(shell_rule.LeaveStrand) == shell_rule.Untouched
+}
+
+// The intents are the three the page has and none of them names anything the
+// session can act on: the rule's whole output is a change of layout or a press
+// of the breadcrumb's link. There is no intent that decides, sends or focuses.
+pub fn every_intent_is_a_layout_change_or_the_breadcrumb_test() {
+  let all = [
+    shell_rule.ToggleSidebar,
+    shell_rule.TogglePanel,
+    shell_rule.LeaveStrand,
+  ]
+  let taken =
+    [
+      stroke("b", "KeyB", command()),
+      stroke("b", "KeyB", command_alt()),
+      stroke("Escape", "Escape", free),
+    ]
+    |> list.filter_map(fn(base) {
+      option.to_result(shell_rule.intent(base, Listed), Nil)
+    })
+  assert taken == all
+}
+
+// The buttons name their shortcuts beside what pressing them does.
+pub fn the_toggles_name_their_shortcuts_test() {
+  assert shell_rule.title(Sidebar, Open)
+    == "Hide sessions (Command or Control B)"
+  assert shell_rule.title(Panel, Closed)
+    == "Show strands (Command or Control Alt B)"
+  assert shell_rule.shortcuts(Sidebar) == "Meta+B Control+B"
+  assert shell_rule.shortcuts(Panel) == "Meta+Alt+B Control+Alt+B"
+}
+
+// `Escape` clicks the link a pointer clicks, which the server draws only
+// while a strand other than `main` is in focus.
+pub fn escape_clicks_the_breadcrumbs_link_test() {
+  assert shell_rule.crumb_link() == "[data-loom-crumb] [data-loom-focus]"
 }

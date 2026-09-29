@@ -589,7 +589,8 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   shows the top bar, the sidebar, the centre and the strand panel through
   slots named `bar`, `left`, the default and `right`; the words are
   light-DOM nodes the server rendered and escaped.
-- **No key handling and no focus near an approval card.** A client
+- **No key acts inside an approval card, and no key decides, dismisses or
+  focuses one; no focus near an approval card.** A client
   component's button is a real button, which the browser activates.
   `<loom-follow>` is the transcript's scroll container: it scrolls itself
   and observes the size of itself and of the lane; the approval cards and
@@ -605,8 +606,12 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   made. Only the composer acts on keys; the follower notes that one was
   pressed, reading nothing from it, so a keyboard scroll counts as the
   reader's. `<loom-shell>` draws the page's frame around the dock and so holds
-  an approval card in its subtree, but it listens for no key, never moves
-  focus, and hears a click only on its own buttons and tabs and on a control
+  an approval card in its subtree. It acts on three keys (Command or Control
+  with `B` for the sidebar, with Alt too for the panel, and `Escape` for `All
+  strands`, protocol-change/051, the addendum on the keyboard) and drops every
+  key pressed inside the region of approval cards, whatever the key; no
+  intent decides, sends or focuses, and the server has no key handler. It
+  never moves focus, and hears a click only on its own buttons and tabs and on a control
   whose own target carries a strand marker (the marker relay,
   protocol-change/051, the addendum of that name): it then presses the strand
   card with the same number, an ordinary click on the card's ordinary

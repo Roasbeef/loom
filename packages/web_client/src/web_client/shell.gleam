@@ -28,9 +28,23 @@
 //// is `listed` or `none`, saying whether the page has a sidebar, and
 //// `needing` is how many strands wait on a decision, the number on the
 //// Strands tab. An observer's page has no sidebar, and the bar draws no
-//// button for it. The element renders no session text, handles no key, takes
-//// no focus, and sends the server nothing. Its buttons and tabs are real
-//// buttons, so a keyboard presses them as it presses any button.
+//// button for it. The element renders no session text, takes no focus, and
+//// sends the server nothing. Its buttons and tabs are real buttons, so a
+//// keyboard presses them as it presses any button, and nothing is
+//// keyboard-only.
+////
+//// The element acts on three keys (protocol-change/051, the addendum on the
+//// keyboard): Command or Control with `B` hides or shows the sessions
+//// sidebar, with Alt too the strand panel, and `Escape` puts the page back on
+//// `main`. It listens for `keydown` on its own frame, which every region of the
+//// page is in, decodes the keystroke into plain values, and lets
+//// `shell_rule.intent` say whether it counts. Any other key is dropped by the
+//// decoder before the element looks at where it was pressed. The toggles
+//// change the element's own layout and nothing the server holds. `Escape`
+//// clicks the breadcrumb's `All strands` link, the click a pointer makes, so it
+//// goes through the relay below and does nothing when there is no breadcrumb.
+//// The element sends no event of its own and none of the keys decides an
+//// approval or takes focus.
 ////
 //// The element relays clicks (protocol-change/051, the addendum on the marker
 //// relay). A server-drawn control that focuses a strand and has no handler of
@@ -47,16 +61,19 @@
 ////
 //// The element wraps the dock, and so holds an approval card in its
 //// subtree, as `<loom-follow>` holds the lane. That is a fact about the
-//// tree and not about behaviour: the element listens for no key and for no
-//// click but its own buttons' and a marked control's, and it never moves
-//// focus. A click on a marker inside an approval card cannot decide it: the
-//// card carries no marker, and the card pressed is always a strand card, whose
-//// only effect is to focus its strand. The dock is in the centre column,
-//// which has no button, and the panel carries no decision control.
+//// tree and not about behaviour: the element listens for no click but its own
+//// buttons' and a marked control's, and for a key only in the three ways above,
+//// and it never moves focus. A click on a marker inside an approval card cannot
+//// decide it: the card carries no marker, and the card pressed is always a
+//// strand card, whose only effect is to focus its strand. A key pressed inside
+//// the region of approval cards is dropped by the rule, whatever the key. The
+//// dock is in the centre column, which has no button, and the panel carries no
+//// decision control.
 
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import lustre
 import lustre/attribute
 import lustre/component
@@ -66,7 +83,7 @@ import lustre/element/html
 import lustre/event
 import web_client/internal/ffi_dom
 import web_client/shell_rule.{
-  type Layout, type Presence, type Region, type Relay, type Tab,
+  type Intent, type Layout, type Presence, type Region, type Relay, type Tab,
 }
 
 /// The element's tag.
@@ -96,6 +113,9 @@ pub type Msg {
   /// strand marker, and asks for the strand card at that position to be
   /// pressed.
   Relayed(relay: Relay)
+
+  /// A key was pressed that `shell_rule.intent` took as a shortcut.
+  Pressed(intent: Intent)
 }
 
 /// Registers the element with the browser.
@@ -160,6 +180,16 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     )
     NeedingChanged(count:) -> #(Model(..model, needing: count), effect.none())
 
+    // The two toggles are the buttons' own turn, so a shortcut and a press
+    // cannot differ. `Escape` presses the breadcrumb's link, which is the
+    // click a pointer makes, and the relay takes it from there.
+    Pressed(intent:) ->
+      case intent {
+        shell_rule.ToggleSidebar -> update(model, Toggled(shell_rule.Sidebar))
+        shell_rule.TogglePanel -> update(model, Toggled(shell_rule.Panel))
+        shell_rule.LeaveStrand -> #(model, press_crumb())
+      }
+
     // The layout changes first, so a panel that was closed is open when the
     // card is pressed, and the press follows the render. The card's own
     // handler does the rest: the strand is focused by the server, exactly as
@@ -190,6 +220,17 @@ fn tab_changed(from: Tab, to: Tab) -> Effect(Msg) {
   }
 }
 
+// Presses the breadcrumb's `All strands` link, which is drawn only while a
+// strand other than `main` is in focus, so with none drawn nothing happens.
+fn press_crumb() -> Effect(Msg) {
+  use _, root <- effect.after_paint
+  let host = ffi_dom.host(ffi_dom.as_element(root))
+  case ffi_dom.query_selector(host, shell_rule.crumb_link()) {
+    Ok(link) -> ffi_dom.click(link)
+    Error(Nil) -> Nil
+  }
+}
+
 // Presses the strand card at `card`. The cards are the server's light-DOM
 // descendants of the host, so the host's own query reaches them; a card that
 // is not there, because the strand left the list between the click and now,
@@ -204,7 +245,7 @@ fn press_card(card: Int) -> Effect(Msg) {
 }
 
 fn view(model: Model) -> Element(Msg) {
-  html.div([attribute.class("shell")], [
+  html.div([attribute.class("shell"), keys(model.sidebar)], [
     html.div([attribute.class("shell-bar")], [
       button(model, shell_rule.Sidebar),
       component.named_slot("bar", [], []),
@@ -218,6 +259,117 @@ fn view(model: Model) -> Element(Msg) {
       column(model, shell_rule.Panel),
     ]),
   ])
+}
+
+// The frame's key listener. It hears every `keydown` that reaches the frame,
+// which is every key pressed in the page, and drops all but the few the rule
+// may read before it looks at where they were pressed. A shortcut it takes
+// has its browser action cancelled where the rule says. The event is never
+// stopped, and the listener reads no key it does not act on.
+fn keys(presence: Presence) -> attribute.Attribute(Msg) {
+  event.advanced("keydown", {
+    use key <- decode.field("key", decode.string)
+    use code <- decode.field("code", decode.string)
+    case shell_rule.candidate(key, code) {
+      False -> decode.failure(no_shortcut(), "a shortcut key")
+      True -> {
+        use meta <- decode.field("metaKey", modifier())
+        use ctrl <- decode.field("ctrlKey", modifier())
+        use alt <- decode.field("altKey", modifier())
+        use shift <- decode.field("shiftKey", modifier())
+        use composing <- decode.field("isComposing", composition())
+        use handled <- decode.field("defaultPrevented", prevention())
+        use repeating <- decode.field("repeat", repetition())
+        use target <- decode.field(
+          "target",
+          decode.map(decode.dynamic, target_of),
+        )
+        let keystroke =
+          shell_rule.Keystroke(
+            key:,
+            code:,
+            modifiers: shell_rule.Modifiers(meta:, ctrl:, alt:, shift:),
+            target:,
+            composition: composing,
+            prevention: handled,
+            repetition: repeating,
+          )
+        case shell_rule.intent(keystroke, presence) {
+          Some(intent) ->
+            decode.success(event.handler(
+              Pressed(intent),
+              prevent_default: shell_rule.cancels(intent)
+                == shell_rule.Cancelled,
+              stop_propagation: False,
+            ))
+          None -> decode.failure(no_shortcut(), "a shortcut")
+        }
+      }
+    }
+  })
+}
+
+// The handler a failed decode names, which is never run: a decode that fails
+// dispatches nothing.
+fn no_shortcut() -> event.Handler(Msg) {
+  event.handler(
+    Pressed(shell_rule.LeaveStrand),
+    prevent_default: False,
+    stop_propagation: False,
+  )
+}
+
+fn modifier() -> decode.Decoder(shell_rule.Modifier) {
+  decode.map(decode.bool, fn(down) {
+    case down {
+      True -> shell_rule.Held
+      False -> shell_rule.Free
+    }
+  })
+}
+
+fn composition() -> decode.Decoder(shell_rule.Composition) {
+  decode.map(decode.bool, fn(composing) {
+    case composing {
+      True -> shell_rule.Composing
+      False -> shell_rule.Settled
+    }
+  })
+}
+
+fn prevention() -> decode.Decoder(shell_rule.Prevention) {
+  decode.map(decode.bool, fn(prevented) {
+    case prevented {
+      True -> shell_rule.Prevented
+      False -> shell_rule.Unhandled
+    }
+  })
+}
+
+fn repetition() -> decode.Decoder(shell_rule.Repetition) {
+  decode.map(decode.bool, fn(repeating) {
+    case repeating {
+      True -> shell_rule.Repeating
+      False -> shell_rule.Fresh
+    }
+  })
+}
+
+// Where the key was pressed: inside the approval cards' region, in the
+// composer, or elsewhere. The region and the composer are found by the
+// server's fixed marker and tag, from the event's own target, and the region
+// wins. A target that is not an element is elsewhere, and the rule reads it as
+// any other page key.
+fn target_of(target: Dynamic) -> shell_rule.Target {
+  let element = ffi_dom.as_element(target)
+  case
+    ffi_dom.closest(element, "[data-loom-approvals]"),
+    ffi_dom.closest(element, "loom-composer")
+  {
+    Ok(_), _ -> shell_rule.Approvals
+    Error(Nil), Ok(_) -> shell_rule.Editor
+    Error(Nil), Error(Nil) -> shell_rule.Elsewhere
+  }
 }
 
 // A click on a control that carries the server's strand marker. The marker's
@@ -254,6 +406,8 @@ fn button(model: Model, region: Region) -> Element(Msg) {
           attribute.class("shell-toggle"),
           button_class(region),
           attribute.aria_label(shell_rule.label(region, state)),
+          attribute.title(shell_rule.title(region, state)),
+          attribute.aria("keyshortcuts", shell_rule.shortcuts(region)),
           attribute.aria_expanded(state == shell_rule.Open),
           event.on_click(Toggled(region)),
         ],
