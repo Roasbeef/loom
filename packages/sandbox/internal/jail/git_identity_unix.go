@@ -51,7 +51,7 @@ func publishGitIdentity(pol policy.Policy, workspace string, content []byte) err
 // mounts. Only an actual host-write grant may anchor publication; a private
 // scratch or root tmpfs is not permission to write its host spelling.
 //
-// The goos argument selects whether a tmpfs scratch hides host paths (see
+// The goos argument selects whether the tmpfs scratch rule below applies (see
 // below) and, as in pathExcludedRoots, keeps both platforms testable from
 // either host.
 func gitIdentityAuthority(pol policy.Policy, workspace, temporary, goos string) (string, string, error) {
@@ -110,11 +110,10 @@ func gitIdentityAuthority(pol policy.Policy, workspace, temporary, goos string) 
 	if grant.Class != ClassWritable && grant.Class != ClassMountReadWrite {
 		return "", "", refused
 	}
-	// On Linux a tmpfs scratch is mounted over ScratchMount, so a host path
-	// spelled beneath it names the private tmpfs, not a host output
-	// directory. An explicit read-write mount is the policy's existing way
-	// to restore a host path inside that view; ordinary writable roots are
-	// insufficient. Seatbelt mounts nothing: a tmpfs scratch is a private
+	// On Linux the tmpfs scratch is mounted at ScratchMount, and protocol
+	// 043 does not let a path spelled beneath it anchor a host write even
+	// when a deeper writable bind restores it; the read-write mount is the
+	// policy's explicit way to say otherwise. Seatbelt mounts nothing: a tmpfs scratch is a private
 	// directory beside the host's /private/tmp, so a workspace under /tmp is
 	// an ordinary host path there and this refusal would misfire.
 	if goos == "linux" && pol.ScratchIsTmpfs() && pathCovers(normalizeSeatbeltPath(ScratchMount), home) &&

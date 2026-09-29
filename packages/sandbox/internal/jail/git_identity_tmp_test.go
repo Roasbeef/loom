@@ -47,12 +47,13 @@ func TestGitIdentityAuthorityAllowsTmpWorkspaceOnDarwin(t *testing.T) {
 	}
 }
 
-// Linux mounts a tmpfs over /tmp inside the jail, so the same workspace is
-// hidden there and the private-scratch refusal stays in force.
+// On Linux the tmpfs scratch is mounted at /tmp, and a path spelled beneath
+// it may not anchor a host write without an explicit read-write mount, so
+// the private-scratch refusal stays in force for the same workspace.
 func TestGitIdentityAuthorityRefusesTmpWorkspaceOnLinux(t *testing.T) {
 	pol, dir := tmpWorkspace(t)
 	if _, _, err := gitIdentityAuthority(pol, dir, ".gitconfig-test", "linux"); err == nil {
-		t.Fatal("a workspace hidden by the tmpfs scratch was treated as a host grant")
+		t.Fatal("a workspace beneath the tmpfs scratch mount was treated as a host grant")
 	}
 }
 
