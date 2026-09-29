@@ -1296,3 +1296,30 @@ by the height of the dock and the strip.
 `operator_page_test` and `component_test` pin the order of the page's
 children (heading, strip, transcript, dock or bar). The scroll behaviour is
 in the browser, where the tests cannot reach it, and is checked by hand.
+
+## Addendum: one DOM binding, and the follower hears the reader (2026-09-29)
+
+The client components' logic moved from three JavaScript files
+(`follow.mjs`, `composer.mjs`, `clock.mjs`) into Gleam over one binding,
+`internal/dom.mjs`, whose every export is a single DOM call or property read
+(issue #569, part 2). Nothing the page sends, accepts or is allowed changes:
+no new event on the socket, no HTML written, no key handled outside the
+composer's editor, and the policy is unchanged. `scripts/web_client_js_check.sh`
+now fails the build if that file is not the only JavaScript in the package or
+names `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function`
+or `document.write`.
+
+One behaviour is new and belongs here. `<loom-follow>` listens, passively, for
+`wheel`, `touchstart`, `touchmove` and `pointerdown` on itself, and notes only
+when each happened. It reads nothing from the events and cancels none. A scroll
+up that ends away from the bottom now leaves the tail only when the reader made
+it: one of those events was heard within half a second, or the transcript is
+the size it was at the last scroll. A scroll the browser makes to fit a box that
+grew or content that shrank, heard after rows landed, was being taken for the
+reader leaving, which stopped the follow in the middle of a burst of rows. The
+listeners are not keys, and no key is heard.
+
+**Verification.** `packages/web_client/test` runs the decision as pure
+functions and as sequences of the element's messages. The listeners, the scroll
+events and the DOM calls run only in a browser, which `make check` does not
+have.

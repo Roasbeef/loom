@@ -2139,10 +2139,13 @@ them.
    refusals of an input before it reaches the session (an empty or
    oversized draft, a terminal-surface command, a stale approval) stay
    `Warned`, in a `View` field cleared by the operator's next input. The
-   cost is that the composer's notice line now shows what the session last
+   cost was that the composer's notice line showed what the session last
    said, as the terminal's footer does: "notes sent" after the first read,
    "streaming text" during an answer, and a daemon's refusal as its code
-   and message. Typing the notice is now worth doing.
+   and message. #624 changed that: the notice now shows the outcome of the
+   last command only, the daemon's reply to it (`Shared.answer`, which only
+   a reply writes) or what the shared step worded when the page ran it, and
+   an event that is not a command's outcome does not replace it.
 
 7. **Slash commands mix surfaces and session commands.**
    `command.Command` has both, so the shared `submit_text` keeps arms it
