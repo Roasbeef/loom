@@ -147,6 +147,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
     strip.view(component.strip(model)),
     lane.view(
       component.pieces(model),
+      component.live(model),
       component.top(model),
       Observed(component.OlderRequested),
     ),

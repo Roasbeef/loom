@@ -45,9 +45,14 @@ type Page {
     runtime: lustre.Runtime(component.Msg(Subject(String))),
     inbox: Subject(connection_event.Message),
     wire: Subject(String),
-    renders: Subject(Nil),
+    renders: Subject(Int),
   )
 }
+
+// The size in bytes of the message the runtime hands a client, as its
+// transport encodes it.
+@external(erlang, "lane_memo_ffi", "wire_bytes")
+fn wire_bytes(message: server_component.ClientMessage(message)) -> Int
 
 // Starts a real server component whose transport hands the test the inbox
 // it reads and the subject the open is answered on, and whose client is a
@@ -77,7 +82,9 @@ fn started() -> Page {
   let renders = process.new_subject()
   lustre.send(
     runtime,
-    server_component.register_callback(fn(_) { process.send(renders, Nil) }),
+    server_component.register_callback(fn(message) {
+      process.send(renders, wire_bytes(message))
+    }),
   )
   process.sleep(50)
   process.send(opened, Ok(wire))
@@ -86,10 +93,16 @@ fn started() -> Page {
 }
 
 // How many patches arrived before the runtime went quiet for `quiet_ms`.
-fn settle(renders: Subject(Nil), quiet_ms: Int) -> Int {
+fn settle(renders: Subject(Int), quiet_ms: Int) -> Int {
+  list.length(patches(renders, quiet_ms))
+}
+
+// The sizes, in bytes, of the patches that arrived before the runtime went
+// quiet for `quiet_ms`, oldest first.
+fn patches(renders: Subject(Int), quiet_ms: Int) -> List(Int) {
   case process.receive(renders, quiet_ms) {
-    Ok(Nil) -> 1 + settle(renders, quiet_ms)
-    Error(Nil) -> 0
+    Ok(bytes) -> [bytes, ..patches(renders, quiet_ms)]
+    Error(Nil) -> []
   }
 }
 
@@ -101,13 +114,22 @@ fn settle(renders: Subject(Nil), quiet_ms: Int) -> Int {
 // so the renders it caused are taken back out and the count is the burst's
 // alone.
 fn burst(page: Page, frames: List(connection_event.Message)) -> Int {
+  list.length(burst_patches(page, frames))
+}
+
+// `burst`, with the size of each patch the burst cost in place of their
+// count.
+fn burst_patches(
+  page: Page,
+  frames: List(connection_event.Message),
+) -> List(Int) {
   let pid = server_component.pid(page.runtime)
   system.suspend(pid)
   list.each(frames, process.send(page.inbox, _))
   system.resume(pid)
-  let renders = settle(page.renders, 200)
+  let sizes = patches(page.renders, 200)
 
-  renders - catch_ups(written(page.wire, 0))
+  list.drop(sizes, catch_ups(written(page.wire, 0)))
 }
 
 fn delta(n: Int) -> connection_event.Message {
@@ -191,6 +213,54 @@ pub fn a_burst_costs_one_render_per_batch_test() {
   assert burst(page, deltas(40)) == 1
   assert burst(page, deltas(150)) == 3
   assert component.arrival_batch == 64
+}
+
+// One sentence of a streaming answer, a blank line after every sixth so the
+// answer is a run of paragraphs, as a stream delta of one request.
+fn sentence(n: Int) -> connection_event.Message {
+  let text = "Sentence " <> int.to_string(n) <> " of the answer, said. "
+  let text = case n % 6 {
+    0 -> text <> "\\n\\n"
+    _ -> text
+  }
+  connection_event.Incoming(
+    "{\"v\":2,\"event\":\"stream_delta\",\"body\":{\"strand\":\"main\",\"op\":\"o\",\"generation\":\"g\",\"kind\":\"text\",\"text\":\""
+    <> text
+    <> "\"}}",
+  )
+}
+
+fn sentences(from: Int, to: Int) -> List(connection_event.Message) {
+  int.range(from: from, to: to + 1, with: [], run: fn(acc, n) {
+    [sentence(n), ..acc]
+  })
+  |> list.reverse
+}
+
+// A live answer costs its own patches and no more. Each burst of fragments
+// is one message and so one patch, and the patch is the region's tail and
+// not the page: it is the paragraph being written and a fixed envelope, a
+// few hundred bytes however long the answer has become and whatever the
+// page holds beneath it. This is what a page that drew every fragment into
+// its own row, or reprojected the capture for each batch, could not say.
+pub fn a_live_answer_costs_one_small_patch_per_burst_test() {
+  let page = following_pushed()
+
+  // The first burst opens the region: the answer's first paragraphs and the
+  // region's envelope.
+  let opening = burst_patches(page, sentences(1, 8))
+  assert list.length(opening) == 1
+
+  // Every burst after it is one patch of the paragraph being written.
+  let later =
+    list.map([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], fn(index) {
+      burst_patches(page, sentences(index * 8 + 1, index * 8 + 8))
+    })
+  list.each(later, fn(sizes) {
+    assert list.length(sizes) == 1
+  })
+  let assert Ok(largest) = list.reduce(list.flatten(later), int.max)
+  assert largest < 1024
 }
 
 // An idle page does no work between refreshes: with the lane pushing, the

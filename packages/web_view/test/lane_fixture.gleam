@@ -366,6 +366,70 @@ pub fn answered(texts: List(String)) -> session_channel.Update {
   capture_of([item(1, 10_000, said("go", None)), ..answers], None, [], [])
 }
 
+/// A capture of `main` holding only the prompt "go", with `operation`
+/// running when one is given: the state in which a response is streaming
+/// and its answer, the entry after the prompt, is not committed yet. The
+/// capture `answered` makes is the one that holds that entry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.asked(Some(lane_fixture.main_op()))
+/// ```
+pub fn asked(operation: Option(String)) -> session_channel.Update {
+  capture_of([item(1, 10_000, said("go", None))], operation, [], [])
+}
+
+/// The identity of the request whose answer will be committed as record
+/// `seq`, as the daemon writes it: the entry it reserved is the last element.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.generation(2)
+/// ```
+pub fn generation(seq: Int) -> String {
+  "[\"generation\",\""
+  <> main_op()
+  <> "\",0,\""
+  <> ids.entry_id_to_string(id(seq))
+  <> "\"]"
+}
+
+/// One pushed fragment of `kind` (`thinking` or `text`) of the request
+/// `generation`, on `main`'s running operation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.fragment(lane_fixture.generation(2), "text", "Hello")
+/// ```
+pub fn fragment(
+  generation: String,
+  kind: String,
+  text: String,
+) -> session_channel.Update {
+  session_channel.Streamed("main", main_op(), generation, kind, text)
+}
+
+/// The push that says the request `generation` committed record `seq` with
+/// `text`: the daemon's entry event, which clears the strand's streams
+/// before the next capture holds the record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.committed(2, "Hello")
+/// ```
+pub fn committed(seq: Int, text: String) -> session_channel.Update {
+  let assert snapshot.Loaded(record, _) =
+    item(seq, 11_000, assistant([message.AssistantText(text, None)]))
+    as "an item built from a message is loaded"
+  session_channel.Auxiliary(
+    protocol.EntryAdded(protocol.EntryRecord("main", record)),
+  )
+}
+
 /// A capture of `main` holding the records `from` to `to` of a
 /// conversation in which every turn is three records: a person's question,
 /// a working note and the answer, so each turn is an input, a work divider

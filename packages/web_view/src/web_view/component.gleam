@@ -77,11 +77,21 @@
 //// runs at the end of every message and rebuilds a projection only when the
 //// inputs it reads moved. The shared record's own `render_revision` is not
 //// that signal. It moves for everything the terminal's rows are built from,
-//// including stream fragments and tool output tails that the page does not
-//// draw, and a page that re-projected on each of them would project once per
-//// batch of a streaming answer. The projection's inputs are compared
-//// instead, and an unchanged input is the same term, which costs a pointer
-//// comparison.
+//// including stream fragments, which change the live region (`live`) and
+//// nothing a capture projects, and a page that re-projected on each of them
+//// would project once per batch of a streaming answer. The projection's
+//// inputs are compared instead, and an unchanged input is the same term,
+//// which costs a pointer comparison.
+////
+//// The response the provider is still writing is drawn from the shared
+//// record's streams, as the terminal draws it, in a region of its own at the
+//// lane's end (`view/live`). The page keeps the streams it last drew
+//// (`View.streams`) beyond the moment the shared record drops them, because
+//// a pushed entry clears a strand's streams and a page that draws only
+//// captures has no row for the answer until its next capture: `streamed`
+//// keeps the last streams while their answer is still owed and lets go once
+//// a capture holds it, so the answer is replaced by its record and does not
+//// leave the page and come back.
 ////
 //// The page's regions are drawn by the modules under `web_view/view`: the
 //// heading, the agent strip and the transcript lane. This module derives
@@ -102,6 +112,7 @@ import lustre/server_component
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
+import session_view/block_summary
 import session_view/cache_miss
 import session_view/cache_watch
 import session_view/command
@@ -120,12 +131,15 @@ import session_view/snapshot_view
 import session_view/step
 import session_view/step_effect
 import session_view/transcript
-import session_view/transcript_line.{type CacheNotice, type Line}
+import session_view/transcript_line.{
+  type CacheNotice, type Line, type Stream, Assistant, Line,
+}
 import session_view/transcript_lines
 import session_view/turns
 import web_view/view/expansion
 import web_view/view/heading
 import web_view/view/lane
+import web_view/view/live
 import web_view/view/strip
 import web_view/view/todo_panel
 
@@ -384,6 +398,11 @@ type View(socket) {
     pieces: List(turns.Piece),
     /// The inputs `blocks` and `pieces` were derived from.
     projected: Projected,
+    /// The live answers the page draws (`live`): the shared record's
+    /// streams for the followed strand, and after a pushed entry clears
+    /// them, the last ones until a capture holds the entry
+    /// (`streamed`).
+    streams: List(Stream),
     /// The agent strip, derived when a capture, a usage push or a tick
     /// changed something it draws.
     strip: strip.Strip,
@@ -493,6 +512,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       blocks: [],
       pieces: [],
       projected: projected_of(shared, Tail),
+      streams: [],
       strip: strip.Strip(chips: [], advisor: None, settled: 0),
       stripped: stripped_of(shared),
       status: Connecting,
@@ -801,7 +821,51 @@ fn refreshed(model: Model(socket)) -> Model(socket) {
         False -> model
       }
   }
-  statused(model)
+  model |> streamed |> statused
+}
+
+// Follows the shared record's live streams for the followed strand, which
+// `transcript_lines.display_streams` picks as the terminal does: the pushed
+// fragments, or the capture's sampled preview of an answer already running
+// when the page attached, and neither once the terminal's own records hold
+// the answer.
+//
+// The record drops a strand's streams when the entry lands, ahead of the
+// capture that gives this page the row. Until that capture the page would
+// show nothing where the answer was. So when the record has no stream, the
+// streams the page last drew stay while their answer is still owed
+// (`response_awaited`): its entry is not in the window the page projects and
+// the capture still shows the operation running. Once the entry is drawn as
+// a row, or the capture says the operation ended without one, they go. A
+// stream that reserved no entry (an older daemon) is never kept. This runs
+// after the projection, so it reads the window that was just built.
+fn streamed(model: Model(socket)) -> Model(socket) {
+  let shown =
+    session_model.presentation(model.shared)
+    |> transcript_lines.display_streams
+    |> list.filter(fn(stream) { stream.kind != "end" })
+  case shown, model.view.streams {
+    [], [] -> model
+    [_, ..], _ -> Model(..model, view: View(..model.view, streams: shown))
+    [], last ->
+      case list.any(last, awaited(model, _)) {
+        True -> model
+        False -> Model(..model, view: View(..model.view, streams: []))
+      }
+  }
+}
+
+// Whether the answer this stream is writing is still to come as a row.
+fn awaited(model: Model(socket), stream: Stream) -> Bool {
+  case model.shared.captured {
+    None -> True
+    Some(#(_, view)) ->
+      transcript_lines.response_awaited(
+        history_view.branch(model.shared.scrollback, view).records,
+        view.operations,
+        stream,
+      )
+  }
 }
 
 fn projected_of(shared: Session(socket), paging: Paging) -> Projected {
@@ -1501,6 +1565,44 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
   model.view.pieces
 }
 
+/// The live region's rows: the reasoning the provider is writing, with how
+/// much of it has arrived, how long the generation has run and the
+/// summarizer's headline when one was pushed, and the answer as it stands.
+/// All of it is the terminal's own state (`Shared.streams`,
+/// `Shared.summaries` and the generation clock), and the page reads no
+/// extra frame for it.
+///
+/// The elapsed time is a reading, not a running clock: the browser counts
+/// on from it (`<loom-elapsed>`), so the server draws again when a fragment
+/// arrives and not to move a second. A tool call the model is composing is
+/// not drawn; the capture draws it as a running call as soon as it commits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lane.view(component.pieces(model), component.live(model), ..)
+/// ```
+pub fn live(model: Model(socket)) -> List(live.Row) {
+  let shared = model.shared
+  let elapsed_ms =
+    option.map(shared.generation_started_ms, fn(started) {
+      int.max(0, shared.stamp.now_ms - started)
+    })
+  list.filter_map(model.view.streams, fn(stream) {
+    let text = stream.fragments |> list.reverse |> string.concat
+    case stream.kind {
+      "thinking" ->
+        Ok(live.Thinking(
+          progress: transcript_lines.line_count(text),
+          elapsed_ms:,
+          headline: block_summary.live(shared.summaries, stream.generation),
+        ))
+      "tool_call" | "end" -> Error(Nil)
+      _ -> Ok(live.Answer(Line(Assistant, text)))
+    }
+  })
+}
+
 /// The agent strip as the page draws it.
 ///
 /// ## Examples
@@ -1690,7 +1792,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session")], [
     heading(model),
     strip.view(model.view.strip),
-    lane.view(model.view.pieces, top(model), OlderRequested),
+    lane.view(model.view.pieces, live(model), top(model), OlderRequested),
     plan(model),
     html.p([attribute.class("observer-bar")], [
       html.text(
