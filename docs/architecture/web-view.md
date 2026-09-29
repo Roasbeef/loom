@@ -827,7 +827,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/ending.gleam` | `Ending`, the closed reason a page has no session, with its fixed headline and advice, its reason string (the relay's hop to the component) and its close code (`Final` or `Retry`). |
 | `packages/web_view/src/web_view/view/ended.gleam` | The notice a page draws from an `Ending`, inside the heading. |
 | `packages/web_view/src/web_view/view/heading.gleam` | The top bar: the brand, the session's workspace and name, the connection's status and the context and cost estimates, drawn from plain values the component hands it. |
-| `packages/web_view/src/web_view/view/shell.gleam` | The page's frame and the order of its four children: the top bar, the sidebar, the centre column and the strand panel. |
+| `packages/web_view/src/web_view/view/shell.gleam` | The page's frame, `<loom-shell>`, and the order of its four children: the top bar, the sidebar, the centre column and the strand panel. The `sidebar` attribute is written from the `Sidebar` type. |
 | `packages/web_view/src/web_view/view/panel.gleam` | The strand panel, the right column and the frame's last child: a title and the strip's cards. |
 | `packages/web_view/src/web_view/view/strip.gleam` | The strand cards (the agent strip's old name) and their `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
 | `packages/web_view/src/web_view/view/sidebar.gleam` | The session sidebar: the principal's sessions by workspace, read-only, memoized, the frame's second child. |

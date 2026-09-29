@@ -28,10 +28,17 @@ import lustre/element/html
 /// // panel.view(strip.count(strip), strip.view(strip, focus))
 /// ```
 pub fn view(count: Int, strands: Element(message)) -> Element(message) {
-  html.aside([attribute.class("panel"), attribute.aria_label("Strand panel")], [
-    html.h2([attribute.class("panel-title")], [html.text(title(count))]),
-    strands,
-  ])
+  html.aside(
+    [
+      attribute.class("panel"),
+      attribute.aria_label("Strand panel"),
+      attribute.attribute("slot", "right"),
+    ],
+    [
+      html.h2([attribute.class("panel-title")], [html.text(title(count))]),
+      strands,
+    ],
+  )
 }
 
 /// The panel's title for `count` strands.

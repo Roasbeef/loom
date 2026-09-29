@@ -346,13 +346,13 @@ pub fn the_observers_frame_is_bar_centre_panel_test() {
     |> arrive(page_fixture.transfer("observer", []))
   let html = element.to_string(simulate.view(page))
   assert in_order(html, [
-    "<div class=\"loom-session\">",
+    "<loom-shell class=\"loom-session\" sidebar=\"none\">",
     "class=\"session-head\"",
     "<main class=\"centre\">",
     "<loom-follow class=\"follow\">",
     "class=\"observer-bar\"",
     "</main>",
-    "<aside aria-label=\"Strand panel\" class=\"panel\">",
+    "<aside aria-label=\"Strand panel\" class=\"panel\" slot=\"right\">",
     "class=\"agent-strip\"",
   ])
 }

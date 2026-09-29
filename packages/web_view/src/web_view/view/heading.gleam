@@ -64,27 +64,30 @@ pub fn view(
   cost cost: String,
   notice notice: Element(message),
 ) -> Element(message) {
-  html.header([attribute.class("session-head")], [
-    html.span([attribute.class("brand")], [html.text("Loom")]),
-    workspace_element(workspace),
-    html.h1([attribute.title(session_id)], [
-      html.text(session_name(session_id, name)),
-    ]),
-    html.p([attribute.class("status"), attribute.role("status")], [
-      html.text(status),
-    ]),
-    html.span([attribute.class("figures")], [
-      html.span([attribute.class("figure")], [html.text(context)]),
-      html.span(
-        [
-          attribute.class("figure"),
-          attribute.title("Estimated cost of the session, across strands"),
-        ],
-        [html.text("session " <> cost)],
-      ),
-    ]),
-    notice,
-  ])
+  html.header(
+    [attribute.class("session-head"), attribute.attribute("slot", "bar")],
+    [
+      html.span([attribute.class("brand")], [html.text("Loom")]),
+      workspace_element(workspace),
+      html.h1([attribute.title(session_id)], [
+        html.text(session_name(session_id, name)),
+      ]),
+      html.p([attribute.class("status"), attribute.role("status")], [
+        html.text(status),
+      ]),
+      html.span([attribute.class("figures")], [
+        html.span([attribute.class("figure")], [html.text(context)]),
+        html.span(
+          [
+            attribute.class("figure"),
+            attribute.title("Estimated cost of the session, across strands"),
+          ],
+          [html.text("session " <> cost)],
+        ),
+      ]),
+      notice,
+    ],
+  )
 }
 
 // A session with no name, or none the host could read, is named by its

@@ -2382,7 +2382,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   shell.view(
     shell.Observer,
     heading(model),
-    element.none(),
+    shell.Unlisted,
     [
       lane.view(
         model.view.pieces,

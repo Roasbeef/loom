@@ -172,7 +172,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   shell.view(
     shell.Operator,
     component.heading(model),
-    sidebar.view(component.session_groups(model), component.session_id(model)),
+    sidebar_place(model),
     [
       lane.view(
         component.pieces(model),
@@ -193,6 +193,16 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       Observed(component.FocusRequested(strand))
     }),
   )
+}
+
+// The sidebar's place in the frame. A page whose catalogue read listed
+// nothing has no sidebar to draw, and the frame is told so, so that its bar
+// draws no button that would hide an empty column.
+fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
+  case component.session_groups(model) {
+    [] -> shell.Unlisted
+    groups -> shell.Listed(sidebar.view(groups, component.session_id(model)))
+  }
 }
 
 // The controls, with what each sends. Stop is offered while the strand runs

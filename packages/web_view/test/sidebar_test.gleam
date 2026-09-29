@@ -218,7 +218,7 @@ pub fn the_sidebar_lists_workspaces_and_sessions_test() {
   let drawn = observer_html(listed_page(listing()))
   assert string.contains(
     drawn,
-    "<aside aria-label=\"Sessions\" class=\"sidebar\">",
+    "<aside aria-label=\"Sessions\" class=\"sidebar\" slot=\"left\">",
   )
   assert string.contains(drawn, "title=\"/src/loom\"")
   assert string.contains(drawn, ">loom<")
@@ -255,7 +255,8 @@ pub fn the_sidebar_escapes_what_the_catalogue_holds_test() {
 // A page whose read found nothing draws no sidebar.
 pub fn an_empty_list_draws_no_sidebar_test() {
   let drawn = observer_html(listed_page([]))
-  assert !string.contains(drawn, "sidebar")
+  assert !string.contains(drawn, "class=\"sidebar\"")
+  assert string.contains(drawn, "sidebar=\"none\"")
   assert !string.contains(drawn, "<aside aria-label=\"Sessions\"")
 }
 

@@ -114,25 +114,26 @@
 
 /* The page's parts. Each class here is one the view spells literally. */
 @layer components {
-  /* The page is exactly one viewport tall and does not scroll. Its frame
-     (web_view/view/shell) is a grid: the top bar across the full width, and
-     beneath it the sessions' sidebar, the centre and the strand panel. The
-     side columns are as wide as their contents, so a page with no sidebar
-     has no left column. Only the transcript inside the centre scrolls
-     (loom-follow.follow below), and the dock (or the observer's bar) is
-     pinned under it. The centre has no bottom padding: the dock carries its
-     own, so it sits flush with the edge it is pinned to.
+  /* The page is exactly one viewport tall and does not scroll. Its frame is
+     <loom-shell> (web_view/view/shell, web_client/shell): the top bar across
+     the full width, and beneath it the sessions' sidebar, the centre and the
+     strand panel. The element's own tree is below, in the shell rules; the
+     server's regions are its light-DOM children, styled here. Only the
+     transcript inside the centre scrolls (loom-follow.follow below), and the
+     dock (or the observer's bar) is pinned under it. The centre has no bottom
+     padding: the dock carries its own, so it sits flush with the edge it is
+     pinned to.
 
      The widths: the sidebar is 232px, the panel 340px, and the transcript at
-     most 780px. The frame's children are placed by area, so the order they
-     are drawn in is free of the order they are shown in. Each side column is
-     dropped where it would leave the transcript under 640px: the sidebar
-     below 1212px (232 + 340 + 640), and the panel, which then becomes a row
-     of cards beneath the bar, below 980px (340 + 640). There is no drawer. */
-  .loom-session{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto minmax(0,1fr); grid-template-areas:"bar bar bar" "left centre right";height:100dvh;min-width:0;overflow:hidden;background:var(--color-bg);}
+     most 780px. Each side column is dropped where it would leave the
+     transcript under 640px: the sidebar below 1212px (232 + 340 + 640), and
+     the panel, which then becomes a row of cards beneath the bar, below 980px
+     (340 + 640). There is no drawer. */
+  loom-shell.loom-session{display:block;height:100dvh;min-width:0;overflow:hidden;background:var(--color-bg);}
   /* The top bar. It is 44px tall, and taller only when the ended page's
-     notice wraps onto a row of its own. */
-  .session-head{grid-area:bar;display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;box-sizing:border-box;min-height:44px;min-width:0;padding:6px 16px;background:var(--color-bg-raised);border-bottom:1px solid var(--color-divider);}
+     notice wraps onto a row of its own. The shell draws the bar's border and
+     background around it, with a button at each end. */
+  .session-head{display:flex;flex-wrap:wrap;align-items:center;flex:1 1 auto;gap:4px 12px;box-sizing:border-box;min-height:44px;min-width:0;padding:6px 16px;}
   .session-head .brand{font:600 14px/1.4 var(--font-sans);letter-spacing:.02em;}
   .session-head h1{font:600 13px/1.4 var(--font-mono);margin:0;min-width:0;overflow-wrap:anywhere;}
   .session-head .status{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
@@ -140,7 +141,34 @@
   .session-head .workspace::after{content:" /";content:" /" / "";}
   .session-head .figures{display:flex;flex-wrap:wrap;gap:0 12px;margin-left:auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
   .session-head .figure{white-space:nowrap;}
-  main.centre{grid-area:centre;display:flex;flex-direction:column;min-width:0;min-height:0;box-sizing:border-box;padding:16px 16px 0;overflow:hidden;}
+  /* The shell's own tree (web_client/shell), drawn in its shadow root: the
+     bar with its two buttons, and under it a row of the sidebar's column, the
+     centre and the panel's column. A column is a fixed-width wrapper around
+     its slot, so that closing it can animate its width. A closed column takes
+     no width, is not painted and is inert, which also takes its content out
+     of the tab order, and it hides only after the width has finished
+     shrinking. Opening shows it at once. Below the breakpoints of the frame
+     above the wrapper of the sidebar is not drawn, and the panel's wrapper
+     goes above the centre. */
+  .shell{display:flex;flex-direction:column;height:100%;min-width:0;}
+  .shell-bar{flex:0 0 auto;display:flex;align-items:stretch;min-width:0;background:var(--color-bg-raised);border-bottom:1px solid var(--color-divider);}
+  .shell-body{flex:1 1 0;display:flex;min-height:0;min-width:0;}
+  .shell-centre{flex:1 1 0;display:flex;min-width:0;min-height:0;}
+  .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease;}
+  .region-sidebar{width:232px;}
+  .region-panel{width:340px;}
+  .region.closed{width:0;visibility:hidden;transition:width 180ms ease,visibility 0s linear 180ms;}
+  /* The buttons: a real button at each end of the bar, drawn as a small
+     window with its side column filled while the column is open. */
+  .shell-toggle{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:44px;padding:0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);cursor:pointer;}
+  .shell-toggle:hover{background:var(--color-bg-sunk);color:var(--color-fg);}
+  .shell-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .toggle-icon{position:relative;display:block;width:16px;height:13px;box-sizing:border-box;border:1.5px solid currentColor;border-radius:3px;}
+  .toggle-icon::after{content:"";position:absolute;top:0;bottom:0;width:4px;background:currentColor;}
+  .toggle-sidebar .toggle-icon::after{left:0;}
+  .toggle-panel .toggle-icon::after{right:0;}
+  .shell-toggle[aria-expanded="false"] .toggle-icon::after{opacity:.2;}
+  main.centre{flex:1 1 0;display:flex;flex-direction:column;min-width:0;min-height:0;box-sizing:border-box;padding:16px 16px 0;overflow:hidden;}
   main.centre > :not(loom-follow){width:100%;max-width:780px;margin-left:auto;margin-right:auto;box-sizing:border-box;}
   /* A strand's hue as a mark (--hue: a swatch, a bar, a border) and as words
      (--hue-text: a name or a heading), which is a darker colour in the light
@@ -156,7 +184,7 @@
   /* The strand panel, the right column (web_view/view/panel): a title and one
      card per strand, top to bottom. Below 980px it is a row of cards under
      the bar instead, scrolling sideways. */
-  aside.panel{grid-area:right;width:340px;box-sizing:border-box;min-height:0;padding:12px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg);border-left:1px solid var(--color-divider);}
+  aside.panel{width:340px;height:100%;box-sizing:border-box;min-height:0;padding:12px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg);border-left:1px solid var(--color-divider);}
   .panel-title{margin:0 0 10px 0;font:600 11px/1.4 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--color-fg-quiet);}
   nav.agent-strip{margin:0;}
   ul.chips{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;}
@@ -185,7 +213,7 @@
   /* The session sidebar, the left column: the principal's sessions by
      workspace, read-only. It is a column of the frame and scrolls on its own.
      Below 1212px it is not drawn. */
-  aside.sidebar{grid-area:left;width:232px;box-sizing:border-box;min-height:0;padding:12px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg-sunk);border-right:1px solid var(--color-divider);}
+  aside.sidebar{width:232px;height:100%;box-sizing:border-box;min-height:0;padding:12px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg-sunk);border-right:1px solid var(--color-divider);}
   .sidebar-title{margin:0 0 12px 0;font:600 11px/1.4 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--color-fg-quiet);}
   section.workspace-group{margin:0 0 16px 0;}
   .workspace-group .workspace{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 4px 0;font:600 12px/1.4 var(--font-mono);color:var(--color-fg);overflow-wrap:anywhere;}
@@ -431,13 +459,16 @@
   button.approval-deny{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.approval-allow{border-color:var(--color-added);color:var(--color-added-text);}
   button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
-  /* The narrow frames. Below 1212px the sidebar is dropped. Below 980px the
-     panel moves under the bar, one row of cards that scrolls sideways, and
-     the frame is one column. Below 640px the centre's padding shrinks. */
-  @media (max-width:1211px){aside.sidebar{display:none;}}
+  /* The narrow frames. Below 1212px the sidebar's column and its button are
+     dropped. Below 980px the panel moves under the bar, one row of cards that
+     scrolls sideways, and the body is one column; its button still hides the
+     row. Below 640px the centre's padding shrinks. */
+  @media (max-width:1211px){.region-sidebar,.toggle-sidebar{display:none;}}
   @media (max-width:979px){
-    .loom-session{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);grid-template-areas:"bar" "right" "centre";}
-    aside.panel{width:auto;max-height:132px;padding:8px 16px;border-left:0;border-bottom:1px solid var(--color-divider);}
+    .shell-body{flex-direction:column;}
+    .region-panel{order:-1;width:auto;}
+    .region-panel.closed{width:auto;height:0;transition:none;}
+    aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;border-left:0;border-bottom:1px solid var(--color-divider);}
     .panel-title{display:none;}
     nav.agent-strip{overflow-x:auto;scrollbar-width:thin;}
     ul.chips{flex-direction:row;padding-bottom:4px;}

@@ -105,10 +105,17 @@ page keys and nonces, and the relay into the session's gateway.
   `est $` cost, worded as the terminal's footer words them), with the ended
   page's notice as its last child; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
-  `shell.view(audience, bar, sidebar, centre, panel)` lays the frame out,
-  and is where its order is written: the bar (0), the sidebar (1, or
-  `element.none()`), the centre `main` (2, the transcript first, then the
-  dock or the observer's bar) and the strand panel (3, last).
+  `shell.view(audience, bar, sidebar, centre, panel)` draws the frame, the
+  client element `<loom-shell sidebar="listed|none">`, and is where its
+  order is written: the bar (0, `slot="bar"`), the sidebar (1, `slot="left"`,
+  or `element.none()` when `shell.Unlisted`), the centre `main` (2, the
+  default slot: the transcript first, then the dock or the observer's bar)
+  and the strand panel (3, last, `slot="right"`). Each region puts its own
+  slot attribute on its element. The `sidebar` word comes from the
+  `shell.Sidebar` type, `Listed(element)` or `Unlisted`, so the element draws
+  no button for a column the page lacks; the operator's page is `Unlisted`
+  when its catalogue read listed nothing. The server never renders whether a
+  column is open: that is the reader's, in the element.
   `panel.view(count, strands)` is the panel's `aside`, its title first and
   the strip second; `component.strands(model, focus)` builds it for both
   pages. `strip.view(strip, focus)` draws the cards (the agent strip, kept
@@ -354,12 +361,14 @@ page keys and nonces, and the relay into the session's gateway.
   record the page holds. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in each chip and in the live reasoning row, `<loom-fold>` around a settled
-  turn's work, `<loom-expand>` around a row with more to show, and `<loom-follow>` around the lane. The stylesheet pins the
-  page's frame (a grid: the top bar across the full width, and under it the
-  sessions' sidebar, the centre and the strand panel; the dock or the
+  turn's work, `<loom-expand>` around a row with more to show, and `<loom-follow>` around the lane and `<loom-shell>` around the page. The stylesheet pins the
+  page's frame (`<loom-shell>`: the top bar across the full width, and under
+  it the sessions' sidebar, the centre and the strand panel; the dock or the
   observer's bar at the bottom of the centre, the page itself never
   scrolling) and makes `<loom-follow>` the scroll container between them
-  and the dock. The sidebar is dropped below 1212px, and below 980px the
+  and the dock. The element's two buttons hide and show the sidebar and the
+  panel (a hidden column is `inert`, so its content leaves the tab order),
+  with nothing kept across a reload. The sidebar is dropped below 1212px, and below 980px the
   panel becomes a row of cards under the bar. It keeps the
   newest row in view while the reader is at the bottom, shows a "Jump to
   latest" button while they are not, and keeps the reader's place when a

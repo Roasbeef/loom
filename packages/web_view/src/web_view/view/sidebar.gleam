@@ -50,7 +50,11 @@ pub fn view(groups: List(Group), current: String) -> Element(message) {
     [] -> element.none()
     [_, ..] ->
       html.aside(
-        [attribute.class("sidebar"), attribute.aria_label("Sessions")],
+        [
+          attribute.class("sidebar"),
+          attribute.aria_label("Sessions"),
+          attribute.attribute("slot", "left"),
+        ],
         [
           html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
           ..list.map(groups, group(_, current))
