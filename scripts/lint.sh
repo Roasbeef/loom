@@ -48,12 +48,16 @@ fi
 # The lint reads Gleam. The browser package's one JavaScript file is held to
 # its own textual gate whenever that package's sources are in the run, which
 # is every full run and `make lint-web_client`. It gates as R0 does: a
-# violation fails the run. See scripts/web_client_js_check.sh.
+# violation fails the run. See scripts/web_client_js_check.sh. The same
+# runs hold the stylesheet's text colours to a 4.5:1 contrast ratio
+# (scripts/web_client_contrast_check.sh).
 for path in "${paths[@]}"; do
 	case $path in
 	"$root"/packages/web_client/src*)
 		scripts/web_client_js_check.sh
 		scripts/web_client_js_check.sh --self-test
+		scripts/web_client_contrast_check.sh
+		scripts/web_client_contrast_check.sh --self-test
 		break
 		;;
 	esac

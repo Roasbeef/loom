@@ -1,5 +1,9 @@
-//// The agent strip: one chip per strand the page lists, drawn below the
-//// heading on both pages, and the types the component builds it from.
+//// The agent strip: one card per strand the page lists, drawn in the strand
+//// panel (`view/panel`) on both pages, and the types the component builds it
+//// from. It was a row of chips below the heading before the redesign moved
+//// it to the right-hand column, and the names of its types and classes
+//// (`Strip`, `Chip`, `chip-hit`) are from then; the stylesheet draws each
+//// chip as a card.
 ////
 //// The component derives a `Strip` when a capture, a usage push or a tick
 //// changed something it draws (`component.restripped`), and this module
@@ -19,8 +23,9 @@
 //// transcript and addresses it (`component.focus`). Its handler's message is
 //// made by the function `view` is given, from the strand's name as the strip
 //// was built, so the browser's event names only a path. The chips are the
-//// strip's `ul`'s children, which is what `component.strip_path` counts on
-//// and the observer's socket admits clicks under
+//// strip's `ul`'s children, and the strip is the panel's second child, which
+//// is what `component.strip_path` counts on and the observer's socket admits
+//// clicks under
 //// (protocol-change/051, the addendum on strand focus). The strip that says
 //// "settled" is not a control.
 ////
@@ -78,8 +83,24 @@ pub type Strip {
   )
 }
 
-/// The agent strip: one chip per listed strand, the advisor's chip last,
-/// and one chip counting the strands that settled.
+/// How many strands the strip lists as cards: the listed chips and the
+/// advisor's. The chip counting settled strands is not a strand's card and
+/// is not counted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // panel.view(strip.count(strip), strip.view(strip, focus))
+/// ```
+pub fn count(strip: Strip) -> Int {
+  case strip.advisor {
+    Some(_) -> list.length(strip.chips) + 1
+    None -> list.length(strip.chips)
+  }
+}
+
+/// The agent strip: one card per listed strand, the advisor's last, and one
+/// line counting the strands that settled.
 ///
 /// Each chip is a button whose click is `focus` applied to the strand's
 /// name, so a page's message type decides what a press means. The list is

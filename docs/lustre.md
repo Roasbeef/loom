@@ -574,14 +574,17 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   identities or numbers.** `<loom-elapsed offset>` is a duration in
   milliseconds, which the element anchors to the browser's clock, since a
   browser's clock need not agree with the daemon's. No attribute carries
-  session text. `<loom-composer commands>` is the one attribute of another
-  kind: the static table of slash-command names and hints, written in
+  session text. `<loom-shell sidebar>` is a fixed word, `listed` or `none`,
+  written from a type. `<loom-composer commands>` is the one attribute of
+  another kind: the static table of slash-command names and hints, written in
   `session_view` and built for the page by `web_view/completion`.
 - **Session text reaches it only as the server's children.** `<loom-fold>`
   shows the divider and the work through a named and a default slot,
   `<loom-expand>` shows a row's compact or full form through one of two named
   slots, and
-  `<loom-follow>` shows the lane through a default slot; the words are
+  `<loom-follow>` shows the lane through a default slot, and `<loom-shell>`
+  shows the top bar, the sidebar, the centre and the strand panel through
+  slots named `bar`, `left`, the default and `right`; the words are
   light-DOM nodes the server rendered and escaped.
 - **No key handling and no focus near an approval card.** A client
   component's button is a real button, which the browser activates.
@@ -598,7 +601,11 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   a key pressed inside itself, to tell the reader's scroll from one the layout
   made. Only the composer acts on keys; the follower notes that one was
   pressed, reading nothing from it, so a keyboard scroll counts as the
-  reader's.
+  reader's. `<loom-shell>` draws the page's frame around the dock and so holds
+  an approval card in its subtree, but it listens for no key and no event
+  beyond the clicks of its own two buttons, never moves focus, and has no
+  button for the centre column where the dock is. A hidden side column is
+  `inert`, which takes its content out of the tab order.
 - **No raw HTML.** It renders through Lustre's virtual DOM, as the server
   component does. Its browser calls are one file, `internal/dom.mjs`, one
   DOM call per export and no logic, declared in `internal/ffi_dom.gleam`;

@@ -131,11 +131,14 @@ pub fn an_observer_socket_accepts_a_chip_click_test() {
   assert ui_socket.observer_accepts(click_at(chip, "click"))
   list.each(
     [
-      // The list itself, and a sibling of it whose path shares the digits.
+      // The list itself, a sibling of it whose path shares the digits, and
+      // the panel's title and its parents.
       click_at(component.strip_path, "click"),
-      click_at("0\t1\t01\t2", "click"),
-      click_at("0\t1\t1\t0", "click"),
-      click_at("0\t1", "click"),
+      click_at(component.strip_path <> "0\t2", "click"),
+      click_at("0\t3\t1\t1\t0", "click"),
+      click_at("0\t3\t0", "click"),
+      click_at("0\t3\t1", "click"),
+      click_at("0\t3", "click"),
 
       // Another event at a chip's path.
       click_at(chip, "submit"),

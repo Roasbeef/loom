@@ -30,6 +30,16 @@ renders again just for it:
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
   form is submitted, which is why they are here.
+- `<loom-shell sidebar="listed">` is the page's frame. The server draws the
+  top bar, the sessions sidebar, the centre and the strand panel as its
+  children, in the slots `bar`, `left`, the default and `right`, and the
+  element lays them out and draws a button at each end of the bar that hides
+  and shows a side column. Which columns are open is the reader's preference
+  and nothing the server holds, so the server never renders it and nothing
+  is kept across a reload. A hidden column takes no width and is `inert`, so
+  its content leaves the tab order. The `sidebar` attribute is a fixed word
+  the server writes (`listed` or `none`), so an observer's page, which has no
+  sidebar, gets no button for one.
 
 A page that has ended or was refused needs no element here. The server draws
 its notice (`web_view/view/ended`, `web_view/page.refusal`), and the shell's
@@ -121,6 +131,16 @@ time builds anything.
   `Reading` more than `slack` pixels from the bottom, one button, "Jump to
   latest" (`Jumped`), whose wrapper has no height and sticks to the
   scroller's bottom edge.
+- `shell_rule.Region` (`Sidebar` | `Panel`), `State` (`Open` | `Closed`),
+  `Layout(sidebar, panel)`, `Presence` (`Listed` | `Unlisted`) and `Reach`
+  (`Reachable` | `Unreachable`), with `toggled`, `state`, `reach`, `label`,
+  `has_button` and `presence` (a total decoder of the `sidebar` attribute),
+  and `shell.Model(layout, sidebar)` and `shell.Msg` (`Toggled(region)`,
+  `SidebarChanged(presence)`): the shadow root holds the bar (the two buttons
+  around the `bar` slot) and the body (a wrapper per side column around its
+  slot, and the default slot in the centre). A closed column's wrapper is
+  `inert` and the stylesheet gives it no width. The buttons are real buttons
+  with words from `shell_rule.label` and `aria-expanded`.
 - `composer.Model(entries, draft, selected, palette, returns)` and
   `composer.Msg` (`Configured`, `Returned`, `Typed`, `Moved`, `Accepted`,
   `Picked`, `Dismissed`, `Sent`, `Ignored`): `commands` is the table the
@@ -166,9 +186,11 @@ time builds anything.
 
 ## Tests
 
-What the components decide is in four modules that import neither Lustre nor
+What the components decide is in five modules that import neither Lustre nor
 `ffi_dom`: `follow_rule` (the scroll rule, `Reader` and its transitions,
-`keeping`), `expand_rule` (the two states and the button's words), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,
+`keeping`), `expand_rule` (the two states and the button's words), `shell_rule`
+(which columns are open, the buttons' words, what a closed column lets the
+keyboard reach), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,
 `joined`, `revealed`) and `duration`. `follow`, `composer` and `elapsed` are
 the elements over them. The split is enforced, not just conventional: Lustre's
 client runtime declares `class LustreEvent extends CustomEvent` at load, Node
@@ -221,7 +243,10 @@ it sends is the form's submit, which the server already accepts.
   prompts it takes arrive as text-node children, never as attributes.
 - **No key handling and no focus near an approval card.** Only
   `<loom-composer>` acts on a key, and only on its own editor, through its
-  slot. `<loom-follow>` may note that a key was pressed inside the transcript
+  slot. `<loom-shell>` holds the dock in its subtree, as the page's frame,
+  but listens for no key, moves no focus, and acts only on the clicks of its
+  own two buttons, which hide and show the side columns; the centre column,
+  where the dock is, has no button. `<loom-follow>` may note that a key was pressed inside the transcript
   (a passive `keydown` that reads nothing from the event, never cancels it and
   sends nothing), so a keyboard scroll counts as the reader's. It calls `focus` once, on that editor, when the operator chooses
   a row. The approval cards are outside it, in the dock, and no key it
@@ -234,6 +259,19 @@ it sends is the form's submit, which the server already accepts.
   `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function`,
   `document.write`, `srcdoc`, `DOMParser`, `createContextualFragment` or a
   dynamic `import(`. It has its own self-test.
+- **Words use a `-text` token; marks use the plain one.** The stylesheet's
+  hues come in pairs (`--color-signal` and `--color-signal-text`, and the same
+  for `advisor`, `peer`, `danger`, `added` and `strand-2` to `strand-6`). The
+  plain token is the redesign's colour for a dot, ring, bar or border; the
+  `-text` token is the value for words in that hue, which is darker in the
+  light theme because the design's light hues are under 4.5:1 there
+  (`docs/design-notes/web-design.md`, section 5). A strand's hue is `--hue`
+  for marks and `--hue-text` for words. `--color-fg-faint` is never text.
+  `scripts/web_client_contrast_check.sh`, run by `make lint`, fails if a text
+  token is under 4.5:1 on a surface it is drawn on (`bg`, `bg-raised`,
+  `bg-sunk`, `bg-user`, `code`, and the diff backgrounds for `added-text` and
+  `danger-text`) in either theme, or if a rule sets `color:` from a mark
+  token, `--hue` or `fg-faint`. It has its own self-test.
 - **State the DOM would hold in an expando lives in the model.** The
   returned-prompt bookkeeping (`Seen(taken)`), the scroll bookkeeping (`top`,
   `extent`, `touched`) and the held row are Lustre model fields, never

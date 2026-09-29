@@ -8,6 +8,7 @@
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
+import gleam/result
 import gleam/string
 import lane_fixture
 import lustre/effect
@@ -217,7 +218,7 @@ pub fn the_sidebar_lists_workspaces_and_sessions_test() {
   let drawn = observer_html(listed_page(listing()))
   assert string.contains(
     drawn,
-    "<aside aria-label=\"Sessions\" class=\"sidebar\">",
+    "<aside aria-label=\"Sessions\" class=\"sidebar\" slot=\"left\">",
   )
   assert string.contains(drawn, "title=\"/src/loom\"")
   assert string.contains(drawn, ">loom<")
@@ -254,8 +255,9 @@ pub fn the_sidebar_escapes_what_the_catalogue_holds_test() {
 // A page whose read found nothing draws no sidebar.
 pub fn an_empty_list_draws_no_sidebar_test() {
   let drawn = observer_html(listed_page([]))
-  assert !string.contains(drawn, "sidebar")
-  assert !string.contains(drawn, "<aside")
+  assert !string.contains(drawn, "class=\"sidebar\"")
+  assert string.contains(drawn, "sidebar=\"none\"")
+  assert !string.contains(drawn, "<aside aria-label=\"Sessions\"")
 }
 
 // The sidebar is read-only: no row is a link, a button or a form, and it adds
@@ -270,8 +272,7 @@ pub fn the_sidebar_carries_no_handler_test() {
   assert handlers(operator_page.view(listed))
     == handlers(operator_page.view(bare))
 
-  let drawn = observer_html(listed)
-  let assert Ok(#(_, sidebar)) = string.split_once(drawn, "<aside")
+  let assert Ok(sidebar) = sidebar_of(observer_html(listed))
   assert !string.contains(sidebar, "<a ")
   assert !string.contains(sidebar, "<button")
   assert !string.contains(sidebar, "<form")
@@ -279,11 +280,28 @@ pub fn the_sidebar_carries_no_handler_test() {
   assert !string.contains(sidebar, "onclick")
 }
 
-// The operator's page draws the same sidebar, after its dock.
-pub fn the_operators_page_draws_the_sidebar_last_test() {
+// The markup of the sidebar alone: from its opening tag to the first closing
+// `</aside>`, which is its own, since the sidebar holds no other aside.
+fn sidebar_of(drawn: String) -> Result(String, Nil) {
+  use #(_, from) <- result.try(string.split_once(
+    drawn,
+    "<aside aria-label=\"Sessions\"",
+  ))
+  use #(sidebar, _) <- result.try(string.split_once(from, "</aside>"))
+  Ok(sidebar)
+}
+
+// The operator's page draws the sidebar in the frame's second place: after
+// the top bar and before the centre, whose composer and dock it precedes, and
+// the strand panel, which is the last child.
+pub fn the_operators_page_draws_the_sidebar_second_test() {
   let drawn = element.to_string(operator_page.view(listed_page(listing())))
-  let assert Ok(#(before, _)) = string.split_once(drawn, "<aside")
-  assert string.contains(before, "class=\"composer\"")
+  let assert Ok(#(before, after)) =
+    string.split_once(drawn, "<aside aria-label=\"Sessions\"")
+  assert string.contains(before, "class=\"session-head\"")
+  assert !string.contains(before, "class=\"composer\"")
+  assert string.contains(after, "class=\"composer\"")
+  assert string.contains(after, "<aside aria-label=\"Strand panel\"")
 }
 
 // Focusing another strand leaves the sidebar as it was: it lists sessions,
@@ -298,7 +316,7 @@ pub fn focusing_a_strand_leaves_the_sidebar_alone_test() {
 // supplies it none, and the view has nowhere to draw one.
 pub fn an_observers_page_draws_no_sidebar_test() {
   let drawn = element.to_string(component.view(listed_page(listing())))
-  assert !string.contains(drawn, "<aside")
+  assert !string.contains(drawn, "<aside aria-label=\"Sessions\"")
   assert !string.contains(drawn, "vetting lint")
   assert !string.contains(drawn, "/src/loom")
 }

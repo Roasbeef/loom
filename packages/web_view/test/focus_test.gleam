@@ -237,7 +237,9 @@ pub fn a_press_on_a_chip_focuses_it_on_an_operators_page_test() {
     )
     |> simulate.start(Nil)
     |> simulate.click(on: query.descendant(
-      of: query.element(query.class("hue-2")),
+      // The lane's own cards carry hue classes too, and the centre comes
+      // before the panel, so the chip is named by its own class as well.
+      of: query.element(query.and(query.class("chip"), query.class("hue-2"))),
       matching: query.class("chip-hit"),
     ))
   assert component.strand(simulate.model(pressed)) == lane_fixture.child
