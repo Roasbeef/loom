@@ -1093,13 +1093,27 @@ fn active_run_images(opened: Session, operation: OpId) -> Result(Int, Nil) {
   |> Ok
 }
 
-// The admitted prompt batch is immutable for the operation. It can contain
-// an image followed by a text instruction when held inputs are released
-// together. Keep that entire image-bearing run on vision, including tool and
-// run-end continuations; the next operation gets a new batch and can recover
-// to text after a failed image run. Context classification additionally covers
-// image steers and legacy callers without operation metadata.
-fn request_image_bearing(
+/// Whether the dispatcher sends this generation to the `vision` chain when
+/// its identity reads only text.
+///
+/// The admitted prompt batch is immutable for the operation. It can contain
+/// an image followed by a text instruction when held inputs are released
+/// together. Keep that entire image-bearing run on vision, including tool and
+/// run-end continuations; the next operation gets a new batch and can recover
+/// to text after a failed image run. Context classification additionally covers
+/// image steers and legacy callers without operation metadata.
+///
+/// This is public so that a consumer with a confidentiality stake in the
+/// routing, the block summarizer's live observer, asks the dispatcher's own
+/// rule rather than re-deriving it from the context alone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.request_image_bearing(config, operation, context)
+/// ```
+///
+pub fn request_image_bearing(
   config: Config,
   operation: OpId,
   context: List(AgentMessage),

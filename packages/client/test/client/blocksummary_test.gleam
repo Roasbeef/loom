@@ -14,6 +14,7 @@ import client/blocksummary
 import client/blocksummarybook
 import client/catalog
 import client/distill
+import client/vision
 import core/clock
 import core/entry
 import core/ids.{type EntryId, type OpId}
@@ -400,7 +401,7 @@ pub fn another_strands_stream_is_not_summarized_live_test() {
   let rig = a_rig(held("unused"))
   let operation = an_operation(rig.opened, "sub:main/audit", 8)
   let tap =
-    blocksummary.observer(rig.name, single_provider())(
+    blocksummary.observer(rig.name, by_context, single_provider())(
       a_request("acme", operation),
       "g-4",
     )
@@ -419,7 +420,7 @@ pub fn live_requests_coalesce_behind_the_one_out_test() {
   let rig = a_rig(held("The agent compares two fixes."))
   let operation = an_operation(rig.opened, "main", 5)
   let tap =
-    blocksummary.observer(rig.name, single_provider())(
+    blocksummary.observer(rig.name, by_context, single_provider())(
       a_request("acme", operation),
       "g-1",
     )
@@ -457,7 +458,7 @@ pub fn another_providers_stream_is_not_observed_test() {
   let rig = a_rig(held("unused"))
   let operation = an_operation(rig.opened, "main", 6)
   let tap =
-    blocksummary.observer(rig.name, single_provider())(
+    blocksummary.observer(rig.name, by_context, single_provider())(
       a_request("other", operation),
       "g-2",
     )
@@ -476,13 +477,16 @@ pub fn a_cross_provider_fallback_chain_is_not_observed_test() {
   let crossing =
     a_catalogue([#(model.Main, ["acme", "other"]), #(model.Summarize, ["acme"])])
   let admits = blocksummary.live_admission(crossing, "acme")
-  assert !admits(identity("acme"))
-  assert !admits(identity("other"))
+  assert !admits(identity("acme"), blocksummary.TextTurn)
+  assert !admits(identity("other"), blocksummary.TextTurn)
 
   let rig = a_rig(held("unused"))
   let operation = an_operation(rig.opened, "main", 7)
   let tap =
-    blocksummary.observer(rig.name, admits)(a_request("acme", operation), "g-3")
+    blocksummary.observer(rig.name, by_context, admits)(
+      a_request("acme", operation),
+      "g-3",
+    )
   tap(reasoning(string.repeat("a", 8192)))
   assert process.receive(rig.held, 300) == Error(Nil)
   stop(rig)
@@ -497,14 +501,71 @@ pub fn a_same_host_chain_is_observed_live_test() {
       #(model.Main, ["acme-flash", "acme"]),
       #(model.Summarize, ["acme"]),
     ])
-  assert blocksummary.live_admission(sharing, "acme")(identity("acme-flash"))
+  assert blocksummary.live_admission(sharing, "acme")(
+    identity("acme-flash"),
+    blocksummary.TextTurn,
+  )
 
   let crossing =
     a_catalogue([
       #(model.Main, ["acme-flash", "other"]),
       #(model.Summarize, ["acme"]),
     ])
-  assert !blocksummary.live_admission(crossing, "acme")(identity("acme-flash"))
+  assert !blocksummary.live_admission(crossing, "acme")(
+    identity("acme-flash"),
+    blocksummary.TextTurn,
+  )
+}
+
+// The catalogue that hid live headlines in practice: a text-only main
+// entry on the summarizer's host and a `vision` chain on another host. A
+// text turn is answered by the main entry itself and is observed. Only a
+// turn that carries an image is dispatched to the `vision` chain, so only
+// that turn is refused, and the request decides which one it is.
+pub fn a_text_turn_is_observed_when_only_the_vision_chain_crosses_test() {
+  let crossing_vision =
+    a_catalogue([
+      #(model.Main, ["acme"]),
+      #(model.Summarize, ["acme"]),
+      #(model.Vision, ["other"]),
+    ])
+  let blind =
+    catalog.Catalog(
+      ..crossing_vision,
+      models: list.map(crossing_vision.models, fn(entry) {
+        catalog.CatalogModel(..entry, vision: catalog.TextOnly)
+      }),
+    )
+  let admits = blocksummary.live_admission(blind, "acme")
+  assert admits(identity("acme"), blocksummary.TextTurn)
+  assert !admits(identity("acme"), blocksummary.ImageTurn)
+
+  let rig = a_rig(held("The agent reads."))
+  let operation = an_operation(rig.opened, "main", 10)
+  let tap = blocksummary.observer(rig.name, by_context, admits)
+  tap(a_request("acme", operation), "g-5")(reasoning(string.repeat("a", 4096)))
+  let assert Ok(#(asked, release)) = process.receive(rig.held, 2000)
+    as "a text turn must reach the summarizer"
+  assert string.byte_size(asked) >= 4096
+  process.send(release, Nil)
+  let assert Ok(bus.BlockSummary(
+    subject: bus.LiveStream(generation: "g-5", ..),
+    ..,
+  )) = process.receive(rig.published, 2000)
+    as "the text turn's label must be pushed"
+
+  let picture =
+    message.UserMessage(
+      content: [message.UserImage(data: "AA", mime_type: "image/png")],
+      timestamp: 0,
+      origin: Some(message.Origin("principal", "Operator")),
+    )
+  let assert effects.GenerationRequest(..) as plain =
+    a_request("acme", operation)
+  let imaged = effects.GenerationRequest(..plain, context: [picture])
+  tap(imaged, "g-6")(reasoning(string.repeat("b", 4096)))
+  assert process.receive(rig.held, 300) == Error(Nil)
+  stop(rig)
 }
 
 // A chain that stays on the summarize provider admits the strands it
@@ -514,7 +575,10 @@ pub fn a_same_host_chain_is_observed_live_test() {
 pub fn only_single_provider_routes_are_observed_test() {
   let staying =
     a_catalogue([#(model.Main, ["acme"]), #(model.Summarize, ["acme"])])
-  assert blocksummary.live_admission(staying, "acme")(identity("acme"))
+  assert blocksummary.live_admission(staying, "acme")(
+    identity("acme"),
+    blocksummary.ImageTurn,
+  )
 
   let seeing =
     a_catalogue([
@@ -522,7 +586,10 @@ pub fn only_single_provider_routes_are_observed_test() {
       #(model.Summarize, ["acme"]),
       #(model.Vision, ["other"]),
     ])
-  assert blocksummary.live_admission(seeing, "acme")(identity("acme"))
+  assert blocksummary.live_admission(seeing, "acme")(
+    identity("acme"),
+    blocksummary.ImageTurn,
+  )
 
   let blind =
     catalog.Catalog(
@@ -531,7 +598,10 @@ pub fn only_single_provider_routes_are_observed_test() {
         catalog.CatalogModel(..entry, vision: catalog.TextOnly)
       }),
     )
-  assert !blocksummary.live_admission(blind, "acme")(identity("acme"))
+  assert !blocksummary.live_admission(blind, "acme")(
+    identity("acme"),
+    blocksummary.ImageTurn,
+  )
 }
 
 // --- the rig -------------------------------------------------------------------
@@ -875,9 +945,23 @@ fn identity(provider: String) -> machine_strand.ModelIdentity {
   machine_strand.ModelIdentity(provider:, model_id: "loom-1")
 }
 
-fn single_provider() -> fn(machine_strand.ModelIdentity) -> Bool {
+fn single_provider() -> fn(machine_strand.ModelIdentity, blocksummary.Turn) ->
+  Bool {
   blocksummary.live_admission(
     a_catalogue([#(model.Main, ["acme"]), #(model.Summarize, ["acme"])]),
     "acme",
   )
+}
+
+// The classifier the observer is given in these tests, which looks at the
+// context alone. Production passes the dispatcher's own rule, whose held
+// batch case `vision_test` covers.
+fn by_context(
+  _operation: OpId,
+  context: List(message.AgentMessage),
+) -> blocksummary.Turn {
+  case vision.image_bearing(context) {
+    True -> blocksummary.ImageTurn
+    False -> blocksummary.TextTurn
+  }
 }
