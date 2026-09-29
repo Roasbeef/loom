@@ -28,7 +28,7 @@
 import core/entry
 import core/json
 import core/message
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -37,7 +37,6 @@ import gleam/set
 import gleam/string
 import session_view/agent_view
 import session_view/composer
-import session_view/notes_view
 import session_view/protocol
 import session_view/snapshot_view
 import session_view/tool_activity
@@ -120,7 +119,13 @@ pub type Worked {
 pub type Item {
   /// A block drawn as its rows: reasoning, an intermediate message, a
   /// result whose call is outside the window.
-  Narrated(block: Block)
+  Narrated(
+    block: Block,
+    /// The full form of each of the block's reasoning rows, by the row's
+    /// key, cut by the host's `Expansion`. Empty when the host asked for
+    /// none or no row has more to show.
+    thoughts: Dict(String, List(Line)),
+  )
 
   /// One tool call.
   Step(
@@ -132,17 +137,24 @@ pub type Item {
     summary: String,
     /// The rows under the summary: its result, patch or program.
     detail: List(Line),
-    /// The call itself, with its result when the window holds one. The
-    /// terminal's `Ctrl+g` shows the whole of it, and `expanded_step` draws
-    /// the same rows from it.
-    call: tool_activity.Call,
+    /// What the terminal's `Ctrl+g` shows for the call under its summary,
+    /// cut by the host's `Expansion`: the whole program, patch or arguments,
+    /// then the whole result. Empty when the host asked for none or when it
+    /// equals `detail`, so the host draws an expander only where there is
+    /// more to read.
+    full: List(Line),
   )
 }
 
 /// One piece of a strand's reading lane, in lane order.
 pub type Piece {
   /// A block drawn as its rows: an input, an answer, harness speech.
-  Plain(block: Block)
+  Plain(
+    block: Block,
+    /// The full form of each of the block's reasoning rows, as in
+    /// `Narrated`. Empty for a block with none.
+    thoughts: Dict(String, List(Line)),
+  )
 
   /// The work of one turn, behind one divider. `key` names the turn by its
   /// input, or `work:window-start` for the turn the window opens inside.
@@ -232,20 +244,39 @@ pub fn latest(
   }
 }
 
+/// Whether the pieces carry the rows a reader can expand a row to, and how
+/// they are bounded.
+///
+/// The expansion of a call or a reasoning block is what the terminal's
+/// `Ctrl+g` shows, which can be a whole program or a tool's whole output.
+/// It is built where the compact rows are, once per projection, and the
+/// host's `cap` cuts it there, so no piece ever holds the uncapped text.
+pub type Expansion {
+  /// The host draws no expansion. The terminal does not use `turns` at
+  /// all, and a caller that only asks where turns begin skips the work.
+  Skip
+
+  /// Build each expansion and cut it with `cap`, which may add a line
+  /// saying it cut. The web view passes `web_view/view/expansion.capped`.
+  Expand(cap: fn(List(Line)) -> List(Line))
+}
+
 /// The pieces of one strand's lane, in order.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert turns.pieces([], [], turns.Settled) == []
+/// assert turns.pieces([], [], turns.Settled, turns.Skip) == []
 /// ```
 pub fn pieces(
   blocks: List(Block),
   strands: List(protocol.Strand),
   latest: Latest,
+  expansion: Expansion,
 ) -> List(Piece) {
   let joined = joined(blocks)
-  let classified = list.flat_map(blocks, classify(_, strands, joined))
+  let classified =
+    list.flat_map(blocks, classify(_, strands, joined, expansion))
   let turns = split(classified)
   let count = list.length(turns)
   turns
@@ -287,7 +318,7 @@ pub fn grouped(
   let #(lead, done, current) =
     list.fold(blocks, #([], [], None), fn(acc, block) {
       let #(lead, done, current) = acc
-      case classify(block, strands, unjoined), current {
+      case classify(block, strands, unjoined, Skip), current {
         [Input(..), ..], None -> #(lead, done, Some([block]))
         [Input(..), ..], Some(turn) -> #(
           lead,
@@ -321,7 +352,7 @@ type Classified {
   Input(piece: Piece, at: Option(Int))
 
   // A message with the strand's own prose, a candidate for the answer.
-  Answer(block: Block, at: Option(Int))
+  Answer(block: Block, at: Option(Int), thoughts: Dict(String, List(Line)))
 
   // Something folded under the divider, with the tool calls it made and
   // the paths those calls wrote.
@@ -380,6 +411,7 @@ fn classify(
   block: Block,
   strands: List(protocol.Strand),
   joined: Joined,
+  expansion: Expansion,
 ) -> List(Classified) {
   case block.source {
     transcript_lines.FromSpacer -> []
@@ -390,11 +422,16 @@ fn classify(
     transcript_lines.FromTools(calls) ->
       calls
       |> list.index_map(fn(call, index) {
-        called(block.key <> "/" <> int.to_string(index), call, strands)
+        called(
+          block.key <> "/" <> int.to_string(index),
+          call,
+          strands,
+          expansion,
+        )
       })
       |> list.flatten
     transcript_lines.FromEntry(value) ->
-      entry_kind(block, value, strands, joined)
+      entry_kind(block, value, strands, joined, expansion)
   }
 }
 
@@ -403,6 +440,7 @@ fn entry_kind(
   value: entry.Entry,
   strands: List(protocol.Strand),
   joined: Joined,
+  expansion: Expansion,
 ) -> List(Classified) {
   let at = Some(value.ts)
   case block.rows, value {
@@ -425,8 +463,10 @@ fn entry_kind(
         ]
         Some(transcript_lines.Feed(..)), _
         | Some(transcript_lines.GoalFeed(..)), _
-        -> [Outside(Plain(block))]
-        Some(transcript_lines.Continuation(..)), _ -> [Input(Plain(block), at)]
+        -> [Outside(Plain(block, dict.new()))]
+        Some(transcript_lines.Continuation(..)), _ -> [
+          Input(Plain(block, dict.new()), at),
+        ]
         None, Some(message.PeerOrigin(session:, strand:)) -> [
           Input(
             Peer(
@@ -441,7 +481,9 @@ fn entry_kind(
             at,
           ),
         ]
-        None, Some(message.Origin(..)) | None, None -> [Input(Plain(block), at)]
+        None, Some(message.Origin(..)) | None, None -> [
+          Input(Plain(block, dict.new()), at),
+        ]
       }
 
     // A response is drawn as its prose, and each of its calls as a step
@@ -459,7 +501,8 @@ fn entry_kind(
         ..,
       )
     -> {
-      let prose = prose(block, content, stop_reason, error_message)
+      let #(prose, thoughts) =
+        prose(block, content, stop_reason, error_message, expansion)
       let own =
         content
         |> list.filter_map(fn(part) {
@@ -472,13 +515,18 @@ fn entry_kind(
         |> list.index_map(fn(call, index) {
           let key = block.key <> "/" <> int.to_string(index)
           let outcome = dict.get(joined.results, call.id) |> option.from_result
-          called(key, tool_activity.Call(source, call, outcome, None), strands)
+          called(
+            key,
+            tool_activity.Call(source, call, outcome, None),
+            strands,
+            expansion,
+          )
         })
         |> list.flatten
       case list.any(content, speaks), prose.rows {
-        True, _ -> [Answer(prose, at), ..own]
+        True, _ -> [Answer(prose, at, thoughts), ..own]
         False, [] -> own
-        False, [_, ..] -> [Doing(Narrated(prose), at, 0, []), ..own]
+        False, [_, ..] -> [Doing(Narrated(prose, thoughts), at, 0, []), ..own]
       }
     }
 
@@ -513,10 +561,10 @@ fn entry_kind(
           Outside(spawned(block.key, None, details, outcome, strands)),
         ]
         False, "agent_wait" -> [
-          Doing(Narrated(block), at, 0, []),
+          Doing(Narrated(block, dict.new()), at, 0, []),
           ..returned(block.key, details, strands)
         ]
-        False, _ -> [Doing(Narrated(block), at, 0, [])]
+        False, _ -> [Doing(Narrated(block, dict.new()), at, 0, [])]
       }
     }
 
@@ -524,118 +572,93 @@ fn entry_kind(
     | _, entry.CompactionEntry(..)
     | _, entry.BranchSummaryEntry(..)
     | _, entry.CustomEntry(..)
-    -> [Outside(Plain(block))]
+    -> [Outside(Plain(block, dict.new()))]
   }
 }
 
 // A response's own words, without its calls: its text and reasoning, drawn
 // by the transcript's own row builders, and the line its stop left when it
 // did not end cleanly. The calls are drawn as steps instead.
+//
+// Each part that is not a call draws exactly one row, in order, so the
+// row's key is the block's and the part's index. A reasoning block that has
+// more than its opening line to show gets its full form, built by the same
+// builder the terminal's `Ctrl+g` runs and cut by the host, under that key.
 fn prose(
   block: Block,
   content: List(message.AssistantBlock),
   stop_reason: message.StopReason,
   error_message: Option(String),
-) -> Block {
+  expansion: Expansion,
+) -> #(Block, Dict(String, List(Line))) {
+  let parts =
+    list.filter(content, fn(part) {
+      case part {
+        message.AssistantToolCall(..) -> False
+        message.AssistantText(..) | message.AssistantThinking(..) -> True
+      }
+    })
   let lines =
-    prose_lines(content, stop_reason, error_message, notes_view.Excerpt)
-  transcript_lines.Block(
-    ..block,
-    rows: list.index_map(lines, fn(line, index) {
-      #(block.key <> ":" <> int.to_string(index), line)
-    }),
+    parts
+    |> list.flat_map(fn(part) {
+      case part {
+        message.AssistantToolCall(..) -> []
+
+        // The digest keeps the transcript's rule for which line opens a
+        // block, without the terminal's key hint: the lane's reader opens
+        // reasoning with an expander, not a key.
+        message.AssistantThinking(thinking:, redacted: False, ..) -> [
+          transcript_line.Line(
+            transcript_line.ReasoningDigest,
+            transcript_lines.reasoning_opening(thinking),
+          ),
+        ]
+        message.AssistantText(..) | message.AssistantThinking(..) ->
+          transcript_lines.assistant_block_lines(part, False, None)
+      }
+    })
+    |> list.append(transcript_lines.assistant_terminal_lines(
+      stop_reason,
+      error_message,
+    ))
+  let key = fn(index) { block.key <> ":" <> int.to_string(index) }
+  let thoughts = case expansion {
+    Skip -> dict.new()
+    Expand(cap:) ->
+      parts
+      |> list.index_map(fn(part, index) { #(part, index) })
+      |> list.filter_map(fn(pair) { thought(pair.0, key(pair.1), cap) })
+      |> dict.from_list
+  }
+  #(
+    transcript_lines.Block(
+      ..block,
+      rows: list.index_map(lines, fn(line, index) { #(key(index), line) }),
+    ),
+    thoughts,
   )
 }
 
-// The rows of a response's prose at one extent. `Excerpt` is the lane's
-// own: a reasoning block is its opening line. `Complete` is what the
-// terminal's `Ctrl+g` draws, the block in full.
-fn prose_lines(
-  content: List(message.AssistantBlock),
-  stop_reason: message.StopReason,
-  error_message: Option(String),
-  extent: notes_view.Extent,
-) -> List(Line) {
-  content
-  |> list.flat_map(fn(part) {
-    case part, extent {
-      message.AssistantToolCall(..), _ -> []
-
-      // The digest keeps the transcript's rule for which line opens a
-      // block, without the terminal's key hint: the lane's reader opens
-      // reasoning with an expander, not a key.
-      message.AssistantThinking(thinking:, redacted: False, ..),
-        notes_view.Excerpt
-      -> [
-        transcript_line.Line(
-          transcript_line.ReasoningDigest,
-          transcript_lines.reasoning_opening(thinking),
-        ),
-      ]
-      _, notes_view.Excerpt ->
-        transcript_lines.assistant_block_lines(part, False, None)
-      _, notes_view.Complete ->
-        transcript_lines.assistant_block_lines(part, True, None)
-    }
-  })
-  |> list.append(transcript_lines.assistant_terminal_lines(
-    stop_reason,
-    error_message,
-  ))
-}
-
-/// What a tool call shows once its reader expands it, when that is more
-/// than `detail`, the rows the lane draws under the call's summary.
-///
-/// The rows are the ones the terminal's `Ctrl+g` draws for the call
-/// (`transcript_lines.expanded_call_lines`): the whole program, patch or
-/// arguments, then the whole result. A call whose expansion is exactly its
-/// `detail` has nothing to expand to and gets `[]`, so a host draws an
-/// expander only where there is something more to read.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // turns.expanded_step(call, detail) == []  // nothing more to show
-/// ```
-pub fn expanded_step(
-  call: tool_activity.Call,
-  detail: List(Line),
-) -> List(Line) {
-  differing(transcript_lines.expanded_call_lines(call), detail)
-}
-
-/// What a block of a response's prose shows once its reader expands it, when
-/// that is more than its rows: each reasoning block in full, where the lane
-/// draws its opening line. Anything else, including a block that is not a
-/// response's prose, gets `[]`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert turns.expanded_block(transcript_lines.Block("1.0", transcript_lines.FromSpacer, []))
-///   == []
-/// ```
-pub fn expanded_block(block: Block) -> List(Line) {
-  case block.source {
-    transcript_lines.FromEntry(entry.MessageEntry(
-      message: message.AssistantMessage(
-        content:,
-        stop_reason:,
-        error_message:,
-        ..,
-      ),
-      ..,
-    )) ->
-      differing(
-        prose_lines(content, stop_reason, error_message, notes_view.Complete),
-        list.map(block.rows, fn(row) { row.1 }),
-      )
-    transcript_lines.FromEntry(_)
-    | transcript_lines.FromTools(_)
-    | transcript_lines.FromNotice
-    | transcript_lines.FromAdvisor
-    | transcript_lines.FromSpacer -> []
+// The full form of one part's row, when it has more to show than its row:
+// a reasoning block longer than the opening line its digest draws.
+fn thought(
+  part: message.AssistantBlock,
+  key: String,
+  cap: fn(List(Line)) -> List(Line),
+) -> Result(#(String, List(Line)), Nil) {
+  case part {
+    message.AssistantThinking(thinking:, redacted: False, ..) ->
+      case thinking == transcript_lines.reasoning_opening(thinking) {
+        True -> Error(Nil)
+        False ->
+          Ok(#(
+            key,
+            cap(transcript_lines.assistant_block_lines(part, True, None)),
+          ))
+      }
+    message.AssistantThinking(..)
+    | message.AssistantText(..)
+    | message.AssistantToolCall(..) -> Error(Nil)
   }
 }
 
@@ -696,6 +719,7 @@ fn called(
   key: String,
   call: tool_activity.Call,
   strands: List(protocol.Strand),
+  expansion: Expansion,
 ) -> List(Classified) {
   let standing = standing(call.outcome)
   let at = case call.outcome {
@@ -714,24 +738,44 @@ fn called(
       )),
     ]
     "agent_wait" -> [
-      Doing(step(key, call, standing), at, 1, []),
+      Doing(step(key, call, standing, expansion), at, 1, []),
       ..returned(key, details(call.outcome), strands)
     ]
-    _ -> [Doing(step(key, call, standing), at, 1, result.unwrap(wrote, []))]
+    _ -> [
+      Doing(
+        step(key, call, standing, expansion),
+        at,
+        1,
+        result.unwrap(wrote, []),
+      ),
+    ]
   }
 }
 
-fn step(key: String, call: tool_activity.Call, standing: Standing) -> Item {
+fn step(
+  key: String,
+  call: tool_activity.Call,
+  standing: Standing,
+  expansion: Expansion,
+) -> Item {
   let detail = case transcript_lines.activity_call_lines(call) {
     [_, ..rest] -> rest
     [] -> []
+  }
+  let full = case expansion {
+    Skip -> []
+    Expand(cap:) ->
+      case differing(transcript_lines.expanded_call_lines(call), detail) {
+        [] -> []
+        more -> cap(more)
+      }
   }
   Step(
     key:,
     standing:,
     summary: transcript_lines.call_summary(call),
     detail:,
-    call:,
+    full:,
   )
 }
 
@@ -854,7 +898,8 @@ fn lay_out(turn: Turn, folding: Folding) -> List(Piece) {
       let #(item, index) = pair
       case item {
         Doing(item:, ..) -> Ok(item)
-        Answer(block:, ..) if Some(index) != answer -> Ok(Narrated(block))
+        Answer(block:, thoughts:, ..) if Some(index) != answer ->
+          Ok(Narrated(block, thoughts))
         Answer(..) | Input(..) | Outside(..) -> Error(Nil)
       }
     })
@@ -906,7 +951,7 @@ fn folded(item: Classified, index: Int, answer: Option(Int)) -> Place {
 
 fn placed(item: Classified) -> Result(Piece, Nil) {
   case item {
-    Answer(block:, ..) -> Ok(Plain(block))
+    Answer(block:, thoughts:, ..) -> Ok(Plain(block, thoughts))
     Outside(piece:) -> Ok(piece)
     Input(piece:, ..) -> Ok(piece)
     Doing(..) -> Error(Nil)
@@ -930,7 +975,7 @@ fn work_key(turn: Turn) -> String {
 
 fn piece_key(piece: Piece) -> String {
   case piece {
-    Plain(block:) | Commentary(block:) -> block.key
+    Plain(block:, ..) | Commentary(block:) -> block.key
     Work(key:, ..)
     | Spawned(key:, ..)
     | Returned(key:, ..)
