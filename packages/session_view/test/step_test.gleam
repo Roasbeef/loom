@@ -461,3 +461,31 @@ pub fn forgetting_surfaces_keeps_a_returned_prompt_test() {
   assert step.forget_surfaces(returned).returned_drafts
     == returned.returned_drafts
 }
+
+// The session lists `main` and the advisor, for a change of strand to name.
+fn listing() -> Shared(String, Nil, String, String) {
+  Shared(..attached(), strands: [
+    protocol.Strand("main", None, None),
+    protocol.Strand("advisor", None, None),
+  ])
+}
+
+// A change of strand moves the record to the strand and leaves nothing for a
+// surface the host lacks. With no cut captured yet, the strand's
+// configuration is asked for, and the lane's frames come back as effects.
+pub fn focusing_a_strand_moves_the_record_and_drops_the_facts_test() {
+  let #(focused, effects) = step.focus(listing(), "advisor", msg.Stamp(5, 5))
+  assert focused.active_strand == "advisor"
+  assert focused.stamp == msg.Stamp(5, 5)
+  assert focused.surface_facts == []
+  assert focused.outbox == []
+  assert effects != [] as "the lane's queued frames are returned"
+}
+
+// The change cancels the lane's unsent frames, so a prompt queued for the
+// strand being left cannot reach the strand being entered.
+pub fn focusing_a_strand_leaves_no_unsent_prompt_behind_test() {
+  let #(focused, _) = step.focus(listing(), "advisor", msg.Stamp(5, 5))
+  assert focused.pending_submission == None
+  assert focused.queued == []
+}
