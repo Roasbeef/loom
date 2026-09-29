@@ -40,6 +40,7 @@
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
+import client/daemon/upgrade_log
 import client/gateway
 import gleam/erlang/process
 import gleam/http/request.{type Request}
@@ -282,7 +283,10 @@ fn admit(
     // a handler turn is terminal: `on_close` sees `Pending` and detaches
     // nothing, the peer gets a close frame rather than a torn socket, and the
     // root frees the refused capacity on the DOWN it already watches for.
-    Error(_) -> mist.stop()
+    Error(reason) -> {
+      upgrade_log.closed_early(upgrade_log.Session, "admit", reason)
+      mist.stop()
+    }
     Ok(connection) -> {
       // The replacement selector must carry `outbound` as well as the monitor:
       // mist swaps the whole user selector for the one a handler turn returns.

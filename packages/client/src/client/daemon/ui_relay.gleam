@@ -55,6 +55,7 @@
 //// are unbounded, and what bounds a slow browser is the page socket's TCP
 //// writes.
 
+import client/daemon/upgrade_log
 import client/gateway
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/result
@@ -249,6 +250,7 @@ fn attached(state: State) -> actor.Next(State, Message) {
         )
       case connection {
         Error(reason) -> {
+          upgrade_log.refused(upgrade_log.Page, "attach", reason)
           process.send(opened, Error(reason))
           actor.stop()
         }
