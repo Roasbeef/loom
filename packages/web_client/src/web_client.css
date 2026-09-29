@@ -213,11 +213,18 @@
   /* The session sidebar, the left column: the principal's sessions by
      workspace, read-only. It is a column of the frame and scrolls on its own.
      Below 1212px it is not drawn. */
-  aside.sidebar{width:232px;height:100%;box-sizing:border-box;min-height:0;padding:12px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg-sunk);border-right:1px solid var(--color-divider);}
-  .sidebar-title{margin:0 0 12px 0;font:600 11px/1.4 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--color-fg-quiet);}
-  section.workspace-group{margin:0 0 16px 0;}
-  .workspace-group .workspace{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 4px 0;font:600 12px/1.4 var(--font-mono);color:var(--color-fg);overflow-wrap:anywhere;}
-  .group-count{flex:0 0 auto;color:var(--color-fg-quiet);font-weight:400;font-variant-numeric:tabular-nums;}
+  aside.sidebar{position:relative;width:232px;height:100%;box-sizing:border-box;min-height:0;padding:12px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg-sunk);border-right:1px solid var(--color-divider);}
+  /* The sections are set apart quietly: a small eyebrow above each group, a
+     one-pixel hairline in the divider colour between groups, and space on
+     both sides of it, with no box or background of its own. The list's
+     title stays in the page for assistive technology and is not drawn, since
+     the eyebrows are the labels a sighted reader needs and a second one
+     above them would read as a section of its own. */
+  .sidebar-title{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+  section.workspace-group{margin:0;}
+  section.workspace-group + section.workspace-group{margin-top:12px;padding-top:12px;border-top:1px solid var(--color-divider);}
+  .workspace-group .workspace{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 6px 0;font:600 11px/1.4 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .group-count{flex:0 0 auto;font-weight:400;letter-spacing:0;font-variant-numeric:tabular-nums;}
   ul.sessions{list-style:none;margin:0;padding:0;}
   li.session{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:4px 8px;border-radius:6px;font-size:12px;}
   li.session.current{background:var(--color-bg-raised);box-shadow:inset 2px 0 0 var(--color-current);}

@@ -61,7 +61,11 @@ page keys and nonces, and the relay into the session's gateway.
   session's workspace first, then by newest session, sessions newest first,
   ties by identity and path). `view/sidebar.view(groups, current)` draws it,
   read-only, as the frame's second child (`aside.sidebar`, the left column;
-  `element.none()` where a page draws none), memoized. The
+  `element.none()` where a page draws none), memoized. A workspace is a
+  section whose label the stylesheet draws as a small uppercase eyebrow with
+  the session count, and a hairline in the divider colour separates one
+  section from the next (team feedback, 2026-09-29); the list's own heading
+  is kept for assistive technology and not drawn. The
   component reads `Transport.sessions` on `Opened` and on a `Ticked` at
   least `sessions_refresh_ms` (30 s) after the last read, keeps at most
   `sessions.listed_limit` entries, and `component.session_groups(model)` is

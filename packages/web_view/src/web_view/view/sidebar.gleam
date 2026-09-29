@@ -7,10 +7,15 @@
 //// key and opening another needs a link the page cannot make
 //// (protocol-change/051, the addendum on the session sidebar). It is the
 //// second child of the page's frame (`view/shell`), between the top bar and
-//// the centre column, and the left column of the stylesheet's grid. It has
-//// no handler, so the paths `component.older_path` and
-//// `component.strip_path` name are those of regions after it, and they count
-//// on it keeping its place as `element.none()` when it is not drawn.
+//// the centre column, in the frame's `left` slot. It has no handler, so the
+//// paths `component.older_path` and `component.strip_path` name are those of
+//// regions after it, and they count on it keeping its place as
+//// `element.none()` when it is not drawn.
+////
+//// Each workspace is a section with its own label, which the stylesheet draws
+//// as a small eyebrow above the group and separates from the next group by a
+//// hairline. The list's own heading, "Sessions", is in the page for
+//// assistive technology and is not drawn.
 ////
 //// Every name is drawn as a text node, and a workspace's whole path as a
 //// `title` attribute that Lustre escapes. The catalogue's fields are written
