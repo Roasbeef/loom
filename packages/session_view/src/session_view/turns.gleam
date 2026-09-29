@@ -407,6 +407,40 @@ fn joined(blocks: List(Block)) -> Joined {
   })
 }
 
+// An owner's turn, or the memory context the daemon attached to the run
+// as a user message of its own (`composer.memory_context_lines`). The
+// memory context is drawn as one line, `memory context (n lines)`, with the
+// whole message as that row's expansion under the row's key, which is how
+// a reasoning block's full form is kept (`prose`). The host's cap cuts the
+// expansion, so a digest longer than the page draws is cut with a notice
+// and stays whole in the terminal. A host that draws no expansion keeps the
+// block as the transcript projected it, so the text is never dropped.
+fn folded_memory(block: Block, body: String, expansion: Expansion) -> Piece {
+  case expansion, composer.memory_context_lines(body) {
+    Expand(cap:), Some(lines) -> {
+      // The message's row is the block's first, which `transcript_lines`
+      // keys `<block key>:0`, and `classify` has already dropped a block
+      // that draws no rows.
+      let key = block.key <> ":0"
+      Plain(
+        transcript_lines.Block(..block, rows: [
+          #(
+            key,
+            transcript_line.Line(
+              transcript_line.System,
+              composer.memory_summary(lines),
+            ),
+          ),
+        ]),
+        dict.from_list([
+          #(key, cap([transcript_line.Line(transcript_line.ToolDetail, body)])),
+        ]),
+      )
+    }
+    _, _ -> Plain(block, dict.new())
+  }
+}
+
 fn classify(
   block: Block,
   strands: List(protocol.Strand),
@@ -482,7 +516,10 @@ fn entry_kind(
           ),
         ]
         None, Some(message.Origin(..)) | None, None -> [
-          Input(Plain(block, dict.new()), at),
+          Input(
+            folded_memory(block, transcript_lines.user_body(content), expansion),
+            at,
+          ),
         ]
       }
 

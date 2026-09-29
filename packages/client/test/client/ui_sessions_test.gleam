@@ -1,9 +1,9 @@
 //// The web view's ticket and UI-session table: a ticket is redeemed once,
 //// even by two redemptions at the same moment; tickets and UI sessions
-//// expire on the table's clock; a redemption ends the principal's other UI
-//// sessions for the same session; the page key and nonce a redemption hands
-//// out are the only ones its UI session admits; and the sweep reclaims what
-//// expired.
+//// expire on the table's clock; a redemption ends no other page, and a
+//// principal holds a bounded number of pages per session; the page key and
+//// nonce a redemption hands out are the only ones its UI session admits; and
+//// the sweep reclaims what expired.
 
 import client/daemon/ui_sessions
 import gleam/erlang/process.{type Subject}
@@ -154,30 +154,112 @@ pub fn a_ui_session_expires_after_eight_hours_test() {
   assert looked_up(sessions, redeemed.cookie) == Error(Nil)
 }
 
-// Protocol-change/051, the operator addendum: a key-scoped cookie never
-// reaches the exchange, so a redemption ends every UI session of the same
-// principal for the same session, and leaves another principal's page and
-// the principal's page for another session alone.
-pub fn a_redemption_ends_the_principals_other_pages_for_the_session_test() {
+fn redeem(sessions, principal: String, session: String) {
+  let assert Ok(issued) =
+    ui_sessions.mint(sessions, grant_for(principal, session))
+    as "a ticket is minted"
+  ui_sessions.redeem(sessions, issued.ticket, session)
+}
+
+// Protocol-change/051, the addendum on several pages: a redemption adds a
+// page and ends none, whether the other pages are the principal's own for
+// the same session, another principal's, or the principal's for another
+// session. Each page keeps its own cookie, key and nonce.
+pub fn a_redemption_leaves_every_other_page_open_test() {
   let sessions = table(clock())
-  let redeem = fn(principal, session) {
-    let assert Ok(issued) =
-      ui_sessions.mint(sessions, grant_for(principal, session))
-      as "a ticket is minted"
-    let assert Ok(redeemed) =
-      ui_sessions.redeem(sessions, issued.ticket, session)
-      as "the ticket is redeemed"
-    redeemed.cookie
-  }
-  let first = redeem("alice", "s1")
-  let other_session = redeem("alice", "s2")
-  let other_principal = redeem("bob", "s1")
-  let second = redeem("alice", "s1")
-  assert second != first
-  assert looked_up(sessions, first) == Error(Nil)
-  assert looked_up(sessions, second) == Ok(grant_for("alice", "s1"))
-  assert looked_up(sessions, other_session) == Ok(grant_for("alice", "s2"))
-  assert looked_up(sessions, other_principal) == Ok(grant_for("bob", "s1"))
+  let assert Ok(first) = redeem(sessions, "alice", "s1") as "first page"
+  let assert Ok(other_session) = redeem(sessions, "alice", "s2")
+    as "page of another session"
+  let assert Ok(other_principal) = redeem(sessions, "bob", "s1")
+    as "page of another principal"
+  let assert Ok(second) = redeem(sessions, "alice", "s1") as "second page"
+  assert second.cookie != first.cookie
+  assert second.key != first.key
+  assert second.nonce != first.nonce
+  assert looked_up(sessions, first.cookie) == Ok(grant_for("alice", "s1"))
+  assert looked_up(sessions, second.cookie) == Ok(grant_for("alice", "s1"))
+  assert looked_up(sessions, other_session.cookie)
+    == Ok(grant_for("alice", "s2"))
+  assert looked_up(sessions, other_principal.cookie)
+    == Ok(grant_for("bob", "s1"))
+
+  // Neither page admits the other's key or nonce, so holding two pages
+  // gives a stolen key no reach beyond the page it names.
+  let assert Ok(page) = ui_sessions.lookup(sessions, first.cookie)
+    as "the first page is live"
+  assert ui_sessions.keyed(page, first.key)
+  assert !ui_sessions.keyed(page, second.key)
+  assert ui_sessions.admits(page, first.nonce)
+  assert !ui_sessions.admits(page, second.nonce)
+}
+
+// The bound is per principal and session. The redemption at the bound ends
+// the oldest page and only that one, so the principal keeps the newest
+// `max_pages`. Another principal's and another session's pages neither
+// count toward the bound nor are ended by it.
+pub fn the_redemption_past_the_cap_ends_only_the_oldest_page_test() {
+  let sessions = table(clock())
+  let assert Ok(other_session) = redeem(sessions, "alice", "s2")
+    as "another session"
+  let assert Ok(other_principal) = redeem(sessions, "bob", "s1")
+    as "another principal"
+  let held =
+    list.repeat(Nil, ui_sessions.max_pages)
+    |> list.map(fn(_) {
+      let assert Ok(redeemed) = redeem(sessions, "alice", "s1")
+        as "a page under the cap"
+      redeemed.cookie
+    })
+  assert list.length(held) == ui_sessions.max_pages
+  list.each(held, fn(cookie) {
+    assert looked_up(sessions, cookie) == Ok(grant("s1"))
+  })
+
+  let assert Ok(newest) = redeem(sessions, "alice", "s1") as "the fifth page"
+  let assert [oldest, ..rest] = held
+  assert looked_up(sessions, oldest) == Error(Nil)
+  list.each([newest.cookie, ..rest], fn(cookie) {
+    assert looked_up(sessions, cookie) == Ok(grant("s1"))
+  })
+  assert looked_up(sessions, other_session.cookie)
+    == Ok(grant_for("alice", "s2"))
+  assert looked_up(sessions, other_principal.cookie)
+    == Ok(grant_for("bob", "s1"))
+  assert ui_sessions.sizes(sessions) == Ok(#(0, ui_sessions.max_pages + 2))
+
+  // The next redemption ends the next oldest, one at a time.
+  let assert Ok(_) = redeem(sessions, "alice", "s1") as "the sixth page"
+  let assert [second, ..] = rest
+  assert looked_up(sessions, second) == Error(Nil)
+  assert looked_up(sessions, newest.cookie) == Ok(grant("s1"))
+}
+
+// A page that expires ends alone at its deadline and frees its place before
+// any sweep, so a redemption after it ends no live page.
+pub fn an_expired_page_ends_alone_and_frees_its_place_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(old) = redeem(sessions, "alice", "s1") as "the oldest page"
+  process.send(time, Advance(1000))
+  let later =
+    list.repeat(Nil, ui_sessions.max_pages - 1)
+    |> list.map(fn(_) {
+      let assert Ok(redeemed) = redeem(sessions, "alice", "s1")
+        as "a page under the cap"
+      redeemed.cookie
+    })
+
+  process.send(time, Advance(28_800_000 - 1000))
+  assert looked_up(sessions, old.cookie) == Error(Nil)
+  list.each(later, fn(cookie) {
+    assert looked_up(sessions, cookie) == Ok(grant("s1"))
+  })
+
+  // Three live pages and one expired: the new page takes the free place.
+  let assert Ok(fresh) = redeem(sessions, "alice", "s1") as "the freed place"
+  list.each([fresh.cookie, ..later], fn(cookie) {
+    assert looked_up(sessions, cookie) == Ok(grant("s1"))
+  })
 }
 
 // The page key and nonce handed out with a cookie are the only ones its UI

@@ -271,9 +271,10 @@ fn web_document(
       }
 
     // A ticket presented against another session's path is spent without a
-    // UI session. A redeemed one ends the principal's other pages for the
-    // session and hands this tab the new page's key, in the cookie's path,
-    // and its nonce, in the body, never in a redirect.
+    // UI session. A redeemed one adds a page and leaves the principal's
+    // others open (the oldest ends only at `ui_sessions.max_pages`), and
+    // hands this tab the new page's key, in the cookie's path, and its
+    // nonce, in the body, never in a redirect.
     ui_http.Exchange(id, ticket) ->
       case ui_http.exchange_allowed(request) {
         False -> plain(403, "forbidden exchange")

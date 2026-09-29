@@ -218,9 +218,10 @@ sequenceDiagram
 ```
 
 1. **The exchange.** `GET /ui/sessions/<id>?ticket=<t>` redeems the ticket
-   inside the actor. A redemption ends every other UI session of the same
-   principal for the same session, then mints three secrets for the new
-   one: the `loom_ui` cookie, the page key, and the page nonce. The
+   inside the actor. A redemption ends no other page, except that a
+   principal already holding `ui_sessions.max_pages` (four) live pages for
+   the session has its oldest ended to make room (protocol-change/051, the
+   addendum on several pages). It mints three secrets for the new page: the `loom_ui` cookie, the page key, and the page nonce. The
    response is a small same-origin page whose body carries the keyed path
    and the nonce as data attributes, and whose script
    (`web_view_enter.js`) stores the nonce in `sessionStorage` and calls

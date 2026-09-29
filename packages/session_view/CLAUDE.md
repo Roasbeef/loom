@@ -342,7 +342,10 @@ The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and
 `advisor_pending`, `block_summary` (summarizer labels), `command` and
 `skills`, `composer` (the rules for showing pasted text, and the composer's
-attachment list), `context_view`, `file_read_view`, `goal_view`,
+attachment list; it also recognises the memory context the daemon attaches to
+a run, `memory_context_lines`, and folds it in `transcript_text` to `memory
+context (n lines)` beside the `[loom]` injection collapse, and owns the
+attribution lead and fence `client/memory` builds its text from), `context_view`, `file_read_view`, `goal_view`,
 `live_jobs`, `notes_view`, `pasted_image`, `queued_input`,
 `stream_identity`, `text_hygiene`, `todo_board` and `tool_activity`, and
 `worktree_view`.

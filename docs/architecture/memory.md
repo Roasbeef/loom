@@ -77,7 +77,7 @@ managed daemon's source authority.
 started through `begin_domain`. While a pass runs, it coalesces authorized
 triggers, and it retains the original cleanup witness.
 
-**The injection** is `client/memory.gleam:1675` (`digest_hooks`), which
+**The injection** is `client/memory.gleam:1676` (`digest_hooks`), which
 appends the fenced, attributed digest to every accepted run's opening
 messages.
 
@@ -215,10 +215,15 @@ temporal, so a digest injected earlier in the same session still
 contributes nothing to later extraction.
 
 The digest body is rendered from the head
-(`client/memory.gleam:1448`, `render_digest`): scrubbed, capped in bytes,
+(`client/memory.gleam:1449`, `render_digest`): scrubbed, capped in bytes,
 and marked where truncated. The fence and attribution are added at
-injection time (`client/memory.gleam:1721`, `wrapped`), so the file cannot
-forge its own provenance.
+injection time (`client/memory.gleam:1730`, `wrapped`), so the file cannot
+forge its own provenance. The message is a user turn of its own ahead of the
+prompt. Both views draw it as one line, `memory context (n lines)`, which
+opens to the whole message: `session_view/composer.memory_context_lines`
+recognises it by the attribution's lead and the fence, both defined there and
+used by `wrapped`, and the terminal's `Ctrl+g` and the web page's expander
+show the text unchanged.
 
 The read is bounded before it happens, because it reads an untrusted file
 on the strand driver's own process at every run. One `stat` gets the

@@ -195,7 +195,9 @@ page keys and nonces, and the relay into the session's gateway.
   session is named in the notice and not kept.
 - `ending.Ending` (`PageEnded`, `AccessRevoked`, `SessionStopped`,
   `NotOpen`, `DaemonNotReady`, `LinkExpired`, `ConnectionFailed`): why a page
-  has no session, as a closed type. `headline` and `advice(ending,
+  has no session, as a closed type. `PageEnded` means eight hours ran out, the
+  daemon restarted, or the page was the oldest of `ending.max_pages` (four)
+  when a newer link opened; a newer link ends nothing below that bound. `headline` and `advice(ending,
   session_id)` are fixed strings, so no peer, session or error text reaches
   the page. `reason` and `from_reason(given, otherwise)` are the two halves
   of the hop through the reason string `connection_event.Closed` carries

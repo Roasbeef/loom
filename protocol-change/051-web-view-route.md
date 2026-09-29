@@ -624,6 +624,11 @@ keeps either from reaching another origin in a `Referer` header. The page,
 both scripts and the exchange response each carry it, and a test checks
 all three.
 
+**Superseded (2026-09-29, see "Addendum: several pages per principal and
+session"): the exchange no longer ends the principal's other pages.** The
+paragraph below is the rule as first written, kept so the reason for it
+stays findable.
+
 **The exchange ends the principal's other pages for that session.** The
 cookie's path is the key's, so the exchange no longer receives an older
 cookie to replace. The exchange therefore ends every UI session with the
@@ -727,7 +732,8 @@ these rules:
   refused with `401`. The unkeyed page route is `404`. A socket upgrade
   without the nonce, or with a wrong one, is refused.
 - A second exchange for the same principal and session ends the first UI
-  session.
+  session. (Superseded: it leaves the first open, and the fifth ends the
+  oldest; see "Addendum: several pages per principal and session".)
 - `Referrer-Policy: no-referrer` is on the keyed page, the exchange
   response and the enter script.
 - Enter in the composer while an approval card is pending decides nothing
@@ -1356,8 +1362,9 @@ connection's state, and the word was read as the scroll state, which only
 ## Addendum: a page with no session says why (2026-09-29)
 
 A page can lose its session in several ways, and until now none of them told
-the person anything (issue #569, part 2). Redeeming a new link ends the
-principal's other page for the session (the ticket section above), but the
+the person anything (issue #569, part 2). Redeeming a new link ended the
+principal's other page for the session (the ticket section above; the
+addendum on several pages, below, replaces that rule), but the
 ended page kept a stale transcript under a small header word, and reloading it
 answered "no page session under this key". A page whose socket the daemon
 refused stayed empty, because Lustre's client runtime reconnects after any
@@ -1386,7 +1393,7 @@ text from a peer, a session or an error message reaches a browser.
 
 | Ending | Cause | Says | Socket close |
 |---|---|---|---|
-| `PageEnded` | The page's UI session is gone: a newer link for the same principal and session replaced it, its eight hours ran out, or the daemon restarted. The daemon keeps no record of which. | "This page has ended." A new link ends the page you had open before it, and a page lasts eight hours. Run `loom ui --session <id>` for a fresh link. | 1000 |
+| `PageEnded` | The page's UI session is gone: its eight hours ran out, the daemon restarted, or it was the oldest of the principal's four pages for the session and a newer link took its place. The daemon keeps no record of which. | "This page has ended." A page lasts eight hours, and the daemon forgets every page when it restarts. You can also have 4 pages open for a session at once; opening another ends the oldest. Run `loom ui --session <id>` for a fresh link. | 1000 |
 | `AccessRevoked` | The credential behind the page, or the membership under it, was revoked, or the capped role changed. The socket's own check answers this reason when it refuses. | "Your access to this session was revoked or changed." Ask the owner to restore it, then run `loom ui --session <id>`. | 1000 |
 | `SessionStopped` | The gateway exited (the session stopped, or the daemon shut it down), or closed the attachment while the page's check still passes with the authority it attached with (its snapshot reader failed and the incarnation is stopping). | "The session stopped." Open it again, then reload this page; the page's own link still works, so a fresh one is not needed. | 1000 |
 | `NotOpen` | The gateway refused the relay's attach. | "The session is not open." The daemon may still be opening it: reload, and if it stays closed run `loom ui --session <id>`. | 4000 |
@@ -1514,7 +1521,7 @@ command with the session. `component_test` and `operator_page_test` draw
 each ending on both pages, draw a reason that names none as
 `ConnectionFailed` with none of its words, and keep the heading's children in
 place. `page_test` pins the waiting paragraph inside the component and the
-refusal document's escaping. `ui_relay_test` shows a replaced or expired UI
+refusal document's escaping. `ui_relay_test` shows a displaced or expired UI
 session ending the page as `PageEnded`, a revoked credential as
 `AccessRevoked`, and a refused attach naming `NotOpen` to both the component
 and the socket. `ui_route_test` reloads an ended page and a used link and
@@ -1525,3 +1532,117 @@ running: the notice is in the frames the browser gets, and the close code is
 paragraph when it mounts, and retries after 4000 and not after 1000, was read
 in its source (`docs/lustre.md`) and is left to the hand check on a live
 daemon.
+
+## Addendum: several pages per principal and session (2026-09-29)
+
+The owner ruled on issue #569 that a principal may hold more than one page on
+a session: an observer's tab beside an operator's, or two devices. The ticket
+section above did the opposite, and this addendum replaces that rule. It adds
+no route, no event and no field to the wire, and does not touch the content
+security policy.
+
+### The problem
+
+A page's cookie is scoped to its key's path, so the exchange never receives an
+older cookie to say which page a new link replaces. The first answer was to
+end every UI session of the same principal and session at each redemption,
+which kept one live page per pair and needed no other bookkeeping. It made
+these ordinary uses fail without a word: running `loom ui --operate` while an
+observer tab was open ended the observer tab, and a second device ended the
+first. The ended page said only that a new link had ended it.
+
+### What was decided
+
+- **A redemption adds a page and ends none.** Every page keeps its own cookie,
+  page key and nonce, and lives eight hours from its own exchange. Redemption
+  is still one message to the actor, so a ticket is still redeemed once.
+- **A principal holds at most four live pages per session.** The bound is
+  `ui_sessions.max_pages`, and `ending.max_pages` is the same number, because
+  the words a page shows name it. The bound is on pages in the actor's table, not on
+  sockets: one page's secrets can open several sockets, as before this change,
+  and the root's admission capacity bounds those. While its browser is
+  connected a page holds a socket, a relay process and a lane of up to 300
+  rows. A page that ends, by its deadline or by displacement, has them torn
+  down at its next frame, when the gateway revalidates it (`check_binding`),
+  so displacement frees them as late as expiry does. Four is an observer tab, an operator tab, a second device and a spare. Pages of another
+  principal or of another session are not counted. An expired page is not
+  counted either, at its deadline rather than at the next sweep.
+- **At the bound, the oldest page ends and the new one opens.** The daemon
+  never learns that a tab was closed: a reload closes the page's socket and
+  reopens it with the same cookie, key and nonce, so a closed tab's page stays
+  live until its eight hours end. A refusal at the bound would lock a person
+  out of a long-running daemon after their fifth `loom ui` of the day with
+  nothing to close. Ending the oldest keeps the newest four, which are the ones
+  a person can still be using. Order is by a serial the actor assigns, not by
+  time, since two pages can open in one millisecond.
+- **"Ended" now means one of three things**, and the daemon still cannot say
+  which: the page's eight hours ran out, the daemon restarted, or it was the
+  oldest at the bound. `PageEnded`'s advice says all three and names the bound;
+  the table under "The endings" carries the new words. No ending was added, and
+  a refused redemption still answers `LinkExpired` as before.
+- **Unchanged:** the 60 second single-use ticket, the eight hour lifetime, and
+  the Operator cap. Each page's ceiling comes from its own link, so an observer
+  page and an operator page of one principal stay what they were minted as, and
+  the ceiling still caps the membership role and never grants one. Every frame
+  still re-authenticates the credential that minted the page, so revoking that
+  credential ends all of its pages at once.
+
+### What a key can do
+
+A stolen key gets exactly one page, and this change does not widen that. What
+one page's cookie, key and nonce admit is unchanged: the cookie is `HttpOnly`
+and scoped to its key's path, `keyed` and `admits` compare that page's own
+digests in constant time, and another page's key or nonce is refused
+(`a_page_admits_only_its_own_key_and_nonce_test`, and the two-page route test
+under Verification). Holding several pages gives no page a reach into another. Nor
+does a stolen page mint pages: a ticket comes only from the principal's own
+control connection, so the number of pages an attacker can hold is the number
+of secrets they stole, at most the pages the person opened.
+
+What changes is one incidental property of the old rule. Redeeming a fresh link
+used to cut off a page the person suspected was copied. It no longer does.
+Revoking the credential ends every page it minted, and a page expires in eight
+hours; a person who suspects theft revokes.
+
+### What was considered
+
+- **Keep replacement, and add a flag to keep the others.** It leaves the
+  surprising behaviour as the default and is not what the owner ruled.
+- **Refuse the redemption at the bound, with its own ending.** Built first and
+  dropped for the lockout above: no signal frees a place before eight hours, so
+  the advice to close a page would be untrue.
+- **Free a place when its socket closes.** It needs a grace period to tell a
+  reload from a closed tab, and a timer and a pending-close entry per page in
+  the actor. A page outliving its tab is the common case, and its cost is a
+  place among four that the next link takes over, which is cheap.
+- **A bound per principal across sessions, or per daemon.** A principal's
+  sessions are already limited by its memberships, and a per-session bound is
+  the one a person can predict.
+- **A configurable bound.** No case has been made for another number, and a
+  setting would need documenting and testing at its extremes.
+- **Ending the oldest by time.** Two redemptions in one millisecond would tie.
+
+### Cost
+
+- A fifth page ends the oldest without asking. A person with five useful tabs
+  loses one, and that tab shows `PageEnded`, which says why in general and not
+  which cause it was.
+- A page can outlive its tab by up to eight hours and hold a place until
+  displaced. Its socket is gone; the table entry is a few hundred bytes.
+- Several operator pages of one principal can each send a prompt or decide an
+  approval. The gateway already admits several attachments of one principal,
+  as several terminals do, and orders their commands as it does theirs.
+- A stolen page cannot be cut off by opening a new link.
+
+### Verification
+
+`ui_sessions_test` shows that a redemption ends no other page, that a principal
+holds four and the fifth ends only the oldest, one at a time, without touching
+another principal's or session's pages, and that a page expires alone at its
+deadline and frees its place before any sweep. `ui_relay_test` shows an open
+page staying open when a newer link arrives, and the displaced page ending as
+`PageEnded` at its next frame. `ui_route_test` opens two pages of one principal
+and reads both, then a fifth, and reads the first as an ended page with the
+others open, checks that the second page's nonce does not open the first
+page's socket, and reloads a page whose cookie names no live page.
+`ending_test` pins the advice to the bound and to the eight hours.
