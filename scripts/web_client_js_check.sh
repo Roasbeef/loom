@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # web_client_js_check.sh — keep the browser package's JavaScript to one file
-# that cannot turn text into markup or code.
+# that names none of the APIs that turn text into markup or code.
 #
 #   scripts/web_client_js_check.sh [dir]     fail on a violation (default
 #                                            packages/web_client/src)
@@ -21,12 +21,15 @@
 #   1. `dom.mjs` is the only JavaScript file under src. A second `.mjs`
 #      (or a `.js`, `.cjs` or `.ts`) is logic written outside the language
 #      the package's tests and lint cover.
-#   2. No JavaScript there mentions a way to turn a string into markup or
+#   2. No JavaScript there names an API that turns a string into markup or
 #      code: `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`,
-#      `new Function` or `document.write`. protocol-change/051 keeps raw
-#      HTML out of the page, and the page's policy (`script-src 'self'`)
-#      would refuse the code forms anyway; naming them in the one file
-#      that could use them is the cheapest place to stop it.
+#      `new Function`, `document.write`, `srcdoc`, `DOMParser`,
+#      `createContextualFragment` or a dynamic `import(`. protocol-change/051
+#      keeps raw HTML out of the page, and the page's policy
+#      (`script-src 'self'`) would refuse the code forms anyway. The check is
+#      textual, not a proof; the guarantee is that dom.mjs is a short list of
+#      one-call exports a reviewer reads, and this stops the obvious way to
+#      break that.
 #
 # The match is on the token anywhere in the file, comments included, so a
 # comment that must discuss one spells it differently.
@@ -53,6 +56,10 @@ patterns=(
 	'\beval\b'
 	'new[[:space:]]+Function\b'
 	'document[[:space:]]*\.[[:space:]]*write'
+	'srcdoc'
+	'DOMParser'
+	'createContextualFragment'
+	'\bimport[[:space:]]*\('
 )
 
 # check <dir>: print each violation, and return non-zero if there was one.
@@ -115,7 +122,12 @@ self_test() {
 		'window.eval(x);' \
 		'return new Function("a", x);' \
 		'document.write(x);' \
-		'document . write(x);'; do
+		'document . write(x);' \
+		'frame.srcdoc = x;' \
+		'new DOMParser().parseFromString(x, "text/html");' \
+		'range.createContextualFragment(x);' \
+		'import(x);' \
+		'await import ("./x.mjs");'; do
 		name=$(printf '%s' "$body" | tr -c 'A-Za-z0-9' '_')
 		fresh "$name"
 		printf '%s\n' "$body" >>"$case_dir/$sole"
