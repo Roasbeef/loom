@@ -508,9 +508,8 @@ it does not draw. After a first capture it reads the strand's notes, to
 seed a todo board, which the todo panel draws, and then the session's context, the
 advisor's pending nudges and the goal, each when the one before is
 answered; it reads the context again when an operation ends and when the
-configuration changes. From its first tick it also reads the followed
-strand's live jobs for the Session section, on a tick at most every ten
-seconds (the lane also asks for them whenever a run's completion changes):
+configuration changes. Ten seconds after it opens, and then on a tick at most every ten seconds, it also reads the followed
+strand's live jobs for the Session section (the lane also asks for them whenever a run's completion changes; the delay keeps the startup reads the same as the terminal's):
 `live_jobs` is one of the gateway's read-only commands, every role may send
 it, and its answer is a snapshot the lane folds like the others, so it adds
 no page event. That is four round trips at load that hold the
@@ -837,7 +836,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry`, `Residency` and `Group`, and `grouped`, the ordering (current workspace first, newest first). |
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board as one line (`Todo · n of m done · <active task>`, a `<loom-fold>` summary) which opens to the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/changes.gleam` | The Changes section: the files the session's own `fs_edit` results named and their diffs (`session_view/changes_view`), a collapsed `<details>` below the transcript on both pages, bounded and drawn as text nodes with a class from a closed row kind. It reads no worktree. |
-| `packages/web_view/src/web_view/view/session_tab.gleam` | The Session section: the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, at most every 10 s) and, on an operator's page only, the attached viewers, as text nodes in a collapsed `<details>` below the transcript. |
+| `packages/web_view/src/web_view/view/session_tab.gleam` | The Session section: the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s) and, on an operator's page only, the attached viewers, as text nodes in a collapsed `<details>` below the transcript. |
 | `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn on both pages and has no handler. |
 | `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: Stop, the goal row with its buttons, and the Fork and Set goal forms. It takes the messages its buttons send and the forms' submit handlers as values. |
 | `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |

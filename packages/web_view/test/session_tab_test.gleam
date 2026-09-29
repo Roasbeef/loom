@@ -143,6 +143,50 @@ fn ready(clock, wire, role: String) {
   |> page_fixture.refuse_reads(component.update, wire, component.Arrived)
 }
 
+// The page's first tick-driven ask comes one interval after it opened, so a
+// test that wants the ask moves its clock there before the tick.
+fn first_tick(clock, model) {
+  page_fixture.set(clock, component.jobs_refresh_ms)
+  page_fixture.run(model, component.update, [component.Ticked])
+}
+
+// The daemon's answer to every request in `frames`, so the lane's one command
+// slot is free for the next ask: a catch-up is answered with a catch-up, and
+// any other read is refused.
+fn refused(model, frames: List(String)) {
+  let answers =
+    frames
+    |> list.filter(fn(frame) {
+      !string.contains(frame, "\"cmd\":\"snapshot")
+      && !string.contains(frame, "\"cmd\":\"subscribe\"")
+    })
+    |> list.flat_map(fn(frame) {
+      let id = page_fixture.request_id(frame)
+      case string.contains(frame, "\"cmd\":\"catch_up\"") {
+        True -> page_fixture.catch_up(id, "operator")
+        False -> [page_fixture.refusal(id)]
+      }
+    })
+
+  page_fixture.run(model, component.update, [component.Arrived(answers)])
+}
+
+pub fn no_jobs_are_read_before_an_interval_has_passed_test() {
+  let clock = page_fixture.clock()
+  let wire = process.new_subject()
+  let model = ready(clock, wire, "operator")
+  let _ = page_fixture.sent(wire)
+
+  // The first tick, at the moment the page opened, asks for nothing, so the
+  // startup reads are the terminal's reads and the page's lane matches it.
+  let model = page_fixture.run(model, component.update, [component.Ticked])
+  assert live_jobs_reads(page_fixture.sent(wire)) == []
+
+  // Once the interval has passed since it opened, a tick asks once.
+  let _ = first_tick(clock, model)
+  assert list.length(live_jobs_reads(page_fixture.sent(wire))) == 1
+}
+
 pub fn a_tick_reads_the_jobs_once_per_interval_test() {
   let clock = page_fixture.clock()
   let wire = process.new_subject()
@@ -150,7 +194,7 @@ pub fn a_tick_reads_the_jobs_once_per_interval_test() {
   let _ = page_fixture.sent(wire)
 
   // The first tick asks, and names the strand the page shows.
-  let model = page_fixture.run(model, component.update, [component.Ticked])
+  let model = first_tick(clock, model)
   let asked = live_jobs_reads(page_fixture.sent(wire))
   assert list.length(asked) == 1
   let assert [read] = asked as "one read"
@@ -166,8 +210,10 @@ pub fn a_tick_reads_the_jobs_once_per_interval_test() {
 
   // A tick inside the interval asks for nothing; one after it asks again.
   let model = page_fixture.run(model, component.update, [component.Ticked])
-  assert live_jobs_reads(page_fixture.sent(wire)) == []
-  page_fixture.set(clock, component.jobs_refresh_ms)
+  let frames = page_fixture.sent(wire)
+  assert live_jobs_reads(frames) == []
+  let model = refused(model, frames)
+  page_fixture.set(clock, 2 * component.jobs_refresh_ms)
   let _ = page_fixture.run(model, component.update, [component.Ticked])
   assert list.length(live_jobs_reads(page_fixture.sent(wire))) == 1
 }
@@ -178,21 +224,20 @@ pub fn a_refused_read_is_not_repeated_on_every_tick_test() {
   let model = ready(clock, wire, "operator")
   let _ = page_fixture.sent(wire)
 
-  let model = page_fixture.run(model, component.update, [component.Ticked])
-  let assert [read] = live_jobs_reads(page_fixture.sent(wire)) as "one read"
-  let model =
-    page_fixture.run(model, component.update, [
-      component.Arrived([page_fixture.refusal(page_fixture.request_id(read))]),
-    ])
-  let _ = page_fixture.sent(wire)
+  let model = first_tick(clock, model)
+  let asked = page_fixture.sent(wire)
+  assert list.length(live_jobs_reads(asked)) == 1
+  let model = refused(model, asked)
 
   let model = page_fixture.run(model, component.update, [component.Ticked])
-  assert live_jobs_reads(page_fixture.sent(wire)) == []
+  let frames = page_fixture.sent(wire)
+  assert live_jobs_reads(frames) == []
   assert string.contains(operator(model), "not read yet")
+  let model = refused(model, frames)
 
   // The refusal cleared the outstanding ask, so once the interval has passed
   // the next tick asks exactly once more.
-  page_fixture.set(clock, component.jobs_refresh_ms)
+  page_fixture.set(clock, 2 * component.jobs_refresh_ms)
   let _ = page_fixture.run(model, component.update, [component.Ticked])
   assert list.length(live_jobs_reads(page_fixture.sent(wire))) == 1
 }
@@ -202,7 +247,7 @@ pub fn a_job_command_on_a_page_is_escaped_test() {
   let wire = process.new_subject()
   let model = ready(clock, wire, "operator")
   let _ = page_fixture.sent(wire)
-  let model = page_fixture.run(model, component.update, [component.Ticked])
+  let model = first_tick(clock, model)
   let assert [read] = live_jobs_reads(page_fixture.sent(wire)) as "one read"
   let model =
     page_fixture.run(model, component.update, [

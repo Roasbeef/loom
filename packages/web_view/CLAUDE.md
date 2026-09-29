@@ -208,9 +208,12 @@ page keys and nonces, and the relay into the session's gateway.
 - `session_tab.view(jobs, viewers)` draws the Session section: the followed
   strand's live jobs and, where the page shows them, the attached viewers
   (`session_view/session_summary`). The component asks for the jobs on a
-  `Ticked` when it has never asked or last asked `jobs_refresh_ms` (10 s) ago
-  and no answer is outstanding (the tick-driven ask only: the lane also
-  requests a read whenever a run's completion changes, `lane_fold`): it marks `Shared.jobs_refresh` as requested and
+  `Ticked` when the page opened or last asked `jobs_refresh_ms` (10 s) ago
+  and no answer is outstanding. The clock starts when the page opens, so the
+  first tick-driven ask comes ten seconds later, after the startup reads, and
+  the page's lane stays in the terminal's engine state through them. This is
+  the tick-driven ask only: the lane also requests a read whenever a run's
+  completion changes, `lane_fold`. The tick marks `Shared.jobs_refresh` as requested and
   the shared step sends the `live_jobs` read once the lane is ready
   (`surfaces.service_jobs_read`). The read is one of the gateway's
   `read_only` commands, every role may send it, and its answer is a snapshot
