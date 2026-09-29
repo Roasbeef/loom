@@ -158,7 +158,7 @@ pub fn update(
 /// has no accept or dismiss (`web_view/view/nudges`). The controls are the
 /// operator's commands as buttons and two small forms
 /// (`web_view/view/controls`), and a peer's message in the lane carries a
-/// Reply button (`lane.view_replying`). All are capped or drawn at fixed
+/// Reply button (`lane.view`). All are capped or drawn at fixed
 /// places, so none can move the composer's controls.
 ///
 /// ## Examples
@@ -170,7 +170,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
     strip.view(component.strip(model)),
-    lane.view_replying(
+    lane.view(
       component.pieces(model),
       component.live(model),
       component.top(model),

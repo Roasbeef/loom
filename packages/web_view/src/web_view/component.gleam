@@ -126,6 +126,7 @@ import session_view/lane_fold
 import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
 import session_view/operator
+import session_view/outbound
 import session_view/protocol
 import session_view/reviewer_status
 import session_view/session_channel
@@ -1463,8 +1464,10 @@ pub fn decide(
 /// A control's command has no draft (`msg.Control`), so it leaves whatever
 /// the operator is typing in the composer where it is. The forms are a
 /// different matter, since the text in them is the command: they are cleared
-/// once the frame is on the wire and kept when the command was refused, so a
-/// refusal costs the operator nothing to retry.
+/// once the lane accepts the command (sent, or queued behind a read) and kept
+/// when the command was refused, so a refusal costs the operator nothing to
+/// retry. A command queued behind a read shows the shared step's waiting
+/// notice, which is the terminal's wording.
 ///
 /// ## Examples
 ///
@@ -1509,16 +1512,31 @@ fn written(
   }
 }
 
-// Runs a form's command, and counts the form as sent when a frame went out
-// for it. The step refuses a mutation the lane cannot take before it writes a
-// frame, so an unmoved request identity is a refusal and the form keeps its
-// text.
+// Runs a form's command, and counts the form as sent once the lane accepts
+// the command, whether it went out at once or was queued behind a read.
+//
+// Acceptance is decided by the step's own admission check, before the command
+// runs (`outbound.mutation_refusal`), and not by whether a frame has left. A
+// lane that is waiting for a read's reply admits a mutation and queues it, so
+// its request identity does not move until the reply lands and the queued
+// frame is sent. Reading that as a refusal would keep the text in the form
+// after the command was accepted, and the operator would send it again. A
+// command that is not a mutation (the complaint that a name is missing) is
+// never accepted, and neither is one the check refuses, so those keep the
+// text and the notice says why.
 fn sent_from_form(
   model: Model(socket),
   session: command.Session,
 ) -> #(Model(socket), Effect(Msg(socket))) {
+  let accepted = case
+    outbound.mutation_refusal(model.shared, session),
+    outbound.mutating_submission(model.shared, session)
+  {
+    None, True -> True
+    Some(_), _ | None, False -> False
+  }
   let #(after, effects) = commanded(model, msg.Control(command: session))
-  case after.shared.next_id > model.shared.next_id {
+  case accepted {
     True -> #(
       Model(
         ..after,
@@ -2124,7 +2142,13 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session")], [
     heading(model),
     strip.view(model.view.strip),
-    lane.view(model.view.pieces, live(model), top(model), OlderRequested),
+    lane.view(
+      model.view.pieces,
+      live(model),
+      top(model),
+      OlderRequested,
+      lane.NoReplies,
+    ),
     plan(model),
     nudges.view(pending_nudges(model)),
     html.p([attribute.class("observer-bar")], [

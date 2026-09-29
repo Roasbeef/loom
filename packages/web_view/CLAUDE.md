@@ -73,7 +73,7 @@ page keys and nonces, and the relay into the session's gateway.
   last child; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
   `strip.view(strip)` draws the agent strip, memoized on the whole strip;
-  `lane.view(pieces, live, top, load)` draws the transcript lane, memoized per
+  `lane.view(pieces, live, top, load, replies)` draws the transcript lane, memoized per
   line, followed by the live region, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
   exist, and words otherwise.
@@ -103,7 +103,7 @@ page keys and nonces, and the relay into the session's gateway.
 - **The live region.** `component.live(model)` turns the shared record's
   streams for the followed strand (`transcript_lines.display_streams`),
   `Shared.summaries` and the generation clock into `live.Row`s, and
-  `lane.view(pieces, live, top, load)` draws them through `view/live` as the
+  `lane.view(pieces, live, top, load, replies)` draws them through `view/live` as the
   lane's last keyed entry, keyed `live`. `live.Thinking(progress, elapsed_ms,
   headline)` is the reasoning row: `12 lines · <loom-elapsed offset> so far`,
   or with a headline the count and clock and the headline as text beneath
@@ -139,8 +139,8 @@ page keys and nonces, and the relay into the session's gateway.
   each holding a one-field form, Fork and Set goal. `controls.Bar` carries the
   messages each button sends and the forms' submit handlers, since
   `operator_page` owns the message type. The observer's page draws none of it.
-- `lane.view_replying(pieces, live, top, load, replies)`: `lane.view` with
-  `Replies(fn(key) -> message)` or `NoReplies`. A peer card draws a `Reply to
+- `lane.Replies(fn(key) -> message)` or `NoReplies`, the last argument of
+  `lane.view`. A peer card draws a `Reply to
   this peer` button after its body when the lane has replies, and the button
   sends the piece's key, never the peer's session or strand.
 - `todo_panel.view(board, reviewers)` draws the terminal's pinned todo
@@ -207,9 +207,10 @@ page keys and nonces, and the relay into the session's gateway.
   form's text goes after `/fork ` or `/goal ` and through `command.parse`, and
   `forking` and `pinning` check what came back: the goal form accepts only a
   goal or the command's own complaint about it, so the word `clear` in its box
-  never unpins the goal. `View.sent_forms` counts forms whose frame went out
-  (the request identity moved), and the forms are keyed by it, so a sent form
-  comes back closed and empty and a refused one keeps its text.
+  never unpins the goal. `View.sent_forms` counts forms whose command the lane accepted
+  (`outbound.mutation_refusal` said none and the command mutates, so it went out
+  or was queued behind a read), and the forms are keyed by it, so an accepted
+  form comes back closed and empty and a refused one keeps its text.
   `component.reply` finds the `turns.Peer` piece by the engine's key, drafts
   `Reply to the peer message from session S, strand T, with peer_send: `, and
   appends it to `View.returned` beside the daemon's returned prompts, so
@@ -417,8 +418,9 @@ page keys and nonces, and the relay into the session's gateway.
   submission marker and drops `DraftTaken`, so pressing Fork or Clear goal
   while the operator is typing leaves the composer as it was
   (`component.drafts` does not move). The two forms hold the command's own
-  text, so they are keyed by `sent_forms`, which rises when the request
-  identity moved, and a refusal (no name, an observer's attachment, a busy
+  text, so they are keyed by `sent_forms`, which rises when the lane accepts
+  the command (sent, or queued behind a read, whose frame moves the request
+  identity only when the reply lands), and a refusal (no name, an observer's attachment, a busy
   lane) keeps what was typed.
 - **The controls draw at fixed places.** Stop is always in the row and only
   its `disabled` changes, so a strand starting to run moves nothing under

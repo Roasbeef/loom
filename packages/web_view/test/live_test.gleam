@@ -460,6 +460,7 @@ pub fn a_fragment_draws_no_committed_line_again_test() {
       component.live(model),
       element.none(),
       draw,
+      lane.NoReplies,
     )
   }
   let one = render(grown("one"))

@@ -85,44 +85,25 @@ import web_view/view/strip
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested)
+/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested, lane.NoReplies)
 /// ```
 pub fn view(
   pieces: List(turns.Piece),
   live: List(live.Row),
   top: Top,
   load: message,
-) -> Element(message) {
-  view_replying(pieces, live, top, load, NoReplies)
-}
-
-/// `view` for a page that may answer a peer: the same lane, with a Reply
-/// button on each cross-session message that sends `replies`' message for
-/// that message's key.
-///
-/// The button carries the engine's key for the piece, a sequence, and never
-/// the peer's session or strand, so the handler holds nothing the session
-/// wrote. The operator's page passes `Replies`, and the observer's passes
-/// `NoReplies`, which is `view`, so an observer's lane has no handler but
-/// "Load older".
-///
-/// ## Examples
-///
-/// ```gleam
-/// // lane.view_replying(pieces, [], top, load, lane.Replies(Replying))
-/// ```
-pub fn view_replying(
-  pieces: List(turns.Piece),
-  live: List(live.Row),
-  top: Top,
-  load: message,
   replies: Replies(message),
 ) -> Element(message) {
-  rows_replying(pieces, live, boundary(top, load), line_element, replies)
+  rows(pieces, live, boundary(top, load), line_element, replies)
 }
 
 /// Whether the lane offers a reply to a peer's message, and what pressing it
 /// sends.
+///
+/// The button carries the engine's key for the piece, a sequence, and never
+/// the peer's session or strand, so the handler holds nothing the session
+/// wrote. The operator's page passes `Replies`, and the observer's passes
+/// `NoReplies`, so an observer's lane has no handler but "Load older".
 pub type Replies(message) {
   /// The lane offers no reply. An observer's page has none to send.
   NoReplies
@@ -166,20 +147,10 @@ pub const older_marker = "loom-older"
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.rows(pieces, [], element.none(), fn(line) { html.text(line.text) })
+/// // lane.rows(pieces, [], element.none(), fn(line) { html.text(line.text) }, lane.NoReplies)
 /// ```
 @internal
 pub fn rows(
-  pieces: List(turns.Piece),
-  live: List(live.Row),
-  top: Element(message),
-  draw: fn(Line) -> Element(message),
-) -> Element(message) {
-  rows_replying(pieces, live, top, draw, NoReplies)
-}
-
-// `rows` with the lane's replies, which only a peer message's card draws.
-fn rows_replying(
   pieces: List(turns.Piece),
   live: List(live.Row),
   top: Element(message),

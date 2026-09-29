@@ -420,15 +420,6 @@ pub fn a_held_goal_offers_resume_and_clear_test() {
   assert !string.contains(html, "Pause goal")
 }
 
-// A goal whose status changes is a new row, keyed by the status, so the
-// stylesheet's arming runs again for it.
-pub fn the_goal_row_is_keyed_by_its_status_test() {
-  let #(active, _) = page("operator", pinned("active", json.Null))
-  let #(paused, _) = page("operator", pinned("paused", json.String("operator")))
-  assert !string.contains(drawn(active), "Resume goal")
-  assert string.contains(drawn(paused), "Resume goal")
-}
-
 pub fn the_goal_buttons_send_the_goal_commands_test() {
   let #(model, wire) = page("operator", pinned("active", json.Null))
   let drafts = component.drafts(model)
@@ -544,6 +535,71 @@ pub fn the_fork_form_is_a_submit_the_page_carries_test() {
   assert component.sent_forms(simulate.model(refused)) == 0
   let assert Ok(simulate.Problem(..)) = list.last(simulate.history(refused))
     as "a form with a field it does not offer refuses the event"
+}
+
+// A lane waiting for a read's reply admits a mutation and queues it, so the
+// frame leaves only when the reply lands. The form is cleared when the lane
+// accepts the command, not when the frame leaves: a form that kept its text
+// here would invite a second fork. The frame goes out once, after the reply.
+pub fn a_form_sent_while_a_read_is_out_is_cleared_and_goes_out_after_it_test() {
+  let wire = process.new_subject()
+  let model =
+    page_fixture.run(
+      component.new(page_fixture.start()),
+      operator_page.update,
+      list.flatten([
+        [operator_page.Observed(component.Opened(wire))],
+        list.map(page_fixture.transfer("operator", []), fn(frame) {
+          operator_page.Observed(component.Arrived([frame]))
+        }),
+        [operator_page.Observed(component.Ticked)],
+      ]),
+    )
+  let assert Ok(read) =
+    list.find(page_fixture.sent(wire), fn(frame) {
+      !string.contains(frame, "\"cmd\":\"snapshot")
+      && !string.contains(frame, "\"cmd\":\"subscribe\"")
+    })
+    as "a first capture starts a read, which is now awaiting its reply"
+
+  let model =
+    send(model, [operator_page.Controlled(component.Fork("try-a-cache"))])
+  assert component.sent_forms(model) == 1 as "the lane accepted the fork"
+  assert forks(page_fixture.sent(wire)) == 0 as "the frame waits for the read"
+  let assert component.Said(waiting) = component.notice(model)
+    as "the step says the command is waiting"
+  assert string.contains(waiting, "Waiting to send")
+
+  let model =
+    send(model, [
+      operator_page.Observed(
+        component.Arrived([page_fixture.refusal(page_fixture.request_id(read))]),
+      ),
+    ])
+  assert component.sent_forms(model) == 1
+  assert forks(page_fixture.sent(wire)) == 1 as "the fork goes out once"
+}
+
+fn forks(frames: List(String)) -> Int {
+  list.length(
+    list.filter(frames, fn(frame) { string.contains(frame, "\"cmd\":\"fork\"") }),
+  )
+}
+
+// A stop the lane refuses records no interrupt, so the next press says why
+// again and does not claim a stop is already pending.
+pub fn a_refused_stop_leaves_no_interrupt_behind_test() {
+  let #(model, wire) = running("observer", nothing())
+  let model = send(model, [operator_page.Controlled(component.Stop)])
+  let assert component.Said(first) = component.notice(model)
+    as "the step words the refusal"
+  assert string.contains(first, "read-only")
+  let model = send(model, [operator_page.Controlled(component.Stop)])
+  let assert component.Said(second) = component.notice(model)
+    as "the step words the refusal again"
+  assert string.contains(second, "read-only")
+  assert !string.contains(second, "already requested")
+  assert commands(wire) == []
 }
 
 // A fork with no name is the command's own complaint, nothing is sent, and

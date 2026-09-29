@@ -29,6 +29,7 @@
 //// `web_view/operator_page` owns the message type and imports this module.
 
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import lustre/attribute.{type Attribute}
 import lustre/element.{type Element}
@@ -123,7 +124,7 @@ fn goal(bar: Bar(message)) -> Element(message) {
             [
               html.span(
                 [attribute.class("control-goal-text")],
-                list_text(goal_view.row(pinned)),
+                list.map(list.take(goal_view.row(pinned), 1), html.text),
               ),
               steering(status, bar),
               button("control-clear", "Clear goal", bar.clear),
@@ -131,13 +132,6 @@ fn goal(bar: Bar(message)) -> Element(message) {
           ),
         ),
       ])
-  }
-}
-
-fn list_text(lines: List(String)) -> List(Element(message)) {
-  case lines {
-    [] -> []
-    [line, ..] -> [html.text(line)]
   }
 }
 
