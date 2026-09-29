@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loom · pi-gui · main (concept A2)</title>
+<style>
+:root{
+  --bg:#f6f5f2; --panel:#fff; --sunk:#efede8; --line:#e2dfd8; --ink:#1d1c1a; --mute:#6f6b63; --faint:#a29d92;
+  --main:#3b5bdb; --adv:#d9822b; --tests:#0f9d8a; --docs:#7a8a3a; --peer:#8b5cf6;
+  --ok:#2f9e44; --warn:#d9822b; --bad:#d6336c; --code:#f1efe9; --addbg:#e6f4ea; --delbg:#fbe9ef;
+  --shadow:0 1px 2px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.05);
+}
+:root[data-theme=dark]{
+  --bg:#141517; --panel:#1b1c1f; --sunk:#111214; --line:#2b2d31; --ink:#e8e6e1; --mute:#9a978f; --faint:#66645e;
+  --main:#7c96ff; --adv:#f0a24f; --tests:#3cc9b4; --docs:#a3b85a; --peer:#a78bfa;
+  --ok:#51cf66; --warn:#f0a24f; --bad:#f06595; --code:#212226; --addbg:#17301f; --delbg:#3a1a26;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme=light]){
+    --bg:#141517; --panel:#1b1c1f; --sunk:#111214; --line:#2b2d31; --ink:#e8e6e1; --mute:#9a978f; --faint:#66645e;
+    --main:#7c96ff; --adv:#f0a24f; --tests:#3cc9b4; --docs:#a3b85a; --peer:#a78bfa;
+    --ok:#51cf66; --warn:#f0a24f; --bad:#f06595; --code:#212226; --addbg:#17301f; --delbg:#3a1a26;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;height:100vh;overflow:hidden;--lw:232px;--rw:340px}
+body.no-left{--lw:0px} body.no-right{--rw:0px}
+.mono,code,pre,kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+button{font:inherit;color:inherit;background:none;border:1px solid var(--line);border-radius:6px;padding:3px 10px;cursor:pointer}
+button.pri{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,summary:focus-visible,[data-strand]:focus-visible,.tab:focus-visible{outline:2px solid var(--main);outline-offset:2px}
+.app{display:grid;grid-template-columns:var(--lw) minmax(0,1fr) var(--rw);grid-template-rows:44px 1fr;height:100vh;transition:grid-template-columns .18s ease}
+/* top bar */
+.top{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px 0 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font-weight:600;letter-spacing:.02em}
+.crumb{color:var(--mute)} .crumb b{color:var(--ink);font-weight:500}
+.sp{flex:1}
+.meter{display:flex;align-items:center;gap:8px;color:var(--mute);font-size:12px}
+.pill{border:1px solid var(--line);border-radius:99px;padding:1px 9px;font-size:12px;color:var(--mute)}
+.live:before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:6px}
+.tgl{display:flex;align-items:center;gap:6px;padding:3px 6px;border-color:transparent;color:var(--mute)}
+.tgl:hover{background:var(--sunk)}
+.tgl kbd{font-size:11px;color:var(--faint)}
+.ico{width:16px;height:12px;border:1.5px solid currentColor;border-radius:3px;position:relative;display:block}
+.ico:after{content:"";position:absolute;top:0;bottom:0;width:4px;background:currentColor;opacity:.5}
+.ico.l:after{left:0} .ico.r:after{right:0}
+body.no-left .ico.l:after,body.no-right .ico.r:after{opacity:0}
+/* left */
+.side{background:var(--sunk);border-right:1px solid var(--line);overflow:hidden;min-width:0}
+.side>div{width:232px;height:100%;overflow:auto;padding:12px 10px}
+body.no-left .side{border-right-width:0;visibility:hidden}
+.side h4{margin:14px 8px 4px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:500}
+.ws{display:flex;justify-content:space-between;margin:14px 8px 4px;font-size:12px;color:var(--mute)}
+.nav{display:flex;gap:4px;margin:2px 4px}.nav button{white-space:nowrap;padding:3px 8px}
+.sess{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--mute)}
+.sess.on{background:var(--panel);color:var(--ink);box-shadow:var(--shadow)}
+.sess .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dots{display:flex;gap:2px}
+.dots{gap:0}
+.bar{border:0;padding:0;width:11px;height:22px;background:none;position:relative;border-radius:3px}
+.bar:before{content:"";position:absolute;left:3px;top:4px;width:5px;height:14px;border-radius:2px;background:var(--faint);opacity:.5;transition:box-shadow .12s}
+.bar.w:before{opacity:1;animation:pulse 1.4s infinite}
+.bar:hover:before{box-shadow:0 0 0 3px color-mix(in srgb,var(--faint) 30%,transparent)}
+.bar.m:before{background:var(--main)} .bar.a:before{background:var(--adv)} .bar.t:before{background:var(--tests)}
+.bar:focus-visible{outline:2px solid var(--main)}
+@keyframes pulse{50%{opacity:.35}}
+.badge{font-size:11px;padding:0 6px;border-radius:99px;background:var(--adv);color:#fff}
+/* centre */
+.mid{display:grid;grid-template-rows:1fr auto;min-width:0;min-height:0;background:var(--bg)}
+.scroll{overflow:auto;padding:16px 24px 8px}
+.col{max-width:780px;margin:0 auto}
+.row{display:grid;grid-template-columns:22px minmax(0,1fr);position:relative}
+.row:before{content:"";position:absolute;left:7px;top:0;bottom:0;border-left:1px solid var(--line)}
+.row:first-child:before{top:18px}
+.nd{position:absolute;left:3px;top:11px;width:9px;height:9px;border-radius:50%;background:var(--c);border:2px solid var(--bg);box-sizing:content-box;margin:-2px;padding:0;cursor:pointer;transition:box-shadow .12s}
+.nd:after{content:"";position:absolute;inset:-6px}
+.nd:hover{box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 28%,transparent)}
+.nd:focus-visible{outline:2px solid var(--main);outline-offset:3px}
+.crumbbar{position:sticky;top:-16px;z-index:3;max-width:780px;margin:-16px auto 8px;padding:12px 0 6px 22px;background:var(--bg);font-size:12px;color:var(--mute);display:flex;gap:8px;align-items:center}
+.crumbbar[hidden]{display:none}
+.crumbbar b{color:var(--ink);font-weight:600}
+.crumbbar kbd{color:var(--faint)}
+#to-in{color:var(--faint)}
+.todo[hidden]{display:none}
+body[data-focus=main] #merged .row:not(.c-m){display:none}
+.c-m{--c:var(--main)} .c-a{--c:var(--adv)} .c-t{--c:var(--tests)} .c-d{--c:var(--docs)} .c-p{--c:var(--peer)}
+.body{grid-column:2;padding:4px 0 10px;min-width:0}
+.who{font-size:12px;color:var(--mute);margin-bottom:2px}
+.who b{color:var(--ink);font-weight:600}
+.tag{font-size:11px;font-family:ui-monospace,Menlo,monospace;border-radius:4px;padding:0 5px;border:1px solid var(--c);color:var(--c);background:none;cursor:pointer;display:inline-block;line-height:1.5}
+button.tag{padding:0 5px}
+.tag:hover{background:color-mix(in srgb,var(--c) 10%,transparent)}
+.user{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;display:inline-block;max-width:90%}
+/* collapsibles */
+details>summary{list-style:none;cursor:pointer;display:flex;gap:8px;align-items:baseline;color:var(--mute);font-size:13px;padding:1px 0}
+details>summary::-webkit-details-marker{display:none}
+details>summary:before{content:"▸";font-size:11px;width:10px;flex:none;transition:transform .12s}
+details[open]>summary:before{transform:rotate(90deg)}
+details>summary .mono{color:var(--faint)}
+details>summary:hover{color:var(--ink)}
+.more{margin:4px 0 2px 18px;padding-left:12px;border-left:2px solid var(--line);color:var(--mute);font-size:13px}
+.more p{margin:0 0 6px}
+pre{margin:0;background:var(--code);border-radius:6px;padding:8px 10px;overflow:auto;line-height:1.5}
+.k{color:var(--peer)} .s{color:var(--ok)} .cm{color:var(--faint)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:9px 12px}
+.card.adv{border-color:var(--adv)}
+.card .h{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mute);margin-bottom:4px}
+.card .h b{color:var(--ink);font-weight:600}
+.act{display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--mute)}
+.reason{color:var(--mute)}
+.ans p{margin:2px 0 6px}
+.link{color:var(--main);cursor:pointer;background:none;border:0;padding:0;text-decoration:underline;text-underline-offset:2px}
+.needs{font-size:13px;color:var(--bad)}
+/* composer */
+.dock{padding:0 24px 14px}
+.dock>div{max-width:780px;margin:0 auto;display:grid;gap:8px}
+.todo{font-size:13px;padding:0 4px}
+.todo .more{margin-left:18px}
+.todo .cur{color:var(--main);font-weight:500}.done{color:var(--ok)}.pend{color:var(--faint)}
+.comp{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.comp .to{display:flex;gap:8px;align-items:center;padding:8px 12px 0;font-size:12px;color:var(--mute)}
+.comp .ta{padding:6px 12px 8px;min-height:44px;color:var(--faint)}
+.comp .ft{display:flex;gap:8px;align-items:center;padding:6px 10px;border-top:1px solid var(--line);font-size:12px;color:var(--mute)}
+.av{width:16px;height:16px;border-radius:50%;display:inline-grid;place-items:center;font-size:9px;font-weight:600;color:#fff;background:var(--peer);vertical-align:-3px;margin-right:4px}
+/* right */
+.right{background:var(--panel);border-left:1px solid var(--line);overflow:hidden;min-width:0}
+.right>div{width:340px;height:100%;display:flex;flex-direction:column}
+body.no-right .right{border-left-width:0;visibility:hidden}
+.tabs{display:flex;gap:2px;padding:0 10px;border-bottom:1px solid var(--line);flex:none}
+.tab{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:10px 8px 9px;color:var(--mute);font-size:13px}
+.tab:hover{color:var(--ink)}
+.tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--ink);font-weight:500}
+.tab i{font-style:normal;font-size:11px;background:var(--bad);color:#fff;border-radius:99px;padding:0 5px;margin-left:4px}
+.pane{display:none;overflow:auto;padding:14px;flex:1}
+.pane.on{display:block}
+.pane h3{margin:0 0 8px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:500;display:flex;justify-content:space-between}
+.sc{display:grid;grid-template-columns:34px 1fr;gap:10px;padding:8px 9px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;cursor:pointer;background:var(--panel)}
+.sc:hover{border-color:var(--faint)}
+.sc.foc{border-color:var(--c);box-shadow:inset 3px 0 0 var(--c)}
+.ring{width:34px;height:34px;border-radius:50%;background:conic-gradient(var(--c) calc(var(--p)*1%),var(--sunk) 0);display:grid;place-items:center;position:relative}
+.ring:before{content:"";position:absolute;inset:4px;border-radius:50%;background:var(--panel)}
+.ring span{position:relative;font-size:10px;font-weight:600}
+.ring.lo{--c:var(--warn)}
+.sc .nm{font-weight:500;display:flex;gap:6px;align-items:center}
+.sc .st{font-size:12px;color:var(--mute)}
+.st.w:before{content:"●";color:var(--c);margin-right:4px;animation:pulse 1.4s infinite}
+.st.f:before{content:"✓";color:var(--ok);margin-right:4px}
+.st.q:before{content:"◌";color:var(--adv);margin-right:4px}
+.blk{margin:18px 0 0}
+.approve{border:1px solid var(--bad);border-radius:10px;padding:10px;background:color-mix(in srgb,var(--bad) 6%,transparent);font-size:13px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:12px;color:var(--mute)}
+.kv b{color:var(--ink);font-weight:500;text-align:right}
+.quiet{font-size:12px;color:var(--faint);margin-top:18px}
+.back{margin-bottom:12px;display:inline-block}
+.dh{display:flex;gap:12px;align-items:center;margin-bottom:14px}
+.dh .ring{width:46px;height:46px}.dh .ring:before{inset:5px}.dh .ring span{font-size:12px}
+.dh .nm{font-size:16px;font-weight:600}
+.log{font-size:12px;color:var(--mute);display:grid;gap:5px}
+.log div{display:flex;justify-content:space-between;gap:10px}.log span:last-child{color:var(--faint);white-space:nowrap}
+.file{display:flex;justify-content:space-between;padding:4px 0;font-size:13px}
+.file span{color:var(--faint)}
+.diff{font-size:12px;border-radius:6px;overflow:hidden;background:var(--code)}
+.diff div{padding:0 10px;white-space:pre;font-family:ui-monospace,Menlo,monospace}
+.diff .a{background:var(--addbg)}.diff .d{background:var(--delbg)}.diff .hh{color:var(--faint);padding:3px 10px}
+.tr{display:grid;grid-template-columns:96px 1fr 44px;gap:8px;align-items:center;font-size:12px;color:var(--mute);padding:4px 0}
+.tr .b{height:6px;background:var(--sunk);border-radius:3px;position:relative;border:1px solid var(--line)}
+.tr .b i{position:absolute;top:-1px;bottom:-1px;background:var(--main);border-radius:3px}
+.tr span:last-child{text-align:right;color:var(--faint)}
+@media (max-width:900px){ body{--rw:0px} body .right{border-left-width:0;visibility:hidden} .meter,.tgl kbd{display:none} }
+</style>
+</head>
+<body data-ws="pi-gui">
+<div class="app">
+
+<header class="top">
+  <button class="tgl" id="tl" title="Toggle sessions sidebar (Cmd+B)" aria-label="Toggle sessions sidebar"><span class="ico l"></span><kbd>⌘B</kbd></button>
+  <span class="brand">Loom</span>
+  <span class="crumb" id="path">~/code/pi-gui / <b>ws · main</b></span>
+  <span class="pill live">connected</span>
+  <span class="sp"></span>
+  <span class="meter" id="ctx">ctx 41%</span>
+  <span class="meter">est <b class="mono" id="est" style="color:var(--ink)">$1.86</b></span>
+  <button onclick="var r=document.documentElement;r.dataset.theme=(r.dataset.theme==='dark'||(!r.dataset.theme&&matchMedia('(prefers-color-scheme:dark)').matches))?'light':'dark'">Theme</button>
+  <button class="tgl" id="tr" title="Toggle side panel (Cmd+Alt+B)" aria-label="Toggle side panel"><kbd>⌘⌥B</kbd><span class="ico r"></span></button>
+</header>
+
+<!-- left: workspaces and sessions -->
+<nav class="side"><div>
+  <div class="nav"><button class="pri">New session</button><button>Goals</button><button>Jobs</button></div>
+  <div class="ws"><span>~/code/pi-gui</span><span>3</span></div>
+  <div class="sess on" data-sess="ws"><span class="nm">ws · main</span><span class="dots"><button class="bar m w" data-sess="ws" data-strand="main" aria-label="Open ws · main, focus main" title="main"></button><button class="bar a w" data-sess="ws" data-strand="advisor" aria-label="Open ws · main, focus advisor" title="advisor"></button><button class="bar t w" data-sess="ws" data-strand="tests" aria-label="Open ws · main, focus sub:tests" title="sub:tests"></button></span></div>
+  <div class="sess"><span class="nm">fix readme badge</span></div>
+  <div class="sess"><span class="nm">extension api probe</span></div>
+  <div class="ws"><span>~/code/lnd-review</span><span>2</span></div>
+  <div class="sess" data-sess="lnd" title="Operators can switch sessions"><span class="nm">review htlc interceptor</span><span class="dots"><button class="bar m w" data-sess="lnd" data-strand="main" aria-label="Open review htlc interceptor, focus main" title="main"></button></span></div>
+  <div class="sess"><span class="nm">nightly: deps bump</span><span class="badge">1</span></div>
+  <h4>Scheduled</h4>
+  <div class="sess"><span class="nm">deps bump · 02:00</span></div>
+</div></nav>
+
+<!-- centre: transcript -->
+<main class="mid">
+<div class="scroll"><div class="crumbbar" id="crumb" hidden></div><div class="col"><div id="merged">
+
+  <div class="row c-m"><button class="nd" data-strand="main" aria-label="Focus main" title="Focus main"></button><div class="body"><div class="who"><b>Owner</b> · operator</div>
+    <div class="user">Add a <code>subtract</code> function to calc.gleam, check it, and update the README.</div></div></div>
+
+  <div class="row c-m"><button class="nd" data-strand="main" aria-label="Focus main" title="Focus main"></button><div class="body">
+    <details><summary>Memory <span class="mono">3 notes</span></summary>
+      <div class="more"><p>calc.gleam uses labelled-free arguments.</p><p>README examples live under "Usage".</p><p>Run <code>gleam test</code> before committing.</p></div></details>
+    <details><summary>Read 3 files, edited <code>calc.gleam</code> <span class="mono">+6 −0</span></summary>
+      <div class="more"><pre>fs_read  src/calc.gleam
+fs_read  test/calc_test.gleam
+fs_read  README.md
+fs_edit  src/calc.gleam   +6 −0</pre></div></details></div></div>
+
+  <div class="row c-t"><button class="nd" data-strand="tests" aria-label="Focus sub:tests" title="Focus sub:tests"></button><div class="body">
+    <div class="who"><button class="tag c-m" data-strand="main">main</button> forked <button class="tag" data-strand="tests">sub:tests</button> · 34s ago</div>
+    <details><summary>Run <code>gleam test</code> and report failures <span class="mono">working</span></summary>
+      <div class="more">Tool calls: <code>bash gleam test</code> (waiting for network approval).</div></details></div></div>
+
+  <div class="row c-a"><button class="nd" data-strand="advisor" aria-label="Focus advisor" title="Focus advisor"></button><div class="body"><div class="card adv">
+    <div class="h"><button class="tag c-a" data-strand="advisor">advisor</button><b>Pending nudge</b><span class="sp"></span><span class="mono">for main · 12s ago</span></div>
+    Consider running the unit tests before committing.
+    <div class="act"><button class="pri">Deliver to main</button><button>Dismiss</button></div></div></div></div>
+
+  <div class="row c-d"><button class="nd" data-strand="docs" aria-label="Focus sub:docs" title="Focus sub:docs"></button><div class="body">
+    <div class="who"><button class="tag" data-strand="docs">sub:docs</button> finished · 1m 12s</div>
+    <details><summary>README draft ready <span class="mono">2 files</span></summary>
+      <div class="more">Added a subtract example under "Usage". Result delivered to main.</div></details></div></div>
+
+  <div class="row c-p"><button class="nd" data-strand="peer" aria-label="Focus lnd-review" title="Focus lnd-review"></button><div class="body">
+    <details><summary><button class="tag c-p" data-strand="peer" title="Operators can switch sessions">peer</button> lnd-review asked a question <button class="link" data-sess="lnd" title="Operators can switch sessions">Open lnd-review</button></summary>
+      <div class="more"><i>Does subtract need an overflow guard, or is Int arbitrary-precision on BEAM?</i></div></details></div></div>
+
+  <div class="row c-m"><button class="nd" data-strand="main" aria-label="Focus main" title="Focus main"></button><div class="body">
+    <details><summary>Reasoning <span class="mono">9s</span></summary>
+      <div class="more">Comparing <code>list.range</code> and <code>int.range</code> semantics. The README example needs a range that includes both endpoints, so which helper is inclusive matters here.</div></details>
+    <details><summary><code>code_mode</code> <span class="mono">check_subtract.gleam · running 1.2s</span></summary>
+      <div class="more"><pre><span class="k">import</span> gleam/int
+<span class="k">import</span> calc
+
+<span class="k">pub fn</span> main() {
+  <span class="k">let</span> got = calc.subtract(<span class="s">10</span>, <span class="s">3</span>)
+  <span class="cm">// Expect 7; also try a negative result.</span>
+  <span class="k">assert</span> got == <span class="s">7</span>
+  int.to_string(calc.subtract(<span class="s">2</span>, <span class="s">5</span>))
+}</pre><div class="act">Sandboxed, network off. <button class="link" data-tab="trace">Open trace</button></div></div></details></div></div>
+
+  <div class="row c-t"><button class="nd" data-strand="tests" aria-label="Focus sub:tests" title="Focus sub:tests"></button><div class="body">
+    <div class="needs"><button class="tag" data-strand="tests">sub:tests</button> is waiting for your approval. <button class="link" data-tab="strands">Review in panel</button></div></div></div>
+
+  <div class="row c-m"><button class="nd" data-strand="main" aria-label="Focus main" title="Focus main"></button><div class="body ans"><div class="who"><button class="tag c-m" data-strand="main">main</button> answering</div>
+    <p>I added <code>subtract</code> next to <code>add</code>. Both tests should pass once <b>sub:tests</b> reports back, then I will update the README example.</p></div></div>
+</div><div id="focus" hidden></div></div></div>
+
+<div class="dock"><div>
+  <details class="todo" id="todo"><summary><b style="color:var(--ink)">Todo</b> · 3 of 5 done · <span class="cur">check it</span></summary>
+    <div class="more"><span class="done">✓ add a subtract function</span> &nbsp; <span class="cur">▸ check it</span> &nbsp; <span class="pend">○ update README</span></div></details>
+  <div class="comp">
+    <div class="to"><span>To</span><button class="tag c-m" id="to-tag">main ▾</button><span id="to-in" hidden>in lnd-review</span><span class="sp"></span><span><span class="av">A</span>Alex is typing</span></div>
+    <div class="ta" id="ta">Message main…</div>
+    <div class="ft"><span>Turn is busy · Cmd+Enter to send</span><span class="sp"></span><button>Queue</button><button class="pri">Steer</button></div>
+  </div>
+</div></div>
+</main>
+
+<!-- right: tabbed side panel -->
+<aside class="right"><div>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="strands">Strands<i id="badge">1</i></button>
+    <button class="tab" role="tab" data-tab="changes">Changes</button>
+    <button class="tab" role="tab" data-tab="trace">Trace</button>
+    <button class="tab" role="tab" data-tab="session">Session</button>
+  </div>
+
+  <section class="pane" id="p-strands">
+    <div id="s-list-lnd" hidden>
+      <h3><span>Strands · 1</span><span>cache hit</span></h3>
+      <div class="sc c-m foc" data-sess="lnd" data-strand="main" tabindex="0"><div class="ring" style="--p:90;--c:var(--main)"><span>90</span></div>
+        <div><div class="nm">main</div><div class="st w">Working</div></div></div>
+    </div>
+    <div id="s-list">
+      <h3><span>Strands · 5</span><span>cache hit</span></h3>
+      <div class="sc c-m foc" data-strand="main" tabindex="0"><div class="ring" style="--p:92;--c:var(--main)"><span>92</span></div>
+        <div><div class="nm">main</div><div class="st w">Working · code_mode</div></div></div>
+      <div class="sc c-a" data-strand="advisor" tabindex="0"><div class="ring lo" style="--p:61"><span>61</span></div>
+        <div><div class="nm">advisor</div><div class="st q">1 nudge pending</div></div></div>
+      <div class="sc c-t" data-strand="tests" tabindex="0"><div class="ring" style="--p:88;--c:var(--tests)"><span>88</span></div>
+        <div><div class="nm">sub:tests</div><div class="st w">Needs approval</div></div></div>
+      <div class="sc c-d" data-strand="docs" tabindex="0"><div class="ring" style="--p:95;--c:var(--docs)"><span>95</span></div>
+        <div><div class="nm">sub:docs</div><div class="st f">Finished 1m 12s</div></div></div>
+      <div class="sc c-p" data-strand="peer" tabindex="0"><div class="ring" style="--p:0;--c:var(--peer)"><span>·</span></div>
+        <div><div class="nm">lnd-review</div><div class="st q">Asked 1 question</div></div></div>
+      <div class="blk"><h3><span>Needs you</span></h3>
+        <div class="approve"><b>sub:tests</b> wants network access<br><code>fetch https://proxy.golang.org</code>
+          <div class="act"><button class="pri" disabled>Approve</button><button disabled>Deny</button><span class="mono">arms in 2s</span></div></div></div>
+    </div>
+    <div id="s-detail" hidden></div>
+  </section>
+
+  <section class="pane" id="p-changes">
+    <h3><span>Changes · 2 files</span><span>+14 −2</span></h3>
+    <div class="file"><b>src/calc.gleam</b><span>+6 −0</span></div>
+    <div class="diff">
+      <div class="hh">@@ -9,6 +9,12 @@</div>
+      <div>pub fn add(a: Int, b: Int) -> Int {</div>
+      <div>  a + b</div>
+      <div>}</div>
+      <div class="a">+</div>
+      <div class="a">+/// Subtracts b from a.</div>
+      <div class="a">+pub fn subtract(a: Int, b: Int) -> Int {</div>
+      <div class="a">+  a - b</div>
+      <div class="a">+}</div>
+    </div>
+    <details style="margin-top:12px"><summary><b style="color:var(--ink);font-weight:500">README.md</b> <span class="mono">+8 −2</span></summary>
+      <div class="more" style="margin-left:0"><div class="diff"><div class="hh">@@ -12,4 +12,10 @@</div><div class="d">-Only addition is supported.</div><div class="a">+Use `calc.subtract(10, 3)` to get 7.</div></div></div></details>
+  </section>
+
+  <section class="pane" id="p-trace">
+    <h3><span>check_subtract · attempt 2</span><span>running 4.2s</span></h3>
+    <div class="tr"><span>cap/fs.read</span><span class="b"><i style="left:0;width:14%"></i></span><span>0.2s</span></div>
+    <div class="tr"><span>cap/proc.run</span><span class="b"><i style="left:16%;width:52%"></i></span><span>2.1s</span></div>
+    <div class="tr"><span>cap/report.text</span><span class="b"><i style="left:70%;width:6%"></i></span><span>0.1s</span></div>
+    <details style="margin-top:12px"><summary>Budget <span class="mono">12k of 40k tokens</span></summary>
+      <div class="more" style="margin-left:0">Deadline 30s. Vetting passed, compiled, running.</div></details>
+  </section>
+
+  <section class="pane" id="p-session">
+    <h3><span>Session</span></h3>
+    <div class="kv"><span>Goal</span><b>calc has subtract + README</b><span>Jobs</span><b>1 running</b><span>Schedules</span><b>none</b><span>Viewers</span><b>Owner (op), Alex (obs)</b><span>Est. cost</span><b>$1.86</b></div>
+    <details style="margin-top:14px"><summary>Cost by strand</summary>
+      <div class="more" style="margin-left:0"><div class="kv"><span>main</span><b>$1.21</b><span>sub:tests</span><b>$0.31</b><span>advisor</span><b>$0.26</b><span>sub:docs</span><b>$0.08</b></div></div></details>
+    <div class="quiet">Layout is remembered for this workspace.</div>
+  </section>
+</div></aside>
+</div>
+
+<script>
+(function(){
+  var b=document.body, key='loom.layout.'+b.dataset.ws;
+  function load(){try{return JSON.parse(localStorage.getItem(key))||{}}catch(e){return {}}}
+  function save(){try{localStorage.setItem(key,JSON.stringify({left:!b.classList.contains('no-left'),right:!b.classList.contains('no-right'),tab:tab,strand:view.strand,sess:view.sess}))}catch(e){}}
+  var tab='strands', st=load(), view={sess:'ws',strand:null};
+  if(st.left===false)b.classList.add('no-left');
+  if(st.right===false)b.classList.add('no-right');
+  function setTab(t,keep){
+    tab=t;
+    ['strands','changes','trace','session'].forEach(function(n){
+      document.getElementById('p-'+n).classList.toggle('on',n===t);
+      var el=document.querySelector('.tab[data-tab='+n+']');
+      el.setAttribute('aria-selected',n===t?'true':'false');
+    });
+    if(!keep){document.getElementById('s-list').hidden=false;document.getElementById('s-detail').hidden=true;}
+    save();
+  }
+  var S={
+    main:{n:'main',c:'--main',p:92,s:'Working · code_mode',m:'kimi-k3 · high',x:'41%',e:'4m 10s',$:'$1.21',
+      l:[['Ran check_subtract.gleam','now'],['Edited src/calc.gleam','2m'],['Read 3 files','3m']]},
+    advisor:{n:'advisor',c:'--adv',p:61,s:'Waiting · 1 nudge pending',m:'reviewer',x:'18k',e:'1m 05s',$:'$0.26',
+      l:[['Cache miss, $0.42 re-read (prefix changed after compaction)','3m'],['Nudge queued for main','12s']]},
+    tests:{n:'sub:tests',c:'--tests',p:88,s:'Working 34s · needs approval',m:'kimi-k3 · low',x:'9k',e:'3m',$:'$0.31',
+      l:[['Waiting on network approval','2s'],['Started gleam test','34s']]},
+    docs:{n:'sub:docs',c:'--docs',p:95,s:'Finished 1m 12s',m:'kimi-k3 · low',x:'7k',e:'cold in 9m',$:'$0.08',
+      l:[['Delivered README draft to main','1m'],['Edited README.md','1m']]},
+    peer:{n:'lnd-review',c:'--peer',p:0,s:'Waiting · asked 1 question',m:'linked session, read-only',x:'n/a',e:'n/a',$:'n/a',
+      l:[['Asked about overflow on subtract','2m']]}
+  };
+  function tg(k,id,label){return '<button class="tag c-'+k+'" data-strand="'+id+'">'+label+'</button>'}
+  function R(k,id,name,body,sess){return '<div class="row c-'+k+'"><button class="nd" '+(sess?'data-sess="'+sess+'" ':'')+'data-strand="'+id+'" aria-label="Focus '+name+'" title="Focus '+name+'"></button><div class="body">'+body+'</div></div>'}
+  function D(sum,more){return '<details><summary>'+sum+'</summary><div class="more">'+more+'</div></details>'}
+  var T={
+    tests:function(){return [
+      R('t','tests','sub:tests','<div class="who">'+tg('m','main','main')+' forked this strand · 34s ago</div><div class="user">Run <code>gleam test</code> and report failures.</div>'),
+      R('t','tests','sub:tests',D('Reasoning <span class="mono">4s</span>','Tests need the Hex package index, which is not cached in the sandbox. Asking for network access.')),
+      R('t','tests','sub:tests',D('<code>bash gleam test</code> <span class="mono">waiting for approval</span>','<pre>$ gleam test\nResolving versions\nDownloading packages</pre>')),
+      R('t','tests','sub:tests','<div class="needs">Waiting for your approval: fetch <code>proxy.golang.org</code>. <button class="link" data-tab="strands">Review in panel</button></div>')].join('')},
+    docs:function(){return [
+      R('d','docs','sub:docs','<div class="who">'+tg('m','main','main')+' forked this strand · 1m 40s ago</div><div class="user">Add a subtract example to the README.</div>'),
+      R('d','docs','sub:docs',D('Read <code>README.md</code>','<pre>fs_read  README.md</pre>')+D('Edited <code>README.md</code> <span class="mono">+8 −2</span>','<pre>-Only addition is supported.\n+Use `calc.subtract(10, 3)` to get 7.</pre>')),
+      R('d','docs','sub:docs','<div class="who">Finished · 1m 12s</div><p style="margin:2px 0">README draft ready. Result delivered to '+tg('m','main','main')+'.</p>')].join('')},
+    advisor:function(){return [
+      R('a','advisor','advisor','<div class="who">Reviewer · watching '+tg('m','main','main')+'</div>'+D('Reviewed 3 turns <span class="mono">no issues</span>','Checked the edit to <code>calc.gleam</code> and the plan to update the README. No tests had run yet.')),
+      R('a','advisor','advisor','<div class="card adv"><div class="h"><b>Pending nudge</b><span class="sp"></span><span class="mono">for main · 12s ago</span></div>Consider running the unit tests before committing.<div class="act"><button class="pri">Deliver to main</button><button>Dismiss</button></div></div>'),
+      R('a','advisor','advisor',D('Cache miss <span class="mono">$0.42 re-read</span>','The prefix changed after compaction, so the advisor re-read its context.'))].join('')},
+    lnd:function(){return [
+      R('m','main','main','<div class="who"><b>Owner</b> · operator</div><div class="user">Review the HTLC interceptor for overflow handling.</div>','lnd'),
+      R('m','main','main',D('Read 4 files <span class="mono">htlcswitch/interceptable_switch.go</span>','<pre>fs_read  htlcswitch/interceptable_switch.go\nfs_read  htlcswitch/link.go\nfs_read  htlcswitch/switch.go\nfs_read  lnwire/amount.go</pre>'),'lnd'),
+      R('m','main','main','<div class="who">'+'<span class="tag c-p" style="cursor:default">ws · main</span>'+' asked a question</div><i>Does subtract need an overflow guard, or is Int arbitrary-precision on BEAM?</i>','lnd'),
+      R('m','main','main','<div class="who"><b>main</b> answering</div><p style="margin:2px 0">Amounts here are uint64 in Go, so the interceptor must check overflow. BEAM Ints are arbitrary-precision, so the Gleam side does not need a guard.</p>','lnd')].join('')}
+  };
+  var NAME={main:'main',advisor:'advisor',tests:'sub:tests',docs:'sub:docs'};
+  function render(){
+    b.dataset.sess=view.sess; b.dataset.focus=view.strand||'';
+    Array.prototype.forEach.call(document.querySelectorAll('.sess[data-sess]'),function(r){r.classList.toggle('on',r.dataset.sess===view.sess)});
+    Array.prototype.forEach.call(document.querySelectorAll('.sc'),function(c){c.classList.toggle('foc',c.dataset.sess?view.sess===c.dataset.sess:(view.sess==='ws'&&c.dataset.strand===(view.strand||'main')))});
+    var custom=view.sess!=='ws'||(view.strand&&view.strand!=='main');
+    var m=document.getElementById('merged'),f=document.getElementById('focus'),c=document.getElementById('crumb');
+    m.hidden=!!custom; f.hidden=!custom;
+    f.innerHTML=custom?(view.sess!=='ws'?T.lnd():T[view.strand]()):'';
+    if(view.sess!=='ws')c.innerHTML='<button class="link" data-all>ws · main</button> ▸ <b>lnd-review · review htlc interceptor</b><span class="sp"></span><button class="link" data-all>Back to ws · main</button> <kbd>Esc</kbd>';
+    else if(view.strand)c.innerHTML='<button class="link" data-all>ws · main</button> ▸ <b>'+NAME[view.strand]+'</b><span class="sp"></span><button class="link" data-all>All strands</button> <kbd>Esc</kbd>';
+    c.hidden=view.sess==='ws'&&!view.strand;
+    var lnd=view.sess!=='ws', tgt=lnd?'main':(view.strand?NAME[view.strand]:'main'), k=lnd?'m':(view.strand==='tests'?'t':view.strand==='docs'?'d':view.strand==='advisor'?'a':'m');
+    document.getElementById('path').innerHTML=lnd?'~/code/lnd-review / <b>review htlc interceptor</b>':'~/code/pi-gui / <b>ws · main</b>';
+    document.getElementById('ctx').textContent=lnd?'ctx 22%':'ctx 41%';
+    document.getElementById('est').textContent=lnd?'$0.64':'$1.86';
+    var tt=document.getElementById('to-tag'); tt.textContent=tgt+' ▾'; tt.className='tag c-'+k;
+    document.getElementById('to-in').hidden=!lnd;
+    document.getElementById('ta').textContent='Message '+tgt+'…';
+    document.getElementById('todo').hidden=lnd||(view.strand&&view.strand!=='main');
+    document.getElementById('badge').hidden=lnd;
+    document.querySelector('.scroll').scrollTop=0;
+  }
+  function showList(){document.getElementById('s-list').hidden=view.sess!=='ws';document.getElementById('s-list-lnd').hidden=view.sess==='ws';document.getElementById('s-detail').hidden=true}
+  function openStrand(id,quiet){
+    var d=S[id]; if(!d)return;
+    var h='<button class="link back" data-back>← Strands</button><div class="dh"><div class="ring" style="--p:'+d.p+';--c:var('+d.c+')"><span>'+d.p+'</span></div><div><div class="nm">'+d.n+'</div><div class="st" style="font-size:12px;color:var(--mute)">'+d.s+'</div></div></div>'+
+      '<div class="kv"><span>Model</span><b>'+d.m+'</b><span>Context</span><b>'+d.x+'</b><span>Cache expires</span><b>'+d.e+'</b><span>Cost</span><b>'+d.$+'</b></div>'+
+      '<div class="blk"><h3><span>Recent</span></h3><div class="log">'+d.l.map(function(r){return '<div><span>'+r[0]+'</span><span>'+r[1]+'</span></div>'}).join('')+'</div></div>';
+    document.getElementById('s-detail').innerHTML=h;
+    document.getElementById('s-list').hidden=true;document.getElementById('s-detail').hidden=false;
+    if(!quiet){b.classList.remove('no-right');setTab('strands',true);}
+  }
+  function go(sess,strand,quiet){
+    if(strand==='peer'){sess='lnd';strand=null}
+    view.sess=sess; view.strand=sess==='ws'?strand:null;
+    render();
+    if(view.strand)openStrand(view.strand,quiet); else showList();
+    save();
+  }
+  document.addEventListener('click',function(e){
+    var t=e.target.closest('[data-strand],[data-tab],[data-back],[data-sess],[data-all]'); if(!t)return;
+    if(t.hasAttribute('data-back')){go('ws',null);setTab('strands');return}
+    if(t.hasAttribute('data-all')){go('ws',null);return}
+    if(t.dataset.sess){e.preventDefault();go(t.dataset.sess,t.dataset.strand||null);return}
+    if(t.dataset.strand){e.preventDefault();go('ws',t.dataset.strand);return}
+    b.classList.remove('no-right');setTab(t.dataset.tab);
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Enter'&&e.target.classList&&e.target.classList.contains('sc'))go('ws',e.target.dataset.strand);
+    if(e.key==='Escape'&&(view.sess!=='ws'||view.strand))go('ws',null);
+  });
+  function tl(){b.classList.toggle('no-left');save()}
+  function tr(){b.classList.toggle('no-right');save()}
+  document.getElementById('tl').onclick=tl;
+  document.getElementById('tr').onclick=tr;
+  document.addEventListener('keydown',function(e){
+    if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='b'||(e.metaKey||e.ctrlKey)&&e.altKey&&e.code==='KeyB'){
+      e.preventDefault(); if(e.altKey)tr(); else tl();
+    }
+  });
+  setTab(st.tab&&['strands','changes','trace','session'].indexOf(st.tab)>=0?st.tab:'strands');
+  var isess=b.dataset.sess||st.sess, init=b.dataset.focus||st.strand;
+  if(isess==='lnd')go('lnd',null,true); else if(init&&S[init])go('ws',init,true); else render();
+})();
+</script>
+</body>
+</html>
