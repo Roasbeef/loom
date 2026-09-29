@@ -339,11 +339,57 @@ pub fn act(
   case command {
     msg.Submit(draft:, command:, delivery:) ->
       submit(shared, draft, command, delivery)
+    msg.Control(command:) -> control(shared, command)
     msg.Interrupt -> interrupt_active(shared)
     msg.Stop(strand:) -> stop_strand(shared, strand)
     msg.Decide(review:, choice:) -> decide_review(shared, review, choice)
     msg.SelectModel(name:) -> select_model(shared, name)
     msg.Quit -> quit(shared)
+  }
+}
+
+/// Runs a session command that a control chose, not a composer's draft.
+///
+/// A button on a host's page names a command directly (`/fork`, `/goal
+/// pause`, `/goal clear`), so no draft belongs to it. The composer's text
+/// is the operator's own, and a control that fired while they were typing
+/// must leave it where it is. `submit` cannot promise that: it marks a
+/// mutating command `ComposerSubmission`, so the lane counts the frame it
+/// sends in `drafts_sent`, and a dispatch that consumes at once records
+/// `DraftTaken`, and a host empties its editor on either. This entry marks
+/// nothing, so the lane counts nothing, and it drops the `DraftTaken` the
+/// dispatch would record, so the host reads neither.
+///
+/// Everything else is `submit`'s: the refusal for an attachment that cannot
+/// mutate comes first, and the dispatch is the same exhaustive one, so a
+/// control cannot do what the same words typed in the composer would not.
+/// A control carries no prompt, since a prompt's text is a draft; the
+/// hosts that call this build a fixed set of commands.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = commands.control(shared, command.GoalPause)
+/// ```
+@internal
+pub fn control(
+  shared: Shared(socket, recorder, source, replay_source),
+  command: command.Session,
+) -> Shared(socket, recorder, source, replay_source) {
+  case outbound.mutation_refusal(shared, command) {
+    Some(reason) -> session_model.append_error(shared, reason)
+    None -> {
+      let ran = dispatch(shared, "", command, operator.Prompt)
+      Shared(
+        ..ran,
+        surface_facts: list.filter(ran.surface_facts, fn(fact) {
+          case fact {
+            DraftTaken(..) -> False
+            _ -> True
+          }
+        }),
+      )
+    }
   }
 }
 

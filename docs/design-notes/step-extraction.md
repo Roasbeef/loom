@@ -134,7 +134,7 @@ terminal, 4 handles, 3 split.
 | `input` | b | An etui `TextAreaState`; the web's editor is the browser's. |
 | `strand_workspaces` | split | The parked `scrollback` per strand is the session's history window and moves to a shared `Dict(#(session, strand), history_view.State)`; the editor, its history, the offset, anchors and height stay terminal; the record is `StrandWorkspace` (`tui/model.gleam:245`). |
 | `restored_workspace` | b | A viewport endpoint the next projection restores. |
-| `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`session_view/commands.gleam:632` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
+| `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`session_view/commands.gleam:678` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
 | `history`, `history_index`, `history_draft` | b | The composer's command history. |
 | `command_selected` | b | The palette's cursor. |
 | `submission_mode` | b | Tab's choice for the next Enter; the web sends its delivery with each submit. The shared `Submit` command carries it. |

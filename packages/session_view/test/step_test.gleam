@@ -389,6 +389,48 @@ pub fn an_acted_command_leaves_its_facts_for_the_host_test() {
   assert step.forget_surfaces(acted).surface_facts == []
 }
 
+// A control's command has no draft. `/clear` typed in a composer consumes
+// the draft and records `DraftTaken`, which a host answers by emptying its
+// editor; the same command chosen by a control records no such fact and
+// moves no draft count, so the text an operator is typing survives it.
+pub fn a_control_takes_no_draft_test() {
+  let typed =
+    msg.Input(
+      msg.Stamp(3, 3),
+      msg.Acted(msg.Submit(
+        draft: "/clear",
+        command: command.Clear,
+        delivery: operator.Prompt,
+      )),
+    )
+  let #(submitted, _) = step.update(attached(), typed)
+  assert list.contains(
+    submitted.surface_facts,
+    session_model.DraftTaken(session_model.TakenByCommand),
+  )
+
+  let chosen =
+    msg.Input(msg.Stamp(3, 3), msg.Acted(msg.Control(command: command.Clear)))
+  let #(acted, _) = step.update(attached(), chosen)
+  assert acted.notice == "local view cleared" as "the command ran"
+  assert acted.surface_facts == [session_model.TranscriptCleared]
+  assert acted.drafts_sent == 0
+  assert acted.pending_submission == None
+}
+
+// The refusal for an attachment that cannot mutate is the same one: a
+// control is not a way around it.
+pub fn a_control_the_lane_cannot_take_is_refused_test() {
+  let chosen =
+    msg.Input(
+      msg.Stamp(3, 3),
+      msg.Acted(msg.Control(command: command.GoalClear)),
+    )
+  let #(acted, _) = step.update(attached(), chosen)
+  assert acted.notice
+    == "attachment is read-only or its command slot is busy; draft retained"
+}
+
 // A mutation an unsynchronized lane cannot take is refused before it is
 // encoded, so nothing is written for it and the reason is the notice.
 pub fn an_acted_prompt_the_lane_cannot_take_is_refused_test() {
