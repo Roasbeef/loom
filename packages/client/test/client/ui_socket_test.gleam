@@ -5,6 +5,7 @@
 //// click at its fixed path, and has no composer; an operator's takes a
 //// click and a submit and nothing else.
 
+import client/daemon/manager
 import client/daemon/ui_relay
 import client/daemon/ui_socket
 import gleam/erlang/process
@@ -14,7 +15,9 @@ import gleam/option.{None}
 import gleam/string
 import session_view/snapshot
 import storage/access
+import storage/catalogue
 import web_view/component
+import web_view/sessions
 
 // A page whose transport never opens: what is under test is which
 // component starts and what reaches it, not the session.
@@ -28,6 +31,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: fn() { 0 },
+      sessions: fn() { [] },
     ),
   )
 }
@@ -111,6 +115,41 @@ pub fn an_observer_socket_accepts_only_the_older_click_test() {
   )
 }
 
+// Protocol-change/051, the addendum on strand focus: an observer's socket
+// also admits a click beneath the agent strip's chip list, where each handler
+// is a chip's button, and nothing else beside that list or the older button.
+pub fn an_observer_socket_accepts_a_chip_click_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let chip = component.strip_path <> "\t2\t1"
+  assert ui_socket.observer_accepts(click_at(chip, "click"))
+  list.each(
+    [
+      // The list itself, and a sibling of it whose path shares the digits.
+      click_at(component.strip_path, "click"),
+      click_at("0\t1\t01\t2", "click"),
+      click_at("0\t1\t1\t0", "click"),
+      click_at("0\t1", "click"),
+
+      // Another event at a chip's path.
+      click_at(chip, "submit"),
+      click_at(chip, "keydown"),
+      click_at(chip, "input"),
+
+      // A batch, even of chip clicks, is not admitted.
+      "{\"kind\":3,\"messages\":[" <> click_at(chip, "click") <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
 pub fn an_operator_socket_accepts_only_its_two_events_test() {
   assert ui_socket.operator_accepts("{\"kind\":1,\"name\":\"click\"}")
   assert ui_socket.operator_accepts("{\"kind\":1,\"name\":\"submit\"}")
@@ -131,6 +170,65 @@ pub fn an_operator_socket_accepts_only_its_two_events_test() {
     ],
     fn(frame) {
       assert !ui_socket.operator_accepts(frame)
+    },
+  )
+}
+
+fn view(status: manager.Status) -> manager.View {
+  manager.View(
+    registration: catalogue.Registration(
+      id: "0192-abcd",
+      path: "/private/db/secret.sqlite",
+      workspace: "/src/loom",
+      name: "web ui",
+      configuration: "config-ref",
+      created_at: 1_790_000_000_000,
+      request_key: "request-key",
+      state: catalogue.Saved,
+    ),
+    status:,
+  )
+}
+
+// The sidebar's entry carries what a reader is shown and nothing of the
+// registration's path, request key or configuration reference: the entry type
+// has no field for them.
+pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
+  let entry = ui_socket.listed_entry(view(manager.Saved))
+  assert entry
+    == sessions.Entry(
+      id: "0192-abcd",
+      name: "web ui",
+      workspace: "/src/loom",
+      created_at: 1_790_000_000_000,
+      residency: sessions.Saved,
+    )
+  assert !string.contains(string.inspect(entry), "secret.sqlite")
+  assert !string.contains(string.inspect(entry), "request-key")
+  assert !string.contains(string.inspect(entry), "config-ref")
+}
+
+// A session the daemon runs, opens or closes is live; one it holds no process
+// for is saved.
+pub fn a_running_session_is_live_and_the_rest_are_saved_test() {
+  list.each(
+    [
+      manager.Resident("incarnation"),
+      manager.Opening("operation"),
+      manager.Stopping("operation"),
+    ],
+    fn(status) {
+      assert ui_socket.listed_entry(view(status)).residency == sessions.Live
+    },
+  )
+  list.each(
+    [
+      manager.Saved,
+      manager.Reserved,
+      manager.RecoveryBlocked("proof lost"),
+    ],
+    fn(status) {
+      assert ui_socket.listed_entry(view(status)).residency == sessions.Saved
     },
   )
 }

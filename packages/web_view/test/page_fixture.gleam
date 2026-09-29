@@ -420,6 +420,7 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       transmit: fn(wire, frame) { process.send(wire, frame) },
       shut: fn(_) { Nil },
       now:,
+      sessions: fn() { [] },
     ),
   )
 }
