@@ -54,10 +54,10 @@ the tools somebody else's repository contributes.
 `client` hosts all of it — the protocol, the hub, the websocket server,
 the production wiring, and the `loomd` entry point — and `tui` is
 the native terminal client on the far side of the wire. The client's
-engine, the session lane and the transcript projection, is its own
-package, `session_view`, so that a second host can drive it: `web_view`
-holds the Lustre server components that `loomd --ui` serves to a
-browser. `prompt` renders the
+engine, the session lane, the transcript projection and the shared step,
+is its own package, `session_view`, so that a second host can drive it:
+`web_view` holds the Lustre server components that `loomd --ui` serves to a
+browser, which run the same step the terminal does. `prompt` renders the
 system prompt from a data pack, `conformance` holds the suites that
 define correct, and `cap` is compiled *into* the jail rather than linked
 into the harness.
