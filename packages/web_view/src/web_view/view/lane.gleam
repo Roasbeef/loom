@@ -93,7 +93,43 @@ pub fn view(
   top: Top,
   load: message,
 ) -> Element(message) {
-  rows(pieces, live, boundary(top, load), line_element)
+  view_replying(pieces, live, top, load, NoReplies)
+}
+
+/// `view` for a page that may answer a peer: the same lane, with a Reply
+/// button on each cross-session message that sends `replies`' message for
+/// that message's key.
+///
+/// The button carries the engine's key for the piece, a sequence, and never
+/// the peer's session or strand, so the handler holds nothing the session
+/// wrote. The operator's page passes `Replies`, and the observer's passes
+/// `NoReplies`, which is `view`, so an observer's lane has no handler but
+/// "Load older".
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lane.view_replying(pieces, [], top, load, lane.Replies(Replying))
+/// ```
+pub fn view_replying(
+  pieces: List(turns.Piece),
+  live: List(live.Row),
+  top: Top,
+  load: message,
+  replies: Replies(message),
+) -> Element(message) {
+  rows_replying(pieces, live, boundary(top, load), line_element, replies)
+}
+
+/// Whether the lane offers a reply to a peer's message, and what pressing it
+/// sends.
+pub type Replies(message) {
+  /// The lane offers no reply. An observer's page has none to send.
+  NoReplies
+
+  /// Each peer message carries a Reply button that sends this message,
+  /// given the piece's key.
+  Replies(reply: fn(String) -> message)
 }
 
 /// What lies above the oldest row the page holds.
@@ -139,13 +175,24 @@ pub fn rows(
   top: Element(message),
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
+  rows_replying(pieces, live, top, draw, NoReplies)
+}
+
+// `rows` with the lane's replies, which only a peer message's card draws.
+fn rows_replying(
+  pieces: List(turns.Piece),
+  live: List(live.Row),
+  top: Element(message),
+  draw: fn(Line) -> Element(message),
+  replies: Replies(message),
+) -> Element(message) {
   element.element("loom-follow", [attribute.class("follow")], [
     top,
     keyed.div(
       [attribute.class("transcript lane"), attribute.role("log")],
       list.append(
         list.map(pieces, fn(piece) {
-          #(piece_key(piece), piece_element(piece, draw))
+          #(piece_key(piece), piece_element(piece, draw, replies))
         }),
         live_entry(live, draw),
       ),
@@ -230,6 +277,7 @@ fn piece_key(piece: turns.Piece) -> String {
 fn piece_element(
   piece: turns.Piece,
   draw: fn(Line) -> Element(message),
+  replies: Replies(message),
 ) -> Element(message) {
   case piece {
     turns.Plain(block:, thoughts:) -> block_element(block, thoughts, draw)
@@ -297,7 +345,10 @@ fn piece_element(
 
     // Another session's message. The daemon records that it was stored and
     // nothing about whether anyone read it, so the receipt says `stored`.
-    turns.Peer(session:, strand:, text:, ..) ->
+    //
+    // A page that may answer offers a Reply button after the body. The button
+    // sends the piece's key and nothing the peer wrote.
+    turns.Peer(key:, session:, strand:, text:) ->
       html.article([attribute.class("peer-card")], [
         html.p([attribute.class("card-head")], [
           html.span([attribute.class("peer-from")], [
@@ -306,6 +357,7 @@ fn piece_element(
           html.span([attribute.class("receipt")], [html.text("stored")]),
         ]),
         card_body(text),
+        ..reply_button(replies, key)
       ])
 
     turns.Missed(text:, ..) ->
@@ -319,6 +371,30 @@ fn piece_element(
         [attribute.class("block"), attribute.class("commentary")],
         list.map(block.rows, fn(row) { line_row(row.1, draw) }),
       )
+  }
+}
+
+// The Reply button of a peer card, or nothing on a lane that offers none. It
+// is a real button, labelled for what it does, and puts a draft in the
+// composer rather than sending anything: the operator reads it and sends it.
+fn reply_button(
+  replies: Replies(message),
+  key: String,
+) -> List(Element(message)) {
+  case replies {
+    NoReplies -> []
+    Replies(reply:) -> [
+      html.p([attribute.class("card-actions")], [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("peer-reply"),
+            event.on_click(reply(key)),
+          ],
+          [html.text("Reply to this peer")],
+        ),
+      ]),
+    ]
   }
 }
 

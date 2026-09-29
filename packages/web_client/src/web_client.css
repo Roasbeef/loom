@@ -276,10 +276,37 @@
      back to its own style when it ends. The delay (loom-arm) is exempt from
      the reduced-motion rule below; only the dimming (loom-arm-look) obeys
      it. */
-  .approval-actions.arming{animation:loom-arm 600ms steps(1,end);}
-  .approval-actions.arming button{animation:loom-arm-look 600ms steps(1,end);}
+  .approval-actions.arming,.control-actions.arming{animation:loom-arm 600ms steps(1,end);}
+  .approval-actions.arming button,.control-actions.arming button{animation:loom-arm-look 600ms steps(1,end);}
   @keyframes loom-arm{from{pointer-events:none;}to{pointer-events:none;}}
   @keyframes loom-arm-look{from{opacity:.45;}to{opacity:.45;}}
+  /* The advisor's pending nudges, in the operator's dock above the controls
+     and above the observer's bar. Read-only: the card has no button. Its
+     height is capped and it scrolls on its own, so a long queue cannot cover
+     the transcript. */
+  section.nudges{flex:0 0 auto;min-height:0;max-height:22vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box; margin:8px 0 0 0;padding:8px 12px;background:var(--color-bg-raised);border:1px solid var(--color-advisor); border-left-width:3px;border-radius:8px;font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  footer.dock > section.nudges{margin:0 0 8px 0;}
+  .nudge-head{margin:0 0 4px 0;color:var(--color-advisor);font:12px/1.4 var(--font-mono);}
+  ul.nudge-list{margin:0;padding-left:20px;}
+  li.nudge-item{white-space:pre-wrap;}
+  .nudge-more{margin:4px 0 0 0;color:var(--color-fg-quiet);font-size:12px;}
+  /* The operator's session controls, in the dock above the approvals. Stop is
+     always drawn so nothing moves when it is enabled. */
+  section.controls{flex:0 0 auto;margin:0 0 8px 0;font-size:13px;}
+  .control-row{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
+  button.control-stop,button.control-clear{border-color:var(--color-danger);color:var(--color-danger);}
+  button.control-stop:disabled{opacity:.45;cursor:default;}
+  button.control-pause,button.control-resume{border-color:var(--color-signal);color:var(--color-signal);}
+  .control-goal{flex:1 1 auto;min-width:0;}
+  .control-actions{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;}
+  .control-goal-text{flex:1 1 12em;min-width:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
+  .control-forms{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:6px;}
+  details.control-form{flex:1 1 16em;min-width:0;}
+  details.control-form summary{cursor:pointer;color:var(--color-current);font-size:12px;}
+  form.control-input{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0 0;}
+  form.control-input input{flex:1 1 14em;min-width:0;background:var(--color-bg);color:var(--color-fg); border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
+  p.card-actions{margin:8px 0 0 0;}
+  button.peer-reply{border-color:var(--color-fg-quiet);color:var(--color-fg-quiet);font-size:12px;}
   /* The dock: the operator's approvals and composer, pinned to the bottom of
      the frame. It is the last item of the page's column and the transcript
      takes what is left above it, so a card appearing or the editor growing
@@ -316,7 +343,7 @@
   button.steer{border-color:var(--color-signal);color:var(--color-signal);}
   button.approval-deny{border-color:var(--color-danger);color:var(--color-danger);}
   button.approval-allow{border-color:var(--color-added);color:var(--color-added);}
-  button:focus-visible,textarea:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
   @media (max-width:640px){main.loom-session{padding:12px 16px 0;}li.chip{width:200px;} .line.user{padding:6px 10px;}}
   @media (prefers-reduced-motion:reduce){*:not(.arming){transition:none!important;animation:none!important;}}
 }

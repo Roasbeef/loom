@@ -110,6 +110,7 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/server_component
+import session_view/advisor_pending
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
@@ -118,6 +119,7 @@ import session_view/cache_miss
 import session_view/cache_watch
 import session_view/command
 import session_view/connection_event
+import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
 import session_view/lane_fold
@@ -131,6 +133,7 @@ import session_view/snapshot
 import session_view/snapshot_view
 import session_view/step
 import session_view/step_effect
+import session_view/text_hygiene
 import session_view/transcript
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Stream, Assistant, Line,
@@ -143,6 +146,7 @@ import web_view/view/expansion
 import web_view/view/heading
 import web_view/view/lane
 import web_view/view/live
+import web_view/view/nudges
 import web_view/view/strip
 import web_view/view/todo_panel
 
@@ -329,6 +333,36 @@ pub type Answer {
   Deny
 }
 
+/// What a control on an operator's page asks for: a command the terminal
+/// runs from a typed draft, chosen by a button or a small form instead.
+///
+/// The controls act on the page's strand. Each is the same command a draft
+/// names, run through the same shared step, so what the page may do here is
+/// what a draft may do (`page_command`), and no control adds an operation.
+pub type Control {
+  /// Abort the strand's running operation, as Escape does in the terminal.
+  /// The session stays open, and the strand's queued input is held until the
+  /// operation settles. Ending the session is daemon control, which stays in
+  /// the terminal.
+  Stop
+
+  /// `/goal pause`.
+  PauseGoal
+
+  /// `/goal resume`.
+  ResumeGoal
+
+  /// `/goal clear`.
+  ClearGoal
+
+  /// `/fork <name>`, with the name as the operator typed it.
+  Fork(name: String)
+
+  /// `/goal <objective>`, with the text as the operator typed it, which may
+  /// begin with `--budget <tokens>` as the command allows.
+  PinGoal(objective: String)
+}
+
 /// How much of the strand's history the page holds. It only moves forward:
 /// a page that has loaded older rows keeps the larger limit, and a page
 /// that reached it stays full.
@@ -423,12 +457,14 @@ type View(socket) {
     /// later reply to that command is `Shared.answer`, and the two are what
     /// `notice` draws.
     outcome: String,
-    /// How many prompts the daemon has handed back to this page's strand
-    /// since the page opened, and all of them, oldest
-    /// first. None is dropped: each is the prompt's last copy, and the element
-    /// takes them in a frame that does not run in a background tab, so any cap
-    /// could lose one before it is read. The list is bounded by the daemon's
-    /// held queue. The composer's element puts each in the editor once, by its
+    /// How many entries the composer's element has been offered since the
+    /// page opened, and all of them, oldest first. An entry is a prompt the
+    /// daemon handed back to this page's strand, or the start of a reply the
+    /// operator asked for (`reply`). None is dropped: a returned prompt is its
+    /// last copy, and the element takes entries in a frame that does not run
+    /// in a background tab, so any cap could lose one before it is read. The
+    /// list is bounded by the daemon's held queue and by how often the
+    /// operator presses a Reply button. The composer's element puts each in the editor once, by its
     /// number. The shared record holds a returned prompt only until the next
     /// step forgets it (`step.forget_surfaces`), so it is taken here at the
     /// end of every message.
@@ -440,6 +476,10 @@ type View(socket) {
     /// so a consumed draft is replaced by an empty editor while a refused
     /// one stays as the operator left it.
     consumed: Int,
+    /// How many of the controls' forms have sent a command. The forms are
+    /// keyed by it, so a form that sent is replaced by a closed, empty one
+    /// while a refused one keeps what the operator typed.
+    sent_forms: Int,
     /// The timer's subject, once the tick selector is armed.
     timer: Option(Subject(Nil)),
     /// The one timer armed for the lane's next due reading, kept so the
@@ -527,6 +567,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       returns: 0,
       returned: [],
       consumed: 0,
+      sent_forms: 0,
       timer: None,
       armed: None,
     ),
@@ -1404,6 +1445,198 @@ pub fn decide(
   }
 }
 
+/// Runs one of the page's controls through the shared step's command arm.
+///
+/// Stop is the terminal's Escape (`msg.Interrupt`), and the goal's three
+/// buttons are `/goal pause`, `/goal resume` and `/goal clear`. The two forms
+/// hold text the operator typed, and that text becomes the command exactly as
+/// it would in the composer: it is put after `/fork ` or `/goal ` and parsed
+/// with `command.parse`, so the name, the objective, `--budget` and every
+/// limit are the command's own and the page holds no second list of them.
+/// What the parse returns is checked against what the form is for. A fork
+/// form yields a fork or the command's own complaint that a name is missing.
+/// A goal form yields a goal, or the complaint about its budget, its length
+/// or a missing objective, and any other command it names (`clear`, `pause`,
+/// `check ...`, or nothing) is refused with a notice, because a box labelled
+/// for a goal's objective must never unpin the goal.
+///
+/// A control's command has no draft (`msg.Control`), so it leaves whatever
+/// the operator is typing in the composer where it is. The forms are a
+/// different matter, since the text in them is the command: they are cleared
+/// once the frame is on the wire and kept when the command was refused, so a
+/// refusal costs the operator nothing to retry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.control(model, component.Fork("try-a-cache"))
+/// ```
+pub fn control(
+  model: Model(socket),
+  control: Control,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case control {
+    Stop -> commanded(model, msg.Interrupt)
+    PauseGoal -> commanded(model, msg.Control(command: command.GoalPause))
+    ResumeGoal -> commanded(model, msg.Control(command: command.GoalResume))
+    ClearGoal -> commanded(model, msg.Control(command: command.GoalClear))
+    Fork(name:) -> written(model, "/fork ", name, forking)
+    PinGoal(objective:) -> written(model, "/goal ", objective, pinning)
+  }
+}
+
+// A form's text as the command it is for, or the notice saying it is not
+// one. Text over the page's limit is refused as a draft is.
+fn written(
+  model: Model(socket),
+  verb: String,
+  text: String,
+  accept: fn(command.Command) -> Result(command.Session, String),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case string.byte_size(text) > prompt_limit {
+    True ->
+      refused(
+        model,
+        "The text is longer than the page sends ("
+          <> int.to_string(prompt_limit)
+          <> " bytes).",
+      )
+    False ->
+      case accept(command.parse(verb <> text)) {
+        Error(notice) -> refused(model, notice)
+        Ok(session) -> sent_from_form(model, session)
+      }
+  }
+}
+
+// Runs a form's command, and counts the form as sent when a frame went out
+// for it. The step refuses a mutation the lane cannot take before it writes a
+// frame, so an unmoved request identity is a refusal and the form keeps its
+// text.
+fn sent_from_form(
+  model: Model(socket),
+  session: command.Session,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(after, effects) = commanded(model, msg.Control(command: session))
+  case after.shared.next_id > model.shared.next_id {
+    True -> #(
+      Model(
+        ..after,
+        view: View(..after.view, sent_forms: after.view.sent_forms + 1),
+      ),
+      effects,
+    )
+    False -> #(after, effects)
+  }
+}
+
+// The fork form's words: a fork, or the command's complaint that the name is
+// missing. Nothing else can follow `/fork `.
+fn forking(parsed: command.Command) -> Result(command.Session, String) {
+  case parsed {
+    command.Session(command.Fork(_) as fork) -> Ok(fork)
+    command.Session(command.MissingArgument(_) as missing) -> Ok(missing)
+    command.Session(_) | command.Surface(_) ->
+      Error("Type a name for the fork.")
+  }
+}
+
+// The goal form's words: a goal, or one of the command's own complaints
+// about it. A word that names another goal command is not an objective.
+fn pinning(parsed: command.Command) -> Result(command.Session, String) {
+  case parsed {
+    command.Session(command.GoalSet(..) as goal) -> Ok(goal)
+    command.Session(command.GoalBudgetInvalid(_) as budget) -> Ok(budget)
+    command.Session(command.GoalObjectiveTooLong(_) as long) -> Ok(long)
+    command.Session(command.MissingArgument(_) as missing) -> Ok(missing)
+    command.Session(_) | command.Surface(_) ->
+      Error(
+        "Type the goal's objective. To pause, resume or clear the goal, use its buttons.",
+      )
+  }
+}
+
+/// Puts a reply to the peer message drawn under `key` in the composer.
+///
+/// The terminal has no command that answers a peer. A peer's message is
+/// stored in this session's transcript, and the model answers it by calling
+/// its `peer_send` tool under the owner's grant of a link (protocol 048), so
+/// the operator's part is an ordinary prompt asking for the reply. This
+/// drafts the start of that prompt, naming the peer, and leaves the rest to
+/// the operator, who reads it and sends it with Send or Steer like any other
+/// draft. It goes into the composer the way a returned prompt does
+/// (`Returned`): put in an empty editor, or after what the operator has
+/// already typed, and never over it. Nothing is sent by this call.
+///
+/// The peer's identity is read from the page's own piece for `key`, which is
+/// the daemon's host-bound origin, and the page holds no other copy. A key
+/// no piece has (the message was cut from the window) is refused with a
+/// notice.
+///
+/// Each call adds one small entry to the list the composer's element reads,
+/// which is a click's worth of text and is bounded by how often an operator
+/// presses a button.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.reply(model, "0000000000000012")
+/// ```
+pub fn reply(
+  model: Model(socket),
+  key: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case list.find_map(model.view.pieces, peer_named(_, key)) {
+    Error(Nil) ->
+      refused(
+        model,
+        "That message is no longer on the page, so no reply was started.",
+      )
+    Ok(draft) -> {
+      let number = model.view.returns + 1
+      #(
+        Model(
+          shared: Shared(..model.shared, answer: ""),
+          view: View(
+            ..model.view,
+            refusal: None,
+            outcome: "A reply is in the composer. Add your words and send it.",
+            returns: number,
+            returned: list.append(model.view.returned, [
+              Returned(number:, text: draft),
+            ]),
+          ),
+        ),
+        effect.none(),
+      )
+    }
+  }
+}
+
+// The start of a prompt asking for a reply, when `piece` is the peer message
+// drawn under `key`. The identity is the daemon's, and goes through the
+// terminal's hygiene because the operator sends it on as text.
+fn peer_named(piece: turns.Piece, key: String) -> Result(String, Nil) {
+  case piece {
+    turns.Peer(key: found, session:, strand:, ..) if found == key ->
+      Ok(
+        "Reply to the peer message from session "
+        <> text_hygiene.single_line(session)
+        <> ", strand "
+        <> text_hygiene.single_line(strand)
+        <> ", with peer_send: ",
+      )
+    turns.Peer(..)
+    | turns.Plain(..)
+    | turns.Work(..)
+    | turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Missed(..)
+    | turns.Commentary(..) -> Error(Nil)
+  }
+}
+
 // An input the page refused before it became a command. The refusal stays
 // until the operator's next input.
 fn refused(
@@ -1712,6 +1945,44 @@ pub fn pending(model: Model(socket)) -> List(approval.Review) {
   })
 }
 
+/// The advisor's nudges that have not reached the primary, as the last read
+/// of the queue found them (`session_view/advisor_pending`), or `None`
+/// before any read. The shared step keeps it as the terminal does: it reads
+/// again when the primary settles and drops it when the primary starts a
+/// run, since that run's prompt takes the queue.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // nudges.view(component.pending_nudges(model))
+/// ```
+pub fn pending_nudges(model: Model(socket)) -> Option(advisor_pending.Board) {
+  model.shared.nudges
+}
+
+/// The session goal as the server last rendered it, or `None` before any
+/// read. `None` is not "no goal is pinned": that is `goal_view.NoGoal`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.goal(model)
+/// ```
+pub fn goal(model: Model(socket)) -> Option(goal_view.Board) {
+  model.shared.goal
+}
+
+/// How many of the controls' forms have sent a command, which keys them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.sent_forms(model)
+/// ```
+pub fn sent_forms(model: Model(socket)) -> Int {
+  model.view.sent_forms
+}
+
 /// What the page last told the operator: its own refusal of an input if
 /// there is one, otherwise the daemon's reply to the last command, otherwise
 /// what the session said when that command ran.
@@ -1833,8 +2104,9 @@ pub fn session_id(model: Model(socket)) -> String {
 }
 
 /// The observer's page: the heading, the agent strip, the lane, the todo
-/// panel when the strand has a board or a reviewer is running, and a fixed
-/// line saying the page is read-only. Its one event handler is the lane's
+/// panel when the strand has a board or a reviewer is running, the advisor's
+/// pending nudges when any are queued, and a fixed line saying the page is
+/// read-only. Its one event handler is the lane's
 /// "Load older" button, whose message asks for a read and nothing else; the
 /// page socket admits that one event from an observer and drops every other
 /// frame (protocol-change/051, the addendum on history paging).
@@ -1854,6 +2126,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     strip.view(model.view.strip),
     lane.view(model.view.pieces, live(model), top(model), OlderRequested),
     plan(model),
+    nudges.view(pending_nudges(model)),
     html.p([attribute.class("observer-bar")], [
       html.text(
         "Observer · read-only · you can follow this session; ask the owner for operator access",
