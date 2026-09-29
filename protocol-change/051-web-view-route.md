@@ -2514,6 +2514,9 @@ process, and `ui_socket.ticket_for` answers it. Each step is made afresh with
 the digest of the credential the page was admitted under, and none is read
 from the page:
 
+0. The asking page must still be open, which also yields its deadline for the
+   ticket (below). A page that ended but whose socket is still up mints
+   nothing.
 1. The identity must parse as a canonical session identity.
 2. `manager.session_authority` must find a membership of the page's principal
    in that session (an owner holds every active session). It is the check

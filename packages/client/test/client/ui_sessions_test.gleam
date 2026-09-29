@@ -182,6 +182,29 @@ pub fn a_switched_page_ends_no_later_than_the_page_it_left_test() {
   assert looked_up(sessions, page.cookie) == Error(Nil)
 }
 
+// A switch ticket exchanged after the page that minted it ended opens
+// nothing and displaces nothing: it is refused as unknown, and the
+// principal's live pages stay.
+pub fn a_switch_ticket_outliving_its_source_opens_no_page_test() {
+  let time = clock()
+  let sessions = table(time)
+  let held =
+    list.map(list.repeat(Nil, ui_sessions.max_pages), fn(_) {
+      let assert Ok(redeemed) =
+        ui_sessions.redeem(sessions, mint(sessions, "s4"), "s4")
+        as "the ticket is redeemed"
+      redeemed
+    })
+  let assert Ok(issued) = ui_sessions.mint_before(sessions, grant("s4"), 30_000)
+    as "a switch ticket is minted"
+  process.send(time, Advance(30_000))
+  assert ui_sessions.redeem(sessions, issued.ticket, "s4")
+    == Error(ui_sessions.UnknownTicket)
+  list.each(held, fn(page) {
+    assert looked_up(sessions, page.cookie) == Ok(grant("s4"))
+  })
+}
+
 fn redeem(sessions, principal: String, session: String) {
   let assert Ok(issued) =
     ui_sessions.mint(sessions, grant_for(principal, session))

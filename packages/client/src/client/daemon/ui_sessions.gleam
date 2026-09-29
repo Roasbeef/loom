@@ -462,6 +462,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           process.send(reply, Error(OtherSession))
           actor.continue(State(..state, tickets:))
         }
+
+        // A switch ticket minted in the last minute of its source page's life
+        // can outlive it. The page it would open is already past its
+        // deadline, so it is refused as an unknown ticket before it can make
+        // room by displacing one of the principal's live pages.
+        Ok(Ticket(until: Some(bound), ..)) if bound <= now -> {
+          process.send(reply, Error(UnknownTicket))
+          actor.continue(State(..state, tickets:))
+        }
+
         Ok(Ticket(grant:, until:)) -> {
           let ends = case until {
             Some(bound) -> int.min(bound, now + state.settings.session_ms)
