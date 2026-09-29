@@ -1,6 +1,7 @@
 //// The parts of a client step's message that belong to the session rather
-//// than to any one host: the clock readings an input is applied at, and
-//// the commands an operator gives the session.
+//// than to any one host: the clock readings an input is applied at, the
+//// commands an operator gives the session, and the whole-event message
+//// `session_view/step.update` reduces for a host with no surfaces of its own.
 ////
 //// A host's own message names what happened in its own terms, keys and a
 //// pointer for the terminal (`tui/msg`) and DOM events for the web view,
@@ -18,7 +19,9 @@
 //// `session_view/model` in the import graph.
 
 import session_view/approval
+import session_view/attempt
 import session_view/command
+import session_view/connection_event
 import session_view/operator
 
 /// The clock readings one event is applied at.
@@ -75,4 +78,46 @@ pub type Command {
   /// End the session's half of the attachment: close the adopted lane and
   /// mark the session as ending. The host cancels its own work after it.
   Quit
+}
+
+/// What a host with no surfaces of its own hands the shared step
+/// (`step.update`): traffic it received, or one event to reduce.
+///
+/// The two are separate messages because they are separate moments. Traffic
+/// is received when the transport delivers it, and reducing it waits for an
+/// input, which carries the clock readings the reducers run at. A host that
+/// wakes on arrival, as the web view does, sends `Arrived` and then an
+/// `Input` for the same wake.
+@internal
+pub type Msg(source) {
+  /// One event and the readings it is applied at. The step reduces it.
+  Input(at: Stamp, event: Event)
+
+  /// Traffic the host received, oldest first. The step files it and reduces
+  /// nothing.
+  Arrived(arrivals: List(Arrival(source)))
+}
+
+/// One unit of received traffic, in the terms of the buffer it is filed
+/// into.
+@internal
+pub type Arrival(source) {
+  /// A conversation socket's message, and the source it was read from. A
+  /// message from a source the record no longer reads is dropped
+  /// (`admission.file_frame`).
+  Frame(source: source, message: connection_event.Message)
+
+  /// One recorded attempt event, for a host that replays a recording.
+  Replayed(event: attempt.Event)
+}
+
+/// What one `Input` does.
+@internal
+pub type Event {
+  /// The host's wake-up: the clocks advance, the inbox is drained, the lane
+  /// ticks and the waiting reads are sent.
+  Ticked
+
+  /// The operator acted, in the session's terms.
+  Acted(command: Command)
 }

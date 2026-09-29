@@ -342,6 +342,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
             ..model.shared,
             inbox: inbox,
             peer: Attached,
+            ended: None,
             channel: Some(channel),
             captured: None,
             note_board: None,

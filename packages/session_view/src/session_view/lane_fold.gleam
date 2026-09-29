@@ -387,6 +387,7 @@ pub fn apply_channel_update(
           Shared(
             ..session_model.record_surface(discarded, GoalReleased),
             peer: after_close(shared.peer),
+            ended: Some(reason),
             scrollback: history_view.cancel(shared.scrollback),
             streams: [],
             tool_tails: [],

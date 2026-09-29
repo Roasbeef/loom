@@ -576,6 +576,7 @@ pub fn new_model_with_clock(
       session_label: None,
       inbox: buffered.new(inbox),
       peer: Preview,
+      ended: None,
       channel: None,
       captured: None,
       last_capture: session_channel.Requested,
