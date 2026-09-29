@@ -32,6 +32,29 @@ check-gleam: binaries ## Full gate for the Gleam packages only
 check-%: binaries ## Full gate for one package, e.g. make check-machine
 	@scripts/check.sh $*
 
+# The gates a change can affect: the static gates, the changed packages and
+# every package that builds against or reads them, derived from the
+# gleam.toml path dependencies. Build machinery, a manifest, or a change
+# reaching most packages selects the full check instead. `make affected`
+# prints the selection and its reasons without running anything.
+# docs/execution.md section 4 says when this is enough to merge.
+BASE ?= origin/main
+
+# `check-affected` also matches the check-% pattern. Make prefers an
+# explicit rule to a pattern rule, so it never reaches scripts/check.sh as
+# a package named "affected".
+.PHONY: affected
+affected: ## Print the gates a change against BASE can affect (BASE=origin/main)
+	@python3 scripts/affected.py --base "$(BASE)"
+
+.PHONY: check-affected
+check-affected: ## Run only the gates a change against BASE can affect (BASE=origin/main)
+	@bash scripts/check_affected.sh "$(BASE)"
+
+.PHONY: model-check
+model-check: ## Check the P protocol models under protocol/models (needs the P tool)
+	@bash scripts/model_check.sh
+
 # The real-helper suites in broker, tools, codemode and conformance run the
 # helper `make sandbox` builds and never compile one themselves, so every
 # target that runs them builds it first. Tests that each ran their own
