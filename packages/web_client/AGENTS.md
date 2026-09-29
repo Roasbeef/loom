@@ -13,6 +13,10 @@ renders again just for it:
 - `<loom-elapsed offset="<ms>">` counts an operation's elapsed time once a
   second, on from a duration the server measured.
 - `<loom-fold>` opens and closes a turn's folded work with no round trip.
+- `<loom-expand>` shows a row compact or in full, as the terminal's `Ctrl+g`
+  does. The server draws both forms as children (`slot="compact"` and
+  `slot="full"`); the element holds one button and the slot the reader chose,
+  with no round trip.
 - `<loom-follow>` is the transcript's scroll container: the page's frame is
   pinned and only it scrolls. It scrolls itself to a row that lands below
   its view while the reader is at the bottom; once the reader scrolls up it
@@ -60,6 +64,16 @@ time builds anything.
   shadow root holds one button carrying the `summary` slot and, while open,
   the default slot. Each toggle emits `fold.toggled_event`
   (`loom-fold-toggled`, bubbling and composed, no data).
+- `expand_rule.Shown` (`Compact` | `Full`), `expand_rule.toggled`, `slot`,
+  `words` and `glyph`, and `expand.Msg` (`Toggled`): the element's shadow
+  root holds one button (fixed words, `aria-expanded`) and the named slot for
+  the state. It starts `Compact`, and the server never renders the state, so
+  a patch leaves the reader's choice alone. Each toggle emits
+  `fold.toggled_event`, so `<loom-follow>` hears it as it hears a fold's: it
+  sets `Reading`, and expanding the newest row at the bottom does not scroll
+  past the button the reader pressed. Collapsing shrinks the lane and the
+  browser fits the scroll position, which the follow rule treats as layout,
+  never as the reader leaving.
 - `follow.Model(reader, watching, anchor)` (`follow_rule.Reader` holds
   position, gap, top, extent and touched, and `follow_rule` moves it),
   `follow_rule.Position` (`Following` | `Reading`) and `follow.Msg` (`Connected`,
@@ -145,9 +159,9 @@ time builds anything.
 
 ## Tests
 
-What the components decide is in three modules that import neither Lustre nor
+What the components decide is in four modules that import neither Lustre nor
 `ffi_dom`: `follow_rule` (the scroll rule, `Reader` and its transitions,
-`keeping`), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,
+`keeping`), `expand_rule` (the two states and the button's words), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,
 `joined`, `revealed`) and `duration`. `follow`, `composer` and `elapsed` are
 the elements over them. The split is enforced, not just conventional: Lustre's
 client runtime declares `class LustreEvent extends CustomEvent` at load, Node
