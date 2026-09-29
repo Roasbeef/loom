@@ -29,6 +29,15 @@
 #      `color:var(--color-signal)` is text in a colour that was not held to
 #      the ratio, so it must name `--color-signal-text`.
 #   3. `--color-fg-faint` is never text.
+#   4. The theme toggle's two light palettes agree, and every token reaches
+#      each shadow root. The stylesheet writes the light palette twice, once
+#      for a system that prefers light and once for `data-theme="light"`,
+#      because CSS cannot share the two; they must declare the same tokens with
+#      the same values. And a `:host` rule sets each token to `inherit`, so a
+#      shadow root takes the value from the document's root and not the dark
+#      palette Tailwind writes on `:host`; a token with no line there stays dark
+#      inside every element when the reader picks light (docs/design-notes/
+#      web-design.md, section 6.5).
 #
 # The ratio is WCAG's: the relative luminance of each colour, computed in
 # awk from the tokens' hex values, and (lighter + 0.05) / (darker + 0.05).
@@ -81,6 +90,8 @@ ratios() {
 		# The switch is one-way: every token after the light block is read as
 		# a light value, so the stylesheet must keep that block last.
 		/prefers-color-scheme: light/ { theme = "light"; next }
+		/^[ \t]*:root\[data-theme="light"\][ \t]*\{[ \t]*$/ { theme = "manual"; next }
+		/^[ \t]*:host[ \t]*\{[ \t]*$/ { theme = "host"; next }
 		BEGIN { theme = "dark" }
 		/^[ \t]*--color-[a-z0-9-]+: #[0-9a-fA-F]{6};/ {
 			name = $1; sub(/^--color-/, "", name); sub(/:$/, "", name)
@@ -102,6 +113,48 @@ ratios() {
 			}
 		}
 	' "$1"
+}
+
+# agreement <css>: print `token problem` for each token the toggle's two light
+# palettes disagree on, and for each token with no `inherit` line in the
+# `:host` rule. The dark palette is the `@theme` block, before the light media
+# query; the palette for a forced light is the block headed
+# `:root[data-theme="light"]`, and the `:host` rule is headed `:host {`.
+agreement() {
+	awk '
+		BEGIN { theme = "dark" }
+		/prefers-color-scheme: light/ { theme = "light"; next }
+		/^[ \t]*:root\[data-theme="light"\][ \t]*\{[ \t]*$/ { theme = "manual"; next }
+		/^[ \t]*:host[ \t]*\{[ \t]*$/ { theme = "host"; next }
+		/^[ \t]*--color-[a-z0-9-]+: #[0-9a-fA-F]{6};/ {
+			name = $1; sub(/:$/, "", name)
+			hexvalue = $2; sub(/;$/, "", hexvalue)
+			value[theme, name] = tolower(hexvalue)
+			seen[name] = 1
+		}
+		/^[ \t]*--(color|shadow)-[a-z0-9-]+: inherit;/ {
+			name = $1; sub(/:$/, "", name)
+			inherits[name] = 1
+			seen[name] = 1
+		}
+		END {
+			seen["--shadow-card"] = 1
+			for (name in seen) {
+				if (!(("light", name) in value) && !(("manual", name) in value) \
+					&& !(("dark", name) in value)) {
+					if (!(name in inherits)) print name, "is not declared"
+					continue
+				}
+				if ((("light", name) in value) != (("manual", name) in value))
+					print name, "is in one light palette and not the other"
+				else if (("light", name) in value \
+					&& value["light", name] != value["manual", name])
+					print name, "differs between the two light palettes"
+				if (!(name in inherits))
+					print name, "has no inherit line in the :host rule"
+			}
+		}
+	' "$1" | LC_ALL=C sort
 }
 
 # check <css>: print each violation, and return non-zero if there was one.
@@ -126,6 +179,11 @@ check() {
 			failed=1
 		fi
 	done < <(ratios "$css")
+
+	while IFS= read -r line; do
+		echo "web_client_contrast_check: $line" >&2
+		failed=1
+	done < <(agreement "$css")
 
 	if grep -nE "(^|[;{ ])color:var\\(--color-($marks)\\)" "$css" >&2; then
 		echo "web_client_contrast_check: a rule sets text from a mark token; use its -text token" >&2
@@ -169,8 +227,20 @@ self_test() {
 	{ cat "$default_css"; printf '.x{color:var(--hue,red);}\n'; } >"$tmp/raw-hue.css"
 	{ cat "$default_css"; printf '.x{color:var(--color-fg-faint);}\n'; } >"$tmp/faint.css"
 
+	# The forced-light palette drifting from the media query's, in one token.
+	awk '/--color-bg: #f6f5f2;/ { n++; if (n == 2) sub(/#f6f5f2/, "#f6f5f3") } { print }' \
+		"$default_css" >"$tmp/light-drift.css"
+
+	# A token with no inherit line in the :host rule.
+	grep -v -- '--color-peer: inherit;' "$default_css" >"$tmp/no-inherit.css"
+
+	# A token in the media query's light palette and not in the forced one.
+	awk '/--color-code: #f1efe9;/ { n++; if (n == 2) next } { print }' \
+		"$default_css" >"$tmp/light-lacks.css"
+
 	local name
-	for name in light-mark-as-text dark-quiet missing raw-mark raw-hue faint; do
+	for name in light-mark-as-text dark-quiet missing raw-mark raw-hue faint \
+		light-drift no-inherit light-lacks; do
 		if check "$tmp/$name.css" >/dev/null 2>&1; then
 			echo "web_client_contrast_check: self-test: $name passed the check" >&2
 			return 1
