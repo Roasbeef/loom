@@ -140,7 +140,12 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   forwards only the
   click and submit events its page attaches (`operator_accepts`) and takes
   frames up to `operator_frame_limit` (1 MiB). It closes on the relay's
-  `Ended` and shuts the component down on close.
+  `Ended`, with the close code `web_view/ending.close` gives that reason (1000
+  after a quarter second for an ending the person resolves, 4000, through
+  `mist.stop_abnormal`, for one that may clear), and shuts the component down
+  on close. The two failures in `admit` that are the daemon's alone (the
+  permit's transfer, the component's start) also close with 4000, which
+  Lustre's client runtime retries; a 1000 there left the tab empty for good.
 - `daemon/ui_relay`: the page's stand-in for a session socket. `start`
   returns before the attach, which runs as the relay's first message and
   answers on the component's `opened` subject, so a slow gateway cannot
@@ -151,8 +156,16 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `while_open(frame_authority, still_open)`, so revocation, expiry,
   replacement and a role change all end the page. It ends on `Shut`, the
   component's exit, the gateway's exit and the gateway's `close`,
-  detaching in each; `ui_socket` closes two component ticks after the
-  gateway's end so the ended state is drawn.
+  detaching in each; `ui_socket` closes a quarter second after the
+  gateway's end so the ended state is drawn. Its reasons are
+  `web_view/ending` strings: the gateway's exit is `SessionStopped`; a
+  `close` (or a request the gateway answered as closed) makes the relay ask
+  the attachment's check again, and a UI session that is gone is `PageEnded`
+  where any other refusal is `AccessRevoked`; a refused attach is `NotOpen`
+  unless the check named the page's end, and it now also calls `ended`, so the
+  socket closes. `server`'s refused page requests answer with
+  `page.refusal` (`refused_page`) under the status they always had; the
+  session identity in it is drawn only if it parses as a canonical one.
 
 ## Purpose
 

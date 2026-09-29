@@ -26,6 +26,17 @@
 //// When the relay ends from the gateway's side (the session stopped, or the
 //// attachment was revoked) it tells this socket, which closes, so a revoked
 //// page does not stay open showing a transcript it may no longer read.
+////
+//// The close code is the message to Lustre's client runtime, which
+//// reconnects after any code but 1000 and treats 1000 as final. A page that
+//// ended for a reason the person resolves (a newer link replaced it, access
+//// was revoked, the session stopped) closes with 1000 after the component
+//// has drawn why, so the notice stays and no reconnect is refused every ten
+//// seconds. A failure the daemon may clear by itself (the session was still
+//// opening, the permit transfer or the component's start ran over its
+//// budget) closes with 4000, which the runtime retries. `web_view/ending`
+//// decides which is which, one closed type for both the words and the code
+//// (protocol-change/051, the addendum on an ended page).
 
 import client/daemon/manager
 import client/daemon/root
@@ -48,6 +59,7 @@ import mist
 import session_view/snapshot
 import storage/access
 import web_view/component
+import web_view/ending
 import web_view/operator_page
 
 /// The inbound frame limit on an operator's page socket: a text prompt fits,
@@ -72,8 +84,9 @@ type Signal {
   // The relay ended from the gateway's side; the page closes shortly.
   Ended(reason: String)
 
-  // The delayed close after `Ended`, once the component has drawn its end.
-  Stop
+  // The delayed close after `Ended`, once the component has drawn its end,
+  // with the close code that ending calls for.
+  Stop(close: ending.Close)
 }
 
 // A serving page is the two things the socket does with its component:
@@ -230,7 +243,7 @@ pub fn upgrade(
           | Pending(_), mist.Shutdown
           | Pending(_), mist.Custom(Client(_))
           | Pending(_), mist.Custom(Ended(_))
-          | Pending(_), mist.Custom(Stop)
+          | Pending(_), mist.Custom(Stop(_))
           -> mist.stop()
 
           // The browser's client runtime speaks Lustre's protocol. What the
@@ -251,14 +264,21 @@ pub fn upgrade(
           // patch that draws the ended state; closing now could drop that
           // patch, which reaches this socket through the component rather
           // than from the relay. `ended_grace_ms` covers the component's
-          // one message and its broadcast.
-          Serving(signals:, ..) as serving, mist.Custom(Ended(_)) -> {
-            process.send_after(signals, ended_grace_ms, Stop)
+          // one message and its broadcast. The reason picks the close code:
+          // a reason that names no ending is a failure the person resolves.
+          Serving(signals:, ..) as serving, mist.Custom(Ended(reason)) -> {
+            let close =
+              ending.close(ending.from_reason(
+                reason,
+                otherwise: ending.ConnectionFailed,
+              ))
+            process.send_after(signals, ended_grace_ms, Stop(close))
             mist.continue(serving)
           }
 
-          Serving(..), mist.Custom(Stop)
-          | Serving(..), mist.Binary(_)
+          Serving(..), mist.Custom(Stop(close)) -> closing(close)
+
+          Serving(..), mist.Binary(_)
           | Serving(..), mist.Closed
           | Serving(..), mist.Shutdown
           | Serving(..), mist.Custom(Admit)
@@ -353,7 +373,11 @@ fn admit(
       })
   }
   case started {
-    Error(Nil) -> mist.stop()
+    // Neither failure is the person's to resolve: the daemon's permit
+    // transfer was slow, or the component's start ran over its budget. The
+    // close is one the client runtime retries, so a tab that hit one is not
+    // left empty for good behind a final close (1000).
+    Error(Nil) -> closing(ending.close(ending.DaemonNotReady))
     Ok(Page(forward:, shutdown:, frames:)) ->
       mist.continue(Serving(forward, shutdown, signals))
       |> mist.with_selector(
@@ -361,6 +385,19 @@ fn admit(
         |> process.select(signals)
         |> process.merge_selector(process.map_selector(frames, Client)),
       )
+  }
+}
+
+// Ends the page's socket with the close code the ending calls for. Mist
+// sends 1000, which Lustre's client runtime treats as final, when a handler
+// returns `stop`, and 4000, which it retries after a backoff, when a handler
+// returns `stop_abnormal` (the user-message path of mist's websocket
+// module). The abnormal stop also exits this process abnormally, which takes
+// the linked component down with it; the relay follows on its monitor.
+fn closing(close: ending.Close) -> mist.Next(Phase, Signal) {
+  case close {
+    ending.Final -> mist.stop()
+    ending.Retry -> mist.stop_abnormal("the page may retry")
   }
 }
 

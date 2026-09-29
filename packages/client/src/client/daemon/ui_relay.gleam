@@ -51,6 +51,16 @@
 ////   revocation). The attachment's `close` reaches the relay, which reports
 ////   the end so the page's socket closes, and exits.
 ////
+//// The reason it reports is one of `web_view/ending`'s fixed strings, so the
+//// component draws a closed reason class and the page's socket picks the
+//// close code from it. The gateway does not say why it closed an attachment,
+//// so the relay asks the attachment's own check once more: a UI session that
+//// is gone is `PageEnded` (a newer link replaced the page, or its eight
+//// hours ran out), and any other refusal is `AccessRevoked`. The gateway
+//// exiting is `SessionStopped`. A refused attach is reported the same way,
+//// as `NotOpen` unless the check named the page's end, and it also tells the
+//// page's socket, which closes with a code the client retries.
+////
 //// Backpressure is the terminal socket's: this mailbox and the component's
 //// are unbounded, and what bounds a slow browser is the page socket's TCP
 //// writes.
@@ -61,6 +71,7 @@ import gleam/erlang/process.{type Pid, type Subject}
 import gleam/result
 import session_view/connection_event
 import storage/access
+import web_view/ending.{type Ending}
 import weft/actor
 
 /// What the relay needs to attach: the gateway, the binding, the page's
@@ -130,7 +141,7 @@ pub fn while_open(
   fn() {
     case open() {
       Ok(Nil) -> check()
-      Error(Nil) -> Error("the page session ended")
+      Error(Nil) -> Error(ending.reason(ending.PageEnded))
     }
   }
 }
@@ -180,6 +191,7 @@ type State {
     connection: gateway.ConnectionHandle,
     inbox: Subject(connection_event.Message),
     ended: fn(String) -> Nil,
+    check: fn() -> Result(#(access.Principal, access.Authority), String),
   )
 }
 
@@ -249,16 +261,23 @@ fn attached(state: State) -> actor.Next(State, Message) {
           process.self(),
         )
       case connection {
+        // The gateway refused the attach. The page is told the ending, not
+        // the gateway's words, both through `opened`, which the component
+        // draws, and through `ended`, which closes the page's socket with
+        // the code that ending calls for.
         Error(reason) -> {
           upgrade_log.refused(upgrade_log.Page, "attach", reason)
-          process.send(opened, Error(reason))
+          let why =
+            ending.reason(ending.from_reason(reason, otherwise: ending.NotOpen))
+          process.send(opened, Error(why))
+          ended(why)
           actor.stop()
         }
         Ok(connection) -> {
           let gateway_watch =
             process.monitor(gateway.connection_pid(connection))
           process.send(opened, Ok(Relay(self)))
-          actor.continue(State(connection:, inbox:, ended:))
+          actor.continue(State(connection:, inbox:, ended:, check: attach.check))
           |> actor.with_selector(
             process.new_selector()
             |> process.select(self)
@@ -328,7 +347,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           process.send(inbox, connection_event.Incoming(reply))
           actor.continue(state)
         }
-        Error(reason) -> end(state, reason)
+        Error(_) ->
+          end(state, diagnosed(state, passing: ending.ConnectionFailed))
       }
 
     State(inbox:, ..), Push(frame:) -> {
@@ -351,15 +371,40 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     // The two ends that come from the gateway's side. The page's socket is
     // told, so it closes and shuts the component down.
-    State(..), GatewayDown(_) -> end(state, "the session ended")
-    State(..), Closed -> end(state, "access was revoked")
+    State(..), GatewayDown(_) -> end(state, ending.SessionStopped)
+    State(..), Closed ->
+      end(state, diagnosed(state, passing: ending.AccessRevoked))
   }
 }
 
-fn end(state: State, reason: String) -> actor.Next(State, Message) {
+// Why the gateway ended the attachment. It ended it because the attachment's
+// `check` refused, and the gateway does not say what the check said, so the
+// relay asks again. A UI session that is gone answers with the page's own
+// ending, and any other refusal (a credential that no longer authenticates,
+// a membership that is gone) is a revoked access. A check that now passes
+// was refused only while the membership was changing, or the request failed
+// for another reason, and `passing` says which of those the caller saw. The
+// check reads the page's authorization and changes nothing, and this runs
+// once, as the relay ends.
+fn diagnosed(state: State, passing passing: Ending) -> Ending {
+  case state {
+    Waiting(..) -> passing
+    State(check:, ..) ->
+      case check() {
+        Error(reason) ->
+          ending.from_reason(reason, otherwise: ending.AccessRevoked)
+        Ok(_) -> passing
+      }
+  }
+}
+
+// The relay's last message to the page, in the reason string the session
+// engine carries and the page's component reads back as the same ending.
+fn end(state: State, why: Ending) -> actor.Next(State, Message) {
   case state {
     Waiting(..) -> actor.stop()
-    State(connection:, inbox:, ended:) -> {
+    State(connection:, inbox:, ended:, ..) -> {
+      let reason = ending.reason(why)
       process.send(inbox, connection_event.Closed(reason))
       ended(reason)
       gateway.connection_detach(connection)
