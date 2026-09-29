@@ -31,6 +31,7 @@ import support/daemon_observation
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_proc
 import support/internal/ffi_ws
+import support/shipped_server
 import tui/bootstrap
 import tui/claim
 import tui/daemon
@@ -53,7 +54,7 @@ pub fn daemon_shipped_claim_flow_test_() -> EunitTest {
   // The runner scales EUnit timeouts by ten: 120 seconds around the 70-second
   // body and its independent native cleanup.
   Timeout(12, fn() {
-    case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+    case shipped_server.from_environment() {
       Error(Nil) ->
         io.println_error(
           "SKIP shipped claim: LOOM_BOOTSTRAP_E2E_SERVER is unset",

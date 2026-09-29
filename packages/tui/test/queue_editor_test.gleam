@@ -285,7 +285,7 @@ pub fn queue_inspector_preserves_composer_and_attachments_test() {
 
   // The slash command consumes its own text, while pasted context remains
   // owned by the ordinary composer rather than becoming a queue mutation.
-  assert command.parse("/queue") == command.QueueInspect
+  assert command.parse("/queue") == command.Surface(command.QueueInspect)
   let slash =
     key(
       tui_model.Model(

@@ -18,6 +18,15 @@
 //// result through `tui_model.run_shared` and applies what it recorded with
 //// `inbound.settle_surfaces`, at the point of the call.
 ////
+//// `act` is the entry: it carries out one `msg.Command`. A submitted draft
+//// that parsed as a `command.Session` command is dispatched here too
+//// (`submit`), exhaustively over the session's commands; the host has
+//// already acted on any `command.Surface` command itself. A draft that the
+//// dispatch consumes at once records `DraftTaken`, saying whether it became
+//// a prompt or a command, and the host decides what that means for its
+//// editor, its input history and its submission mode. A draft locked behind
+//// the lane is consumed when the lane sends it, as `drafts_sent` records.
+////
 //// A change of active strand is three units rather than one, because the
 //// lane's cancellation of unsent frames produces updates, and under the
 //// ruling on question 11 the host applies each update and its facts before
@@ -27,20 +36,35 @@
 //// it or asks for its configuration. The host applies `focus`'s facts before
 //// `load_strand` runs, so the cut sees the workspace the switch restored.
 
+import core/message
+import gleam/bool
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import session_view/approval
 import session_view/command
+import session_view/composer
 import session_view/operator
+import session_view/pasted_image
 import session_view/protocol
 import session_view/session_channel
+import session_view/text_hygiene
+import session_view/transcript_line.{
+  type Submission, Assistant, HeldPrompt, Interjection, Line, User,
+}
 import tui/event_fold
 import tui/lane_fold
+import tui/msg
 import tui/outbound
 import tui/session_model.{
-  type Shared, Interrupt, InterruptRequested, ReviewAnswered, Shared,
+  type DraftTaking, type Shared, Attached, ComposerSubmission, Disconnected,
+  DraftTaken, Interrupt, InterruptRequested, LookupRequested, OverlaySubmission,
+  Preview, Replaying, ReviewAnswered, Shared, TakenAsPrompt, TakenByCommand,
+  TranscriptCleared,
 }
+import tui/surfaces
 
 /// Sends an interrupt for the active strand's running operation, once.
 ///
@@ -292,4 +316,597 @@ pub fn quit(
     None -> shared
   }
   Shared(..shared, quit: True)
+}
+
+/// Carries out one operator command over the session state.
+///
+/// This is the shared step's entry for a command: the host has decided from
+/// its own controls what the operator meant, and every command here is one
+/// call that reads and writes `Shared` alone. What a command did to a
+/// host's own surfaces is recorded as a `SurfaceFact`, which the host
+/// applies after the call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = commands.act(shared, msg.Interrupt)
+/// ```
+@internal
+pub fn act(
+  shared: Shared(socket, recorder, source, replay_source),
+  command: msg.Command,
+) -> Shared(socket, recorder, source, replay_source) {
+  case command {
+    msg.Submit(draft:, command:, delivery:) ->
+      submit(shared, draft, command, delivery)
+    msg.Interrupt -> interrupt_active(shared)
+    msg.Stop(strand:) -> stop_strand(shared, strand)
+    msg.Decide(review:, choice:) -> decide_review(shared, review, choice)
+    msg.SelectModel(name:) -> select_model(shared, name)
+    msg.Quit -> quit(shared)
+  }
+}
+
+/// Submits a draft that parsed as a session command.
+///
+/// A mutation the attachment cannot accept is refused before encoding, and
+/// the draft is kept. Otherwise a mutation sent through a live lane is
+/// marked `ComposerSubmission`, so the draft is consumed only when the lane
+/// sends it (`drafts_sent`); any other command consumes it now, and records
+/// `DraftTaken` for the host's editor. A draft whose frame is still queued
+/// behind the lane stays locked; otherwise the marker is released.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared =
+///   commands.submit(shared, "hello", command.Prompt("hello"), operator.Prompt)
+/// ```
+@internal
+pub fn submit(
+  shared: Shared(socket, recorder, source, replay_source),
+  draft: String,
+  command: command.Session,
+  delivery: operator.Delivery,
+) -> Shared(socket, recorder, source, replay_source) {
+  case outbound.mutation_refusal(shared, command) {
+    Some(reason) -> session_model.append_error(shared, reason)
+    None -> {
+      // The marker scopes the encoder call and, only if the frame is queued,
+      // the later send. The draft itself stays where the host keeps it.
+      let prepared = case
+        outbound.mutating_submission(shared, command),
+        shared.peer
+      {
+        True, Attached ->
+          Shared(..shared, pending_submission: Some(ComposerSubmission))
+        _, _ -> shared
+      }
+      case composer.has_images(prepared.attachments) {
+        True -> submit_with_images(prepared, draft, command)
+        False -> dispatch(prepared, draft, command, delivery)
+      }
+      |> release_submission
+    }
+  }
+}
+
+/// Releases the submission marker unless a frame is still queued behind the
+/// lane, which keeps the draft locked until the lane sends or refuses it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = commands.release_submission(shared)
+/// ```
+@internal
+pub fn release_submission(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel {
+    Some(channel) ->
+      case session_channel.has_unsent(channel) {
+        True -> shared
+        False -> Shared(..shared, pending_submission: None)
+      }
+    None -> Shared(..shared, pending_submission: None)
+  }
+}
+
+// Consumes the draft now, unless the lane will consume it when it sends the
+// frame. The host empties its editor when it applies the fact; a prompt
+// also takes the attachments, which are the session's.
+fn take_draft(
+  shared: Shared(socket, recorder, source, replay_source),
+  taking: DraftTaking,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.pending_submission, taking {
+    Some(ComposerSubmission), _ -> shared
+    Some(OverlaySubmission), TakenByCommand | None, TakenByCommand ->
+      session_model.record_surface(shared, DraftTaken(TakenByCommand))
+    Some(OverlaySubmission), TakenAsPrompt | None, TakenAsPrompt ->
+      Shared(..shared, attachments: [])
+      |> session_model.record_surface(DraftTaken(TakenAsPrompt))
+  }
+}
+
+// One session command, dispatched. `shared` is the state the submission
+// was admitted at; `cleared` has consumed the draft as a command and
+// `prompt_cleared` as a prompt, and the arm decides which it continues from.
+fn dispatch(
+  shared: Shared(socket, recorder, source, replay_source),
+  draft: String,
+  command: command.Session,
+  delivery: operator.Delivery,
+) -> Shared(socket, recorder, source, replay_source) {
+  let expanded = composer.expand(draft, shared.attachments)
+  let cleared = take_draft(shared, TakenByCommand)
+  let prompt_cleared = take_draft(shared, TakenAsPrompt)
+  case command {
+    command.Empty ->
+      case shared.attachments {
+        [] -> cleared
+        _ -> send_prompt(prompt_cleared, expanded)
+      }
+    command.Clear ->
+      Shared(
+        ..cleared,
+        transcript: [],
+        records: [],
+        record_cache_epoch: cleared.record_cache_epoch + 1,
+        compact_call_cache: dict.new(),
+        compact_entry_cache: dict.new(),
+        pending_records: [],
+        record_cache_valid: False,
+        // `/clear` empties the local view, and an echo is part of that view
+        // rather than something it is drawn over.
+        queued: [],
+        awaiting_outcome: None,
+        notice: "local view cleared",
+      )
+      |> session_model.record_surface(TranscriptCleared)
+      |> session_model.invalidate_transcript
+    command.Model(name) -> select_model(cleared, name)
+    command.Schedules ->
+      outbound.send_frame(cleared, protocol.schedules(cleared.next_id))
+    command.Unschedule(name:, target:) -> {
+      // An absent target means the strand the operator is looking at,
+      // which is the row the listing above the prompt just printed. A
+      // schedule a parent set onto a subagent needs the second word.
+      let target = option.unwrap(target, cleared.active_strand)
+      session_model.append_system(
+        cleared,
+        "cancelling schedule " <> name <> " on " <> target,
+      )
+      |> outbound.send_frame(protocol.schedule_cancel(
+        cleared.next_id,
+        target,
+        name,
+      ))
+    }
+    command.Approvals(None) ->
+      list.fold(
+        lane_fold.approval_lines(cleared.approvals),
+        cleared,
+        fn(shared, line) { session_model.append_system(shared, line.text) },
+      )
+
+    // The host opens the record when the lookup answers, so it is told
+    // which record was asked for.
+    command.Approvals(Some(id)) ->
+      session_model.record_surface(cleared, LookupRequested(id))
+      |> lane_fold.request_decisions([id])
+    command.AddDirectory(path, access) ->
+      outbound.send_frame(
+        cleared,
+        protocol.add_directory(cleared.next_id, path, access),
+      )
+    command.Approve(id) -> decide(cleared, id, operator.AllowOnce)
+    command.Deny(id) -> decide(cleared, id, operator.Deny)
+    command.Fork(name) ->
+      session_model.append_system(cleared, "fork queued: " <> name)
+      |> outbound.send_frame(protocol.fork(
+        cleared.next_id,
+        cleared.active_strand,
+        name,
+      ))
+    command.Effort(level) ->
+      session_model.append_system(
+        cleared,
+        "reasoning level for " <> cleared.active_strand <> ": " <> level,
+      )
+      |> outbound.send_frame(protocol.set_thinking(
+        cleared.next_id,
+        cleared.active_strand,
+        level,
+      ))
+
+    // Each mutation's confirmation waits for the board that commits it.
+    // The server answers every goal mutation with the fresh board or with
+    // a refusal, so the line belongs on the reply: printed on the way out
+    // it claimed a goal was pinned and was then followed by the sentence
+    // saying no advisor is routed.
+    command.GoalSet(objective:, token_budget:) ->
+      surfaces.confirming(
+        cleared,
+        "goal pinned · budget "
+          <> int.to_string(token_budget)
+          <> " tokens · /goal --budget N sets it",
+      )
+      |> outbound.send_frame(protocol.goal_set(
+        cleared.next_id,
+        objective,
+        token_budget,
+      ))
+
+    // The confirmation names the command back, because an operator who
+    // mistyped it should see what the harness will run before the reviewer
+    // is shown its result.
+    command.GoalCheck(command: Some(check)) ->
+      surfaces.confirming(cleared, "the goal check is " <> check)
+      |> outbound.send_frame(protocol.goal_check(cleared.next_id, Some(check)))
+    command.GoalCheck(command: None) ->
+      surfaces.confirming(cleared, "the goal check is cleared")
+      |> outbound.send_frame(protocol.goal_check(cleared.next_id, None))
+    command.GoalClear ->
+      surfaces.confirming(cleared, "the session goal is cleared")
+      |> outbound.send_frame(protocol.goal_clear(cleared.next_id))
+    command.GoalPause -> surfaces.submit_goal_action(cleared, command.GoalPause)
+    command.GoalResume ->
+      surfaces.submit_goal_action(cleared, command.GoalResume)
+
+    // The word is shown back because the operator has to see which of
+    // their words was read as the budget, and a goal must never be pinned
+    // to a spend nobody chose.
+    command.GoalBudgetInvalid(word) ->
+      session_model.append_error(
+        cleared,
+        "/goal --budget needs a positive token count, not \""
+          <> word
+          <> "\" · /goal <objective> pins the default budget instead",
+      )
+
+    // The count is shown for the reason the objective's is: the operator has
+    // to know how much to cut, and the two bounds are different numbers.
+    command.GoalCheckTooLong(count) ->
+      session_model.append_error(
+        cleared,
+        "/goal check command is "
+          <> int.to_string(count)
+          <> " characters; the most a goal check may carry is "
+          <> int.to_string(command.check_limit),
+      )
+
+    // The objective is not sent: the server refuses it on the same bound,
+    // and a round trip to be told so is a round trip wasted.
+    command.GoalObjectiveTooLong(count) ->
+      session_model.append_error(
+        cleared,
+        "/goal objective is "
+          <> int.to_string(count)
+          <> " characters; the most a goal may carry is "
+          <> int.to_string(command.objective_limit),
+      )
+    command.Compact ->
+      session_model.append_system(
+        cleared,
+        "compaction queued for " <> cleared.active_strand,
+      )
+      |> outbound.send_frame(protocol.compact(
+        cleared.next_id,
+        cleared.active_strand,
+      ))
+    command.Abort ->
+      session_model.append_system(
+        cleared,
+        "abort queued for " <> cleared.active_strand,
+      )
+      |> outbound.send_frame(protocol.abort(
+        cleared.next_id,
+        cleared.active_strand,
+      ))
+    command.Steer(text) ->
+      send_explicit_steer(
+        prompt_cleared,
+        composer.expand(text, shared.attachments),
+        shared,
+      )
+    command.Queue(text) ->
+      send_follow_up(prompt_cleared, composer.expand(text, shared.attachments))
+    command.Unknown(name) ->
+      session_model.append_error(cleared, "unknown command /" <> name)
+    command.MissingArgument(name) ->
+      session_model.append_error(cleared, "/" <> name <> " needs an argument")
+    command.Prompt(_) ->
+      send_user_text(prompt_cleared, expanded, shared, delivery)
+  }
+}
+
+// Images are new prompt content, never live-turn steering, and
+// `prompt_content` is the only frame that carries them. A session command
+// therefore has nowhere to put an attachment; refusing before the draft is
+// consumed preserves both the instruction and every local attachment.
+// Liveness is not this client's question: `prompt` on a busy strand is held
+// by the daemon and drained when the run settles, so an image prompt goes
+// out and comes back `queued`.
+fn submit_with_images(
+  shared: Shared(socket, recorder, source, replay_source),
+  draft: String,
+  command: command.Session,
+) -> Shared(socket, recorder, source, replay_source) {
+  case command {
+    command.Empty | command.Prompt(_) -> send_image_prompt(shared, draft)
+    command.Model(_)
+    | command.Schedules
+    | command.Unschedule(..)
+    | command.Approvals(_)
+    | command.AddDirectory(..)
+    | command.Approve(_)
+    | command.Deny(_)
+    | command.Fork(_)
+    | command.Effort(_)
+    | command.GoalSet(..)
+    | command.GoalCheck(..)
+    | command.GoalClear
+    | command.GoalPause
+    | command.GoalResume
+    | command.GoalBudgetInvalid(_)
+    | command.GoalObjectiveTooLong(_)
+    | command.GoalCheckTooLong(_)
+    | command.Compact
+    | command.Abort
+    | command.Steer(_)
+    | command.Queue(_)
+    | command.Clear
+    | command.Unknown(_)
+    | command.MissingArgument(_) ->
+      session_model.append_error(
+        shared,
+        "image attachments can only accompany an ordinary prompt",
+      )
+  }
+}
+
+fn send_image_prompt(
+  shared: Shared(socket, recorder, source, replay_source),
+  draft: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  let expanded = composer.expand(draft, shared.attachments)
+  let images = composer.images(shared.attachments)
+  let content = image_prompt_content(expanded, images)
+  send_prompt_content(
+    take_draft(shared, TakenAsPrompt),
+    content,
+    expanded,
+    images,
+  )
+}
+
+/// Builds one ordered user turn without exposing local image paths.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let content = commands.image_prompt_content("look", [image])
+/// ```
+@internal
+pub fn image_prompt_content(
+  text: String,
+  images: List(pasted_image.Image),
+) -> List(message.UserBlock) {
+  let text_blocks = case text {
+    "" -> []
+    _ -> [message.UserText(text, None)]
+  }
+  let image_blocks =
+    list.map(images, fn(image) {
+      let pasted_image.Image(data:, mime_type:, ..) = image
+      message.UserImage(data, mime_type)
+    })
+  list.append(text_blocks, image_blocks)
+}
+
+// The image prompt's echo is expected before the frame goes out, so the
+// entry that commits it retires the echo rather than drawing a second copy.
+// Only a live lane sends; a replay stops where the live client's own work
+// stopped, and the preview answers locally.
+fn send_prompt_content(
+  shared: Shared(socket, recorder, source, replay_source),
+  content: List(message.UserBlock),
+  text: String,
+  images: List(pasted_image.Image),
+) -> Shared(socket, recorder, source, replay_source) {
+  let sent =
+    Shared(
+      ..event_fold.expect_own_turn(shared, HeldPrompt(text)),
+      submitting: Some(shared.active_strand),
+      notice: "image prompt sent to " <> shared.active_strand,
+    )
+  case shared.peer {
+    Attached ->
+      outbound.send_frame(
+        sent,
+        protocol.prompt_content(shared.next_id, shared.active_strand, content),
+      )
+
+    // A replay stops exactly where the live client's local work stopped.
+    // The turn it produced is in the recording and arrives as an entry.
+    Replaying -> sent
+    Disconnected ->
+      session_model.append_error(shared, "no conversation is attached")
+    Preview ->
+      Shared(
+        ..shared,
+        transcript: list.append(shared.transcript, [
+          Line(
+            User,
+            image_prompt_preview(text, images, shared.details_expanded),
+          ),
+          Line(Assistant, "Design-preview echo received."),
+        ]),
+        record_cache_valid: False,
+        notice: "image prompt accepted",
+      )
+      |> session_model.invalidate_transcript
+  }
+}
+
+fn image_prompt_preview(
+  text: String,
+  images: List(pasted_image.Image),
+  details_expanded: Bool,
+) -> String {
+  let text = case text {
+    "" -> []
+    _ -> [composer.transcript_text(text, details_expanded)]
+  }
+  let image_labels =
+    list.map(images, fn(image) {
+      let pasted_image.Image(filename:, mime_type:, byte_size:, ..) = image
+      "[image: "
+      <> text_hygiene.single_line(filename)
+      <> " · "
+      <> mime_type
+      <> " · "
+      <> int.to_string(byte_size)
+      <> " B]"
+    })
+  list.append(text, image_labels) |> string.join("\n")
+}
+
+// An ordinary prompt: held and released after an interrupt, steered into a
+// running strand when the host asked for a steer, and otherwise a prompt,
+// which the daemon holds on a busy strand and runs when it settles.
+fn send_user_text(
+  cleared: Shared(socket, recorder, source, replay_source),
+  text: String,
+  before: Shared(socket, recorder, source, replay_source),
+  delivery: operator.Delivery,
+) -> Shared(socket, recorder, source, replay_source) {
+  case session_model.active_interrupt(before) {
+    Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
+    None ->
+      case session_model.active_strand_live(before), delivery {
+        False, _ -> send_prompt(cleared, text)
+
+        // A prompt aimed at a running strand is held by the daemon and run
+        // when that strand settles, so this is the same frame as the idle
+        // case and needs no command of its own. Only the local echo differs.
+        True, operator.Prompt -> send_prompt(cleared, text)
+        True, operator.Steer -> send_steer(cleared, text)
+      }
+  }
+}
+
+// `/steer` is an explicit instruction about ordering, so a pending interrupt
+// does not quietly turn it into a prompt. The gateway holds a steer at its own
+// priority and a release keeps that priority, which is what the operator asked
+// for (`protocol-change/033`). Only a legacy host without a gateway queue falls
+// back to the client-side hold.
+fn send_explicit_steer(
+  cleared: Shared(socket, recorder, source, replay_source),
+  text: String,
+  before: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  use <- bool.lazy_guard(before.channel != None, fn() {
+    send_steer(cleared, text)
+  })
+  case session_model.active_interrupt(before) {
+    Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
+    None -> send_steer(cleared, text)
+  }
+}
+
+// After an Escape the daemon halts everything it holds for the strand and
+// waits for the operator (`protocol-change/033`). What the operator types
+// next is an ordinary prompt: the gateway appends it to the halted queue and
+// releases the whole batch, so it runs after the held input rather than
+// ahead of it as a steer would. A legacy host without a gateway queue keeps
+// the older client-side hold until the terminal transition.
+fn hold_or_send_interrupt(
+  cleared: Shared(socket, recorder, source, replay_source),
+  before: Shared(socket, recorder, source, replay_source),
+  strand: String,
+  text: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  use <- bool.lazy_guard(before.channel != None, fn() {
+    event_fold.send_prompt_to(cleared, strand, text)
+  })
+  case session_model.active_strand_live(before) {
+    False ->
+      event_fold.send_prompt_to(
+        Shared(..cleared, interrupt: None),
+        strand,
+        text,
+      )
+    True -> {
+      let pending = case before.interrupt {
+        Some(Interrupt(pending: Some(earlier), ..)) ->
+          Some(earlier <> "\n\n" <> text)
+        _ -> Some(text)
+      }
+      Shared(
+        ..cleared,
+        interrupt: Some(Interrupt(strand:, operation: None, pending:)),
+        notice: "steer captured; waiting for stop",
+      )
+    }
+  }
+}
+
+fn send_prompt(
+  shared: Shared(socket, recorder, source, replay_source),
+  text: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  event_fold.send_prompt_to(shared, shared.active_strand, text)
+}
+
+// A steer draws no echo, but the entry it commits is indistinguishable from a
+// drained prompt's, so it is recorded as an interjection: without that, a
+// steer typed while a prompt is held retires the prompt's echo and the
+// operator watches their own line disappear, which is the symptom the echo
+// exists to prevent.
+fn send_steer(
+  shared: Shared(socket, recorder, source, replay_source),
+  text: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  let expected =
+    event_fold.expect_own_turn(shared, steering_submission(shared, text))
+  outbound.send_via(
+    Shared(..expected, notice: "steered " <> shared.active_strand),
+    fn(lane, now) {
+      operator.submit(
+        lane,
+        shared.next_id,
+        shared.active_strand,
+        text,
+        operator.Steer,
+        now,
+      )
+    },
+  )
+}
+
+// Both controls transfer input custody to the modern host queue. Older
+// recordings still account for their original in-operation interjections.
+fn send_follow_up(
+  shared: Shared(socket, recorder, source, replay_source),
+  text: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  let expected =
+    event_fold.expect_own_turn(shared, steering_submission(shared, text))
+  outbound.send_frame(
+    Shared(..expected, notice: "queued after " <> shared.active_strand),
+    protocol.follow_up(shared.next_id, shared.active_strand, text),
+  )
+}
+
+fn steering_submission(
+  shared: Shared(socket, recorder, source, replay_source),
+  text: String,
+) -> Submission {
+  case shared.channel {
+    Some(_) -> HeldPrompt(text)
+    None -> Interjection
+  }
 }

@@ -85,6 +85,7 @@ import simplifile
 import support/enforcement
 import support/internal/ffi_proc
 import support/provider_http as provider
+import support/shipped_server
 import support/tui_driver
 import tui/bootstrap
 import tui/daemon
@@ -258,7 +259,7 @@ type Shipped {
 // never built, and an absent enforcement layer means the host cannot run
 // an unattended jailed process under a policy at all.
 fn shipped_prerequisites() -> Option(Shipped) {
-  case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+  case shipped_server.from_environment() {
     Error(Nil) -> {
       io.println_error("SKIP shipped jobs: LOOM_BOOTSTRAP_E2E_SERVER is unset")
       None

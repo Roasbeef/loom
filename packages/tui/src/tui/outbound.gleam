@@ -284,7 +284,7 @@ pub fn discard_own_turn(
 @internal
 pub fn mutation_refusal(
   shared: Shared(socket, recorder, source, replay_source),
-  command: command.Command,
+  command: command.Session,
 ) -> Option(String) {
   let mutates = mutating_submission(shared, command)
   use <- bool.guard(
@@ -311,7 +311,8 @@ pub fn mutation_refusal(
 }
 
 /// Reports whether `command` changes session state, and so needs a live,
-/// writable attachment and a known recipient.
+/// writable attachment and a known recipient. Only a session command can:
+/// every `command.Surface` command is the host's own, and none mutates.
 ///
 /// ## Examples
 ///
@@ -321,7 +322,7 @@ pub fn mutation_refusal(
 @internal
 pub fn mutating_submission(
   shared: Shared(socket, recorder, source, replay_source),
-  command: command.Command,
+  command: command.Session,
 ) -> Bool {
   case command {
     command.Prompt(_)
@@ -340,29 +341,12 @@ pub fn mutating_submission(
     | command.Queue(_) -> True
     command.Approve(_) | command.Deny(_) | command.AddDirectory(..) -> True
     command.Empty -> shared.attachments != []
-    command.Help
-    | command.Models
-    | command.Strands
-    | command.Schedules
-    | command.Agents
-    | command.PeerLinks
-    | command.Sessions
-    | command.Rename(_)
+    command.Schedules
     | command.Approvals(_)
-    | command.Notes
-    | command.Diff
-    | command.QueueInspect
-    | command.Summary
-    | command.Context
-    | command.ContextAll
-    | command.Details
-    | command.Strand(_)
-    | command.GoalStatus
     | command.GoalBudgetInvalid(_)
     | command.GoalObjectiveTooLong(_)
     | command.GoalCheckTooLong(_)
     | command.Clear
-    | command.Quit
     | command.Unknown(_)
     | command.MissingArgument(_) -> False
   }

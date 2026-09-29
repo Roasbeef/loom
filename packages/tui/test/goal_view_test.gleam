@@ -170,22 +170,22 @@ fn noted(status: goal_view.Status, note: Option(String)) -> goal_view.Board {
 /// its first word as the subcommand would unpin a goal the operator was
 /// trying to pin.
 pub fn the_subcommands_are_only_the_whole_argument_test() {
-  assert command.parse("/goal") == command.GoalStatus
-  assert command.parse("  /goal  ") == command.GoalStatus
-  assert command.parse("/goal clear") == command.GoalClear
-  assert command.parse("/goal pause") == command.GoalPause
-  assert command.parse("/goal resume") == command.GoalResume
+  assert command.parse("/goal") == command.Surface(command.GoalStatus)
+  assert command.parse("  /goal  ") == command.Surface(command.GoalStatus)
+  assert command.parse("/goal clear") == command.Session(command.GoalClear)
+  assert command.parse("/goal pause") == command.Session(command.GoalPause)
+  assert command.parse("/goal resume") == command.Session(command.GoalResume)
 
   assert command.parse("/goal clear the failing test")
-    == command.GoalSet(
+    == command.Session(command.GoalSet(
       objective: "clear the failing test",
       token_budget: command.default_goal_budget,
-    )
+    ))
   assert command.parse("/goal pause the migration until review")
-    == command.GoalSet(
+    == command.Session(command.GoalSet(
       objective: "pause the migration until review",
       token_budget: command.default_goal_budget,
-    )
+    ))
 }
 
 /// `check` is the one subcommand that takes an argument, so it is a
@@ -197,19 +197,26 @@ pub fn the_subcommands_are_only_the_whole_argument_test() {
 /// past the first position. Both are asserted here, because the ambiguity is
 /// the one thing about this grammar a reader would otherwise have to guess.
 pub fn the_check_subcommand_takes_the_rest_as_its_command_test() {
-  assert command.parse("/goal check") == command.GoalCheck(command: None)
-  assert command.parse("/goal check   ") == command.GoalCheck(command: None)
+  assert command.parse("/goal check")
+    == command.Session(command.GoalCheck(command: None))
+  assert command.parse("/goal check   ")
+    == command.Session(command.GoalCheck(command: None))
   assert command.parse("/goal check make check")
-    == command.GoalCheck(command: Some("make check"))
+    == command.Session(command.GoalCheck(command: Some("make check")))
   assert command.parse("/goal check go test ./... 2>&1 | tail -40")
-    == command.GoalCheck(command: Some("go test ./... 2>&1 | tail -40"))
+    == command.Session(
+      command.GoalCheck(command: Some("go test ./... 2>&1 | tail -40")),
+    )
 
   // An objective that begins with the word is read as the subcommand, and
   // `--budget` is how the operator says they meant the objective.
   assert command.parse("/goal check the logs")
-    == command.GoalCheck(command: Some("the logs"))
+    == command.Session(command.GoalCheck(command: Some("the logs")))
   assert command.parse("/goal --budget 1000 check the logs")
-    == command.GoalSet(objective: "check the logs", token_budget: 1000)
+    == command.Session(command.GoalSet(
+      objective: "check the logs",
+      token_budget: 1000,
+    ))
 }
 
 /// The command's own bound is refused here with the count, because the
@@ -221,11 +228,11 @@ pub fn an_oversized_check_command_is_refused_with_its_count_test() {
 
   let oversized = string.repeat("x", command.check_limit + 1)
   assert command.parse("/goal check " <> oversized)
-    == command.GoalCheckTooLong(count: command.check_limit + 1)
+    == command.Session(command.GoalCheckTooLong(count: command.check_limit + 1))
 
   let allowed = string.repeat("x", command.check_limit)
   assert command.parse("/goal check " <> allowed)
-    == command.GoalCheck(command: Some(allowed))
+    == command.Session(command.GoalCheck(command: Some(allowed)))
 }
 
 /// A trailing number belongs to the objective. The budget is carried by
@@ -233,24 +240,30 @@ pub fn an_oversized_check_command_is_refused_with_its_count_test() {
 /// end in any number without an escape form.
 pub fn a_trailing_number_stays_part_of_the_objective_test() {
   assert command.parse("/goal fix issue 468")
-    == command.GoalSet(
+    == command.Session(command.GoalSet(
       objective: "fix issue 468",
       token_budget: command.default_goal_budget,
-    )
+    ))
   assert command.parse("/goal land the migration in 3 steps 200000")
-    == command.GoalSet(
+    == command.Session(command.GoalSet(
       objective: "land the migration in 3 steps 200000",
       token_budget: command.default_goal_budget,
-    )
+    ))
 }
 
 /// The explicit flag sets the budget and keeps the objective verbatim,
 /// including its own trailing number.
 pub fn the_budget_flag_owns_the_budget_test() {
   assert command.parse("/goal --budget 50000 fix issue 468")
-    == command.GoalSet(objective: "fix issue 468", token_budget: 50_000)
+    == command.Session(command.GoalSet(
+      objective: "fix issue 468",
+      token_budget: 50_000,
+    ))
   assert command.parse("/goal --budget 200_000 get the branch green")
-    == command.GoalSet(objective: "get the branch green", token_budget: 200_000)
+    == command.Session(command.GoalSet(
+      objective: "get the branch green",
+      token_budget: 200_000,
+    ))
 }
 
 /// The equals form says the same thing as the spaced one, and is accepted
@@ -259,15 +272,21 @@ pub fn the_budget_flag_owns_the_budget_test() {
 /// failure the operator had no way to see.
 pub fn the_budget_flag_accepts_the_equals_form_test() {
   assert command.parse("/goal --budget=50000 fix issue 468")
-    == command.GoalSet(objective: "fix issue 468", token_budget: 50_000)
+    == command.Session(command.GoalSet(
+      objective: "fix issue 468",
+      token_budget: 50_000,
+    ))
   assert command.parse("/goal --budget=200_000 get the branch green")
-    == command.GoalSet(objective: "get the branch green", token_budget: 200_000)
+    == command.Session(command.GoalSet(
+      objective: "get the branch green",
+      token_budget: 200_000,
+    ))
 
   // And its bad arguments are refused the same way, with the word shown back.
   assert command.parse("/goal --budget=soon get the branch green")
-    == command.GoalBudgetInvalid("soon")
+    == command.Session(command.GoalBudgetInvalid("soon"))
   assert command.parse("/goal --budget=0 get the branch green")
-    == command.GoalBudgetInvalid("0")
+    == command.Session(command.GoalBudgetInvalid("0"))
 }
 
 /// A `/goal` with no budget pins the documented default rather than being
@@ -275,30 +294,30 @@ pub fn the_budget_flag_accepts_the_equals_form_test() {
 pub fn a_missing_budget_defaults_and_a_bad_one_refuses_test() {
   assert command.default_goal_budget == 200_000
 
-  let assert command.GoalSet(token_budget: budget, ..) =
+  let assert command.Session(command.GoalSet(token_budget: budget, ..)) =
     command.parse("/goal get the branch green")
     as "a bare objective pins the default budget"
   assert budget == command.default_goal_budget
 
   assert command.parse("/goal --budget soon get the branch green")
-    == command.GoalBudgetInvalid("soon")
+    == command.Session(command.GoalBudgetInvalid("soon"))
   assert command.parse("/goal --budget 0 get the branch green")
-    == command.GoalBudgetInvalid("0")
+    == command.Session(command.GoalBudgetInvalid("0"))
   assert command.parse("/goal --budget -5 get the branch green")
-    == command.GoalBudgetInvalid("-5")
+    == command.Session(command.GoalBudgetInvalid("-5"))
   // The flag with nothing after it names itself; the flag with a budget and
   // no objective is missing the objective, which is `/goal`'s own argument.
   assert command.parse("/goal --budget")
-    == command.MissingArgument("goal --budget")
+    == command.Session(command.MissingArgument("goal --budget"))
   assert command.parse("/goal --budget 50000")
-    == command.MissingArgument("goal")
+    == command.Session(command.MissingArgument("goal"))
 
   // A rejected budget with no objective after it names the budget, not the
   // objective. Reporting only the missing objective sent the operator
   // looking for the wrong mistake: their budget word is the thing that will
   // still be wrong the second time.
   assert command.parse("/goal --budget soon")
-    == command.GoalBudgetInvalid("soon")
+    == command.Session(command.GoalBudgetInvalid("soon"))
 }
 
 /// An objective longer than the wire accepts is refused here, with the count
@@ -313,19 +332,23 @@ pub fn an_oversized_objective_is_refused_before_it_is_sent_test() {
 
   let allowed = string.repeat("a", command.objective_limit)
   assert command.parse("/goal " <> allowed)
-    == command.GoalSet(
+    == command.Session(command.GoalSet(
       objective: allowed,
       token_budget: command.default_goal_budget,
-    )
+    ))
 
   let oversized = string.repeat("a", command.objective_limit + 1)
   assert command.parse("/goal " <> oversized)
-    == command.GoalObjectiveTooLong(count: command.objective_limit + 1)
+    == command.Session(command.GoalObjectiveTooLong(
+      count: command.objective_limit + 1,
+    ))
 
   // The flagged form is held to the same bound, because one rule that two
   // call sites share is a rule neither can forget.
   assert command.parse("/goal --budget 50000 " <> oversized)
-    == command.GoalObjectiveTooLong(count: command.objective_limit + 1)
+    == command.Session(command.GoalObjectiveTooLong(
+      count: command.objective_limit + 1,
+    ))
 }
 
 /// The palette offers `/goal` with room for its argument, and past the space

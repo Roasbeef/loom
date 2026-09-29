@@ -11,8 +11,10 @@ import tui/daemon/protocol
 const hello = "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"epoch-one\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536}}}"
 
 pub fn rename_command_preserves_spaces_and_requires_argument_test() {
-  assert command.parse("/rename review auth") == command.Rename("review auth")
-  assert command.parse("/rename   ") == command.MissingArgument("rename")
+  assert command.parse("/rename review auth")
+    == command.Surface(command.Rename("review auth"))
+  assert command.parse("/rename   ")
+    == command.Session(command.MissingArgument("rename"))
   assert protocol.mutates(protocol.RenameSession("invalid", "name"))
   let assert Error(_) =
     protocol.encode(

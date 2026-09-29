@@ -4284,6 +4284,27 @@ these forks because they define the same modules.
   `main` does, through `host.relay_sigterm`, and a test that boots a
   server leaves the node's signal handling alone.
 
+## Shipped fixtures run the daemon with an isolated home
+
+Every fixture that launches the real `bin/loomd` named by
+`LOOM_BOOTSTRAP_E2E_SERVER` reads that variable through
+`test/support/shipped_server.from_environment`, never through `getenv`
+directly. It returns a generated launcher script under
+`build/shipped-home-<hex>/` that exports `HOME` as an empty private
+directory, `XDG_CONFIG_HOME` inside it, and `GIT_CONFIG_GLOBAL` naming a
+generated `Loom Fixture` identity, then execs the real server with its
+arguments unchanged. A symbolic link to the server's sibling `loom-exec`
+sits beside the script, so the launcher still passes `--helper` and
+`test/support/enforcement.probe` still finds the helper. The daemon reads
+the operator's `~/.claude/settings.json` hooks, home skills, installed
+extensions under `~/.loom/extensions`, home guidance files, and global Git
+identity from `HOME`. Before this, a developer's own hooks ran inside
+fixture sessions and failed them on macOS, while `signoff/linux` passed
+only because its container has no `~/.claude`. The test VM's own
+environment is left alone: `git_identity_test` and other suites in the
+same VM read it, and `os:putenv` would change it for all of them. A new
+shipped fixture takes its server from `shipped_server.from_environment`.
+
 ## Shipped recovery observations
 
 The reservation and identity recovery fixtures keep lifecycle mutations on

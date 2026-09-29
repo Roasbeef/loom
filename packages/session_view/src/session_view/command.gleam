@@ -3,6 +3,12 @@
 //// Commands stay separate from protocol encoding: this module decides what
 //// the operator meant, while the connection layer later decides which frozen
 //// ClientGateway envelope carries it.
+////
+//// A parse also decides who acts on the command. A `Surface` command is the
+//// host's own: a panel it draws, its daemon control connection, its exit.
+//// A `Session` command is the session's, and the shared step dispatches it
+//// the same way in every host. The host routes on the outer variant, so the
+//// shared dispatch never sees a command it can only refuse.
 
 import gleam/int
 import gleam/list
@@ -10,38 +16,35 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
-/// One action entered at the prompt.
+/// One action entered at the prompt: a command the host acts on itself, or
+/// one it hands to the session.
+///
+/// The parse decides which, so a host routes on this outer variant and the
+/// shared step's dispatch is exhaustive over `Session` alone
+/// (`docs/design-notes/step-extraction.md`, question 7).
 pub type Command {
-  /// Add read access to a directory, or write access with an explicit flag.
-  AddDirectory(path: String, access: String)
+  /// A command the host carries out with its own machinery: it opens a
+  /// surface the host draws, reaches the daemon's control connection, or
+  /// ends the host. The session state may change as a consequence, but the
+  /// host decides how.
+  Surface(surface: Surface)
 
+  /// A command the session carries out: it sends a frame, writes the
+  /// session state, or refuses with a line in the transcript. The shared
+  /// step dispatches it.
+  Session(session: Session)
+}
+
+/// A command the host acts on itself.
+pub type Surface {
   /// Show the command reference.
   Help
 
   /// Show the model catalogue.
   Models
 
-  /// Switch the active strand to one catalogue model by name.
-  Model(
-    /// The stable catalogue name selected by the operator.
-    name: String,
-  )
-
   /// Show the strand list.
   Strands
-
-  /// List every schedule the session holds — the operator's own tables
-  /// and the ones its strands created.
-  Schedules
-
-  /// Retire one schedule a strand created.
-  Unschedule(
-    /// The schedule's name, as the listing prints it.
-    name: String,
-    /// The strand it fires onto; `None` means the active strand, which
-    /// is the row an operator is usually looking at.
-    target: Option(String),
-  )
 
   /// Inspect the session's agents and sub-agents.
   Agents
@@ -54,15 +57,6 @@ pub type Command {
 
   /// Change the current session's saved display name.
   Rename(name: String)
-
-  /// Show captured decisions, or explicitly load one exact historical decision.
-  Approvals(id: Option(String))
-
-  /// Approve the exact displayed action and requested grants at its captured seq.
-  Approve(id: String)
-
-  /// Reject the displayed pending action at its captured seq.
-  Deny(id: String)
 
   /// Browse the active strand's injected agent-note digest.
   Notes
@@ -91,6 +85,46 @@ pub type Command {
     name: String,
   )
 
+  /// Show the session goal's status panel.
+  GoalStatus
+
+  /// Leave the client.
+  Quit
+}
+
+/// A command the shared step dispatches.
+pub type Session {
+  /// Add read access to a directory, or write access with an explicit flag.
+  AddDirectory(path: String, access: String)
+
+  /// Switch the active strand to one catalogue model by name.
+  Model(
+    /// The stable catalogue name selected by the operator.
+    name: String,
+  )
+
+  /// List every schedule the session holds — the operator's own tables
+  /// and the ones its strands created.
+  Schedules
+
+  /// Retire one schedule a strand created.
+  Unschedule(
+    /// The schedule's name, as the listing prints it.
+    name: String,
+    /// The strand it fires onto; `None` means the active strand, which
+    /// is the row an operator is usually looking at.
+    target: Option(String),
+  )
+
+  /// Show captured decisions, or explicitly load one exact historical decision.
+  Approvals(id: Option(String))
+
+  /// Approve the exact displayed action and requested grants at its captured seq.
+  Approve(id: String)
+
+  /// Reject the displayed pending action at its captured seq.
+  Deny(id: String)
+
   /// Fork the active strand.
   Fork(
     /// The operator-facing name for the new branch strand.
@@ -104,9 +138,6 @@ pub type Command {
     /// unknown word comes back as a worded error rather than a guess.
     level: String,
   )
-
-  /// Show the session goal's status panel.
-  GoalStatus
 
   /// Pin or replace the session goal.
   GoalSet(
@@ -187,9 +218,6 @@ pub type Command {
 
   /// Clear only this client's rendered transcript.
   Clear
-
-  /// Leave the client.
-  Quit
 
   /// Send ordinary text as a prompt.
   Prompt(
@@ -393,74 +421,87 @@ fn option_map(value: Option(a), map: fn(a) -> b) -> Option(b) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert command.parse("/models") == command.Models
+/// assert command.parse("/models") == command.Surface(command.Models)
 /// ```
 ///
 /// ```gleam
-/// assert command.parse("hello") == command.Prompt("hello")
+/// assert command.parse("hello") == command.Session(command.Prompt("hello"))
 /// ```
 ///
 pub fn parse(input: String) -> Command {
   let input = string.trim(input)
   case input {
-    "" -> Empty
-    "/help" -> Help
-    "/models" -> Models
-    "/model" -> Models
-    "/strands" -> Strands
-    "/schedules" -> Schedules
-    "/unschedule" -> MissingArgument("unschedule")
-    "/agents" -> Agents
-    "/peers" -> PeerLinks
-    "/sessions" -> Sessions
-    "/rename" -> MissingArgument("rename")
-    "/rename " <> rest -> required_argument("rename", rest, Rename)
-    "/approvals" -> Approvals(None)
-    "/add-dir" -> MissingArgument("add-dir")
-    "/add-write-dir" -> MissingArgument("add-write-dir")
-    "/approve" -> MissingArgument("approve")
-    "/deny" -> MissingArgument("deny")
-    "/notes" -> Notes
-    "/diff" -> Diff
-    "/summary" -> Summary
-    "/context" -> Context
-    "/context all" | "/contextall" -> ContextAll
-    "/details" -> Details
-    "/effort" -> MissingArgument("effort")
-    "/goal" -> GoalStatus
-    "/compact" -> Compact
-    "/abort" -> Abort
-    "/steer" -> MissingArgument("steer")
-    "/queue" -> QueueInspect
-    "/clear" -> Clear
-    "/quit" -> Quit
-    "/strand" -> MissingArgument("strand")
-    "/fork" -> MissingArgument("fork")
-    "/model " <> rest -> required_argument("model", rest, Model)
+    "" -> Session(Empty)
+    "/help" -> Surface(Help)
+    "/models" -> Surface(Models)
+    "/model" -> Surface(Models)
+    "/strands" -> Surface(Strands)
+    "/schedules" -> Session(Schedules)
+    "/unschedule" -> Session(MissingArgument("unschedule"))
+    "/agents" -> Surface(Agents)
+    "/peers" -> Surface(PeerLinks)
+    "/sessions" -> Surface(Sessions)
+    "/rename" -> Session(MissingArgument("rename"))
+    "/rename " <> rest ->
+      required_argument("rename", rest, fn(value) { Surface(Rename(value)) })
+    "/approvals" -> Session(Approvals(None))
+    "/add-dir" -> Session(MissingArgument("add-dir"))
+    "/add-write-dir" -> Session(MissingArgument("add-write-dir"))
+    "/approve" -> Session(MissingArgument("approve"))
+    "/deny" -> Session(MissingArgument("deny"))
+    "/notes" -> Surface(Notes)
+    "/diff" -> Surface(Diff)
+    "/summary" -> Surface(Summary)
+    "/context" -> Surface(Context)
+    "/context all" | "/contextall" -> Surface(ContextAll)
+    "/details" -> Surface(Details)
+    "/effort" -> Session(MissingArgument("effort"))
+    "/goal" -> Surface(GoalStatus)
+    "/compact" -> Session(Compact)
+    "/abort" -> Session(Abort)
+    "/steer" -> Session(MissingArgument("steer"))
+    "/queue" -> Surface(QueueInspect)
+    "/clear" -> Session(Clear)
+    "/quit" -> Surface(Quit)
+    "/strand" -> Session(MissingArgument("strand"))
+    "/fork" -> Session(MissingArgument("fork"))
+    "/model " <> rest ->
+      required_argument("model", rest, fn(value) { Session(Model(value)) })
     "/approvals " <> rest ->
-      required_argument("approvals", rest, fn(id) { Approvals(Some(id)) })
+      required_argument("approvals", rest, fn(id) {
+        Session(Approvals(Some(id)))
+      })
     "/add-write-dir " <> rest ->
       required_argument("add-write-dir", rest, fn(path) {
-        AddDirectory(path, "write")
+        Session(AddDirectory(path, "write"))
       })
     "/add-dir --write " <> rest ->
       required_argument("add-dir", rest, fn(path) {
-        AddDirectory(path, "write")
+        Session(AddDirectory(path, "write"))
       })
-    "/add-dir --write" -> MissingArgument("add-dir")
+    "/add-dir --write" -> Session(MissingArgument("add-dir"))
     "/add-dir " <> rest ->
-      required_argument("add-dir", rest, fn(path) { AddDirectory(path, "read") })
-    "/approve " <> rest -> required_argument("approve", rest, Approve)
-    "/deny " <> rest -> required_argument("deny", rest, Deny)
-    "/strand " <> rest -> required_argument("strand", rest, Strand)
-    "/fork " <> rest -> required_argument("fork", rest, Fork)
-    "/effort " <> rest -> required_argument("effort", rest, Effort)
+      required_argument("add-dir", rest, fn(path) {
+        Session(AddDirectory(path, "read"))
+      })
+    "/approve " <> rest ->
+      required_argument("approve", rest, fn(value) { Session(Approve(value)) })
+    "/deny " <> rest ->
+      required_argument("deny", rest, fn(value) { Session(Deny(value)) })
+    "/strand " <> rest ->
+      required_argument("strand", rest, fn(value) { Surface(Strand(value)) })
+    "/fork " <> rest ->
+      required_argument("fork", rest, fn(value) { Session(Fork(value)) })
+    "/effort " <> rest ->
+      required_argument("effort", rest, fn(value) { Session(Effort(value)) })
     "/goal " <> rest -> goal(rest)
-    "/steer " <> rest -> required_argument("steer", rest, Steer)
-    "/queue " <> rest -> required_argument("queue", rest, Queue)
+    "/steer " <> rest ->
+      required_argument("steer", rest, fn(value) { Session(Steer(value)) })
+    "/queue " <> rest ->
+      required_argument("queue", rest, fn(value) { Session(Queue(value)) })
     "/unschedule " <> rest -> unschedule(rest)
-    "/" <> rest -> Unknown(command_name(rest))
-    text -> Prompt(text)
+    "/" <> rest -> Session(Unknown(command_name(rest)))
+    text -> Session(Prompt(text))
   }
 }
 
@@ -470,9 +511,9 @@ pub fn parse(input: String) -> Command {
 // parent set onto a subagent is reached.
 fn unschedule(raw: String) -> Command {
   case words(raw) {
-    [] -> MissingArgument("unschedule")
-    [name] -> Unschedule(name:, target: None)
-    [name, target, ..] -> Unschedule(name:, target: Some(target))
+    [] -> Session(MissingArgument("unschedule"))
+    [name] -> Session(Unschedule(name:, target: None))
+    [name, target, ..] -> Session(Unschedule(name:, target: Some(target)))
   }
 }
 
@@ -519,10 +560,10 @@ pub const objective_limit = 4000
 // One rule, no escape hatch needed, and an objective may end in any number.
 fn goal(raw: String) -> Command {
   case string.trim(raw) {
-    "" -> GoalStatus
-    "clear" -> GoalClear
-    "pause" -> GoalPause
-    "resume" -> GoalResume
+    "" -> Surface(GoalStatus)
+    "clear" -> Session(GoalClear)
+    "pause" -> Session(GoalPause)
+    "resume" -> Session(GoalResume)
 
     // `check` is the one subcommand that takes an argument of its own, so it
     // is matched as a whole-argument *prefix* rather than as the whole
@@ -535,10 +576,10 @@ fn goal(raw: String) -> Command {
     // `--budget` puts the objective past the first position, so `/goal
     // --budget 200000 check the logs` pins the objective. One rule, and the
     // escape is a flag the operator is already being offered.
-    "check" -> GoalCheck(command: None)
+    "check" -> Session(GoalCheck(command: None))
     "check " <> command -> checking(string.trim(command))
 
-    "--budget" -> MissingArgument("goal --budget")
+    "--budget" -> Session(MissingArgument("goal --budget"))
     "--budget " <> rest -> budgeted(rest)
 
     // `--budget=200000` is the same statement as `--budget 200000`, and it is
@@ -557,9 +598,9 @@ fn goal(raw: String) -> Command {
 // server reads an empty command as a clear, and so does this.
 fn checking(command: String) -> Command {
   case command, string.length(command) > check_limit {
-    "", _empty -> GoalCheck(command: None)
-    _text, True -> GoalCheckTooLong(count: string.length(command))
-    text, False -> GoalCheck(command: Some(text))
+    "", _empty -> Session(GoalCheck(command: None))
+    _text, True -> Session(GoalCheckTooLong(count: string.length(command)))
+    text, False -> Session(GoalCheck(command: Some(text)))
   }
 }
 
@@ -567,8 +608,8 @@ fn checking(command: String) -> Command {
 // and the bare form cannot disagree about the bound.
 fn pinning(objective: String, token_budget: Int) -> Command {
   case string.length(objective) > objective_limit {
-    True -> GoalObjectiveTooLong(count: string.length(objective))
-    False -> GoalSet(objective:, token_budget:)
+    True -> Session(GoalObjectiveTooLong(count: string.length(objective)))
+    False -> Session(GoalSet(objective:, token_budget:))
   }
 }
 
@@ -588,8 +629,8 @@ fn budgeted(raw: String) -> Command {
 
 fn objective_for(word: String, objective: String) -> Command {
   case token_count(word), objective {
-    Error(Nil), _ -> GoalBudgetInvalid(word)
-    Ok(_), "" -> MissingArgument("goal")
+    Error(Nil), _ -> Session(GoalBudgetInvalid(word))
+    Ok(_), "" -> Session(MissingArgument("goal"))
     Ok(budget), objective -> pinning(objective, budget)
   }
 }
@@ -620,7 +661,7 @@ fn required_argument(
   build: fn(String) -> Command,
 ) -> Command {
   case string.trim(raw) {
-    "" -> MissingArgument(name)
+    "" -> Session(MissingArgument(name))
     value -> build(value)
   }
 }
@@ -703,8 +744,8 @@ pub fn suggestions_with_skills(
         list.filter(skills, fn(skill) {
           string.starts_with(skill.command, word)
           && case parse(skill.command) {
-            Unknown(_) -> True
-            _ -> False
+            Session(Unknown(_)) -> True
+            Session(_) | Surface(_) -> False
           }
         }),
       )
@@ -720,13 +761,14 @@ pub fn suggestions_with_skills(
 /// ## Examples
 ///
 /// ```gleam
-/// assert command.parse_with_skills("/missing", []) == command.Unknown("missing")
+/// assert command.parse_with_skills("/missing", [])
+///   == command.Session(command.Unknown("missing"))
 /// ```
 pub fn parse_with_skills(input: String, skills: List(Suggestion)) -> Command {
   case parse(input) {
-    Unknown(name) as unknown ->
+    Session(Unknown(name)) as unknown ->
       case list.any(skills, fn(skill) { skill.command == "/" <> name }) {
-        True -> Prompt(input)
+        True -> Session(Prompt(input))
         False -> unknown
       }
     other -> other

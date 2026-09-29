@@ -55,9 +55,10 @@ inside the update reads (whether a diff or a notes surface is shown, and
 the approval under review), and after it applies the update's facts.
 The commands an operator gives the session (an interrupt, a stop, a
 decision, a model change, a change of strand, the session's half of a
-quit) take `Shared` alone too (`tui/commands`); the terminal decides from
-a key or a parsed slash command which one to run, and settles the facts
-it records, as it does for a fold. The three edges that decide after
+quit, and every slash command the session carries out) take `Shared`
+alone too (`tui/commands`); the terminal decides from a key or a parsed
+slash command which one to run, and settles the facts it records, as it
+does for a fold. The three edges that decide after
 every event whether the context, the advisor's pending nudges or the goal
 need a fresh read compare two shared records, and run together as the
 shared step's settle (`tui/session_step`).
@@ -689,13 +690,22 @@ Image prompts go out as `prompt_content`, the only frame that carries
 images.
 
 Enter submits. `command.parse_with_skills` classifies the draft into a
-`command.Command`: ordinary text becomes `Prompt`, a slash word becomes one of
-the command variants, and a name from the daemon's skill catalogue becomes a
-prompt the daemon expands. `submit` first checks `mutation_refusal` (is a
-conversation attached, is the recipient strand known, is the mutation slot
-free) and keeps the draft with a reason if the answer is no. Otherwise the
-command is encoded by a `session_view/protocol` constructor and handed to `send_frame`,
-which calls `session_channel.submit`. Every send site switches on
+`command.Command`, and the parse also says who acts on it. A
+`command.Surface` command is the terminal's own: a panel it draws, the
+model selector, daemon control, a change of strand, the quit; `submit`
+carries it out. Everything else is a `command.Session` command: ordinary
+text becomes `Prompt`, a slash word becomes one of the session's command
+variants, and a name from the daemon's skill catalogue becomes a prompt the
+daemon expands. `submit` hands it to the shared step as `msg.Submit`, and
+`commands.submit` first checks `mutation_refusal` (is a conversation
+attached, is the recipient strand known, is the mutation slot free) and
+keeps the draft with a reason if the answer is no. Otherwise the command is
+encoded by a `session_view/protocol` constructor and handed to `send_frame`,
+which calls `session_channel.submit`. The dispatch reads no editor: when it
+consumes a draft it records `DraftTaken`, and the terminal empties its
+editor, keeps the text in its input history and, for a prompt, returns to
+prompting; a draft locked behind the lane is consumed when the lane sends
+it. Every send site switches on
 `tui.Peer`: `Attached`, which always has its lane, queues a write through
 the lane that the runtime performs at the end of the step, `Preview` echoes
 locally for `--demo`, `Replaying` does only the local half, and
@@ -1020,7 +1030,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/model` | `Model` and its two halves, `TerminalShared` (the terminal's binding of `Shared`) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox in `View` (`emit`, `record`, `hold_shared`, `run_shared`, and the terminal forms of `record_arrival`, `hold_channel`, `send_frame`, `send_via` and `apply_submission`), the composer's `clear_composer` and the other terminal types every reducer shares. |
 | `tui/session_model` | `Shared`, the session state, generic over the host handles, with the types it names, its step-effect outbox, and the functions over it alone: appending lines, the revisions, the activity mark, storing the lane, recording a channelless arrival, and the readers such as `queue_owner` and `presentation`. |
 | `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
-| `tui/msg` | What the step is given: `Input(at, wall_ms, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`. |
+| `tui/msg` | What the step is given: `Input(at, wall_ms, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`; and `Command`, what an operator does to the session. |
 | `tui/keymap` | `translate`, etui's input event to a `msg.Event`; parsing only. |
 | `tui/admission` | `admit`: files arrivals into inboxes and job slots, and reduces nothing. |
 | `tui/job` | Jobs as data: `Key`, the slot type `Awaiting`, `Spec`, and the keyed `Arrival`. |
