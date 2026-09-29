@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/roasbeef/loom/sandbox/internal/policy"
@@ -20,7 +21,7 @@ func publishGitIdentity(pol policy.Policy, workspace string, content []byte) err
 		return errors.New("Git identity publication temporary name failed")
 	}
 	name := ".gitconfig-" + hex.EncodeToString(nonce[:])
-	root, relative, err := gitIdentityAuthority(pol, workspace, name)
+	root, relative, err := gitIdentityAuthority(pol, workspace, name, runtime.GOOS)
 	if err != nil {
 		return err
 	}
@@ -49,7 +50,11 @@ func publishGitIdentity(pol policy.Policy, workspace string, content []byte) err
 // Authorization uses the existing mount precedence without performing any
 // mounts. Only an actual host-write grant may anchor publication; a private
 // scratch or root tmpfs is not permission to write its host spelling.
-func gitIdentityAuthority(pol policy.Policy, workspace, temporary string) (string, string, error) {
+//
+// The goos argument selects whether a tmpfs scratch hides host paths (see
+// below) and, as in pathExcludedRoots, keeps both platforms testable from
+// either host.
+func gitIdentityAuthority(pol policy.Policy, workspace, temporary, goos string) (string, string, error) {
 	refused := errors.New("Git identity publication is outside the writable policy")
 	groups := [][]string{pol.WritableRoots, pol.ReadableRoots, pol.Protected}
 	for _, group := range groups {
@@ -105,10 +110,14 @@ func gitIdentityAuthority(pol policy.Policy, workspace, temporary string) (strin
 	if grant.Class != ClassWritable && grant.Class != ClassMountReadWrite {
 		return "", "", refused
 	}
-	// The private scratch spelling is not a host output directory. An
-	// explicit read-write mount is the policy's existing way to restore a
-	// host path inside that view; ordinary writable roots are insufficient.
-	if pol.ScratchIsTmpfs() && pathCovers(normalizeSeatbeltPath(ScratchMount), home) &&
+	// On Linux a tmpfs scratch is mounted over ScratchMount, so a host path
+	// spelled beneath it names the private tmpfs, not a host output
+	// directory. An explicit read-write mount is the policy's existing way
+	// to restore a host path inside that view; ordinary writable roots are
+	// insufficient. Seatbelt mounts nothing: a tmpfs scratch is a private
+	// directory beside the host's /private/tmp, so a workspace under /tmp is
+	// an ordinary host path there and this refusal would misfire.
+	if goos == "linux" && pol.ScratchIsTmpfs() && pathCovers(normalizeSeatbeltPath(ScratchMount), home) &&
 		grant.Class != ClassMountReadWrite {
 		return "", "", refused
 	}
