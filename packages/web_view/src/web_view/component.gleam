@@ -1076,15 +1076,45 @@ pub fn submit(
           <> " bytes).",
       )
     _, False ->
-      case command.parse_with_skills(text, model.shared.skills) {
-        command.Session(session) ->
+      case page_command(command.parse_with_skills(text, model.shared.skills)) {
+        Ok(session) ->
           commanded(model, msg.Submit(draft: text, command: session, delivery:))
-        command.Surface(_) ->
-          refused(
-            model,
-            "That command opens a terminal surface, which the page does not have. Nothing was sent.",
-          )
+        Error(notice) -> refused(model, notice)
       }
+  }
+}
+
+/// The session command a parsed draft is on the page, or the notice saying
+/// why the page does not carry it out.
+///
+/// This is the one place that names what the page does not run. A terminal
+/// surface (`/help`, `/models`, `/sessions` and the rest) has no surface
+/// here. `/add-dir` and `/add-write-dir` name a path on the daemon's host,
+/// which a browser reader, who may be on another machine, can neither see
+/// nor pick, and they are the only commands that widen the session's
+/// filesystem scope. Every other session command runs as it does in the
+/// terminal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert result.is_error(component.page_command(command.parse("/models")))
+/// ```
+pub fn page_command(
+  parsed: command.Command,
+) -> Result(command.Session, String) {
+  case parsed {
+    command.Surface(_) ->
+      Error(
+        "That command opens a terminal surface, which the page does not have. Nothing was sent.",
+      )
+
+    command.Session(command.AddDirectory(..)) ->
+      Error(
+        "Add directories from a terminal on the daemon's host. Nothing was sent.",
+      )
+
+    command.Session(session) -> Ok(session)
   }
 }
 

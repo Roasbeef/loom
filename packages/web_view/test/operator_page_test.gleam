@@ -142,6 +142,26 @@ pub fn a_terminal_surface_command_is_refused_with_a_notice_test() {
   assert component.drafts(model) == drafts
 }
 
+// Adding a directory names a path on the daemon's host, which a browser
+// reader cannot see or pick, and it is the one command that widens the
+// session's filesystem scope. The page refuses each spelling with a notice,
+// sends nothing, and keeps the draft where the operator left it.
+pub fn adding_a_directory_is_refused_with_a_notice_test() {
+  let #(model, wire) = page("operator", [])
+  let drafts = component.drafts(model)
+  let model =
+    send(model, [
+      operator_page.Submitted("/add-dir /tmp/x", operator.Prompt),
+      operator_page.Submitted("/add-write-dir /tmp/x", operator.Prompt),
+      operator_page.Submitted("/add-dir --write /tmp/x", operator.Prompt),
+    ])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  let assert component.Warned(text) = component.notice(model)
+    as "the page says it does not carry the command out"
+  assert string.contains(text, "terminal on the daemon's host")
+  assert component.drafts(model) == drafts
+}
+
 // A command the session consumes at dispatch, rather than sends, takes the
 // draft with it: `/clear` sends nothing and the composer is replaced.
 pub fn a_command_that_sends_nothing_still_takes_the_draft_test() {
