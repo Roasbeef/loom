@@ -163,7 +163,7 @@ The centre shows the strand in focus. With no strand focused (the default,
 crossed into it: a spawn row, a result card, a nudge, a peer message. This is
 what the page draws today, restyled. It is not an interleaving of every
 strand's internal work, which would need a new projection over several
-strands' windows. Whether the owner wants that is open question 3.
+strands' windows, and it is not built.
 
 Focusing a strand shows a breadcrumb above the transcript (`session ▸
 strand`, an `All strands` link, and the `Esc` hint) and the strand's own
@@ -286,8 +286,9 @@ redesign would therefore need the strand list to include settled strands, up
 to a bound (the design suggests the newest six, with `+n earlier` as text),
 each with its own card handler. `agent_roster` keeps only a count of settled
 strands, so this is a retention change in `session_view` that the terminal's
-strip also feels, as well as a change to #636's admitted-path rule. It is open
-question 4 and is not scheduled until the owner answers.
+strip also feels, as well as a change to #636's admitted-path rule. The owner
+ruled (2026-09-29, issue #569) that it is a later pull request of its own,
+after this redesign, and not part of step 5.
 
 ### 3.2 The breadcrumb, `Esc` and the way back
 
@@ -301,9 +302,10 @@ The mockup distinguishes "no strand focused" from "`main` focused": clicking
 Loom has one state, the active strand, and `main` is the default. The design
 follows the engine: focusing `main` is `All strands`, shows the list, and
 shows no breadcrumb. `main`'s model, context and cost are still reachable, in
-the top bar and the Session tab, but its detail view is not drawn. If the
-owner wants the detail view for `main`, it needs a second piece of state on
-the server (which strand's detail is open) and is open question 5.
+the top bar and the Session tab, but its detail view is not drawn. (Default
+adopted by the orchestrator, open to the owner's override: a detail view for
+`main` would need a second piece of state on the server, which strand's detail
+is open.)
 
 ### 3.3 The composer target
 
@@ -362,8 +364,7 @@ drawn after a page for session A holds no text from A.
 
 Three things persist across a switch and are not session-scoped: the two
 sidebars' open state, the active tab, and the theme (section 4). The focused
-strand is session-scoped, and the design stores it per session, not per
-workspace (section 4).
+strand is session-scoped and is not stored: a new page shows `main`.
 
 A switch that instead re-attached the lane inside the same component was
 considered and is not proposed. It would make each of the regions above a
@@ -383,36 +384,37 @@ the bound on Changes and Trace content (section 6.3) is what keeps that cost
 small.
 
 **Narrow windows.** The mockup hides the right panel below 900 px and keeps
-the sidebar; #636 drops the sidebar below 1180 px. The design lets each region
-start hidden when its column would leave the transcript under 640 px, and lets
-its toggle show it over the transcript as an overlay. This is not in the
-mockup and is open question 8.
+the sidebar; #636 drops the sidebar below 1180 px. The design hides each
+sidebar below a breakpoint at which its column would leave the transcript under
+640 px, and has no overlay in the first build. (Default adopted by the
+orchestrator, open to the owner's override.)
 
-**What persists, and where the state lives.**
+**What persists, and where the state lives.** Owner, 2026-09-29, issue #569:
+layout state lives in the browser's `localStorage`, per workspace.
 
 | State | Scope | Lives in |
 |---|---|---|
-| Left sidebar open, right panel open | per workspace | the browser (recommended, see below) |
-| Active tab | per workspace | the browser |
-| Focused strand | per session | see below |
+| Left sidebar open, right panel open | per workspace | the browser's `localStorage` |
+| Active tab | per workspace | the browser's `localStorage` |
+| Focused strand | not persisted | a reload shows `main` (owner, 2026-09-29, issue #569) |
 | Session viewed | not persisted | the page's address |
 | Theme | per browser | the browser, if the toggle is built |
 
 The mockup keys one record by workspace and stores the focused strand and the
-viewed session in it. Two of those do not carry over.
+viewed session in it. Neither carries over.
 
 - **The viewed session is not stored.** A page's address names its session,
   and `loom ui --session <id>` opens that one. Restoring another session on
   load would override the link the person just opened and would need a ticket
-  minted at load, and tickets are single use. The design drops it. This departs
-  from the mockup.
-- **The focused strand is stored per session, not per workspace.** `main` and
-  the advisor exist in every session, but `sub:tests` exists in one.
-  Restoring a strand name against another session would name nothing.
+  minted at load, and tickets are single use.
+- **The focused strand is not restored across a reload** (owner, 2026-09-29,
+  issue #569). Restoring it would need the browser to name a strand to the
+  server, which #636 avoided ("a browser's click chooses among the chips that
+  exist and cannot name a strand"), so the change needs no event, query
+  parameter or addendum.
 
-**Where to store layout: two options.**
-
-*Option A, the browser's `localStorage`, written by a client element.* The
+**Storage.** The owner chose the browser's `localStorage`, written by a client
+element, over a per-principal server record (Option B below, not built). The
 state is presentation only and nothing the server needs, which is the
 condition `docs/lustre.md` sets for state that lives in a client component.
 It needs no new socket event and works identically for observer and operator
@@ -437,11 +439,18 @@ policy does not restrict it. The costs:
   attribute is an identity. (Reading the catalogue's workspace path directly
   is the alternative; the heading already draws it as a `title`, on the
   grounds that the owner and host write it, not the agent.)
-- The element needs two new exports in `internal/dom.mjs` (a storage read and
-  a storage write), which the JavaScript gate allows since neither names a
-  banned identifier.
+- Storage is reached only through two new single-call exports in
+  `internal/dom.mjs`, one that reads an item and one that writes an item, each
+  wrapping its storage access in try/catch and returning a result, because
+  storage can throw in a private window. They are bound in Gleam beside the
+  existing DOM bindings. Everything else is Gleam in `layout_rule`: the
+  per-workspace key, the encoding, the total decoding of the saved layout, and
+  the defaults when nothing is stored or it fails to decode. The tests for
+  `layout_rule` run on Node 18 and import neither Lustre nor the DOM binding.
+  `scripts/web_client_js_check.sh` should keep refusing any other storage use
+  outside `dom.mjs`.
 
-*Option B, server-side, per principal and workspace.* A record in the
+*Option B, server-side, per principal and workspace (not chosen).* A record in the
 daemon's state directory, read when a page opens and written when the person
 changes the layout. It survives restarts and follows the principal across
 browsers. Its costs are larger: a new persistence surface in the daemon; a
@@ -452,28 +461,11 @@ on how a change reaches the other pages of the principal; and a round trip
 for what should be an instant toggle, so the browser would still apply it
 first and the server would only remember it.
 
-**Recommendation: Option A for the sidebars and the tab.** They are
-preferences that are cheap to reset, a daemon restart is rare, and Option B's
-costs are all in the protocol. If restarts on a new port prove to be a
-nuisance in use, the owner can fix the port or move to Option B later without
-changing what the elements do.
-
-**The focused strand is different**, because the server owns it. Restoring it
-means the browser tells the server which strand to open, and the server must
-accept a strand name from the browser, which #636 was careful to avoid ("a
-browser's click chooses among the chips that exist and cannot name a
-strand"). Two ways to do it:
-
-- An event, admitted from observer and operator pages, carrying a strand name
-  the component checks against the strands it lists and ignores otherwise.
-- A query parameter on the socket's address, set by the page script from
-  storage, which the upgrade hands to the component at start. Whether Lustre's
-  runtime keeps an added query parameter beside `csrf-token` has to be read in
-  its source before this is chosen.
-
-Neither is decided here. The first build does not restore the focused strand
-across a reload, and the tab and sidebar state persist. Restoration is a
-separate pull request that needs an addendum (open question 2).
+The sidebars and the tab are preferences that are cheap to reset, a daemon
+restart is rare, and Option B's costs are all in the protocol. If restarts on
+a new port prove to be a nuisance, the owner can fix the port or move to
+Option B later without changing what the elements do. The storage still needs
+a 051 addendum (step 7), because 051 states no rule for it.
 
 ## 5. Theme tokens
 
@@ -575,13 +567,11 @@ through each new behaviour and says what covers it.
 | Strand focus from cards | #636's addendum, admitted for observers at one prefix | nothing, once the cards keep that prefix |
 | Focus from dots, tags, breadcrumb and links | none | a 051 addendum: a client element that hears a click on a fixed marker and clicks a server-drawn strand card |
 | `Esc`, `⌘B`, `⌘⌥B` | the approved keydown listener is passive and reads nothing | a 051 addendum, section 6.2 |
-| Layout in `localStorage` | none | a 051 addendum, section 4 |
-| Restoring the focused strand | none | a 051 addendum, section 4 |
+| Layout in `localStorage` | none (051 mentions only `sessionStorage` for the nonce) | a 051 addendum (step 7): storage is reached only through two single-call exports in `internal/dom.mjs`, and `scripts/web_client_js_check.sh` keeps refusing any other storage use outside that file |
 | Session switching | proposed in #636's addendum | its own addendum, already planned |
 | Changes from transcript edits | session text drawn as text nodes | nothing new |
-| Changes from the worktree diff | the gateway's owner-only worktree gate | a ruling, section 6.3 |
-| Trace | unknown | the data question, section 6.3 |
-| Viewers list on an observer's page | the reasoning of #636's list ruling | a ruling, section 6.4 |
+| Trace | no per-call timing is recorded | a `protocol-change/NNN.md`, section 6.3 |
+| Viewers list | the reasoning of #636's list ruling | operator pages only (a default the orchestrator adopted, open to the owner), section 6.4 |
 | Theme toggle | none | storage and theme decisions, section 6.5 |
 
 **The approval card does not move.** The owner ruled on 2026-09-27 that cards
@@ -677,24 +667,19 @@ and the page never sends that read. So a page cannot show a git diff today,
 and 051 records it as a bound (the operator-commands addendum), so a change
 would be a ruling and not a view.
 
-Two sources:
+Owner, 2026-09-29, issue #569: Changes shows only diffs from the session's own
+edit tool calls, and makes no worktree read. The page holds the records of the
+session's edits (`fs_edit` calls and their results, the `tool-patch` lines it
+already draws). A `session_view` module folds them into files with counts and
+hunks, labelled "from this session's edits", the fallback `web-ui.md`
+(section 3.6) already names. It shows what the agent wrote, not what is in the
+tree, so it omits a change made outside the session and a change since
+reverted. A git diff for a page would mean letting an Operator page read
+worktree bytes, which are Owner-only, and is not planned.
 
-- *From the transcript, no protocol change.* The page holds the records of
-  the session's edits (`fs_edit` calls and their results, the `tool-patch`
-  lines it already draws). A `session_view` module folds them into files with
-  counts and hunks, labelled "from this session's edits", the fallback
-  `web-ui.md` (section 3.6) already names. It shows what the agent wrote, not
-  what is in the tree, so it omits a change made outside the session and a
-  change since reverted. The first build uses this.
-- *From the worktree, needs a ruling.* A git diff for the page means letting
-  an Operator page read worktree bytes, or a new read that returns a bounded
-  diff to Operators. Both change the bound in 051 and need an addendum that
-  says what the read returns, its size limit, and why an operator page may see
-  what is otherwise Owner-only. This is open question 7.
-
-Both must bound what the page holds and draws: a file count, lines per hunk,
+The fold must bound what the page holds and draws: a file count, lines per hunk,
 and a total, cut with a fixed line, as `view/expansion.capped` does for
-expanded rows. Both are session text, so drawn as text nodes; a diff line's
+expanded rows. The diffs are session text, so drawn as text nodes; a diff line's
 class (added, removed, context) comes from a closed type the fold computes,
 never from a string built from the text.
 
@@ -725,8 +710,8 @@ Viewers names the session's other principals. A terminal attachment sees the
 roster, but #636 ruled that an observer page must not learn the owner's other
 session names, on the reasoning that an observer link is handed to someone who
 may only watch one session. The same reasoning applies to who else is watching.
-The design shows viewers on operator pages only, until the owner rules on
-observer pages (open question 10).
+The design shows viewers on operator pages only. This is a default the
+orchestrator adopted, open to the owner's override.
 
 ### 6.5 The theme toggle
 
@@ -815,10 +800,18 @@ The order assumes #635 and #636 have landed.
    `shell_rule.intent` tests over the key set and every exclusion; a drive in
    Firefox, Chrome and Safari; a test that no key sends a decision.
 
-7. **Persistence of layout.** `localStorage` for the sidebars and the tab, the
-   workspace digest in `component.Start`, the storage exports. Addendum: the
-   storage decision. Proof: `layout_rule` tests including malformed input; a
-   drive reloading the page and reopening in a new tab.
+7. **Persistence of layout.** `localStorage` for the sidebars and the tab,
+   the workspace digest in `component.Start`, and two new single-call exports
+   in `internal/dom.mjs` (read an item, write an item), each wrapping its
+   storage access in try/catch and returning a result, since storage can throw
+   in a private window. They are bound in Gleam beside the existing DOM
+   bindings, the same pattern as the minimal DOM binding. The per-workspace
+   key, the encoding, the total decoding of the saved layout, and the defaults
+   when nothing is stored or it fails to decode are all Gleam in `layout_rule`.
+   Addendum: the storage decision, including that `web_client_js_check.sh`
+   keeps refusing any storage use outside `dom.mjs`. Proof: `layout_rule` tests
+   on Node 18 (default on nothing stored, default on a malformed value, an
+   unknown tab); a drive reloading the page and reopening in a new tab.
 
 8. **The todo line.** The one-line collapsed form of the todo panel, with the
    strand's focus. Addendum: none. Proof: `todo_panel` tests; screenshots.
@@ -839,21 +832,17 @@ The order assumes #635 and #636 have landed.
     plus that test and a drive switching between two sessions with a pending
     approval in each.
 
-12. **Restoring the focused strand.** After the ruling in open question 2.
-    Addendum: required. Proof: tests that an unknown strand name is ignored
-    and that an observer cannot name a strand the page does not list.
-
-13. **The theme toggle.** After the decisions of sections 5 and 6.5. Proof: a
+12. **The theme toggle.** After the decisions of sections 5 and 6.5. Proof: a
     drive in both themes and inside each shadow root.
 
 The 051 addenda in this series are those of steps 5, 6 and 7, plus the one the
 session-switching follow-up already carries.
 
-The remaining items wait on a ruling or on data, and are not scheduled:
-settled strands in the list (open question 4), Changes from the worktree
-(open question 7), Trace bars (which need a `protocol-change/NNN.md`), the
-other sessions' activity bars in the sidebar, and the composer target menu of
-section 3.3.
+Settled strands in the list are their own pull request after this redesign
+(owner, 2026-09-29, issue #569), not part of step 5. The remaining items wait
+on data or a decision, and are not scheduled: Trace bars (which need a
+`protocol-change/NNN.md`), the other sessions' activity bars in the sidebar,
+and the composer target menu of section 3.3.
 
 ## 9. Where this note departs from the mockup and from earlier notes
 
@@ -870,8 +859,7 @@ From the mockup:
   3.3).
 - The sidebar has no `New session`, `Goals`, `Jobs` or `Scheduled`, and no
   strand bars for other sessions (section 2.2).
-- The viewed session is not persisted, and the focused strand is per session
-  (section 4).
+- Neither the viewed session nor the focused strand is persisted (section 4).
 - The `ctx` figure keeps its tilde (section 2.1).
 - The approval arming delay is 600 ms, not the mockup's 2 s.
 - The mockup's session switch left the Changes, Trace and Session tabs showing
@@ -887,29 +875,32 @@ folded work, the cache semantics and the multiplayer model stand.
 
 ## 10. Open questions for the owner
 
-1. **Layout storage.** Browser `localStorage` (recommended) or a per-principal
-   server record. The browser choice loses the layout when a daemon on the
-   default port restarts on a new one. Section 4.
-2. **Restoring the focused strand.** It needs the browser to name a strand to
-   the server, by an event or a socket query parameter, which #636 avoided.
-   Should it persist at all, or is a reload allowed to return to `main`?
-3. **Closed: what "All strands" shows.** It is `main`'s rows plus the rows where
-   other strands crossed in, which is today's projection. No new projection.
-4. **Focusing settled strands.** A2 lists finished strands and lets them be
-   focused, and #636 does not. Should the strand list include settled strands,
-   up to a bound? `agent_roster` keeps only a count of them, so this is a
-   retention change in `session_view` that the terminal's strip also feels.
-5. **A detail view for `main`.** A2 shows one; the engine has only the active
-   strand. It needs a second state on the server.
-6. **Closed: the cache ring's number.** `cache_watch` computes no hit rate, so
-   the ring keeps the outlook the page computes today.
-7. **Changes from the worktree.** May an Operator page read a bounded worktree
-   diff? (The timing half of this question is closed: no per-call timing is
-   recorded, so the Trace bars need a `protocol-change/NNN.md`.)
-8. **Narrow windows.** The overlay behaviour of section 4 is a proposal.
-9. **Closed: the viewed session.** A page's address names its session and
-   tickets are single use, so it is not restored.
-10. **Viewers on observer pages.** Shown, or operator pages only until ruled.
+Ruled by the owner (2026-09-29, issue #569):
+
+1. Layout state lives in the browser's `localStorage`, per workspace.
+2. The focused strand is not restored across a reload; a reload shows `main`.
+3. Settled strands in the list are a later pull request of their own, after
+   this redesign.
+4. Changes shows only diffs from the session's own edit tool calls, with no
+   worktree read.
+
+Closed by the tree:
+
+5. What "All strands" shows: `main`'s rows plus the rows where other strands
+   crossed in, which is today's projection. No new projection.
+6. The cache ring: `cache_watch` computes no hit rate, so the ring keeps the
+   outlook the page computes today.
+7. The viewed session: a page's address names its session and tickets are
+   single use, so it is not restored.
+8. Trace bars: no per-call timing is recorded, so they need a
+   `protocol-change/NNN.md`.
+
+Defaults the orchestrator adopted, open to the owner's override:
+
+9. No detail view for `main`. It would need a second piece of server state
+   (which strand's detail is open).
+10. Below a breakpoint the sidebars hide, with no overlay in the first build.
+11. Viewers are shown in the Session tab on operator pages only.
 
 ## 11. Out of scope
 
