@@ -119,7 +119,7 @@ page keys and nonces, and the relay into the session's gateway.
   `component.returned(model)`: a held prompt the daemon handed back for
   `main` (protocol-change/038), taken from `Shared.returned_drafts` at the
   end of every message (`taken`), numbered, and kept, the latest
-  `returned_kept` (4) of them, for the composer's element. `step.update`
+  all of them, for the composer's element. `step.update`
   leaves `returned_drafts` alone (`forget_surfaces` no longer clears it), so
   the page is the host that empties it. A prompt for another strand or
   session is named in the notice and not kept.

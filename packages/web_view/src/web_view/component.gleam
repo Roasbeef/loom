@@ -281,12 +281,6 @@ pub type Returned {
   )
 }
 
-/// How many returned prompts the page keeps for the composer's element to
-/// take. The element takes each one within a frame of its arrival, so the
-/// latest few are more than it needs, and the cap keeps a run of returns from
-/// making every render carry them all.
-pub const returned_kept = 4
-
 /// Whether the page's strand is running an operation.
 pub type Activity {
   /// Nothing is running: a draft is sent as a prompt.
@@ -397,8 +391,11 @@ type View(socket) {
     /// `notice` draws.
     outcome: String,
     /// How many prompts the daemon has handed back to this page's strand
-    /// since the page opened, and the latest `returned_kept` of them, oldest
-    /// first. The composer's element puts each in the editor once, by its
+    /// since the page opened, and all of them, oldest
+    /// first. None is dropped: each is the prompt's last copy, and the element
+    /// takes them in a frame that does not run in a background tab, so any cap
+    /// could lose one before it is read. The list is bounded by the daemon's
+    /// held queue. The composer's element puts each in the editor once, by its
     /// number. The shared record holds a returned prompt only until the next
     /// step forgets it (`step.forget_surfaces`), so it is taken here at the
     /// end of every message.
@@ -660,7 +657,7 @@ fn finished(
   effects: List(step_effect.Effect(socket, Nil)),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  let model = taken(model) |> refreshed |> rearm(at)
+  let model = settled(model) |> refreshed |> rearm(at)
   #(model, perform(model.view.transport, effects))
 }
 
@@ -683,11 +680,7 @@ fn taken(model: Model(socket)) -> Model(socket) {
         list.index_map(mine, fn(draft, index) {
           Returned(number: model.view.returns + index + 1, text: draft.text)
         })
-      let returned =
-        list.append(model.view.returned, numbered)
-        |> list.reverse
-        |> list.take(returned_kept)
-        |> list.reverse
+      let returned = list.append(model.view.returned, numbered)
       Model(
         shared: Shared(..model.shared, returned_drafts: [], answer: ""),
         view: View(
@@ -700,6 +693,15 @@ fn taken(model: Model(socket)) -> Model(socket) {
       )
     }
   }
+}
+
+// The end of every step over the record: the returned prompts are taken
+// first, since forgetting the step's leftovers would not drop them but a host
+// must not leave them behind, and then the facts a host has no surface for
+// are forgotten.
+fn settled(model: Model(socket)) -> Model(socket) {
+  let held = taken(model)
+  Model(..held, shared: step.forget_surfaces(held.shared))
 }
 
 // What the page says when prompts come back: how many, for which strand, and
@@ -763,8 +765,7 @@ pub fn apply(
         update,
         lane_fold.nothing_shown(),
       )
-    let held = taken(Model(..model, shared:))
-    Model(..held, shared: step.forget_surfaces(held.shared))
+    settled(Model(..model, shared:))
   })
   |> refreshed
 }
@@ -1303,15 +1304,11 @@ fn commanded(
     False -> model.view.consumed
   }
 
-  // A prompt the daemon handed back is taken before the step's leftovers are
-  // forgotten, which would drop it.
-  let acted =
-    taken(Model(
+  finished(
+    Model(
       shared:,
       view: View(..model.view, refusal: None, outcome: shared.notice, consumed:),
-    ))
-  finished(
-    Model(..acted, shared: step.forget_surfaces(acted.shared)),
+    ),
     effects,
     at,
   )

@@ -1215,7 +1215,8 @@ the end of every message (`docs/design-notes/step-extraction.md`, question
   that were there.
 - The `commands` attribute is about 3 KB, sent with the composer and
   unchanged between renders.
-- A returned prompt is held on the page, at most four of them, until the
+- A returned prompt is held on the page, all of them (none may be lost, and the list is bounded
+  by the daemon's held queue), until the
   page ends.
 
 ### Verification

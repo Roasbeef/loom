@@ -93,20 +93,19 @@ pub fn a_page_that_has_had_no_return_says_zero_test() {
   assert !string.contains(html, "slot=\"returned\"")
 }
 
-// The page keeps only the latest few, so a run of returns does not make every
-// render carry them all; the numbers keep counting.
-pub fn only_the_latest_returns_are_kept_test() {
+// A drain returns every held prompt at once, and the element takes them in a
+// frame that does not run in a background tab, so none may be dropped: all of
+// them are kept, in one message and across two before any is taken.
+pub fn every_return_is_kept_test() {
   let texts = ["a", "b", "c", "d", "e", "f"]
   let model =
     arrive(page(), list.map(texts, fn(text) { returned("main", text) }))
-  assert component.returns(model) == 6
+  let model = arrive(model, [returned("main", "g"), returned("main", "h")])
+  assert component.returns(model) == 8
   assert component.returned(model)
-    == [
-      component.Returned(3, "c"),
-      component.Returned(4, "d"),
-      component.Returned(5, "e"),
-      component.Returned(6, "f"),
-    ]
+    == list.index_map(["a", "b", "c", "d", "e", "f", "g", "h"], fn(text, index) {
+      component.Returned(index + 1, text)
+    })
 }
 
 // A return in a later message is numbered after the earlier ones.

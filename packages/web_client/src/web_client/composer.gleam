@@ -28,7 +28,7 @@
 //// - Each child in the `returned` slot is one returned prompt, drawn by the
 ////   server as a text node, and its `data-n` is its number in that count.
 ////   The shadow root has no such slot, so the browser never displays them
-////   here; the element reads them as text. The server keeps the latest few,
+////   here; the element reads them as text. The server keeps every one,
 ////   and the element takes each number once, in order.
 ////
 //// ## Keys
