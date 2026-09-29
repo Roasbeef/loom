@@ -15,12 +15,12 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/session_channel
 import session_view/snapshot
 import tui
 import tui/connection
 import tui/model as tui_model
-import tui/session_model
 import tui/workspace
 
 /// The one metadata fragment a minimal transfer carries.

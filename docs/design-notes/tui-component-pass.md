@@ -60,7 +60,7 @@ Tab transfers focus to the existing composer. Enter opens the inspected agent as
 the existing composer recipient. `o` explicitly opens the selected sender's
 transcript. Preserve per-recipient drafts, the current recipient until an
 explicit change, and the provenance rules in
-[`agent_messages`](../../packages/tui/src/tui/agent_messages.gleam). A message
+[`agent_messages`](../../packages/session_view/src/session_view/agent_messages.gleam). A message
 occurrence remains identified by its captured invocation, sender, operation,
 and branch rather than body text or a reusable call ID.
 

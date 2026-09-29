@@ -13,9 +13,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import machine/operation
+import session_view/completion_summary
 import session_view/live_jobs
 import session_view/text_hygiene
-import tui/completion_summary
 import tui/theme
 
 /// The independently scrollable summary section.

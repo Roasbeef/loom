@@ -44,6 +44,7 @@ import host/bootstrap as native
 import host/claim
 import host/endpoint
 import machine/strand
+import session_view/model as session_model
 import session_view/protocol as conversation
 import session_view/session_channel
 import session_view/snapshot
@@ -64,7 +65,6 @@ import tui/daemon/protocol
 import tui/daemon/selection
 import tui/model as tui_model
 import tui/peer_links
-import tui/session_model
 import tui/workspace
 import weft
 import weft/actor

@@ -22,8 +22,10 @@ import machine/codec
 import machine/strand
 import session_view/attempt
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/session_channel
 import session_view/snapshot
+import session_view/step_effect
 import simplifile
 import tui
 import tui/attachment
@@ -36,8 +38,6 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/recording
 import tui/runtime
-import tui/session_model
-import tui/step_effect
 import tui/terminal_lane
 import tui/virtual_backend
 import tui/workspace

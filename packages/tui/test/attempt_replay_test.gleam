@@ -21,17 +21,19 @@ import machine/codec as machine_codec
 import machine/strand
 import session_view/advisor_pending
 import session_view/attempt
+import session_view/attempt_replay
 import session_view/composer
 import session_view/connection_event
 import session_view/goal_view
 import session_view/history_view
+import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
+import session_view/surfaces
 import session_view/transcript_line
 import tui
 import tui/attachment
-import tui/attempt_replay
 import tui/buffered
 import tui/connection
 import tui/frame
@@ -39,8 +41,6 @@ import tui/inbound
 import tui/interaction
 import tui/model as tui_model
 import tui/recording
-import tui/session_model
-import tui/surfaces
 import tui/virtual_backend
 import tui/workspace
 

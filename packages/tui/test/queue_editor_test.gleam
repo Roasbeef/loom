@@ -17,7 +17,9 @@ import session_view/attempt
 import session_view/command
 import session_view/composer
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/protocol
+import session_view/queue_request
 import session_view/queued_input
 import session_view/session_channel
 import session_view/snapshot
@@ -28,11 +30,9 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/queue_editor
-import tui/queue_request
 import tui/recording
 import tui/render
 import tui/runtime
-import tui/session_model
 import tui/submit
 import tui/workspace
 import tui_test/pushed

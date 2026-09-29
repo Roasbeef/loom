@@ -11,13 +11,20 @@
 //// This module holds the entry points (`main` and the launch parsing,
 //// `new_model`, `loop`, `run_script`, `replay_steps`, `connect_remote`) and
 //// the event dispatch (`update`, `apply_input`, `settle_update`). The work
-//// each event does lives in the modules under `tui/`, which form a strict
-//// import order because Gleam forbids cycles and none of them may import
-//// this one: `tui/model` holds the `Model` record and its types;
-//// `session_view/transcript_lines` builds transcript lines; `tui/layout` computes
-//// screen geometry and `tui/render` paints it; `tui/outbound` sends command
-//// frames; `tui/surfaces` services the side-surface reads; `tui/inbound`
-//// applies channel traffic; `tui/session_control` runs daemon control
+//// each event does lives in the modules under `tui/` and, for the session's
+//// half of it, in `session_view`, which form a strict import order because
+//// Gleam forbids cycles and none of them may import this one. The shared
+//// step is in `session_view`: `session_view/model` holds the session state,
+//// `session_view/outbound` sends command frames, `session_view/surfaces`
+//// services the side-surface reads, `session_view/event_fold` and
+//// `session_view/lane_fold` fold pushed events and lane updates,
+//// `session_view/commands` carries out an operator's commands, and
+//// `session_view/transcript_lines` builds transcript lines. The terminal's
+//// half is under `tui/`: `tui/model` holds the `Model` record, its `View`
+//// and the binding of the shared record's handles; `tui/layout` computes
+//// screen geometry and `tui/render` paints it; `tui/inbound` runs the loop
+//// over the lane's updates and applies what each recorded for the
+//// terminal's surfaces; `tui/session_control` runs daemon control
 //// requests; `tui/projection` maintains the transcript row caches;
 //// `tui/submit` handles composer submission; `tui/interaction` handles keys,
 //// pastes and the mouse; and `tui/tick` drains the inboxes on each tick.
@@ -51,12 +58,20 @@ import host/endpoint
 import session_view/advisor_history
 import session_view/agent_roster
 import session_view/attempt
+import session_view/attempt_replay
 import session_view/block_summary
 import session_view/cache_watch
+import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
+import session_view/model.{
+  Disconnected, HoldGoalReport, Preview, Replaying, Shared,
+} as session_model
+import session_view/msg as session_msg
+import session_view/queue_request
 import session_view/session_channel
+import session_view/step as session_step
 import session_view/text_hygiene
 import session_view/transcript_line.{
   Assistant, Line, Reasoning, System, ToolResult,
@@ -66,11 +81,9 @@ import tui/admission
 import tui/agent_strip
 import tui/appearance
 import tui/attachment
-import tui/attempt_replay
 import tui/bootstrap
 import tui/buffered
 import tui/claim
-import tui/completion_summary
 import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
@@ -82,7 +95,6 @@ import tui/interaction
 import tui/internal/ffi_terminal
 import tui/job
 import tui/job_runner
-import tui/lane_fold
 import tui/layout
 import tui/model.{
   type Model, DiffAutomatic, Model, Newer, NoClipboard, NoOverlay, Older,
@@ -93,15 +105,10 @@ import tui/note_panel
 import tui/pacing
 import tui/projection
 import tui/queue_editor
-import tui/queue_request
 import tui/recording
 import tui/render
 import tui/runtime
 import tui/session_control
-import tui/session_model.{
-  Disconnected, HoldGoalReport, Preview, Replaying, Shared,
-}
-import tui/session_step
 import tui/session_table
 import tui/summary_panel
 import tui/tick
@@ -172,17 +179,36 @@ type Launch {
 
 // The two catalogue verbs the launcher owns. `rm` carries its consent so the
 // parser settles the question and the runner never re-derives it from flags.
-type SessionsCommand {
-  ListRegistrations
+// `list` carries its own `Showing` for the same reason: the parser is the
+// one place `--all` is read, so the runner never re-derives the question
+// from flags either.
+@internal
+pub type SessionsCommand {
+  ListRegistrations(showing: Showing)
   RemoveRegistration(session_id: String, consent: Consent)
 }
 
 // Whether the person has already agreed to lose a conversation. `--yes` is
 // the whole of the second variant; without it the runner asks, and refuses
 // when there is no terminal to ask.
-type Consent {
+@internal
+pub type Consent {
   AskAtTerminal
   GivenOnCommandLine
+}
+
+/// Which rows `loom sessions list` prints.
+///
+/// The resident track is the daemon's active catalogue: a runtime that is
+/// up, one starting or stopping, and a stuck cleanup all belong to it,
+/// because each still occupies the daemon rather than sitting idle. A
+/// saved registration and a bare reservation are the idle remainder, and
+/// stay out of the default view until `--all` asks for the whole
+/// catalogue.
+@internal
+pub type Showing {
+  ResidentOnly
+  Every
 }
 
 // Which of a replay's frames to print. A recording produces one frame per
@@ -536,7 +562,6 @@ pub fn new_model_with_clock(
       models: interaction.demo_models(),
       skills: [],
       current_model: "baseten-kimi-k3",
-      workspace: project,
       strands:,
       reviewer_rows: [],
       agent_rows: [],
@@ -577,8 +602,7 @@ pub fn new_model_with_clock(
       record_cache_valid: False,
       frame_revision: 0,
       stamp:,
-      client_build: build_identity.current(),
-      daemon_build: None,
+      build_notice: [],
       activity_revision: 0,
       connection_backlog: session_model.MailboxDrained,
       recorder: None,
@@ -615,8 +639,10 @@ pub fn new_model_with_clock(
       overlay: NoOverlay,
       strip_focus: agent_strip.Composing,
       local_options: None,
+      workspace: project,
       candidate: attachment.idle(),
       daemon_host: None,
+      client_build: build_identity.current(),
       control_request: None,
       activity_poll: tui_model.ActivityDue,
       reconnect: ReconnectIdle,
@@ -686,11 +712,15 @@ fn interactive(launch: Launch, record: String) -> Nil {
       // later `/sessions` switch derives it the same way from its choice.
       let local =
         Model(
-          shared: Shared(..base.shared, workspace: case options.workspace {
-            "" -> base.shared.workspace
-            path -> workspace.discover_from(path)
-          }),
-          view: tui_model.View(..base.view, local_options: Some(options)),
+          ..base,
+          view: tui_model.View(
+            ..base.view,
+            local_options: Some(options),
+            workspace: case options.workspace {
+              "" -> base.view.workspace
+              path -> workspace.discover_from(path)
+            },
+          ),
         )
       case bootstrap.resolve_daemon(options, process.self(), 90_000) {
         Error(reason) ->
@@ -898,6 +928,31 @@ pub fn launch_view(arguments: List(String)) -> Result(ViewRequest, String) {
   }
 }
 
+/// Classifies the words after `loom sessions` the way the launcher does,
+/// answering the parsed command when they name one and the refusal
+/// otherwise. It is the test seam for `--all`, `--yes`, and the shared
+/// local options, none of which the runner re-parses once this has settled
+/// them onto the command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(tui.ListRegistrations(tui.Every)) =
+///   tui.launch_sessions(["list", "--all"])
+/// let assert Ok(tui.ListRegistrations(tui.ResidentOnly)) =
+///   tui.launch_sessions(["list"])
+/// ```
+@internal
+pub fn launch_sessions(
+  arguments: List(String),
+) -> Result(SessionsCommand, String) {
+  case parse_launch(["sessions", ..arguments]) {
+    Sessions(command:, ..) -> Ok(command)
+    Invalid(reason) -> Error(reason)
+    _other -> Error("not a sessions launch")
+  }
+}
+
 // An interactive launch: a remote session when `--addr` is given, otherwise
 // a local one over the bootstrap ladder.
 fn parse_terminal_launch(arguments: List(String)) -> Launch {
@@ -928,7 +983,14 @@ fn parse_sessions(arguments: List(String)) -> Launch {
     #(False, remaining) -> #(AskAtTerminal, remaining)
   }
   case rest {
-    ["list", ..flags] -> sessions_launch(flags, ListRegistrations)
+    ["list", ..flags] -> {
+      let #(all, remaining) = take_switch(flags, "--all")
+      let showing = case all {
+        True -> Every
+        False -> ResidentOnly
+      }
+      sessions_launch(remaining, ListRegistrations(showing))
+    }
     ["rm", id, ..flags] ->
       sessions_launch(flags, RemoveRegistration(id, consent))
     ["rm"] -> Invalid("sessions rm needs a session id\n" <> sessions_usage())
@@ -961,8 +1023,14 @@ fn take_switch(arguments: List(String), flag: String) -> #(Bool, List(String)) {
 }
 
 fn sessions_usage() -> String {
-  "usage: loom sessions list [--state-dir <path>] [--server <path>]\n"
+  "usage: loom sessions list [--all] [--state-dir <path>] [--server <path>]\n"
   <> "       loom sessions rm <session-id> [--yes] [--state-dir <path>]\n"
+  <> "  list shows the resident track by default; --all adds every saved\n"
+  <> "  registration and reservation\n"
+  <> "  resident: running in the daemon now\n"
+  <> "  saved: has a database, not running; opens when selected\n"
+  <> "  reserved: a creation that never finished, an id with no database\n"
+  <> "  behind it; retry the create or remove it\n"
   <> "  rm asks for confirmation unless --yes is given, and refuses a\n"
   <> "  session the daemon still holds open; stop it first"
 }
@@ -1145,7 +1213,7 @@ fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
     Error(reason) -> sessions_failed(reason)
     Ok(#(control, host)) -> {
       let outcome = case command {
-        ListRegistrations -> list_registrations(host)
+        ListRegistrations(showing:) -> list_registrations(host, showing)
         RemoveRegistration(session_id:, consent:) ->
           remove_registration(host, session_id, consent)
       }
@@ -1190,13 +1258,124 @@ fn sessions_host(options: bootstrap.Options) {
 }
 
 // A terminal gets the aligned, coloured table; anything else gets the one
-// line per row that scripts already parse, byte for byte as before.
-fn list_registrations(host: daemon_selection.Host) -> Result(String, String) {
+// line per row that scripts already parse, byte for byte as before. The
+// default view narrows both to the resident track; `--all` widens either
+// back to the whole catalogue.
+fn list_registrations(
+  host: daemon_selection.Host,
+  showing: Showing,
+) -> Result(String, String) {
   use rows <- result.map(registration_rows(host, "", [], 100))
-  case rows, ffi_terminal.require_terminal() {
-    [], _ -> "no sessions"
-    rows, Ok(Nil) -> frame.buffer_to_styled(session_table.render(rows))
-    rows, Error(_) -> string.join(list.map(rows, registration_line), "\n")
+  format_listing(rows, showing, ffi_terminal.require_terminal())
+}
+
+/// Renders `loom sessions list` exactly as it would print, given the
+/// daemon's full page of rows, which of them to show, and whether standard
+/// output is a terminal.
+///
+/// Kept apart from `list_registrations` so the formatting — the filter, the
+/// hidden-count note, and the plain fallback — can be exercised without a
+/// daemon to list from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = [session_row(control_protocol.Saved)]
+/// assert tui.format_listing(rows, tui.ResidentOnly, Error("not a tty"))
+///   == "no sessions"
+/// ```
+@internal
+pub fn format_listing(
+  rows: List(control_protocol.Session),
+  showing: Showing,
+  terminal: Result(Nil, String),
+) -> String {
+  let visible = visible_rows(rows, showing)
+  case terminal {
+    Error(_) -> plain_listing(visible)
+    Ok(Nil) -> terminal_listing(visible, rows, showing)
+  }
+}
+
+// The rows a `Showing` keeps. `Every` is the identity; `ResidentOnly` drops
+// exactly the two lifecycles `session_table.resident_track` calls idle.
+fn visible_rows(
+  rows: List(control_protocol.Session),
+  showing: Showing,
+) -> List(control_protocol.Session) {
+  case showing {
+    Every -> rows
+    ResidentOnly ->
+      list.filter(rows, fn(row) { session_table.resident_track(row.status) })
+  }
+}
+
+// The plain, script-parsed format: one line per visible row, byte for byte
+// as before. No hidden-count note here — a line a parser was not expecting
+// would break it, and a script that wants every row already has `--all`.
+fn plain_listing(visible: List(control_protocol.Session)) -> String {
+  case visible {
+    [] -> "no sessions"
+    rows -> string.join(list.map(rows, registration_line), "\n")
+  }
+}
+
+// The styled, terminal format: the table (or an empty-catalogue notice),
+// followed by the hidden-count note when `--all` would add rows.
+fn terminal_listing(
+  visible: List(control_protocol.Session),
+  all_rows: List(control_protocol.Session),
+  showing: Showing,
+) -> String {
+  let body = case visible {
+    [] -> empty_notice(showing)
+    rows -> frame.buffer_to_styled(session_table.render(rows))
+  }
+  case hidden_summary(all_rows, showing) {
+    "" -> body
+    summary -> body <> "\n" <> summary
+  }
+}
+
+fn empty_notice(showing: Showing) -> String {
+  case showing {
+    Every -> "no sessions"
+    ResidentOnly -> "no resident sessions"
+  }
+}
+
+// The two lifecycles `--all` alone reveals: a saved registration and a bare
+// reservation. Naming each by its own count, rather than one combined
+// figure, is what lets a person tell stale history apart from a stuck
+// creation without reaching for `--all` first.
+fn hidden_summary(
+  rows: List(control_protocol.Session),
+  showing: Showing,
+) -> String {
+  case showing {
+    Every -> ""
+    ResidentOnly -> {
+      let saved =
+        list.count(rows, fn(row) { row.status == control_protocol.Saved })
+      let reserved =
+        list.count(rows, fn(row) { row.status == control_protocol.Reserved })
+      case
+        list.filter_map(
+          [#(saved, "saved"), #(reserved, "reserved")],
+          hidden_word,
+        )
+      {
+        [] -> ""
+        parts -> string.join(parts, ", ") <> " not shown (use --all)"
+      }
+    }
+  }
+}
+
+fn hidden_word(count: #(Int, String)) -> Result(String, Nil) {
+  case count.0 {
+    0 -> Error(Nil)
+    n -> Ok(int.to_string(n) <> " " <> count.1)
   }
 }
 
@@ -1713,13 +1892,7 @@ fn attach_daemon(
       let model =
         Model(
           ..model,
-          shared: Shared(
-            ..model.shared,
-            transcript: lane_fold.daemon_build_lines(
-              model.shared.daemon_build,
-              base.shared.client_build,
-            ),
-          ),
+          shared: Shared(..model.shared, transcript: model.shared.build_notice),
         )
 
       // Flushed for the reason `connect_remote` gives: the first request
@@ -1811,7 +1984,7 @@ pub fn step(message: msg.Msg, model: Model) -> #(Model, List(effect.Effect)) {
 // recording holds what the client was given rather than what it made of it,
 // and the input's line is ahead of every line the reducer queues for it.
 fn reduce(
-  at: msg.Stamp,
+  at: session_msg.Stamp,
   wall_ms: Int,
   event: msg.Event,
   model: Model,

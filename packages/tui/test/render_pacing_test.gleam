@@ -21,6 +21,7 @@ import gleam/list
 import gleam/option.{None}
 import gleam/string
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/protocol
 import tui
 import tui/connection
@@ -29,7 +30,6 @@ import tui/keymap
 import tui/model as tui_model
 import tui/pacing
 import tui/render
-import tui/session_model
 import tui/tick
 import tui/virtual_backend
 import tui/workspace

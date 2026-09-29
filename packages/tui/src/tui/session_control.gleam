@@ -22,6 +22,7 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/attempt
+import session_view/model.{Shared}
 import tui/agents
 import tui/attachment
 import tui/daemon/protocol as control_protocol
@@ -39,7 +40,6 @@ import tui/model.{
 } as tui_model
 import tui/peer_links
 import tui/recording
-import tui/session_model.{Shared}
 import tui/session_selector
 import tui/workspace
 import weft
@@ -232,7 +232,7 @@ pub fn load_catalogue_collection(
             command,
             collection,
             model.shared.session,
-            model.shared.workspace.path,
+            model.view.workspace.path,
           ),
         )
       Model(
@@ -400,7 +400,7 @@ fn finish_control(model: Model, result) {
     Some(Ok(PageLoaded(page, selected, collection))) -> {
       let selector =
         session_selector.new(
-          session_selector.prioritize(page, model.shared.workspace.path),
+          session_selector.prioritize(page, model.view.workspace.path),
           selected,
         )
 
@@ -639,8 +639,8 @@ fn create_session_configured(model: Model, config: String) -> Model {
         job.CreateSession(
           host.control,
           key,
-          model.shared.workspace.path,
-          workspace.session_name(model.shared.workspace),
+          model.view.workspace.path,
+          workspace.session_name(model.view.workspace),
           config,
         )
       let #(model, job_key) =

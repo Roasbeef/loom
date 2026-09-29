@@ -8,40 +8,41 @@
 //// or paints the record.
 ////
 //// The model is two records, `Model(shared: TerminalShared, view: View)`.
-//// `Shared`, defined in `tui/session_model` with the types it names, is the
+//// `Shared`, defined in `session_view/model` with the types it names, is the
 //// session state: what the daemon said, what this client has sent and not
 //// yet seen committed, the reads in flight, and the revision
 //// counters that tell a host its projection is stale. `View` is the
 //// terminal's own state: the screen size, the composer and its history, the
 //// panels, overlays and their cursors, the row projection's outputs, frame
 //// pacing, the host clocks, the daemon-control and attachment job slots, and
-//// the etui render caches. The terminal owns both today. The split is there
-//// because the web view shows the same sessions and should run the same
-//// reducers rather than its own copies (issue #569): a second host holds a
-//// `Shared` beside a view record of its own, and nothing in `Shared` names an
-//// etui type, a terminal surface or a job slot. Three records held both
+//// the etui render caches. The split is there because the web view shows the
+//// same sessions and should run the same reducers rather than its own copies
+//// (issue #569): a second host holds a `Shared` beside a view record of its
+//// own, and nothing in `Shared` names an etui type, a terminal surface or a
+//// job slot. Three records held both
 //// kinds of state and are cut in two: a parked strand's history window is
 //// `Shared.parked_scrollback` beside the editor in `View.strand_workspaces`,
 //// the agent strip's roster is `Shared.roster` beside its keyboard focus
 //// in `View.strip_focus`, and the queue editor's requests on the lane are
 //// `Shared.queue_request` beside the editor in `View.queue_editor`. The
-//// daemon's build is `Shared.daemon_build` beside the control connection in
-//// `View.daemon_host`, and a held prompt the daemon returns waits in
-//// `Shared.returned_drafts` until the terminal moves it into an editor.
+//// build-mismatch notice a cut draws is `Shared.build_notice`, which the
+//// terminal writes from the daemon it adopts into `View.daemon_host` and the
+//// client's build in `View.client_build`, and a held prompt the daemon
+//// returns waits in `Shared.returned_drafts` until the terminal moves it into
+//// an editor.
 ////
-//// The record is shaped by the first two slices of moving the client
-//// step into `session_view` (`docs/design-notes/step-extraction.md`).
-//// `Shared` holds four host handles, the adopted lane (`channel`), the
-//// connection and replay inboxes (`inbox`, `replay_inbox`) and the
-//// recorder, and names none of them with a terminal type: it is
-//// `Shared(socket, recorder, source, replay_source)`. The terminal binds
-//// the parameters to its connection, its recording and the two subjects it
-//// reads in `TerminalShared`, which is the type of `Model.shared`. Most
-//// reducers still take the whole `Model` and read a field through the half
-//// that holds it. The reducer cut (issue #569, S3) moves them one layer at a
-//// time, from the helpers they call upward, to functions over `Shared`
-//// alone, which a later slice moves into `session_view`, where the web view
-//// can drive them with its own bindings.
+//// The record is shaped by moving the client step into `session_view`
+//// (`docs/design-notes/step-extraction.md`). `Shared` holds four host
+//// handles, the adopted lane (`channel`), the connection and replay inboxes
+//// (`inbox`, `replay_inbox`) and the recorder, and names none of them with a
+//// terminal type: it is `Shared(socket, recorder, source, replay_source)`.
+//// The terminal binds the parameters to its connection, its recording and
+//// the two subjects it reads in `TerminalShared`, which is the type of
+//// `Model.shared`. The session's reducers are in `session_view` over
+//// `Shared` alone, where the web view can drive them with its own bindings.
+//// The terminal's reducers take the whole `Model`, call those through
+//// `hold_shared` and `run_shared`, and apply what each call recorded for
+//// the terminal's surfaces (`inbound.settle_surfaces`).
 ////
 //// The step's effect queue is `View.outbox`. It holds the terminal's
 //// effects, jobs and the attachment among them, in one order with the
@@ -56,7 +57,7 @@
 //// every reducer needs. Those that change only session state (appending a
 //// system or error line, the transcript and frame revisions, the activity
 //// mark, storing the lane, recording a channelless arrival) are defined
-//// over `Shared` in `tui/session_model`; the functions of the same names
+//// over `Shared` in `session_view/model`; the functions of the same names
 //// here are their forms over the whole model, each a `hold_shared` of the
 //// shared call, for the reducers that still take the whole model. The
 //// terminal's own operations, queuing a terminal effect, starting a job and
@@ -77,6 +78,9 @@ import session_view/attempt
 import session_view/composer
 import session_view/connection_event
 import session_view/history_view
+import session_view/model.{type Shared, Shared} as session_model
+import session_view/msg as session_msg
+import session_view/outbound
 import session_view/session_channel
 import session_view/transcript_line.{type Line}
 import session_view/worktree_view
@@ -96,17 +100,16 @@ import tui/live_tail
 import tui/model_selector
 import tui/msg
 import tui/note_panel
-import tui/outbound
 import tui/pacing
 import tui/peer_links
 import tui/queue_editor
 import tui/recording
 import tui/selection
-import tui/session_model.{type Shared, Shared}
 import tui/session_selector
 import tui/summary_panel
 import tui/terminal_lane
 import tui/transcript_anchor
+import tui/workspace
 import weft
 
 /// Whether the transcript area is showing captured edits.
@@ -452,10 +455,20 @@ pub type View {
     /// The local launch's options, which session creation and the
     /// reconnect reuse; `None` for a remote attachment.
     local_options: Option(bootstrap.Options),
+    /// The repository path and branch the terminal attached from, which the
+    /// footer, the session picker's ordering and a new session's name read.
+    /// It is the terminal's reading of its own directory, so it stays here
+    /// rather than in the session state.
+    workspace: workspace.Context,
     /// One provisional replacement, whose original deadline includes capture.
     candidate: attachment.Status,
     /// Terminal-owned daemon control, independent of the selected session.
     daemon_host: Option(job.Daemon),
+    /// The build this client runs, which the build-mismatch notice compares
+    /// with the daemon's. It comes from two environment variables that do
+    /// not change while the process runs, so it is read once, when the model
+    /// is created, and `adopt_daemon` compares it with each daemon it adopts.
+    client_build: build_identity.Identity,
     /// One bounded metadata page request; no catalogue accumulation.
     control_request: Option(ControlRequest),
     /// The session picker's activity poll, separate from the control job.
@@ -939,12 +952,12 @@ pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
 /// Records the daemon whose control connection the terminal now holds.
 ///
 /// The connection and its key are the terminal's and go in
-/// `View.daemon_host`; the build the daemon's `hello` named is data every
-/// coherent cut compares with this client's build, so it also goes in
-/// `Shared.daemon_build`, where the build-mismatch notice reads it. Both
+/// `View.daemon_host`. The build the daemon's `hello` named is compared with
+/// `View.client_build` here, and the mismatch notice that comparison yields
+/// goes in `Shared.build_notice`, which every coherent cut draws. Both
 /// places that adopt a control connection, the launch and the reconnect,
-/// write through this function, so the two fields always describe the same
-/// daemon.
+/// write through this function, so the notice always describes the daemon
+/// the terminal holds.
 ///
 /// ## Examples
 ///
@@ -958,9 +971,43 @@ pub fn adopt_daemon(model: Model, daemon: job.Daemon) -> Model {
       build_identity.Identity(build.version, build.commit)
     })
   Model(
-    shared: Shared(..model.shared, daemon_build:),
+    shared: Shared(
+      ..model.shared,
+      build_notice: daemon_build_lines(daemon_build, model.view.client_build),
+    ),
     view: View(..model.view, daemon_host: Some(daemon)),
   )
+}
+
+// The build-mismatch notice for a daemon's build and this client's. The
+// authenticated build belongs to the retained control host. Projecting its
+// mismatch on every coherent cut keeps attachment and later captures from
+// erasing the update notice when they replace the transcript presentation.
+// `theirs` is the build the daemon's `hello` named, `None` when it named
+// none. `ours` is `View.client_build`, read when the model was created, so
+// neither the comparison nor a cut reads an environment variable.
+fn daemon_build_lines(
+  theirs: Option(build_identity.Identity),
+  ours: build_identity.Identity,
+) -> List(Line) {
+  case theirs {
+    None -> []
+    Some(theirs) ->
+      case build_identity.matches(ours, theirs) {
+        True -> []
+        False -> [
+          transcript_line.Line(
+            transcript_line.System,
+            "daemon build "
+              <> build_identity.describe(theirs)
+              <> " differs from this client's "
+              <> build_identity.describe(ours)
+              <> "; the daemon runs the build it was started with, so "
+              <> "restart it to pick up an update",
+          ),
+        ]
+      }
+  }
 }
 
 /// Queues the release of what a job reply holds, when nobody will take it.
@@ -1107,7 +1154,7 @@ pub fn record_arrival(
 @internal
 pub fn start_step(
   model: Model,
-  at: msg.Stamp,
+  at: session_msg.Stamp,
   wall_ms: Int,
   event: msg.Event,
 ) -> Model {

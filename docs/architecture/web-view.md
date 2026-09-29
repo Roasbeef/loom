@@ -556,12 +556,15 @@ browser goes away, because a runtime outlives its last client.
   proposed and not implemented. Today a remote person reaches the page
   through `ssh -L`, which presents a loopback `Host`.
 - **The extracted step.** The page drives the lane and the projection, not
-  the terminal's step. Strand focus, streams and the auxiliary reads wait
-  for the four changes ADR-014 lists under "Why the step waits for the
-  build-out phase". History paging is built on the page's own
-  `history_view.State`, the field the shared step will hold for both hosts
-  (`docs/design-notes/step-extraction.md`, `scrollback`); the row limit and
-  `Paging` stay the page's view state.
+  the shared step. The step's record and reducers now live in
+  `session_view` (`session_view/model`, the folds, the commands and the
+  settle in `session_view/step`, since S4 of
+  `docs/design-notes/step-extraction.md`), and the terminal runs them; the
+  page keeps its own capture, cache and submission folds until S5 switches
+  it to them. Strand focus, streams and the auxiliary reads wait for that
+  slice. History paging is built on the page's own `history_view.State`,
+  the field the shared record, `session_view/model.Shared`, holds as
+  `scrollback`; the row limit and `Paging` stay the page's view state.
 - **One strand, one session.** The page shows and addresses `main`. The
   routes already carry the session ID, so a later page can mount one
   component per session or agent.

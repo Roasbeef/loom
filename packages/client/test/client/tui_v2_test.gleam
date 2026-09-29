@@ -15,6 +15,7 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import session_view/attempt
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/session_channel
 import support/tui_driver
 import tui
@@ -26,7 +27,6 @@ import tui/inbound
 import tui/model as tui_model
 import tui/recording
 import tui/runtime
-import tui/session_model
 import tui/terminal_lane
 import weft/poll
 
