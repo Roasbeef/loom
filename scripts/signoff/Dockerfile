@@ -59,7 +59,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # dependency for driving a real terminal — without it that suite
 # declares a skip rather than failing, which is honest but would mean
 # the container never actually proves what the bare host and the hosted
-# jail both do.
+# jail both do. nodejs runs packages/web_client's tests, which target
+# JavaScript (scripts/web_client_test.sh); without it that gate prints a
+# SKIP and the census refuses it.
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 		build-essential \
 		pkg-config \
@@ -76,6 +78,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 		curl \
 		openssh-client \
 		locales \
+		nodejs \
 		xz-utils \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& locale-gen en_US.UTF-8
