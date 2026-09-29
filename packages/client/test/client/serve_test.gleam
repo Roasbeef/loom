@@ -166,6 +166,7 @@ fn settings_under(root: String) -> serve.Settings {
   let root = absolute(root)
   serve.Settings(
     peer_directory: None,
+    codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/session.db",
@@ -1578,6 +1579,9 @@ pub fn the_state_root_masks_name_the_secrets_and_not_the_root_test() {
     "/home/o/.loom/launch.lock",
     "/home/o/.loom/endpoints",
     "/home/o/.loom/daemon.endpoint",
+    // The code-mode socket root (#611): masked from every jail, and
+    // lifted only in a satellite's own base for its own directory.
+    "/home/o/.loom/run",
   ]
   list.each(secrets, fn(entry) {
     assert list.contains(masks, entry) as { "masked: " <> entry }
@@ -2497,4 +2501,26 @@ pub fn code_mode_defaults_to_both_isolated_surfaces_test() {
   assert serve.parse_codemode_seams(Some("both")) == Ok(codemode.BothSeams)
   let assert Error(_) = serve.parse_codemode_seams(Some("invalid"))
     as "unknown modes must not silently select a default"
+}
+
+// --- where a managed session binds its code-mode sockets (#611) ------------
+
+pub fn a_session_binds_its_sockets_under_the_daemon_runtime_root_test() {
+  assert serve.codemode_socket_root(serve.base_policy("/work"), "/home/o/.loom")
+    == Some("/home/o/.loom/run")
+}
+
+pub fn a_session_that_can_write_the_runtime_root_binds_in_its_workspace_test() {
+  // A session on the home directory could replace `run` from a jail, so
+  // it keeps the mask and binds under its own work root instead.
+  assert serve.codemode_socket_root(
+      serve.base_policy("/home/o"),
+      "/home/o/.loom",
+    )
+    == None
+  assert serve.codemode_socket_root(
+      serve.base_policy("/home/o/.loom"),
+      "/home/o/.loom",
+    )
+    == None
 }

@@ -21,6 +21,7 @@
 //// `make check` stays hermetic and fast.
 
 import broker/broker
+import broker/budget
 import broker/escalation
 import broker/exec
 import broker/policy
@@ -1631,6 +1632,19 @@ fn rig_protecting(
   under root: String,
   protected protected: List(String),
 ) -> Rig {
+  rig_sized(ready, under: root, protected:, helpers: 3)
+}
+
+// The rig with a helper pool of a stated size. Two executions running at
+// once each hold a build helper, then a node helper and a `proc.run`
+// helper, so the concurrent run below needs more than the default three
+// to avoid measuring pool congestion instead of socket placement.
+fn rig_sized(
+  ready: Ready,
+  under root: String,
+  protected protected: List(String),
+  helpers helpers: Int,
+) -> Rig {
   let workspace = workspace_in(root)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
     as "the live rig must have a workspace"
@@ -1652,7 +1666,7 @@ fn rig_protecting(
     )
     |> serve.merging_mounts
   let assert Ok(pool) =
-    exec.start_pool(size: 3, spawn: fn() {
+    exec.start_pool(size: helpers, spawn: fn() {
       exec.spawn_helper(exec.SpawnConfig(
         helper_path: ready.helper_path,
         shell_path: "/bin/sh",
@@ -2245,4 +2259,250 @@ fn recipe_agency(
       )
     },
   )
+}
+
+// --- the cap socket outside the workspace (#611) ------------------------------
+
+// The workspace length the deep-workspace runs pad to. Under the old
+// placement the socket path would have been this plus thirty bytes, well
+// past the 100-byte budget.
+const deep_workspace_bytes = 150
+
+// A directory name placed in the socket root by the masking run, so that
+// a listing which could see the root would print it.
+const socket_marker = "611marker"
+
+pub fn a_deep_workspace_binds_its_socket_under_the_runtime_root_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println_error(
+        "SKIP a_deep_workspace_binds_its_socket_under_the_runtime_root: "
+        <> reason,
+      )
+    Ok(ready) -> run_deep_workspace(ready)
+  }
+}
+
+pub fn two_concurrent_executions_bind_separate_sockets_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println_error(
+        "SKIP two_concurrent_executions_bind_separate_sockets: " <> reason,
+      )
+    Ok(ready) -> run_concurrent_sockets(ready)
+  }
+}
+
+pub fn an_unrelated_jail_cannot_see_the_socket_root_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println_error(
+        "SKIP an_unrelated_jail_cannot_see_the_socket_root: " <> reason,
+      )
+    Ok(ready) -> run_socket_mask(ready)
+  }
+}
+
+// The socket root inside a rig, standing in for `<state root>/run`. It is
+// created before the rig for the reason the daemon creates the real one
+// at startup: the base masks it, and a mask over a missing path is one
+// the jail may refuse to build.
+fn socket_root_in(root: String) -> String {
+  let sockets = root <> "/" <> codemode.runtime_directory
+  let assert Ok(Nil) = simplifile.create_directory_all(sockets)
+    as "the socket root must be creatable"
+  sockets
+}
+
+// A workspace padded to exactly `deep_workspace_bytes`, inside the rig's
+// root so the rig's base covers it.
+fn deep_workspace(root: String) -> String {
+  let prefix = workspace_in(root) <> "/"
+  let padding = deep_workspace_bytes - string.byte_size(prefix)
+  let workspace = prefix <> string.repeat("d", padding)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+    as "the deep workspace must be creatable"
+  workspace
+}
+
+// The shipped wiring, with the daemon's socket placement.
+fn socket_rooted_config(
+  rig: Rig,
+  workspace: String,
+  sockets: String,
+) -> codemode.Config {
+  codemode.default_config(
+    broker: rig.broker,
+    clock: wall_clock(),
+    workspace:,
+    toolchain: rig.toolchain,
+  )
+  |> codemode.sockets_under(option.Some(sockets))
+}
+
+fn program_arguments() -> json.JsonValue {
+  json.Object([
+    #("program", json.String(program_source())),
+    #("within_ms", json.Int(600_000)),
+  ])
+}
+
+// Issue #611's acceptance: a workspace of 150 bytes runs a real program
+// through the real pipeline, jailed, with the session base masking the
+// socket root exactly as a daemon session's does. The echo proves the cap
+// channel carried a capability call both ways, so the satellite reached
+// its socket through the mask.
+fn run_deep_workspace(ready: Ready) -> Nil {
+  let root = ready.root
+  let sockets = socket_root_in(root)
+  let workspace = deep_workspace(root)
+  assert string.byte_size(workspace) == deep_workspace_bytes
+  let rig = rig_protecting(ready, under: root, protected: [sockets])
+
+  // The old placement is refused for this workspace, and the refusal
+  // names the root that is too deep rather than failing at `listen`.
+  let assert Error(old) =
+    codemode.check_socket_path(
+      workspace <> "/" <> codemode.work_directory <> "/0000000000000000",
+    )
+    as "a socket inside a 150-byte workspace must be over the budget"
+  assert string.contains(old, workspace <> "/" <> codemode.work_directory)
+
+  let outcome =
+    codemode_tool.tool_for(
+      codemode.seam(socket_rooted_config(rig, workspace, sockets)),
+    ).run(
+      live_ctx(workspace, rig.base_policy, wall_clock()),
+      program_arguments(),
+    )
+  let text = rendered_text(outcome)
+  assert !outcome.is_error as text
+  assert string.contains(text, echoed <> " exit=0")
+
+  // The execution settled and took its socket directory with it.
+  assert simplifile.read_directory(sockets) == Ok([])
+  io.println(
+    "code-mode deep workspace: a "
+    <> int.to_string(deep_workspace_bytes)
+    <> "-byte workspace ran with its socket under "
+    <> sockets,
+  )
+  stop_rig(rig)
+}
+
+// Issue #87 with the new placement: two executions of one operation and
+// one step, differing only in source index, run at the same time against
+// one socket root. Each must bind its own directory; a shared one would
+// let the first execution's cleanup remove the second's live socket.
+fn run_concurrent_sockets(ready: Ready) -> Nil {
+  let root = ready.root
+  let sockets = socket_root_in(root)
+  let rig = rig_sized(ready, under: root, protected: [sockets], helpers: 6)
+  let config = socket_rooted_config(rig, rig.workspace, sockets)
+  let code_mode = codemode_tool.tool_for(codemode.seam(config))
+  let ctx = live_ctx(rig.workspace, rig.base_policy, wall_clock())
+
+  // The two directories differ before anything runs, which is the
+  // property the race depends on.
+  assert codemode.socket_directory(
+      config,
+      op_id: ctx.op_id,
+      step_id: ctx.step_id,
+      source_index: 0,
+    )
+    != codemode.socket_directory(
+      config,
+      op_id: ctx.op_id,
+      step_id: ctx.step_id,
+      source_index: 1,
+    )
+
+  let settled = process.new_subject()
+  list.each([0, 1], fn(index) {
+    process.spawn(fn() {
+      let outcome =
+        code_mode.run(tool.Ctx(..ctx, source_index: index), program_arguments())
+      process.send(settled, #(index, outcome))
+    })
+  })
+  let assert Ok(#(_, first)) = process.receive(settled, 900_000)
+    as "the first concurrent execution must settle"
+  let assert Ok(#(_, second)) = process.receive(settled, 900_000)
+    as "the second concurrent execution must settle"
+  assert !first.is_error as rendered_text(first)
+  assert !second.is_error as rendered_text(second)
+  assert string.contains(rendered_text(first), echoed <> " exit=0")
+  assert string.contains(rendered_text(second), echoed <> " exit=0")
+  assert simplifile.read_directory(sockets) == Ok([])
+  stop_rig(rig)
+}
+
+// The mask, from outside a satellite. A jailed command under the session
+// base, which is what `bash` runs under, lists the socket root and must
+// not see the directory in it. The same command under the satellite's
+// derivation for that one directory (`codemode.reaching_socket`) must see
+// the socket file inside it, so the test cannot pass because the listing
+// failed for some other reason.
+fn run_socket_mask(ready: Ready) -> Nil {
+  let root = ready.root
+  let sockets = socket_root_in(root)
+  let directory = sockets <> "/" <> socket_marker
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "the marker directory must be creatable"
+  let assert Ok(Nil) = simplifile.write(directory <> "/s", "")
+    as "the marker socket stand-in must be writable"
+  let rig = rig_protecting(ready, under: root, protected: [sockets])
+
+  let masked = jailed_stdout(rig, rig.base_policy, ["/bin/ls", "-a", sockets])
+  assert !string.contains(masked, socket_marker) as masked
+
+  let granted =
+    codemode.reaching_socket(rig.base_policy, under: sockets, directory:)
+  assert granted.protected == []
+  let reached = jailed_stdout(rig, granted, ["/bin/ls", directory])
+  assert string.contains(reached, "s") as reached
+
+  let assert Ok(Nil) = simplifile.delete(directory)
+    as "the marker directory must be removable"
+  stop_rig(rig)
+}
+
+// One jailed command through the rig's broker, as a built-in tool clears
+// one, returning what it printed. A command the jail kept from reading
+// its target still exits; only a refused clearance is a failure here.
+fn jailed_stdout(
+  rig: Rig,
+  base: policy.SandboxPolicy,
+  argv: List(String),
+) -> String {
+  let wall = wall_clock()
+  let #(now, _) = clock.read(wall)
+  let #(operation, _) = ids.mint_op(ids.generator(wall, seed: 611))
+  let events = process.new_subject()
+  let assert Ok(call) =
+    broker.clear_call(
+      rig.broker,
+      broker.CallSpec(
+        op_id: operation,
+        step_id: "socket-mask",
+        base_policy: base,
+        requirements: base,
+        grants: [],
+        response: broker.RefuseNarrowed,
+        demand: exec.BestEffort,
+        argv:,
+        env: [#("PATH", "/usr/bin:/bin")],
+        cwd: rig.workspace,
+        budget: budget.Budget(1, now + 30_000),
+      ),
+      events:,
+      waiting: 20_000,
+    )
+    as "the listing must be admitted"
+  broker.stdin(rig.broker, call, data: <<>>, eof: True)
+  let assert Ok(collected) = tool.collect_events(events, waiting: 30_000)
+    as "the listing must settle"
+  let assert Ok(text) = bit_array.to_string(collected.stdout)
+    as "a listing is UTF-8"
+  text
 }

@@ -478,8 +478,11 @@ fn host_config(
   at: hosts.Coordinates,
 ) -> Result(satellite.HostConfig, String) {
   let root = codemode.host_root(config.host, extension: written.name)
-  use _ok <- result.try(codemode.check_socket_path(root))
+  let sockets =
+    codemode.host_socket_directory(config.host, extension: written.name)
+  use _ok <- result.try(codemode.check_socket_path(sockets))
   use _ok <- result.try(codemode.prepare_root(root))
+  use _ok <- result.try(codemode.prepare_root(sockets))
   let #(now, _clock) = clock.read(config.host.clock)
   Ok(satellite.HostConfig(
     broker: config.host.broker,
@@ -488,7 +491,13 @@ fn host_config(
       step_id: host_step_id,
       budget: codemode.pooled_budget(config.host, now + host_lifetime_ms),
     )),
-    base_policy: session_lived(codemode.execution_policy(at.base_policy)),
+    // The node's jail, and no invocation's, reaches the one socket
+    // directory this host binds in (`codemode.reaching_socket`).
+    base_policy: session_lived(codemode.reaching_socket_of(
+      config.host,
+      codemode.execution_policy(at.base_policy),
+      sockets,
+    )),
     demand: at.demand,
     // The satellite's children inherit the driver's constructed
     // environment, exactly as a code-mode program's do. No binding's
@@ -497,7 +506,7 @@ fn host_config(
     // checkable from the policy alone.
     env: at.env,
     cwd: at.workspace,
-    cap_socket_path: codemode.socket_path(root),
+    cap_socket_path: codemode.socket_path(sockets),
     entropy: config.host.entropy,
     clock: config.host.clock,
     write_token_file: satellite.private_token_writer(root <> "/token"),

@@ -324,6 +324,12 @@ pub type Settings {
     domain_paths: Option(DomainPaths),
     /// Resident-only peer lookups supplied by the owning daemon.
     peer_directory: Option(peers.Directory),
+    /// Where code-mode cap sockets are bound: `<state root>/run` for a
+    /// daemon-managed session, `None` to bind them under the workspace's
+    /// `.codemode`. A field because only the daemon knows its state root,
+    /// and a socket under the workspace fails in any deep workspace
+    /// (issue #611).
+    codemode_sockets: Option(String),
     /// The session's base policy — the ceiling every tool call is
     /// composed against, and the thing an escalation widens. `main`
     /// fills it with `base_policy(workspace)`; it is a field rather than
@@ -854,6 +860,7 @@ pub fn resolve_managed(
       ..settings,
       session_id: registration.id,
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
+      codemode_sockets: codemode_socket_root(settings.base_policy, state_root),
       // The daemon's secrets, not the daemon's directory. Masking the
       // whole state root also masked a workspace an operator had every
       // right to open on it; see `state_root_mask_candidates` for the grain and
@@ -861,6 +868,40 @@ pub fn resolve_managed(
       base_policy: protecting_state_root(settings.base_policy, state_root),
     ),
   )
+}
+
+/// Where a managed session binds its code-mode cap sockets: the daemon's
+/// `<state root>/run`, unless the session's own writable roots cover it.
+///
+/// The covered case is a session opened on a directory above the state
+/// root, such as the operator's home directory. A jailed process that can
+/// write the parent of `run` could replace the directory before a
+/// satellite's socket is bound in it. So that session binds under its own
+/// work root instead, as every session did before issue #611, and keeps
+/// the mask; its socket path is then as long as its workspace makes it,
+/// and a workspace too deep is refused in band.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.codemode_socket_root(serve.base_policy("/work"), "/home/o/.loom")
+/// //   == Some("/home/o/.loom/run")
+/// ```
+///
+@internal
+pub fn codemode_socket_root(
+  base: policy.SandboxPolicy,
+  state_root: String,
+) -> Option(String) {
+  let root = state_root <> "/" <> codemode_wiring.runtime_directory
+  case
+    list.any(base.writable_roots, fn(writable) {
+      policy.covers(root: writable, path: root)
+    })
+  {
+    True -> None
+    False -> Some(root)
+  }
 }
 
 /// Builds domain services from their stored maintenance configuration only.
@@ -1161,6 +1202,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     workspace:,
     domain_paths: None,
     peer_directory: None,
+    codemode_sockets: None,
     base_policy: admitting_config_mounts(
       base_policy_for(
         workspace,
@@ -2020,7 +2062,11 @@ fn code_mode_seam(
           // The MCP layer widens both installed modes' allowlists, their
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
-          |> codemode_wiring.over_mcp(layer),
+          |> codemode_wiring.over_mcp(layer)
+          // Cap sockets under the daemon's short runtime root rather than
+          // the workspace, so the socket path has the same length for a
+          // workspace of any depth (issue #611).
+          |> codemode_wiring.sockets_under(settings.codemode_sockets),
         ),
         layer,
       ))
@@ -5421,6 +5467,15 @@ fn established_masks(state_root: String) -> List(String) {
     // singleton fence, and a jailed process that could unlink or rewrite
     // it could induce a second daemon over the same catalogue.
     state_root <> "/daemon.lock",
+
+    // The code-mode socket root. Each directory under it holds one
+    // execution's cap socket, and only that execution's satellite is
+    // given its directory back (`client/codemode.reaching_socket`). The
+    // mask stops every other jail listing it on both platforms, and
+    // stops connecting under bubblewrap. Seatbelt allows unix-socket
+    // connects by path regardless, so on macOS the unlisted digest name
+    // is what keeps another jail from the socket.
+    state_root <> "/" <> codemode_wiring.runtime_directory,
   ]
 }
 

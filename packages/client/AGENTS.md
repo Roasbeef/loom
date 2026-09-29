@@ -762,7 +762,8 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/codemode.{Config, Toolchain, seam, discover, toolchain,
   install_prefix, toolchain_mounts, default_config,
   execute, exec_config, build_config, exec_root, execution_policy,
-  translate, pooled_budget}` — code mode: `tools/codemode`'s seam
+  sockets_under, socket_directory, host_socket_directory,
+  reaching_socket, translate, pooled_budget}` — code mode: `tools/codemode`'s seam
   implemented over the real pipeline, the other package this one exists
   to join (`tools` cannot see `codemode`, which already depends on it).
   `discover` locates `gleam`, `erl` and a verified build seed or says
@@ -2271,7 +2272,9 @@ catalogue without opening runtimes. Explicit admission invokes
   WAL family, `workspaces/`, `domains/`, `locks/`, `daemon.lock`,
   `launch.lock`, `endpoints/` and `daemon.endpoint` (those last two carry
   no secret and are masked as *control*: a launcher adopts a running
-  daemon by the PID and birth marker it reads there). Not masked: the
+  daemon by the PID and birth marker it reads there), and `run/`, the
+  code-mode socket root, which only a satellite's own base reopens for
+  its one directory (`client/codemode.reaching_socket`). Not masked: the
   `loom*.toml` catalogues, which name environment variables rather than
   holding secrets, `extensions/`, `logs/` and `daemon.log`. The blob store
   is masked one layer up, by `base_policy`'s `<workspace>/.blobs`, so a
@@ -2735,9 +2738,10 @@ the nodes:
   `ext/runtime` reads; the answer goes through `settle`, which now takes a
   `Result(MsgPackValue, hosts.HookFailure)` and is still public because it
   is the one part of a dispatch a test can hold still. **No work directory
-  is prepared or removed per call**: a host's socket and token file live
-  under `codemode.host_root(config, extension:)`, keyed on the extension
-  because they outlive every call. The router is two layers now rather
+  is prepared or removed per call**: a host's token file lives under
+  `codemode.host_root(config, extension:)` and its socket under
+  `codemode.host_socket_directory(config, extension:)`, both keyed on the
+  extension because they outlive every call. The router is two layers now rather
   than three — `seam.routing` over `codemode.workspace_seam_for`'s bridge
   over `satellite.default_router` — and it, the ceilings and the clearance
   identity are all built per invocation. A call's wall budget is `within`,
@@ -3826,10 +3830,41 @@ these forks because they define the same modules.
   the first execution's cleanup could unlink the second's live socket and
   token, while `prepare_root`'s recursive delete races the same janitor
   the other way (issue #87). The name is a short digest of that triple
-  rather than the triple itself, because the cap socket sits inside it and
-  an AF_UNIX path is capped near 108 bytes — a socket that would exceed
-  the limit is refused in band, naming the workspace, instead of failing
-  as an opaque `einval` from `listen`.
+  rather than the triple itself, so a step id cannot put a separator or a
+  dot segment into a path.
+- **The cap socket does not live in the execution directory** (issue
+  #611). An AF_UNIX path is limited to 104 bytes on macOS and 108 on
+  Linux, and a socket inside the workspace failed in any workspace deeper
+  than about 60 bytes. `codemode.socket_directory` names one directory per
+  execution under `Config.socket_root`: `<state root>/run` for a
+  daemon-managed session (`Settings.codemode_sockets`, set by
+  `resolve_managed`; `codemode.runtime_directory` is the name), or
+  `work_root` when a host names none. The key is the same `{op_id,
+  step_id, source_index}` triple plus a length-prefixed work root, since
+  one socket root serves every workspace, so #87's janitor and
+  `prepare_root` races stay closed. `execute` removes it with the
+  execution directory. Extension hosts use `host_socket_directory`, keyed
+  on the extension name like `host_root`, and keep it for the session.
+  `daemon/root.directories` creates `<state root>/run` mode 0700 at
+  startup, and `serve.established_masks` masks it from **every** jail.
+  Only the satellite's own base reaches its directory:
+  `codemode.reaching_socket` adds that directory as a readable root and
+  drops a protected entry only when it lies inside the socket root and
+  covers the directory. `protected` has no carve-out verb, so this is the
+  only way to reopen a path under a mask; a mask above the socket root
+  (an operator masking the whole state root) is kept and the launch
+  refuses in band. The build's base and an extension invocation's base
+  do not get the grant. Under host reads the satellite (and its
+  `proc.run` children, which share its base) can list the other socket
+  directories beside its own; they hold sockets only, and each accepts a
+  connection only with its execution's token, which stays in that
+  execution's workspace directory. The mask stops listing on both
+  platforms and connecting only under bubblewrap; Seatbelt allows
+  unix-socket connects by path, so on macOS the unlisted digest name is
+  the barrier. A session whose writable roots cover `<state root>/run`
+  (one opened on the home directory) binds under its own work root
+  instead (`serve.codemode_socket_root`). The in-band length refusal remains
+  for the residual case and names the socket root, not the workspace.
 - **MCP reaches a model through code mode, and a host with no code mode
   starts no MCP server.** A server's tools are a *module* a program may
   import, never a registered tool, so a host that registers no
