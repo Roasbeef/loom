@@ -416,8 +416,12 @@ fn joined(blocks: List(Block)) -> Joined {
 // and stays whole in the terminal. A host that draws no expansion keeps the
 // block as the transcript projected it, so the text is never dropped.
 fn folded_memory(block: Block, body: String, expansion: Expansion) -> Piece {
-  case expansion, composer.memory_context_lines(body), block.rows {
-    Expand(cap:), Some(lines), [#(key, _first), ..] ->
+  case expansion, composer.memory_context_lines(body) {
+    Expand(cap:), Some(lines) -> {
+      // The message's row is the block's first, which `transcript_lines`
+      // keys `<block key>:0`, and `classify` has already dropped a block
+      // that draws no rows.
+      let key = block.key <> ":0"
       Plain(
         transcript_lines.Block(..block, rows: [
           #(
@@ -432,7 +436,8 @@ fn folded_memory(block: Block, body: String, expansion: Expansion) -> Piece {
           #(key, cap([transcript_line.Line(transcript_line.ToolDetail, body)])),
         ]),
       )
-    _, _, _ -> Plain(block, dict.new())
+    }
+    _, _ -> Plain(block, dict.new())
   }
 }
 
