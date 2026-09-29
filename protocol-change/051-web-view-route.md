@@ -1673,7 +1673,8 @@ socket (`ui_socket.observer_accepts`) now admits a Lustre `EventFired`
 frame of kind 1 and name `click` at `component.older_path`, as before, or at
 any path beneath `component.strip_path` (the strip's chip list; `0\t1\t0\t`
 when this addendum landed, `0\t3\t1\t0\t` since the redesign's shell moved the
-strip into the strand panel, as the constant says). A path beneath the list
+strip into the strand panel, and `0\t3\t0\t1\t0\t` since the panel became
+three tabbed panes with the Strands pane first, as the constant says). A path beneath the list
 that names no button finds no handler in the runtime and does nothing. Every other frame is dropped as before: another
 event name at a chip's path, a click elsewhere, a batch, a frame of another
 kind. `page_events_test` pins that the observer's chips are beneath that

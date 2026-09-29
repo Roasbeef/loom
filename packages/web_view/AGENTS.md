@@ -109,8 +109,9 @@ page keys and nonces, and the relay into the session's gateway.
   `est $` cost, worded as the terminal's footer words them), with the ended
   page's notice as its last child; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
-  `shell.view(audience, bar, sidebar, centre, panel)` draws the frame, the
-  client element `<loom-shell sidebar="listed|none">`, and is where its
+  `shell.view(audience, bar, sidebar, centre, panel, needing)` draws the
+  frame, the client element `<loom-shell sidebar="listed|none"
+  needing="n">`, and is where its
   order is written: the bar (0, `slot="bar"`), the sidebar (1, `slot="left"`,
   or `element.none()` when `shell.Unlisted`), the centre `main` (2, the
   default slot: the transcript first, then the dock or the observer's bar)
@@ -118,13 +119,26 @@ page keys and nonces, and the relay into the session's gateway.
   slot attribute on its element. The `sidebar` word comes from the
   `shell.Sidebar` type, `Listed(element)` or `Unlisted`, so the element draws
   no button for a column the page lacks; the operator's page is `Unlisted`
-  when its catalogue read listed nothing. The server never renders whether a
-  column is open: that is the reader's, in the element.
-  `panel.view(count, strands)` is the panel's `aside`, its title first and
-  the strip second; `component.strands(model, focus)` builds it for both
-  pages. `strip.view(strip, focus)` draws the cards (the agent strip, kept
-  under its old name), memoized on the whole strip, and `strip.count`
-  counts them;
+  when its catalogue read listed nothing. `needing` is the number of strands
+  waiting on a decision (`component.needing`, `session_view/strand_card`),
+  which the element draws as the badge on the Strands tab; it is an integer
+  the component counted and never session text. The server never renders
+  whether a column is open or which tab shows: those are the reader's, in
+  the element.
+  `panel.view(count, strands, changes, session)` is the panel's `aside`, a
+  tabbed panel of three panes, always all drawn and always in this order: the
+  Strands pane (a title, then the strip's list), `changes.view`'s pane and
+  `session_tab.view`'s pane. `component.panel(model, focus, viewers)` builds
+  it for both pages, the operator's passing `Some(viewers)` and the observer's
+  `None`. The tab bar is not drawn here: `<loom-shell>` draws it, keeps which
+  tab is chosen and hides the panes of the others with a custom state, so the
+  server never learns which shows. The panel carries no decision control: its
+  only handlers are the strand cards' focus clicks, a strand waiting on a
+  decision reads `Needs approval` on its card, and the approval card that
+  answers it stays in the dock, for the strand on screen only
+  (`panel_test` pins all of it). `strip.view(strip, focus)` draws the cards
+  (the agent strip, kept under its old name), memoized on the whole strip, and
+  `strip.count` counts them;
   `lane.view(pieces, live, top, load, replies)` draws the transcript lane, memoized per
   line, followed by the live region, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
@@ -216,26 +230,30 @@ page keys and nonces, and the relay into the session's gateway.
   between the lane and the bar on the observer's, so the lane's
   `older_path` is unchanged. The terminal's idle-advisor placeholder is not
   drawn.
-- `changes.view(board)` draws the Changes section on both pages from
-  `component.changes(model)`, the board `session_view/changes_view` folds from
-  the records of the window the page projects (`relaned` builds it with the
-  transcript, so a message that moved neither costs no fold). It is a
-  collapsed `<details>` below the lane on both pages, `Changes · 2 files · +14
-  -2` with `from this session's edits` under it, then one `<details>` per file
-  with the first open. Paths and diff rows are text nodes; a row's class is
-  one of four literals chosen from the fold's `Kind`. It has no handler, is
-  memoized on the board, and is `element.none()` with no edit. It reads no
-  worktree: the daemon serves worktree bytes to an Owner binding only. The
-  tabbed panel of the web design note will move it into a Changes tab.
-- `session_tab.view(jobs, viewers)` draws the Session section: the followed
-  strand's live jobs and, where the page shows them, the attached viewers
-  (`session_view/session_summary`). The component asks for the jobs on a
-  `Ticked` when the page opened or last asked `jobs_refresh_ms` (10 s) ago
-  and no answer is outstanding. The clock starts when the page opens, so the
-  first tick-driven ask comes ten seconds later, after the startup reads, and
-  the page's lane stays in the terminal's engine state through them. This is
-  the tick-driven ask only: the lane also requests a read whenever a run's
-  completion changes, `lane_fold`. The tick marks `Shared.jobs_refresh` as requested and
+- `changes.view(board)` draws the Changes pane, the panel's second, on both
+  pages from `component.changes(model)`, the board `session_view/changes_view`
+  folds from the records of the window the page projects (`relaned` builds it
+  with the transcript, so a message that moved neither costs no fold). Its
+  heading is `Changes · 2 files · +14 -2` with `from this session's edits`
+  under it, then one `<details>` per file with the first open. Paths and diff
+  rows are text nodes; a row's class is one of four literals chosen from the
+  fold's `Kind`. It has no handler and is memoized on the board. With no edit
+  it is the heading and one line saying so, so the pane is always drawn and
+  the panes after it never move. It reads no worktree: the daemon serves
+  worktree bytes to an Owner binding only.
+- `session_tab.view(goal, cost, jobs, viewers)` draws the Session pane, the
+  panel's third: the goal (the terminal's own row, `goal_view.row`, or
+  `none`), the followed strand's live jobs, where the page shows them the
+  attached viewers (`session_view/session_summary`) and the estimated cost the
+  top bar shows. Schedules are not a row: the shared record keeps a schedule
+  listing only as transcript lines the page does not draw. The component asks
+  for the jobs on a `Ticked` when the page opened or last asked
+  `jobs_refresh_ms` (10 s) ago and no answer is outstanding. The clock starts
+  when the page opens, so the first tick-driven ask comes ten seconds later,
+  after the startup reads, and the page's lane stays in the terminal's engine
+  state through them. This is the tick-driven ask only: the lane also requests
+  a read whenever a run's completion changes, `lane_fold`. The tick marks
+  `Shared.jobs_refresh` as requested and
   the shared step sends the `live_jobs` read once the lane is ready
   (`surfaces.service_jobs_read`). The read is one of the gateway's
   `read_only` commands, every role may send it, and its answer is a snapshot
@@ -244,9 +262,8 @@ page keys and nonces, and the relay into the session's gateway.
   (`View.jobs_asked_at`), and a board for another strand than the one shown
   reads as not read yet. Viewers are drawn on the operator's page and never on
   the observer's, which is handed `None` (a default the design note adopted,
-  open to an owner override). Job commands and viewer names are text nodes.
-  Like the Changes section it is a collapsed `<details>` below the lane until
-  the tabbed panel moves it.
+  open to an owner override). Job commands, viewer names and the goal are
+  text nodes.
 - `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, and `running_ms`, how long its operation had run when the strip
@@ -499,8 +516,10 @@ page keys and nonces, and the relay into the session's gateway.
   The sidebar and every other region add none. The strand panel is the
   frame's last child, so a region added after it does not move an admitted
   path; the redesign's shell moved both constants once (`older_path` is
-  `0\t2\t0\t0\t0`, `strip_path` `0\t3\t1\t0`), and `page_events_test` and
-  `ui_socket_test` pin them. An operator's page is
+  `0\t2\t0\t0\t0`, `strip_path` `0\t3\t1\t0`; the tabbed panel moved
+  `strip_path` again, to `0\t3\t0\t1\t0`, because the Strands pane is the
+  panel's first child), and `page_events_test` and `ui_socket_test` pin
+  them. An operator's page is
   `operator_page.app()`. Since S5 the draft its composer carries is parsed
   as the terminal parses it, so the page sends any session command a draft
   names (`/fork`, `/model`, `/goal ...` and the rest of `command.Session`),

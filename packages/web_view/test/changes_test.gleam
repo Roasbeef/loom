@@ -1,12 +1,13 @@
-//// The Changes section: the files the session's own edits touched and the
-//// diff each reported, drawn on both pages from the records the page holds.
+//// The Changes tab: the files the session's own edits touched and the diff
+//// each reported, drawn on both pages from the records the page holds.
 ////
 //// The first group draws `view/changes` from a board, which is the module's
-//// whole contract: the summary, the first file open, the rows' classes, the
+//// whole contract: the heading, the first file open, the rows' classes, the
 //// cut lines, and every string arriving as escaped text. The second drives
 //// the pages through a capture holding `fs_edit` results and reads the HTML
-//// the browser would receive, so the section's place below the transcript is
-//// pinned on the operator's page and the observer's, and so is its size.
+//// the browser would receive, so the pane's place in the strand panel, after
+//// the transcript and the dock, is pinned on the operator's page and the
+//// observer's, and so is its size.
 
 import gleam/int
 import gleam/list
@@ -41,14 +42,22 @@ fn board(files: List(changes_view.File)) -> changes_view.Board {
   )
 }
 
-pub fn no_edits_draw_nothing_test() {
-  assert !string.contains(drawn(changes_view.empty()), "changes")
+// The pane is drawn whether or not the tab shows, and always with its heading,
+// so it never moves the panes after it and the tab never opens on nothing.
+pub fn no_edits_draw_the_heading_and_a_line_saying_so_test() {
+  let html = drawn(changes_view.empty())
+
+  assert string.contains(html, "pane pane-changes")
+  assert string.contains(html, "Changes</h2>")
+  assert string.contains(html, "No edits in this session yet.")
+  assert !string.contains(html, "changes-file")
 }
 
-pub fn the_summary_names_the_files_and_the_totals_test() {
+pub fn the_heading_names_the_files_and_the_totals_test() {
   let html = drawn(board([file("a.gleam", []), file("b.gleam", [])]))
 
-  assert string.contains(html, "<details class=\"changes\">")
+  assert string.contains(html, "<section aria-label=\"Changes\"")
+  assert string.contains(html, "pane pane-changes")
   assert string.contains(html, "Changes")
   assert string.contains(html, " · 2 files · +14 -2")
   assert string.contains(html, "from this session&#39;s edits")
@@ -58,7 +67,7 @@ pub fn the_first_file_is_open_and_the_rest_are_collapsed_test() {
   let html = drawn(board([file("a.gleam", []), file("b.gleam", [])]))
 
   // The fixed `open` attribute is on the first file's details alone.
-  assert list.length(string.split(html, "<details")) == 4
+  assert list.length(string.split(html, "<details")) == 3
   let assert Ok(#(first, second)) = string.split_once(html, "b.gleam")
   assert string.contains(first, "<details class=\"changes-file\" open>")
   assert !string.contains(second, " open")
@@ -142,13 +151,18 @@ fn observer(model) -> String {
   element.to_string(component.view(model))
 }
 
-pub fn a_page_with_no_edit_draws_no_section_test() {
+pub fn a_page_with_no_edit_draws_the_empty_pane_test() {
   let model = page([lane_fixture.captured(10, None)])
-  assert !string.contains(operator(model), "class=\"changes\"")
-  assert !string.contains(observer(model), "class=\"changes\"")
+  list.each([operator(model), observer(model)], fn(html) {
+    assert string.contains(html, "No edits in this session yet.")
+    assert !string.contains(html, "changes-file")
+  })
 }
 
-pub fn both_pages_draw_the_section_below_the_transcript_test() {
+// The pane is the strand panel's second child, after the Strands pane and
+// before the Session pane, and the panel is drawn after the centre column: the
+// transcript, the dock and the observer's bar all come before it.
+pub fn both_pages_draw_the_pane_in_the_panel_after_the_centre_test() {
   let model =
     page([
       lane_fixture.edited([#("src/calc.gleam", diff), #("README.md", diff)]),
@@ -156,18 +170,33 @@ pub fn both_pages_draw_the_section_below_the_transcript_test() {
 
   assert in_order(operator(model), [
     "<loom-follow",
-    "<details class=\"changes\">",
-    "Changes",
+    "<footer class=\"dock\">",
+    "<aside aria-label=\"Strand panel\"",
+    "pane pane-strands",
+    "pane pane-changes",
     " · 2 files · +4 -2",
     "src/calc.gleam",
-    "<footer class=\"dock\">",
+    "pane pane-session",
   ])
   assert in_order(observer(model), [
     "<loom-follow",
-    "<details class=\"changes\">",
-    "src/calc.gleam",
     "<p class=\"observer-bar\">",
+    "<aside aria-label=\"Strand panel\"",
+    "pane pane-changes",
+    "src/calc.gleam",
+    "pane pane-session",
   ])
+}
+
+// The transcript's column holds no Changes: it moved into the panel.
+pub fn the_centre_column_no_longer_holds_the_changes_test() {
+  let model = page([lane_fixture.edited([#("src/calc.gleam", diff)])])
+  list.each([operator(model), observer(model)], fn(html) {
+    let assert Ok(#(centre, _)) =
+      string.split_once(html, "<aside aria-label=\"Strand panel\"")
+    assert !string.contains(centre, "src/calc.gleam")
+    assert !string.contains(centre, "pane-changes")
+  })
 }
 
 pub fn a_diff_on_a_page_is_escaped_text_test() {
@@ -197,9 +226,9 @@ pub fn the_section_stays_within_a_fixed_size_test() {
   let html = observer(page([lane_fixture.edited(edits)]))
 
   let assert Ok(#(_, from)) =
-    string.split_once(html, "<details class=\"changes\">")
+    string.split_once(html, "<section aria-label=\"Changes\"")
   let assert Ok(#(section, _)) =
-    string.split_once(from, "<p class=\"observer-bar\">")
+    string.split_once(from, "<section aria-label=\"Session\"")
   // The board holds `max_rows` rows of at most `max_row_characters`
   // characters, plus the markup around each row and each file.
   assert string.length(section) < 220_000

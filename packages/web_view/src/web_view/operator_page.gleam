@@ -53,11 +53,9 @@ import session_view/operator
 import session_view/snapshot
 import web_view/completion
 import web_view/component
-import web_view/view/changes
 import web_view/view/controls
 import web_view/view/lane
 import web_view/view/nudges
-import web_view/view/session_tab
 import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/strip
@@ -183,8 +181,6 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         Observed(component.OlderRequested),
         lane.Replies(Replying),
       ),
-      changes.view(component.changes(model)),
-      session_tab.view(component.jobs(model), Some(component.viewers(model))),
       html.footer([attribute.class("dock")], [
         component.plan(model),
         nudges.view(component.pending_nudges(model)),
@@ -193,9 +189,12 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         composer(model),
       ]),
     ],
-    component.strands(model, fn(strand) {
-      Observed(component.FocusRequested(strand))
-    }),
+    component.panel(
+      model,
+      fn(strand) { Observed(component.FocusRequested(strand)) },
+      Some(component.viewers(model)),
+    ),
+    component.needing(model),
   )
 }
 

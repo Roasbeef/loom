@@ -1,11 +1,12 @@
-//// The Session section's jobs and viewers rows.
+//// The Session tab's rows: the goal, the jobs, the viewers and the cost.
 ////
 //// The first group draws `view/session_tab` from plain rows, its whole
-//// contract: what each row says, that names and commands are only text nodes,
-//// and that a page passing no roster draws no viewers. The second drives the
-//// pages: a tick makes the read-only `live_jobs` read once per interval and
-//// no more, the reply fills the row, an operator's page names its viewers, and
-//// an observer's page draws the jobs and never the viewers.
+//// contract: what each row says, that names, commands and the goal are only
+//// text nodes, that the pane always has its heading and its cost, and that a
+//// page passing no roster draws no viewers. The second drives the pages: a
+//// tick makes the read-only `live_jobs` read once per interval and no more,
+//// the reply fills the row, an operator's page names its viewers, and an
+//// observer's page draws the jobs and never the viewers.
 
 import core/message
 import gleam/erlang/process
@@ -25,17 +26,57 @@ import web_view/operator_page
 import web_view/view/session_tab
 
 fn drawn(jobs, viewers) -> String {
-  element.to_string(session_tab.view(jobs, viewers))
+  element.to_string(session_tab.view([], "est $0.00", jobs, viewers))
 }
 
-pub fn nothing_to_say_draws_nothing_test() {
-  assert !string.contains(drawn(Unread, None), "session-rows")
+// The pane is drawn whether or not it shows, so its heading and its cost row
+// are always there and the panel's other panes never move.
+pub fn nothing_to_say_still_draws_the_heading_and_the_cost_test() {
+  let html = drawn(Unread, None)
+
+  assert string.contains(html, "<section aria-label=\"Session\"")
+  assert string.contains(html, "pane pane-session")
+  assert string.contains(html, "Session</h2>")
+  assert string.contains(html, "Est. cost")
+  assert string.contains(html, "est $0.00")
+}
+
+pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
+  let with_goal =
+    element.to_string(session_tab.view(
+      ["goal active · 10/100 tokens · 2 continuations · ship it"],
+      "est $0.12",
+      Unread,
+      None,
+    ))
+  assert string.contains(with_goal, "Goal")
+  assert string.contains(
+    with_goal,
+    "goal active · 10/100 tokens · 2 continuations · ship it",
+  )
+  assert string.contains(with_goal, "est $0.12")
+
+  let without = drawn(Unread, None)
+  assert string.contains(without, "Goal")
+  assert string.contains(without, "none")
+}
+
+pub fn the_goal_is_only_ever_a_text_node_test() {
+  let html =
+    element.to_string(session_tab.view(
+      ["goal active · <script>alert(1)</script>"],
+      "est $0.00",
+      Unread,
+      None,
+    ))
+  assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
+  assert !string.contains(html, "<script")
 }
 
 pub fn unread_jobs_say_so_and_never_zero_test() {
   let html = drawn(Unread, Some(Viewers([], 0)))
 
-  assert string.contains(html, "<details class=\"session-rows\">")
+  assert string.contains(html, "pane pane-session")
   assert string.contains(html, "Jobs")
   assert string.contains(html, "not read yet")
   assert !string.contains(html, "none live")

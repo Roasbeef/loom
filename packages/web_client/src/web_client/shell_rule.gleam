@@ -1,6 +1,7 @@
 //// What `<loom-shell>` decides: which of the page's two side columns are
-//// open, what each toggle says, whether a column can be reached by the
-//// keyboard, and whether the page has a sidebar at all.
+//// open, which tab the strand panel shows, what each toggle and tab says,
+//// whether a column can be reached by the keyboard, and whether the page has
+//// a sidebar at all.
 ////
 //// The element (`web_client/shell`) draws the page's frame around the
 //// server's regions: the top bar, the sessions sidebar on the left, the
@@ -8,14 +9,22 @@
 //// each region and knows nothing of whether a column is shown. Which columns
 //// are shown is a preference of the reader's browser that changes with
 //// nothing the server holds, so it lives in the element, and the two
-//// buttons that change it are the whole of its behaviour. This module holds
-//// the rules over plain values and imports neither Lustre nor the DOM
-//// binding, so the tests load it under Node
-//// (`scripts/web_client_test.sh` checks that).
+//// buttons that change it are most of its behaviour. The strand panel has
+//// tabs, and which one shows is the same kind of preference: the server
+//// draws every tab's pane, and the shell shows one. This module holds the
+//// rules over plain values and imports neither Lustre nor the DOM binding,
+//// so the tests load it under Node (`scripts/web_client_test.sh` checks
+//// that).
 ////
-//// Nothing here is remembered: a reload opens both columns
-//// (docs/design-notes/web-design.md, section 4, puts persistence in a later
-//// change). Nothing here handles a key.
+//// Nothing here is remembered: a reload opens both columns on the Strands
+//// tab (docs/design-notes/web-design.md, section 4, puts persistence in a
+//// later change). Nothing here handles a key.
+
+import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
 
 /// One of the two side columns.
 pub type Region {
@@ -24,6 +33,21 @@ pub type Region {
 
   /// The strand panel, on the right.
   Panel
+}
+
+/// One of the strand panel's tabs. The server draws a pane for each, always,
+/// and the shell shows the chosen one, so a tab needs no round trip and the
+/// server never learns which is showing.
+pub type Tab {
+  /// The strand cards, and the detail of the strand in focus.
+  Strands
+
+  /// The files the session's own edits changed.
+  Changes
+
+  /// The session's goal and cost and, where the page shows them, its jobs
+  /// and viewers.
+  Session
 }
 
 /// Whether a column is shown.
@@ -35,13 +59,15 @@ pub type State {
   Closed
 }
 
-/// Which columns are shown.
+/// Which columns are shown, and which tab the panel shows.
 pub type Layout {
   Layout(
     /// The sessions sidebar's state.
     sidebar: State,
     /// The strand panel's state.
     panel: State,
+    /// The tab the strand panel shows, whether or not the panel is open.
+    tab: Tab,
   )
 }
 
@@ -66,15 +92,16 @@ pub type Reach {
   Unreachable
 }
 
-/// Both columns open, which is how every page starts.
+/// Both columns open on the Strands tab, which is how every page starts.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert shell_rule.initial() == shell_rule.Layout(shell_rule.Open, shell_rule.Open)
+/// assert shell_rule.initial()
+///   == shell_rule.Layout(shell_rule.Open, shell_rule.Open, shell_rule.Strands)
 /// ```
 pub fn initial() -> Layout {
-  Layout(sidebar: Open, panel: Open)
+  Layout(sidebar: Open, panel: Open, tab: Strands)
 }
 
 /// The state of one column.
@@ -92,13 +119,14 @@ pub fn state(layout: Layout, region: Region) -> State {
 }
 
 /// The layout after the reader presses one column's button: that column
-/// changes and the other stays as it was.
+/// changes and the other stays as it was, as does the panel's tab.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let closed = shell_rule.toggled(shell_rule.initial(), shell_rule.Sidebar)
-/// assert closed == shell_rule.Layout(shell_rule.Closed, shell_rule.Open)
+/// assert shell_rule.state(closed, shell_rule.Sidebar) == shell_rule.Closed
+/// assert shell_rule.state(closed, shell_rule.Panel) == shell_rule.Open
 /// ```
 pub fn toggled(layout: Layout, region: Region) -> Layout {
   case region {
@@ -111,6 +139,67 @@ fn flipped(state: State) -> State {
   case state {
     Open -> Closed
     Closed -> Open
+  }
+}
+
+/// The layout after the reader presses a tab: the panel shows that tab and
+/// nothing else changes. A tab is pressed inside the panel, so the panel is
+/// open when this is called; a closed panel keeps the tab it had.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let chosen = shell_rule.chosen(shell_rule.initial(), shell_rule.Changes)
+/// assert chosen.tab == shell_rule.Changes
+/// assert chosen.panel == shell_rule.Open
+/// ```
+pub fn chosen(layout: Layout, tab: Tab) -> Layout {
+  Layout(..layout, tab:)
+}
+
+/// The tabs, in the order the bar draws them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.tabs()
+///   == [shell_rule.Strands, shell_rule.Changes, shell_rule.Session]
+/// ```
+pub fn tabs() -> List(Tab) {
+  [Strands, Changes, Session]
+}
+
+/// The word on a tab's button.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.tab_label(shell_rule.Changes) == "Changes"
+/// ```
+pub fn tab_label(tab: Tab) -> String {
+  case tab {
+    Strands -> "Strands"
+    Changes -> "Changes"
+    Session -> "Session"
+  }
+}
+
+/// The custom state the element sets on itself while `tab` shows. The
+/// stylesheet hides the panes of the other tabs with it
+/// (`loom-shell:state(tab-changes)`), which is how a slotted pane the server
+/// drew is hidden without the server knowing. Each is a whole literal, so the
+/// stylesheet can spell it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.tab_state(shell_rule.Session) == "tab-session"
+/// ```
+pub fn tab_state(tab: Tab) -> String {
+  case tab {
+    Strands -> "tab-strands"
+    Changes -> "tab-changes"
+    Session -> "tab-session"
   }
 }
 
@@ -179,5 +268,65 @@ pub fn presence(value: String) -> Presence {
   case value {
     "listed" -> Listed
     _ -> Unlisted
+  }
+}
+
+/// How many strands need a decision, from the `needing` attribute the server
+/// writes. The server writes a count, and decoding is total: anything that is
+/// not a plain non-negative number of at most four digits is none, so a page
+/// that says nothing, or something else, draws no badge.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.needing("2") == 2
+/// assert shell_rule.needing("-1") == 0
+/// assert shell_rule.needing("<b>") == 0
+/// ```
+pub fn needing(value: String) -> Int {
+  let graphemes = string.to_graphemes(value)
+  let plain =
+    list.all(graphemes, fn(grapheme) { string.contains("0123456789", grapheme) })
+    && list.length(graphemes) <= 4
+  case plain {
+    True -> result.unwrap(int.parse(value), 0)
+    False -> 0
+  }
+}
+
+/// What the Strands tab's badge says for `count` strands waiting on a
+/// decision: nothing for none, the number up to nine, and `9+` past that.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.badge(0) == None
+/// assert shell_rule.badge(3) == Some("3")
+/// assert shell_rule.badge(12) == Some("9+")
+/// ```
+pub fn badge(count: Int) -> Option(String) {
+  case count {
+    count if count > 9 -> Some("9+")
+    count if count > 0 -> Some(int.to_string(count))
+    _ -> None
+  }
+}
+
+/// The words a screen reader gets for the Strands tab: the label alone, or
+/// with how many strands wait on a decision, since the badge is a number a
+/// reader cannot see.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.strands_words(0) == "Strands"
+/// assert shell_rule.strands_words(1) == "Strands, 1 needs approval"
+/// assert shell_rule.strands_words(2) == "Strands, 2 need approval"
+/// ```
+pub fn strands_words(count: Int) -> String {
+  case count {
+    1 -> "Strands, 1 needs approval"
+    count if count > 1 -> "Strands, " <> int.to_string(count) <> " need approval"
+    _ -> "Strands"
   }
 }

@@ -1,32 +1,46 @@
-//// `<loom-shell sidebar="listed">`: the page's frame, with a button at each
-//// end of the top bar that hides or shows a side column.
+//// `<loom-shell sidebar="listed" needing="0">`: the page's frame, with a
+//// button at each end of the top bar that hides or shows a side column, and
+//// the tabs of the strand panel.
 ////
 //// The server draws the regions (`web_view/view/shell`) as this element's
 //// light-DOM children, each in a slot: `bar` for the top bar, `left` for the
 //// sessions sidebar, `right` for the strand panel, and the centre in the
 //// default slot. The shadow root here lays them out and draws the two
-//// buttons. Which columns are open is the reader's preference and nothing
-//// the server holds, so the server never renders it and a patch leaves the
-//// reader's choice alone, as it does a fold's. A hidden column is drawn by
-//// the server all the same, because the server does not know, so the
-//// column's wrapper is what makes it inert: it takes no width, is not
-//// painted, and is out of the tab order (`shell_rule.reach`), so the
-//// keyboard never lands on a control the reader cannot see.
+//// buttons and the panel's tab bar. Which columns are open, and which tab
+//// the panel shows, are the reader's preference and nothing the server
+//// holds, so the server never renders them and a patch leaves the reader's
+//// choice alone, as it does a fold's. A hidden column is drawn by the server
+//// all the same, because the server does not know, so the column's wrapper
+//// is what makes it inert: it takes no width, is not painted, and is out of
+//// the tab order (`shell_rule.reach`), so the keyboard never lands on a
+//// control the reader cannot see.
 ////
-//// The one attribute, `sidebar`, is a fixed word the server writes, `listed`
-//// or `none`, saying whether the page has a sidebar; an observer's page has
-//// none, and the bar draws no button for it. The element renders no session
-//// text, handles no key, takes no focus, and sends the server nothing. Its
-//// buttons are real buttons, so a keyboard presses them as it presses any
-//// button.
+//// The panel's panes are the server's children of the `right` slot: one
+//// section for each tab, all of them drawn. The element shows one by
+//// setting a custom state on itself, `tab-strands`, `tab-changes` or
+//// `tab-session` (Lustre's `component.set_pseudo_state`), which the
+//// stylesheet reads to hide the other panes (`loom-shell:state(tab-changes)`).
+//// A hidden pane is `display: none`, so its controls leave the tab order. A
+//// browser without custom states shows every pane, stacked, which is
+//// readable and loses nothing.
+////
+//// The attributes are fixed words and numbers the server writes: `sidebar`
+//// is `listed` or `none`, saying whether the page has a sidebar, and
+//// `needing` is how many strands wait on a decision, the number on the
+//// Strands tab. An observer's page has no sidebar, and the bar draws no
+//// button for it. The element renders no session text, handles no key, takes
+//// no focus, and sends the server nothing. Its buttons and tabs are real
+//// buttons, so a keyboard presses them as it presses any button.
 ////
 //// The element wraps the dock, and so holds an approval card in its
 //// subtree, as `<loom-follow>` holds the lane. That is a fact about the
 //// tree and not about behaviour: the element listens for no key and no
 //// event beyond its own buttons' clicks, and it never moves focus. Nothing
 //// it does can decide, or hide, an approval: the dock is in the centre
-//// column, which has no button.
+//// column, which has no button, and the panel carries no decision control.
 
+import gleam/list
+import gleam/option.{Some}
 import lustre
 import lustre/attribute
 import lustre/component
@@ -34,15 +48,15 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
-import web_client/shell_rule.{type Layout, type Presence, type Region}
+import web_client/shell_rule.{type Layout, type Presence, type Region, type Tab}
 
 /// The element's tag.
 pub const name = "loom-shell"
 
-/// What the element knows: which columns are open, and whether the page has
-/// a sidebar.
+/// What the element knows: which columns are open and which tab shows,
+/// whether the page has a sidebar, and how many strands wait on a decision.
 pub type Model {
-  Model(layout: Layout, sidebar: Presence)
+  Model(layout: Layout, sidebar: Presence, needing: Int)
 }
 
 /// Everything the element can be told.
@@ -50,8 +64,14 @@ pub type Msg {
   /// The reader pressed a column's button.
   Toggled(region: Region)
 
+  /// The reader pressed a tab.
+  Chosen(tab: Tab)
+
   /// The server set the `sidebar` attribute.
   SidebarChanged(presence: Presence)
+
+  /// The server set the `needing` attribute.
+  NeedingChanged(count: Int)
 }
 
 /// Registers the element with the browser.
@@ -64,6 +84,7 @@ pub type Msg {
 pub fn register() -> Result(Nil, lustre.Error) {
   lustre.component(init, update, view, [
     component.on_attribute_change("sidebar", sidebar),
+    component.on_attribute_change("needing", needing),
   ])
   |> lustre.register(name)
 }
@@ -73,14 +94,23 @@ fn sidebar(value: String) -> Result(Msg, Nil) {
   Ok(SidebarChanged(shell_rule.presence(value)))
 }
 
-// A page starts with both columns open and no sidebar. The sidebar's button
-// appears when the server's attribute arrives, which is at once for a page
-// that has one; assuming the opposite would draw a button that hides nothing
-// on an observer's page for as long as the attribute took.
+// The attribute's count decoded totally: anything but a small plain number
+// is none.
+fn needing(value: String) -> Result(Msg, Nil) {
+  Ok(NeedingChanged(shell_rule.needing(value)))
+}
+
+// A page starts with both columns open on the first tab, no sidebar and no
+// strand waiting. The sidebar's button appears when the server's attribute
+// arrives, which is at once for a page that has one; assuming the opposite
+// would draw a button that hides nothing on an observer's page for as long as
+// the attribute took. The first tab's state is set here, since the stylesheet
+// hides the other panes by the state of the tab that shows.
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
+  let layout = shell_rule.initial()
   #(
-    Model(layout: shell_rule.initial(), sidebar: shell_rule.Unlisted),
-    effect.none(),
+    Model(layout:, sidebar: shell_rule.Unlisted, needing: 0),
+    component.set_pseudo_state(shell_rule.tab_state(layout.tab)),
   )
 }
 
@@ -90,10 +120,21 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, layout: shell_rule.toggled(model.layout, region)),
       effect.none(),
     )
+
+    // The state of the tab that stops showing is removed and the new one
+    // added in the same turn, so the stylesheet never sees two tabs showing.
+    Chosen(tab:) -> #(
+      Model(..model, layout: shell_rule.chosen(model.layout, tab)),
+      effect.batch([
+        component.remove_pseudo_state(shell_rule.tab_state(model.layout.tab)),
+        component.set_pseudo_state(shell_rule.tab_state(tab)),
+      ]),
+    )
     SidebarChanged(presence:) -> #(
       Model(..model, sidebar: presence),
       effect.none(),
     )
+    NeedingChanged(count:) -> #(Model(..model, needing: count), effect.none())
   }
 }
 
@@ -154,14 +195,21 @@ fn button_class(region: Region) -> attribute.Attribute(Msg) {
 // takes its whole subtree, the slotted content included, out of the tab
 // order and away from assistive technology, and the stylesheet gives it no
 // width and no paint. The sidebar's wrapper is not drawn when the page has
-// no sidebar.
+// no sidebar. The panel's wrapper holds the tab bar above the slot, so the
+// tabs leave the tab order with the panes when the panel is closed.
 fn column(model: Model, region: Region) -> Element(Msg) {
   case shell_rule.has_button(model.sidebar, region) {
     False -> element.none()
     True ->
-      html.div(column_attributes(model, region), [
-        component.named_slot(slot(region), [], []),
-      ])
+      html.div(column_attributes(model, region), case region {
+        shell_rule.Sidebar -> [component.named_slot(slot(region), [], [])]
+        shell_rule.Panel -> [
+          tab_bar(model),
+          html.div([attribute.class("panel-body")], [
+            component.named_slot(slot(region), [], []),
+          ]),
+        ]
+      })
   }
 }
 
@@ -192,4 +240,45 @@ fn slot(region: Region) -> String {
     shell_rule.Sidebar -> "left"
     shell_rule.Panel -> "right"
   }
+}
+
+// The panel's tab bar: one real button per tab, the shown one marked
+// pressed. The words are fixed by the rule; the Strands tab's badge is a
+// number the server wrote, drawn beside the label and named in the button's
+// own label, since the number alone says nothing to a screen reader.
+fn tab_bar(model: Model) -> Element(Msg) {
+  html.nav(
+    [attribute.class("panel-tabs"), attribute.aria_label("Panel views")],
+    list.map(shell_rule.tabs(), tab_button(model, _)),
+  )
+}
+
+fn tab_button(model: Model, tab: Tab) -> Element(Msg) {
+  let shown = model.layout.tab == tab
+  let pressed = case shown {
+    True -> "true"
+    False -> "false"
+  }
+  let badge = case tab, shell_rule.badge(model.needing) {
+    shell_rule.Strands, Some(count) -> [
+      html.span([attribute.class("tab-badge"), attribute.aria_hidden(True)], [
+        html.text(count),
+      ]),
+    ]
+    _, _ -> []
+  }
+  let words = case tab {
+    shell_rule.Strands -> shell_rule.strands_words(model.needing)
+    _ -> shell_rule.tab_label(tab)
+  }
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("panel-tab"),
+      attribute.aria_pressed(pressed),
+      attribute.aria_label(words),
+      event.on_click(Chosen(tab)),
+    ],
+    [html.text(shell_rule.tab_label(tab)), ..badge],
+  )
 }

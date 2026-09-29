@@ -30,16 +30,26 @@ renders again just for it:
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
   form is submitted, which is why they are here.
-- `<loom-shell sidebar="listed">` is the page's frame. The server draws the
-  top bar, the sessions sidebar, the centre and the strand panel as its
-  children, in the slots `bar`, `left`, the default and `right`, and the
+- `<loom-shell sidebar="listed" needing="0">` is the page's frame. The server
+  draws the top bar, the sessions sidebar, the centre and the strand panel as
+  its children, in the slots `bar`, `left`, the default and `right`, and the
   element lays them out and draws a button at each end of the bar that hides
   and shows a side column. Which columns are open is the reader's preference
   and nothing the server holds, so the server never renders it and nothing
   is kept across a reload. A hidden column takes no width and is `inert`, so
   its content leaves the tab order. The `sidebar` attribute is a fixed word
   the server writes (`listed` or `none`), so an observer's page, which has no
-  sidebar, gets no button for one.
+  sidebar, gets no button for one. The strand panel has three tabs, Strands,
+  Changes and Session. The server draws a pane for each, all of them, as
+  children of the panel; the element draws the tab bar above the `right` slot
+  and shows the chosen tab's pane by setting a custom state on itself
+  (`component.set_pseudo_state`, `tab-strands`, `tab-changes` or
+  `tab-session`), which the stylesheet reads to hide the other two
+  (`loom-shell:state(tab-changes) .pane:not(.pane-changes)`). A hidden pane is
+  `display: none`, so its controls leave the tab order too; a browser without
+  custom states shows every pane, stacked. The `needing` attribute is a count
+  the server writes, the number of strands waiting on a decision, which the
+  Strands tab shows as a badge and names in its label; decoding is total.
 
 A page that has ended or was refused needs no element here. The server draws
 its notice (`web_view/view/ended`, `web_view/page.refusal`), and the shell's
@@ -131,16 +141,23 @@ time builds anything.
   `Reading` more than `slack` pixels from the bottom, one button, "Jump to
   latest" (`Jumped`), whose wrapper has no height and sticks to the
   scroller's bottom edge.
-- `shell_rule.Region` (`Sidebar` | `Panel`), `State` (`Open` | `Closed`),
-  `Layout(sidebar, panel)`, `Presence` (`Listed` | `Unlisted`) and `Reach`
-  (`Reachable` | `Unreachable`), with `toggled`, `state`, `reach`, `label`,
-  `has_button` and `presence` (a total decoder of the `sidebar` attribute),
-  and `shell.Model(layout, sidebar)` and `shell.Msg` (`Toggled(region)`,
-  `SidebarChanged(presence)`): the shadow root holds the bar (the two buttons
-  around the `bar` slot) and the body (a wrapper per side column around its
-  slot, and the default slot in the centre). A closed column's wrapper is
-  `inert` and the stylesheet gives it no width. The buttons are real buttons
-  with words from `shell_rule.label` and `aria-expanded`.
+- `shell_rule.Region` (`Sidebar` | `Panel`), `Tab` (`Strands` | `Changes` |
+  `Session`), `State` (`Open` | `Closed`), `Layout(sidebar, panel, tab)`,
+  `Presence` (`Listed` | `Unlisted`) and `Reach` (`Reachable` | `Unreachable`),
+  with `toggled`, `chosen`, `state`, `reach`, `label`, `tabs`, `tab_label`,
+  `tab_state`, `has_button`, `presence` (a total decoder of the `sidebar`
+  attribute), `needing` (a total decoder of the `needing` attribute: a plain
+  number of at most four digits, else none), `badge` and `strands_words`, and
+  `shell.Model(layout, sidebar, needing)` and `shell.Msg` (`Toggled(region)`,
+  `Chosen(tab)`, `SidebarChanged(presence)`, `NeedingChanged(count)`): the
+  shadow root holds the bar (the two buttons around the `bar` slot) and the
+  body (a wrapper per side column around its slot, and the default slot in the
+  centre; the panel's wrapper holds the tab bar above the slot). A closed
+  column's wrapper is `inert` and the stylesheet gives it no width. The
+  buttons and the tabs are real buttons, the tabs `aria-pressed`, with words
+  from `shell_rule.label` and `shell_rule.tab_label`. A tab press changes
+  the custom state and nothing else: closing and reopening the panel keeps the
+  tab.
 - `composer.Model(entries, draft, selected, palette, returns)` and
   `composer.Msg` (`Configured`, `Returned`, `Typed`, `Moved`, `Accepted`,
   `Picked`, `Dismissed`, `Sent`, `Ignored`): `commands` is the table the

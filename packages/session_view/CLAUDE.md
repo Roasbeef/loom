@@ -46,6 +46,11 @@ for a host with no surfaces.
 
 ## Key Types
 
+- `strand_card.word(status)` and `strand_card.needing(lines)`: the word on a
+  strand's card for a state (`Needs approval` for `NeedsInput`, else
+  `agent_view.label`) and how many strands wait on a decision, the count on
+  the web view's Strands tab. Both hosts read them so the terminal can word a
+  card the same way.
 - `command.Command`: a parsed draft, `Surface(command.Surface)` for a
   command the host carries out with its own machinery (a panel, the model
   selector, daemon control, a change of strand, the host's exit) or

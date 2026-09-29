@@ -1,9 +1,15 @@
-//// The agent strip: one card per strand the page lists, drawn in the strand
-//// panel (`view/panel`) on both pages, and the types the component builds it
-//// from. It was a row of chips below the heading before the redesign moved
-//// it to the right-hand column, and the names of its types and classes
-//// (`Strip`, `Chip`, `chip-hit`) are from then; the stylesheet draws each
-//// chip as a card.
+//// The agent strip: one card per strand the page lists, drawn in the Strands
+//// tab of the strand panel (`view/panel`) on both pages, and the types the
+//// component builds it from. It was a row of chips below the heading before
+//// the redesign moved it to the right-hand column, and the names of its types
+//// and classes (`Strip`, `Chip`, `chip-hit`) are from then; the stylesheet
+//// draws each chip as a card.
+////
+//// A strand that waits on a decision reads `Needs approval`
+//// (`session_view/strand_card`), in the attention colour. The approval card
+//// that answers it is drawn in the dock and only for the strand on screen, so
+//// the strand's card is a button that focuses the strand, which draws the
+//// approval card, and carries no control that decides.
 ////
 //// The component derives a `Strip` when a capture, a usage push or a tick
 //// changed something it draws (`component.restripped`), and this module
@@ -45,6 +51,7 @@ import lustre/event
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/cache_miss
+import session_view/strand_card
 import session_view/turns
 
 /// One agent chip: the roster's line for a strand, the hue its position
@@ -177,7 +184,7 @@ fn chip_element(
             html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
               html.text(status_glyph(line.status)),
             ]),
-            html.text(agent_view.label(line.status)),
+            html.text(strand_card.word(line.status)),
           ]),
         ]),
         html.span([attribute.class("chip-activity")], [html.text(line.text)]),
