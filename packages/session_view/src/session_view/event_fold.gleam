@@ -3,8 +3,8 @@
 //// `apply_event` handles each event the daemon pushes: stream fragments,
 //// tool output tails, durable entries, strand phases, usage and the prompt
 //// cache it reveals, and the replies to side-surface reads. It takes and
-//// returns the shared record alone (`tui/session_model`), so a second host
-//// of the session can run the same fold, and it reads no terminal state.
+//// returns the shared record alone (`session_view/model`), so any host of
+//// the session can run the same fold, and it reads no host state.
 ////
 //// Live streams stay separate from durable entries because the server may
 //// replay the settled entry after its fragments; the stream is dropped when
@@ -17,8 +17,9 @@
 //// `SurfaceFact` in `Shared.surface_facts` instead, in the order it
 //// happened, and the terminal applies them after the call that recorded
 //// them (`inbound.settle_surfaces`), so its writes land where they did. The
-//// lane fold in `tui/inbound` calls this module once per event, through the
-//// terminal's `inbound.run_event`.
+//// lane fold calls this module once per pushed event, and the terminal's
+//// strand switch and model selector call `select_workspace` and
+//// `select_model` directly.
 ////
 //// The functions here call `outbound`'s and `surfaces`' functions over the
 //// shared record and no other function of either module.
@@ -44,9 +45,17 @@ import session_view/composer
 import session_view/context_view
 import session_view/history_view
 import session_view/live_jobs
+import session_view/model.{
+  type Shared, Attached, Disconnected, HoldGoalReport, Interrupt, JobsReplaced,
+  ModelsListed, NotesArrived, OutlookCleared, Preview, Replaying, ReturnedDraft,
+  SessionSynchronized, Shared, WorkspaceSwitched,
+} as session_model
 import session_view/operator
+import session_view/outbound
 import session_view/protocol.{Strand}
+import session_view/queue_request
 import session_view/stream_identity
+import session_view/surfaces
 import session_view/todo_board
 import session_view/transcript_line.{
   type Stream, type Submission, type ToolTail, Assistant, CacheNotice,
@@ -54,14 +63,6 @@ import session_view/transcript_line.{
 }
 import session_view/transcript_lines
 import session_view/worktree_view
-import tui/outbound
-import tui/queue_request
-import tui/session_model.{
-  type Shared, Attached, Disconnected, HoldGoalReport, Interrupt, JobsReplaced,
-  ModelsListed, NotesArrived, OutlookCleared, Preview, Replaying, ReturnedDraft,
-  SessionSynchronized, Shared, WorkspaceSwitched,
-}
-import tui/surfaces
 
 /// Applies one pushed event to the session state.
 ///

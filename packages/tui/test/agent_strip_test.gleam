@@ -20,6 +20,7 @@ import machine/codec
 import machine/operation
 import session_view/agent_roster.{Changed, Unchanged}
 import session_view/agent_view
+import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -35,7 +36,6 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
-import tui/session_model
 import tui/workspace
 
 // --- fixtures --------------------------------------------------------------

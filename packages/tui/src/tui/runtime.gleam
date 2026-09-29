@@ -48,6 +48,9 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
+import session_view/model.{Shared} as session_model
+import session_view/msg.{type Stamp, Stamp} as _
+import session_view/step_effect
 import tui/admission
 import tui/attachment
 import tui/buffered
@@ -60,10 +63,8 @@ import tui/job
 import tui/job_runner
 import tui/keymap
 import tui/model.{type Model, Model, View} as tui_model
-import tui/msg.{type Msg, type Stamp, Stamp}
+import tui/msg.{type Msg}
 import tui/recording
-import tui/session_model.{Shared}
-import tui/step_effect
 import tui/terminal_lane
 import weft
 

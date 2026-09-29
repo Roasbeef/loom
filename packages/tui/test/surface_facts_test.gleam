@@ -1,6 +1,6 @@
 //// The terminal's surfaces follow what the event fold records for them.
 ////
-//// The event fold (`tui/event_fold`) takes the session state alone, so a
+//// The event fold (`session_view/event_fold`) takes the session state alone, so a
 //// pushed event that changes a terminal surface records a surface fact and
 //// `inbound.settle_surfaces` applies it after the event. Most facts are
 //// observed by the tests of the surface they change. These two cover the
@@ -13,7 +13,7 @@
 //// editor. So do two of the three things the lane fold reads from its
 //// `Surroundings`: whether a notes surface is open when a notes read is
 //// refused, and whether a diff is shown when a new cut arrives. The
-//// commands (`tui/commands`) record facts too; those no other test reached
+//// commands (`session_view/commands`) record facts too; those no other test reached
 //// are an interrupt returning a steering composer to prompting, a
 //// dispatched prompt returning it too while a dispatched command leaves it
 //// alone, `/clear` dropping the gutters, and `/approvals <id>` naming the
@@ -25,12 +25,13 @@ import etui/backend
 import etui/widgets/textarea as text_area
 import gleam/dict
 import gleam/option.{None, Some}
+import session_view/attempt_replay
+import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
-import tui/attempt_replay
 import tui/connection
 import tui/focused_goal_panel
 import tui/inbound
@@ -38,7 +39,6 @@ import tui/interaction
 import tui/model.{DiffVisible, GoalInspector, ModelSelector, NoOverlay} as tui_model
 import tui/model_selector
 import tui/queue_editor
-import tui/session_model
 import tui/submit
 import tui/tick
 import tui/workspace

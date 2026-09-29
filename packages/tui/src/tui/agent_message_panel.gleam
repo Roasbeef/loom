@@ -15,8 +15,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/agent_messages
 import session_view/text_hygiene
-import tui/agent_messages
 import tui/theme
 
 type RowFocus {

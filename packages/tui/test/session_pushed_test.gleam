@@ -23,6 +23,7 @@ import session_view/attempt
 import session_view/cache_miss
 import session_view/cache_watch
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -33,7 +34,6 @@ import tui/connection
 import tui/inbound
 import tui/model as tui_model
 import tui/recording
-import tui/session_model
 import tui/workspace
 import tui_test/pushed
 

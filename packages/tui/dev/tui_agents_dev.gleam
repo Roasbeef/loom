@@ -25,6 +25,7 @@ import session_view/advisor_pending
 import session_view/context_view
 import session_view/goal_view
 import session_view/live_jobs
+import session_view/model as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/queued_input
@@ -41,7 +42,6 @@ import tui/internal/ffi_terminal
 import tui/model as tui_model
 import tui/queue_editor
 import tui/render
-import tui/session_model
 import tui/tick
 import tui/workspace
 

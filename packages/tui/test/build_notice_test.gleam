@@ -4,15 +4,14 @@
 //// The notice is redrawn on every coherent cut, and it used to read the
 //// client's build from two environment variables each time. Those do not
 //// change while the process runs, so phase 3 of issue #530 reads them once,
-//// into `Model.client_build`, and a cut reads no environment. These tests
-//// set that field to a build of their choosing and apply a real cut, so a
-//// cut that went back to the environment would compare against the wrong
-//// build and draw the wrong answer.
+//// into `View.client_build`, and a cut reads no environment. These tests
+//// set that field to a build of their choosing, adopt a daemon and apply a
+//// real cut, so a comparison that went back to the environment would compare
+//// against the wrong build and draw the wrong answer.
 
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{Some}
 import gleam/string
 import host/build_identity
 import session_view/session_channel
@@ -21,7 +20,6 @@ import tui/daemon/selection as daemon_selection
 import tui/inbound
 import tui/model as tui_model
 import tui/runtime
-import tui/session_model
 import tui_test/pushed
 
 // A daemon whose build differs from the one the model was created with is
@@ -31,35 +29,30 @@ import tui_test/pushed
 pub fn the_notice_compares_with_the_build_read_at_creation_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let host = host_with_build(owner, "9.9.9", "feedface")
-  let base = runtime.adopt_control(pushed.attached(), host)
 
-  // Adopting the control connection copies its build into the session
-  // state, which is what a cut reads; the connection stays the terminal's.
-  assert base.shared.daemon_build
-    == Some(build_identity.Identity("9.9.9", "feedface"))
-    as "the adopted daemon's build is shared data"
-
-  let differing =
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        client_build: build_identity.Identity("1.0.0", "abc123"),
-      ),
-    )
+  // Adopting the control connection compares the daemon's build with the
+  // client's and leaves the notice in the session state, which is what a
+  // cut reads; the connection and the client's build stay the terminal's.
+  let differing = adopted(host, build_identity.Identity("1.0.0", "abc123"))
+  assert differing.shared.build_notice != []
+    as "the adopted daemon's mismatch is shared data"
   assert has_notice(captured(differing))
     as "a daemon on another build is reported"
 
-  let matching =
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        client_build: build_identity.Identity("9.9.9", "feedface"),
-      ),
-    )
+  let matching = adopted(host, build_identity.Identity("9.9.9", "feedface"))
   assert !has_notice(captured(matching))
     as "a daemon on the model's own build is not reported"
+}
+
+// An attached model whose client build is `client_build`, after it adopts
+// the control connection `host`.
+fn adopted(
+  host: daemon_selection.Host,
+  client_build: build_identity.Identity,
+) -> tui_model.Model {
+  let base = pushed.attached()
+  tui_model.Model(..base, view: tui_model.View(..base.view, client_build:))
+  |> runtime.adopt_control(host)
 }
 
 // Applies the first cut of a real credited transfer, which is where the

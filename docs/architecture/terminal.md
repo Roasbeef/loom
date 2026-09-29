@@ -24,44 +24,49 @@ effect outbox. `Shared` names its host handles only by type parameter,
 replay state take the socket and recorder types, and the connection and
 replay inboxes are keyed by their sources. `TerminalShared` binds them to
 the terminal's connection, its recording and the two subjects it reads.
-`Shared` and the functions over it alone live in `tui/session_model`,
-which imports nothing of the terminal. Three records that held both kinds of
+`Shared` and the functions over it alone live in `session_view`, the
+package lint's R6 keeps portable, since S4 of the step extraction:
+`session_view/model` holds the record and its helpers, and the terminal
+imports it as `session_model`. Three records that held both kinds of
 state are split, each with its session half in `Shared` and its terminal
 half in `View`: a strand's parked history window and its editor, the agent
 roster and the strip's focus, and the queue editor's requests on the lane
-(`tui/queue_request`) and the editor. The daemon's build is shared data
-beside the control connection the terminal holds, and a held prompt the
-daemon returns waits in `Shared.returned_drafts` until the terminal moves it
-into an editor. Most reducers still take the whole
-model and read a field through the half that holds it; the reducer cut
-moves them to `Shared` from the helpers upward, and a terminal reducer
-stores the result of any function over `Shared` through
-`tui_model.hold_shared`. The sending path (`tui/outbound`) and the side
-surfaces' reads and receivers (`tui/surfaces`) already take `Shared`
-alone. They cannot write the composer, the queue editor or the goal
-inspector, so they record what those must show (`Shared.drafts_sent`,
-`queue_notices` and `goal_observations`), and `hold_shared` applies it at
-the point of the call, where the old functions wrote the editors
-themselves. The event fold, which applies each pushed event, takes `Shared`
-alone too (`tui/event_fold`). Where an event used to write the terminal's
-editor, overlays or footer, it records a `SurfaceFact` in
-`Shared.surface_facts`, and `inbound.settle_surfaces` applies the facts
-after each event, before the next one reads the terminal state they change.
-The lane fold, which applies each update of the adopted lane and each
-change of a replay, takes `Shared` alone too (`tui/lane_fold`), one update
-per call. The terminal keeps the loop over a drain's updates in
-`tui/inbound`: before each update it passes the `Surroundings` a decision
-inside the update reads (whether a diff or a notes surface is shown, and
-the approval under review), and after it applies the update's facts.
-The commands an operator gives the session (an interrupt, a stop, a
-decision, a model change, a change of strand, the session's half of a
-quit, and every slash command the session carries out) take `Shared`
-alone too (`tui/commands`); the terminal decides from a key or a parsed
-slash command which one to run, and settles the facts it records, as it
-does for a fold. The three edges that decide after
-every event whether the context, the advisor's pending nudges or the goal
-need a fresh read compare two shared records, and run together as the
-shared step's settle (`tui/session_step`).
+(`session_view/queue_request`) and the editor. The build-mismatch notice
+is shared data (`Shared.build_notice`) that the terminal computes from the
+daemon it adopts and its own build, which stay in `View` because
+`host/build_identity` reads the environment, and a held prompt the daemon
+returns waits in `Shared.returned_drafts` until the terminal moves it into
+an editor. The terminal's reducers take the whole model and read a field
+through the half that holds it, and a terminal reducer stores the result
+of any function over `Shared` through `tui_model.hold_shared`. The sending
+path (`session_view/outbound`) and the side surfaces' reads and receivers
+(`session_view/surfaces`) take `Shared` alone. They cannot write the
+composer, the queue editor or the goal inspector, so they record what
+those must show (`Shared.drafts_sent`, `queue_notices` and
+`goal_observations`), and `hold_shared` applies it at the point of the
+call, where the old functions wrote the editors themselves. The functions
+that open a side surface or read its target read the terminal's overlay
+and stay in `tui/side_surfaces`. The event fold, which applies each pushed
+event, takes `Shared` alone too (`session_view/event_fold`). Where an event
+used to write the terminal's editor, overlays or footer, it records a
+`SurfaceFact` in `Shared.surface_facts`, and `inbound.settle_surfaces`
+applies the facts after each event, before the next one reads the terminal
+state they change. The lane fold, which applies each update of the adopted
+lane and each change of a replay, takes `Shared` alone too
+(`session_view/lane_fold`), one update per call. The terminal keeps the
+loop over a drain's updates in `tui/inbound`: before each update it passes
+the `Surroundings` a decision inside the update reads (whether a diff or a
+notes surface is shown, and the approval under review), and after it
+applies the update's facts. The commands an operator gives the session (an
+interrupt, a stop, a decision, a model change, a change of strand, the
+session's half of a quit, and every slash command the session carries out)
+take `Shared` alone too (`session_view/commands`, with the command set in
+`session_view/msg`); the terminal decides from a key or a parsed slash
+command which one to run, and settles the facts it records, as it does for
+a fold. The three edges that decide after every event whether the context,
+the advisor's pending nudges or the goal need a fresh read compare two
+shared records, and run together as the shared step's settle
+(`session_view/step`, imported as `session_step`).
 The split, the parameters and the cut are the
 slices of moving the step into `session_view` so that the web view runs
 the same reducers ([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
@@ -141,7 +146,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:1744`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:1922`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid
@@ -241,7 +246,7 @@ modules divide the work:
   can assert on the effects a step produced and a second runtime can interpret
   the same values against its own transport. The two effects the session
   reducers decide, a lane output and the recording line for a message that
-  arrived with no lane, are `tui/step_effect` values generic over the socket
+  arrived with no lane, are `session_view/step_effect` values generic over the socket
   and recorder, carried as `effect.Step`; the rest are the terminal's own.
 - `session_view/session_channel` is a pure transition system. Its `emit`, `close`
   and receive queue `Transmit`, `Shut` and `Note` outputs on the channel
@@ -285,7 +290,7 @@ The step reads no clock, file, mailbox, process or environment variable.
 Whether the replacement socket's actor is alive is read by the host when it
 hands the attachment job's end over (`runtime.hold`, which delivers
 `job.Finished` with the answer), and this client's build identity is read
-once when the model is created (`Model.shared.client_build`). Clock reads, the
+once when the model is created (`Model.view.client_build`). Clock reads, the
 connection, replay and attachment drains, every job start, and every file
 read have moved out of the step, as described above and below. Recording
 appends are effects: each line's offset is read
@@ -924,7 +929,7 @@ can tell a provisional attachment that failed from the one that was adopted.
 `loom replay <path>` plays a recording through `tui/virtual_backend`, an etui
 backend whose `poll` answers from a script. The replay runs the shipped
 `update` and `view`, with `Peer` set to `Replaying`: it opens no socket, starts
-no daemon, and sends nothing, and `tui/attempt_replay` feeds recorded frames
+no daemon, and sends nothing, and `session_view/attempt_replay` feeds recorded frames
 through the same channel reducer the live client uses. `tui/frame` converts a
 rendered `Buffer` to plain text for printing and for snapshot tests. Only the
 last frame is reproducible across machines, because whether a paced event
@@ -1023,25 +1028,26 @@ Paths are relative to the package's source root: `tui/...` is under
 | Module | What it owns |
 |---|---|
 | `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, `loom ui` (`run_view`), and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
-| `tui/step_effect` | The two effects the session reducers decide, a lane output and a channelless arrival's recording line, generic over the host's socket and recorder. |
 | `tui/effect` | The closed vocabulary of effects a step decides on, with the session reducers' effects wrapped as `Step`. |
 | `tui/terminal_lane` | The session lane with the terminal's socket and recorder filled in, and `perform`, the one place a lane's outputs touch the websocket or the recording. |
 | `tui/view_link` | Printing the `loom ui` link and handing it to the platform's opener. |
 | `tui/model` | `Model` and its two halves, `TerminalShared` (the terminal's binding of `Shared`) and `View` (the terminal's own state and its `Caches`), the frame cache, the `Reconnect` state, the effect outbox in `View` (`emit`, `record`, `hold_shared`, `run_shared`, and the terminal forms of `record_arrival`, `hold_channel`, `send_frame`, `send_via` and `apply_submission`), the composer's `clear_composer` and the other terminal types every reducer shares. |
-| `tui/session_model` | `Shared`, the session state, generic over the host handles, with the types it names, its step-effect outbox, and the functions over it alone: appending lines, the revisions, the activity mark, storing the lane, recording a channelless arrival, and the readers such as `queue_owner` and `presentation`. |
 | `tui/runtime` | The terminal's host: `message`, which builds the step's input with the clocks and a pasted file read into it; `receive` and `arrivals`, which read job replies and each inbox's mailbox up to its room and have admission file them; `hold`, which hands one job message over after checking an attachment's socket; `take`, `perform`, `settle` and `flush`, which collect a step's effects, perform them and store the job table. |
-| `tui/msg` | What the step is given: `Input(at, wall_ms, event)` or `Arrived(arrivals)`, the client's `Event`, `Arrival` and `Stamp`; and `Command`, what an operator does to the session. |
+| `tui/msg` | What the step is given: `Input(at, wall_ms, event)` or `Arrived(arrivals)`, and the client's `Event` and `Arrival`. |
 | `tui/keymap` | `translate`, etui's input event to a `msg.Event`; parsing only. |
-| `tui/admission` | `admit`: files arrivals into inboxes and job slots, and reduces nothing. |
+| `tui/admission` | `admit`: files arrivals into the waiting attempt and the job slots, and the session's frames and replayed events through `session_view/admission`; it reduces nothing. |
 | `tui/job` | Jobs as data: `Key`, the slot type `Awaiting`, `Spec`, and the keyed `Arrival`. |
 | `tui/job_runner` | The runtime's table of running jobs: starts a spec as a weft run, cancels by key, receives every job's replies. |
 | `tui/buffered` | `Inbox`: a terminal-owned subject with the messages already received from it, `waiting` and `push` before the step, `take` in it, `receive` outside it. |
 | `session_view/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
-| `tui/outbound`, `tui/inbound`, `tui/event_fold`, `tui/lane_fold` | Sending frames and folding the lane's disposition, over `Shared` alone (`outbound`); the terminal's loop over the lane's updates, and settling the surface facts each recorded (`inbound`); applying each pushed event (`event_fold`) and each lane update and replay change, captured cuts included (`lane_fold`), over `Shared` alone. |
-| `tui/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed), their replies, the edge detectors and the goal commands, over `Shared` alone, and the surface openers, over the whole model. |
-| `tui/commands`, `tui/session_step` | The operator's commands to the session, over `Shared` alone (`commands`), and the shared step's settle after every event (`session_step`). |
+| `tui/inbound` | The terminal's loop over the lane's updates, and settling the surface facts each recorded. |
+| `tui/side_surfaces` | The side surfaces' openers and targets, which read the terminal's overlay and panels, over the whole model. |
+| `session_view/model`, `session_view/step_effect`, `session_view/msg`, `session_view/admission` | The shared step's record, `Shared`, generic over the host handles, with the types it names, its effect outbox and the functions over it alone; the two effects it decides; the `Stamp` and the operator's `Command`; and the filing of frames and replayed events. |
+| `session_view/outbound`, `session_view/event_fold`, `session_view/lane_fold` | Sending frames and folding the lane's disposition (`outbound`); applying each pushed event (`event_fold`) and each lane update and replay change, captured cuts included (`lane_fold`), over `Shared` alone. |
+| `session_view/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed), their replies, the edge detectors and the goal commands, over `Shared` alone. |
+| `session_view/commands`, `session_view/step` | The operator's commands to the session (`commands`), and the shared step's settle after every event and a tick's side-surface reads and clocks (`step`), over `Shared` alone. |
 | `tui/session_control` | Daemon control requests and reconnection, as job specs, and the drains that take their replies. |
 | `tui/projection` | The record row cache and render cache. |
 | `tui/live_tail` | The live answer's rows, rebuilt each frame from what changed: settled blocks, checked text, and the open tail. |
@@ -1069,12 +1075,12 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/theme`, `tui/appearance` | Semantic colours and the launch-time palette. |
 | `session_view/command`, `session_view/skills` | Slash-command grammar, palette suggestions, and daemon skill names. |
 | `session_view/composer`, `tui/image_drop` | Paste attachments, token estimate, and image admission. |
-| `tui/queue_panel`, `tui/queue_editor`, `tui/queue_request` | Held-input inspector, the revision-fenced queue editor, and the editor's requests on the lane, which `Shared` holds. |
+| `tui/queue_panel`, `tui/queue_editor`, `session_view/queue_request` | Held-input inspector, the revision-fenced queue editor, and the editor's requests on the lane, which `Shared` holds. |
 | `session_view/approval`, `tui/approval_panel` | Exact approval capture and the approval dialog. |
 | `session_view/worktree_view`, `tui/diff_panel` | Git worktree observation and the changes navigator. |
-| `tui/agents`, `session_view/agent_view`, `session_view/agent_activity`, `session_view/agent_roster`, `tui/agent_messages`, `tui/agent_message_panel`, `session_view/reviewer_status` | The agent rail and inspector projections. |
+| `tui/agents`, `session_view/agent_view`, `session_view/agent_activity`, `session_view/agent_roster`, `session_view/agent_messages`, `tui/agent_message_panel`, `session_view/reviewer_status` | The agent rail and inspector projections. |
 | `session_view/notes_view`, `tui/note_panel` | The notes observation and browser. |
-| `tui/completion_summary`, `tui/summary_panel`, `session_view/live_jobs` | Completion evidence, the summary panel, and the jobs roster. |
+| `session_view/completion_summary`, `tui/summary_panel`, `session_view/live_jobs` | Completion evidence, the summary panel, and the jobs roster. |
 | `session_view/context_view`, `tui/context_panel` | The context observation and inspector. |
 | `session_view/advisor_pending` | The pending-nudge observation. |
 | `session_view/block_summary` | Summarizer labels for long blocks, stored and live, and the exact-key reads still owed. |
@@ -1084,6 +1090,6 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/selection`, `tui/frame` | Mouse selection and OSC 52 copy; a `Buffer` as plain text. |
 | `tui/workspace`, `tui/internal/workspace_file` | Repository root and branch discovery. |
 | `tui/herdr`, `tui/internal/ffi_herdr` | Herdr pane-state reporting and its one socket exchange. |
-| `tui/recording`, `session_view/attempt`, `tui/attempt_replay`, `tui/virtual_backend` | The `--record` format, attempt custody, replay reduction, and the scripted etui backend. |
+| `tui/recording`, `session_view/attempt`, `session_view/attempt_replay`, `tui/virtual_backend` | The `--record` format, attempt custody, replay reduction, and the scripted etui backend. |
 | `tui/update`, `tui/update/*` | The `loom update` release installer and daemon restart. |
 | `tui/internal/ffi_terminal`, `tui/internal/ffi_file`, `tui/internal/ffi_download` | The package's Erlang FFI: terminal-owned actions, bounded image reads, and Gun HTTPS streams. |

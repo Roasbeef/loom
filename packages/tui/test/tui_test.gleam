@@ -18,8 +18,10 @@ import gleam/string
 import gleeunit
 import session_view/agent_view
 import session_view/command
+import session_view/commands
 import session_view/composer
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/pasted_image
 import session_view/protocol.{ModelInfo, Strand}
 import session_view/session_channel
@@ -31,7 +33,6 @@ import snapshot_test
 import tui
 import tui/agents
 import tui/buffered
-import tui/commands
 import tui/connection
 import tui/frame
 import tui/image_drop
@@ -48,7 +49,6 @@ import tui/projection
 import tui/recording
 import tui/render
 import tui/selection
-import tui/session_model
 import tui/submit
 import tui/theme
 import tui/virtual_backend

@@ -7,6 +7,10 @@
 //// etui buffer sized to its content, printed into the scrollback through
 //// `frame.buffer_to_styled` rather than painted on an alternate screen.
 ////
+//// Both readers see the resident track by default — the launcher filters
+//// on `resident_track` before either format runs — and only `--all` widens
+//// the rows this module ever receives back to the whole catalogue.
+////
 //// Drawing through a buffer rather than concatenating escape codes keeps
 //// one width model for the whole client. A CJK session name is measured by
 //// the same cell arithmetic the interactive picker uses, so the columns stay
@@ -75,6 +79,31 @@ pub fn state(status: control_protocol.Lifecycle) -> #(String, style.Style) {
     control_protocol.Resident(_) -> #("resident", theme.success_text())
     control_protocol.Stopping(_) -> #("stopping", signal())
     control_protocol.RecoveryBlocked -> #("blocked", theme.danger_text())
+  }
+}
+
+/// Whether a lifecycle belongs to the resident track `loom sessions list`
+/// shows by default.
+///
+/// A saved registration and a bare reservation are the idle remainder —
+/// neither holds a runtime or a cleanup in progress — so both answer
+/// `False` here; every other lifecycle, including a transition or a
+/// blocked recovery, still occupies the daemon and answers `True`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session_table.resident_track(control_protocol.Resident("i"))
+/// assert !session_table.resident_track(control_protocol.Saved)
+/// ```
+pub fn resident_track(status: control_protocol.Lifecycle) -> Bool {
+  case status {
+    control_protocol.Saved -> False
+    control_protocol.Reserved -> False
+    control_protocol.Opening(_) -> True
+    control_protocol.Resident(_) -> True
+    control_protocol.Stopping(_) -> True
+    control_protocol.RecoveryBlocked -> True
   }
 }
 

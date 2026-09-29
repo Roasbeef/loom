@@ -46,25 +46,25 @@ import gleam/string
 import session_view/approval
 import session_view/command
 import session_view/composer
-import session_view/operator
-import session_view/pasted_image
-import session_view/protocol
-import session_view/session_channel
-import session_view/text_hygiene
-import session_view/transcript_line.{
-  type Submission, Assistant, HeldPrompt, Interjection, Line, User,
-}
-import tui/event_fold
-import tui/lane_fold
-import tui/msg
-import tui/outbound
-import tui/session_model.{
+import session_view/event_fold
+import session_view/lane_fold
+import session_view/model.{
   type DraftTaking, type Shared, Attached, ComposerSubmission, Disconnected,
   DraftTaken, Interrupt, InterruptRequested, LookupRequested, OverlaySubmission,
   Preview, Replaying, ReviewAnswered, Shared, TakenAsPrompt, TakenByCommand,
   TranscriptCleared,
+} as session_model
+import session_view/msg
+import session_view/operator
+import session_view/outbound
+import session_view/pasted_image
+import session_view/protocol
+import session_view/session_channel
+import session_view/surfaces
+import session_view/text_hygiene
+import session_view/transcript_line.{
+  type Submission, Assistant, HeldPrompt, Interjection, Line, User,
 }
-import tui/surfaces
 
 /// Sends an interrupt for the active strand's running operation, once.
 ///

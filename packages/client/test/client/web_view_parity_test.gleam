@@ -23,22 +23,22 @@ import gleam/string
 import lustre/effect
 import lustre/element
 import session_view/approval
+import session_view/commands
 import session_view/connection_event
+import session_view/event_fold
 import session_view/markdown
+import session_view/model as session_model
+import session_view/msg
 import session_view/operator
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript_line.{type Line}
 import tui
-import tui/commands
 import tui/connection
-import tui/event_fold
 import tui/inbound
 import tui/model as tui_model
-import tui/msg
 import tui/projection
-import tui/session_model
 import tui/workspace
 import web_view/component
 import web_view/operator_page

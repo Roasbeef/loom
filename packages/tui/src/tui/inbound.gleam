@@ -24,9 +24,15 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import session_view/agent_messages
 import session_view/agent_roster
 import session_view/approval
+import session_view/commands
 import session_view/connection_event
+import session_view/event_fold
+import session_view/lane_fold
+import session_view/model.{ReturnedDraft, Shared} as session_model
+import session_view/msg
 import session_view/notes_view
 import session_view/operator
 import session_view/protocol
@@ -34,16 +40,12 @@ import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import tui/agent_message_panel
-import tui/agent_messages
 import tui/agent_strip
 import tui/agents
 import tui/approval_panel
 import tui/bootstrap
 import tui/buffered
-import tui/commands
-import tui/event_fold
 import tui/job
-import tui/lane_fold
 import tui/layout
 import tui/model.{
   type Model, type Reconnect, type StrandWorkspace, AgentInspector,
@@ -52,14 +54,12 @@ import tui/model.{
   ReconnectSpent, StrandWorkspace, View,
 } as tui_model
 import tui/model_selector
-import tui/msg
 import tui/note_panel
 import tui/queue_editor
 import tui/queue_panel
 import tui/render
-import tui/session_model.{ReturnedDraft, Shared}
+import tui/side_surfaces
 import tui/summary_panel
-import tui/surfaces
 
 /// Decides whether one unexpected daemon death earns a reconnect.
 ///
@@ -202,7 +202,7 @@ pub fn apply_channel_update(
 pub fn surroundings(model: Model) -> lane_fold.Surroundings {
   lane_fold.Surroundings(
     worktree: worktree_view_of(model),
-    notes: case surfaces.notes_surface(model) {
+    notes: case side_surfaces.notes_surface(model) {
       True -> lane_fold.NotesShown
       False -> lane_fold.NotesHidden
     },
@@ -658,7 +658,7 @@ fn show_surface(
 // selection holds. Any other board only seeded the todo panel, which the
 // event fold has already done.
 fn show_notes(model: Model, board: notes_view.Board) -> Model {
-  case board.strand == surfaces.notes_target(model) {
+  case board.strand == side_surfaces.notes_target(model) {
     False -> model
     True -> {
       let previous = case model.shared.note_board {
@@ -691,7 +691,7 @@ fn show_notes(model: Model, board: notes_view.Board) -> Model {
           note_board: Some(board),
           // A read the terminal sent to seed the todo panel is not
           // news to an operator who has no notes surface open.
-          notice: case surfaces.notes_surface(model) {
+          notice: case side_surfaces.notes_surface(model) {
             True -> "notes refreshed for " <> board.strand
             False -> model.shared.notice
           },
@@ -831,7 +831,7 @@ pub fn note_max_scroll(model: Model) -> Int {
     AgentInspector(_) -> layout.message_detail_area(model)
     _ -> layout.note_detail_area(model)
   }
-  render.prepared_notes(model, surfaces.notes_target(model), area)
+  render.prepared_notes(model, side_surfaces.notes_target(model), area)
   |> note_panel.max_scroll(model.view.note_selected)
 }
 

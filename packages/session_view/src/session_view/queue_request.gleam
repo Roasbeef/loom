@@ -7,8 +7,7 @@
 //// the request that caused them. The editor itself, meaning the fetched draft
 //// in its etui text area, the inspector's selection and the surface, is the
 //// terminal's and stays in `tui/queue_editor`. The split keeps this module
-//// free of etui so that it can sit in `Shared` (`tui/session_model`) and
-//// later move into `session_view` with it
+//// free of etui so that it can sit in `Shared` (`session_view/model`)
 //// (`docs/design-notes/step-extraction.md`, section 5, S3b′).
 
 import gleam/option.{type Option, None, Some}

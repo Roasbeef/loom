@@ -14,6 +14,8 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import session_view/connection_event
+import session_view/model as session_model
+import session_view/msg
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -24,9 +26,7 @@ import tui/inbound
 import tui/job
 import tui/job_runner
 import tui/model as tui_model
-import tui/msg
 import tui/pacing
-import tui/session_model
 import tui/tick
 import tui/workspace
 import tui_test/pushed
