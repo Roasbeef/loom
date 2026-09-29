@@ -3383,15 +3383,23 @@ pub fn async_real_workflow_reuses_named_children_test_() -> AsyncEunitTest {
     let assert Ok(here) = simplifile.current_directory()
       as "the package path exists"
     let repo = here <> "/../.."
-    let assert Ok(toolchain) = codemode.discover(repo <> "/build/codemode-seed")
-      as "the real workflow test needs make codemode-seed"
-    async_satellite(
-      repo,
-      toolchain,
-      codemode_tool.OrchestrationSeam,
-      async_workflow_program(),
-      NamedWorkflow,
-    )
+    case
+      simplifile.is_file(repo <> "/packages/sandbox/loom-exec"),
+      codemode.discover(repo <> "/build/codemode-seed")
+    {
+      Ok(True), Ok(toolchain) ->
+        async_satellite(
+          repo,
+          toolchain,
+          codemode_tool.OrchestrationSeam,
+          async_workflow_program(),
+          NamedWorkflow,
+        )
+      _, _ ->
+        io.println_error(
+          "SKIP async_real_workflow: run make sandbox codemode-seed",
+        )
+    }
   })
 }
 
@@ -3737,15 +3745,23 @@ pub fn workspace_mode_combines_files_and_named_children_test_() -> AsyncEunitTes
     let assert Ok(here) = simplifile.current_directory()
       as "the package path exists"
     let repo = here <> "/../.."
-    let assert Ok(toolchain) = codemode.discover(repo <> "/build/codemode-seed")
-      as "the real workflow test needs make codemode-seed"
-    async_satellite(
-      repo,
-      toolchain,
-      codemode_tool.WorkspaceSeam,
-      async_workflow_program(),
-      NamedWorkflow,
-    )
+    case
+      simplifile.is_file(repo <> "/packages/sandbox/loom-exec"),
+      codemode.discover(repo <> "/build/codemode-seed")
+    {
+      Ok(True), Ok(toolchain) ->
+        async_satellite(
+          repo,
+          toolchain,
+          codemode_tool.WorkspaceSeam,
+          async_workflow_program(),
+          NamedWorkflow,
+        )
+      _, _ ->
+        io.println_error(
+          "SKIP workspace_mode_workflow: run make sandbox codemode-seed",
+        )
+    }
   })
 }
 
