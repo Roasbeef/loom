@@ -27,6 +27,7 @@ import session_view/agent_view
 import session_view/composer
 import session_view/context_view
 import session_view/goal_view
+import session_view/model.{Attached, Disconnected, Preview, Replaying} as session_model
 import session_view/reviewer_status
 import session_view/snapshot_view
 import session_view/text_hygiene
@@ -43,7 +44,6 @@ import tui/model.{
 } as tui_model
 import tui/queue_editor
 import tui/queue_panel
-import tui/session_model.{Attached, Disconnected, Preview, Replaying}
 import tui/todo_panel
 
 /// The area inside a one-cell rounded border.

@@ -16,8 +16,10 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/model as session_model
 import session_view/session_channel
 import session_view/snapshot
+import session_view/step_effect
 import session_view/transcript_line
 import tui
 import tui/attachment
@@ -27,8 +29,6 @@ import tui/effect.{type Effect}
 import tui/job
 import tui/model as tui_model
 import tui/runtime
-import tui/session_model
-import tui/step_effect
 import tui/terminal_lane
 import tui/workspace
 import tui_test/pushed

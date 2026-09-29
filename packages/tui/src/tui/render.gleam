@@ -32,10 +32,13 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/advisor_pending
+import session_view/agent_messages
 import session_view/command
+import session_view/completion_summary
 import session_view/composer
 import session_view/context_view
 import session_view/live_jobs
+import session_view/model.{Disconnected} as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/queued_input
@@ -49,13 +52,11 @@ import session_view/transcript_line.{
 import session_view/transcript_lines
 import session_view/worktree_view
 import tui/agent_message_panel
-import tui/agent_messages
 import tui/agent_strip
 import tui/agents
 import tui/appearance
 import tui/approval_panel
 import tui/collaboration_view
-import tui/completion_summary
 import tui/context_panel
 import tui/diff_panel
 import tui/focused_goal_panel
@@ -73,7 +74,6 @@ import tui/peer_links
 import tui/queue_editor
 import tui/queue_panel
 import tui/selection
-import tui/session_model.{Disconnected}
 import tui/session_selector
 import tui/summary_panel
 import tui/theme
@@ -489,7 +489,7 @@ fn render_header(
     text.truncate(
       text_hygiene.single_line(session_title(model))
         <> " · "
-        <> text_hygiene.single_line(workspace.label(model.shared.workspace)),
+        <> text_hygiene.single_line(workspace.label(model.view.workspace)),
       room,
       "…",
     )
@@ -1473,7 +1473,7 @@ fn footer_sections(
   model: Model,
 ) -> #(span.Line, span.Line, span.Line, span.Line, span.Line) {
   let project_text =
-    model.shared.workspace |> workspace.label |> text_hygiene.single_line
+    model.view.workspace |> workspace.label |> text_hygiene.single_line
   let model_text = text_hygiene.single_line(model.shared.current_model)
   let status_text = model |> model_footer_status |> text_hygiene.single_line
   let project =

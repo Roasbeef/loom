@@ -7,9 +7,9 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/agent_messages
 import tui
 import tui/agent_message_panel
-import tui/agent_messages
 import tui/connection
 import tui/layout
 import tui/theme

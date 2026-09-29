@@ -14,6 +14,7 @@ import gleam/option.{None, Some}
 import machine/codec as machine_codec
 import machine/strand
 import session_view/approval
+import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -22,7 +23,6 @@ import session_view/transcript_line
 import tui/approval_panel
 import tui/inbound
 import tui/model as tui_model
-import tui/session_model
 import tui_test/pushed
 
 fn author(name) {

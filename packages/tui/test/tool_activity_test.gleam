@@ -19,6 +19,7 @@ import machine/codec as machine_codec
 import machine/operation
 import machine/strand
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/protocol
 import session_view/snapshot_view
 import session_view/tool_activity
@@ -29,7 +30,6 @@ import tui/inbound
 import tui/layout
 import tui/model as tui_model
 import tui/render
-import tui/session_model
 import tui/workspace
 import tui_test/gateway
 

@@ -1,14 +1,29 @@
-//// The session state the terminal shares with any other host of a
-//// session, and the types that record names.
+//// The session state every host of a session holds, and the types that
+//// record names.
 ////
-//// `Shared` is the half of the terminal's model that a second host showing
-//// the same session would need (`docs/design-notes/step-extraction.md`,
-//// section 1). It sits in its own module, below `tui/model`, because the
-//// reducers being cut down to it (issue #569) need functions over `Shared`
-//// alone, and those functions cannot live beside the terminal's own
-//// helpers of the same names in `tui/model`. This module imports nothing of
-//// the terminal: no etui type, no job slot, no `Subject`. A later slice
-//// moves it into `session_view` as `session_view/model`.
+//// `Shared` is what a host showing a session needs to show it and act on it
+//// correctly: what the daemon said, what this client has sent and not yet
+//// seen committed, and the reads in flight
+//// (`docs/design-notes/step-extraction.md`, section 1). The shared step's
+//// reducers, the folds in `session_view/event_fold` and
+//// `session_view/lane_fold`, the commands in `session_view/commands` and the
+//// reads in `session_view/surfaces`, take and return it alone, so any host
+//// can run them. The record lives in `session_view`, the package lint's R6
+//// holds to the portable subset, so it names no etui type, no job slot and
+//// no `Subject`: the four host handles it carries, the adopted lane's socket
+//// and recorder and the sources of its two inboxes, are type parameters.
+//// The terminal binds them in `tui/model` (`TerminalShared`) and holds the
+//// record beside its own `View`; the web view will bind them to its relay
+//// and `Nil`.
+////
+//// Four fields are presentation revisions rather than session facts:
+//// `render_revision`, `frame_revision`, `activity_revision` and
+//// `record_cache_epoch`, with the `record_cache_valid` flag beside them.
+//// The reducers bump them when they change what a host draws, so a host
+//// compares a revision with the one it last drew instead of comparing the
+//// whole record after every event. A host that rebuilds its view on every
+//// update may ignore them (`docs/design-notes/step-extraction.md`, question
+//// 3).
 
 import core/entry
 import core/json
@@ -19,16 +34,18 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
-import host/build_identity
 import session_view/advisor_history
 import session_view/advisor_pending
+import session_view/agent_messages
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
 import session_view/attempt
+import session_view/attempt_replay
 import session_view/block_summary
 import session_view/cache_watch
 import session_view/command
+import session_view/completion_summary
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
@@ -36,12 +53,15 @@ import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
 import session_view/live_jobs
+import session_view/msg
 import session_view/notes_view
 import session_view/protocol
+import session_view/queue_request
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/step_effect
 import session_view/tool_activity
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Stream, type Submission, type ToolTail,
@@ -49,13 +69,6 @@ import session_view/transcript_line.{
 }
 import session_view/transcript_lines
 import session_view/worktree_view
-import tui/agent_messages
-import tui/attempt_replay
-import tui/completion_summary
-import tui/msg
-import tui/queue_request
-import tui/step_effect
-import tui/workspace
 
 /// The session state: what a second host showing the same session would need
 /// to show it or act on it correctly.
@@ -229,8 +242,6 @@ pub type Shared(socket, recorder, source, replay_source) {
     skills: List(command.Suggestion),
     /// The model the active strand runs on, as the daemon reported it.
     current_model: String,
-    /// The session's working directory and branch.
-    workspace: workspace.Context,
     /// The strands the last capture listed.
     strands: List(protocol.Strand),
     /// Current reviewer progress, with operation-owned task excerpts.
@@ -358,18 +369,14 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// them from its message before any reducer runs, and every reducer that
     /// needs the time reads them here, so a step reads no clock.
     stamp: msg.Stamp,
-    /// The build this client runs, which the build-mismatch notice compares
-    /// with the daemon's. It comes from two environment variables that do
-    /// not change while the process runs, so it is read once, when the model
-    /// is created, rather than on every coherent cut that draws the notice.
-    client_build: build_identity.Identity,
-    /// The build the daemon named in its `hello` on the control connection,
-    /// if it named one. The build-mismatch notice compares it with
-    /// `client_build` on every coherent cut. The terminal writes it when it
-    /// adopts a control connection, beside `View.daemon_host`, which holds
-    /// the connection itself and stays the terminal's; the value here is the
-    /// data a cut needs, so the notice reads no terminal state.
-    daemon_build: Option(build_identity.Identity),
+    /// The build-mismatch notice every coherent cut draws: a system line
+    /// naming the daemon's build and this client's when they differ, and
+    /// nothing when they match or the daemon named no build. Reading and
+    /// comparing the two builds is the host's work, because the client's
+    /// build comes from the environment (`host/build_identity`), so the host
+    /// writes these lines when it adopts a daemon's control connection and
+    /// a cut only splices them into the transcript.
+    build_notice: List(Line),
     /// Bumped by operator or traffic activity (`mark_activity`); idle pacing
     /// reads it.
     activity_revision: Int,
@@ -544,8 +551,8 @@ pub type GoalObservation {
 /// Something the event fold, the lane fold or a command did that a host's
 /// own surfaces have to follow.
 ///
-/// The folds (`tui/event_fold`, `tui/lane_fold`) and the commands
-/// (`tui/commands`) take the shared record alone, so they cannot write the
+/// The folds (`event_fold`, `lane_fold`) and the commands (`commands`) take
+/// the shared record alone, so they cannot write the
 /// terminal's editor, overlays or footer. Where an event, an update or a
 /// command used to write them at the point it was applied, the shared
 /// function records one of these in `Shared.surface_facts`, and the terminal

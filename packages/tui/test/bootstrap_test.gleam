@@ -11,6 +11,7 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/endpoint
+import session_view/model as session_model
 import session_view/session_channel
 import simplifile
 import tui
@@ -28,7 +29,6 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
-import tui/session_model
 import tui/session_selector
 import tui/terminal_lane
 import tui/workspace

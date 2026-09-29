@@ -7,6 +7,7 @@ import etui/widgets/textarea as text_area
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/model as session_model
 import tui
 import tui/buffered
 import tui/connection
@@ -16,7 +17,6 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
-import tui/session_model
 import tui/session_selector
 import tui/virtual_backend
 import tui/workspace

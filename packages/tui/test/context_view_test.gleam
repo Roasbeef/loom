@@ -18,10 +18,12 @@ import machine/codec as machine_codec
 import machine/strand
 import session_view/command
 import session_view/context_view as context
+import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/surfaces
 import session_view/worktree_view
 import tui
 import tui/connection
@@ -29,8 +31,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
-import tui/session_model
-import tui/surfaces
+import tui/side_surfaces
 import tui/workspace
 import tui_test/pushed
 
@@ -213,7 +214,7 @@ pub fn inspector_retains_the_draft_and_shows_unavailable_without_a_connection_te
       ),
     )
   let opened =
-    surfaces.open_context(original, context.Overview)
+    side_surfaces.open_context(original, context.Overview)
     |> fn(model) { tui.update(backend.Resize(100, 30), model) }
   let #(buf, _) = render.view(opened, geometry.rect_new(0, 0, 100, 30))
   assert string.contains(
@@ -251,7 +252,7 @@ pub fn wheel_scrolls_the_visible_inspector_without_moving_transcript_test() {
       fn() { 0 },
     )
   let opened =
-    surfaces.open_context(base, context.All)
+    side_surfaces.open_context(base, context.All)
     |> fn(model) { tui.update(backend.Resize(100, 30), model) }
   let moved = tui.update(backend.MouseScroll(5, 5, False), opened)
   assert moved.shared.context.scroll == 0

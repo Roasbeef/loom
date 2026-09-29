@@ -95,14 +95,14 @@ flowchart TD
     subgraph engine["pure step"]
         Step["tui.step"]
         Admission["tui/admission"]
-        Reducers["inbound, interaction, submit,<br/>tick, surfaces, session_control"]
+        Reducers["inbound, interaction, submit,<br/>tick, side_surfaces, session_control"]
         Model["tui/model, tui/msg,<br/>tui/effect, tui/job"]
     end
     subgraph view["view"]
         Render["tui/render, tui/layout"]
         Projection["tui/projection, tui/live_tail,<br/>tui/markdown"]
     end
-    SV["session_view<br/>lane, decoders, snapshots,<br/>transcript lines"]
+    SV["session_view<br/>lane, decoders, snapshots,<br/>transcript lines, the shared step"]
     HostPkg["host package<br/>websocket, endpoint, bootstrap"]
     Runtime --> Step
     Step --> Admission
@@ -277,12 +277,14 @@ status 1 and left alone.
 event dispatch. The modules under `tui/`, roughly in the order a reader
 needs them:
 
-- `tui/msg`: `Msg` is `Input(at, event)`, one event with its clock
-  `Stamp`, or `Arrived(arrivals)`, traffic the host received.
-- `tui/model`: the `Model` record, the effect outbox with `emit`, and the
-  helpers every reducer shares. `presentation` builds the
-  `transcript_lines.Presentation` that `session_view`'s line builders
-  read.
+- `tui/msg`: `Msg` is `Input(at, wall_ms, event)`, one event with its
+  clock `Stamp` (`session_view/msg`), or `Arrived(arrivals)`, traffic the
+  host received.
+- `tui/model`: the `Model` record, the terminal's `View` beside the shared
+  step's record (`session_view/model.Shared`), the effect outbox with
+  `emit`, and the helpers every reducer shares. `hold_shared` stores the
+  result of a function over the shared record and applies what it
+  recorded for the terminal's surfaces.
 - `tui/effect`: `Effect`, the closed vocabulary of effects a step can
   decide on.
 - `tui/job`: background jobs as data. `Spec` names the work (a control
@@ -291,10 +293,12 @@ needs them:
 - `tui/admission`: `admit`, the pure filing of arrivals into the inbox or
   slot that waits for them.
 - `tui/inbound`, `tui/interaction`, `tui/submit`, `tui/tick`,
-  `tui/surfaces`, `tui/session_control`: the reducers for received
-  traffic; keys, pastes and the mouse; composer submission; the tick and
-  its drain order; the notes, queue, diff and goal reads; and daemon
-  control and reconnection.
+  `tui/side_surfaces`, `tui/session_control`: the terminal's loop over
+  received traffic; keys, pastes and the mouse; composer submission; the
+  tick and its drain order; the notes, summary, goal and context panels'
+  openers; and daemon control and reconnection. The session's reducers
+  (the folds, the commands, the side-surface reads) are in
+  `session_view`.
 - `tui/attachment`: one provisional attachment attempt, adopted only
   after a validated cut, a completed worker and a passed adoption check.
 - `tui/runtime`, `tui/job_runner`, `tui/terminal_lane`, `tui/buffered`:

@@ -1,6 +1,7 @@
 import etui/backend
 import etui/widgets/textarea
 import gleam/option.{None, Some}
+import session_view/model as session_model
 import tui
 import tui/connection
 import tui/daemon/protocol
@@ -8,7 +9,6 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/session_control
-import tui/session_model
 import tui/session_selector
 import tui/workspace
 import weft

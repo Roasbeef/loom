@@ -48,7 +48,7 @@ surface; they never choose a grant. General assistant questions remain in their
 update and transcript because the protocol has no separate pending-question fact.
 
 The inspector keeps Activity, Messages, Notes and Collaboration under
-`agents.Detail`, switched with 1/2/3/4. `agent_messages` admits sends only after the sending strand's
+`agents.Detail`, switched with 1/2/3/4. `session_view/agent_messages` admits sends only after the sending strand's
 accepted operation prompt. It joins results within that branch and before a
 later reuse of the call ID. `Model.shared.agent_messages` retains the latest twenty
 verified sends across operation completion, with message bodies bounded to 4096
@@ -156,7 +156,7 @@ cannot disagree about a stored board. `Model.shared.todo_boards` keeps each stra
 newest board across cuts, because a capture window that has moved past the
 last `todo` call would otherwise blank the panel; session replacement releases
 it. A strand whose capture reaches no board gets one ordinary `notes` read per
-session (`Model.shared.todo_seed`, `todo_asked`, sent by `surfaces.service_todo_seed`
+session (`Model.shared.todo_seed`, `todo_asked`, sent by `session_view/surfaces.service_todo_seed`
 from the tick once the read lane is free). Any `notes` reply seeds a missing
 board from its complete `todo` row, and never replaces a transcript board or
 parses an excerpt. The "notes refreshed" notice appears only while a notes
@@ -257,10 +257,12 @@ Unstamped direct runs retain the honest `dev`/`unknown` defaults. Shipment and
 bundled-release smoke checks exercise the command without a host daemon.
 
 The authenticated control host owns the daemon build identity, and
-`tui_model.adopt_daemon` copies it into `Shared.daemon_build` when a control
-connection is adopted. `render_cut` projects a mismatch into each transcript
-capture from that shared copy, so successful adoption and later refreshes cannot
-erase it. Missing identity stays silent. Shipment and
+`tui_model.adopt_daemon` compares it with `View.client_build` when a control
+connection is adopted and stores the mismatch lines (`daemon_build_lines`) in
+`Shared.build_notice`. `render_cut` projects those lines into each transcript
+capture, so successful adoption and later refreshes cannot erase it. The
+comparison stays in the terminal because `host/build_identity`, which reads
+the environment, is not a module `session_view` may import. Missing identity stays silent. Shipment and
 release launchers export their own build metadata, replacing inherited values.
 
 A local terminal makes one bounded reconnect attempt after conversation loss.
@@ -333,9 +335,21 @@ types and `snapshot_view`, the history window, the attempt vocabulary and
 `connection_event`, the approval decisions, the board decoders the
 protocol names, and the transcript's line builders (`transcript_lines`,
 which read a `transcript_lines.Presentation` rather than the model), their
-line types (`transcript_line`), and `transcript.project`. It imports only
-`core`, `machine` and the standard library, R6 holds it there, and nothing
-in it imports `tui`. Its `CLAUDE.md` describes each module.
+line types (`transcript_line`), and `transcript.project`. Since S4 of
+`docs/design-notes/step-extraction.md` it also holds the shared step: the
+session state `session_view/model` (`Shared` and the types it names), the
+effects the session decides (`session_view/step_effect`), the session's half
+of a message (`session_view/msg`: `Stamp` and `Command`), the frame and replay
+filing (`session_view/admission`), the send path (`session_view/outbound`),
+the side-surface reads and edges (`session_view/surfaces`), the event fold
+and the lane fold (`session_view/event_fold`, `session_view/lane_fold`), the
+commands (`session_view/commands`), the step's settle (`session_view/step`),
+and the modules they fold through (`queue_request`, `agent_messages`,
+`attempt_replay`, `completion_summary`). The terminal imports
+`session_view/model` as `session_model` and `session_view/step` as
+`session_step`, the names they had here. It imports only `core`, `machine`
+and the standard library, R6 holds it there, and nothing in it imports
+`tui`. Its `CLAUDE.md` describes each module.
 
 Gleam forbids import cycles and none of the `tui/` modules may import
 `tui`, so a module may import only those above it in the list:
@@ -343,69 +357,19 @@ Gleam forbids import cycles and none of the `tui/` modules may import
 - `tui/terminal_lane`: `Lane` and `Output`, the session lane with the
   terminal's connection and recorder as its handle types, and `perform`,
   the only place a lane's outputs touch the websocket or the recording.
-- `tui/step_effect`: `Effect(socket, recorder)`, the two effects the session
-  reducers decide, generic over the host's handles: `Lane(output)`, an
-  output of the adopted lane, and `Recorded(recorder, message)`, the
-  recording line for a message that arrived with no lane. It imports only
-  `session_view`, so it moves into `session_view/step` unchanged in S4 of
-  `docs/design-notes/step-extraction.md`.
 - `tui/effect`: `Effect`, the closed vocabulary of fire-and-forget effects a
   step decides on, input recording lines among them (`Record`). The session
   reducers' effects arrive as `Step(step_effect.Effect(Connection,
-  Recorder))`. It imports the modules whose handles its variants carry
-  (`attachment`, `connection`, `herdr`, `job`, `recording`,
-  `step_effect`) and nothing that imports the model.
-- `tui/session_model`: the session state, `Shared(socket, recorder,
-  source, replay_source)`, the types it names (`Peer`, `Interrupt`,
-  `SubmissionSource`, `UnconfirmedSubmission`, `ConnectionBacklog`,
-  `GoalReport`, `ReturnedDraft`, `GoalObservation`, `SurfaceFact`), and
-  the functions over `Shared` alone. `Shared` is what a
-  second host would need (what the daemon said, what was sent and not yet
-  committed, the reads in flight, the presentation revisions) and the four
-  host handles, typed by its parameters: `channel` is
-  `Option(session_channel.Channel(socket, recorder))`, `replay_state` is
-  `attempt_replay.State(socket, recorder)`, `inbox` and `replay_inbox` are
-  `session_view/inbox` values keyed by `source` and `replay_source`, and
-  `recorder` is `Option(recorder)`. The inboxes have separate source
-  parameters because the terminal reads them from differently typed
-  subjects. `Shared.outbox` holds the `step_effect.Effect` values a
-  function over `Shared` decided, newest first, and is empty between calls.
-  Four fields record what a shared call means for a host's editors and
-  surfaces, so that the call need not write them: `drafts_sent` counts the
-  composer drafts the lane has sent, `queue_notices` holds the
-  `queue_request.Notice` values (`Refused(reason)`, `Dropped(message)`,
-  `Received(owner, namespace, document)`, `Saved`, `Unknown`) the queue
-  editor has not shown,
-  `goal_observations` holds the `GoalObserved(board)` and
-  `GoalUnavailable(reason)` entries the goal inspector has not shown, and
-  `surface_facts` holds the `SurfaceFact` values the event fold, the
-  lane fold and the commands recorded (`WorkspaceSwitched(departing, arriving,
-  previous_session)`, `SessionSynchronized`, `ModelsListed(models,
-  current)`, `OutlookCleared`, `NotesArrived(board)`, `JobsReplaced(previous,
-  board)`, `LookupAnswered(records, missing)`, `ApprovalSettled`,
-  `ApprovalsPresented`, `QueueRowsCaptured(previous, rows)`,
-  `HistoryReleased(session, strands)`, `AgentMessagesCaptured`,
-  `GoalReleased`, `ConnectionLost`, `ReplayAdopted(SessionChange)`,
-  `InterruptRequested`, `ReviewAnswered`, `DraftTaken(DraftTaking)`,
-  `TranscriptCleared` and `LookupRequested(id)`).
-  The three lists
-  are empty between calls. `record_surface` appends a fact.
-  The functions are the writers `append_system`, `append_error`,
-  `append_notice`, `invalidate_transcript`, `invalidate_frame`,
-  `mark_activity` (bumps `activity_revision` only), `hold_channel` (stores
-  the lane, queues its outputs as `Lane(..)`) and `record_arrival` (queues
-  `Recorded(..)`), and the readers `queue_owner`, `queue_namespace`,
-  `active_strand_live`, `active_strand_phase`, `active_interrupt`,
-  `is_known_strand` and `presentation`, which builds the
-  `transcript_lines.Presentation` the line builders read. The module
-  imports nothing of the terminal and sits below `tui/model`; slice S4 of
-  the step extraction renames it to `session_view/model`.
+  Recorder))`, `session_view/step_effect`'s type bound to the terminal's
+  handles. It imports the modules whose handles its variants carry
+  (`attachment`, `connection`, `herdr`, `job`, `recording`) and nothing
+  that imports the model.
 - `tui/model`: the `Model` record, `Model(shared: TerminalShared, view:
   View)`. `TerminalShared` binds `Shared`'s four parameters to
   `connection.Connection`, `recording.Recorder`,
-  `Subject(connection_event.Message)` and `Subject(attempt.Event)`. Most
-  reducers still take `Model`; the reducer cut (slice S3, landed from the
-  helpers upward) moves them to `Shared` one layer at a time.
+  `Subject(connection_event.Message)` and `Subject(attempt.Event)`. The
+  session's reducers are in `session_view` over `Shared` alone; the
+  terminal's take `Model` and call them through the functions below.
   `hold_shared(model, shared)` is how a terminal reducer stores the result
   of any function over `Shared`: it moves `Shared.outbox` into
   `View.outbox`, wrapped as `effect.Step`, at the point of the call, so
@@ -418,13 +382,16 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `hold_shared(model, reducer(model.shared))`, for a pipeline of shared
   calls such as the tick's reads. The writers above keep terminal forms
   here of the same names, each a `hold_shared` of the shared call, and so
-  do `tui/outbound`'s `send_frame`, `send_via` and `apply_submission`; the
+  do `session_view/outbound`'s `send_frame`, `send_via` and
+  `apply_submission`; the
   readers have none, so a caller passes `model.shared` to the shared
   function. `clear_composer` and `clear_composer_text` are the terminal's
   and live here.
   `View` is the terminal's own state (screen size, composer, panels,
   overlays, the row projection's outputs, pacing, clocks and
-  `View.wall_ms`, the daemon-control and attachment job slots, the step's
+  `View.wall_ms`, the repository context `View.workspace`, the client's
+  build `View.client_build`, the daemon-control and attachment job slots,
+  the step's
   outbox, the job table) and holds the
   etui render caches, `Caches`, as `View.caches`: the rendered, record and
   diff rows, their line caches, the frame cache and the selection's frame;
@@ -438,10 +405,12 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `agent_strip.State`), a parked strand's history window is
   `Shared.parked_scrollback` beside its editor in `View.strand_workspaces`,
   and the queue editor's requests on the lane are `Shared.queue_request`
-  (`tui/queue_request`) beside the editor in `View.queue_editor`. Three
-  more fields are shared data beside terminal state: `Shared.daemon_build`
-  is the build of the daemon in `View.daemon_host`, written with it by
-  `adopt_daemon`, the one writer of either; and `Shared.returned_drafts`
+  (`session_view/queue_request`) beside the editor in `View.queue_editor`.
+  Two more fields are shared data beside terminal state:
+  `Shared.build_notice` is the mismatch between the daemon in
+  `View.daemon_host` and `View.client_build`, written with the daemon by
+  `adopt_daemon`, the one writer of either (`daemon_build_lines` draws
+  it); and `Shared.returned_drafts`
   holds a held prompt the daemon handed back until
   `inbound.restore_returned_drafts` moves it into the composer or a parked
   editor. The footer's agent count is not stored: `render` derives it from
@@ -472,12 +441,9 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   into `job.Finished` with the adopted socket's liveness read) and has
   admission file it. `tui.gleam` and test drivers import it; no reducer
   module does.
-- `tui/msg`: what the step is given, and `Command`, what an operator does
-  to the session in the session's terms (`Submit(draft, command,
-  delivery)`, `Interrupt`, `Stop(strand)`, `Decide(review, choice)`,
-  `SelectModel(name)`, `Quit`), which `commands.act` carries out. `Msg` is
-  `Input(at, wall_ms, event)`,
-  one event with its `Stamp` (the presentation and transport clocks) and
+- `tui/msg`: what the step is given. `Msg` is `Input(at, wall_ms, event)`,
+  one event with its `session_view/msg.Stamp` (the presentation and
+  transport clocks) and
   the wall clock reading, which the step reduces, or `Arrived(arrivals)`,
   traffic the host received, which the step only files. `Event` is in the
   client's terms (`KeyPressed(text, key)`, `Pasted(text, image)`,
@@ -485,7 +451,9 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `Ticked`); `Arrival` is `Frame(source, message)` tagged with the inbox
   subject it was read from, `Replayed(event)` or `JobReplied(arrival)`.
   `recorded` gives the recording line an event is written as. It imports
-  nothing of the model, which stores its `Stamp`.
+  nothing of the model. `Command`, what an operator does to the session,
+  is `session_view/msg.Command`, which `session_view/commands.act` carries
+  out; the terminal's key and slash-command handlers build one.
 - `tui/keymap`: `translate`, etui's input event to a `msg.Event`. It only
   parses; what a key means stays in the reducer.
 - `tui/admission`: `admit`, the pure filing of arrivals that the step runs
@@ -493,11 +461,11 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   the adopted inbox or the waiting attempt whose subject it names and is
   otherwise not filed; a job reply goes to the slot that holds its key or
   is dropped with its resource released through `tui_model.release`.
-  It never drops a frame for capacity. The session half is over `Shared`
-  alone: `file_frame` files a frame into the adopted inbox when its source
-  matches and refuses it otherwise, and `file_replayed` files a replayed
-  event. A refused frame is then offered to the attempt, which is terminal
-  state, over the whole model.
+  It never drops a frame for capacity. The session half is
+  `session_view/admission`, over `Shared` alone: `file_frame` files a frame
+  into the adopted inbox when its source matches and refuses it otherwise,
+  and `file_replayed` files a replayed event. A refused frame is then
+  offered to the attempt, which is terminal state, over the whole model.
 - `tui/job`: background jobs as data, and pure. `Key` is allocated from
   `Model.view.next_job` and never reused; `Awaiting(reply)` is a slot's key and
   the replies received for it, and `admit` accepts a reply only under that
@@ -508,7 +476,8 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   job message tagged with its key. A daemon control connection is named by
   a `ControlKey` the runtime allocates, and the step holds it as `Daemon`,
   the key with the build the daemon's `hello` named (`Model.view.daemon_host`,
-  and the build again as `Model.shared.daemon_build`, which a cut reads);
+  and the mismatch with the client's build as `Model.shared.build_notice`,
+  which a cut reads);
   a relaunch's reply arrives as `Arrival(daemon_selection.Host)` and is
   filed as `Arrival(Daemon)`. An attachment job's messages are
   `Published(Prepared)`, the worker's socket together with the frames
@@ -546,75 +515,11 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   transcript width and height.
 - `tui/render`: `view`, `cached_frame` and `render_frame`; a pure function of
   the model.
-- `tui/outbound`: `send_frame`, `send_via`, `apply_submission`,
-  `discard_own_turn`, `waiting_notice`, `mutation_refusal` and
-  `mutating_submission`, all over `Shared` alone. A sent
-  `ComposerSubmission` empties `attachments` and bumps `drafts_sent`; a
-  frame the lane did not send appends `queue_request.Refused(reason)`.
-  Terminal reducers call `tui_model.send_frame`, `send_via` and
-  `apply_submission`, or `tui_model.run_shared` for the others.
-- `tui/surfaces`: the `service_*` reads (`service_todo_seed`,
-  `service_notes_read`, `service_queue_read`, `service_worktree_read`,
-  `service_jobs_read`, `service_advisor_nudges_read`,
-  `service_block_summaries`, `service_goal_read`, `service_context_read`)
-  and the receivers (`receive_jobs`, `receive_goal`,
-  `receive_advisor_nudges`, `retire_delivered_nudges`, `refuse_goal`), all
-  over `Shared` alone; a dropped queue read appends
-  `queue_request.Dropped`, and a goal board or failed goal read appends a
-  `GoalObservation`. The `sync_*` edges (`sync_context`,
-  `sync_advisor_nudges`, `sync_goal`, with `context_refresh_due`,
-  `advisor_nudges_action` and `goal_action`) compare two shared records, and
-  the goal commands `submit_goal_action` and `confirming` take one. The
-  functions that open a surface or read its target (`refresh_notes`,
-  `select_note`, `open_summary`, `open_context`, `request_goal_status`,
-  `notes_target`, `notes_surface`) still take the whole model.
-- `tui/commands`: what an operator does to a session, over `Shared` alone.
-  `act(shared, msg.Command)` is the entry: `Submit` runs `submit`, the
-  refusal before encoding, the `ComposerSubmission` marker, the image
-  prompt and the dispatch exhaustive over `command.Session`, then
-  `release_submission`; `Interrupt`, `Stop`, `Decide` (the dialog's
-  captured record), `SelectModel` and `Quit` run `interrupt_active`,
-  `stop_strand`, `decide_review`, `select_model` and `quit`. `decide` (by
-  ID, the displayed record) is the `/approve` and `/deny` arm. `focus` and
-  `load_strand` are the second and third units of a strand switch, after
-  the lane's `cancel_unsent`. An interrupt records `InterruptRequested`, a
-  decision on the dialog `ReviewAnswered`, a draft the dispatch consumes
-  at once `DraftTaken(TakenByCommand | TakenAsPrompt)` (the shared side
-  empties the attachments for a prompt), `/clear` `TranscriptCleared` and
-  `/approvals <id>` `LookupRequested(id)`; the terminal forms in
-  `tui/submit`, `tui/inbound` and `tui/interaction` go through
-  `run_settled`, which applies them.
-- `tui/session_step`: `settle(before, after)`, the shared step's own settle
-  after every event: `sync_context`, `sync_advisor_nudges` and `sync_goal`
-  in that order. `settle_update` in `tui.gleam` runs it through
-  `run_shared`.
-- `tui/event_fold`: the event fold over `Shared` alone. `apply_event`
-  handles each pushed event: streams, tool tails, entries, phases, usage and
-  the cache watch, the side-surface replies, schedules, skills, models and a
-  returned draft. It also holds the functions the event fold reaches:
-  `select_workspace` (the session half of a switch, with `leave_session`),
-  `select_model`, `settle_pending_cache`, `send_prompt_to`,
-  `expect_own_turn`, `settle_own_turn` and `abandon_interjections`. Where
-  an event used to write terminal state it records a `SurfaceFact`, and a
-  queued-input reply appends `queue_request.Received`. It reads no terminal
-  state; it calls `outbound`'s and `surfaces`' functions over `Shared` and
-  no other function of either.
-- `tui/lane_fold`: the lane fold over `Shared` alone, one update per call.
-  `apply_channel_update(shared, update, around)` folds one
-  `session_channel.Update` (`reconcile_cut`, `render_cut`,
-  `receive_history`, the approval lookup, `apply_request_refused`, the
-  acknowledgements, a lost lane); `receive_unlaned` applies a channelless
-  message; `apply_replay_change` applies one change of a replayed attempt
-  event. `tick`, `receive` and `cancel_unsent` hold the lane and return its
-  updates, and `take_replayed` returns a replay event's changes, so the
-  host keeps the loop. `Surroundings(worktree, notes, reviewing, wanted)` is
-  what the host shows that a decision inside an update reads (the
-  worktree request, the refused notes read, the "settled elsewhere" close);
-  `nothing_shown()` is a host that shows none of it. Terminal writes are
-  recorded as surface facts, and queue editor writes as queue notices. Also
-  `request_decisions`, `apply_cut`, `service_history`,
-  `request_visible_worktree`, `refresh_worktree`, `daemon_build_lines`,
-  `approval_lines` and `retains_history`.
+- `tui/side_surfaces`: the terminal's half of the side surfaces, over the
+  whole model because each reads the overlay or a panel: `notes_target`,
+  `notes_surface`, `refresh_notes`, `select_note`, `open_summary`,
+  `request_goal_status` and `open_context`. The reads, receivers and edges
+  they call are `session_view/surfaces`, over `Shared` alone.
 - `tui/inbound`: the terminal's loop over the lane fold.
   `drain_connection` takes messages from the inbox, `tick_channel`,
   `accept_connection_message` and `cancel_pending` take a lane's updates,
@@ -665,7 +570,10 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `commands.load_strand`, each settled before the next).
 - `tui/interaction`: key, paste, mouse and candidate-event handling.
 - `tui/tick`: `update_tick`, `settle_tick`, the frame cache, viewport pacing
-  and the Herdr reporter.
+  and the Herdr reporter. The tick's session units, the side-surface reads
+  and the activity and generation clocks, are `session_view/step`'s
+  `service_reads` and `advance_activity_clocks`; the activity glyph's frame
+  is the terminal's and advances here.
 
 The module boundaries also bound compile time; see the two parameter
 boundaries and the split's measurements under Invariants.
@@ -911,7 +819,7 @@ boundaries and the split's measurements under Invariants.
   `claim`, and prints only its digest and fingerprint. The token arrives on
   standard input through `ffi_terminal.read_standard_line`, which prompts
   only on a terminal.
-- `tui/model.Peer` says where this client's commands go, and replaces the
+- `session_view/model.Peer` says where this client's commands go, and replaces the
   optional socket the model used to carry. An absent socket meant two
   opposite things — a `--demo` `Preview`, which answers a submitted prompt
   itself so the layout can be seen, and a `Replaying` run, which must
@@ -1515,7 +1423,7 @@ untouched.
   paging calculation and clamp retained offsets during rendering. At 40×12,
   the focused footer uses one row; a card with no inner row pages its excerpt
   in the title while preserving the composer and transcript row.
-- **Completion and live jobs**: `tui/completion_summary` retains observed
+- **Completion and live jobs**: `session_view/completion_summary` retains observed
   operation start boundaries and processes a result before a successor in the
   same cut. It attributes captured edits and paired tool outcomes only within
   that ancestry interval. Missing ancestry is partial; a missed start is
@@ -1553,7 +1461,7 @@ untouched.
   clamped to the current geometry. Preview refuses a live observation rather
   than presenting illustrative data as fetched state. Compact help retains the
   Escape control at 40 columns. Escape returns without discarding the composer.
-- **Advisor pending-nudge panel**: `tui/surfaces.sync_advisor_nudges` issues an
+- **Advisor pending-nudge panel**: `session_view/surfaces.sync_advisor_nudges` issues an
   `advisor_pending` read itself, with no operator keystroke, when the
   primary settles, a review settles even while the primary is running,
   or the primary first appears in the roster. A session switch also
@@ -1580,7 +1488,7 @@ untouched.
   "check" as the subcommand — and `--budget` is the escape, since it puts the
   objective past the first position. A `/goal` with
   no flag pins `command.default_goal_budget`, named in the row that confirms
-  it. `tui/surfaces.goal_action` reads the board on the three edges
+  it. `session_view/surfaces.goal_action` reads the board on the three edges
   `advisor_nudges_action` reads on plus one the queue does not have — the
   primary *starting* a run, which is what a goal continuation is, and the
   transition that moves `continuations`, the accounting and the bounds.
@@ -1872,7 +1780,7 @@ untouched.
   measures worse than the original; `erlc +time` on the generated `tui.erl`
   shows it as `core_inline_module`, and `docs/execution.md` has the
   measurement. Since the module split (#374) most settling steps are calls
-  into `tui/surfaces`, `tui/inbound`, `tui/projection`, `tui/interaction`
+  into `session_view/surfaces`, `tui/inbound`, `tui/projection`, `tui/interaction`
   and `tui/tick`, which the inliner never attempts, but `snap_viewport_for`
   is still local and the boundary stays.
 - **Tick settling has the same parameter boundary.** `update_tick` drains
@@ -1886,7 +1794,7 @@ untouched.
   that phase to 1.632 seconds in the generated-code experiment; the actual Gleam
   package build took 7.80 seconds. Keep the service order and this boundary.
   Both functions now live in `tui/tick`; the services are cross-module calls
-  into `tui/surfaces` and `tui/inbound`, but the drains and
+  into `session_view/surfaces` and `tui/inbound`, but the drains and
   `advance_cache_outlook` are local.
 - **Compile-time measurements for the split (#374).** On Gleam 1.18.1 and OTP
   29 on macOS, before the split a rebuild after a comment change to
@@ -1913,7 +1821,7 @@ untouched.
   creation key reads `Model.view.wall_ms` with `Model.view.terminal`, the OS and BEAM
   process identity read once when the model is created. The build the
   mismatch notice compares with the daemon's is read once too, into
-  `Model.shared.client_build`. The message is a cross-module call on `update`'s
+  `Model.view.client_build`. The message is a cross-module call on `update`'s
   parameter, never a local step in `tui.gleam`, for the inliner reason
   above. The two monotonic readings are
   separate because a test may fix the presentation clock to pin frames
@@ -2222,7 +2130,7 @@ untouched.
   in its third, the control, reconnect and activity jobs in its fourth, the
   attachment job in its fifth, and file reads in its sixth; phase 3 took
   the adopted socket's liveness read into `runtime.hold` and the client
-  build identity to model creation (`Model.shared.client_build`). The step now
+  build identity to model creation (`Model.view.client_build`). The step now
   reads no clock, file, mailbox, process or environment variable: see the
   clock, traffic, job and file invariants above and the recording
   invariant below.

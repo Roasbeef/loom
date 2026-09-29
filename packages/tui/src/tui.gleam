@@ -11,13 +11,20 @@
 //// This module holds the entry points (`main` and the launch parsing,
 //// `new_model`, `loop`, `run_script`, `replay_steps`, `connect_remote`) and
 //// the event dispatch (`update`, `apply_input`, `settle_update`). The work
-//// each event does lives in the modules under `tui/`, which form a strict
-//// import order because Gleam forbids cycles and none of them may import
-//// this one: `tui/model` holds the `Model` record and its types;
-//// `session_view/transcript_lines` builds transcript lines; `tui/layout` computes
-//// screen geometry and `tui/render` paints it; `tui/outbound` sends command
-//// frames; `tui/surfaces` services the side-surface reads; `tui/inbound`
-//// applies channel traffic; `tui/session_control` runs daemon control
+//// each event does lives in the modules under `tui/` and, for the session's
+//// half of it, in `session_view`, which form a strict import order because
+//// Gleam forbids cycles and none of them may import this one. The shared
+//// step is in `session_view`: `session_view/model` holds the session state,
+//// `session_view/outbound` sends command frames, `session_view/surfaces`
+//// services the side-surface reads, `session_view/event_fold` and
+//// `session_view/lane_fold` fold pushed events and lane updates,
+//// `session_view/commands` carries out an operator's commands, and
+//// `session_view/transcript_lines` builds transcript lines. The terminal's
+//// half is under `tui/`: `tui/model` holds the `Model` record, its `View`
+//// and the binding of the shared record's handles; `tui/layout` computes
+//// screen geometry and `tui/render` paints it; `tui/inbound` runs the loop
+//// over the lane's updates and applies what each recorded for the
+//// terminal's surfaces; `tui/session_control` runs daemon control
 //// requests; `tui/projection` maintains the transcript row caches;
 //// `tui/submit` handles composer submission; `tui/interaction` handles keys,
 //// pastes and the mouse; and `tui/tick` drains the inboxes on each tick.
@@ -51,12 +58,20 @@ import host/endpoint
 import session_view/advisor_history
 import session_view/agent_roster
 import session_view/attempt
+import session_view/attempt_replay
 import session_view/block_summary
 import session_view/cache_watch
+import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
+import session_view/model.{
+  Disconnected, HoldGoalReport, Preview, Replaying, Shared,
+} as session_model
+import session_view/msg as session_msg
+import session_view/queue_request
 import session_view/session_channel
+import session_view/step as session_step
 import session_view/text_hygiene
 import session_view/transcript_line.{
   Assistant, Line, Reasoning, System, ToolResult,
@@ -66,11 +81,9 @@ import tui/admission
 import tui/agent_strip
 import tui/appearance
 import tui/attachment
-import tui/attempt_replay
 import tui/bootstrap
 import tui/buffered
 import tui/claim
-import tui/completion_summary
 import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
@@ -82,7 +95,6 @@ import tui/interaction
 import tui/internal/ffi_terminal
 import tui/job
 import tui/job_runner
-import tui/lane_fold
 import tui/layout
 import tui/model.{
   type Model, DiffAutomatic, Model, Newer, NoClipboard, NoOverlay, Older,
@@ -93,15 +105,10 @@ import tui/note_panel
 import tui/pacing
 import tui/projection
 import tui/queue_editor
-import tui/queue_request
 import tui/recording
 import tui/render
 import tui/runtime
 import tui/session_control
-import tui/session_model.{
-  Disconnected, HoldGoalReport, Preview, Replaying, Shared,
-}
-import tui/session_step
 import tui/session_table
 import tui/summary_panel
 import tui/tick
@@ -536,7 +543,6 @@ pub fn new_model_with_clock(
       models: interaction.demo_models(),
       skills: [],
       current_model: "baseten-kimi-k3",
-      workspace: project,
       strands:,
       reviewer_rows: [],
       agent_rows: [],
@@ -577,8 +583,7 @@ pub fn new_model_with_clock(
       record_cache_valid: False,
       frame_revision: 0,
       stamp:,
-      client_build: build_identity.current(),
-      daemon_build: None,
+      build_notice: [],
       activity_revision: 0,
       connection_backlog: session_model.MailboxDrained,
       recorder: None,
@@ -615,8 +620,10 @@ pub fn new_model_with_clock(
       overlay: NoOverlay,
       strip_focus: agent_strip.Composing,
       local_options: None,
+      workspace: project,
       candidate: attachment.idle(),
       daemon_host: None,
+      client_build: build_identity.current(),
       control_request: None,
       activity_poll: tui_model.ActivityDue,
       reconnect: ReconnectIdle,
@@ -686,11 +693,15 @@ fn interactive(launch: Launch, record: String) -> Nil {
       // later `/sessions` switch derives it the same way from its choice.
       let local =
         Model(
-          shared: Shared(..base.shared, workspace: case options.workspace {
-            "" -> base.shared.workspace
-            path -> workspace.discover_from(path)
-          }),
-          view: tui_model.View(..base.view, local_options: Some(options)),
+          ..base,
+          view: tui_model.View(
+            ..base.view,
+            local_options: Some(options),
+            workspace: case options.workspace {
+              "" -> base.view.workspace
+              path -> workspace.discover_from(path)
+            },
+          ),
         )
       case bootstrap.resolve_daemon(options, process.self(), 90_000) {
         Error(reason) ->
@@ -1713,13 +1724,7 @@ fn attach_daemon(
       let model =
         Model(
           ..model,
-          shared: Shared(
-            ..model.shared,
-            transcript: lane_fold.daemon_build_lines(
-              model.shared.daemon_build,
-              base.shared.client_build,
-            ),
-          ),
+          shared: Shared(..model.shared, transcript: model.shared.build_notice),
         )
 
       // Flushed for the reason `connect_remote` gives: the first request
@@ -1811,7 +1816,7 @@ pub fn step(message: msg.Msg, model: Model) -> #(Model, List(effect.Effect)) {
 // recording holds what the client was given rather than what it made of it,
 // and the input's line is ahead of every line the reducer queues for it.
 fn reduce(
-  at: msg.Stamp,
+  at: session_msg.Stamp,
   wall_ms: Int,
   event: msg.Event,
   model: Model,

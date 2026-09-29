@@ -15,14 +15,14 @@
 //// strand switch is dropped rather than shown against the wrong target.
 //// The `sync_*` functions compare the session state before and after an
 //// event and decide whether that event makes a surface's data stale; the
-//// three together are the shared step's settle (`tui/session_step`).
+//// three together are the shared step's settle (`session_view/step`).
 ////
 //// The reads (`service_*`), the receivers (`receive_jobs`,
 //// `receive_goal`, `receive_advisor_nudges`, `retire_delivered_nudges` and
 //// `refuse_goal`), the `sync_*` edges and the goal commands
 //// (`submit_goal_action`, `confirming`) take and return the shared record
 //// alone
-//// (`tui/session_model`), so a second host of the session can run them with
+//// (`session_view/model`), so a second host of the session can run them with
 //// its own handle bindings. The surfaces they feed are the terminal's, and
 //// what a read or a reply means for them is recorded rather than written: a
 //// dropped queued-input read appends a `queue_request.Dropped` notice, and a
@@ -33,71 +33,31 @@
 //// own state, the job selected before the board changed, so the terminal
 //// moves it itself after `receive_jobs` (`inbound`'s `receive_jobs`). The
 //// functions that open a surface, move its cursor or decide a surface's
-//// target read the terminal's state and still take the whole model.
+//// target read the terminal's state, take the whole model, and live in the
+//// terminal (`tui/side_surfaces`).
 
 import core/entry
 import gleam/bool
 import gleam/dict
-import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import session_view/advisor_pending
 import session_view/block_summary
 import session_view/command
 import session_view/context_view
 import session_view/goal_view
 import session_view/live_jobs
-import session_view/protocol
-import session_view/session_channel
-import session_view/transcript_lines
-import session_view/worktree_view
-import tui/agents
-import tui/focused_goal_panel
-import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, DaemonSelector, GoalInspector,
-  Model, ModelSelector, NoOverlay, PeerLinkManager, View,
-} as tui_model
-import tui/outbound
-import tui/queue_editor
-import tui/queue_request
-import tui/render
-import tui/session_model.{
+import session_view/model.{
   type Shared, Attached, ConfirmGoal, Disconnected, GoalObserved,
   GoalUnavailable, HoldGoalReport, OverlaySubmission, Preview, Replaying,
   ReportGoal, Shared,
-}
-import tui/summary_panel
-
-/// Inspection has its own target. Reading a worker's notes never changes the
-/// active strand, its parked draft, or the next submitted message.
-@internal
-pub fn notes_target(model: Model) -> String {
-  case model.view.overlay {
-    AgentInspector(agents.Inspector(detail: agents.Notes, selected:, ..)) ->
-      selected
-    _ -> model.shared.active_strand
-  }
-}
-
-/// Whether a notes surface is on screen: standalone `/notes`, or the
-/// agent inspector's Notes tab.
-@internal
-pub fn notes_surface(model: Model) -> Bool {
-  case model.view.notes_open, model.view.overlay {
-    True, _
-    | False, AgentInspector(agents.Inspector(detail: agents.Notes, ..))
-    -> True
-    False, NoOverlay
-    | False, ModelSelector(_)
-    | False, GoalInspector(_)
-    | False, DaemonSelector(_)
-    | False, PeerLinkManager(_)
-    | False, AgentInspector(_)
-    | False, ApprovalInspector(_)
-    -> False
-  }
-}
+} as session_model
+import session_view/outbound
+import session_view/protocol
+import session_view/queue_request
+import session_view/session_channel
+import session_view/transcript_lines
+import session_view/worktree_view
 
 /// Sends the pending todo seed as an ordinary `notes` read once the read
 /// lane is free. An operator's own notes read goes first, and its reply
@@ -153,22 +113,6 @@ fn send_todo_seed(
   )
 }
 
-/// Asks for a fresh read of the notes board for the strand the notes
-/// surface is showing. The target is the terminal's, so this takes the
-/// whole model.
-@internal
-pub fn refresh_notes(model: Model) -> Model {
-  Model(
-    ..model,
-    shared: Shared(
-      ..model.shared,
-      notes_requested: Some(notes_target(model)),
-      notice: "refreshing notes for " <> notes_target(model),
-    ),
-  )
-  |> tui_model.run_shared(service_notes_read)
-}
-
 /// Reads coalesce to the latest inspected target while the existing channel
 /// owns an earlier command. Old replies may be retained, but never relabelled.
 ///
@@ -201,42 +145,6 @@ pub fn service_notes_read(
         Shared(..shared, notes_requested: None),
         protocol.notes(shared.next_id, target),
       )
-  }
-}
-
-/// Moves the note selection by `direction`, clamped to the board.
-@internal
-pub fn select_note(model: Model, direction: Int) -> Model {
-  let target = notes_target(model)
-  case model.shared.note_board {
-    Some(board) if board.strand == target -> {
-      let index =
-        list.index_map(board.notes, fn(note, position) {
-          #(Some(note.key), position)
-        })
-        |> list.key_find(render.selected_note(model, board))
-        |> result.unwrap(0)
-      let next =
-        int.clamp(
-          index + direction,
-          0,
-          int.max(0, list.length(board.notes) - 1),
-        )
-      let selected =
-        list.drop(board.notes, next)
-        |> list.first
-        |> result.map(fn(note) { note.key })
-        |> option.from_result
-
-      // Note navigation moves only the surface that owns this key. The
-      // transcript beneath an inspector retains its independent anchor.
-      Model(
-        ..model,
-        view: View(..model.view, note_selected: selected, note_scroll: 0),
-      )
-      |> tui_model.invalidate_transcript
-    }
-    _ -> model
   }
 }
 
@@ -332,29 +240,6 @@ pub fn service_worktree_read(
       }
     _, _, _ -> shared
   }
-}
-
-/// Opens detailed completion evidence while preserving the ordinary composer.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tui.open_summary(model)
-/// ```
-@internal
-pub fn open_summary(model: Model) -> Model {
-  Model(
-    shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
-    view: View(
-      ..model.view,
-      summary_surface: queue_editor.Inspector,
-      summary_scroll: 0,
-      summary_tab: summary_panel.Completion,
-      summary_job_selected: 0,
-    ),
-  )
-  |> tui_model.run_shared(service_jobs_read)
-  |> tui_model.invalidate_frame
 }
 
 /// Sends a requested live-jobs read once the channel is ready for it.
@@ -806,55 +691,6 @@ pub fn submit_goal_action(
   }
 }
 
-/// Opens the goal inspector and asks for a fresh goal board. The preview
-/// mode shows an illustrative observation instead.
-@internal
-pub fn request_goal_status(model: Model) -> Model {
-  let panel = case model.view.overlay {
-    GoalInspector(state) -> state
-    _ -> focused_goal_panel.new(model.shared.goal, goal_observation(model))
-  }
-  case model.shared.peer {
-    Preview ->
-      Model(
-        shared: Shared(
-          ..model.shared,
-          goal_report: HoldGoalReport,
-          notice: "goal inspector · illustrative observation",
-        ),
-        view: View(
-          ..model.view,
-          overlay: GoalInspector(panel),
-          repaint_phase: !model.view.repaint_phase,
-        ),
-      )
-    Attached | Disconnected | Replaying ->
-      Model(
-        shared: Shared(
-          ..model.shared,
-          goal_refresh: worktree_view.Requested,
-          goal_report: ReportGoal,
-        ),
-        view: View(
-          ..model.view,
-          overlay: GoalInspector(panel),
-          repaint_phase: !model.view.repaint_phase,
-        ),
-      )
-  }
-}
-
-fn goal_observation(model: Model) -> String {
-  case model.shared.goal, model.shared.peer {
-    Some(_), Attached -> "Last server observation · refreshing"
-    Some(_), Disconnected -> "Last server observation · disconnected"
-    Some(_), Preview | Some(_), Replaying -> "Illustrative observation"
-    None, Attached -> "Reading current goal"
-    None, Disconnected -> "Goal unavailable · disconnected"
-    None, Preview | None, Replaying -> "Goal unavailable in this preview"
-  }
-}
-
 /// The read waits for a free command lane like every other observation.
 ///
 /// Over the shared record alone. A read that cannot be sent appends a
@@ -1174,29 +1010,6 @@ pub fn service_context_read(
       }
     _, _, _, _ -> shared
   }
-}
-
-/// Opens context inspection while retaining the composer's draft and selection.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tui.open_context(model, context_view.Overview)
-/// ```
-@internal
-pub fn open_context(model: Model, surface: context_view.Surface) -> Model {
-  Model(
-    ..model,
-    shared: Shared(
-      ..model.shared,
-      context: context_view.State(
-        ..context_view.invalidate(model.shared.context),
-        surface:,
-        scroll: 0,
-      ),
-    ),
-  )
-  |> tui_model.run_shared(service_context_read)
 }
 
 fn context_in_flight(state: context_view.State) -> Bool {

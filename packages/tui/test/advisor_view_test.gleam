@@ -34,6 +34,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/advisor_history
+import session_view/model as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/transcript_line
@@ -43,7 +44,6 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
-import tui/session_model
 import tui/workspace
 import tui_test/gateway
 

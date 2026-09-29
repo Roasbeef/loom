@@ -10,13 +10,13 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None}
+import session_view/model as session_model
 import session_view/transcript_line
 import tui
 import tui/buffered
 import tui/connection
 import tui/model as tui_model
 import tui/recording
-import tui/session_model
 import tui/virtual_backend
 import tui/workspace
 

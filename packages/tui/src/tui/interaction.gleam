@@ -21,27 +21,32 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/agent_messages
 import session_view/agent_roster
 import session_view/approval
 import session_view/cache_watch
 import session_view/command
+import session_view/commands
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
+import session_view/model.{Attached, OverlaySubmission, Shared} as session_model
+import session_view/msg
+import session_view/outbound
 import session_view/pasted_image
 import session_view/protocol.{ModelInfo, Strand}
+import session_view/queue_request
 import session_view/session_channel
 import session_view/snapshot_view
+import session_view/surfaces
 import session_view/worktree_view
 import tui/agent_message_panel
-import tui/agent_messages
 import tui/agent_strip
 import tui/agents
 import tui/approval_panel
 import tui/attachment
 import tui/buffered
-import tui/commands
 import tui/context_panel
 import tui/daemon/protocol as control_protocol
 import tui/effect
@@ -57,22 +62,18 @@ import tui/model.{
   ReconnectAttempting, ReconnectIdle, ReconnectSpent, TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
-import tui/msg
 import tui/note_panel
-import tui/outbound
 import tui/peer_links
 import tui/projection
 import tui/queue_editor
 import tui/queue_panel
-import tui/queue_request
 import tui/render
 import tui/selection
 import tui/session_control
-import tui/session_model.{Attached, OverlaySubmission, Shared}
 import tui/session_selector
+import tui/side_surfaces
 import tui/submit
 import tui/summary_panel
-import tui/surfaces
 
 /// The rename overlay owns pasted text just as it owns character keys. It
 /// must never leave a pasted title in the hidden conversation composer.
@@ -346,7 +347,6 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
             note_board: None,
             notes_requested: None,
             approvals: [],
-            workspace: workspace,
             active_strand: target_strand,
             agent_rows: case
               model.shared.session == cut.attachment.expected.session
@@ -385,6 +385,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           ),
           view: View(
             ..model.view,
+            workspace: workspace,
             note_selected: None,
             prompted_approvals: [],
             overlay: NoOverlay,
@@ -540,7 +541,7 @@ fn update_goal_inspector(
       )
     focused_goal_panel.Continue(next) ->
       Model(..model, view: View(..model.view, overlay: GoalInspector(next)))
-    focused_goal_panel.Refresh -> surfaces.request_goal_status(model)
+    focused_goal_panel.Refresh -> side_surfaces.request_goal_status(model)
     focused_goal_panel.Pause ->
       tui_model.run_shared(model, surfaces.submit_goal_action(
         _,
@@ -715,11 +716,11 @@ fn update_agent_inspector(
     keys.Char("]") if inspector.detail == agents.Messages ->
       select_agent_message(model, inspector, 1)
     keys.Char("[") if inspector.detail == agents.Notes ->
-      surfaces.select_note(model, -1)
+      side_surfaces.select_note(model, -1)
     keys.Char("]") if inspector.detail == agents.Notes ->
-      surfaces.select_note(model, 1)
+      side_surfaces.select_note(model, 1)
     keys.Char("r") if inspector.detail == agents.Notes ->
-      surfaces.refresh_notes(model)
+      side_surfaces.refresh_notes(model)
     keys.Ctrl("g") if inspector.detail == agents.Notes -> toggle_note_mode(model)
     keys.Ctrl("g") -> submit.toggle_details(model)
     keys.Char("n") ->
@@ -841,7 +842,7 @@ fn update_agent_inspector(
     AgentInspector(next)
       if next.detail == agents.Notes && next.selected != inspector.selected
     ->
-      surfaces.refresh_notes(
+      side_surfaces.refresh_notes(
         Model(
           ..changed,
           view: View(
@@ -918,7 +919,7 @@ fn select_agent_detail(
       ),
     )
   case detail {
-    agents.Notes -> surfaces.refresh_notes(selected)
+    agents.Notes -> side_surfaces.refresh_notes(selected)
     agents.Overview | agents.Messages | agents.Collaboration -> selected
   }
 }
@@ -1266,11 +1267,11 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
 
 fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   case key, model.view.help_open, model.view.notes_open {
-    keys.Char("r"), False, True -> surfaces.refresh_notes(model)
-    keys.Up, False, True -> surfaces.select_note(model, -1)
-    keys.Down, False, True -> surfaces.select_note(model, 1)
-    keys.Char("["), False, True -> surfaces.select_note(model, -1)
-    keys.Char("]"), False, True -> surfaces.select_note(model, 1)
+    keys.Char("r"), False, True -> side_surfaces.refresh_notes(model)
+    keys.Up, False, True -> side_surfaces.select_note(model, -1)
+    keys.Down, False, True -> side_surfaces.select_note(model, 1)
+    keys.Char("["), False, True -> side_surfaces.select_note(model, -1)
+    keys.Char("]"), False, True -> side_surfaces.select_note(model, 1)
     keys.Ctrl("g"), False, True -> toggle_note_mode(model)
     keys.Ctrl("g"), _, _ -> submit.toggle_details(model)
     keys.PageUp, False, True -> {
