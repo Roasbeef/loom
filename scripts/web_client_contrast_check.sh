@@ -29,7 +29,8 @@
 #      `color:var(--color-signal)` is text in a colour that was not held to
 #      the ratio, so it must name `--color-signal-text`.
 #   3. `--color-fg-faint` is never text.
-#   4. The theme toggle's two light palettes agree, and every token reaches
+#   4. The theme toggle's two light palettes agree (colour tokens: the
+#      `--shadow-card` value is not compared, only that it inherits), and every token reaches
 #      each shadow root. The stylesheet writes the light palette twice, once
 #      for a system that prefers light and once for `data-theme="light"`,
 #      because CSS cannot share the two; they must declare the same tokens with
