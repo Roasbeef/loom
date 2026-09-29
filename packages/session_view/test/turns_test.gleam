@@ -12,9 +12,11 @@ import core/message
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/tool_activity
 import session_view/transcript
 import session_view/transcript_line
 import session_view/transcript_lines
@@ -451,4 +453,98 @@ pub fn grouped_splits_the_lane_at_its_inputs_test() {
   assert lead != []
   assert list.length(opened) == 2
   assert list.append(lead, list.flatten(opened)) == inside
+}
+
+// --- expanding a row ---------------------------------------------------------
+
+fn called(name: String, arguments: json.JsonValue, output: Option(String)) {
+  tool_activity.Call(
+    id(1),
+    message.ToolCall("c", name, arguments, None, None),
+    option.map(output, fn(text) {
+      message.ToolResultMessage(
+        "c",
+        name,
+        [message.ToolResultText(text, None)],
+        Some(json.Object([])),
+        None,
+        None,
+        False,
+        0,
+      )
+    }),
+    None,
+  )
+}
+
+pub fn a_settled_code_mode_call_expands_to_its_program_and_output_test() {
+  let program =
+    "let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\nlet e = 5\nlet f = 6\nlet g = 7"
+  let call =
+    called(
+      "code_mode",
+      json.Object([#("program", json.String(program))]),
+      Some("all done"),
+    )
+  let detail = case transcript_lines.activity_call_lines(call) {
+    [_, ..rest] -> rest
+    [] -> []
+  }
+  let full = turns.expanded_step(call, detail)
+
+  // The whole program is there, where the compact rows dropped it on
+  // success, and the result follows it.
+  assert list.any(full, fn(line) {
+    line.speaker == transcript_line.ToolDetail
+    && string.contains(line.text, "let g = 7")
+    && !string.contains(line.text, "// …")
+  })
+  assert list.any(full, fn(line) { string.contains(line.text, "all done") })
+}
+
+pub fn a_call_with_nothing_more_to_show_has_no_expansion_test() {
+  let call =
+    called("bash", json.Object([#("command", json.String("ls"))]), None)
+  assert turns.expanded_step(call, []) == []
+}
+
+pub fn a_reasoning_block_expands_to_its_whole_text_test() {
+  let value =
+    entry.MessageEntry(
+      id(2),
+      None,
+      2,
+      0,
+      assistant([
+        message.AssistantThinking("first\nsecond\nthird", None, False),
+        message.AssistantText("Done.", None),
+      ]),
+      False,
+    )
+  let block =
+    transcript_lines.Block("2.0", transcript_lines.FromEntry(value), [
+      #("2.0:0", transcript_line.Line(transcript_line.ReasoningDigest, "first")),
+      #("2.0:1", transcript_line.Line(transcript_line.Assistant, "Done.")),
+    ])
+  assert turns.expanded_block(block)
+    == [
+      transcript_line.Line(transcript_line.Reasoning, "first\nsecond\nthird"),
+      transcript_line.Line(transcript_line.Assistant, "Done."),
+    ]
+
+  // A response that only speaks has nothing more to show.
+  let spoken =
+    transcript_lines.Block(
+      "3.0",
+      transcript_lines.FromEntry(entry.MessageEntry(
+        id(3),
+        None,
+        3,
+        0,
+        assistant([message.AssistantText("Done.", None)]),
+        False,
+      )),
+      [#("3.0:0", transcript_line.Line(transcript_line.Assistant, "Done."))],
+    )
+  assert turns.expanded_block(spoken) == []
 }

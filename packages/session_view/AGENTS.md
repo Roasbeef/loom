@@ -162,7 +162,11 @@ for a host with no surfaces.
   the same blocks at their inputs, the lead before the first input and
   then each turn, so a host that holds only the newest turns cuts between
   them. `turns.hue` is a strand's colour from its position, never its
-  name.
+  name. `turns.expanded_step(call, detail)` and `turns.expanded_block(block)`
+  are what a reader who expands a row sees, the rows the terminal's `Ctrl+g`
+  draws (`transcript_lines.expanded_call_lines`, the prose builder at
+  `Complete` extent), or `[]` when they equal the compact rows. A `Step`
+  carries its `call` for this.
 - `agent_view.Row`, `agent_activity` and `reviewer_status`: each strand's
   status, task, activity and approvals from one capture, shared by the
   terminal's agent rail and strip and the web view's chips.

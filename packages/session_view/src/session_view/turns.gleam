@@ -37,6 +37,7 @@ import gleam/set
 import gleam/string
 import session_view/agent_view
 import session_view/composer
+import session_view/notes_view
 import session_view/protocol
 import session_view/snapshot_view
 import session_view/tool_activity
@@ -131,6 +132,10 @@ pub type Item {
     summary: String,
     /// The rows under the summary: its result, patch or program.
     detail: List(Line),
+    /// The call itself, with its result when the window holds one. The
+    /// terminal's `Ctrl+g` shows the whole of it, and `expanded_step` draws
+    /// the same rows from it.
+    call: tool_activity.Call,
   )
 }
 
@@ -533,34 +538,113 @@ fn prose(
   error_message: Option(String),
 ) -> Block {
   let lines =
-    content
-    |> list.flat_map(fn(part) {
-      case part {
-        message.AssistantToolCall(..) -> []
-
-        // The digest keeps the transcript's rule for which line opens a
-        // block, without the terminal's key hint: the lane's reader opens
-        // reasoning with the fold, not a key.
-        message.AssistantThinking(thinking:, redacted: False, ..) -> [
-          transcript_line.Line(
-            transcript_line.ReasoningDigest,
-            transcript_lines.reasoning_opening(thinking),
-          ),
-        ]
-        message.AssistantText(..) | message.AssistantThinking(..) ->
-          transcript_lines.assistant_block_lines(part, False, None)
-      }
-    })
-    |> list.append(transcript_lines.assistant_terminal_lines(
-      stop_reason,
-      error_message,
-    ))
+    prose_lines(content, stop_reason, error_message, notes_view.Excerpt)
   transcript_lines.Block(
     ..block,
     rows: list.index_map(lines, fn(line, index) {
       #(block.key <> ":" <> int.to_string(index), line)
     }),
   )
+}
+
+// The rows of a response's prose at one extent. `Excerpt` is the lane's
+// own: a reasoning block is its opening line. `Complete` is what the
+// terminal's `Ctrl+g` draws, the block in full.
+fn prose_lines(
+  content: List(message.AssistantBlock),
+  stop_reason: message.StopReason,
+  error_message: Option(String),
+  extent: notes_view.Extent,
+) -> List(Line) {
+  content
+  |> list.flat_map(fn(part) {
+    case part, extent {
+      message.AssistantToolCall(..), _ -> []
+
+      // The digest keeps the transcript's rule for which line opens a
+      // block, without the terminal's key hint: the lane's reader opens
+      // reasoning with an expander, not a key.
+      message.AssistantThinking(thinking:, redacted: False, ..),
+        notes_view.Excerpt
+      -> [
+        transcript_line.Line(
+          transcript_line.ReasoningDigest,
+          transcript_lines.reasoning_opening(thinking),
+        ),
+      ]
+      _, notes_view.Excerpt ->
+        transcript_lines.assistant_block_lines(part, False, None)
+      _, notes_view.Complete ->
+        transcript_lines.assistant_block_lines(part, True, None)
+    }
+  })
+  |> list.append(transcript_lines.assistant_terminal_lines(
+    stop_reason,
+    error_message,
+  ))
+}
+
+/// What a tool call shows once its reader expands it, when that is more
+/// than `detail`, the rows the lane draws under the call's summary.
+///
+/// The rows are the ones the terminal's `Ctrl+g` draws for the call
+/// (`transcript_lines.expanded_call_lines`): the whole program, patch or
+/// arguments, then the whole result. A call whose expansion is exactly its
+/// `detail` has nothing to expand to and gets `[]`, so a host draws an
+/// expander only where there is something more to read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // turns.expanded_step(call, detail) == []  // nothing more to show
+/// ```
+pub fn expanded_step(
+  call: tool_activity.Call,
+  detail: List(Line),
+) -> List(Line) {
+  differing(transcript_lines.expanded_call_lines(call), detail)
+}
+
+/// What a block of a response's prose shows once its reader expands it, when
+/// that is more than its rows: each reasoning block in full, where the lane
+/// draws its opening line. Anything else, including a block that is not a
+/// response's prose, gets `[]`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.expanded_block(transcript_lines.Block("1.0", transcript_lines.FromSpacer, []))
+///   == []
+/// ```
+pub fn expanded_block(block: Block) -> List(Line) {
+  case block.source {
+    transcript_lines.FromEntry(entry.MessageEntry(
+      message: message.AssistantMessage(
+        content:,
+        stop_reason:,
+        error_message:,
+        ..,
+      ),
+      ..,
+    )) ->
+      differing(
+        prose_lines(content, stop_reason, error_message, notes_view.Complete),
+        list.map(block.rows, fn(row) { row.1 }),
+      )
+    transcript_lines.FromEntry(_)
+    | transcript_lines.FromTools(_)
+    | transcript_lines.FromNotice
+    | transcript_lines.FromAdvisor
+    | transcript_lines.FromSpacer -> []
+  }
+}
+
+// The expansion, or nothing when it says what the rows already say.
+fn differing(full: List(Line), shown: List(Line)) -> List(Line) {
+  case full == shown {
+    True -> []
+    False -> full
+  }
 }
 
 fn speaks(block: message.AssistantBlock) -> Bool {
@@ -642,7 +726,13 @@ fn step(key: String, call: tool_activity.Call, standing: Standing) -> Item {
     [_, ..rest] -> rest
     [] -> []
   }
-  Step(key:, standing:, summary: transcript_lines.call_summary(call), detail:)
+  Step(
+    key:,
+    standing:,
+    summary: transcript_lines.call_summary(call),
+    detail:,
+    call:,
+  )
 }
 
 fn standing(outcome: Option(message.AgentMessage)) -> Standing {

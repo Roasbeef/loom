@@ -1296,6 +1296,43 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
   )
 }
 
+/// The rows the terminal's `Ctrl+g` shows for one tool call under its
+/// summary: the whole program, patch or argument text the model sent,
+/// then the whole result or failure once the outcome is known.
+///
+/// These are the same builders expanded history runs (`assistant_block_lines`
+/// for the invocation, `message_lines` for the result), not a second
+/// rendering, so a host that lets its reader expand one call shows what the
+/// terminal shows. The invocation's own first row is left out, because it is
+/// the call's summary and the host draws that itself
+/// (`call_summary`). A call with nothing more to show than
+/// `activity_call_lines` gives returns those same rows, and a host compares
+/// the two to decide whether to offer an expansion at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.expanded_call_lines(call)
+/// //   == [Line(ToolDetail, "```gleam\n<the whole program>\n```"), ..]
+/// ```
+pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
+  let invocation = case
+    assistant_block_lines(
+      message.AssistantToolCall(call.invocation),
+      True,
+      None,
+    )
+  {
+    [_, ..rest] -> rest
+    [] -> []
+  }
+  let outcome = case call.outcome {
+    Some(result) -> message_lines(result, True, None, [])
+    None -> []
+  }
+  list.append(invocation, outcome)
+}
+
 /// The one-line summary of a tool call, as its compact row names it: the
 /// tool and its target (`Bash(ls)`, `fs_edit · src/a.gleam`), or
 /// `code_mode` for a program.
