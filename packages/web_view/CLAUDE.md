@@ -172,17 +172,21 @@ page keys and nonces, and the relay into the session's gateway.
   record the page holds. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in each chip, `<loom-fold>` around a settled
-  turn's work, and `<loom-follow>` around the lane, which keeps the newest
-  row in view while the reader is at the bottom, and keeps the reader's
-  place when a press of "Load older" brings rows in above them. They run
-  in the browser and send the server nothing. The operator's editor is
-  drawn inside `<loom-composer commands returned>`, which lists the slash
-  commands as the draft grows, sends the draft on Command or Control with
-  Enter (by submitting the composer form), and puts a returned prompt in
-  the editor. Its inputs are the `commands` table, the `returned` count and
-  the returned prompts as text-node children in a `returned` slot, numbered
-  by `data-n`; the editor stays the uncontrolled textarea, and keeps its
-  place when a return arrives.
+  turn's work, and `<loom-follow>` around the lane. The stylesheet pins the
+  page's frame (the heading and the agent strip at the top, the dock or
+  the observer's bar at the bottom, the page itself never scrolling) and
+  makes `<loom-follow>` the scroll container between them. It keeps the
+  newest row in view while the reader is at the bottom, shows a "Jump to
+  latest" button while they are not, and keeps the reader's place when a
+  press of "Load older" brings rows in above them. They run in the browser
+  and send the server nothing. The operator's editor is drawn inside
+  `<loom-composer commands returned>`, which lists the slash commands as
+  the draft grows, sends the draft on Command or Control with Enter (by
+  submitting the composer form), and puts a returned prompt in the editor.
+  Its inputs are the `commands` table, the `returned` count and the
+  returned prompts as text-node children in a `returned` slot, numbered by
+  `data-n`; the editor stays the uncontrolled textarea, and keeps its place
+  when a return arrives.
 - An operator's page also receives Lustre's `EventFired` for its two
   handlers: a click on an approval button and the composer form's submit.
   The composer element's keys and list add no event: the send key calls
@@ -263,9 +267,10 @@ page keys and nonces, and the relay into the session's gateway.
   and a fence's language are text; classes come from closed types.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
   in its own region outside the transcript, directly above the composer in
-  the dock, the footer pinned to the viewport's bottom edge. A card
-  appearing grows the dock upward and never moves the composer, and the
-  region's height is capped so it scrolls on its own. With nothing pending
+  the dock, the footer at the bottom of the pinned frame. A card
+  appearing grows the dock upward and never moves the composer, the
+  transcript above it shrinks by as much, and the region's height is
+  capped so it scrolls on its own. With nothing pending
   the region is `element.none()`, so the composer's path does not change
   when a card appears. The action row carries `arming`: for 600 ms after
   a card is inserted the stylesheet refuses clicks on it and dims the

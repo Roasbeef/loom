@@ -12,8 +12,9 @@
 ////   operation's elapsed time.
 //// - `<loom-fold>` (`web_client/fold`) opens and closes a turn's folded
 ////   work.
-//// - `<loom-follow>` (`web_client/follow`) keeps the lane's newest row in
-////   view while the reader is at the bottom of the page.
+//// - `<loom-follow>` (`web_client/follow`) is the transcript's scroll
+////   container. It keeps the lane's newest row in view while the reader is
+////   at the bottom, and offers a way back to it while they are not.
 //// - `<loom-composer>` (`web_client/composer`) wraps the operator's editor:
 ////   it lists slash commands as the draft grows, sends the draft on Command
 ////   or Control with Enter, and puts a returned prompt back in the editor.

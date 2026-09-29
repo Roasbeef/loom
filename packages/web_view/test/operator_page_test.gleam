@@ -498,3 +498,31 @@ pub fn a_closed_connection_refuses_commands_test() {
     ])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
 }
+
+// The page's frame is pinned: the heading and the agent strip above the
+// transcript, the dock below it, in that order among `main`'s children. The
+// stylesheet gives the transcript (`<loom-follow>`) the height between
+// them and scrolls only it, so the order here is what pins the header at
+// the top and the composer and approvals at the bottom.
+pub fn the_frame_is_heading_strip_transcript_dock_test() {
+  let #(model, _) = page("operator", pending())
+  let html = element.to_string(operator_page.view(model))
+  assert in_order(html, [
+    "class=\"session-head\"",
+    "class=\"agent-strip\"",
+    "<loom-follow class=\"follow\">",
+    "<footer class=\"dock\">",
+  ])
+}
+
+// Whether each part appears in `html` after the one before it.
+fn in_order(html: String, parts: List(String)) -> Bool {
+  case parts {
+    [] -> True
+    [part, ..rest] ->
+      case string.split_once(html, part) {
+        Ok(#(_, after)) -> in_order(after, rest)
+        Error(Nil) -> False
+      }
+  }
+}

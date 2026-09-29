@@ -443,9 +443,9 @@ the button (it carries a fixed `data-loom-older` marker) as it hears a
 fold's toggle: it becomes `Reading`, so the growth that follows does not
 scroll to the tail, and it holds the lane's first row and its position on
 screen. When that row stops being the lane's first, the older rows have
-arrived, and it scrolls the page by however far the row moved. A browser
-that anchors scrolling itself has already kept the row in place, and the
-scroll is zero.
+arrived, and it scrolls the transcript by however far the row moved. The stylesheet
+turns the browser's scroll anchoring off for the transcript, so this is
+the one place the reader's place is kept.
 
 **Observers.** A `history` read is a read. The gateway admits it for an
 observer's binding (`gateway.read_only` lists `History`), and the lane
@@ -493,10 +493,10 @@ would try to trick the person into approving:
   (`approval.presentation`), never from transcript text, in a region
   that transcript content cannot occupy, and in a style no transcript
   line uses. The region sits directly above the composer in the dock, the
-  footer pinned to the bottom of the viewport, so a pending card is on
-  screen wherever the operator has scrolled. The dock is pinned by its
-  bottom edge, so a card appearing grows it upward and leaves the
-  composer's controls where they were. For 600 ms after a card is
+  footer at the bottom of the page's pinned frame, so a pending card is on
+  screen wherever the operator has scrolled the transcript. A card
+  appearing grows the dock upward, shrinks the transcript by as much, and
+  leaves the composer's controls where they were. For 600 ms after a card is
   inserted its buttons refuse clicks and are drawn dimmed (a CSS
   animation on the action row's `arming` class), so a click already
   heading for the bottom of the transcript cannot land on Allow (051, the

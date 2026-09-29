@@ -59,7 +59,8 @@ import web_view/view/strip
 /// from; Lustre compares dependencies with `==` on the BEAM.
 ///
 /// The lane is drawn inside a `<loom-follow>` (`packages/web_client`),
-/// which scrolls the page to a row that lands below the viewport while the
+/// which is the transcript's scroll container (the page's frame is pinned
+/// around it). It scrolls to a row that lands below its view while the
 /// reader is at the bottom, and stops once they scroll up to read. Where
 /// the reader has scrolled is the browser's to know: the server never
 /// renders it, so scrolling costs no message here.

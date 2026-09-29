@@ -112,11 +112,13 @@ pub fn update(
 /// dock, which holds the approvals waiting for a decision, in a region of
 /// their own, directly above the composer.
 ///
-/// The dock is a footer the stylesheet pins to the bottom edge of the
-/// viewport. In the document's flow the composer moved down every time a
-/// row landed or its editor grew, so a click aimed at Send or Steer could
-/// land on whatever had slid under the pointer. Pinned, it stays where the
-/// operator last saw it however the transcript moves.
+/// The page is a fixed frame: the heading and the agent strip at the top,
+/// the dock at the bottom, and the lane between them as the one thing that
+/// scrolls (`<loom-follow>`). In the document's flow the composer moved
+/// down every time a row landed or its editor grew, so a click aimed at
+/// Send or Steer could land on whatever had slid under the pointer. In the
+/// frame the dock stays where the operator last saw it however the
+/// transcript moves.
 ///
 /// The approvals are in the dock so that a pending card is on screen
 /// wherever the operator has scrolled. They sit above the composer, and the

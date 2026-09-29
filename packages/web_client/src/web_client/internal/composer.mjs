@@ -66,8 +66,8 @@ export function restore(root, baseline) {
 
 // Scrolls the completion list, and only the list, so the highlighted row is
 // inside it. The list is positioned, so a row's offset is from the list's
-// top edge. The page is left where it is, which `scrollIntoView` would not
-// promise.
+// top edge. The transcript and the page are left where they are, which
+// `scrollIntoView` would not promise: it scrolls every ancestor that can.
 export function reveal(root) {
   const list = root.querySelector('[role="listbox"]');
   const row = root.querySelector('[aria-selected="true"]');

@@ -13,11 +13,13 @@ renders again just for it:
 - `<loom-elapsed offset="<ms>">` counts an operation's elapsed time once a
   second, on from a duration the server measured.
 - `<loom-fold>` opens and closes a turn's folded work with no round trip.
-- `<loom-follow>` wraps the lane and scrolls the page to a row that lands
-  below the viewport while the reader is at the bottom; once the reader
-  scrolls up it stops, and scrolling back to the bottom resumes it. When
-  the reader presses the lane's "Load older" button, it keeps the row they
-  were looking at in place while the older rows arrive above it.
+- `<loom-follow>` is the transcript's scroll container: the page's frame is
+  pinned and only it scrolls. It scrolls itself to a row that lands below
+  its view while the reader is at the bottom; once the reader scrolls up it
+  stops and shows a "Jump to latest" button, and scrolling back to the bottom
+  or pressing the button resumes it. When the reader presses the lane's
+  "Load older" button, it keeps the row they were looking at in place while
+  the older rows arrive above it.
 - `<loom-composer commands="<json>" returned="<n>">` wraps the operator's
   editor, the server's uncontrolled textarea, which is its default slot.
   It lists the slash commands as the draft grows, sends the draft on
@@ -54,20 +56,27 @@ time builds anything.
   shadow root holds one button carrying the `summary` slot and, while open,
   the default slot. Each toggle emits `fold.toggled_event`
   (`loom-fold-toggled`, bubbling and composed, no data).
-- `follow.Model(position, watching, anchor)`, `follow.Position`
+- `follow.Model(position, gap, watching, anchor)`, `follow.Position`
   (`Following` | `Reading`) and `follow.Msg` (`Connected`, `Disconnected`,
-  `Watched`, `Scrolled(gap)`, `Resized`, `Folded`, `Paged`,
-  `Held(anchor)`, `Released`): a scroll sets the position from the gap
-  between the viewport's bottom and the page's (`follow.position`, within
-  `follow.slack` pixels is `Following`); a resize of the lane scrolls to
-  the bottom only while `Following`; a fold's toggle event, heard on the
-  slot, sets `Reading`, so opening a fold never scrolls past it. A click
-  heard on the slot whose target carries the server's fixed
+  `Watched`, `Scrolled(gap, moved)`, `Resized`, `Measured(gap)`, `Folded`,
+  `Paged`, `Jumped`, `Held(anchor)`, `Released`): a scroll sets the
+  position from where it ended and which way it moved
+  (`follow.after_scroll`): within `follow.slack` pixels of the bottom is
+  `Following`, a move up that ends further away is `Reading`, and a move
+  down that ends further away changes nothing, because that is either the
+  reader coming back or the element's own scroll to the bottom reported
+  after more rows landed. A resize of the transcript or its content
+  scrolls to the bottom only while `Following`; a fold's toggle event,
+  heard on the slot, sets `Reading`, so opening a fold never scrolls past
+  it. A click heard on the slot whose target carries the server's fixed
   `data-loom-older` marker is `Paged`: it sets `Reading` and holds the
   lane's first row and its place on screen (`anchor`); a scroll by the
   reader measures it again, and the first resize after which that row is
-  no longer the lane's first scrolls the page to put it back and releases
-  it. The shadow root holds one default slot.
+  no longer the lane's first scrolls the transcript to put it back and
+  releases it. The shadow root holds the default slot and, while the
+  reader is `Reading` more than `slack` pixels from the bottom, one
+  button, "Jump to latest" (`Jumped`), whose wrapper has no height and
+  sticks to the scroller's bottom edge.
 - `composer.Model(entries, draft, selected, palette, returns)` and
   `composer.Msg` (`Configured`, `Returned`, `Typed`, `Moved`, `Accepted`,
   `Picked`, `Dismissed`, `Sent`, `Ignored`): `commands` is the table the
@@ -88,11 +97,13 @@ time builds anything.
   `role="option"`.
 - `internal/ffi_clock`: `now` (`Date.now`), `every` (`setInterval`) and
   `cancel` (`clearInterval`), in `clock.mjs`.
-- `internal/ffi_follow`: `watch` (a passive `scroll` listener on the window
-  and a `ResizeObserver` on the element), `unwatch`, `to_bottom`, and for
-  the held row `hold`, `remeasure` and `keep` (`Waiting` | `Restored`),
-  which read the first row's box and scroll the page by a distance, in
-  `follow.mjs`.
+- `internal/ffi_follow`: `watch` (a passive `scroll` listener on the
+  element, and a `ResizeObserver` on the element and on each of its
+  children, which a `MutationObserver` keeps current: the element's own box
+  is fixed, so it is the content that changes size when a row lands),
+  `unwatch`, `measure`, `to_bottom`, and for the held row `hold`,
+  `remeasure` and `keep` (`Waiting` | `Restored`), which read the first
+  row's box and scroll the element by a distance, in `follow.mjs`.
 - `internal/ffi_composer`: `place` (write the editor and focus it, for a
   chosen row), `send` (`requestSubmit` on the form, with its first submit
   button), `restore` (take the numbered returned children into the editor)
@@ -114,11 +125,11 @@ time builds anything.
 None over the socket. Each element is a Lustre runtime inside the browser:
 attribute changes and DOM events reach its `update`; its timers dispatch
 messages to it. Nothing here opens a connection. The one element that
-looks outside itself is `<loom-follow>`, which reads and sets the page's
-scroll position and observes its own size; it reads no content.
-`<loom-composer>` listens to its own editor's `input` and `keydown`, and
-writes the editor's value; the one thing it sends is the form's submit,
-which the server already accepts.
+looks outside itself is `<loom-follow>`, which reads and sets its own
+scroll position and observes the size of itself and its children; it reads
+no content. `<loom-composer>` listens to its own editor's `input` and
+`keydown`, and writes the editor's value; the one thing it sends is the
+form's submit, which the server already accepts.
 
 ## Invariants
 
@@ -141,7 +152,8 @@ which the server already accepts.
   whether the reader follows the tail live only in the browser; the server
   never reads them.
 - **The follower never touches an approval card.** `<loom-follow>` wraps
-  the lane only; the cards and the composer are in the dock outside it.
+  the lane only, as the scroll container between the pinned header and
+  the pinned dock; the cards and the composer are in the dock outside it.
   It scrolls instantly, never smoothly, because a smooth scroll reports
   intermediate positions that read as the reader leaving the tail. The row
   it holds for "Load older" is found by structure (the lane's first
