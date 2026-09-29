@@ -2267,3 +2267,126 @@ separate places, and no key handler in the operator's or the observer's tree
 with an approval pending. `ui_socket_test` drops a `keydown` frame on the
 operator's socket. The listener, the decoder over a real event and the target
 lookup run only in a browser and were not run.
+
+## Addendum: the storage decision (2026-09-29)
+
+**Status**: PROPOSED, IMPLEMENTED with issue #569, step 7 of the web UI
+redesign (`docs/design-notes/web-design.md`, section 4) · **Raised by**:
+issue #569
+
+`<loom-shell>` now keeps the reader's layout in the browser's `localStorage`.
+The addendum on the page nonce mentions browser storage once, for the nonce in
+`sessionStorage`, and states no rule for anything else stored. This one does.
+It adds no socket event, no operation to what a page may do, and no frozen
+interface. The only change to a type the daemon fills in is a new field on
+`component.Start`, which is described below.
+
+### What was decided
+
+**What is stored.** One record, and nothing else:
+
+- The layout of one workspace: whether the sessions sidebar is open, whether
+  the strand panel is open, and which of the panel's tabs shows. It is one item
+  per workspace, `loom.layout.v1.<digest>`, holding a JSON object of three
+  words, for example `{"sidebar":"open","panel":"closed","tab":"changes"}`.
+
+The owner ruled (issue #569, 2026-09-29) that the focused strand is not saved
+or restored: a reload shows `main`. The viewed session is not stored either,
+since the page's address names it. **Nothing session-derived is stored.** No
+strand name, session identity, path, transcript text or count reaches storage,
+and the three values the layout holds are words from fixed sets.
+
+**Where.** Only in `internal/dom.mjs`, through two exports, `storage_read` and
+`storage_write`, which each make one call on `window.localStorage` inside a
+`try` and answer a `Result`, because storage throws when it is blocked and in
+some private windows. They are bound in `internal/ffi_dom.gleam` beside the
+other DOM bindings. Every decision about the record is Gleam in
+`web_client/layout_rule`: the item's name, the encoding, and the decoding. The
+decoding is total. It accepts any string and answers a layout, the default
+(both columns open, the Strands tab) for a missing, blocked or malformed item,
+and the default for one field that names a word this release does not know, so
+a tab a later release removes does not discard the columns saved beside it.
+The module imports neither Lustre nor the DOM binding, and its tests run on
+Node.
+
+`scripts/web_client_js_check.sh` holds the boundary, as it already holds the
+rule that `dom.mjs` is the only JavaScript in the package. It fails on any
+`localStorage` use other than `window.localStorage.getItem(` and
+`window.localStorage.setItem(`, on `sessionStorage`, `indexedDB`,
+`document.cookie` and `cookieStore` anywhere in the package's JavaScript, and
+on a Gleam `@external(javascript, ...)` to any file but `./dom.mjs`, so a
+component cannot reach storage another way. The page's own scripts under
+`assets/`, which keep the nonce in `sessionStorage`, are not the components
+and are outside that check.
+
+**The key.** A page names its workspace by a digest: the lower-case SHA-256 of
+the workspace's canonical path in hex, which the daemon computes when it admits
+the page's socket (`client/daemon/ui_socket`) and hands the component in
+`component.Start.workspace_digest`. The frame writes it as the `workspace`
+attribute of `<loom-shell>`, left out when the host has none. A path is never an
+attribute or a storage key. The element reads the attribute from its own host
+when it connects and decodes it totally (`layout_rule.workspace`): anything but
+64 lower-case hex digits is no workspace, and a page with no workspace reads no
+item and writes none, so it can neither share nor overwrite another's layout.
+The digest is not a secret and stores nothing that is: it is a name, and a
+script on the origin that reads storage learns which workspaces the browser has
+opened and the columns it left open in each.
+
+**What the server learns.** Nothing. The layout is read and written in the
+browser, and no message carries it: the element sends the server no event of
+its own, and the socket's accepted list is unchanged. The server draws every
+pane and every column whether or not the browser shows it, and it never learns
+which. `component.Start` gains one field, filled from the registration the page
+route has already read, and no wire format, frame or daemon state changes.
+
+**What the scope means.** `localStorage` is scoped to the scheme, host and
+port. The daemon binds `127.0.0.1:0` by default, so a restart on a new port is
+a new origin with empty storage, and the page starts from the defaults;
+`--bind` with a fixed port avoids that. `127.0.0.1` and `localhost` are
+different origins and each has its own layout. A page served on another
+loopback port cannot read this page's storage, which is the property the page
+nonce relies on for `sessionStorage`. The content security policy does not
+restrict storage. Tabs of one workspace share the item, and one tab's change
+reaches another only when that tab loads.
+
+**What the reader sees.** The page draws its default, and the stored layout
+replaces it a frame later, because the read runs after the paint. A reader
+whose columns are stored closed sees them open for that frame.
+
+### What was considered
+
+- **Storing the record on the server, per principal and workspace** (Option B
+  in the design note). It survives a restart on a new port and follows a
+  principal across browsers, and it needs a persistence surface in the daemon,
+  a socket event that an observer's page must also send, a decision on who
+  writes whose layout, and a round trip for a toggle the browser would still
+  apply first. The owner chose the browser's storage. If restarts on a new port
+  prove a nuisance, a fixed `--bind` or Option B remains open without changing
+  what the elements do.
+- **The workspace path as the key.** It is readable in the developer tools and
+  in the markup, and the client-component rule keeps attributes to identities
+  and numbers.
+- **One record keyed by workspace, holding the focused strand and the session
+  viewed.** The mockup does that. Neither carries over, for the reasons in the
+  design note.
+
+### Cost
+
+- Two items of a few dozen bytes per workspace and browser, never cleaned up: a
+  workspace that is never opened again leaves its item behind.
+- A digest field on `component.Start`, which the tests that build one must
+  supply.
+- The layout is lost when the daemon's origin changes, and it is not shared
+  between a browser's profiles or machines.
+- The one-frame flash from the default to the stored layout.
+
+### Verification
+
+`layout_test` (`packages/web_client`) covers the default on nothing stored, the
+default on malformed text of several kinds, an unknown tab, an unknown column
+word, a missing field, the round trip of all twelve layouts, and that text which
+is not a digest names no workspace. `shell_test` (`packages/web_view`) shows the
+frame carries the digest on both pages and none when the host has none.
+`web_client_js_check.sh --self-test` plants each storage violation and a stray
+binding. The element's read and write, and the storage's behaviour in a private
+window, run only in a browser and were not run.
