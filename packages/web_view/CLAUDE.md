@@ -31,13 +31,41 @@ page keys and nonces, and the relay into the session's gateway.
   `title`.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
-  and `now()`. All run in the component's process.
+  `now()`, and `sessions()`, the sidebar's read of the principal's sessions
+  (the daemon's authorized catalogue read, `[]` on failure). All run in the
+  component's process.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
-  (the deadline timer fired) and `OlderRequested` (the "Load older"
-  button, a read). It holds no command. `component.older_path` is the
-  button's Lustre event path, the one path the socket admits an
-  observer's click at.
+  (the deadline timer fired), `OlderRequested` (the "Load older" button, a
+  read), `FocusRequested(strand)` (a strip chip, a change of what the page
+  shows) and `SessionsListed(entries)` (the sidebar read's own answer,
+  dispatched by an effect and carried by no handler). It holds no command.
+  `component.older_path` and `component.strip_path` are the Lustre event
+  paths the socket admits an observer's click at: the button, and anything
+  beneath the strip's chip list.
+- **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
+  `step.focus`, the shared step's change of strand, plus what only this host
+  holds: the history read owed for the strand being left is dropped
+  (`history_view.resume`) before its window parks, and paging starts again
+  at `Tail`. The strand must be listed, must not be the active one, and the
+  page must be `Connected`; otherwise nothing changes. Every derived input
+  (`Projected.strand`, `Stripped.followed`) includes the active strand, so
+  the projection and the strip are rebuilt by `refreshed`. `component.strand(model)`
+  is the active strand and `component.primary` (`"main"`) is where a page
+  starts. Prompts, steers, queues, interrupts and commands address it because
+  the shared step's commands read `active_strand`. A prompt the daemon hands
+  back for any strand of the session is kept, and the notice names the
+  strand it was held for when that is not the one on screen.
+- **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
+  (`Live | Saved`), `Group` and `grouped(entries, current)` (the current
+  session's workspace first, then by newest session, sessions newest first,
+  ties by identity and path). `view/sidebar.view(groups, current)` draws it,
+  read-only, as the page's last child (`aside.sidebar`), memoized. The
+  component reads `Transport.sessions` on `Opened` and on a `Ticked` at
+  least `sessions_refresh_ms` (30 s) after the last read, keeps at most
+  `sessions.listed_limit` entries, and `component.session_groups(model)` is
+  what it draws. The list cannot open a session (protocol-change/051, the
+  addendum on strand focus and the session sidebar, has the proposal).
 - `component.Model(socket)` (opaque): two records, as the terminal's is.
   `shared` is `session_view/model.Shared(socket, Nil, Nil, Nil)`, the
   session state the shared step reads and writes: the lane, the inbox, the
@@ -145,8 +173,10 @@ page keys and nonces, and the relay into the session's gateway.
   was built), the advisor's chip and the settled count. The component
   builds them and `strip.view` draws them. `strip.hue_class` and
   `strip.ring_class` map a hue and an outlook to literal classes.
-  `strip.followed` is the strand the strip marks as current, and
-  `component.strand` is defined as it.
+  `Strip.followed` is the strand the strip marks as current
+  (`component.strand(model)`). `strip.view(strip, focus)` draws each chip
+  as `li > button.chip-hit` whose click is `focus(name)`, the name the strip
+  was built with; the "settled" chip is not a control.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
   `tui/markdown` also draws. `view/lane` uses it for the speakers the
@@ -339,12 +369,15 @@ page keys and nonces, and the relay into the session's gateway.
   the list, and the composer's element puts it back in the editor.
 - **Which application runs is which commands exist.** An observer's page is
   `component.app()`, whose message type holds no command and whose view
-  attaches one handler, the lane's "Load older" click, whose message
-  (`OlderRequested`) is a read; its bar is a fixed text node. The page
-  socket admits from an observer only that click at `component.older_path`
-  (protocol-change/051, the addendum on history paging), and
-  `page_events_test` pins that the observer's view registers that one
-  handler. An operator's page is
+  attaches the lane's "Load older" click (`OlderRequested`, a read) and one
+  click per strip chip (`FocusRequested`, a change of what the page shows,
+  built from the name the strip was drawn with); its bar is a fixed text
+  node. The page socket admits from an observer only a click at
+  `component.older_path` or beneath `component.strip_path`
+  (protocol-change/051, the addenda on history paging and strand focus), and
+  `page_events_test` pins that the observer's handlers are exactly those.
+  The sidebar and every other region add none, and the sidebar is the last
+  child so no admitted path moves. An operator's page is
   `operator_page.app()`. Its two handlers are unchanged, but since S5 the
   draft one of them carries is parsed as the terminal parses it, so the page
   sends any session command a draft names (`/fork`, `/model`, `/goal ...`

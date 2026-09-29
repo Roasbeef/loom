@@ -1,9 +1,10 @@
 //// The page socket starts the component its admitted role calls for, and
 //// passes on only the browser messages that component attaches handlers for
 //// (protocol-change/051, the operator addendum and the addendum on history
-//// paging). An observer's page takes one browser message, the "Load older"
-//// click at its fixed path, and has no composer; an operator's takes a
-//// click and a submit and nothing else.
+//// paging and on strand focus). An observer's page takes one kind of browser
+//// message, a click, at the "Load older" button's fixed path or beneath the
+//// agent strip's chip list, and has no composer; an operator's takes a click
+//// and a submit and nothing else.
 
 import client/daemon/manager
 import client/daemon/ui_relay

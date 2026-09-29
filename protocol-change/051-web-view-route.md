@@ -1525,3 +1525,167 @@ running: the notice is in the frames the browser gets, and the close code is
 paragraph when it mounts, and retries after 4000 and not after 1000, was read
 in its source (`docs/lustre.md`) and is left to the hand check on a live
 daemon.
+
+## Addendum: strand focus and the session sidebar (2026-09-29)
+
+**Status**: strand focus and the read-only list ACCEPTED under the owner's
+brief for issue #569, part 2, and IMPLEMENTED in the same change; opening
+another session from the sidebar is a **PROPOSAL** and is not implemented ·
+**Raised by**: issue #569
+
+### Strand focus
+
+**What it is.** Each chip of the agent strip is a button. Pressing it makes
+the page show that strand's transcript and address it: the page's
+projection, strip, todo panel and composer all read the shared record's
+active strand, which the shared step's change of strand moves
+(`step.focus`, the terminal's `switch_active_strand` less its surfaces).
+The change sends no command. The frames it may queue are reads (a strand's
+configuration, the context, the nudges and the goal), which the gateway
+already admits from an observer's binding.
+
+**What is admitted.** The observer's message type gains one constructor,
+`component.FocusRequested(strand)`. Its message is built by the strip's
+view from the strand name the strip was drawn with, so a browser's click
+chooses among the chips that exist and cannot name a strand. The observer's
+socket (`ui_socket.observer_accepts`) now admits a Lustre `EventFired`
+frame of kind 1 and name `click` at `component.older_path`, as before, or at
+any path beneath `component.strip_path` (`0\t1\t0\t`, the strip's chip
+list). A path beneath the list that names no button finds no handler in the
+runtime and does nothing. Every other frame is dropped as before: another
+event name at a chip's path, a click elsewhere, a batch, a frame of another
+kind. `page_events_test` pins that the observer's chips are beneath that
+prefix and that the operator's page draws them at the same paths.
+
+**Observers can focus and cannot act.** An observer's page still has no
+composer and no command constructor. After a focus it follows the chosen
+strand read-only, and the gateway's refusal of an observer's mutation and
+the lane's own (`session_channel.can_mutate`) stand as before. An
+operator's prompt, steer, queue, interrupt and slash commands address the
+strand on screen, since the shared step's commands read the active strand.
+Nothing new is sendable: an operator could already address any strand the
+terminal can.
+
+**A returned prompt.** A prompt the daemon hands back
+(protocol-change/038) for another strand of the session is put in the
+composer and named in the notice with the strand it was held for and the
+strand the composer addresses. It was dropped before, on the reasoning that
+the page composed only for `main`; with focus that no longer holds and the
+text is its last copy.
+
+**Cost.** The observer's socket admits a second read-only click and parses
+it as it parses the first. A press costs a projection of the chosen
+strand's window and a re-render of the strip, the lane and the composer's
+address, and the strand's first capture may need its history read (the
+"Load older" button offers it). A strand that settled and left the strip
+cannot be focused from the page; the "settled" chip is not a control.
+
+### The session sidebar, read-only
+
+**What it is.** The page lists the principal's sessions, grouped by
+workspace and newest first, with the session on screen marked and each
+session's residency (resident or saved). The daemon supplies the list with
+the read a terminal's session picker uses, `manager.authorized_page`,
+called with the digest of the credential the page was admitted under,
+which the registry authenticates again on each call. A member therefore
+sees only the sessions they hold a membership in, an owner every active
+session, and a revoked credential none. The page reads the list when it
+opens and again at most every 30 seconds, on a tick the lane already
+raises, and draws at most the first hundred.
+
+**What reaches the browser.** For each session: its name, its workspace
+path, its creation time (used only to order) and whether it is resident,
+drawn as text nodes and a `title`. The entry type has no field for the
+database path, the request key or the configuration reference, so none
+reaches a page. Session identities stay on the server: they mark the
+session on screen and name an unnamed session by its first eight
+characters. The sidebar has no link, button or handler, adds no event to
+either page, and is the page's last child so that no admitted path moves.
+
+**The page ceiling does not narrow it.** The ceiling caps what a page may
+do in its session. The list is metadata the credential is entitled to, and
+the credential's holder is the person whose browser it is. A page whose
+link was minted with an observer ceiling therefore lists the same sessions.
+This is the one place a page reads beyond its own session, and it is the
+reason this section exists. If that is too wide, the alternative is to list
+only the current session's workspace; that is a one-line filter in
+`ui_socket.listed`.
+
+**Cost.** One catalogue query per page per 30 seconds, made in the
+component's process, which waits for it (the manager call is bounded at
+five seconds and a failure is an empty list). A browser holding a page sees
+the names and workspace paths of sessions other than the one it opened,
+within the principal's own entitlement.
+
+### Opening another session from the sidebar: proposal, not implemented
+
+**Why it is not a change to make in passing.** A page is bound to one
+session by its key. Its cookie is scoped to a path that names that session,
+so the cookie cannot reach another session's exchange, and the UI session
+behind it grants exactly one session (`ui_sessions.Grant.session_id`).
+Switching therefore means the page obtaining a way into another session,
+and every way to do that mints a credential from inside a page.
+
+**The smallest design that would work.**
+
+1. A row of the sidebar becomes a button on an operator's page and on an
+   observer's alike, with one handler whose message names the listed
+   session. The socket admits a click beneath a fixed sidebar path, as it
+   does for the strip.
+2. The handler asks the daemon for a ticket for that session with the
+   principal's own credential, exactly as `loom ui` does over the control
+   socket (`ui.link`), and with a ceiling no higher than the current
+   page's. The ticket is single use and expires in 60 seconds. This is
+   the new capability: the component gains a `link(session)` function
+   beside `sessions()`, and the daemon side calls `ui_sessions.mint` after
+   re-authorizing the digest against that session.
+3. The component tells the browser to navigate to
+   `/ui/sessions/<id>?ticket=<ticket>`. Lustre's server component can
+   emit an event to the client, and a small client element (in
+   `web_client`, through the DOM binding) would perform
+   `location.assign` for a path that matches `/ui/sessions/<id>` only.
+   The ticket is in the URL as it is when `loom ui` opens the browser,
+   and is never logged.
+4. The redemption creates a new UI session for the target session. It
+   ends the principal's other page for that session under the current
+   one-page rule, which is why this wants the ruling that several pages
+   per principal are allowed before it lands: with that rule the new page
+   coexists with any page already open there.
+
+**What it changes in the threat model.** A stolen operator page could mint
+a ticket for every session of the principal, not only its own, so the page's
+one-session bound stops being a bound. An observer page could do it too,
+unless the handler is refused for an observer ceiling, which is the
+conservative choice and would leave observers with the read-only list. The
+ticket would travel through the browser's history and the client's
+navigation, and the client element that navigates is the first script that
+acts on a value the server chose. None of this is new authority for the
+credential's holder, who can run `loom ui` for any session, but it is new
+authority for the page.
+
+**Alternatives.** Keep the list read-only and let a row show the command to
+run (`loom ui <name>`), which changes nothing in the model and costs a
+copy. Or make the row a link to a daemon route that mints a ticket and
+redirects, which needs an authenticated request the page's key-scoped
+cookie cannot make, so it would need a cookie for the whole `/ui` prefix.
+Neither was taken; the second widens the cookie, which the operator
+addendum narrowed on purpose.
+
+**Decision needed.** Whether a page may mint tickets for its principal's
+other sessions, whether an observer ceiling may, and whether the several
+pages ruling lands first.
+
+### Verification
+
+`focus_test` shows a chip moving the page to the advisor and to a reviewer
+and back with `main`'s rows restored, the strip marking one strand, an
+unlisted or shown strand changing nothing, a focus sending no command, an
+observer's focused page still having no composer, chips pressed through
+the simulator on both pages, and an operator's prompt, steer and queue
+addressing the focused strand. `ui_socket_test` admits a click beneath the
+strip's list and drops the list's own path, its siblings, other events at a
+chip's path and a batch. `sidebar_test` pins the grouping and its ties, the
+read on open and its 30-second spacing, escaping, that the sidebar holds no
+handler and adds none to either page, and that an empty list draws
+nothing. `ui_socket_test` also shows the catalogue entry carrying none of
+the registration's private fields. No browser was in the loop.
