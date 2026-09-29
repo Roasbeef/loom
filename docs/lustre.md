@@ -736,7 +736,7 @@ shared record holds now, and rebuilds only what differs. The keyed rows and
 pieces stay in the model, so a frame or a tick that changes none of the
 projection's inputs costs the view no projection. The comparison is of
 inputs and not of the record's `render_revision`, which moves for stream
-fragments the page does not draw.
+fragments, which change the live region and nothing the lane's memos hold.
 
 **Key the transcript.** An append-only list diffs well without keys: the
 old lines compare equal and the new ones are inserted at the end. A list

@@ -71,8 +71,8 @@ page keys and nonces, and the relay into the session's gateway.
   status)` draws the heading; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
   `strip.view(strip)` draws the agent strip, memoized on the whole strip;
-  `lane.view(pieces, top, load)` draws the transcript lane, memoized per
-  line, with the line above its oldest row: a "Load older" button sending
+  `lane.view(pieces, live, top, load)` draws the transcript lane, memoized per
+  line, followed by the live region, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
   exist, and words otherwise.
 - **Expanding a row.** The terminal's `Ctrl+g` shows a call's whole program
@@ -98,6 +98,28 @@ page keys and nonces, and the relay into the session's gateway.
   line saying so. The rows are memoized per line as the compact ones are.
   Session text is drawn as text nodes: a program is a Markdown code block,
   so a `<pre><code>` holding text.
+- **The live region.** `component.live(model)` turns the shared record's
+  streams for the followed strand (`transcript_lines.display_streams`),
+  `Shared.summaries` and the generation clock into `live.Row`s, and
+  `lane.view(pieces, live, top, load)` draws them through `view/live` as the
+  lane's last keyed entry, keyed `live`. `live.Thinking(progress, elapsed_ms,
+  headline)` is the reasoning row: `12 lines · <loom-elapsed offset> so far`,
+  or with a headline the count and clock and the headline as text beneath
+  it; the thinking is not drawn. `live.Answer(line)` is the answer so far,
+  drawn by the lane's own assistant line. A tool call being composed is not
+  drawn. `View.streams` holds what the page last drew and is maintained by
+  `component.streamed`, which follows the record's streams and, when a
+  pushed entry has cleared them, keeps the last ones while
+  `transcript_lines.response_awaited` says their answer is still owed
+  (entry not in the projected window, operation still running in the
+  capture), so the committed row replaces the region in one patch. The
+  page also drops a stream whose answer the projected window already holds (a capture before the push) and keeps a mid-answer attach's sampled preview until the pushed text is at least as long (`steadied`), where the terminal shrinks to the first fragment. The
+  region opts out of the log's live announcement (`aria-live="off"`). No
+  read or socket event is involved, and `page_events_test` and `older_path`
+  are unchanged. `live_test` pins the rows, the hand-over and the patch
+  size (107 to 268 bytes for a fragment on a page of 150 rows, the same
+  within two bytes on a page of one; `delivery_test`: a burst is one patch
+  of 576 to 668 bytes on the real runtime).
 - `todo_panel.view(board, reviewers)` draws the terminal's pinned todo
   board and reviewer band on both pages, from plain values;
   `component.plan(model)` reads them: `Shared.todo_boards` at
@@ -217,7 +239,7 @@ page keys and nonces, and the relay into the session's gateway.
   (`session_channel.history`) for at most 100 sequences below the oldest
   record the page holds. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
-  `<loom-elapsed offset>` in each chip, `<loom-fold>` around a settled
+  `<loom-elapsed offset>` in each chip and in the live reasoning row, `<loom-fold>` around a settled
   turn's work, `<loom-expand>` around a row with more to show, and `<loom-follow>` around the lane. The stylesheet pins the
   page's frame (the heading and the agent strip at the top, the dock or
   the observer's bar at the bottom, the page itself never scrolling) and
@@ -254,8 +276,9 @@ page keys and nonces, and the relay into the session's gateway.
   (`Stripped`, less the roster's clock) or a drawn cache label did. An idle
   refresh that brings back the capture already drawn projects nothing. The
   shared record's `render_revision` is not the signal: it moves for stream
-  fragments and tool tails the page does not draw, and a page that
-  re-projected on each would project once per batch of a streaming answer.
+  fragments (which change the live region below, not a projection) and
+  tool tails the page does not draw, and a page that re-projected on each
+  would project once per batch of a streaming answer.
   Logic that decides something about the session belongs to `session_view`,
   where the terminal uses it too.
 - **Event-driven delivery, one render per burst.** `Arrived` files its

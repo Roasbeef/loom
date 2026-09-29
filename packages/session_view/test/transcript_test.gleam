@@ -13,6 +13,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/history_view
+import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript
@@ -333,4 +334,61 @@ pub fn a_capture_keeps_the_progress_of_an_empty_read_test() {
     |> history_view.capture(captured.window, shown, "main")
   assert read.before_seq == after + 1
   assert read.before_seq < 200
+}
+
+// The identity a request that reserved an entry carries, as the daemon
+// writes it: the entry its answer will be committed as is its last element.
+fn generation(seq: Int) -> String {
+  "[\"generation\",\"op-1\",0,\"" <> ids.entry_id_to_string(id(seq)) <> "\"]"
+}
+
+fn streaming(generation: String) -> transcript_line.Stream {
+  transcript_line.Stream("main", "op-1", generation, "text", ["hi"], 2)
+}
+
+fn record_of(item: snapshot.Item) -> List(protocol.EntryRecord) {
+  case item {
+    snapshot.Loaded(entry, _) -> [protocol.EntryRecord("main", entry)]
+    snapshot.Unloaded(..) -> []
+  }
+}
+
+// A response is owed while its entry is not held and its operation still
+// runs; either ending it lets the host stop drawing the stream.
+pub fn a_response_is_owed_until_its_entry_or_its_operation_ends_test() {
+  let running = dict.from_list([#("main", "op-1")])
+  let stream = streaming(generation(2))
+
+  assert transcript_lines.response_awaited([], running, stream)
+
+  // The entry the request reserved is held: the record replaces the stream.
+  assert !transcript_lines.response_awaited(
+    record_of(said(2, Some(1), "answer")),
+    running,
+    stream,
+  )
+
+  // Another entry does not.
+  assert transcript_lines.response_awaited(
+    record_of(said(3, Some(1), "other")),
+    running,
+    stream,
+  )
+
+  // The operation is over with no entry: nothing will replace the stream.
+  assert !transcript_lines.response_awaited([], dict.new(), stream)
+  assert !transcript_lines.response_awaited(
+    [],
+    dict.from_list([#("main", "op-2")]),
+    stream,
+  )
+}
+
+pub fn a_stream_naming_no_entry_is_never_owed_test() {
+  let running = dict.from_list([#("main", "op-1")])
+  assert !transcript_lines.response_awaited(
+    [],
+    running,
+    streaming("legacy-request"),
+  )
 }

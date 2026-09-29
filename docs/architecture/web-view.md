@@ -414,20 +414,77 @@ moved. The blocks and turns are rebuilt when the capture, the history
 window, the cache notices, the agent rows or the paging differ from the
 inputs of the last projection (`Projected`), and the strip when its inputs
 (`Stripped`, less the roster's clock) or a cache label it draws did. The
-record's `render_revision` is not the signal. It moves for stream fragments
-and tool tails the page does not draw, and a page that re-projected on
-each would project once per batch of a streaming answer. The comparison
+record's `render_revision` is not the signal. It moves for stream fragments,
+which change the live region and nothing a capture projects, and for tool
+tails the page does not draw, and a page that re-projected on each would
+project once per batch of a streaming answer. The comparison
 is of state, so an unchanged input is the same term and costs a pointer
 check, and a change of paging forces a reprojection without a `before`
 record. A projection folds the history window's branch into keyed blocks
 for `main` with `transcript.branch_blocks`, keeps the newest turns that fit
 the row limit (below) and lays them out as `turns.Piece` values. Only
-durable records are drawn: the page draws no live answer or tool tail, so
-the terminal's streaming rows (`tui/live_tail`) have no counterpart here
-yet. After a `history` read is answered, refused or abandoned, the window
+durable records are in the blocks; the response still being written is the
+live region, below. The page draws no tool tail. After a `history` read is answered, refused or abandoned, the window
 is still in the reading mode `history_view.older` set, which the terminal
 leaves until its reader scrolls back; `refreshed` resumes it and folds
 the newest capture in.
+
+**The live region.** Between a request going out and its answer
+committing, the page would say nothing for as long as the model takes. It
+draws what the terminal draws for that interval, from the same state: the
+shared record's `streams` for the followed strand
+(`transcript_lines.display_streams`, which also seeds a stream from the
+capture's sampled preview when the page attached mid-answer), the
+summarizer's `summaries` for the request's headline (protocol 050), and the
+generation clock. No read and no socket event is added. `component.live`
+turns them into `live.Row`s and `view/live` draws them as the last entry of
+the lane's keyed list, keyed `live`:
+
+- a reasoning row, `12 lines · <loom-elapsed> so far`, or with a headline
+  the same count and clock and the headline as text beneath. The thinking
+  itself is never drawn. The time is a `<loom-elapsed offset>` in
+  milliseconds since the generation clock started, so the browser counts the
+  seconds and the server renders again for a fragment and not to move a
+  clock (the chips' mechanism);
+- the answer so far, drawn as the lane draws an assistant line, Markdown
+  parsed into text nodes.
+
+A tool call the model is composing is not drawn; the capture shows it as a
+running call. The region carries `aria-live="off"` so the polite log does
+not read an answer out as it grows, and the committed row that replaces it
+is announced once.
+
+The hand-over is exact. A pushed entry clears the strand's streams in the
+shared record before the capture that gives the page the row, and a page
+that drew only what the record holds would show a gap. `component.streamed`
+therefore keeps the streams it last drew when the record has none, while
+`transcript_lines.response_awaited` says their answer is still owed: the
+request's identity names the entry it reserved (`stream_identity`), the
+window the page projects does not hold that entry, and the capture still
+shows the operation running on the strand. When the capture holds the entry,
+the row replaces the region in the same patch, and the keyed list places it
+where the region was. When the capture says the operation ended without the
+entry (an interrupted answer), the region goes. A request that reserved no
+entry (an older daemon) leaves with the record's streams. A stream whose
+entry the window already holds is dropped, so a capture that lands before
+the push cannot draw the answer twice. A page that attached mid-answer keeps
+the capture's sampled preview until the pushed text is at least as long,
+where the record alone would shrink the answer to the first fragment.
+
+The patch cost is the region's, and the committed rows do not enter it.
+A fragment changes `Shared.streams` and nothing a capture projects, so
+`refreshed` projects nothing and every committed line's memo holds
+(`live_test` counts the lines a render draws: the live answer's one, and
+none of a page's 150). Lustre replaces the text node of the paragraph being
+written, so a fragment's patch is that paragraph and a fixed envelope. The
+patch does not grow with the answer or the page. Measured in `live_test`
+with Lustre's own diff, one fragment of a stream of 120 sentences (paragraphs
+of six, about 50 bytes each) costs 107 to 268 bytes on a page of 150 rows, and
+the same within two bytes on a page of one; and in `delivery_test` on the
+real runtime, a burst of eight fragments is one patch of 576 to 668 bytes and
+the burst that opens the region 864. The worst case is a single paragraph as
+long as the stream's limit, 24 KiB (`live_stream_limit`), sent again for
+each batch.
 
 **What the step does for surfaces the page lacks.** The page runs the
 shared step and so does what the step does, including reads for surfaces
