@@ -24,15 +24,26 @@
 //// ending into the live page, and `web_view/page` draws one into the
 //// document a browser gets when it asks for a page that has ended.
 
+import gleam/int
 import gleam/list
 import gleam/result
 
+/// The most pages one principal holds for one session at once.
+///
+/// The daemon enforces it (`client/daemon/ui_sessions.max_pages`, which
+/// says why the number is four and why the oldest page ends rather than the
+/// new link being refused). It is a constant here because the words
+/// `PageEnded` shows name it, and a sentence that states the number beside
+/// a bound that has another would be a lie the tests cannot see.
+pub const max_pages = 4
+
 /// Why a page has no session.
 pub type Ending {
-  /// The page's own UI session is gone. Opening a new link for a session
-  /// ends the principal's earlier page for it, and a page lasts eight hours;
-  /// the daemon keeps no record of which of the two it was, and a daemon
-  /// that restarted forgets every page, so this is all it can say.
+  /// The page's own UI session is gone: its eight hours ran out, the daemon
+  /// restarted and forgot every page, or it was the oldest of `max_pages`
+  /// and a newer link took its place. The daemon keeps no record of which,
+  /// so this is all it can say. A newer link ends a page only at that
+  /// bound; a principal may hold several pages for one session.
   PageEnded
 
   /// The credential behind the page, or the membership it stood on, was
@@ -187,8 +198,11 @@ pub fn headline(ending: Ending) -> String {
 pub fn advice(ending: Ending, session_id: String) -> String {
   case ending {
     PageEnded ->
-      "Opening a new link for a session ends the page you had open before it, "
-      <> "and a page lasts eight hours. "
+      "A page lasts eight hours, and the daemon forgets every page when it "
+      <> "restarts. You can also have "
+      <> int.to_string(max_pages)
+      <> " pages open for a session at once; opening another ends the "
+      <> "oldest. "
       <> fresh_link(session_id)
     AccessRevoked ->
       "Ask the session's owner to restore your access. Then "

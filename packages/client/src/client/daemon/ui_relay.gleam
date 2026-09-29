@@ -55,7 +55,7 @@
 //// component draws a closed reason class and the page's socket picks the
 //// close code from it. The gateway does not say why it closed an attachment,
 //// so the relay asks the attachment's own check once more: a UI session that
-//// is gone is `PageEnded` (a newer link replaced the page, or its eight
+//// is gone is `PageEnded` (its eight
 //// hours ran out), and any other refusal, or a role that changed, is
 //// `AccessRevoked`. The gateway exiting, or closing while the check still
 //// passes unchanged, is `SessionStopped`. A refused attach is reported the same way,

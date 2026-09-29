@@ -18,9 +18,12 @@
 //// (protocol-change/051, the operator addendum): the cookie, the page key
 //// the cookie's path is scoped to, and the page nonce the browser tab keeps
 //// in `sessionStorage` and presents on the socket. The table keeps only
-//// their digests. A redemption also ends every other UI session of the same
-//// principal for the same session, because the key-scoped cookie never
-//// reaches the exchange to name the page it replaces.
+//// their digests. A principal may hold several UI sessions for one session
+//// at once, an observer's tab beside an operator's, or two devices. Each
+//// has its own cookie, key and nonce, so a redemption never touches
+//// another page unless the principal already holds `max_pages` of them for
+//// the session, and then it ends only the oldest (protocol-change/051, the
+//// addendum on several pages).
 ////
 //// Each table is a per-key deadline table inside this one actor, which
 //// `docs/weft.md` ("Per-key deadline tables stay") allows. Every read checks
@@ -34,10 +37,14 @@ import broker/token
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/list
+import gleam/pair
 import gleam/result
 import gleam/string
 import host/bootstrap
 import storage/access
+import web_view/ending
 import weft/actor
 
 /// How long a ticket can be redeemed, in milliseconds.
@@ -47,6 +54,23 @@ pub const ticket_ms = 60_000
 /// hours, a working day. A page left open for a day's work keeps working,
 /// and a cookie copied out of a browser stops working the same day.
 pub const session_ms = 28_800_000
+
+/// The most live UI sessions one principal holds for one session.
+///
+/// Each page is a WebSocket, a relay process and a lane of up to 300 rows,
+/// so the bound is what keeps a stolen or scripted credential from opening
+/// pages until the daemon runs out of memory. Four covers what a person
+/// does with one session: an observer tab, an operator tab, a second device,
+/// and one spare.
+///
+/// A redemption at the bound ends the oldest page and adds the new one; it
+/// is not refused. The daemon never learns that a tab was closed, because a
+/// reload closes and reopens the same page's socket, so a closed tab's page
+/// stays live until its eight hours end. A refusal would therefore lock a
+/// person out of a long-running daemon after their fifth `loom ui` of the
+/// day, with nothing to close. Ending the oldest keeps the newest four,
+/// which are the ones a person can still be using.
+pub const max_pages = ending.max_pages
 
 /// How often the tables are swept, in milliseconds.
 pub const sweep_ms = 60_000
@@ -60,8 +84,8 @@ pub type Grant {
     /// check re-authenticates it, so revoking that credential ends the UI
     /// session.
     credential: access.Digest,
-    /// The principal that asked, whose other UI sessions for the same
-    /// session a redemption ends.
+    /// The principal that asked. The number of live UI sessions it holds
+    /// for one session is bounded by `max_pages`.
     principal: String,
     /// The most the page may do, chosen when the link was minted: observer
     /// unless `loom ui --operate` asked for operator. It caps the
@@ -73,7 +97,14 @@ pub type Grant {
 /// A live UI session: what it grants, and the digests of the page key its
 /// cookie is scoped to and of the nonce its browser tab presents.
 pub opaque type Page {
-  Page(grant: Grant, key: String, nonce: String)
+  Page(
+    grant: Grant,
+    key: String,
+    nonce: String,
+    /// The order pages were opened in, which is how the oldest is found
+    /// when two share a millisecond.
+    serial: Int,
+  )
 }
 
 /// A freshly minted ticket.
@@ -158,6 +189,8 @@ type State {
     settings: Settings,
     tickets: Dict(String, Entry(Grant)),
     sessions: Dict(String, Entry(Page)),
+    /// How many pages this actor has opened, which numbers the next one.
+    opened: Int,
   )
 }
 
@@ -169,7 +202,7 @@ type State {
 /// // let assert Ok(sessions) = ui_sessions.start(settings)
 /// ```
 pub fn start(settings: Settings) -> Result(Sessions, String) {
-  actor.new(State(settings, dict.new(), dict.new()))
+  actor.new(State(settings, dict.new(), dict.new(), 0))
   |> actor.on_message(handle)
   |> actor.periodic(every: sweep_ms, sending: Sweep)
   |> actor.start
@@ -190,10 +223,11 @@ pub fn mint(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
 }
 
 /// Redeems `ticket` once, for the page of `session_id`. A successful
-/// redemption ends every UI session of the ticket's principal for the same
-/// session: a ticket replaces them outright, and nothing carries over. A
-/// refused redemption leaves them alone, so a stale or misdirected link
-/// cannot sign a working page out.
+/// redemption adds a UI session. The principal's other pages for the
+/// session keep their own cookies and stay open until their eight hours run
+/// out, except that a principal already holding `max_pages` live ones has
+/// its oldest ended to make room. A refused redemption leaves every page
+/// alone, so a stale or misdirected link cannot sign a working page out.
 ///
 /// ## Examples
 ///
@@ -272,8 +306,8 @@ fn same_digest(stored: String, presented: String) -> Bool {
 /// A check that the UI session behind `cookie` still grants `grant`.
 ///
 /// The page's socket runs it with every authorization the gateway asks for,
-/// so a UI session that expires, or is replaced by a newer ticket, ends an
-/// open page the way a revoked credential does. A lookup that answers with
+/// so a UI session that expires ends an open page the way a revoked
+/// credential does. A lookup that answers with
 /// a different grant counts as ended too.
 ///
 /// ## Examples
@@ -340,9 +374,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     // The whole redemption happens in this one turn: the ticket is removed
     // whether or not it was still live, and only a live ticket for this
-    // session ends the principal's other UI sessions for it and becomes a
-    // new one. Nothing between those steps can interleave with another
-    // redemption.
+    // session becomes a new UI session. Making room and inserting in one
+    // turn keeps the bound exact: two redemptions at the fourth place reach
+    // this actor one after the other, and the second sees the first's page.
     Redeem(ticket:, session_id:, reply:) -> {
       let key = digest(ticket)
       let found = live(state.tickets, key, now)
@@ -357,17 +391,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.continue(State(..state, tickets:))
         }
         Ok(grant) -> {
-          let sessions =
-            dict.filter(state.sessions, fn(_, entry) {
-              entry.value.grant.principal != grant.principal
-              || entry.value.grant.session_id != grant.session_id
-            })
           let cookie = secret(state.settings)
           let key = secret(state.settings)
           let nonce = secret(state.settings)
           let entry =
             Entry(
-              value: Page(grant:, key: digest(key), nonce: digest(nonce)),
+              value: Page(
+                grant:,
+                key: digest(key),
+                nonce: digest(nonce),
+                serial: state.opened,
+              ),
               expires_at: now + state.settings.session_ms,
             )
           process.send(reply, Ok(Redeemed(cookie:, key:, nonce:, grant:)))
@@ -375,7 +409,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             State(
               ..state,
               tickets:,
-              sessions: dict.insert(sessions, digest(cookie), entry),
+              sessions: state.sessions
+                |> with_room(grant, now)
+                |> dict.insert(digest(cookie), entry),
+              opened: state.opened + 1,
             ),
           )
         }
@@ -404,6 +441,35 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           }),
         ),
       )
+  }
+}
+
+// The table with room for one more of `grant`'s pages: unchanged while the
+// principal holds fewer than `max_pages` live ones, and otherwise without the
+// oldest, so the new page makes `max_pages`. An expired page is not counted
+// even before the sweep removes it, so a place frees at its deadline.
+fn with_room(
+  sessions: Dict(String, Entry(Page)),
+  grant: Grant,
+  now: Int,
+) -> Dict(String, Entry(Page)) {
+  let held =
+    sessions
+    |> dict.to_list
+    |> list.filter(fn(row) {
+      let #(_cookie, entry) = row
+      let other = entry.value.grant
+      entry.expires_at > now
+      && other.principal == grant.principal
+      && other.session_id == grant.session_id
+    })
+    |> list.sort(fn(a, b) {
+      int.compare({ a.1 }.value.serial, { b.1 }.value.serial)
+    })
+  let surplus = list.length(held) - max_pages + 1
+  case surplus > 0 {
+    True -> dict.drop(sessions, list.map(list.take(held, surplus), pair.first))
+    False -> sessions
   }
 }
 

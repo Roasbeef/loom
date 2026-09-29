@@ -99,3 +99,17 @@ pub fn an_ended_page_is_told_to_ask_for_a_fresh_link_not_to_reload_test() {
   assert !string.contains(ending.advice(ending.LinkExpired, "S"), "Reload")
   assert string.contains(ending.advice(ending.DaemonNotReady, "S"), "Reload")
 }
+
+// Opening a newer link ends an earlier page only at the bound
+// (protocol-change/051, the addendum on several pages), so the words for an
+// ended page name the three causes and the bound, and never say that any
+// new link ends the page.
+pub fn an_ended_page_names_what_ends_a_page_test() {
+  let advice = ending.advice(ending.PageEnded, "S")
+  assert !string.contains(advice, "new link")
+  assert string.contains(advice, "eight hours")
+  assert string.contains(advice, "restarts")
+  assert string.contains(advice, "4 pages")
+  assert string.contains(advice, "oldest")
+  assert ending.max_pages == 4
+}
