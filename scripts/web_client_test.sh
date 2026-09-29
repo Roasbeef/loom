@@ -13,8 +13,57 @@
 # exits zero, as the repository's other feature-detected suites do, so that
 # .github/scripts/skip_census.sh turns it into a red CI run instead of a
 # suite that quietly did not run.
+#
+# ## Nothing a test loads may reach Lustre or the DOM binding
+#
+# `lustre/runtime/client/runtime.ffi.mjs` declares `class LustreEvent extends
+# CustomEvent` at load, and Node 18 (what the signoff container's apt gives)
+# has no global `CustomEvent`, so a test module that imports a component
+# throws `ReferenceError` before any test runs. The decisions therefore live in
+# `web_client/follow_rule`, `composer_rule` and `duration`, which import
+# neither, and the tests import only those. `check_imports` walks every
+# `web_client/...` module reachable from `test/` and fails on one that imports
+# `lustre` or `web_client/internal/...`, so the split cannot quietly regress.
+# It needs no runtime, so it runs before the SKIP below can hide it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# check_imports <package dir>: print the offending import chain and return
+# non-zero if a module reachable from the tests imports Lustre or an
+# internal module.
+check_imports() {
+	local pkg="$1"
+	local queue=() seen=" " file import module failed=0
+	while IFS= read -r file; do queue+=("$file"); done < <(find "$pkg/test" -name '*.gleam')
+	while [ ${#queue[@]} -gt 0 ]; do
+		file=${queue[0]}
+		queue=("${queue[@]:1}")
+		while IFS= read -r import; do
+			module=${import#import }
+			module=${module%%[ .{]*}
+			case $module in
+			lustre | lustre/* | web_client/internal/*)
+				echo "web_client_test: $file imports $module, which loads the browser runtime" >&2
+				failed=1
+				;;
+			web_client/*)
+				case $seen in *" $module "*) continue ;; esac
+				seen="$seen$module "
+				if [ -f "$pkg/src/$module.gleam" ]; then
+					queue+=("$pkg/src/$module.gleam")
+				fi
+				;;
+			esac
+		done < <(grep -E '^import ' "$file")
+	done
+	return $failed
+}
+
+check_imports packages/web_client
+
+if [ "${1-}" = "--check-imports" ]; then
+	exit 0
+fi
 
 runtime=""
 for candidate in node bun deno; do
