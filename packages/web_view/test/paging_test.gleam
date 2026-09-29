@@ -44,15 +44,12 @@ fn press(page) {
 // the records of `window`, delivered through the page's lane.
 fn answer(page, read: String, window, before: Int) {
   page_fixture.run(page, component.update, [
-    component.Arrived(
-      page_fixture.history(
-        page_fixture.request_id(read),
-        "operator",
-        window,
-        before,
-      ),
-      0,
-    ),
+    component.Arrived(page_fixture.history(
+      page_fixture.request_id(read),
+      "operator",
+      window,
+      before,
+    )),
   ])
 }
 
@@ -60,16 +57,13 @@ fn answer(page, read: String, window, before: Int) {
 fn refuse(page, read: String) {
   let id = int.to_string(page_fixture.request_id(read))
   page_fixture.run(page, component.update, [
-    component.Arrived(
-      [
-        connection_event.Incoming(
-          "{\"v\":2,\"reply_to\":"
-          <> id
-          <> ",\"event\":\"error\",\"body\":{\"code\":\"unavailable\",\"message\":\"busy\"}}",
-        ),
-      ],
-      0,
-    ),
+    component.Arrived([
+      connection_event.Incoming(
+        "{\"v\":2,\"reply_to\":"
+        <> id
+        <> ",\"event\":\"error\",\"body\":{\"code\":\"unavailable\",\"message\":\"busy\"}}",
+      ),
+    ]),
   ])
 }
 
@@ -173,10 +167,10 @@ pub fn a_full_page_loads_no_more_test() {
 
   let page =
     page_fixture.run(page, component.update, [
-      component.Arrived(
-        page_fixture.catch_up(page_fixture.request_id(refresh), "operator"),
-        0,
-      ),
+      component.Arrived(page_fixture.catch_up(
+        page_fixture.request_id(refresh),
+        "operator",
+      )),
     ])
   let assert [read] = reads(wire) as "the second read, once the lane is free"
   assert string.contains(read, "\"after_seq\":100,\"before_seq\":201")
@@ -208,7 +202,7 @@ pub fn a_refused_read_can_be_asked_again_test() {
   let assert [read] = reads(wire) as "one history read"
   let page = refuse(page, read)
   assert component.top(page) == lane.Earlier
-  let assert component.Warned(text) = component.notice(page)
+  let assert component.Said(text) = component.notice(page)
     as "the refusal is stated"
   assert string.contains(text, "unavailable")
 
@@ -291,17 +285,21 @@ pub fn an_observers_press_sends_only_a_history_read_test() {
 }
 
 // The lane refreshes as soon as a page of history arrives. This answers
-// that refresh, which carries the fixture lane's empty session, and puts
-// back `update`, the capture a real refresh would have carried, so the
-// lane is free for the next read.
+// that refresh, which carries the fixture lane's empty session. A capture
+// that changes the configuration asks for the session's context, and the
+// read goes out on the tick after the capture, so the next tick sends it and
+// its refusal frees the lane. Then `update`, the capture a real refresh would
+// have carried, is put back, so the lane is free for the next read.
 fn settle(page, wire: page_fixture.Wire, update) {
   let assert [refresh] = catch_ups(wire) as "the lane refreshes"
   page_fixture.run(page, component.update, [
-    component.Arrived(
-      page_fixture.catch_up(page_fixture.request_id(refresh), "operator"),
-      0,
-    ),
+    component.Arrived(page_fixture.catch_up(
+      page_fixture.request_id(refresh),
+      "operator",
+    )),
+    component.Ticked,
   ])
+  |> page_fixture.refuse_reads(component.update, wire, component.Arrived)
   |> component.apply([update])
 }
 
@@ -387,7 +385,7 @@ pub fn a_failed_lane_retires_the_read_test() {
   assert component.top(page) == lane.Loading
   let page =
     page_fixture.run(page, component.update, [
-      component.Arrived([connection_event.Closed("gone")], 0),
+      component.Arrived([connection_event.Closed("gone")]),
     ])
   assert component.top(page) != lane.Loading
 }

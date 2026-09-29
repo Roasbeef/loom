@@ -13,19 +13,23 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/register
 import gleam/bit_array
 import gleam/dict
 import gleam/dynamic
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element
+import machine/codec as machine_codec
+import machine/strand
 import session_view/approval
+import session_view/command
 import session_view/commands
 import session_view/connection_event
-import session_view/event_fold
 import session_view/markdown
 import session_view/model as session_model
 import session_view/msg
@@ -33,6 +37,7 @@ import session_view/operator
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/step as session_step
 import session_view/transcript_line.{type Line}
 import tui
 import tui/connection
@@ -274,6 +279,40 @@ fn reply(id: Int, event: String, body: json.JsonValue) {
   )
 }
 
+// The cells that list `main` as a strand: its configuration, its leaf and
+// its state. A capture that lists no strand has no recipient, and the shared
+// step refuses a command to it, which the page now runs its commands
+// through.
+fn main_cells() -> List(json.JsonValue) {
+  let cell = fn(namespace, seq, value) {
+    json.Object([
+      #("namespace", json.String(register.ns_to_string(namespace))),
+      #("key", json.String("main")),
+      #("seq", json.Int(seq)),
+      #("value", value),
+    ])
+  }
+  [
+    cell(
+      register.StrandConfig,
+      1,
+      machine_codec.encode_configuration(
+        strand.StrandConfiguration(
+          strand.ModelIdentity("test", "test"),
+          strand.ThinkingOff,
+          [],
+        ),
+      ),
+    ),
+    cell(register.StrandLeaf, 2, json.Null),
+    cell(
+      register.StrandState,
+      3,
+      machine_codec.encode_strand_state(strand.StrandState(None, [])),
+    ),
+  ]
+}
+
 // One credited transfer for an operator's attachment, whose metadata holds
 // one pending escalation with its whole authority captured.
 fn transfer() -> List(connection_event.Message) {
@@ -311,7 +350,7 @@ fn transfer() -> List(connection_event.Message) {
   let data =
     json.to_string(
       json.Object([
-        #("cells", json.Array([escalation])),
+        #("cells", json.Array([escalation, ..main_cells()])),
         #("message_count", json.Int(0)),
         #("usage", codec.encode_usage(usage())),
         #(
@@ -414,28 +453,64 @@ type Step {
   Deny(String)
 }
 
+// The terminal's tick over a model that has taken the traffic the event
+// carried: the side surfaces' reads, the lane's own tick, and the shared
+// step's settle against the model the event started from. These are the
+// units the page's `step.update` runs for the same event, and the terminal
+// calls them one at a time.
+fn ticked(
+  started: tui_model.Model,
+  drained: tui_model.Model,
+) -> tui_model.Model {
+  let read =
+    tui_model.run_shared(drained, session_step.service_reads)
+    |> inbound.tick_channel
+  tui_model.run_shared(read, session_step.settle(started.shared, _))
+}
+
+// A command the terminal's own key handlers would hand the step, settled as
+// the terminal settles every event.
+fn acted(model: tui_model.Model, command: msg.Command) -> tui_model.Model {
+  tui_model.run_shared(model, fn(shared) {
+    session_step.settle(shared, commands.act(shared, command))
+  })
+}
+
 fn on_terminal(model: tui_model.Model, step: Step) -> tui_model.Model {
   case step {
-    Frame(message) -> inbound.accept_connection_message(model, message)
-    Tick -> inbound.tick_channel(model)
+    Frame(message) ->
+      ticked(model, inbound.accept_connection_message(model, message))
+    Tick -> ticked(model, model)
     Prompt(text) ->
-      tui_model.run_shared(model, event_fold.send_prompt_to(_, "main", text))
+      acted(
+        model,
+        msg.Submit(
+          draft: text,
+          command: command.Prompt(text),
+          delivery: operator.Prompt,
+        ),
+      )
     Deny(id) ->
-      tui_model.run_shared(model, commands.decide(_, id, operator.Deny))
+      case list.find(model.shared.approvals, fn(record) { record.id == id }) {
+        Ok(record) ->
+          acted(model, msg.Decide(review: record, choice: operator.Deny))
+        Error(Nil) -> model
+      }
   }
 }
 
 // The page reduces a frame as it arrives, in a batch of one, which is the
-// terminal's receive-then-apply in one message. The page's reduction also
-// runs the lane's tick at the batch's reading; at the script's reading of
-// zero nothing is due, as nothing is for the terminal's step.
+// terminal's receive-then-tick in one message: the frame is drained, the side
+// surfaces' reads go out, and the lane ticks at the batch's reading. At the
+// script's reading of zero no deadline is due, as none is for the terminal's
+// step.
 fn on_page(
   page: component.Model(process.Subject(String)),
   step: Step,
 ) -> component.Model(process.Subject(String)) {
   let messages = case step {
-    Frame(message) -> [operator_page.Observed(component.Arrived([message], 0))]
-    Tick -> [operator_page.Observed(component.Ticked(0))]
+    Frame(message) -> [operator_page.Observed(component.Arrived([message]))]
+    Tick -> [operator_page.Observed(component.Ticked)]
     Prompt(text) -> [operator_page.Submitted(text, operator.Prompt)]
     Deny(id) ->
       case list.find(component.pending(page), fn(record) { record.id == id }) {
@@ -474,12 +549,19 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
   let wire = process.new_subject()
   let page =
     component.new(start())
-    |> operator_page.update(operator_page.Observed(component.Opened(wire, 0)))
+    |> operator_page.update(operator_page.Observed(component.Opened(wire)))
   perform(page.1)
+
+  // The first capture makes both hosts read the strand's notes, the
+  // session's context, the advisor's pending nudges and the goal, one after
+  // the other, each sent when the one before is answered. The script answers
+  // them by refusal, so the lane is free for the prompt.
   let script =
     list.flatten([
       list.map(transfer(), Frame),
-      [Tick, Prompt("inspect the tree"), Deny("esc-1"), Tick],
+      [Tick],
+      list.map([4, 5, 6, 7], fn(id) { Frame(refusal(id)) }),
+      [Prompt("inspect the tree"), Deny("esc-1"), Tick],
     ])
   let #(terminal, page) =
     list.fold(script, #(terminal(), page.0), fn(hosts, step) {
@@ -499,16 +581,26 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
   assert pending(component.pending(page)) == pending(terminal.shared.approvals)
   assert component.lines(page) == projection.record_projection(terminal).0
 
-  // What the page wrote is the prompt, then the decision the lane queued
-  // behind it once the prompt's reply is outstanding: one command out.
+  // What the page wrote is the prompt. The decision that followed it met a
+  // lane with the prompt's reply outstanding, which the shared step refuses
+  // for the terminal's dialog as for the page's card, so one command is out.
   let frames = drain(wire)
   let assert [prompt] =
     list.filter(frames, fn(frame) {
-      !string.contains(frame, "\"cmd\":\"snapshot")
-      && !string.contains(frame, "\"cmd\":\"subscribe\"")
+      string.contains(frame, "\"cmd\":\"prompt\"")
+      || string.contains(frame, "\"cmd\":\"deny\"")
     })
     as "one command left the page while the prompt's reply is outstanding"
   assert string.contains(prompt, "\"cmd\":\"prompt\"")
+}
+
+// The daemon's refusal of the read sent as request `id`.
+fn refusal(id: Int) -> connection_event.Message {
+  connection_event.Incoming(
+    "{\"v\":2,\"reply_to\":"
+    <> int.to_string(id)
+    <> ",\"event\":\"error\",\"body\":{\"code\":\"unavailable\",\"message\":\"busy\"}}",
+  )
 }
 
 fn drain(wire: process.Subject(String)) -> List(String) {

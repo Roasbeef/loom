@@ -1,29 +1,41 @@
 //// The web view's host for one session: a Lustre server component that
-//// drives `session_view`'s lane and draws the session's transcript lines
-//// as HTML.
+//// drives `session_view`'s shared step and draws the session's transcript
+//// lines as HTML.
 ////
-//// The component is the lane's host in the sense ADR-014 gives the word. It
+//// The component is the step's host in the sense ADR-014 gives the word. It
 //// reads what the engine may not read (a clock, a mailbox) and delivers it as
-//// messages, and it performs the lane's outputs. It holds no session logic of
+//// messages, and it performs the step's effects. It holds no session logic of
 //// its own: which frames to send, what a reply means, when to catch up,
-//// which lines a capture becomes and what an operator's input becomes on the
-//// wire are all `session_view`'s, exactly as they are for the terminal. What
-//// is web-specific here is the delivery (a Lustre selector instead of an
+//// which lines a capture becomes and what an operator's input becomes on
+//// the wire are all `session_view`'s, exactly as they are for the terminal.
+//// What is web-specific here is the delivery (a Lustre selector instead of an
 //// etui tick) and the view (HTML elements instead of terminal cells).
+////
+//// The model is two records, as the terminal's is (`docs/design-notes/
+//// step-extraction.md`, section 1). `shared` is the session state the step
+//// reads and writes, and this module never writes it except in two places
+//// that are the page's own: the history window is trimmed to the rows the
+//// page draws, and asked for older rows when the reader presses "Load
+//// older". `view` is what only this host holds: the transport and its
+//// deadline timer, the transcript blocks the page draws, the agent strip,
+//// how many rows the page holds and the connection's status.
+////
+//// `update` reads the transport's clock once, at its top, and hands the step
+//// that reading as its stamp. Every message then reaches the step as the
+//// entry a host with no surfaces of its own uses, `step.update`: an arriving
+//// batch is filed and reduced in one Lustre message (`Arrived` and then a
+//// tick), the deadline timer's message is a tick, and an operator's input is
+//// a command. The step returns the effects it decided, and this module
+//// performs them.
 ////
 //// Delivery is event-driven (ADR-013, the addendum on event-driven
 //// delivery). The selector that reads the transport's inbox drains it in
 //// the same breath: the frame it matched and up to `arrival_batch - 1` more
-//// that are already waiting become one `Arrived`, with the clock reading
-//// taken after the drain. `Arrived` files the batch into the engine's
-//// `session_view/inbox` and reduces it at once: every filed frame goes to
-//// the lane, oldest first, through `operator.drain`, the loop the terminal
-//// runs too, followed by the lane's own `tick` at the batch's reading.
-////
-//// Batching is what keeps a burst cheap. Lustre 5.7.1 runs the view, diffs
-//// it and broadcasts the patch for every message the runtime takes, with no
-//// check for an empty patch, so one message per frame would be one render
-//// per frame. One message per burst is one render per burst.
+//// that are already waiting become one `Arrived`. Batching is what keeps a
+//// burst cheap. Lustre 5.7.1 runs the view, diffs it and broadcasts the
+//// patch for every message the runtime takes, with no check for an empty
+//// patch, so one message per frame would be one render per frame. One
+//// message per burst is one render per burst.
 ////
 //// There is no periodic tick. After every transition the component asks
 //// the lane when it next has something to do (`session_channel.next_due`:
@@ -39,34 +51,42 @@
 //// whatever the test hands in. Opening it may take as long as the gateway's
 //// attach, which is longer than Lustre's one-second start budget, so the
 //// transport opens asynchronously: `connect` returns at once and answers on
-//// a subject the component selects. The interpreter for the lane's outputs
+//// a subject the component selects. The interpreter for the step's effects
 //// has the terminal's shape: `Transmit` writes a frame through the
-//// transport and `Shut` closes it, in the order the lane decided them, in
+//// transport and `Shut` closes it, in the order the step decided them, in
 //// one effect. The component has no recorder, so its recorder type is `Nil`
 //// and it never queues a note.
 ////
 //// This module is the observer's application, and its message type carries
 //// no command. Its view attaches one event handler, the lane's "Load older"
 //// button, whose message asks for a read of older history and nothing else
-//// (protocol-change/051, the addendum on history paging). An operator's page is `web_view/operator_page`, which
-//// wraps these messages with the two commands an operator may send and
-//// reaches the lane through `submit` and `decide` here, which call the
-//// engine's command arms.
+//// (protocol-change/051, the addendum on history paging). An operator's page
+//// is `web_view/operator_page`, which wraps these messages with the two
+//// commands an operator may send and reaches the step through `submit` and
+//// `decide` here, which wrap them as the step's commands.
 ////
 //// The page holds a bounded number of transcript rows: the newest
 //// `live_rows` of its strand, or `held_rows` once the reader has loaded
 //// older ones. It keeps the strand's history window across captures
-//// (`history_view`, the terminal's `scrollback`), projects the newest turns
-//// that fit, and trims the window to what it draws. `older` pages further
-//// back through the lane's `history` read, the read the terminal pages
-//// with. The window is session state the shared step will hold for both
-//// hosts; the limit and `Paging` are this page's view state.
+//// (`history_view`, the shared record's `scrollback`), projects the newest
+//// turns that fit, and trims the window to what it draws. `older` pages
+//// further back through the lane's `history` read, the read the terminal
+//// pages with. The limit and `Paging` are this page's view state.
+////
+//// What the page draws is derived from the shared record by `refreshed`, which
+//// runs at the end of every message and rebuilds a projection only when the
+//// inputs it reads moved. The shared record's own `render_revision` is not
+//// that signal. It moves for everything the terminal's rows are built from,
+//// including stream fragments and tool output tails that the page does not
+//// draw, and a page that re-projected on each of them would project once per
+//// batch of a streaming answer. The projection's inputs are compared
+//// instead, and an unchanged input is the same term, which costs a pointer
+//// comparison.
 ////
 //// The page's regions are drawn by the modules under `web_view/view`: the
 //// heading, the agent strip and the transcript lane. This module derives
 //// what they draw, when a message changes it, and `view` lays them out.
 
-import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -83,15 +103,20 @@ import session_view/agent_view
 import session_view/approval
 import session_view/cache_miss
 import session_view/cache_watch
+import session_view/command
 import session_view/connection_event
 import session_view/history_view
-import session_view/inbox.{type Inbox}
+import session_view/inbox
+import session_view/lane_fold
+import session_view/model.{type Shared, Shared} as session_model
+import session_view/msg
 import session_view/operator
 import session_view/protocol
-import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/step
+import session_view/step_effect
 import session_view/transcript
 import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
@@ -207,7 +232,8 @@ pub type Transport(socket) {
     transmit: fn(socket, String) -> Nil,
     /// Closes the connection.
     shut: fn(socket) -> Nil,
-    /// A monotonic reading in milliseconds, for the lane's deadlines.
+    /// A monotonic reading in milliseconds, for the lane's deadlines. The
+    /// component reads it once at the top of each message.
     now: fn() -> Int,
   )
 }
@@ -224,16 +250,22 @@ pub type Status {
   Ended(reason: String)
 }
 
-/// What the page last told an operator about their own input. Its text is
-/// the component's own or the engine's, never the session's.
+/// What the page last told an operator about their own input.
+///
+/// The text is the component's own or the engine's, never the session's.
+/// The engine's is the shared record's `notice`, which the terminal shows in
+/// its footer and which any event can replace, so it states the latest thing
+/// the session did as often as the outcome of a command. The component's own
+/// is a refusal of an input before it became a command, and it stays until
+/// the operator's next input.
 pub type Notice {
   /// Nothing to say.
   Quiet
 
-  /// An outcome worth stating, such as a prompt that was sent.
+  /// What the session last said.
   Said(text: String)
 
-  /// A refusal or a loss the operator should read.
+  /// The page refused an input before it reached the session.
   Warned(text: String)
 }
 
@@ -282,26 +314,42 @@ type Earlier {
   Unheld
 }
 
-/// The component's state: the lane, the frames filed since the last tick,
-/// the last completed capture and what was derived from it.
-pub opaque type Model(socket) {
-  Model(
-    session_id: String,
+// The shared record with the web's handles bound: the component has no
+// recorder and its two inboxes have no sources to tell apart, so all three
+// are `Nil`.
+type Session(socket) =
+  Shared(socket, Nil, Nil, Nil)
+
+// What the blocks and pieces were built from. `refreshed` builds them again
+// only when one of these differs from what the session holds now.
+type Projected {
+  Projected(
+    captured: Option(#(snapshot.Captured, snapshot_view.View)),
+    scrollback: history_view.State,
+    notices: List(CacheNotice),
+    agents: List(agent_view.Row),
+    paging: Paging,
+  )
+}
+
+// What the strip was built from. The roster's clock is left out: it moves on
+// every tick, and the strip's elapsed figures are counted by the browser
+// from the reading the strip was built at.
+type Stripped {
+  Stripped(
+    roster: agent_roster.Roster,
+    cache: cache_watch.Ledger,
+    agents: List(agent_view.Row),
+    strands: List(protocol.Strand),
+  )
+}
+
+// What only this host holds.
+type View(socket) {
+  View(
     label: Option(Label),
     expected: snapshot.Expected,
     transport: Transport(socket),
-    /// `None` until the transport has opened.
-    lane: Option(session_channel.Channel(socket, Nil)),
-    /// Frames filed since the last tick, oldest first. The component has
-    /// one source, so its source is `Nil`.
-    filed: Inbox(Nil, connection_event.Message),
-    /// The last `Captured` update.
-    shown: Option(#(snapshot.Captured, snapshot_view.View)),
-    /// The page strand's history window: each capture folded in, and each
-    /// older page the reader loaded. It is the terminal's `scrollback`,
-    /// session state the shared step will hold for both hosts, and it is
-    /// trimmed to the oldest row the page draws (`history_view.retain_from`).
-    scrollback: history_view.State,
     /// How many rows the page holds. This is the page's own view state.
     paging: Paging,
     /// Whether older rows than the page holds exist, derived with `blocks`.
@@ -314,46 +362,40 @@ pub opaque type Model(socket) {
     /// The same blocks laid out as turns (`session_view/turns`), derived
     /// with them.
     pieces: List(turns.Piece),
-    /// Every strand's agent row from the last capture (`agent_view`), and
-    /// the reviewer rows it is observed with.
-    agents: List(agent_view.Row),
-    reviewers: List(reviewer_status.Row),
-    /// The roster's memory of glances, clocks and pushed context sizes.
-    roster: agent_roster.Roster,
-    /// The prompt-cache ledger the usage pushes are folded into.
-    cache: cache_watch.Ledger,
-    /// Cache-miss notices raised on this page for its strand, oldest first.
-    /// Like the terminal's, they are transient and are not stored.
-    notices: List(CacheNotice),
+    /// The inputs `blocks` and `pieces` were derived from.
+    projected: Projected,
     /// The agent strip, derived when a capture, a usage push or a tick
     /// changed something it draws.
     strip: strip.Strip,
-    /// The escalations of `shown`, and the settled ones kept beside them.
-    approvals: List(approval.Review),
+    /// The inputs `strip` was derived from.
+    stripped: Stripped,
     status: Status,
-    /// The latest clock reading: the one a message carried, or the one a
-    /// command read for itself, which its deadline is measured from.
-    clock: Int,
+    /// What the page refused to send, until the operator's next input.
+    refusal: Option(String),
+    /// How many drafts a command consumed at dispatch. A draft a prompt
+    /// carries is consumed when the lane sends it, which the shared record
+    /// counts as `drafts_sent`; the composer's editor is keyed by the sum,
+    /// so a consumed draft is replaced by an empty editor while a refused
+    /// one stays as the operator left it.
+    consumed: Int,
     /// The timer's subject, once the tick selector is armed.
     timer: Option(Subject(Nil)),
     /// The one timer armed for the lane's next due reading, kept so the
     /// next arming can cancel it.
     armed: Option(process.Timer),
-    /// What the page last told the operator.
-    notice: Notice,
-    /// The command counter an operator's commands are encoded with.
-    next_id: Int,
-    /// How many drafts have been sent. The composer's editor is keyed by
-    /// it, so a sent draft is replaced by an empty editor while a refused
-    /// one stays as the operator left it.
-    drafts: Int,
   )
+}
+
+/// The component's state: the shared session record and what only this host
+/// holds.
+pub opaque type Model(socket) {
+  Model(shared: Session(socket), view: View(socket))
 }
 
 /// Everything the component can be told.
 pub type Msg(socket) {
-  /// The transport opened, at this monotonic reading.
-  Opened(socket: socket, at: Int)
+  /// The transport opened.
+  Opened(socket: socket)
 
   /// The transport refused to open.
   Refused(reason: String)
@@ -361,14 +403,12 @@ pub type Msg(socket) {
   /// The deadline timer's selector is armed on this subject.
   TimerArmed(timer: Subject(Nil))
 
-  /// The frames the transport delivered, oldest first, and the monotonic
-  /// reading taken after they were read. One message carries a whole burst,
-  /// up to `arrival_batch` frames, and it is reduced at once.
-  Arrived(messages: List(connection_event.Message), at: Int)
+  /// The frames the transport delivered, oldest first. One message carries a
+  /// whole burst, up to `arrival_batch` frames, and it is reduced at once.
+  Arrived(messages: List(connection_event.Message))
 
-  /// The timer armed for the lane's next due reading fired, at this
-  /// monotonic reading.
-  Ticked(at: Int)
+  /// The timer armed for the lane's next due reading fired.
+  Ticked
 
   /// The lane's "Load older" button was pressed. It asks for a read of
   /// older history and nothing else (`older`), which is why an observer's
@@ -397,33 +437,33 @@ pub fn app() -> lustre.App(Start(socket), Model(socket), Msg(socket)) {
 /// // simulate.application(fn(s) { #(component.new(s), effect.none()) }, ..)
 /// ```
 pub fn new(start: Start(socket)) -> Model(socket) {
+  let shared =
+    step.new(
+      strand,
+      start.session_id,
+      msg.Stamp(now_ms: 0, transport_ms: 0),
+      inbox.new(Nil),
+      inbox.new(Nil),
+    )
   Model(
-    session_id: start.session_id,
-    label: start.label,
-    expected: start.expected,
-    transport: start.transport,
-    lane: None,
-    filed: inbox.new(Nil),
-    shown: None,
-    scrollback: history_view.empty(),
-    paging: Tail,
-    earlier: Reached,
-    blocks: [],
-    pieces: [],
-    agents: [],
-    reviewers: [],
-    roster: agent_roster.new(),
-    cache: cache_watch.new(),
-    notices: [],
-    strip: strip.Strip(chips: [], advisor: None, settled: 0),
-    approvals: [],
-    status: Connecting,
-    clock: 0,
-    timer: None,
-    armed: None,
-    notice: Quiet,
-    next_id: 1,
-    drafts: 0,
+    shared:,
+    view: View(
+      label: start.label,
+      expected: start.expected,
+      transport: start.transport,
+      paging: Tail,
+      earlier: Reached,
+      blocks: [],
+      pieces: [],
+      projected: projected_of(shared, Tail),
+      strip: strip.Strip(chips: [], advisor: None, settled: 0),
+      stripped: stripped_of(shared),
+      status: Connecting,
+      refusal: None,
+      consumed: 0,
+      timer: None,
+      armed: None,
+    ),
   )
 }
 
@@ -437,7 +477,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
 /// ```
 pub fn init(start: Start(socket)) -> #(Model(socket), Effect(Msg(socket))) {
   let model = new(start)
-  #(model, effect.batch([open(start.transport), arm(start.transport)]))
+  #(model, effect.batch([open(start.transport), arm()]))
 }
 
 // Opens the transport inside the component's process, once. The inbox and
@@ -445,12 +485,10 @@ pub fn init(start: Start(socket)) -> #(Model(socket), Effect(Msg(socket))) {
 // component's process, so every frame and the open's answer are read by
 // the process that owns them. `connect` returns at once; the answer is a
 // message, so a slow gateway attach cannot hold the component's start.
-// The clock is read when the answer is received, in the mapping, which is
-// host code.
 //
 // A frame's mapping drains the inbox behind it, so a burst that is already
-// waiting becomes one message and one render. The clock is read after the
-// drain, so the batch's reading is no earlier than any frame in it.
+// waiting becomes one message and one render. Neither mapping reads the
+// clock: `update` does, once, when it takes the message.
 fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
   use _dispatch, opened <- server_component.select
   let inbox = process.new_subject()
@@ -458,13 +496,12 @@ fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
   process.new_selector()
   |> process.select_map(opened, fn(outcome) {
     case outcome {
-      Ok(socket) -> Opened(socket, transport.now())
+      Ok(socket) -> Opened(socket)
       Error(reason) -> Refused(reason)
     }
   })
   |> process.select_map(inbox, fn(first) {
-    let messages = [first, ..waiting(inbox, arrival_batch - 1, [])]
-    Arrived(messages, transport.now())
+    Arrived([first, ..waiting(inbox, arrival_batch - 1, [])])
   })
 }
 
@@ -486,169 +523,120 @@ fn waiting(
 }
 
 // Creates the deadline timer's subject. Nothing is armed here: the lane
-// says when it is next due once it exists. The clock is read when the timer
-// message is received, which is host code, so the reading `Ticked` carries
-// is the instant the timer fired.
-fn arm(transport: Transport(socket)) -> Effect(Msg(socket)) {
+// says when it is next due once it exists.
+fn arm() -> Effect(Msg(socket)) {
   use dispatch, timer <- server_component.select
   dispatch(TimerArmed(timer))
   process.new_selector()
-  |> process.select_map(timer, fn(_) { Ticked(transport.now()) })
+  |> process.select_map(timer, fn(_) { Ticked })
 }
 
 /// Applies one message.
 ///
+/// The transport's clock is read here, once, and every step the message
+/// takes runs at that reading. An operator's command arrives through
+/// `submit` and `decide` instead, which read the clock the same way.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // let #(model, effect) = component.update(model, component.Ticked(250))
+/// // let #(model, effect) = component.update(model, component.Ticked)
 /// ```
 pub fn update(
   model: Model(socket),
   message: Msg(socket),
 ) -> #(Model(socket), Effect(Msg(socket))) {
+  let at = model.view.transport.now()
   case message {
     // The lane starts with its subscribe in flight, and anything filed
-    // before it existed is handed to it at once, in arrival order.
-    Opened(socket:, at:) -> {
-      let lane = session_channel.start(socket, model.expected, now: at)
-      let #(lane, outputs) = session_channel.take_outputs(lane)
-      let #(model, effects) =
-        reduce(Model(..model, lane: Some(lane), clock: at), at)
-      #(
-        rearm(model, at),
-        effect.batch([perform(model.transport, outputs), effects]),
-      )
+    // before it existed is handed to it at once, in arrival order, by the
+    // tick that follows.
+    Opened(socket:) -> {
+      let lane = session_channel.start(socket, model.view.expected, now: at)
+      let shared =
+        Shared(..model.shared, peer: session_model.Attached)
+        |> session_model.hold_channel(lane)
+      stepping(Model(..model, shared:), [tick_at(at)], at)
     }
 
-    Refused(reason:) -> #(Model(..model, status: Ended(reason)), effect.none())
+    Refused(reason:) -> #(
+      Model(..model, view: View(..model.view, status: Ended(reason))),
+      effect.none(),
+    )
 
     // The timer's subject can be ready after the lane opened, since the
     // open's answer comes from another process, so the first arming may
     // happen here.
     TimerArmed(timer:) -> #(
-      rearm(Model(..model, timer: Some(timer)), model.clock),
+      rearm(Model(..model, view: View(..model.view, timer: Some(timer))), at),
       effect.none(),
     )
 
     // A batch is filed behind anything still held and reduced now. One
     // message is one render, so the whole batch costs one.
-    Arrived(messages:, at:) -> {
-      let filed = list.fold(messages, model.filed, inbox.push)
-      let #(model, effects) = reduce(Model(..model, filed:, clock: at), at)
-      #(rearm(model, at), effects)
-    }
+    Arrived(messages:) ->
+      stepping(
+        model,
+        [
+          msg.Arrived(list.map(messages, msg.Frame(Nil, _))),
+          tick_at(at),
+        ],
+        at,
+      )
 
-    // The lane's due reading passed: its tick acts, and the strip's labels
-    // are brought up to the same reading.
-    Ticked(at:) -> {
-      let #(model, effects) = reduce(Model(..model, clock: at), at)
-      #(rearm(ticked(model, at), at), effects)
-    }
+    // The lane's due reading passed: its tick acts.
+    Ticked -> stepping(model, [tick_at(at)], at)
 
-    OlderRequested -> older(model)
+    OlderRequested -> older_at(model, at)
   }
 }
 
-// Every filed frame goes to the lane in arrival order, then the lane's own
-// tick runs, which is where its idle refresh and deadlines are checked. A
-// reduction before the transport opens keeps what was filed for the next
-// one.
-//
-// A read for older rows the lane was too busy to take is offered again
-// last, once the lane has done everything the frames asked of it, as the
-// terminal offers it after each of its drains. The lane's outputs are then
-// one ordered effect.
-fn reduce(
+// The step's tick at `at`. The two readings are the same one because the
+// component has one clock, for the lane's deadlines and for the shared
+// record's elapsed times alike.
+fn tick_at(at: Int) -> msg.Msg(Nil) {
+  msg.Input(at: stamp(at), event: msg.Ticked)
+}
+
+fn stamp(at: Int) -> msg.Stamp {
+  msg.Stamp(now_ms: at, transport_ms: at)
+}
+
+// Runs `messages` through the shared step in order, collecting the effects
+// each decided, and finishes the message.
+fn stepping(
   model: Model(socket),
+  messages: List(msg.Msg(Nil)),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  case model.lane {
-    None -> #(model, effect.none())
-    Some(_) -> {
-      let model = drained(model)
-      case model.lane {
-        None -> #(model, effect.none())
-        Some(lane) -> {
-          let #(lane, ticked) = session_channel.tick(lane, now: at)
-          apply(Model(..model, lane: Some(lane)), ticked)
-          |> serviced
-          |> taken
-        }
-      }
-    }
-  }
+  let #(shared, effects) =
+    list.fold(messages, #(model.shared, []), fn(done, message) {
+      let #(shared, effects) = step.update(done.0, message)
+      #(shared, list.append(done.1, effects))
+    })
+  finished(Model(..model, shared:), effects, at)
 }
 
-// Sends the read `history_view` says is owed, when the lane can take it.
-//
-// The lane has one request out at a time. A busy lane refuses the read, and
-// the demand stays `Wanted` in the history window until the next reduction
-// offers it again; nothing else is needed to retry it, because every
-// transition that frees the lane is a reduction. Only a read the lane
-// accepted becomes `Pending`, which is what `accept` matches the reply
-// against.
-fn serviced(model: Model(socket)) -> Model(socket) {
-  case history_view.range(model.scrollback), model.lane {
-    Some(#(after, before)), Some(lane) ->
-      case session_channel.history(lane, after, before, now: model.clock) {
-        Error(_) -> model
-        Ok(lane) ->
-          Model(
-            ..model,
-            lane: Some(lane),
-            scrollback: history_view.sent(model.scrollback, before),
-          )
-      }
-    Some(_), None | None, _ -> model
-  }
-}
-
-// Takes everything the lane queued, keeping the emptied lane so no output
-// is performed twice, and performs it as one ordered effect.
-fn taken(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
-  case model.lane {
-    None -> #(model, effect.none())
-    Some(lane) -> {
-      let #(lane, outputs) = session_channel.take_outputs(lane)
-      #(Model(..model, lane: Some(lane)), perform(model.transport, outputs))
-    }
-  }
-}
-
-// Hands every filed frame to the lane, oldest first, through the engine's
-// drain. The lane's outputs stay queued on it until the caller takes them,
-// so a command submitted after the drain leaves behind them, in order.
-fn drained(model: Model(socket)) -> Model(socket) {
-  operator.drain(model, inbox.held(model.filed), take_filed, received)
-}
-
-fn take_filed(
+// The end of every message: what the page draws is derived from the record
+// the step left, the deadline timer is armed for the lane's next due
+// reading, and the effects the step decided are performed as one.
+fn finished(
   model: Model(socket),
-) -> #(Model(socket), Result(connection_event.Message, Nil)) {
-  let #(filed, next) = inbox.take(model.filed)
-  #(Model(..model, filed:), next)
+  effects: List(step_effect.Effect(socket, Nil)),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let model = refreshed(model) |> rearm(at)
+  #(model, perform(model.view.transport, effects))
 }
 
-fn received(
-  model: Model(socket),
-  message: connection_event.Message,
-) -> Model(socket) {
-  case model.lane {
-    None -> model
-    Some(lane) -> {
-      let #(lane, updates) =
-        session_channel.receive(lane, message, now: model.clock)
-      apply(Model(..model, lane: Some(lane)), updates)
-    }
-  }
-}
-
-/// Folds the lane's updates into the component: a capture is projected
-/// once, here, into the blocks and pieces the view draws, the agent rows
-/// and strip, and the escalations it offers; a usage push is folded into
-/// the cache ledger and the roster; a submission's outcome becomes the
-/// notice; a failure ends the page.
+/// Folds lane updates into the component as the shared step's lane fold
+/// does, and derives what the page draws from the result.
+///
+/// It is the boundary a test drives to deliver a daemon reply without
+/// standing up a socket, and the terminal has the same one
+/// (`tui/inbound.apply_channel_update`). Each update is applied on its own,
+/// as the step applies them, and the effects the fold queued stay in the
+/// shared record's outbox for the next step to return.
 ///
 /// ## Examples
 ///
@@ -660,282 +648,88 @@ pub fn apply(
   model: Model(socket),
   updates: List(session_channel.Update),
 ) -> Model(socket) {
-  list.fold(updates, model, fn(model, update) {
-    case update {
-      session_channel.Captured(cut:, view:, ..) -> captured(model, cut, view)
-
-      // A lane that failed answers no read it had out or still owed, so the
-      // demand is retired with it and the lane stops saying it is loading.
-      session_channel.Failed(reason:) ->
-        Model(
-          ..model,
-          status: Ended(reason),
-          scrollback: history_view.resume(history_view.cancel(model.scrollback)),
-        )
-      session_channel.Submission(disposition:) -> settled(model, disposition)
-      session_channel.UnknownOutcome(..) ->
-        Model(
-          ..model,
-          notice: Warned(
-            "The daemon's reply to your last command was lost. It was not resent.",
-          ),
-        )
-
-      // An older page of the strand's history, answering the read the page
-      // sent for it.
-      session_channel.HistoryPage(window:, before_seq:, after_seq:) ->
-        paged(model, window, before_seq, after_seq)
-
-      // The daemon refused the read for older rows. The demand is retired
-      // and the page follows the session again, with the rows it held, so
-      // the reader can ask once more.
-      session_channel.RequestRefused(command: "history", code:, ..) ->
-        Model(
-          ..model,
-          scrollback: history_view.cancel(model.scrollback),
-          notice: Warned("Loading older rows was refused: " <> code),
-        )
-        |> resumed
-
-      // The daemon's answer to the page's own command replaces whatever
-      // the page said before, as the terminal's footer does, so the notice
-      // always states the outcome of the latest command rather than an
-      // earlier refusal or a "sent" the daemon has since answered. The only
-      // read the page's lane sends that expects a reply is the history read
-      // above, which is never acknowledged, so every other acknowledgement
-      // and refusal it sees answers a command this page issued. A refusal
-      // names its code, which the daemon chooses, and not its message.
-      session_channel.Acknowledged(command:, status:) ->
-        Model(..model, notice: Said(command <> " " <> status))
-      session_channel.RequestRefused(command:, code:, ..) ->
-        Model(..model, notice: Warned(command <> " refused: " <> code))
-
-      session_channel.Auxiliary(protocol.UsageChanged(
-        strand:,
-        seq:,
-        operation:,
-        usage:,
-      )) -> used(model, strand, seq, operation, usage)
-
-      // The page sends no escalation lookup, so a `LookedUp` never answers
-      // it, and it draws no live stream.
-      session_channel.LookedUp(..)
-      | session_channel.Auxiliary(..)
-      | session_channel.Streamed(..)
-      | session_channel.ToolStreamed(..)
-      | session_channel.Noticed(..) -> model
-    }
-  })
+  let shared =
+    list.fold(updates, model.shared, fn(shared, update) {
+      lane_fold.apply_channel_update(shared, update, lane_fold.nothing_shown())
+      |> step.forget_surfaces
+    })
+  refreshed(Model(..model, shared:))
 }
 
-// One capture, in the order the terminal takes it: the cache ledger is
-// carried across the new configuration before anything is compared, the
-// agent rows and the roster are observed, and only then are the pushed
-// usage rows the capture covers settled, so a miss they reveal is anchored
-// to the records this capture holds.
-fn captured(
-  model: Model(socket),
-  cut: snapshot.Captured,
-  view: snapshot_view.View,
-) -> Model(socket) {
-  case model.shown == Some(#(cut, view)) {
-    True -> recaptured(model, cut.next_seq)
-    False -> fresh(model, cut, view)
+// --- what the page draws ---------------------------------------------------
+
+// Brings everything the page draws up to the shared record, and builds
+// nothing that did not move: the history window follows the session again
+// once its read is answered, the transcript is projected when its inputs
+// moved, the strip when its inputs or a drawn cache label did, and the
+// status follows the lane.
+fn refreshed(model: Model(socket)) -> Model(socket) {
+  let model = resumed(model)
+  let model = case
+    projected_of(model.shared, model.view.paging) == model.view.projected
+  {
+    True -> model
+    False -> relaned(model)
   }
-}
-
-// The lane refreshes an idle page every few seconds, and a refresh of a
-// session where nothing moved brings back the capture already drawn. Comparing it
-// with the one shown costs a walk of the two terms; projecting it again
-// would cost the agent rows, the lane and the strip for nothing. Only the
-// cache ledger can still move, since a held usage row may be covered now.
-fn recaptured(model: Model(socket), next_seq: Int) -> Model(socket) {
-  let settled = settle_cache(model, next_seq)
-  case settled.notices == model.notices, settled.cache == model.cache {
-    True, True -> settled
-    True, False -> restripped(settled)
-    False, _ -> relaned(settled)
+  let model = case stripped_of(model.shared) == model.view.stripped {
+    False -> restripped(model)
+    True ->
+      case label_moved(model) {
+        True -> restripped(model)
+        False -> model
+      }
   }
+  statused(model)
 }
 
-fn fresh(
-  model: Model(socket),
-  cut: snapshot.Captured,
-  view: snapshot_view.View,
-) -> Model(socket) {
-  let previous = option.map(model.shown, fn(shown) { shown.1 })
-  let reviewers = reviewer_status.observe(model.reviewers, cut.window, view)
-  Model(
-    ..model,
-    shown: Some(#(cut, view)),
-    scrollback: history_view.capture(model.scrollback, cut.window, view, strand),
-    cache: cache_watch.capture(model.cache, previous, view),
-    reviewers:,
-    agents: agent_view.observe(model.agents, cut.window, view, reviewers),
-    roster: agent_roster.observe(model.roster, view, model.clock),
-    approvals: case approval.records(view.cells) {
-      Ok(current) -> approval.project(model.approvals, current)
-      Error(_) -> []
-    },
-    status: Following,
+fn projected_of(shared: Session(socket), paging: Paging) -> Projected {
+  Projected(
+    captured: shared.captured,
+    scrollback: shared.scrollback,
+    notices: shared.cache_notices,
+    agents: shared.agent_rows,
+    paging:,
   )
-  |> settle_cache(cut.next_seq)
-  |> relaned
 }
 
-// A usage row the daemon pushed. One with a durable sequence is admitted
-// once, becomes the strand's context size, and waits for a capture that
-// covers it; one without is compared at once. Either way the strip is
-// redrawn, since a context size or an outlook may have moved.
-fn used(
-  model: Model(socket),
-  strand: String,
-  seq: Option(Int),
-  operation: Option(String),
-  usage: message.Usage,
-) -> Model(socket) {
-  case seq {
-    Some(seq) -> {
-      let covered = option.map(model.shown, fn(shown) { { shown.0 }.next_seq })
-      case
-        cache_watch.admit(
-          model.cache,
-          strand,
-          seq,
-          operation,
-          usage,
-          model.clock,
-          covered,
-        )
-      {
-        Error(Nil) -> model
-        Ok(cache) -> {
-          let model =
-            Model(
-              ..model,
-              cache:,
-              roster: agent_roster.observe_usage(
-                model.roster,
-                strand,
-                operation,
-                agent_roster.context(usage),
-              ),
-            )
-          case covered {
-            Some(next_seq) -> settle_pushed(model, next_seq)
-            None -> restripped(model)
-          }
-        }
-      }
-    }
-    None -> {
-      let #(cache, missed) =
-        cache_watch.observe(
-          model.cache,
-          strand,
-          usage,
-          model.clock,
-          cache_watch.Live,
-        )
-      case missed {
-        None -> restripped(Model(..model, cache:))
-        Some(found) -> noted(Model(..model, cache:), found) |> relaned
-      }
-    }
-  }
-}
-
-// Settles the held usage rows a capture covers and files each miss they
-// reveal.
-fn settle_cache(model: Model(socket), next_seq: Int) -> Model(socket) {
-  let #(cache, missed) =
-    cache_watch.settle(model.cache, next_seq, cache_watch.Live)
-  list.fold(missed, Model(..model, cache:), noted)
-}
-
-// A pushed row the last capture already covers is settled at once. A push
-// usually runs ahead of the captures, so settling finds nothing and files
-// no notice; the lane is projected again only when a miss was found, and
-// otherwise only the strip, whose context size or outlook may have moved.
-fn settle_pushed(model: Model(socket), next_seq: Int) -> Model(socket) {
-  let settled = settle_cache(model, next_seq)
-  case settled.notices == model.notices {
-    True -> restripped(settled)
-    False -> relaned(settled)
-  }
-}
-
-// Files one miss as a notice after the newest entry its strand holds, as
-// the terminal files one. The page draws one strand, so a miss on another
-// strand has no row here; that strand's chip still shows its outlook.
-fn noted(model: Model(socket), found: cache_watch.Missed) -> Model(socket) {
-  case model.shown, found.strand == strand {
-    Some(#(cut, view)), True ->
-      case transcript.newest_entry(cut, view, strand) {
-        None -> model
-        Some(after_entry) ->
-          Model(
-            ..model,
-            notices: list.append(model.notices, [
-              transcript_line.CacheNotice(
-                strand:,
-                after_entry:,
-                text: cache_watch.notice_text(found.miss),
-              ),
-            ]),
-          )
-      }
-    _, _ -> model
-  }
-}
-
-// An older page arrived for the read the page has out. It joins the history
-// window, and the page follows the session again from the newest capture,
-// which `capture` folds in on top of the pages read. A reply for any other
-// read, which the lane's one reply slot should never deliver, is dropped.
-fn paged(
-  model: Model(socket),
-  window: snapshot.Window,
-  before: Int,
-  after: Int,
-) -> Model(socket) {
-  case model.shown, model.scrollback.request == history_view.Pending(before) {
-    Some(#(_, view)), True ->
-      Model(
-        ..model,
-        scrollback: history_view.accept(
-          model.scrollback,
-          window,
-          before,
-          after,
-          view,
-        ),
-      )
-      |> resumed
-    Some(_), False | None, _ -> model
-  }
+fn stripped_of(shared: Session(socket)) -> Stripped {
+  Stripped(
+    roster: agent_roster.Roster(..shared.roster, now_ms: 0),
+    cache: shared.cache,
+    agents: shared.agent_rows,
+    strands: shared.strands,
+  )
 }
 
 // Asking for older rows freezes the history window (`history_view.older`),
 // so a capture that lands while the read is out cannot move the endpoint
-// the reply will be placed against. Once the read is answered or refused,
-// the window follows the session again and takes in the newest capture,
-// which `shown` kept while the window was frozen.
+// the reply will be placed against. Once the read is answered or refused, or
+// the lane has failed, no read is owed and the window follows the session
+// again, taking in the newest capture, which `captured` kept while the
+// window was frozen. The terminal leaves the window frozen until its reader
+// scrolls back to the tail; this page never scrolls, so it resumes here.
 fn resumed(model: Model(socket)) -> Model(socket) {
-  case model.shown {
-    None -> model
-    Some(#(cut, view)) ->
+  let shared = model.shared
+  case shared.scrollback.mode, shared.scrollback.request, shared.captured {
+    history_view.Reading, history_view.Quiet, Some(#(cut, view)) ->
       Model(
         ..model,
-        scrollback: history_view.resume(model.scrollback)
-          |> history_view.capture(cut.window, view, strand),
+        shared: Shared(
+          ..shared,
+          scrollback: history_view.resume(shared.scrollback)
+            |> history_view.capture(cut.window, view, strand),
+        ),
       )
-      |> relaned
+    history_view.Reading, history_view.Quiet, None
+    | history_view.Reading, history_view.Wanted, _
+    | history_view.Reading, history_view.Pending(_), _
+    | history_view.Live, _, _
+    -> model
   }
 }
 
 // Projects the page strand's blocks and pieces from the history window and
-// the notices, then the strip. This is the one place a projection runs.
+// the notices. This is the one place a projection runs.
 //
 // The page holds the newest turns whose rows fit its limit, and cuts the
 // rest (`held`). Records older than the oldest row it keeps are then dropped
@@ -943,6 +737,8 @@ fn resumed(model: Model(socket)) -> Model(socket) {
 // draws and the records a capture adds. The window is trimmed only when
 // rows were cut: a record at the start of the strand that draws no row
 // would otherwise leave the page offering to load rows it will never draw.
+// The trim is a write to the shared record, and one of the two this module
+// makes.
 //
 // The end of a turn whose input is older than the window is not drawn, but
 // its records stay in the window (`AtInput`), so the next read asks for the
@@ -955,38 +751,60 @@ fn resumed(model: Model(socket)) -> Model(socket) {
 // whose oldest parent is missing with nothing below to read offers no
 // button that would do nothing.
 fn relaned(model: Model(socket)) -> Model(socket) {
-  case model.shown {
-    None -> restripped(model)
+  let shared = model.shared
+  case shared.captured {
+    None -> settled_projection(model)
     Some(#(cut, view)) -> {
-      let branch = history_view.branch(model.scrollback, view)
+      let branch = history_view.branch(shared.scrollback, view)
       let all =
-        transcript.branch_blocks(branch, cut, view, strand, model.notices)
+        transcript.branch_blocks(
+          branch,
+          cut,
+          view,
+          strand,
+          shared.cache_notices,
+        )
       let #(lead, opened) = turns.grouped(all, view.strands)
       let #(blocks, fit) =
-        held(lead, opened, branch.unloaded, limit(model.paging))
-      let latest = turns.latest(view, model.agents, strand)
+        held(lead, opened, branch.unloaded, limit(model.view.paging))
+      let latest = turns.latest(view, shared.agent_rows, strand)
       let pieces = turns.pieces(blocks, view.strands, latest)
       let #(scrollback, earlier) = case fit, branch.unloaded {
-        Whole, None -> #(model.scrollback, Reached)
+        Whole, None -> #(shared.scrollback, Reached)
         Whole, Some(_) ->
-          case model.scrollback.before_seq > 1 {
-            True -> #(model.scrollback, Unheld)
-            False -> #(model.scrollback, Reached)
+          case shared.scrollback.before_seq > 1 {
+            True -> #(shared.scrollback, Unheld)
+            False -> #(shared.scrollback, Reached)
           }
-        AtInput, _ -> #(trimmed(model.scrollback, lead), Unheld)
-        Cut, _ -> #(trimmed(model.scrollback, blocks), Unheld)
+        AtInput, _ -> #(trimmed(shared.scrollback, lead), Unheld)
+        Cut, _ -> #(trimmed(shared.scrollback, blocks), Unheld)
       }
 
       // A paged page that had to cut a whole turn to stay within its
       // limit is full: loading more would only cut again.
-      let paging = case fit, model.paging {
+      let paging = case fit, model.view.paging {
         Cut, Paged -> Full
-        Cut, Tail | Cut, Full | Whole, _ | AtInput, _ -> model.paging
+        Cut, Tail | Cut, Full | Whole, _ | AtInput, _ -> model.view.paging
       }
-      Model(..model, blocks:, pieces:, scrollback:, earlier:, paging:)
-      |> restripped
+      settled_projection(Model(
+        shared: Shared(..shared, scrollback:),
+        view: View(..model.view, blocks:, pieces:, earlier:, paging:),
+      ))
     }
   }
+}
+
+// Records what the projection was built from, after the trim and the paging
+// it may have written, so the next `refreshed` compares against what the record
+// holds now and not against what the projection started from.
+fn settled_projection(model: Model(socket)) -> Model(socket) {
+  Model(
+    ..model,
+    view: View(
+      ..model.view,
+      projected: projected_of(model.shared, model.view.paging),
+    ),
+  )
 }
 
 // How much of what the history window projects the page holds.
@@ -1124,21 +942,28 @@ fn trimmed(
 }
 
 // The agent strip from the roster, the agent rows and the cache ledger, as
-// of the page's clock. Which strands are listed and what each line says is
-// `agent_roster.chips`; which outlook may be shown is `cache_watch.shown`.
+// of the shared record's clock. Which strands are listed and what each line
+// says is `agent_roster.chips`; which outlook may be shown is
+// `cache_watch.shown`.
 fn restripped(model: Model(socket)) -> Model(socket) {
-  Model(..model, strip: strip_of(model))
+  Model(
+    ..model,
+    view: View(
+      ..model.view,
+      strip: strip_of(model.shared),
+      stripped: stripped_of(model.shared),
+    ),
+  )
 }
 
-fn strip_of(model: Model(socket)) -> strip.Strip {
-  let strands = strands(model)
-  let chips = agent_roster.chips(model.roster, model.agents, strand)
+fn strip_of(shared: Session(socket)) -> strip.Strip {
+  let chips = agent_roster.chips(shared.roster, shared.agent_rows, strand)
   let chip = fn(line: agent_roster.Line) {
     strip.Chip(
       line:,
-      hue: turns.hue(strands, line.id),
-      cache: outlook(model, strands, line.id),
-      running_ms: running_ms(model, line.id),
+      hue: turns.hue(shared.strands, line.id),
+      cache: outlook(shared, line.id),
+      running_ms: running_ms(shared, line.id),
     )
   }
   strip.Strip(
@@ -1149,59 +974,46 @@ fn strip_of(model: Model(socket)) -> strip.Strip {
 }
 
 // How long a strand's current operation has run, on the roster's clock.
-fn running_ms(model: Model(socket), id: String) -> Option(Int) {
-  model.agents
+fn running_ms(shared: Session(socket), id: String) -> Option(Int) {
+  shared.agent_rows
   |> list.find(fn(row) { row.id == id })
   |> option.from_result
-  |> option.then(agent_roster.running_ms(model.roster, _))
-}
-
-fn strands(model: Model(socket)) -> List(protocol.Strand) {
-  case model.shown {
-    Some(#(_, view)) -> view.strands
-    None -> []
-  }
+  |> option.then(agent_roster.running_ms(shared.roster, _))
 }
 
 // A strand the capture lists with a live phase is running, which is the
 // terminal's test too, and `cache_watch.shown` says nothing for it.
 fn outlook(
-  model: Model(socket),
-  strands: List(protocol.Strand),
+  shared: Session(socket),
   id: String,
 ) -> Option(#(cache_miss.Outlook, String)) {
-  let activity = case list.find(strands, fn(listed) { listed.id == id }) {
+  let activity = case
+    list.find(shared.strands, fn(listed) { listed.id == id })
+  {
     Ok(protocol.Strand(live_phase: Some(_), ..)) -> cache_watch.Running
     Ok(protocol.Strand(live_phase: None, ..)) | Error(Nil) ->
       cache_watch.Resting
   }
-  cache_watch.shown(model.cache, id, activity, model.clock)
+  cache_watch.shown(shared.cache, id, activity, shared.stamp.now_ms)
   |> option.map(fn(held) { #(held, cache_miss.outlook_label(held)) })
 }
 
-// The tick's part in the strip. The browser counts each chip's elapsed
-// time, so a second passing redraws nothing; the strip is rebuilt only when
-// a drawn cache label changed, which is once a minute at most until a
+// A tick's part in the strip. The browser counts each chip's elapsed time,
+// so a second passing redraws nothing; the strip is rebuilt only when a
+// drawn cache label changed, which is once a minute at most until a
 // countdown's last minute. An idle page's tick therefore leaves the strip
 // as the same value and its memoized subtree is not diffed. The timer fires
 // only when the lane is due, so a label can lag by up to one refresh
 // interval. A countdown label is an upper bound on what remains, so a late
-// one still states something true. The labels are
-// compared chip by chip rather than by rebuilding the strip, which would
-// redo every line's text on every tick.
-fn ticked(model: Model(socket), at: Int) -> Model(socket) {
-  let #(roster, _) = agent_roster.tick(model.roster, at)
-  let model = Model(..model, roster:)
-  let strands = strands(model)
-  let moved =
-    list.any(chips(model.strip), fn(chip) {
-      option.map(chip.cache, fn(held) { held.1 })
-      != option.map(outlook(model, strands, chip.line.id), fn(held) { held.1 })
-    })
-  case moved {
-    False -> model
-    True -> restripped(model)
-  }
+// one still states something true. The labels are compared chip by chip
+// rather than by rebuilding the strip, which would redo every line's text
+// on every tick.
+fn label_moved(model: Model(socket)) -> Bool {
+  let shared = model.shared
+  list.any(chips(model.view.strip), fn(chip) {
+    option.map(chip.cache, fn(held) { held.1 })
+    != option.map(outlook(shared, chip.line.id), fn(held) { held.1 })
+  })
 }
 
 // Every chip of a strip, the advisor's included.
@@ -1212,34 +1024,37 @@ fn chips(strip: strip.Strip) -> List(strip.Chip) {
   }
 }
 
-// What the lane's answer to a submission means for the page. A sent draft
-// leaves the composer, by a new key on its editor; a waiting one stays until
-// the lane sends it after the next capture; a refused one stays where the
-// operator can edit it.
-fn settled(
-  model: Model(socket),
-  disposition: session_channel.Disposition,
-) -> Model(socket) {
-  case disposition {
-    session_channel.Sent(command:, ..) ->
-      Model(..model, drafts: model.drafts + 1, notice: Said(command <> " sent"))
-    session_channel.Waiting(_) ->
-      Model(
-        ..model,
-        notice: Said("Waiting for the session to synchronize before sending."),
-      )
-    session_channel.DefinitelyNotSent(reason:) ->
-      Model(..model, notice: Warned("Not sent: " <> reason))
+// The connection's status follows the lane. A cut makes a connecting page
+// follow, a lane that ended makes it disconnected, and a disconnected page
+// stays so: the last drawn cut is what it keeps showing.
+fn statused(model: Model(socket)) -> Model(socket) {
+  let status = case
+    model.view.status,
+    model.shared.ended,
+    model.shared.captured
+  {
+    Ended(_), _, _ -> model.view.status
+    _, Some(reason), _ -> Ended(reason)
+    Connecting, None, Some(_) -> Following
+    Connecting, None, None | Following, None, _ -> model.view.status
   }
+  Model(..model, view: View(..model.view, status:))
 }
 
-/// Submits an operator's text to the page's strand through the engine's
-/// command arm, after handing the lane what was already filed, as the
-/// terminal drains before it acts on a key.
+// --- what the operator does ------------------------------------------------
+
+/// Submits an operator's text to the page's strand through the shared
+/// step's command arm.
 ///
 /// Empty text and text over `prompt_limit` are refused with a notice
-/// before they become a command. What the lane decides is folded back as
-/// its disposition.
+/// before they become a command, because they are the page socket's limits
+/// and not the session's. The draft is then parsed as the terminal parses
+/// it (`command.parse_with_skills`). A session command, which includes an
+/// ordinary prompt, goes to the step (`commands.act`) and what the step
+/// decides is folded back as its notice. A command that names a terminal
+/// surface (`/help`, `/models`, `/sessions` and the rest) is refused with a
+/// notice: the page has no such surface, and sending it to the model as a
+/// prompt would run the words as an instruction.
 ///
 /// ## Examples
 ///
@@ -1252,30 +1067,29 @@ pub fn submit(
   delivery: operator.Delivery,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case string.trim(text), string.byte_size(text) > prompt_limit {
-    "", _ -> #(
-      Model(..model, notice: Warned("Nothing to send.")),
-      effect.none(),
-    )
-    _, True -> #(
-      Model(
-        ..model,
-        notice: Warned(
-          "The draft is longer than the page sends ("
+    "", _ -> refused(model, "Nothing to send.")
+    _, True ->
+      refused(
+        model,
+        "The draft is longer than the page sends ("
           <> int.to_string(prompt_limit)
           <> " bytes).",
-        ),
-      ),
-      effect.none(),
-    )
+      )
     _, False ->
-      commanded(model, fn(lane, id, now) {
-        Ok(operator.submit(lane, id, strand, text, delivery, now))
-      })
+      case command.parse_with_skills(text, model.shared.skills) {
+        command.Session(session) ->
+          commanded(model, msg.Submit(draft: text, command: session, delivery:))
+        command.Surface(_) ->
+          refused(
+            model,
+            "That command opens a terminal surface, which the page does not have. Nothing was sent.",
+          )
+      }
   }
 }
 
 /// Answers the escalation the page drew as `id` at `seq`, through the
-/// engine's command arm.
+/// shared step's command arm.
 ///
 /// The answer is sent only for the record with exactly that identity and
 /// sequence, still pending (`operator.drawn`); a record that moved after
@@ -1292,25 +1106,68 @@ pub fn decide(
   seq: Int,
   answer: Answer,
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  let model = drained(model)
-  case operator.drawn(model.approvals, id, seq) {
+  case operator.drawn(model.shared.approvals, id, seq) {
     Error(Nil) ->
-      Model(
-        ..model,
-        notice: Warned(
-          "That approval changed after it was drawn, so nothing was decided.",
-        ),
+      refused(
+        model,
+        "That approval changed after it was drawn, so nothing was decided.",
       )
-      |> flushed
     Ok(record) -> {
       let choice = case answer {
         AllowOnce -> operator.AllowOnce
         Deny -> operator.Deny
       }
-      commanded(model, fn(lane, id, now) {
-        operator.decide(lane, id, record, choice, now)
-      })
+      commanded(model, msg.Decide(review: record, choice:))
     }
+  }
+}
+
+// An input the page refused before it became a command. The refusal stays
+// until the operator's next input.
+fn refused(
+  model: Model(socket),
+  text: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  #(
+    Model(..model, view: View(..model.view, refusal: Some(text))),
+    effect.none(),
+  )
+}
+
+// One command through the step at the transport's own reading, which the
+// request's deadline and the timer armed for it are measured from. What the
+// step decided is folded back as its notice, and the composer's draft is
+// counted as consumed when the command took it at dispatch. The facts the
+// command recorded are the only ones this host reads, and it empties them
+// after.
+fn commanded(
+  model: Model(socket),
+  command: msg.Command,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let at = model.view.transport.now()
+  let #(shared, effects) =
+    step.update(
+      model.shared,
+      msg.Input(at: stamp(at), event: msg.Acted(command)),
+    )
+  let consumed = case list.any(shared.surface_facts, took_draft) {
+    True -> model.view.consumed + 1
+    False -> model.view.consumed
+  }
+  finished(
+    Model(
+      shared: step.forget_surfaces(shared),
+      view: View(..model.view, refusal: None, consumed:),
+    ),
+    effects,
+    at,
+  )
+}
+
+fn took_draft(fact: session_model.SurfaceFact) -> Bool {
+  case fact {
+    session_model.DraftTaken(..) -> True
+    _ -> False
   }
 }
 
@@ -1319,12 +1176,12 @@ pub fn decide(
 ///
 /// The page's limit rises from `live_rows` to `held_rows`, and the history
 /// window asks for the interval of at most a hundred sequences below its
-/// oldest record (`history_view.older`), which the lane sends as a
-/// `history` read as soon as it has no other request out. That is the
+/// oldest record (`history_view.older`), which the step's tick sends as a
+/// `history` read as soon as the lane has no other request out. That is the
 /// read the terminal pages with, and a read, not a mutation: the gateway
 /// admits it for an observer's attachment as for an operator's. While it
 /// is out the lane draws `lane.Loading`, and a second press asks nothing.
-/// The reply is folded in by `apply`.
+/// The reply is folded in by the step.
 ///
 /// ## Examples
 ///
@@ -1332,18 +1189,31 @@ pub fn decide(
 /// // component.older(model)
 /// ```
 pub fn older(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
-  let model = drained(Model(..model, clock: model.transport.now()))
-  case top(model), model.shown, model.status {
+  older_at(model, model.view.transport.now())
+}
+
+// `older` at the reading `update` took at its top.
+fn older_at(
+  model: Model(socket),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let shared = model.shared
+  case top(model), shared.captured, model.view.status {
     lane.Earlier, Some(#(_, view)), Following -> {
-      let branch = history_view.branch(model.scrollback, view)
-      Model(
-        ..model,
-        scrollback: history_view.older(model.scrollback, branch.unloaded),
-        paging: Paged,
+      let branch = history_view.branch(shared.scrollback, view)
+      let asked =
+        Shared(
+          ..shared,
+          scrollback: history_view.older(shared.scrollback, branch.unloaded),
+        )
+      stepping(
+        Model(
+          shared: asked,
+          view: View(..model.view, paging: Paged, refusal: None),
+        ),
+        [tick_at(at)],
+        at,
       )
-      |> relaned
-      |> serviced
-      |> flushed
     }
 
     // Nothing older to load, a read already out, a page at its limit, or
@@ -1354,7 +1224,7 @@ pub fn older(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
     | lane.Earlier, None, _
     | lane.Earlier, Some(_), Connecting
     | lane.Earlier, Some(_), Ended(_)
-    -> flushed(model)
+    -> #(model, effect.none())
   }
 }
 
@@ -1366,7 +1236,7 @@ pub fn older(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
 /// // component.top(model) == lane.Earlier
 /// ```
 pub fn top(model: Model(socket)) -> lane.Top {
-  case model.scrollback.request, model.earlier, model.paging {
+  case model.shared.scrollback.request, model.view.earlier, model.view.paging {
     history_view.Wanted, _, _ | history_view.Pending(_), _, _ -> lane.Loading
     history_view.Quiet, Reached, _ -> lane.Beginning
     history_view.Quiet, Unheld, Full -> lane.Full(held_rows)
@@ -1383,67 +1253,31 @@ pub fn top(model: Model(socket)) -> lane.Top {
 /// // component.paging(model) == component.Tail
 /// ```
 pub fn paging(model: Model(socket)) -> Paging {
-  model.paging
+  model.view.paging
 }
 
-// One command through the lane: drain what was filed, run the arm, fold its
-// disposition, and perform everything the lane queued in the order it
-// queued it.
-fn commanded(
-  model: Model(socket),
-  arm: fn(session_channel.Channel(socket, Nil), Int, Int) ->
-    Result(
-      #(session_channel.Channel(socket, Nil), session_channel.Disposition),
-      String,
-    ),
-) -> #(Model(socket), Effect(Msg(socket))) {
-  // A command reads the host's clock itself. The last message's reading can
-  // be a whole idle refresh old, `pushing_refresh_ms` on a pushing lane, and the
-  // request's deadline and the timer armed for it are measured from here.
-  let model = drained(Model(..model, clock: model.transport.now()))
-  case model.lane {
-    None -> #(
-      Model(..model, notice: Warned("The page is not connected yet.")),
-      effect.none(),
-    )
-    Some(lane) ->
-      case arm(lane, model.next_id, model.clock) {
-        Error(reason) -> flushed(Model(..model, notice: Warned(reason)))
-        Ok(#(lane, disposition)) ->
-          Model(..model, lane: Some(lane), next_id: model.next_id + 1)
-          |> settled(disposition)
-          |> flushed
-      }
-  }
-}
-
-// Takes and performs everything the lane queued, as `taken` does. A command
-// or a read moves the lane's next due reading, so the timer is armed again
-// here too.
-fn flushed(model: Model(socket)) -> #(Model(socket), Effect(Msg(socket))) {
-  let #(model, effects) = taken(model)
-  #(rearm(model, model.clock), effects)
-}
-
-// The lane's outputs, performed through the host's transport in the order
-// the lane decided them, in one effect: Lustre does not order a batch.
-// The shape is the terminal's `terminal_lane.perform`.
+// The step's effects, performed through the host's transport in the order
+// the step decided them, in one effect: Lustre does not order a batch. The
+// shape is the terminal's `terminal_lane.perform`.
 fn perform(
   transport: Transport(socket),
-  outputs: List(session_channel.Out(socket, Nil)),
+  effects: List(step_effect.Effect(socket, Nil)),
 ) -> Effect(Msg(socket)) {
-  case outputs {
+  case effects {
     [] -> effect.none()
     [_, ..] -> {
       use _dispatch <- effect.from
-      list.each(outputs, fn(output) {
-        case output {
-          session_channel.Transmit(socket:, frame:) ->
+      list.each(effects, fn(decided) {
+        case decided {
+          step_effect.Lane(session_channel.Transmit(socket:, frame:)) ->
             transport.transmit(socket, frame)
-          session_channel.Shut(socket:) -> transport.shut(socket)
+          step_effect.Lane(session_channel.Shut(socket:)) ->
+            transport.shut(socket)
 
-          // The lane holds no trace, so it never queues a note.
-          session_channel.Note(..) -> Nil
+          // The lane holds no trace and the record no recorder, so the step
+          // never queues a note or a recording line.
+          step_effect.Lane(session_channel.Note(..))
+          | step_effect.Recorded(..) -> Nil
         }
       })
     }
@@ -1465,17 +1299,17 @@ fn perform(
 // behind. The tick it runs is harmless: `next_due` is exact, so a lane that
 // is not yet due does nothing.
 fn rearm(model: Model(socket), now: Int) -> Model(socket) {
-  let _ = option.map(model.armed, process.cancel_timer)
-  let due = option.then(model.lane, session_channel.next_due)
-  case model.timer, due {
+  let _ = option.map(model.view.armed, process.cancel_timer)
+  let due = option.then(model.shared.channel, session_channel.next_due)
+  let armed = case model.view.timer, due {
     Some(timer), Some(due) ->
-      Model(
-        ..model,
-        armed: Some(process.send_after(timer, int.max(0, due - now), Nil)),
-      )
-    Some(_), None | None, _ -> Model(..model, armed: None)
+      Some(process.send_after(timer, int.max(0, due - now), Nil))
+    Some(_), None | None, _ -> None
   }
+  Model(..model, view: View(..model.view, armed:))
 }
+
+// --- what the page reads ---------------------------------------------------
 
 /// The transcript lines of the page strand's blocks, oldest first: the
 /// lines the terminal draws for the same capture, which the lane lays out
@@ -1487,7 +1321,7 @@ fn rearm(model: Model(socket), now: Int) -> Model(socket) {
 /// // component.lines(model)
 /// ```
 pub fn lines(model: Model(socket)) -> List(Line) {
-  list.flat_map(model.blocks, fn(block) {
+  list.flat_map(model.view.blocks, fn(block) {
     list.map(block.rows, fn(row) { row.1 })
   })
 }
@@ -1500,7 +1334,7 @@ pub fn lines(model: Model(socket)) -> List(Line) {
 /// // lane.view(component.pieces(model))
 /// ```
 pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
-  model.pieces
+  model.view.pieces
 }
 
 /// The agent strip as the page draws it.
@@ -1511,7 +1345,7 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 /// // strip.view(component.strip(model))
 /// ```
 pub fn strip(model: Model(socket)) -> strip.Strip {
-  model.strip
+  model.view.strip
 }
 
 /// The chip of the strand the page addresses, whose cache outlook the
@@ -1523,7 +1357,7 @@ pub fn strip(model: Model(socket)) -> strip.Strip {
 /// // component.addressed(model)
 /// ```
 pub fn addressed(model: Model(socket)) -> Option(strip.Chip) {
-  list.find(model.strip.chips, fn(chip) { chip.line.id == strand })
+  list.find(model.view.strip.chips, fn(chip) { chip.line.id == strand })
   |> option.from_result
 }
 
@@ -1535,7 +1369,7 @@ pub fn addressed(model: Model(socket)) -> Option(strip.Chip) {
 /// // component.status(model) == component.Following
 /// ```
 pub fn status(model: Model(socket)) -> Status {
-  model.status
+  model.view.status
 }
 
 /// The escalations still waiting for a decision, in the order the capture
@@ -1547,10 +1381,13 @@ pub fn status(model: Model(socket)) -> Status {
 /// // component.pending(model)
 /// ```
 pub fn pending(model: Model(socket)) -> List(approval.Review) {
-  list.filter(model.approvals, fn(record) { record.status == approval.Pending })
+  list.filter(model.shared.approvals, fn(record) {
+    record.status == approval.Pending
+  })
 }
 
-/// What the page last told the operator.
+/// What the page last told the operator: its own refusal of an input if
+/// there is one, otherwise what the session last said.
 ///
 /// ## Examples
 ///
@@ -1558,10 +1395,15 @@ pub fn pending(model: Model(socket)) -> List(approval.Review) {
 /// // component.notice(model) == component.Quiet
 /// ```
 pub fn notice(model: Model(socket)) -> Notice {
-  model.notice
+  case model.view.refusal, model.shared.notice {
+    Some(text), _ -> Warned(text)
+    None, "" -> Quiet
+    None, text -> Said(text)
+  }
 }
 
-/// How many drafts have been sent, which keys the composer's editor.
+/// How many drafts have left the composer, which keys the composer's
+/// editor: the ones the lane sent and the ones a command consumed.
 ///
 /// ## Examples
 ///
@@ -1569,7 +1411,7 @@ pub fn notice(model: Model(socket)) -> Notice {
 /// // component.drafts(model)
 /// ```
 pub fn drafts(model: Model(socket)) -> Int {
-  model.drafts
+  model.shared.drafts_sent + model.view.consumed
 }
 
 /// The attachment the last capture was taken for: who the page acts as.
@@ -1580,12 +1422,11 @@ pub fn drafts(model: Model(socket)) -> Int {
 /// // component.attachment(model)
 /// ```
 pub fn attachment(model: Model(socket)) -> Option(snapshot.Attachment) {
-  option.map(model.shown, fn(shown) { { shown.0 }.attachment })
+  option.map(model.shared.captured, fn(shown) { { shown.0 }.attachment })
 }
 
-/// Whether the page's strand has an operation running, as the last
-/// capture says, which decides whether the composer offers one Send or a
-/// Queue and a Steer.
+/// Whether the page's strand has an operation running, which decides
+/// whether the composer offers one Send or a Queue and a Steer.
 ///
 /// ## Examples
 ///
@@ -1593,14 +1434,7 @@ pub fn attachment(model: Model(socket)) -> Option(snapshot.Attachment) {
 /// // component.activity(model) == component.Idle
 /// ```
 pub fn activity(model: Model(socket)) -> Activity {
-  let running = case model.shown {
-    None -> False
-    Some(#(_, view)) ->
-      list.any(view.strands, fn(listed) {
-        listed.id == strand && listed.live_phase != None
-      })
-  }
-  case running {
+  case session_model.active_strand_live(model.shared) {
     True -> Busy
     False -> Idle
   }
@@ -1614,7 +1448,7 @@ pub fn activity(model: Model(socket)) -> Activity {
 /// // component.rows(model)
 /// ```
 pub fn rows(model: Model(socket)) -> List(transcript.Row) {
-  list.flat_map(model.blocks, fn(block) {
+  list.flat_map(model.view.blocks, fn(block) {
     list.map(block.rows, fn(row) { transcript.Row(key: row.0, line: row.1) })
   })
 }
@@ -1631,7 +1465,7 @@ pub fn rows(model: Model(socket)) -> List(transcript.Row) {
 pub fn lane(
   model: Model(socket),
 ) -> Option(session_channel.Channel(socket, Nil)) {
-  model.lane
+  model.shared.channel
 }
 
 /// The session identity the page was opened for.
@@ -1642,7 +1476,7 @@ pub fn lane(
 /// // component.session_id(model)
 /// ```
 pub fn session_id(model: Model(socket)) -> String {
-  model.session_id
+  model.shared.session
 }
 
 /// The observer's page: the heading, the agent strip, the lane, and a fixed
@@ -1663,8 +1497,8 @@ pub fn session_id(model: Model(socket)) -> String {
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session")], [
     heading(model),
-    strip.view(model.strip),
-    lane.view(model.pieces, top(model), OlderRequested),
+    strip.view(model.view.strip),
+    lane.view(model.view.pieces, top(model), OlderRequested),
     html.p([attribute.class("observer-bar")], [
       html.text(
         "Observer · read-only · you can follow this session; ask the owner for operator access",
@@ -1686,10 +1520,10 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 /// ```
 pub fn heading(model: Model(socket)) -> Element(message) {
   heading.view(
-    session_id: model.session_id,
-    name: option.map(model.label, fn(label) { label.name }),
-    workspace: option.map(model.label, fn(label) { label.workspace }),
-    status: status_text(model.status),
+    session_id: model.shared.session,
+    name: option.map(model.view.label, fn(label) { label.name }),
+    workspace: option.map(model.view.label, fn(label) { label.workspace }),
+    status: status_text(model.view.status),
   )
 }
 

@@ -1,5 +1,5 @@
-//// An operator's page: the observer's component, plus the two commands an
-//// operator may send from a browser, a prompt and a decision.
+//// An operator's page: the observer's component, plus the two inputs an
+//// operator may send from a browser, a draft and a decision.
 ////
 //// The page socket starts this application only for an attachment whose
 //// role, capped by the page's ceiling, is operator (protocol-change/051,
@@ -9,13 +9,16 @@
 //// observer's mutation on its own; the type is the second, independent
 //// layer.
 ////
-//// The commands are messages, and the component's state stays the
+//// The inputs are messages, and the component's state stays the
 //// observer's: `Observed` passes every observer message through
-//// unchanged, and `Submitted` and `Decided` reach the lane through
-//// `component.submit` and `component.decide`, which call the engine's
-//// command arms (`session_view/operator`). This module decides nothing
-//// about the session. It turns a browser event into one of those two
-//// calls, and draws the composer and the approval cards.
+//// unchanged, and `Submitted` and `Decided` reach the shared step through
+//// `component.submit` and `component.decide`, which wrap them as its
+//// commands (`session_view/commands`). A draft is parsed as the terminal
+//// parses it, so a slash command that names a session command is that
+//// command, and one that opens a terminal surface is refused with a notice.
+//// This module decides nothing about the session. It turns a browser event
+//// into one of those two calls, and draws the composer and the approval
+//// cards.
 ////
 //// The lane's "Load older" button is the observer's own
 //// (`component.OlderRequested`), a read, and reaches this page as an
@@ -54,7 +57,8 @@ pub type Msg(socket) {
   /// frames and the tick.
   Observed(message: component.Msg(socket))
 
-  /// The composer was submitted with this text, as a prompt or a steer.
+  /// The composer was submitted with this text, to be sent as a prompt or a
+  /// steer, or run as the slash command it names.
   Submitted(text: String, delivery: operator.Delivery)
 
   /// An approval card's button: the escalation's identity, the sequence

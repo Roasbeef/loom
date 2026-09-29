@@ -10,7 +10,9 @@
 
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{Some}
 import gleam/string
+import lane_fixture
 import lustre/dev/query
 import lustre/dev/simulate
 import lustre/effect
@@ -28,17 +30,33 @@ fn page(role: String, cells) {
       component.new(page_fixture.start()),
       operator_page.update,
       list.flatten([
-        [operator_page.Observed(component.Opened(wire, 0))],
+        [operator_page.Observed(component.Opened(wire))],
         list.map(page_fixture.transfer(role, cells), fn(frame) {
-          operator_page.Observed(component.Arrived([frame], 0))
+          operator_page.Observed(component.Arrived([frame]))
         }),
-        [operator_page.Observed(component.Ticked(0))],
+        [operator_page.Observed(component.Ticked)],
       ]),
     )
+    |> page_fixture.refuse_reads(operator_page.update, wire, fn(frames) {
+      operator_page.Observed(component.Arrived(frames))
+    })
 
-  // The lane's own snapshot requests are not what these tests are about.
+  // The lane's own snapshot requests, and the reads the first capture
+  // started, are not what these tests are about, so they are answered and
+  // off the wire.
   let _ = page_fixture.sent(wire)
   #(model, wire)
+}
+
+// A page whose strand is running an operation, as the last capture says.
+fn running(role: String) {
+  let #(model, wire) = page(role, [])
+  #(
+    component.apply(model, [
+      lane_fixture.captured(10, Some(lane_fixture.main_op())),
+    ]),
+    wire,
+  )
 }
 
 fn pending() {
@@ -71,12 +89,67 @@ pub fn an_operator_submits_a_prompt_to_main_test() {
   assert component.drafts(model) == 1
 }
 
+// A steer is folded into the operation that is running, so the page offers
+// it only while one is, and the engine sends one only then: on an idle
+// strand the same words are an ordinary prompt.
 pub fn a_steer_is_sent_as_a_steer_test() {
-  let #(model, wire) = page("operator", [])
+  let #(model, wire) = running("operator")
   let _ = send(model, [operator_page.Submitted("go left", operator.Steer)])
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "one steer is one command"
   assert string.contains(frame, "\"cmd\":\"steer\"")
+}
+
+// A draft that parses as a session command is that command, as it is in the
+// terminal. The page used to send every draft to the model as a prompt, so
+// `/compact` was an instruction to the model rather than a compaction.
+pub fn a_slash_command_is_the_command_and_not_a_prompt_test() {
+  let #(model, wire) = page("operator", [])
+  let _ = send(model, [operator_page.Submitted("/compact", operator.Prompt)])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one command is one frame"
+  assert string.contains(frame, "\"cmd\":\"compact\"")
+  assert !string.contains(frame, "\"cmd\":\"prompt\"")
+  assert !string.contains(frame, "/compact")
+}
+
+// An unknown slash command is refused by the shared step, as the terminal
+// refuses it, and is never sent to the model as a prompt.
+pub fn an_unknown_slash_command_is_refused_not_sent_test() {
+  let #(model, wire) = page("operator", [])
+  let model =
+    send(model, [operator_page.Submitted("/frobnicate now", operator.Prompt)])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  assert component.notice(model)
+    == component.Said("unknown command /frobnicate")
+}
+
+// A command that opens a terminal surface has no surface here. The page says
+// so and sends nothing, and the draft stays where the operator left it.
+pub fn a_terminal_surface_command_is_refused_with_a_notice_test() {
+  let #(model, wire) = page("operator", [])
+  let drafts = component.drafts(model)
+  let model =
+    send(model, [
+      operator_page.Submitted("/models", operator.Prompt),
+      operator_page.Submitted("/sessions", operator.Prompt),
+      operator_page.Submitted("/details", operator.Prompt),
+    ])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  let assert component.Warned(text) = component.notice(model)
+    as "the page says it does not carry the command out"
+  assert string.contains(text, "terminal surface")
+  assert component.drafts(model) == drafts
+}
+
+// A command the session consumes at dispatch, rather than sends, takes the
+// draft with it: `/clear` sends nothing and the composer is replaced.
+pub fn a_command_that_sends_nothing_still_takes_the_draft_test() {
+  let #(model, wire) = page("operator", [])
+  let drafts = component.drafts(model)
+  let model = send(model, [operator_page.Submitted("/clear", operator.Prompt)])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  assert component.drafts(model) == drafts + 1
 }
 
 // The composer's form is the page's one submit handler, and its fields
@@ -196,10 +269,11 @@ pub fn a_later_outcome_replaces_the_notice_test() {
   assert component.notice(model) == component.Said("prompt admitted")
 }
 
-// A command the daemon refuses replaces the "sent" notice with the
-// command's name and the refusal's code, never the daemon's message.
+// A command the daemon refuses replaces the "sent" notice with the refusal,
+// which the shared step words as the code and the daemon's message. The
+// message is the daemon's own text, and the page draws it as text only.
 pub fn a_refusal_replaces_the_sent_notice_test() {
-  let #(model, wire) = page("operator", [])
+  let #(model, wire) = running("operator")
   let model = send(model, [operator_page.Submitted("go left", operator.Steer)])
   assert component.notice(model) == component.Said("steer sent")
 
@@ -212,7 +286,10 @@ pub fn a_refusal_replaces_the_sent_notice_test() {
         "\"error\",\"body\":{\"code\":\"conflict\",\"message\":\"<b>busy</b>\"}",
       ),
     ])
-  assert component.notice(model) == component.Warned("steer refused: conflict")
+  assert component.notice(model) == component.Said("conflict: <b>busy</b>")
+  let html = element.to_string(operator_page.view(model))
+  assert string.contains(html, "conflict: &lt;b&gt;busy&lt;/b&gt;")
+  assert !string.contains(html, "<b>")
 }
 
 // The daemon's correlated reply to `frame`, a command the page sent: the
@@ -225,14 +302,13 @@ fn reply(
     as "a command carries its request identity"
   let assert Ok(#(id, _)) = string.split_once(after, ",")
     as "the identity is followed by the command"
-  operator_page.Observed(component.Arrived(
-    [
+  operator_page.Observed(
+    component.Arrived([
       connection_event.Incoming(
         "{\"v\":2,\"reply_to\":" <> id <> ",\"event\":" <> event <> "}",
       ),
-    ],
-    0,
-  ))
+    ]),
+  )
 }
 
 pub fn the_composer_refuses_any_field_it_does_not_offer_test() {
@@ -333,11 +409,10 @@ pub fn a_closed_connection_refuses_commands_test() {
   let #(model, wire) = page("operator", [])
   let _ =
     send(model, [
-      operator_page.Observed(component.Arrived(
-        [connection_event.Closed("access was revoked")],
-        0,
-      )),
-      operator_page.Observed(component.Ticked(250)),
+      operator_page.Observed(
+        component.Arrived([connection_event.Closed("access was revoked")]),
+      ),
+      operator_page.Observed(component.Ticked),
       operator_page.Submitted("hello", operator.Prompt),
     ])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
