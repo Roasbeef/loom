@@ -89,20 +89,29 @@ pub fn interrupt_active(
   {
     None, _ -> Shared(..shared, notice: "nothing is running")
     Some(_), Some(_) -> Shared(..shared, notice: "interrupt already requested")
-    Some(_), None -> {
-      let strand = shared.active_strand
-      Shared(
-        ..shared,
-        interrupt: Some(Interrupt(
-          strand:,
-          operation: captured_operation(shared, strand),
-          pending: None,
-        )),
-        notice: "stopping; held input waits · enter sends it with your message",
-      )
-      |> session_model.record_surface(InterruptRequested)
-      |> outbound.send_frame(protocol.abort(shared.next_id, strand))
-    }
+    Some(_), None ->
+      // The interrupt is held until the operation settles, so it is recorded
+      // only for an abort the lane will take. A refused one, on an observer's
+      // attachment or a lane whose command slot is busy, would otherwise
+      // leave "interrupt already requested" standing for a frame that was
+      // never written.
+      case outbound.mutation_refusal(shared, command.Abort) {
+        Some(reason) -> session_model.append_error(shared, reason)
+        None -> {
+          let strand = shared.active_strand
+          Shared(
+            ..shared,
+            interrupt: Some(Interrupt(
+              strand:,
+              operation: captured_operation(shared, strand),
+              pending: None,
+            )),
+            notice: "stopping; held input waits · enter sends it with your message",
+          )
+          |> session_model.record_surface(InterruptRequested)
+          |> outbound.send_frame(protocol.abort(shared.next_id, strand))
+        }
+      }
   }
 }
 
