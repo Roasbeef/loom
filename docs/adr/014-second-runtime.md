@@ -1,6 +1,6 @@
 # ADR-014: one client engine, two views
 
-**Status**: accepted, implemented in #552 (2026-09-27) · **Date**: 2026-09-26 · **Supersedes**: nothing ·
+**Status**: accepted, implemented in #552 (2026-09-27); the step moved into `session_view` under #569, per the addendum of 2026-09-29 · **Date**: 2026-09-26 · **Supersedes**: nothing ·
 **Relates to**: [issue #530](https://github.com/Roasbeef/loom/issues/530),
 [ADR-013](013-tui-effects-as-values.md),
 [protocol-change/051](../../protocol-change/051-web-view-route.md)
@@ -270,3 +270,187 @@ reduced on arrival too, a burst costs one render per batch of up to 64
 frames, and an idle page wakes at the lane's refresh rather than four
 times a second. The verification line above that `Arrived` changes
 nothing until a `Ticked` no longer holds for any lane.
+
+## Addendum: the step moved into `session_view` (2026-09-29)
+
+**Status**: implemented over slices S1 to S5 of
+`docs/design-notes/step-extraction.md` (issue #569, Part 1; the pull
+requests are listed on the issue). This addendum supersedes the sections
+"Why the step waits for the build-out phase" and "Delivery under option C"
+where they say otherwise, and amends the second blocker. The sections above
+are left as written.
+
+The four blockers listed under "Why the step waits" are closed. The
+session's half of the step lives in `session_view`, the terminal and the
+web view both run it, and lint R6 holds it to the portable subset.
+
+### The blockers
+
+1. **`buffered.Inbox(a)` wrapped a `Subject`.** Closed on 2026-09-26 by
+   splitting the buffer from its source. `session_view/inbox.Inbox(source,
+   a)` holds the messages and the host's key for the source; the terminal's
+   `tui/buffered` keeps the subject and reads it. The record holds two
+   inboxes, `Shared.inbox` and `Shared.replay_inbox`, keyed by the type
+   parameters `source` and `replay_source`.
+2. **`msg.Event` carried etui's key and pointer types.** Amended, and
+   closed by a different path. The owner ruled on 2026-09-27 that the step
+   does not take an engine-owned key vocabulary. The key handlers read four
+   terminal surfaces before they decide, and moving them would have moved
+   the surfaces. Keys stay in the terminal (`tui/keymap`, `tui/msg`,
+   `tui/interaction`). What a key or a click means is decided by the host,
+   and both hosts hand the session the same closed set,
+   `session_view/msg.Command`: `Submit`, `Interrupt`, `Stop`, `Decide`,
+   `SelectModel` and `Quit`. A submitted draft reaches the session already
+   parsed: `command.Command` is `Surface(..)` for what a host carries out
+   with its own machinery (a panel, the model selector, daemon control, a
+   change of strand, its exit) and `Session(..)` for what the session
+   carries out, and only a `Session` command reaches `commands.act`. The
+   terminal maps keys to commands in `tui/interaction` and `tui/submit`;
+   the web view maps its two DOM events to them in `component.submit` and
+   `component.decide`. Daemon control, reconnection and the attachment jobs
+   stay in the terminal.
+3. **The model held the terminal's render caches.** Closed by splitting
+   the terminal's model into two records. `Shared` (`session_view/model`)
+   is the session state, and `tui/model.View` is the terminal's own state,
+   including its etui render caches as `View.caches`. Three records that
+   held both kinds of state are split, each with its session half in
+   `Shared`: a strand's parked history window and its editor, the agent
+   roster and the strip's focus, and the queue editor's requests on the lane
+   and the editor. `Shared` also carries four presentation revisions
+   (`render_revision`, `frame_revision`, `activity_revision` and
+   `record_cache_epoch`) that a host may compare and may ignore.
+4. **The model held host handles.** Closed by type parameters. `Shared`
+   is `Shared(socket, recorder, source, replay_source)`: four parameters,
+   not three, because the terminal reads its two inboxes from subjects of
+   different types. The terminal binds them in `tui/model.TerminalShared`;
+   the web view leaves the socket to its transport and binds the other three
+   to `Nil`. The terminal's job table, its Herdr reporter and its
+   attachment worker stay in `View`. Two values the moved code reached could
+   not follow it, because `host` reads the environment and the filesystem:
+   the client's and the daemon's build identities, and the workspace
+   context. The terminal keeps them and hands the shared code what it needs
+   as data: `Shared.build_notice` is the mismatch lines the terminal
+   computed when it adopted a daemon.
+
+A fifth thing was not among the blockers. A shared reducer cannot write a
+surface it has no type for, such as the composer, an overlay or the footer,
+so it records a fact (`Shared.surface_facts`, `queue_notices`,
+`goal_observations`, `drafts_sent` and `returned_drafts`) and the host
+applies the facts after the call. A host applies each update's facts before
+the next update in the same drain reads the state they change (the owner's
+ruling on question 11 of the design note), so the host keeps the loop over a
+drain's updates and one update is the shared unit.
+
+### The entry point
+
+The ADR planned that the web component would adopt `msg.Msg` and that
+mutations would arrive as they do in the terminal. Both landed in a
+narrower form, by the owner's ruling on question 12 (2026-09-28, option
+(a)).
+
+`session_view/step.update(shared, msg.Msg)` is the entry for a whole event
+in a host with no surfaces of its own. `msg.Arrived` files traffic through
+`admission` and reduces nothing. `msg.Input(at, Ticked)` runs the terminal's
+tick less its surfaces, in its order: the activity and roster clocks, the
+drain of every held frame, the side-surface reads and the lane's tick.
+`msg.Input(at, Acted(command))` runs the command and settles. The web
+component calls it, and reads the transport's clock once at the top of its
+own `update`. The terminal does not call it. Its tick places its own drains
+among the shared ones and applies facts between updates, and a key handler
+that runs a command writes its own state after the command, so a settle
+inside a shared `update` would run in the middle of the event. The terminal
+calls the shared units one at a time, and `session_view/step_test` holds
+`update` to the terminal's order over a scripted drain, including that the
+drain runs before the reads.
+
+A further option, (d), is recorded on issue #569 for later: move the
+terminal onto `update` too, by passing a pure callback that the sequencer
+calls after each piece so the host applies its facts, so that both hosts run
+one sequence instead of the terminal's copy being held to it by a test. It
+is not planned. Its costs are callbacks threaded through the step, a
+reordering risk that the replay identity checks would catch, and the Erlang
+inliner's cost on long settle chains.
+
+### What changed in delivery
+
+"Delivery under option C" above describes the component's messages as
+`Arrived` and `Ticked` carrying a clock reading, and reducing through
+`operator.drain` directly. Since S5 the messages carry no reading, and the
+component's `update` reads the transport's clock once, at its top. An
+`Arrived` is `step.update(msg.Arrived(..))` and then a tick in one Lustre
+message, so a burst is still one render. `Opened` adopts the lane and
+ticks, so anything filed before the lane existed is drained in order, and
+`Ticked` is a tick. Event-driven delivery, the one timer armed for the
+lane's `next_due`, and the buffer bound being the host's, are as the
+earlier addendum on event-driven delivery states.
+
+### What the page does now that it runs the step
+
+- **It sends more.** The operator page parses a draft as the terminal
+  does and runs any session command it names, except `/add-dir` and
+  `/add-write-dir`, which name a path on the daemon's host.
+  protocol-change/051's addendum "the operator page runs session commands"
+  supersedes the text that says the page has two commands, and re-prices a
+  stolen page. A `command.Surface` command is refused with a notice.
+- **It reads more.** The step's tick reads the strand's notes, the
+  session's context, the advisor's pending nudges and the goal, as the
+  terminal's does, for surfaces the page does not draw. That is four round
+  trips at load that hold the lane's command slot. The block-summary read is
+  left out of `update`, because the daemon may run a summarizer for a label
+  it is asked for and the page draws no labels.
+- **It says more.** The composer's notice line shows the shared notice.
+- **It loses a returned prompt.** `step.forget_surfaces` drops the facts
+  the page has no surface for, including a held prompt the daemon hands
+  back. The page has no editor to put it in, so the prompt's last copy is
+  lost.
+
+These are the costs of running the engine whole rather than choosing, host
+by host, which reads and facts to take, and the ruling on question 12
+accepted them. Each has an item under Part 2 of issue #569.
+
+### The rule, checked
+
+The rule under "Decision", that the web view grows no state logic of its
+own, held by review while the component had its own fold of the lane's
+updates. It now holds by construction. `component.update` reads a clock,
+calls `step.update`, derives what it draws from the record the step left
+and performs the effects the step returned. The fold of captures, the cache
+and usage handling, the submission handling and the strip's input
+bookkeeping are deleted from `web_view/component`. The page compares what
+each projection was built from (`Projected` and `Stripped` in the
+component) and not the record's `render_revision`, which moves for stream
+fragments and tool tails the page does not draw.
+
+The modules the "Direction" section lists as terminal pieces the web view
+would reuse have moved as it proposed: `agent_view`, `agent_roster` and
+`agent_messages` are in `session_view`, and the strip's roster is
+`Shared.roster`. `tui/agent_strip`, `tui/peer_links` and the session
+catalogue behind `tui/session_selector` remain the terminal's.
+
+### Verification
+
+- The terminal's suite and the replay goldens passed at each slice, with
+  test changes limited to import lines, field paths and the handful of
+  cases the slices' entries in the design note name. For S1 to S4, `loom
+  replay --all --plain` on the two committed recordings was byte-identical
+  between each slice's build and its base; S5 changed the terminal's step by
+  one field in its constructor and one in its adoption, and the recordings'
+  goldens pass. `session_channel_property_test` and the P model in
+  `protocol/models/terminal-attachment/` pass, and the P model was not
+  changed.
+- The phase 3 admission mutation, "admission files a frame from any
+  subject", fails the same eight tests on `main`, when applied to
+  `session_view/admission.file_frame`, and when applied to the terminal's
+  routing of a refused frame (question 9 of the design note).
+- `session_view/step_test` holds `step.update` to the terminal's tick order.
+  `client/web_view_parity_test` runs one script of frames and commands
+  through both hosts and compares the lanes' states and the approvals on
+  offer, and one capture through both projections. `component_test`,
+  `operator_page_test` and `delivery_test` cover the component, the commands
+  it now accepts and its render count per burst.
+- The measurements (reductions and words per event, compile time of the
+  generated modules, test counts) are in section 5 of the design note, slice
+  by slice. No slice measured a rise on the terminal's idle tick, key or
+  burst near the two percent that question 5 of the note set as a finding.
+- Not run at S5: the hand check in a browser of the operator page, the
+  observer page and a session with a running strand.

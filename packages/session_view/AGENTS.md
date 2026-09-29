@@ -37,9 +37,12 @@ step: the session state every host of a session keeps (`model.Shared`), and
 the reducers that take and return it alone, which the S3 slices cut out of
 the terminal's step. The terminal runs them over its own binding of the
 record's handles and applies what each call records for its surfaces; the
-web view is to run them in S5. The host keeps its own loop: which event it
-is, which command a key or a click means, when to drain the inbox, and the
+web view runs them through `step.update`, one call per message, and drops
+the facts it has no surface for. The terminal keeps its own loop: which
+event it is, which command a key means, when to drain the inbox, and the
 loop over a drain's updates, one update per call (question 11 of the note).
+The web view has no such loop of its own, since `step.update` is that loop
+for a host with no surfaces.
 
 ## Key Types
 
@@ -232,6 +235,10 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   stored as `Shared.stamp`. `msg.Command` is what an operator does to a
   session from any host: `Submit(draft, command, delivery)`, `Interrupt`,
   `Stop(strand)`, `Decide(review, choice)`, `SelectModel(name)`, `Quit`.
+  `msg.Msg(source)` is what a host with no surfaces hands `step.update`:
+  `Arrived(List(Arrival))`, traffic to file (`Arrival` is `Frame(source,
+  message)` or `Replayed(event)`), or `Input(at: Stamp, event: Event)`,
+  one event to reduce (`Event` is `Ticked` or `Acted(Command)`).
 - `admission.file_frame` and `file_replayed`: a frame is filed into the
   adopted inbox when its source is that inbox's and refused otherwise, and
   a replayed event is always filed. What a refused frame is, the host
@@ -302,8 +309,13 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   drains nothing. The result is the record and the effects, oldest first.
   The terminal does not call it; `step_test` holds it to the terminal's
   order. `step.new(strand, session, stamp, inbox, replay_inbox)` builds the
-  record such a host starts from, with no lane and `peer: Disconnected`.
-  `Shared.ended` is why the adopted lane failed, set by the lane fold.
+  record such a host starts from, with no lane and `peer: Disconnected`;
+  the host adopts a lane with `hold_channel` and sets `peer` to `Attached`.
+  `Shared.ended` is why the adopted lane failed, set by the lane fold; the
+  terminal never reads it and clears it when it adopts a lane. The step's
+  functions are `@internal`, so they are not in `gleam export
+  package-interface`; the hosts in this repository call them, and R6's check
+  of the imports is what covers them.
 - `queue_request.State` (the queue editor's lane correlation),
   `agent_messages` (provenance-checked inter-agent sends),
   `attempt_replay.State(socket, recorder)` (the two-slot replay of recorded
@@ -327,8 +339,10 @@ attachment list), `context_view`, `file_read_view`, `goal_view`,
   `gleam_stdlib`. Nothing else, by R6.
 - **Depended on by**: `tui`, the terminal host, and `web_view`, the second
   host: the Lustre server components the daemon serves with `loomd --ui`,
-  which drive the lane, the inbox, `operator` and `transcript.project_rows`
-  (ADR-014). `client` depends on it at runtime too, for the
+  which run the shared step (`step.update`, `commands`, `model.Shared`) and
+  draw from its record with `transcript.branch_blocks`, `turns` and
+  `agent_roster` (ADR-014 and its addendum). `client` depends on it at
+  runtime too, for the
   `connection_event.Message` its web-view relay sends and the
   `snapshot.Expected` its page socket builds, and its tests drive both
   hosts' lanes.
@@ -345,7 +359,9 @@ decodes the ClientGateway protocol (spec Part 1.6, `docs/client-protocol.md`)
 frames a host hands it, and the frames it asks the host to write are
 `subscribe`, `snapshot_next`, `catch_up`, `history`, `escalations_get` and,
 through `submit`, the session's mutations. A read-only host never calls
-`submit`; the web view's operator page submits only through `operator`.
+`submit`; the web view's operator page reaches it through `commands.act`,
+with any session command a draft names except adding a directory, and its
+observer's page holds no command.
 
 ## Invariants
 
@@ -368,6 +384,17 @@ through `submit`, the session's mutations. A read-only host never calls
 - **One request owns the wire.** A mutation is issued at most once and a
   lost reply becomes `UnknownOutcome`, never a retry (the protocol model in
   `protocol/models/terminal-attachment/` checks this).
+- **`step.update` runs the terminal's units in the terminal's order.** The
+  terminal does not call it, so nothing in the terminal's tests would fail
+  if the two compositions drifted; `test/step_test.gleam` spells the
+  terminal's tick over the shared record (the activity and roster clocks,
+  the drain with each update applied on its own, `service_reads`, the lane's
+  tick with its history read) and holds `update` to the same record and the
+  same effects, and pins the drain before the reads. A change to the
+  terminal's tick order (`tui/tick`) is a change to `update` and its test.
+  Its tick leaves out the block-summary read, and a tick with no adopted
+  lane drains nothing and keeps the frames, because the terminal's tick
+  would read them as the preview peer's traffic.
 - **`next_due` is exact.** A `tick` before the reading it names changes
   nothing and a `tick` at it acts; a host that sleeps until it can never
   miss a refresh or a deadline. The property test in
@@ -407,7 +434,8 @@ through `submit`, the session's mutations. A read-only host never calls
   values; its phase 3 addendum, "What phase 4 extracts", set this
   package's scope.
 - `docs/adr/014-second-runtime.md`: one engine, two views, and why
-  session logic lives here rather than in a host.
+  session logic lives here rather than in a host; its addendum on the step
+  says how the four blockers to moving it were closed.
 - `docs/architecture/client.md`, "The client engine and its hosts": the
   layering this package sits in, and where each host performs effects.
 - `docs/architecture/terminal.md`: the terminal host that drives it.

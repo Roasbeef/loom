@@ -1,6 +1,6 @@
 # Extracting the client step into `session_view`
 
-Status: **accepted**; the owner ruled on questions 1 and 2 of section 6
+Status: **accepted and implemented**; the owner ruled on questions 1 and 2 of section 6
 on 2026-09-27 and approved starting S1. Design note for
 [issue #569](https://github.com/Roasbeef/loom/issues/569) Part 1. Written
 against `main` at `868dfedd8` on 2026-09-27. S1 has since split the
@@ -14,8 +14,11 @@ S3 was re-sliced on 2026-09-28, with the owner's approval, after a census
 found that section 3's lists miss much of what the lane and event folds
 reach; section 5's S3 entry gives the census and the new landings, and
 S3a′ to S3e′ have landed. S4 has landed: the shared step's modules are
-in `session_view`, and its entry points move to S5 under the ruling on
-question 12.
+in `session_view`. S5 has landed: the web view drives the shared step
+through `step.update`, the entry the ruling on question 12 chose. S6 has
+landed: ADR-014's addendum of 2026-09-29 records that its four blockers are
+closed, and the package and architecture documents describe the tree as it
+stands. Part 1 of issue #569 is done.
 
 Issue #530 left the terminal and the web view sharing the session lane and
 the transcript projection but not the step. The terminal reduces with
@@ -131,7 +134,7 @@ terminal, 4 handles, 3 split.
 | `input` | b | An etui `TextAreaState`; the web's editor is the browser's. |
 | `strand_workspaces` | split | The parked `scrollback` per strand is the session's history window and moves to a shared `Dict(#(session, strand), history_view.State)`; the editor, its history, the offset, anchors and height stay terminal; the record is `StrandWorkspace` (`tui/model.gleam:245`). |
 | `restored_workspace` | b | A viewport endpoint the next projection restores. |
-| `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`tui/submit.gleam:464` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
+| `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`session_view/commands.gleam:632` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
 | `history`, `history_index`, `history_draft` | b | The composer's command history. |
 | `command_selected` | b | The palette's cursor. |
 | `submission_mode` | b | Tab's choice for the next Enter; the web sends its delivery with each submit. The shared `Submit` command carries it. |
@@ -608,7 +611,7 @@ The worst cases in the code, and the cut for each:
    remembers the text in the input history. The web's `drafts` counter is
    the same edge, so the two hosts empty their editors on the same fact.
 
-5. **`submit_text`** (`tui/submit.gleam:147` (`submit_text`)) parses
+5. **`submit_text`** (now `commands.submit`, `session_view/commands.gleam:366` (`submit`)) parses
    the draft and dispatches over `command.Command`, opening overlays for
    `Help`, `Models`, `Sessions` and the panels and sending frames for the
    rest. The shell parses first, as described under the message: surface
@@ -1923,7 +1926,8 @@ terminal's engine.
 - The composer's notice line shows the shared notice, so it now says "notes
   sent" after the first read and "streaming text" during an answer, and a
   daemon's refusal appears as its code and message, drawn as text. Question 6
-  said this would happen.
+  said this would happen. (Amended: the page's notice is now the outcome of
+  the last command; see protocol-change/051, the composer's element.)
 - A Steer on an idle strand is an ordinary prompt, as in the terminal. The
   page offers Steer only while the strand runs, so this is reachable only
   through a forged form field, which `composition` already refuses.
@@ -1998,6 +2002,32 @@ are closed and how; `packages/session_view/CLAUDE.md`,
 mirrors; `docs/architecture/client.md`'s layering section, `terminal.md`'s
 loop section, `web-view.md`'s "Time" paragraph and `delivery.md`'s web
 steps; `docs/next.md`. *Proves:* `make doc-check`.
+
+*S6 as landed.* ADR-014 gained the addendum "the step moved into
+`session_view`", which closes its four blockers one by one, amends the second
+under the ruling on question 1, records the entry point chosen under
+question 12 and the option (d) left on #569, and carries the admission
+mutation result of question 9. `packages/session_view/CLAUDE.md`,
+`packages/tui/CLAUDE.md` and `packages/web_view/CLAUDE.md` were refreshed from
+the source with their mirrors, and `docs/architecture/client.md`, `terminal.md`,
+`web-view.md`, `delivery.md`, `docs/lustre.md`, `docs/code-tour.md`, `docs/design-notes/web-ui.md`,
+`packages/web_view/README.md` and `docs/next.md` were brought to the tree
+after S5. Two citations in this
+note that pointed at `tui/submit.gleam` were re-pointed to
+`session_view/commands.gleam`. `make doc-check` is the proof and passes.
+
+Where a document and the code disagreed, the code was taken. The
+architecture documents still described the web view as having no step of its
+own and as reading no clock in `update`; `client.md` still said the step had
+four blockers to clear; `web-view.md` and `delivery.md` still described
+`Arrived(messages, at)`; `web-ui.md` and `code-tour.md` still said the page
+waited for the step; the web view's README and `docs/lustre.md` described
+a component that projects on `Captured`; `client.md`'s table of source files
+named `tui/outbound` and `tui/surfaces`, which moved in S4; and the terminal's
+`CLAUDE.md` gave an etui pin one change behind `gleam.toml`. The module
+comment of `session_view/model.gleam` still says the web view "will bind"
+the handles to its relay and `Nil`; it is code, and S6 is docs only, so the
+sentence is left for the next change to that file.
 
 S1 can start now. S5 must wait for S4, and S3's landings for S2; nothing
 else is ordered. The first pull request is S1 alone, so that its size is

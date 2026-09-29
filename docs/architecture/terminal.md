@@ -67,9 +67,15 @@ a fold. The three edges that decide after every event whether the context,
 the advisor's pending nudges or the goal need a fresh read compare two
 shared records, and run together as the shared step's settle
 (`session_view/step`, imported as `session_step`).
-The split, the parameters and the cut are the
-slices of moving the step into `session_view` so that the web view runs
-the same reducers ([the step extraction design](../design-notes/step-extraction.md)). The other modules are the parts that glue calls into: the launcher and
+The split, the parameters and the cut are slices S1 to S4 of moving the
+step into `session_view` ([the step extraction
+design](../design-notes/step-extraction.md)), and S5 made the web view a
+second caller of what moved: it runs the shared units through
+`session_step.update`, the whole-event entry for a host with no surfaces
+of its own, which the terminal does not call (see "The model, update and
+view loop"). `Shared.ended`, the reason the adopted lane failed, is
+written by the lane fold for the web view's heading and cleared by the
+terminal's adoption, and the terminal never reads it. The other modules are the parts that glue calls into: the launcher and
 daemon bootstrap, two connections (a daemon control connection and a
 per-session conversation channel), pure projections that turn a captured
 snapshot into rows, one module per panel, Markdown rendering, Herdr
@@ -146,7 +152,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:1922`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:1926`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid
@@ -169,6 +175,30 @@ flowchart LR
 [The client engine and its hosts](client.md#the-client-engine-and-its-hosts)
 places this loop beside the web view's, which drives the same session lane
 from a Lustre component.
+
+The terminal's step calls the shared units one at a time, and it does not
+call `session_step.update`, which composes the same units for a whole
+event. Two things stop it. A tick is not one shared call: the terminal
+drains its replay, control, candidate and reconnect traffic among the
+shared drains in a fixed order (`tick.update_tick`), and it applies the
+surface facts each lane update recorded before the next update reads the
+state they change (`inbound.settle_surfaces`, the ruling on question 11 of
+the step extraction design). And a key handler that runs a command writes
+its own state after the command, while the settle runs once at the end of
+the event, in `settle_update`; a settle inside `update` would send a
+context, nudge or goal read earlier than the terminal does now. So
+`session_step.update` is the web view's loop, and its tick runs the
+terminal's units in the terminal's order less its surfaces: the activity
+and roster clocks, the drain of every held frame, `service_reads`, and the
+lane's tick with its history read. `session_view/step_test` holds it to
+that order over a scripted drain, and a mutation that runs the reads
+before the drain fails it. The terminal's tick also sends the block-summary
+read, which `update` leaves out because the daemon may run a summarizer
+for a label it is asked for. Making the terminal call `update` too, with a
+pure callback the sequencer applies after each piece so the host can apply
+its facts, is recorded on
+[issue #569](https://github.com/Roasbeef/loom/issues/569) as a later
+option and is not planned.
 
 `Tick` is the event etui delivers when a poll times out with no input, or
 when another process wakes the poll, so it is where socket traffic enters
@@ -1044,10 +1074,10 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
 | `tui/inbound` | The terminal's loop over the lane's updates, and settling the surface facts each recorded. |
 | `tui/side_surfaces` | The side surfaces' openers and targets, which read the terminal's overlay and panels, over the whole model. |
-| `session_view/model`, `session_view/step_effect`, `session_view/msg`, `session_view/admission` | The shared step's record, `Shared`, generic over the host handles, with the types it names, its effect outbox and the functions over it alone; the two effects it decides; the `Stamp` and the operator's `Command`; and the filing of frames and replayed events. |
+| `session_view/model`, `session_view/step_effect`, `session_view/msg`, `session_view/admission` | The shared step's record, `Shared`, generic over the host handles, with the types it names, its effect outbox and the functions over it alone; the two effects it decides; the `Stamp`, the operator's `Command` and the whole-event `Msg` (`Arrived` and `Input`) that `step.update` reduces; and the filing of frames and replayed events. |
 | `session_view/outbound`, `session_view/event_fold`, `session_view/lane_fold` | Sending frames and folding the lane's disposition (`outbound`); applying each pushed event (`event_fold`) and each lane update and replay change, captured cuts included (`lane_fold`), over `Shared` alone. |
 | `session_view/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed), their replies, the edge detectors and the goal commands, over `Shared` alone. |
-| `session_view/commands`, `session_view/step` | The operator's commands to the session (`commands`), and the shared step's settle after every event and a tick's side-surface reads and clocks (`step`), over `Shared` alone. |
+| `session_view/commands`, `session_view/step` | The operator's commands to the session (`commands`), and the shared step's settle after every event, a tick's side-surface reads and clocks, and `update`, the whole-event entry the web view calls and the terminal does not (`step`), over `Shared` alone. |
 | `tui/session_control` | Daemon control requests and reconnection, as job specs, and the drains that take their replies. |
 | `tui/projection` | The record row cache and render cache. |
 | `tui/live_tail` | The live answer's rows, rebuilt each frame from what changed: settled blocks, checked text, and the open tail. |

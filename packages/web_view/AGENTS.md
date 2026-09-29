@@ -98,12 +98,16 @@ page keys and nonces, and the relay into the session's gateway.
 - `component.{submit, decide}`: the two inputs, wrapped as the shared
   step's commands (`step.update` with `Acted`). `submit` checks the draft's
   emptiness and length, which are the page socket's limits, and then parses
-  it with `command.parse_with_skills`: a `command.Session` runs through
-  `commands.act` as the terminal runs it, and a `command.Surface` is refused
-  with a `Warned` notice and never sent, so `/compact` is a compaction and
-  `/models` is refused. The page loads no skills catalogue, so a skill's
-  slash command is refused as unknown. `Answer` is `AllowOnce | Deny`; a
-  page never offers remembering a grant for the session.
+  it with `command.parse_with_skills`. `component.page_command` is the one
+  place that names what the page does not run: a `command.Surface` and
+  `command.AddDirectory` (`/add-dir`, `/add-write-dir`, which name a path on
+  the daemon's host) are refused with a `Warned` notice and never sent, and
+  every other `command.Session` runs through `commands.act` as the terminal
+  runs it, so `/compact` is a compaction and `/models` is refused. The page
+  loads no skills catalogue, so a skill's slash command is refused as
+  unknown. `Answer` is `AllowOnce | Deny`; a page never offers remembering
+  a grant for the session. A decision takes `outbound.mutation_refusal`'s
+  refusals like any mutation, and the card stays when it is refused.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
   delivery)` and `Decided(id, seq, answer)`. The lane's "Load older"
   button sends `Observed(component.OlderRequested)`.
@@ -242,6 +246,14 @@ page keys and nonces, and the relay into the session's gateway.
   there are sequences below the window to read.
 - **One ordered effect.** The lane's outputs are performed in one
   `effect.from`, never split across `effect.batch`, which does not order.
+- **The page keeps no facts the step recorded for surfaces it lacks.** The
+  step's tick drops them itself; the component drops the ones a command
+  recorded (`step.forget_surfaces`) after it has read `DraftTaken`, the only
+  one it reads, and the ones `apply` folds. A list that nothing empties
+  would grow for the life of the page. `step.forget_surfaces` leaves
+  `returned_drafts` alone, because a held prompt the daemon hands back is
+  its last copy: the page takes it into `component.returned` and empties
+  the list, and the composer's element puts it back in the editor.
 - **Which application runs is which commands exist.** An observer's page is
   `component.app()`, whose message type holds no command and whose view
   attaches one handler, the lane's "Load older" click, whose message
@@ -252,10 +264,11 @@ page keys and nonces, and the relay into the session's gateway.
   handler. An operator's page is
   `operator_page.app()`. Its two handlers are unchanged, but since S5 the
   draft one of them carries is parsed as the terminal parses it, so the page
-  sends any session command a draft names (`/add-dir`, `/fork`, `/model`,
-  `/goal ...` and the rest of `command.Session`), not only a prompt; what
-  bounds them is the attachment's role, capped at operator, which the
-  gateway enforces. The daemon's gateway refuses an observer's mutation
+  sends any session command a draft names (`/fork`, `/model`, `/goal ...`
+  and the rest of `command.Session`), not only a prompt, except adding a
+  directory, which `page_command` refuses (protocol-change/051, the
+  addendum "the operator page runs session commands"); what bounds them is
+  the attachment's role, capped at operator, which the gateway enforces. The daemon's gateway refuses an observer's mutation
   independently, and the engine refuses one on an observer's attachment as a
   third layer.
 - **No handler or attribute from session text.** Button messages carry the
