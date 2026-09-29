@@ -138,10 +138,13 @@ page keys and nonces, and the relay into the session's gateway.
   update into `shared` (captures, history pages, usage and the cache
   ledger, streams, refusals, acknowledgements), as it does for the
   terminal. The page then derives what it draws from `shared` (see the
-  invariants). The notice is the shared record's `notice`, drawn as `Said`,
-  so it states the latest thing the session said (a stream's "streaming
-  text", a read's "notes sent") as often as the outcome of a command; only
-  the page's own refusals are `Warned`.
+  invariants). The notice is an outcome and never the shared record's `notice`, which any
+  event replaces and which would say "advisor_pending sent" on every page
+  load. `Said` is what the shared step worded when the page ran the
+  operator's command (`View.outcome`, read at once, after the notice and
+  `Shared.answer` were emptied so that a silent command leaves nothing) or
+  the daemon's reply to it (`Shared.answer`, which only another reply
+  writes); the page's own refusals are `Warned`.
 - Out on the lane, besides the lane's own snapshot requests and the
   operator's commands: at most one request at a time. The shared step's
   reads go out as the terminal's do, one after another and each when the

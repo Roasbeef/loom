@@ -252,17 +252,18 @@ pub type Status {
 
 /// What the page last told an operator about their own input.
 ///
-/// The text is the component's own or the engine's, never the session's.
-/// The engine's is the shared record's `notice`, which the terminal shows in
-/// its footer and which any event can replace, so it states the latest thing
-/// the session did as often as the outcome of a command. The component's own
-/// is a refusal of an input before it became a command, and it stays until
-/// the operator's next input.
+/// The page draws outcomes only: what the session said when it ran the
+/// operator's command, the daemon's reply to it, a prompt the daemon handed
+/// back, and the page's own refusals. It does not draw the shared record's
+/// `notice`, which the terminal shows in its footer and which any event
+/// replaces, so a background read ("notes sent") or a stream ("streaming
+/// text") would have spoken over the operator's own command. The words
+/// stay until the operator's next input.
 pub type Notice {
   /// Nothing to say.
   Quiet
 
-  /// What the session last said.
+  /// The outcome of the operator's last command, or of what became of it.
   Said(text: String)
 
   /// The page refused an input before it reached the session.
@@ -372,6 +373,12 @@ type View(socket) {
     status: Status,
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
+    /// What the session said when the page ran the operator's last command:
+    /// the notice the shared step left, read at once because any later event
+    /// may write it over. Empty when the command said nothing. The daemon's
+    /// later reply to that command is `Shared.answer`, and the two are what
+    /// `notice` draws.
+    outcome: String,
     /// How many drafts a command consumed at dispatch. A draft a prompt
     /// carries is consumed when the lane sends it, which the shared record
     /// counts as `drafts_sent`; the composer's editor is keyed by the sum,
@@ -460,6 +467,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       stripped: stripped_of(shared),
       status: Connecting,
       refusal: None,
+      outcome: "",
       consumed: 0,
       timer: None,
       armed: None,
@@ -1175,9 +1183,14 @@ fn commanded(
   command: msg.Command,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let at = model.view.transport.now()
+
+  // The step words the outcome into the shared notice, and any later event
+  // may replace it, so it is read at once. The notice and the last reply are
+  // emptied first so that a command which says nothing leaves nothing to
+  // read, and not the words of whatever the session said before it.
   let #(shared, effects) =
     step.update(
-      model.shared,
+      Shared(..model.shared, notice: "", answer: ""),
       msg.Input(at: stamp(at), event: msg.Acted(command)),
     )
   let consumed = case list.any(shared.surface_facts, took_draft) {
@@ -1187,7 +1200,7 @@ fn commanded(
   finished(
     Model(
       shared: step.forget_surfaces(shared),
-      view: View(..model.view, refusal: None, consumed:),
+      view: View(..model.view, refusal: None, outcome: shared.notice, consumed:),
     ),
     effects,
     at,
@@ -1417,7 +1430,8 @@ pub fn pending(model: Model(socket)) -> List(approval.Review) {
 }
 
 /// What the page last told the operator: its own refusal of an input if
-/// there is one, otherwise what the session last said.
+/// there is one, otherwise the daemon's reply to the last command, otherwise
+/// what the session said when that command ran.
 ///
 /// ## Examples
 ///
@@ -1425,10 +1439,11 @@ pub fn pending(model: Model(socket)) -> List(approval.Review) {
 /// // component.notice(model) == component.Quiet
 /// ```
 pub fn notice(model: Model(socket)) -> Notice {
-  case model.view.refusal, model.shared.notice {
-    Some(text), _ -> Warned(text)
-    None, "" -> Quiet
-    None, text -> Said(text)
+  case model.view.refusal, model.shared.answer, model.view.outcome {
+    Some(text), _, _ -> Warned(text)
+    None, "", "" -> Quiet
+    None, "", text -> Said(text)
+    None, text, _ -> Said(text)
   }
 }
 

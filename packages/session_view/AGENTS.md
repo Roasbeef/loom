@@ -204,7 +204,13 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   `QueueRowsCaptured`, `HistoryReleased`, `AgentMessagesCaptured`,
   `GoalReleased`, `ConnectionLost`, `ReplayAdopted`, `InterruptRequested`,
   `ReviewAnswered`, `DraftTaken`, `TranscriptCleared`, `LookupRequested`).
-  The three lists are empty between calls. `build_notice` is the
+  The three lists are empty between calls. `Shared.answer` is the words of
+  the daemon's latest reply to a command the lane sent (an acknowledgement,
+  a refusal, a lost reply), which `lane_fold.apply_channel_update` writes
+  beside `notice`; `notice` is replaced by any event and `answer` only by
+  another reply, and a refusal of an automatic read (`session_channel.is_read`)
+  is not one. The terminal reads `notice`; the web page reads `answer`.
+  `build_notice` is the
   build-mismatch lines the host computed when it adopted a daemon, which a
   cut splices in; the builds themselves are the host's, because
   `host/build_identity` reads the environment. The writers are

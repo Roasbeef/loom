@@ -405,3 +405,38 @@ pub fn an_acted_prompt_the_lane_cannot_take_is_refused_test() {
     == "attachment is read-only or its command slot is busy; draft retained"
   assert acted.pending_submission == None
 }
+
+// A reply to a command is kept as the command's answer, apart from the
+// notice that any later event writes over. A refusal of one of the host's own
+// automatic reads is no command's answer, and neither is a refusal whose arm
+// says nothing, so a host that draws only answers is not spoken over by them.
+pub fn a_reply_is_kept_as_the_answer_and_a_read_refusal_is_not_test() {
+  let shared = attached()
+  assert shared.answer == ""
+
+  let acknowledged =
+    applied(shared, session_channel.Acknowledged("prompt", "admitted"))
+  assert acknowledged.answer == "prompt admitted"
+
+  let streamed =
+    applied(
+      acknowledged,
+      session_channel.Streamed("main", "op-1", "gen-1", "text", "hello"),
+    )
+  assert streamed.notice == "streaming text"
+  assert streamed.answer == "prompt admitted"
+
+  let read_refused =
+    applied(
+      streamed,
+      session_channel.RequestRefused("advisor_pending", 4, "unsupported", "no"),
+    )
+  assert read_refused.answer == "prompt admitted"
+
+  let refused =
+    applied(
+      streamed,
+      session_channel.RequestRefused("steer", 5, "conflict", "busy"),
+    )
+  assert refused.answer == "conflict: busy"
+}

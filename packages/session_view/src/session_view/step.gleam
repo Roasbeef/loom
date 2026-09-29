@@ -230,6 +230,7 @@ pub fn new(
     cache_notices: [],
     scrollback: history_view.empty(),
     notice: "",
+    answer: "",
     worktree: worktree_view.new(),
     context: context_view.new(),
     completion: completion_summary.new(),

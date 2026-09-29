@@ -164,6 +164,14 @@ pub type Shared(socket, recorder, source, replay_source) {
     scrollback: history_view.State,
     /// The last line said to the operator, shown in the footer.
     notice: String,
+    /// The daemon's latest reply to a command this lane sent, worded as the
+    /// notice was when the reply was folded: an acknowledgement, a refusal
+    /// or an outcome that could not be confirmed. Unlike `notice`, which any
+    /// event replaces, nothing but another reply writes it, so a host that
+    /// wants only command outcomes, as the web page does, reads this and
+    /// the terminal, which reads `notice`, is unaffected. A host may reset
+    /// it to empty when it starts a command of its own.
+    answer: String,
     /// Current Git observation and independent file-navigation state.
     worktree: worktree_view.State,
     /// Server-observed current context and independent inspector state.

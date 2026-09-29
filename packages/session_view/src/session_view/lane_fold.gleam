@@ -211,6 +211,35 @@ pub fn apply_channel_update(
   update: session_channel.Update,
   around: Surroundings,
 ) -> Shared(socket, recorder, source, replay_source) {
+  let folded = fold_update(shared, update, around)
+
+  // A reply to a command the lane sent is the one kind of update whose
+  // words are an answer rather than news: the lane has one request out at a
+  // time, so an acknowledgement, a refusal or a lost reply is the outcome of
+  // the command that asked. Any later event may write the notice over, so
+  // the reply's words are kept apart in `answer`, where only another reply
+  // replaces them. An acknowledgement always words itself. A refusal of one
+  // of the host's own automatic reads is no command's outcome, and some are
+  // deliberately silent, so neither is an answer; nor is a refusal whose arm
+  // left the notice as it was.
+  case update {
+    session_channel.Acknowledged(..) -> Shared(..folded, answer: folded.notice)
+    session_channel.RequestRefused(command:, ..) ->
+      case session_channel.is_read(command) || folded.notice == shared.notice {
+        True -> folded
+        False -> Shared(..folded, answer: folded.notice)
+      }
+    session_channel.UnknownOutcome(..) ->
+      Shared(..folded, answer: folded.notice)
+    _ -> folded
+  }
+}
+
+fn fold_update(
+  shared: Shared(socket, recorder, source, replay_source),
+  update: session_channel.Update,
+  around: Surroundings,
+) -> Shared(socket, recorder, source, replay_source) {
   case update {
     session_channel.Submission(disposition) ->
       outbound.apply_submission(shared, disposition)

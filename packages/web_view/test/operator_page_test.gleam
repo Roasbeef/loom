@@ -20,6 +20,7 @@ import lustre/element
 import page_fixture
 import session_view/connection_event
 import session_view/operator
+import session_view/session_channel
 import web_view/component
 import web_view/operator_page
 
@@ -329,6 +330,60 @@ fn reply(
       ),
     ]),
   )
+}
+
+// The notice is the outcome of the operator's own commands. A page that has
+// only loaded, whose lane sent the reads a first capture starts, says nothing:
+// each read leaves "<name> sent" in the shared notice, which the page used to
+// draw as if the operator had asked for it.
+pub fn a_page_that_has_only_loaded_says_nothing_test() {
+  let #(model, _) = page("operator", [])
+  assert component.notice(model) == component.Quiet
+}
+
+// What the session says afterwards, a stream or a read the lane sends on its
+// own, does not replace the words of the command the operator ran.
+pub fn background_events_do_not_speak_over_a_command_test() {
+  let #(model, _) = page("operator", [])
+  let model = send(model, [operator_page.Submitted("hi", operator.Prompt)])
+  let model =
+    component.apply(model, [
+      session_channel.Streamed("main", "op-1", "gen-1", "text", "hello"),
+    ])
+  assert component.notice(model) == component.Said("prompt sent")
+}
+
+// A command that says nothing leaves the page quiet rather than repeating
+// what the session said before it.
+pub fn a_silent_command_does_not_repeat_an_older_notice_test() {
+  let #(model, _) = page("operator", [])
+  let model =
+    component.apply(model, [
+      session_channel.Streamed("main", "op-1", "gen-1", "text", "hello"),
+    ])
+  let model = send(model, [operator_page.Submitted("/clear", operator.Prompt)])
+  assert component.notice(model) == component.Said("local view cleared")
+}
+
+// A refused automatic read is nobody's command outcome. A refused command is.
+pub fn only_a_commands_refusal_is_drawn_test() {
+  let #(model, wire) = page("operator", [])
+  let model = send(model, [operator_page.Submitted("hi", operator.Prompt)])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one prompt is one command"
+  let model =
+    send(model, [
+      reply(
+        frame,
+        "\"error\",\"body\":{\"code\":\"conflict\",\"message\":\"busy\"}",
+      ),
+    ])
+  assert component.notice(model) == component.Said("conflict: busy")
+  let model =
+    component.apply(model, [
+      session_channel.RequestRefused("advisor_pending", 9, "unsupported", "no"),
+    ])
+  assert component.notice(model) == component.Said("conflict: busy")
 }
 
 pub fn the_composer_refuses_any_field_it_does_not_offer_test() {
