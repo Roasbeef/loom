@@ -1747,10 +1747,12 @@ This departs from the note in five other ways.
    question 3's documentation of the revisions is now in
    `session_view/model`.
 5. The note's test for the move, "the `tui` suite passes with only import
-   lines changed", holds for every test but `build_notice_test`, one
+   lines changed", holds except in two ways. `build_notice_test`, one
    `agent_workspace_test` case and two assertions in `client`'s
-   `tui_v2_persisted_test`, which set or read the fields that moved to
-   `View`.
+   `tui_v2_persisted_test` set or read the fields that moved to `View`.
+   And `context_view_test` and `completion_summary_ui_test` call
+   `open_context` and `open_summary` as `side_surfaces.` rather than
+   `surfaces.`, since the two openers stayed in the terminal.
 
 Measured against `main` at `bfe144ed3`, whose tree is the one #606 merged.
 The `tui` suite passes 976 tests and `session_view` 112 on both; on the

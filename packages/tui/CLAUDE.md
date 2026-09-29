@@ -1821,7 +1821,7 @@ untouched.
   creation key reads `Model.view.wall_ms` with `Model.view.terminal`, the OS and BEAM
   process identity read once when the model is created. The build the
   mismatch notice compares with the daemon's is read once too, into
-  `Model.shared.client_build`. The message is a cross-module call on `update`'s
+  `Model.view.client_build`. The message is a cross-module call on `update`'s
   parameter, never a local step in `tui.gleam`, for the inliner reason
   above. The two monotonic readings are
   separate because a test may fix the presentation clock to pin frames
@@ -2130,7 +2130,7 @@ untouched.
   in its third, the control, reconnect and activity jobs in its fourth, the
   attachment job in its fifth, and file reads in its sixth; phase 3 took
   the adopted socket's liveness read into `runtime.hold` and the client
-  build identity to model creation (`Model.shared.client_build`). The step now
+  build identity to model creation (`Model.view.client_build`). The step now
   reads no clock, file, mailbox, process or environment variable: see the
   clock, traffic, job and file invariants above and the recording
   invariant below.
