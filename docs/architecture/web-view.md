@@ -131,7 +131,11 @@ The component is linked to the socket process, and the relay monitors the
 component and the gateway. When the browser goes away, the socket shuts
 the component down and the relay detaches. When the gateway ends the
 attachment, the relay reports it, the socket waits a quarter second so
-the component's patch for the ended state is sent, and then closes. [lustre.md](../lustre.md#lifecycle-and-cleanup)
+the component's patch for the ended state is sent, and then closes. The
+reason is a closed type (`web_view/ending`), so the page draws a fixed
+notice for it, and the close code follows from it: 1000 (final, the client
+runtime does not reconnect) when the person has to act, 4000 (retried) when
+the daemon may clear it. [lustre.md](../lustre.md#lifecycle-and-cleanup)
 walks that chain one link at a time.
 
 ## From `loom ui` to a live socket
@@ -240,7 +244,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:389`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:370`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -614,6 +618,36 @@ The heading's status reads "connected" (it read "following"). It is the
 connection's state, and the word was mistaken for the scroll state, which
 only `<loom-follow>` knows.
 
+### A page with no session says why
+
+A page can be without its session because a newer link replaced it, its
+eight hours ran out, its access was revoked, the session stopped, the
+daemon has not opened the session yet, or the daemon was not ready. Each is
+one variant of `web_view/ending.Ending`, and everything the page says about
+it is a fixed string chosen by the variant; a reason that names none is
+drawn as a failed connection, so no text from a peer reaches the browser.
+Three places draw it:
+
+- **A live page that ended** draws a notice inside its heading
+  (`view/ended`): the headline and what to do, usually to run
+  `loom ui --session <id>` for a fresh link. The last transcript stays under
+  it, and no region after the heading changes its path.
+- **A reload of an ended page**, and a ticket that was used or expired, get a
+  small document for the ending (`page.refusal`) under the status they always
+  had, in place of the bare status text.
+- **A page that never connects** shows a fixed paragraph the shell puts inside
+  the `<lustre-server-component>` element. It is the element's light-DOM
+  content, which Lustre's runtime hides when it attaches the shadow root on
+  the first tree, so it is on screen exactly while the page has no session.
+  A refused WebSocket handshake shows the browser nothing but a failure, so
+  the shell is where a refusal can be explained.
+
+What it does not do: a tab that had mounted and then lost its socket (the
+daemon restarted, the network broke) keeps its last transcript with no
+notice while the client runtime retries, because nothing in the browser
+tells the two apart. Protocol-change/051's addendum on an ended page lists
+what was considered and why a client element was not added.
+
 ## Security layers
 
 The page is served from loopback, and loopback does not protect a page:
@@ -744,6 +778,8 @@ browser goes away, because a runtime outlives its last client.
 | Path | What it owns |
 |---|---|
 | `packages/web_view/src/web_view/component.gleam` | The observer's application: the shared step's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the clock read once per message, `submit` and `decide` wrapping the operator's inputs as the step's commands, the history read `older`, `refreshed` deriving the row window (`live_rows`, `held_rows`, `Paging`) and the strip from the record, and `view`, which lays out the regions below. |
+| `packages/web_view/src/web_view/ending.gleam` | `Ending`, the closed reason a page has no session, with its fixed headline and advice, its reason string (the relay's hop to the component) and its close code (`Final` or `Retry`). |
+| `packages/web_view/src/web_view/view/ended.gleam` | The notice a page draws from an `Ending`, inside the heading. |
 | `packages/web_view/src/web_view/view/heading.gleam` | The heading: the session's name, its workspace and the connection's status, drawn from plain values the component hands it. |
 | `packages/web_view/src/web_view/view/strip.gleam` | The agent strip and its `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board with the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |

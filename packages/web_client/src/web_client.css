@@ -227,6 +227,13 @@
   p.cache-miss{margin:0;padding:6px 10px;border:1px dashed var(--color-signal);border-radius:6px; color:var(--color-signal);font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
   .observer-bar{flex:0 0 auto;margin:16px 0 0 0;padding:12px 16px;border-top:1px solid var(--color-divider); color:var(--color-fg-quiet);font-size:13px;}
   .page-note{margin:16px;color:var(--color-fg-quiet);}
+  /* The notice for a page with no session (web_view/view/ended): a row of
+     its own in the heading, and the whole of a refused page's document. */
+  .ended-notice{flex:1 1 100%;margin:8px 0 0;padding:8px 12px;border:1px solid var(--color-danger);border-radius:6px;font-size:13px;}
+  .ended-notice p{margin:0;overflow-wrap:anywhere;}
+  .ended-headline{color:var(--color-danger);font-weight:600;}
+  .ended-advice{margin-top:2px;}
+  .ended-document{max-width:640px;margin:48px auto;}
   /* The todo panel: the strand's board and the reviewer band, above the
      composer in the operator's dock and above the observer's bar. Its height
      is capped and it scrolls on its own, so a long phase cannot cover the

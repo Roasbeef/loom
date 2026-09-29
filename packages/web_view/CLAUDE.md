@@ -47,9 +47,10 @@ page keys and nonces, and the relay into the session's gateway.
   and its deadline timer, how much history the page holds (`Paging`), the
   transcript blocks it holds and the turns laid out from them
   (`turns.Piece`), the agent `Strip`, the inputs each was built from, the
-  connection `Status` (`Connecting`, `Connected`, `Ended`; the heading says
-  "connected", not "following", which read as the scroll state and is the
-  browser's), the page's own refusal, the outcome of the last
+  connection `Status` (`Connecting`, `Connected`, `Ended(ending)`; the
+  heading says "connected", not "following", which read as the scroll state
+  and is the browser's, and "disconnected" with a notice under it once the
+  page ended), the page's own refusal, the outcome of the last
   command, the returned prompts and the count of drafts a command consumed.
   The component writes `shared` in four places only: it trims the history
   window to the rows the page draws, it marks the window as wanting older
@@ -68,7 +69,8 @@ page keys and nonces, and the relay into the session's gateway.
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
   types or plain values. `heading.view(session_id, name, workspace,
-  status)` draws the heading; `component.heading(model)` reads those
+  status, notice)` draws the heading, with the ended page's notice as its
+  last child; `component.heading(model)` reads those
   values from the model and stays the entry point both pages call.
   `strip.view(strip)` draws the agent strip, memoized on the whole strip;
   `lane.view(pieces, live, top, load)` draws the transcript lane, memoized per
@@ -191,7 +193,23 @@ page keys and nonces, and the relay into the session's gateway.
   leaves `returned_drafts` alone (`forget_surfaces` no longer clears it), so
   the page is the host that empties it. A prompt for another strand or
   session is named in the notice and not kept.
-- `page`: the shell, the exchange page (`enter(next, nonce)`), the asset
+- `ending.Ending` (`PageEnded`, `AccessRevoked`, `SessionStopped`,
+  `NotOpen`, `DaemonNotReady`, `LinkExpired`, `ConnectionFailed`): why a page
+  has no session, as a closed type. `headline` and `advice(ending,
+  session_id)` are fixed strings, so no peer, session or error text reaches
+  the page. `reason` and `from_reason(given, otherwise)` are the two halves
+  of the hop through the reason string `connection_event.Closed` carries
+  (`from_reason` is total: a string that names no ending gets the caller's
+  fallback, which the component sets to `ConnectionFailed`, or `NotOpen` for
+  a refused open). `close(ending)` is `Final` (close 1000, which Lustre's
+  client runtime does not retry) or `Retry` (4000, which it does), read by
+  `client/daemon/ui_socket`. `view/ended.view(option(ending), session_id)` draws
+  the notice, a `section` with two paragraphs, or `element.none()`.
+- `page`: the shell, whose `<lustre-server-component>` holds a fixed
+  paragraph (`waiting_notice(session_id)`) as light-DOM content, which the
+  client runtime hides when it mounts and which so shows exactly while the
+  page has no session; `refusal(ending, session_id)`, the document a
+  refused page request is answered with; the exchange page (`enter(next, nonce)`), the asset
   names (`stylesheet_asset`, `enter_asset`, `page_asset`, `client_asset`,
   `runtime_asset`) and where each is on disk (`static_file`,
   `runtime_file`), the keyed paths (`keyed_prefix`, `session_path`) and

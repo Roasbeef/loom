@@ -22,6 +22,7 @@ import session_view/connection_event
 import session_view/operator
 import session_view/session_channel
 import web_view/component
+import web_view/ending
 import web_view/operator_page
 
 fn page(role: String, cells) {
@@ -497,6 +498,35 @@ pub fn a_closed_connection_refuses_commands_test() {
       operator_page.Submitted("hello", operator.Prompt),
     ])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
+}
+
+// An operator's page that ended says so in its heading, as the observer's
+// does, and the regions after the heading keep the paths they had, so a
+// submit already in flight still names the form it meant.
+pub fn an_ended_operator_page_says_so_and_keeps_its_paths_test() {
+  let #(model, _) = page("operator", [])
+  let live = element.to_string(operator_page.view(model))
+  assert !string.contains(live, "ended-notice")
+  let closed =
+    send(model, [
+      operator_page.Observed(
+        component.Arrived([
+          connection_event.Closed(ending.reason(ending.PageEnded)),
+        ]),
+      ),
+    ])
+  let html = element.to_string(operator_page.view(closed))
+  assert string.contains(html, "class=\"ended-notice\"")
+  assert string.contains(html, ending.headline(ending.PageEnded))
+
+  // The notice is inside the heading, before the strip, so it is the
+  // heading's last child and nothing else moved.
+  assert in_order(html, [
+    "class=\"session-head\"",
+    "class=\"ended-notice\"",
+    "</header>",
+    "class=\"agent-strip\"",
+  ])
 }
 
 // The page's frame is pinned: the heading and the agent strip above the
