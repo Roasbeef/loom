@@ -116,7 +116,7 @@ and its interleavings are the attachment worker's and the gateway's
 ### The terminal's `Model`
 
 152 fields, in the record's own order as it stood before S1, which split
-it into `Shared` (`session_view/model.gleam:94`) and `View`
+it into `Shared` (`session_view/model.gleam:108`) and `View`
 (`tui/model.gleam:379`). The counts: 80 shared, 65
 terminal, 4 handles, 3 split.
 
@@ -172,7 +172,7 @@ terminal, 4 handles, 3 split.
 | `session`, `session_label` | a | Identity and catalogue name. |
 | `local_options` | b | The launch's options, read by session creation. |
 | `inbox` | c | `Inbox(source, Message)`; the source is the terminal's subject and the web's `Nil`. |
-| `peer` | a | `Attached`, `Disconnected`, `Preview`, `Replaying`; reducers branch on it, and the type is `Peer` (`session_view/model.gleam:412`). The web is always `Attached`. |
+| `peer` | a | `Attached`, `Disconnected`, `Preview`, `Replaying`; reducers branch on it, and the type is `Peer` (`session_view/model.gleam:419`). The web is always `Attached`. |
 | `candidate` | b | The provisional attachment: a lane, a `Subject(Nil)` and an inbox inside a job slot, `attachment.Status` (`tui/attachment.gleam:92`). |
 | `channel` | c | `Option(Channel(socket, recorder))`. |
 | `captured` | a | The last cut and its view. |
@@ -190,26 +190,26 @@ terminal, 4 handles, 3 split.
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
 | `agent_rail_visible` | b | A pane toggle. |
-| `details_expanded` | a | The extent the shared line builders read through `presentation` (`session_view/model.gleam:1067`), and `advance_generation_clock` checks it (`tui/tick.gleam:323`); a page will toggle it too. |
+| `details_expanded` | a | The extent the shared line builders read through `presentation` (`session_view/model.gleam:1074`), and `advance_generation_clock` checks it (`session_view/step.gleam:135`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
 | `streams`, `tool_tails` | a | The live answer and tool tails. |
 | `reading_lines` | b | Frozen transient rows while reading above the tail. |
 | `scroll_offset` | b | The viewport. |
-| `render_revision` | a | A presentation revision shared reducers bump (`session_view/model.gleam:790` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
+| `render_revision` | a | A presentation revision shared reducers bump (`session_view/model.gleam:797` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
 | `rendered_revision`, `rendered_row_count`, `revealed_rows`, `rendered_anchors`, `rendered_gutters`, `record_gutters` | b | The row projection's outputs. |
 | `compact_call_cache`, `compact_entry_cache` | a | Line caches keyed by `transcript_line.Line`, read by the shared line builders through `Presentation`. |
 | `pending_records` | a | Legacy entries awaiting append. |
 | `record_cache_valid` | a | Today a flag cleared at twelve write sites; it becomes a counter the terminal compares, in the shape of `record_cache_epoch`. |
 | `record_cache_width`, `record_cache_strand`, `record_cache_details` | b | What the record rows were built for. |
-| `frame_revision` | a | A presentation revision (`session_view/model.gleam:809` (`invalidate_frame`)); every `append_system` bumps it. |
+| `frame_revision` | a | A presentation revision (`session_view/model.gleam:816` (`invalidate_frame`)); every `append_system` bumps it. |
 | `frame_debt` | b | Frame pacing. |
 | `monotonic_time_ms`, `transport_time_ms` | b | The host's clocks; the shell reads them into the stamp. |
 | `stamp` | a | The readings the step applies at. |
 | `terminal` | b | This terminal's identity in a creation key. |
 | `client_build` | a | The build the mismatch line compares; data, read once. |
 | `last_frame_ms` | b | Frame pacing. |
-| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`session_view/model.gleam:821` (`mark_activity`)); the terminal's quiet timer reads it. |
+| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`session_view/model.gleam:828` (`mark_activity`)); the terminal's quiet timer reads it. |
 | `quiet_for_ms` | b | Idle pacing. |
 | `connection_backlog` | a | Set by the shared drain from the inbox it holds (`tui/inbound.gleam:387` (`drain_connection`)); the terminal's poll reads it. |
 | `recorder` | c | `Option(recorder)`. |
@@ -217,7 +217,7 @@ terminal, 4 handles, 3 split.
 | `herdr_reporter`, `herdr_published` | b | The pane reporter, a host handle the terminal alone performs against; it stays in the terminal's record rather than becoming a type parameter because no shared reducer names it. |
 | `outbox` | a | `List(Effect(socket, recorder))`; the terminal moves it into its own outbox at each call boundary, as `hold_channel` does for the lane. |
 | `next_job`, `running` | b | Job keys and the runtime's table. |
-| `record_cache_epoch` | a | Already the counter shape (`session_view/model.gleam:386` (`record_cache_epoch`)). |
+| `record_cache_epoch` | a | Already the counter shape (`session_view/model.gleam:393` (`record_cache_epoch`)). |
 | `view` | b | The etui caches themselves. |
 
 The shared record therefore holds no etui type, no `Subject`, no weft
@@ -397,11 +397,11 @@ entry points above gain the parameter with it.
 
 `Effect` is two variants because those are the two effects the shared
 reducers decide. Every `Channel` effect comes through `hold_channel`
-(`session_view/model.gleam:843` (`hold_channel`)), and the one `Record` a shared
+(`session_view/model.gleam:850` (`hold_channel`)), and the one `Record` a shared
 reducer queues is the channelless arrival
 (`session_view/lane_fold.gleam:998` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
 the reducer runs
-(`tui/model.gleam:1116` (`start_step`)); the terminal's shell keeps
+(`tui/model.gleam:1104` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
 terminal maps `Recorded(recorder, message)` to
 `recording.append(recorder, recording.Arrived(message))`, which writes the
@@ -420,7 +420,7 @@ fields the adoption arm resets today (`tui/interaction.gleam:236`
 `Attached`. `next_due` is
 `option.then(model.channel, session_channel.next_due)`; a host that has
 other reasons to wake, as the terminal does, combines it with its own
-(`tui/tick.gleam:610` (`lane_wait`)).
+(`tui/tick.gleam:532` (`lane_wait`)).
 
 ### The shells
 
@@ -528,9 +528,9 @@ they reach that it misses.
   `service_todo_seed` (`session_view/surfaces.gleam:75`) onward, `sync_context`,
   `sync_advisor_nudges`, `sync_goal`, `receive_jobs`, `receive_goal` and
   `receive_advisor_nudges`, less `notes_target` and `notes_surface`.
-- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:265`)
+- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:250`)
   and `advance_generation_clock` read the stamp and shared fields;
-  `drain_replay` (`tui/tick.gleam:226`) and `apply_replay_change`.
+  `drain_replay` (`tui/tick.gleam:212`) and `apply_replay_change`.
 - `queue_owner`, `queue_namespace`, `active_strand_phase`,
   `append_system`, `append_error`, `append_notice`, `start_step`, `emit`,
   `record`, `hold_channel` and `presentation` from `tui/model`.
@@ -662,7 +662,7 @@ The worst cases in the code, and the cut for each:
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
    (`tui/inbound.gleam:1156` (`tick_strip`)) reads the strip's focus and
-   stays; `advance_cache_outlook` (`tui/tick.gleam:357`
+   stays; `advance_cache_outlook` (`tui/tick.gleam:279`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
    bookkeeping stays terminal (`tui/tick.gleam:156` (`settle_tick`)).

@@ -1552,7 +1552,7 @@ or `/healthz`.
 | `packages/tui/src/tui_ffi.erl` | Terminal-specific OS integration; shared bootstrap primitives live in the host package. |
 | `packages/tui/src/tui/queue_editor.gleam` | Complete queued drafts, revisions, namespace identity, and uncertain-save state. |
 | `packages/session_view/src/session_view/worktree_view.gleam` | Validated worktree boards, request correlation, file selection, and refresh state. |
-| `packages/tui/src/tui/completion_summary.gleam`, `packages/session_view/src/session_view/live_jobs.gleam` | Captured operation evidence and separately timestamped current job rosters. |
+| `packages/session_view/src/session_view/completion_summary.gleam`, `packages/session_view/src/session_view/live_jobs.gleam` | Captured operation evidence and separately timestamped current job rosters. |
 | `packages/session_view/src/session_view/protocol.gleam` | Total event decoding and outbound command encoding. |
 
 Each unqualified Gleam path is relative to its package's source root;

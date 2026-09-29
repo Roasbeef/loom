@@ -290,7 +290,7 @@ The step reads no clock, file, mailbox, process or environment variable.
 Whether the replacement socket's actor is alive is read by the host when it
 hands the attachment job's end over (`runtime.hold`, which delivers
 `job.Finished` with the answer), and this client's build identity is read
-once when the model is created (`Model.shared.client_build`). Clock reads, the
+once when the model is created (`Model.view.client_build`). Clock reads, the
 connection, replay and attachment drains, every job start, and every file
 read have moved out of the step, as described above and below. Recording
 appends are effects: each line's offset is read
@@ -929,7 +929,7 @@ can tell a provisional attachment that failed from the one that was adopted.
 `loom replay <path>` plays a recording through `tui/virtual_backend`, an etui
 backend whose `poll` answers from a script. The replay runs the shipped
 `update` and `view`, with `Peer` set to `Replaying`: it opens no socket, starts
-no daemon, and sends nothing, and `tui/attempt_replay` feeds recorded frames
+no daemon, and sends nothing, and `session_view/attempt_replay` feeds recorded frames
 through the same channel reducer the live client uses. `tui/frame` converts a
 rendered `Buffer` to plain text for printing and for snapshot tests. Only the
 last frame is reproducible across machines, because whether a paced event
@@ -1075,12 +1075,12 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/theme`, `tui/appearance` | Semantic colours and the launch-time palette. |
 | `session_view/command`, `session_view/skills` | Slash-command grammar, palette suggestions, and daemon skill names. |
 | `session_view/composer`, `tui/image_drop` | Paste attachments, token estimate, and image admission. |
-| `tui/queue_panel`, `tui/queue_editor`, `tui/queue_request` | Held-input inspector, the revision-fenced queue editor, and the editor's requests on the lane, which `Shared` holds. |
+| `tui/queue_panel`, `tui/queue_editor`, `session_view/queue_request` | Held-input inspector, the revision-fenced queue editor, and the editor's requests on the lane, which `Shared` holds. |
 | `session_view/approval`, `tui/approval_panel` | Exact approval capture and the approval dialog. |
 | `session_view/worktree_view`, `tui/diff_panel` | Git worktree observation and the changes navigator. |
-| `tui/agents`, `session_view/agent_view`, `session_view/agent_activity`, `session_view/agent_roster`, `tui/agent_messages`, `tui/agent_message_panel`, `session_view/reviewer_status` | The agent rail and inspector projections. |
+| `tui/agents`, `session_view/agent_view`, `session_view/agent_activity`, `session_view/agent_roster`, `session_view/agent_messages`, `tui/agent_message_panel`, `session_view/reviewer_status` | The agent rail and inspector projections. |
 | `session_view/notes_view`, `tui/note_panel` | The notes observation and browser. |
-| `tui/completion_summary`, `tui/summary_panel`, `session_view/live_jobs` | Completion evidence, the summary panel, and the jobs roster. |
+| `session_view/completion_summary`, `tui/summary_panel`, `session_view/live_jobs` | Completion evidence, the summary panel, and the jobs roster. |
 | `session_view/context_view`, `tui/context_panel` | The context observation and inspector. |
 | `session_view/advisor_pending` | The pending-nudge observation. |
 | `session_view/block_summary` | Summarizer labels for long blocks, stored and live, and the exact-key reads still owed. |
@@ -1090,6 +1090,6 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/selection`, `tui/frame` | Mouse selection and OSC 52 copy; a `Buffer` as plain text. |
 | `tui/workspace`, `tui/internal/workspace_file` | Repository root and branch discovery. |
 | `tui/herdr`, `tui/internal/ffi_herdr` | Herdr pane-state reporting and its one socket exchange. |
-| `tui/recording`, `session_view/attempt`, `tui/attempt_replay`, `tui/virtual_backend` | The `--record` format, attempt custody, replay reduction, and the scripted etui backend. |
+| `tui/recording`, `session_view/attempt`, `session_view/attempt_replay`, `tui/virtual_backend` | The `--record` format, attempt custody, replay reduction, and the scripted etui backend. |
 | `tui/update`, `tui/update/*` | The `loom update` release installer and daemon restart. |
 | `tui/internal/ffi_terminal`, `tui/internal/ffi_file`, `tui/internal/ffi_download` | The package's Erlang FFI: terminal-owned actions, bounded image reads, and Gun HTTPS streams. |

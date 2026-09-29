@@ -784,7 +784,7 @@ the model.
 The terminal requests an observation when the primary's run settles,
 when a review settles while the primary is idle, when the primary first
 appears in the roster, or when the session changes.
-`surfaces.advisor_nudges_action` (`packages/tui/src/tui/surfaces.gleam`) owns those
+`surfaces.advisor_nudges_action` (`packages/session_view/src/session_view/surfaces.gleam`) owns those
 edges. A phase change on an unrelated strand keeps the current
 observation. Session replacement first clears the old board and request
 identity, so two idle primaries in different sessions cannot share advice
