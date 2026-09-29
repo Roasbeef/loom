@@ -386,7 +386,8 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `ApprovalsPresented`, `QueueRowsCaptured(previous, rows)`,
   `HistoryReleased(session, strands)`, `AgentMessagesCaptured`,
   `GoalReleased`, `ConnectionLost`, `ReplayAdopted(SessionChange)`,
-  `InterruptRequested` and `ReviewAnswered`).
+  `InterruptRequested`, `ReviewAnswered`, `DraftTaken(DraftTaking)`,
+  `TranscriptCleared` and `LookupRequested(id)`).
   The three lists
   are empty between calls. `record_surface` appends a fact.
   The functions are the writers `append_system`, `append_error`,
@@ -471,7 +472,11 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   into `job.Finished` with the adopted socket's liveness read) and has
   admission file it. `tui.gleam` and test drivers import it; no reducer
   module does.
-- `tui/msg`: what the step is given. `Msg` is `Input(at, wall_ms, event)`,
+- `tui/msg`: what the step is given, and `Command`, what an operator does
+  to the session in the session's terms (`Submit(draft, command,
+  delivery)`, `Interrupt`, `Stop(strand)`, `Decide(review, choice)`,
+  `SelectModel(name)`, `Quit`), which `commands.act` carries out. `Msg` is
+  `Input(at, wall_ms, event)`,
   one event with its `Stamp` (the presentation and transport clocks) and
   the wall clock reading, which the step reduces, or `Arrived(arrivals)`,
   traffic the host received, which the step only files. `Event` is in the
@@ -563,14 +568,22 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   functions that open a surface or read its target (`refresh_notes`,
   `select_note`, `open_summary`, `open_context`, `request_goal_status`,
   `notes_target`, `notes_surface`) still take the whole model.
-- `tui/commands`: what an operator does to a session, over `Shared` alone:
-  `interrupt_active`, `stop_strand`, `decide` (by ID, the displayed
-  record), `decide_review` (the dialog's captured record), `select_model`,
-  `focus` and `load_strand` (the second and third units of a strand switch,
-  after the lane's `cancel_unsent`), and `quit` (the lane's close and the
-  quit flag). An interrupt records `InterruptRequested` and a decision on
-  the dialog `ReviewAnswered`; the terminal forms in `tui/submit` and
-  `tui/inbound` hold the result and call `settle_surfaces`.
+- `tui/commands`: what an operator does to a session, over `Shared` alone.
+  `act(shared, msg.Command)` is the entry: `Submit` runs `submit`, the
+  refusal before encoding, the `ComposerSubmission` marker, the image
+  prompt and the dispatch exhaustive over `command.Session`, then
+  `release_submission`; `Interrupt`, `Stop`, `Decide` (the dialog's
+  captured record), `SelectModel` and `Quit` run `interrupt_active`,
+  `stop_strand`, `decide_review`, `select_model` and `quit`. `decide` (by
+  ID, the displayed record) is the `/approve` and `/deny` arm. `focus` and
+  `load_strand` are the second and third units of a strand switch, after
+  the lane's `cancel_unsent`. An interrupt records `InterruptRequested`, a
+  decision on the dialog `ReviewAnswered`, a draft the dispatch consumes
+  at once `DraftTaken(TakenByCommand | TakenAsPrompt)` (the shared side
+  empties the attachments for a prompt), `/clear` `TranscriptCleared` and
+  `/approvals <id>` `LookupRequested(id)`; the terminal forms in
+  `tui/submit`, `tui/inbound` and `tui/interaction` go through
+  `run_settled`, which applies them.
 - `tui/session_step`: `settle(before, after)`, the shared step's own settle
   after every event: `sync_context`, `sync_advisor_nudges` and `sync_goal`
   in that order. `settle_update` in `tui.gleam` runs it through
@@ -638,13 +651,18 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   growing paragraph re-wraps from its last row (`markdown.rewrap`), and a
   long paragraph is parsed only after a checkpoint past its plain leading
   lines (`markdown.join_soft_break`).
-- `tui/submit`: composer submission, input history, and the terminal forms
-  of the commands: `interrupt_active`, `stop_strand`, `quit` (the session's
-  half through `commands.quit`, then the terminal's cancellations) and
-  `switch_active_strand` (`cancel_pending`, `commands.focus`, the overlay
-  and outlook reset, then `commands.load_strand`, each settled before the
-  next). `submit_text` still parses and dispatches every slash command; its
-  session arms call the commands' functions.
+- `tui/submit`: the shell's half of a submission, input history, and the
+  terminal forms of the commands. `submit` parses the draft and routes on
+  the outer variant: a `command.Session` goes to `commands.act` as
+  `msg.Submit(draft, command, delivery)`, with the composer's mode as the
+  delivery; a `command.Surface` is carried out here (`surface_command`:
+  panels, the model selector with its `models` read, daemon control, a
+  change of strand and the quit), after the terminal consumes the draft
+  itself, and then `commands.release_submission`. Also `interrupt_active`,
+  `stop_strand`, `quit` (the session's half through `act(Quit)`, then the
+  terminal's cancellations) and `switch_active_strand` (`cancel_pending`,
+  `commands.focus`, the overlay and outlook reset, then
+  `commands.load_strand`, each settled before the next).
 - `tui/interaction`: key, paste, mouse and candidate-event handling.
 - `tui/tick`: `update_tick`, `settle_tick`, the frame cache, viewport pacing
   and the Herdr reporter.
