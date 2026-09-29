@@ -47,10 +47,12 @@ page keys and nonces, and the relay into the session's gateway.
   and its deadline timer, how much history the page holds (`Paging`), the
   transcript blocks it holds and the turns laid out from them
   (`turns.Piece`), the agent `Strip`, the inputs each was built from, the
-  connection `Status`, the page's own refusal and the count of drafts a
-  command consumed. The component writes `shared` in two places only: it
-  trims the history window to the rows the page draws, and it marks the
-  window as wanting older rows.
+  connection `Status`, the page's own refusal, the outcome of the last
+  command, the returned prompts and the count of drafts a command consumed.
+  The component writes `shared` in four places only: it trims the history
+  window to the rows the page draws, it marks the window as wanting older
+  rows, it empties `returned_drafts` once it has taken them, and it empties
+  the notice and `answer` before it runs a command.
 - `component.live_rows` (150) and `component.held_rows` (300): the page
   holds the newest `live_rows` rows of `main`, cut between turns
   (`turns.grouped`); once the reader loads older rows its limit is
@@ -107,6 +109,20 @@ page keys and nonces, and the relay into the session's gateway.
   button sends `Observed(component.OlderRequested)`.
   `composition(fields)` is the total decoder of the composer form's
   fields.
+- `completion.rows()` and `completion.table()`: the slash commands the
+  composer offers, built from `session_view/command.suggestions` (the
+  one-word commands, and the argument rows of every word that has some once
+  its space is typed) less the rows `component.page_command` refuses, as one
+  JSON string for the composer element's `commands` attribute. The names and
+  hints are the terminal's and no session text is in it.
+- `component.Returned(number, text)`, `component.returns(model)` and
+  `component.returned(model)`: a held prompt the daemon handed back for
+  `main` (protocol-change/038), taken from `Shared.returned_drafts` at the
+  end of every message (`taken`), numbered, and kept, the latest
+  `returned_kept` (4) of them, for the composer's element. `step.update`
+  leaves `returned_drafts` alone (`forget_surfaces` no longer clears it), so
+  the page is the host that empties it. A prompt for another strand or
+  session is named in the notice and not kept.
 - `page`: the shell, the exchange page (`enter(next, nonce)`), the asset
   names (`stylesheet_asset`, `enter_asset`, `page_asset`, `client_asset`,
   `runtime_asset`) and where each is on disk (`static_file`,
@@ -159,9 +175,19 @@ page keys and nonces, and the relay into the session's gateway.
   turn's work, and `<loom-follow>` around the lane, which keeps the newest
   row in view while the reader is at the bottom, and keeps the reader's
   place when a press of "Load older" brings rows in above them. They run
-  in the browser and send the server nothing.
+  in the browser and send the server nothing. The operator's editor is
+  drawn inside `<loom-composer commands returned>`, which lists the slash
+  commands as the draft grows, sends the draft on Command or Control with
+  Enter (by submitting the composer form), and puts a returned prompt in
+  the editor. Its inputs are the `commands` table, the `returned` count and
+  the returned prompts as text-node children in a `returned` slot, numbered
+  by `data-n`; the editor stays the uncontrolled textarea, and keeps its
+  place when a return arrives.
 - An operator's page also receives Lustre's `EventFired` for its two
   handlers: a click on an approval button and the composer form's submit.
+  The composer element's keys and list add no event: the send key calls
+  `requestSubmit`, which raises the same submit, and `page_events_test` pins
+  that the operator's page registers only clicks and submits.
 - Outputs leave through the transport only: `Transmit` and `Shut`, in the
   lane's order, inside one `effect.from`.
 
@@ -248,6 +274,13 @@ page keys and nonces, and the relay into the session's gateway.
   names the tool; nothing has `autofocus`; the composer's submit never
   decides an approval; a decision is sent only for the record still pending
   at the drawn sequence (`operator.drawn`).
+- **The list offers only what Send would run.** `completion` drops a row
+  exactly when `component.page_command` refuses the command it names, so
+  there is no second list of what the page refuses; a row that takes an
+  argument is judged with one, since the command alone is a usage message.
+- **A returned prompt is never dropped and never replaces a draft.** The
+  editor is not keyed by returns, so a return leaves what the operator is
+  typing; the element decides whether the text is the draft or follows it.
 - **The composer form is decoded totally.** One `draft`, at most one
   `delivery` of `prompt` or `steer`, nothing else; anything more refuses
   the event.

@@ -346,6 +346,19 @@ decided, and the page says so. The lane itself refuses a mutation when the
 attachment's role is observer (`session_channel.can_mutate`), which is a
 third layer under the component's type and the gateway's role check.
 
+**The composer and its notice.** The editor is drawn inside
+`<loom-composer>` (`packages/web_client`), which lists the slash commands as
+the draft grows (`web_view/completion` builds its table from the terminal's
+suggestions, less what `component.page_command` refuses), sends the draft on
+Command or Control with Enter by submitting the form, and puts a prompt the
+daemon handed back into the editor. None adds a handler or a socket event.
+The page's notice is an outcome, not the shared record's notice: the
+refusal the page made, else the daemon's reply to the last command
+(`Shared.answer`), else what the step worded when the page ran it. A
+returned prompt is taken from `Shared.returned_drafts` at the end of every
+message and kept, with a number, for the element (protocol-change/051, the
+addendum on the composer's element).
+
 **Effects.** The lane's outputs, `Transmit(socket, frame)` and
 `Shut(socket)`, are performed through the transport inside one
 `effect.from`, in the order the lane queued them. The component holds no

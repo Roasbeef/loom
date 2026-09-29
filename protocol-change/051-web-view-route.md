@@ -1082,3 +1082,160 @@ prompt, an unknown command refused and sending nothing, a terminal surface
 command (`/models`, `/sessions`, `/details`) refused with a notice, and
 `/add-dir`, `/add-write-dir` and `/add-dir --write` refused with a notice and
 no frame.
+
+## Addendum: the composer's element (2026-09-28)
+
+**Status**: PROPOSED, IMPLEMENTED with issue #569, part 2 · **Raised by**:
+issue #569 (slash-command completion, a send key, the notice, a returned
+prompt)
+
+The composer's editor is an uncontrolled `textarea`. The browser owns the
+text as the operator types, and the server never sees it until the form is
+submitted, so four things that react to the draft as it changes could not
+be done on the server. This addendum puts them in a client component,
+`<loom-composer>` (`packages/web_client/src/web_client/composer.gleam`),
+which wraps the server's textarea and takes it as its default slot. It adds
+no handler to the server's tree, no event to the socket's accepted list,
+and no change to the content security policy.
+
+### What it does
+
+- **Slash-command completion.** A draft that is one word starting with
+  `/` lists the session commands the page can run, narrowed as the draft
+  grows, with the names and hints the terminal's completer gives
+  (`session_view/command.suggestions`). A command whose argument has a
+  closed vocabulary (`/effort`, `/goal`) keeps listing its words past the
+  space. The arrow keys move, Tab and Enter take the highlighted row, and
+  Escape closes the list. A row is offered only when the page would run the
+  command it names: `web_view/completion` builds the table from the
+  terminal's suggestions and drops a row exactly when
+  `component.page_command` refuses the command, so a terminal surface
+  (`/help`, `/models`, `/sessions`) and adding a directory are not offered.
+- **A send key.** Command or Control with Enter submits the composer's
+  form as its first submit button does (Send, or Queue while the strand is
+  busy). Enter alone is still a newline. The key calls `requestSubmit`, so
+  the server receives the `submit` event the form already registers.
+- **The notice.** The page draws outcomes only (see below), not the shared
+  record's notice.
+- **A returned prompt.** A held prompt the daemon hands back
+  ([protocol-change/038](038-held-input-custody-return.md)) is put back in
+  the editor. This supersedes the statement in "Addendum: the operator page
+  runs session commands" that the page drops it.
+
+### What crosses from the server to the element
+
+The element's inputs are two attributes and a slot, and none is session
+text as an attribute.
+
+- `commands`: the completion table as JSON. Every row is a command name
+  and a hint written in `session_view`, never text the session produced.
+- `returned`: how many prompts the daemon has handed back, a number.
+- Children in the slot named `returned`: each returned prompt as a text
+  node in a `span`, with its number in `data-n`. The element's shadow root
+  has no such slot, so the browser draws none of them; the element reads
+  their text. The prompt is what the operator typed and it is drawn only as
+  text, as every other piece of session content is.
+
+Nothing goes from the element to the server except the form's submit, which
+the operator's own key or button raises.
+
+### What the element may do, and what changes in the rules
+
+The earlier addenda kept client components from handling keys or taking
+focus. That rule was written for the approval card, where a stray key must
+never become an answer, and this addendum narrows it to say so:
+
+- The element listens for `input` and `keydown` on its own editor only,
+  through its slot, and never inside an approval card. The approval region is
+  outside it, in the dock. No key the element handles decides an approval:
+  the send key submits the composer's form, which sends a prompt or a
+  command and decides nothing.
+- It calls `focus` on the editor once, when the operator chooses a row from
+  the list (by key or click), so the caret is in the editor after the
+  completed text. It never focuses on its own, and nothing has `autofocus`.
+- It writes the editor's value in two cases only: a row the operator chose,
+  and a returned prompt. It reads the editor's text for two purposes: to
+  narrow the list, for which it keeps the first 200 characters, and to see
+  whether a returned prompt follows text the operator typed. It sends none
+  of it anywhere.
+- The `commands` attribute holds the static table of command names, not a
+  daemon identity or a number. That is the one attribute a client component
+  now reads that is not one of those, and the table is written in
+  `session_view`, not produced by the session.
+
+### The notice is an outcome
+
+The shared record's notice is replaced by any event: a stream ("streaming
+text"), a read the lane sends by itself ("advisor_pending sent" on every
+page load), a capture. The page drew it, so it said whatever the session had
+said last. It now draws only what the operator's commands and the daemon's
+answers to them said: its own refusal, the daemon's reply to the last
+command (`Shared.answer`, which only a reply writes), or what the shared step
+worded when the page ran the command. `Shared.answer` is new in
+`session_view` and additive: the terminal reads the notice as it did.
+
+### A returned prompt
+
+The editor is uncontrolled, so only the browser knows whether the operator
+has typed since the prompt was sent. The element puts the returned text in
+an empty editor, and below what the operator has typed, after a blank line,
+in an occupied one, which is what the terminal does
+(`inbound.restore_returned_drafts`): both texts are the operator's, and
+neither may be lost. The notice says how many prompts came back and for
+which strand. The page composes only for `main`, so a prompt held for
+another strand or session is named in the notice and not restored: the
+page has no editor for it.
+
+The step no longer discards it. `step.forget_surfaces` leaves
+`Shared.returned_drafts` alone, and the web component takes the prompts at
+the end of every message (`docs/design-notes/step-extraction.md`, question
+12, amended).
+
+### What was considered
+
+- **Put the returned text in the server-rendered editor.** The server
+  would replace the textarea with one holding the text. The server cannot
+  tell whether the operator has typed in the editor since, so this would
+  replace their draft. Not taken.
+- **Send the draft to the server as it changes.** It would let the server
+  own completion, at the cost of an `input` handler that fires per
+  keystroke, a new event on the socket's accepted list, and the draft
+  leaving the browser before the operator sent it. Not taken.
+- **A second list of commands in the client.** Two lists drift. The table is
+  built from the terminal's own.
+- **Enter submits, or the list's Enter submits a complete command.** The
+  terminal submits a complete command chosen with Enter. On the page Enter
+  is a newline and choosing a row only fills the editor, so a keystroke
+  never sends on its own; the operator presses Command or Control with Enter.
+
+### Cost
+
+- The page carries one more client element and one more `.mjs` file of
+  browser calls (`internal/composer.mjs`, four functions), beside the two
+  that were there.
+- The `commands` attribute is about 3 KB, sent with the composer and
+  unchanged between renders.
+- A returned prompt is held on the page, at most four of them, until the
+  page ends.
+
+### Verification
+
+`completion_test` shows every row is one the terminal offers with the same
+name and hint, a command the page refuses is not offered, and the
+argument rows are. `returned_test` shows a returned prompt kept and
+numbered, the notice naming the strand and count, the editor not replaced,
+the view carrying the count and the text as escaped text, and a prompt for
+another strand named and not restored. `operator_page_test` shows a page
+that has only loaded saying nothing, background events not speaking over a
+command's outcome, and only a command's refusal drawn.
+`page_events_test` shows the operator's page registering only clicks and
+submits. `session_view/step_test` shows a reply kept as the answer and a
+returned prompt kept through `forget_surfaces`.
+
+The element's keys, list and restore run in the browser and are not in
+`make check`. They were exercised in a browser against the built bundle:
+the list narrowing and moving, Tab and Enter taking a row, Command and
+Control with Enter submitting the form with `draft` and `delivery` and no
+newline, and a returned prompt filling an empty editor, following typed text,
+being taken once when two returns land within a frame, and not returning
+when an editor is drawn afresh.
