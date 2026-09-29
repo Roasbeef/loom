@@ -34,6 +34,14 @@ read, takes the lane's outputs and performs them.
 
 ## Key Types
 
+- `command.Command`: a parsed draft, `Surface(command.Surface)` for a
+  command the host carries out with its own machinery (a panel, the model
+  selector, daemon control, a change of strand, the host's exit) or
+  `Session(command.Session)` for one the session carries out (a prompt, a
+  steer or a follow-up, the goal, schedule, approval and configuration
+  commands, `/clear`, and the parse errors). A host routes on the outer
+  variant, and the terminal's shared dispatch (`tui/commands.submit`) is
+  exhaustive over `Session`.
 - `session_channel.Channel(socket, recorder)` (opaque): one credited
   conversation lane. `start`, `start_recorded`, `start_resumed` and
   `replay` create one; `receive(channel, message, now:)`,

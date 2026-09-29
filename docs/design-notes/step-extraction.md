@@ -13,7 +13,7 @@ it departed from this note, the S2 entry in section 5 says how and why.
 S3 was re-sliced on 2026-09-28, with the owner's approval, after a census
 found that section 3's lists miss much of what the lane and event folds
 reach; section 5's S3 entry gives the census and the new landings, and
-S3a′ to S3d′ and the first half of S3e′ have landed.
+S3a′ to S3e′ have landed.
 
 Issue #530 left the terminal and the web view sharing the session lane and
 the transcript projection but not the step. The terminal reduces with
@@ -38,7 +38,7 @@ template, the web shell reads `now()` once at the top of its `update`, and
 
 The terminal's whole update is `runtime.settle(step(runtime.message(event,
 model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1745`
-(`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:48` (`Msg`)): an
+(`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:59` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
 (`packages/tui/src/tui.gleam:1842` (`apply_input`),
 `packages/tui/src/tui.gleam:1922` (`settle_update`)), or an `Arrived`
@@ -190,26 +190,26 @@ terminal, 4 handles, 3 split.
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
 | `agent_rail_visible` | b | A pane toggle. |
-| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/session_model.gleam:1035`), and `advance_generation_clock` checks it (`tui/tick.gleam:323`); a page will toggle it too. |
+| `details_expanded` | a | The extent the shared line builders read through `presentation` (`tui/session_model.gleam:1067`), and `advance_generation_clock` checks it (`tui/tick.gleam:323`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
 | `streams`, `tool_tails` | a | The live answer and tool tails. |
 | `reading_lines` | b | Frozen transient rows while reading above the tail. |
 | `scroll_offset` | b | The viewport. |
-| `render_revision` | a | A presentation revision shared reducers bump (`tui/session_model.gleam:758` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
+| `render_revision` | a | A presentation revision shared reducers bump (`tui/session_model.gleam:790` (`invalidate_transcript`)); the terminal compares it with `rendered_revision`, the web ignores it. |
 | `rendered_revision`, `rendered_row_count`, `revealed_rows`, `rendered_anchors`, `rendered_gutters`, `record_gutters` | b | The row projection's outputs. |
 | `compact_call_cache`, `compact_entry_cache` | a | Line caches keyed by `transcript_line.Line`, read by the shared line builders through `Presentation`. |
 | `pending_records` | a | Legacy entries awaiting append. |
 | `record_cache_valid` | a | Today a flag cleared at twelve write sites; it becomes a counter the terminal compares, in the shape of `record_cache_epoch`. |
 | `record_cache_width`, `record_cache_strand`, `record_cache_details` | b | What the record rows were built for. |
-| `frame_revision` | a | A presentation revision (`tui/session_model.gleam:777` (`invalidate_frame`)); every `append_system` bumps it. |
+| `frame_revision` | a | A presentation revision (`tui/session_model.gleam:809` (`invalidate_frame`)); every `append_system` bumps it. |
 | `frame_debt` | b | Frame pacing. |
 | `monotonic_time_ms`, `transport_time_ms` | b | The host's clocks; the shell reads them into the stamp. |
 | `stamp` | a | The readings the step applies at. |
 | `terminal` | b | This terminal's identity in a creation key. |
 | `client_build` | a | The build the mismatch line compares; data, read once. |
 | `last_frame_ms` | b | Frame pacing. |
-| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/session_model.gleam:789` (`mark_activity`)); the terminal's quiet timer reads it. |
+| `activity_revision` | a | A revision `mark_activity` bumps from shared reducers (`tui/session_model.gleam:821` (`mark_activity`)); the terminal's quiet timer reads it. |
 | `quiet_for_ms` | b | Idle pacing. |
 | `connection_backlog` | a | Set by the shared drain from the inbox it holds (`tui/inbound.gleam:387` (`drain_connection`)); the terminal's poll reads it. |
 | `recorder` | c | `Option(recorder)`. |
@@ -313,7 +313,7 @@ pub type Command {
 
 What is a session message and what stays a host message follows from the
 split above. `Arrived` and `Ticked` are session messages in both hosts.
-The terminal's event variants (`Event`, `tui/msg.gleam:116`), which
+The terminal's event variants (`Event`, `tui/msg.gleam:127`), which
 are `KeyPressed`, `Pasted`, `Resized`, `Scrolled`, `Pressed`, `Dragged`,
 `Released` and `Moved`, stay terminal messages: the key dispatch in
 `tui/interaction` reads the overlay, the context surface, the queue
@@ -323,7 +323,7 @@ before it decides what a key means (`tui/interaction.gleam:417`
 handler therefore ends in one of three ways: it edits terminal state, it
 opens or moves a terminal surface, or it produces a `Command` and hands
 the shared step an `Acted`. The `JobReplied` arrival
-(`tui/msg.gleam:83` (`JobReplied`)) stays terminal, because every slot
+(`tui/msg.gleam:99` (`JobReplied`)) stays terminal, because every slot
 it is filed into does.
 
 `Stamp` loses `wall_ms`. The one reader is the session creation key
@@ -397,7 +397,7 @@ entry points above gain the parameter with it.
 
 `Effect` is two variants because those are the two effects the shared
 reducers decide. Every `Channel` effect comes through `hold_channel`
-(`tui/session_model.gleam:811` (`hold_channel`)), and the one `Record` a shared
+(`tui/session_model.gleam:843` (`hold_channel`)), and the one `Record` a shared
 reducer queues is the channelless arrival
 (`tui/lane_fold.gleam:1040` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
 the reducer runs
@@ -520,9 +520,9 @@ they reach that it misses.
   `send_via`, `apply_submission`, `discard_own_turn` and
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
-- The command arms: `interrupt_active` (`tui/commands.gleam:59`),
-  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:1032`),
-  `select_model`, `decide` (`tui/commands.gleam:138`), `send_prompt_to`,
+- The command arms: `interrupt_active` (`tui/commands.gleam:80`),
+  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:517`),
+  `select_model`, `decide` (`tui/commands.gleam:159`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from
   `service_todo_seed` (`tui/surfaces.gleam:113`) onward, `sync_context`,
@@ -627,7 +627,7 @@ The worst cases in the code, and the cut for each:
    the shell's edge on `after.shared.approvals`, run after every shared
    call that can change it, which is where `apply_cut` and the `LookedUp`
    arm call them today. `prompted_approvals` moves to the view with them.
-   `decide_captured_approval` (`tui/inbound.gleam:337`
+   `decide_captured_approval` (`tui/inbound.gleam:343`
    (`decide_captured_approval`)) becomes the inspector producing
    `Acted(Decide(id, seq, choice))`, with `AllowForSession` mapped through
    `operator.Choice`, which already has it. *As landed (S3d′):* the close
@@ -644,7 +644,7 @@ The worst cases in the code, and the cut for each:
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
    `request_visible_worktree` on a diff pane appearing, which becomes
    `Acted(RefreshWorktree)` because only the shell knows the pane appeared
-   (`tui/inbound.gleam:1037` (`request_visible_worktree`) reads
+   (`tui/inbound.gleam:1046` (`request_visible_worktree`) reads
    `layout.diff_shown`); `request_history_for_view`, which becomes
    `Acted(OlderHistory)` for the same reason
    (`tui/interaction.gleam:1806` (`request_history_for_view`) reads the
@@ -661,7 +661,7 @@ The worst cases in the code, and the cut for each:
    chain. The order is kept by having the terminal's tick call the shared
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
-   (`tui/inbound.gleam:1134` (`tick_strip`)) reads the strip's focus and
+   (`tui/inbound.gleam:1156` (`tick_strip`)) reads the strip's focus and
    stays; `advance_cache_outlook` (`tui/tick.gleam:357`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
@@ -1539,6 +1539,124 @@ and the census is 928 warnings on both. A report-only review from
 change on any rewritten path; its one actionable note is `run_settled`,
 and a second pass over that commit found nothing further.
 
+*S3e′ as landed, second half: the dispatch.* The slash-command parse now
+says who acts on a command, and the session's commands are dispatched over
+`Shared` alone.
+
+`session_view/command.Command` is two variants under one parse, as
+question 7 recommended. `Surface(command.Surface)` holds the commands a
+host carries out with its own machinery, and `Session(command.Session)`
+everything the session carries out. The terminal's `submit` parses the
+draft and routes on the outer variant. A surface command is carried out in
+`tui/submit` (`surface_command`), after the terminal consumes the draft
+itself. A session command goes to `commands.act` as `msg.Submit(draft,
+command, delivery)`, and `commands.submit` holds what `submit` and
+`submit_text` did for it: the refusal before encoding, the
+`ComposerSubmission` marker, the image prompt, the dispatch, which is
+exhaustive over `command.Session`, and the release of the marker.
+`outbound.mutation_refusal` and `mutating_submission` take a
+`command.Session`, because no surface command mutates.
+
+Section 2 names `Help`, `Sessions`, `Agents`, `Queue`, `Diff`, `Summary`,
+`Notes` and the context surfaces as the host's, with `Models` handled by
+the shell. The split puts seven more there, each because its handling
+reaches the terminal's machinery: `Strands` opens the agent workspace like
+`Agents`; `PeerLinks` and `Rename` go through daemon control; `Details`
+flips the terminal's repaint phase with the shared extent; `GoalStatus`
+opens the goal inspector; `Quit` cancels the terminal's jobs after the
+session's half; and `Strand(name)` is a change of strand, which the host
+drives as three shared calls with its own writes between them (the first
+half's entry). Every other variant is a session command, including the
+parse errors (`Unknown`, `MissingArgument`, the goal bounds), `Empty` and
+`Prompt`, which the dispatch answers with a line or a send; so a missing
+argument to a surface command, such as `/rename` alone, is reported by the
+shared dispatch, with the same line as before.
+
+The dispatch reads no editor state, as the owner asked. The old
+`submit_text` cleared the composer before it dispatched, unless the
+submission was locked behind the lane: the text for every command, and
+also the attachments and the submission mode for a prompt, a steer or a
+follow-up. The dispatch records the outcome instead, as
+`DraftTaken(TakenByCommand)` or `DraftTaken(TakenAsPrompt)`, and empties
+the attachments in the session state for a prompt; the terminal applies
+the fact by clearing its editor into the input history and, for a prompt,
+returning to prompting. A locked draft is still consumed when the lane
+sends it, through `drafts_sent`, which records no `DraftTaken`. `/clear`
+records `TranscriptCleared` for the terminal's gutters, and `/approvals
+<id>` records `LookupRequested(id)` for the record the dialog waits on.
+Each of these writes preceded the rest of its arm and nothing the arm does
+afterwards reads it, so applying it after the call leaves the same model.
+The composer's submission mode, which the send decisions read, reaches the
+dispatch as the `Submit`'s delivery.
+
+`tui/msg` gains `Command`, the operator's command set, with its first user,
+`commands.act`: `Submit`, `Interrupt`, `Stop(strand)`, `Decide(review,
+choice)`, `SelectModel(name)` and `Quit`. The terminal forms of the
+interrupt, the stop, the dialog's decision, the model selector and the
+quit go through it. This departs from section 2 in four ways.
+
+1. `Submit` carries the parsed `command.Session` and not the raw text and
+   attachments. The parse is the host's, since it decides the route, and
+   the attachments are session state already (section 1).
+2. `Decide` carries the review the dialog captured rather than `(id, seq,
+   choice)`. The dialog decides the record it shows, and a lookup by ID and
+   sequence would refuse a record the session state no longer holds, which
+   the terminal does not do today. The web's `Decided` will look up its
+   drawn record before it builds one.
+3. There is no `Focus`, `Clear`, `OlderHistory` or `RefreshWorktree`. A
+   change of strand is three shared calls with host writes between them;
+   `/clear` is a `Submit`; and the history and worktree requests are edges
+   of the terminal's `settle_update` that call shared units.
+4. The `session_view`-shaped `Msg`, `Arrival` and `Event` did not land.
+   Their consumer is `step.update`, which S4 writes, and until then no
+   function would take them, so they wait for it, as the first half's
+   entry said the message types would wait for their first user.
+
+Removing the application of each new fact in turn failed tests for one
+of four: dropping the editor clear of `DraftTaken` failed three. The
+prompt's return to prompting, `TranscriptCleared` and `LookupRequested`
+failed none, since the old `submit_text` wrote each inline and no test
+looked, so `surface_facts_test` gains a test for each; the three pass on
+`main` and each fails, alone, when its fact's application is removed.
+
+Measured against `main` at `c61dc3f0d`, whose tree is the one #605
+merged. The `tui` suite passes 973 tests on `main` and 976 here, the three
+new ones; `session_view` passes 112 and `web_view` 81 on both. `client`
+fails the same `git_identity_test` cases on both trees, with the same
+reason, "global Git identity could not be read", when run alone as well
+as in the suite; they read the machine's global Git configuration, which
+the environment the proofs ran in did not provide, and every other
+`client` test passes on both (2,289 on the branch). Both committed
+recordings replay byte-identical with `--all --plain`, and the synthesized
+`tui_perf` replays of 64, 512 and 4,096 frames end on identical frames.
+The P model's ten cases find no bug at 30,000 schedules each. The shipped
+fixtures, the fifteen tests matching `_shipped_`, pass against each
+build's `bin/loomd` with `HOME` pointed at an empty directory and
+`bin/loom-exec` built. `scripts/tui_perf.sh`, median of three alternating
+runs, plain and with `TUI_PERF_MIN_HEAP=4000000`: the idle tick (7,540
+reductions, 9,476 words), a key (100,980 reductions, 213,555 words) and
+the 500-frame burst (5,528 reductions and 11,844 words per frame) are the
+same on both, and the 64-frame tick is within 0.23%. `erlc` through
+`profile_module.py`, median of three alternating runs, wall time and
+`core_inline_module`: `tui@submit` fell from 0.87 s to 0.55 s (0.039 s to
+0.021 s) and `tui@commands` rose from 0.29 s to 0.50 s (0.010 s to
+0.028 s), as the dispatch moved between them; `tui`, `tui@inbound`,
+`tui@interaction`, `tui@tick`, `tui@surfaces`, `tui@outbound`, `tui@model`,
+`tui@session_model` and `tui@session_step` are within 0.05 s and 0.003 s
+of `main`. Lint finds no error-tier finding on either, and the census
+falls from 928 warnings to 927. A report-only review from `c61dc3f0d`
+found no behaviour change for any slash command, with or without images,
+locked or not; its two optional notes, a naked `Bool` in the moved
+`image_prompt_preview` and binding both draft takings before the `case`,
+were kept, the first because the code moved unchanged and the census did
+not grow, the second because the extra copy does not show in the measured
+key and taking the draft per arm would repeat the call in about
+twenty-five arms or split the dispatch. At its suggestion, `DraftTaken`'s
+documentation names the pairing that clears a draft once and never twice:
+no `DraftTaken` for a `ComposerSubmission`, and no move of `drafts_sent`
+for anything else. A second pass over the dispositions found nothing
+further.
+
 **S4: the move.** `tui/model`'s shared record and helpers,
 `tui/msg`, the frame and replay admission, `tui/inbound`, `tui/outbound`,
 `tui/surfaces`, the shared half of `tui/submit`, `tui/completion_summary`,
@@ -1643,6 +1761,11 @@ them.
    and `tui@interaction` is unchanged, on `tui@submit` fell from 0.046 s to
    0.041 s, and on `tui@tick` rose from 0.013 s to 0.015 s; the new
    `tui@commands` takes 0.010 s and `tui@session_step` 0.003 s.
+   *Measured in the second half of S3e′:* no settle chain changed. The
+   dispatch moved from `tui@submit`, whose `core_inline_module` fell from
+   0.039 s to 0.021 s, to `tui@commands`, where it rose from 0.010 s to
+   0.028 s; neither module holds a chain, and `tui` and `tui@tick` are
+   unchanged.
 
 5. **Allocation per event.** Today one event copies one 152-field record
    per field write. After S1 a shared write copies an 80-field record and
@@ -1671,7 +1794,13 @@ them.
    pause` and `resume`) over `Shared`, and `submit_text` still parses and
    dispatches over the whole `command.Command`. The split lands with its
    first user, the shared dispatch, in the second half, since until then
-   nothing matches on the outer variant.
+   nothing matches on the outer variant. *Resolved in the second half of
+   S3e′:* split as recommended. `command.Command` is `Surface(Surface) |
+   Session(Session)` under one parse; the terminal routes on the outer
+   variant and `commands.submit` is exhaustive over `Session`. Seventeen
+   variants are surface commands and twenty-six session commands; section
+   5's entry says which and why, and every slash-command test names the
+   outer variant.
 
 8. **The web reads its clock in `update`.** This reverses the sentence in
    `docs/architecture/web-view.md` that `update` reads no clock, and

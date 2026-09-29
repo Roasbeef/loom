@@ -32,13 +32,24 @@
 //// The module sits below `tui/model` in the import graph: the model stores
 //// a `Stamp`, and `tui/pacing`, which the model imports, reads events. So it
 //// imports nothing of the model.
+////
+//// `Command` is the other half of the message: what an operator does to the
+//// session, in the session's terms rather than the terminal's keys. The
+//// terminal's key and slash-command handlers decide which one a key or a
+//// parsed draft means, from what the terminal shows, and hand it to
+//// `commands.act`, which takes the shared record alone. It is the command
+//// set a second host builds from its own controls
+//// (`docs/design-notes/step-extraction.md`, section 2).
 
 import etui/backend
 import etui/keys
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
+import session_view/approval
 import session_view/attempt
+import session_view/command
 import session_view/connection_event
+import session_view/operator
 import session_view/pasted_image
 import tui/job
 import tui/recording
@@ -170,4 +181,37 @@ pub fn recorded(event: Event) -> Option(recording.Recorded) {
     Released(x:, y:, button:) -> Some(recording.Released(x:, y:, button:))
     Moved(..) | Ticked -> None
   }
+}
+
+/// What an operator does to a session: one call into the shared step's
+/// commands (`commands.act`), which read and write the session state alone.
+///
+/// A change of active strand is not one of them. It is three shared calls
+/// with the host's own writes between them, because the lane's
+/// cancellation of unsent frames yields updates the host applies one at a
+/// time (the ruling on question 11 of the step-extraction note), so the
+/// host drives it (`submit.switch_active_strand`).
+@internal
+pub type Command {
+  /// A submitted draft that parsed as a session command. `draft` is the
+  /// text as typed, which a prompt sends with its attachments expanded, and
+  /// `delivery` is how the host means a prompt to reach a running strand.
+  Submit(draft: String, command: command.Session, delivery: operator.Delivery)
+
+  /// Interrupt the active strand's running operation.
+  Interrupt
+
+  /// Stop one strand's running operation.
+  Stop(strand: String)
+
+  /// Decide the approval `review` as the host showed it, not as the session
+  /// state holds it under the same ID now.
+  Decide(review: approval.Review, choice: operator.Choice)
+
+  /// Switch the active strand to the catalogue model `name`.
+  SelectModel(name: String)
+
+  /// End the session's half of the attachment: close the adopted lane and
+  /// mark the session as ending. The host cancels its own work after it.
+  Quit
 }

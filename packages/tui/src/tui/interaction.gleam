@@ -57,6 +57,7 @@ import tui/model.{
   ReconnectAttempting, ReconnectIdle, ReconnectSpent, TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
+import tui/msg
 import tui/note_panel
 import tui/outbound
 import tui/peer_links
@@ -640,7 +641,7 @@ fn update_model_selector(
             repaint_phase: !model.view.repaint_phase,
           ),
         )
-      inbound.run_settled(closed, commands.select_model(_, name))
+      inbound.run_settled(closed, commands.act(_, msg.SelectModel(name)))
     }
   }
 }

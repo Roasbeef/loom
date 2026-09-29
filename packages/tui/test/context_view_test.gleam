@@ -192,9 +192,9 @@ pub fn ready_push_can_precede_its_pending_acknowledgement_test() {
 }
 
 pub fn command_aliases_are_local_context_inspectors_test() {
-  assert command.parse("/context") == command.Context
-  assert command.parse("/context all") == command.ContextAll
-  assert command.parse("/contextall") == command.ContextAll
+  assert command.parse("/context") == command.Surface(command.Context)
+  assert command.parse("/context all") == command.Surface(command.ContextAll)
+  assert command.parse("/contextall") == command.Surface(command.ContextAll)
 }
 
 pub fn inspector_retains_the_draft_and_shows_unavailable_without_a_connection_test() {

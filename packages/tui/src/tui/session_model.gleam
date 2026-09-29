@@ -634,6 +634,38 @@ pub type SurfaceFact {
   /// lane. The host closes the dialog; a refused decision leaves it open,
   /// with the reason in the transcript.
   ReviewAnswered
+
+  /// A submitted draft was consumed as it was dispatched, rather than when
+  /// the lane sends it: the submission was not locked behind the lane, so
+  /// nothing later will move `drafts_sent` for it. `taking` says what the
+  /// draft became, and so what a host's editor keeps.
+  ///
+  /// The two records exclude each other, which is what clears a draft once
+  /// and never twice: `commands.take_draft` records no `DraftTaken` for a
+  /// submission marked `ComposerSubmission`, and `outbound.apply_submission`
+  /// moves `drafts_sent` only for one so marked.
+  DraftTaken(taking: DraftTaking)
+
+  /// `/clear` emptied this client's transcript; a host's gutters describe
+  /// rows that are gone.
+  TranscriptCleared
+
+  /// `/approvals <id>` asked the lane for the record `id`; a host that
+  /// opens a dialog when the lookup answers remembers which record it wants.
+  LookupRequested(id: String)
+}
+
+/// What a draft consumed at dispatch became.
+@internal
+pub type DraftTaking {
+  /// A command that is not a prompt: the host empties its editor and keeps
+  /// the text in its input history.
+  TakenByCommand
+
+  /// A prompt, a steer or a follow-up: the host also returns its composer
+  /// to prompting. The attachments the draft carried are emptied in the
+  /// session state, because they went with it.
+  TakenAsPrompt
 }
 
 /// Whether a change of attachment kept the session.

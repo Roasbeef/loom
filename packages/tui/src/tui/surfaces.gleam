@@ -780,7 +780,7 @@ pub fn confirming(
 @internal
 pub fn submit_goal_action(
   shared: Shared(socket, recorder, source, replay_source),
-  action: command.Command,
+  action: command.Session,
 ) -> Shared(socket, recorder, source, replay_source) {
   case outbound.mutation_refusal(shared, action) {
     Some(reason) -> session_model.append_error(shared, reason)
