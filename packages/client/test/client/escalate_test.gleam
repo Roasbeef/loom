@@ -1467,7 +1467,8 @@ const wanted_env = "LOOM_CAP_SOCK"
 // What the launch says when composition refuses it: `launch`'s own
 // sentence, which is what `client/codemode` carries into the denial
 // verbatim.
-const launch_refused = "the session base cannot host a satellite node: environment variable LOOM_CAP_SOCK"
+const launch_refused =
+  "the session base cannot host a satellite node: environment variable LOOM_CAP_SOCK"
 
 // A deadline far past anything this suite's clocks reach, so the park's
 // budget bound never decides a test that is about something else. The

@@ -172,11 +172,12 @@ pub type Options {
 /// It is a constant rather than three numbers inside `default_options`
 /// because the client's `[retry]` table fills its own missing keys from
 /// here, and two copies of the default would drift.
-pub const default_retry_policy = NormalizedRetryPolicy(
-  attempts: Unbounded,
-  base_delay_ms: 1000,
-  max_delay_ms: 60_000,
-)
+pub const default_retry_policy =
+  NormalizedRetryPolicy(
+    attempts: Unbounded,
+    base_delay_ms: 1000,
+    max_delay_ms: 60_000,
+  )
 
 /// Sensible defaults: strand `"main"`, parallel tools, consume-all
 /// queues, compaction off, an unbounded retry ladder from a 1 s base to a

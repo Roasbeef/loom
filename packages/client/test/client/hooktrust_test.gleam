@@ -18,9 +18,11 @@ import simplifile
 
 // Two fixtures that differ in one handler's command, so their hashes
 // differ and the trust verdict can be observed to flip.
-const fixture_a = "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"lint.sh\"}]}]}}"
+const fixture_a =
+  "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"lint.sh\"}]}]}}"
 
-const fixture_b = "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"lint2.sh\"}]}]}}"
+const fixture_b =
+  "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"lint2.sh\"}]}]}}"
 
 // Every filesystem test gets a directory of its own. The parallel runner
 // executes a module's tests at once, and a shared root that each test

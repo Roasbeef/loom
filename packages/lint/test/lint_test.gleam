@@ -550,7 +550,8 @@ pub fn r2_ignores_a_formatter_wrapped_literal_test() {
 // --- R1 across module boundaries --------------------------------------------
 
 /// A `use`-compatible combinator, as `tools/tool` exports one.
-const exported_combinator: String = "pub fn or_outcome(
+const exported_combinator: String =
+  "pub fn or_outcome(
   result: Result(a, e),
   failed: Outcome,
   then: fn(a) -> Outcome,
@@ -563,7 +564,8 @@ const exported_combinator: String = "pub fn or_outcome(
 "
 
 /// Another module calling it, with an eagerly-built fallback.
-const calling_module: String = "import tools/tool
+const calling_module: String =
+  "import tools/tool
 
 fn run(result, cursor) {
   use value <- tool.or_outcome(result, tool.failure(describe(cursor)))
@@ -1658,7 +1660,8 @@ fn r6_in(package: String, code: String) -> Bool {
   |> list.contains(finding.PortablePurity)
 }
 
-const erlang_external: String = "@external(erlang, \"erlang\", \"phash2\")
+const erlang_external: String =
+  "@external(erlang, \"erlang\", \"phash2\")
 pub fn hash(term: String) -> Int
 "
 
@@ -1731,7 +1734,8 @@ pub fn r6_leaves_an_ordinary_portable_source_alone_test() {
   |> should.be_false
 }
 
-const portable_manifest: String = "name = \"core\"
+const portable_manifest: String =
+  "name = \"core\"
 version = \"0.1.0\"
 
 [dependencies]

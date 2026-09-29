@@ -252,10 +252,11 @@ pub type JobsPolicy {
 }
 
 /// The policy a host with no `[jobs]` table serves.
-pub const default_policy = JobsPolicy(
-  max_wall_ms: default_wall_ms,
-  heartbeat_ms: notice.default_heartbeat_ms,
-)
+pub const default_policy =
+  JobsPolicy(
+    max_wall_ms: default_wall_ms,
+    heartbeat_ms: notice.default_heartbeat_ms,
+  )
 
 // --- what a caller asks for, and what it hears back -----------------------
 

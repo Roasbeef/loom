@@ -244,7 +244,8 @@ fn scripted_frames() -> List(String) {
   list.map(run.frames, frame.buffer_to_text)
 }
 
-const assistant_phase = "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"assistant\"}}"
+const assistant_phase =
+  "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"assistant\"}}"
 
 // Moves the event's presentation reading without touching the clock, which
 // is what a caller of `tui.step` does to choose the time.

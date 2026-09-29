@@ -627,7 +627,8 @@ fn read_entry(
   |> result.map_error(fn(error) { string.inspect(error) })
 }
 
-const unavailable_index = "the search index could not be opened; recall is "
+const unavailable_index =
+  "the search index could not be opened; recall is "
   <> "refused in band until a restart over a repaired file. Removing a "
   <> "corrupt index is safe: the restart recreates it and a sync "
   <> "rebuilds the rows."

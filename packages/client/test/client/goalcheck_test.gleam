@@ -145,9 +145,8 @@ fn draining(
 
 // The broker's answer to a clearance while an earlier check still holds the
 // one slot: the only refusal the runner waits out rather than reports.
-const still_draining = broker.BudgetRefused(
-  refusal: budget.OutstandingCapReached(cap: 1),
-)
+const still_draining =
+  broker.BudgetRefused(refusal: budget.OutstandingCapReached(cap: 1))
 
 // A runner nothing clears through, answering every attempt with `refusal`. The
 // spec is still recorded, so a test can say how many times the runner asked

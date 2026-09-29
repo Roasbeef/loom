@@ -17,10 +17,12 @@ import telemetry/level
 import telemetry/record
 
 // An Anthropic-shaped key: the `sk-ant-` prefix plus a long body.
-const provider_key = "sk-ant-api03-9fJ2kQwErTyUiOpAsDfGhJkLzXcVbNm1234567890abcdefGH"
+const provider_key =
+  "sk-ant-api03-9fJ2kQwErTyUiOpAsDfGhJkLzXcVbNm1234567890abcdefGH"
 
 // A broker clearance token as hex: 32 random bytes, 64 hex characters.
-const clearance_hex = "3f5a9c1d7b2e4086af13c5d9e07b6482913ac5de7f024b8619cd3a5e7f01b2c4"
+const clearance_hex =
+  "3f5a9c1d7b2e4086af13c5d9e07b6482913ac5de7f024b8619cd3a5e7f01b2c4"
 
 // A cap channel token as base64url: the same 32 bytes, 43 characters.
 const channel_token = "P1qcHXsuQIavE8XZ4HtkgpE6xd5_Aku4Gc06Xn8Bssc"

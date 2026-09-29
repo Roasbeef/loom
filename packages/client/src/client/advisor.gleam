@@ -666,7 +666,8 @@ type Owing {
 /// next slice renders; a transient prepend is a byte-stable head of
 /// every request, which is what a provider's prompt cache is keyed on,
 /// and it survives compaction because it is re-applied per request.
-pub const brief = "You are reviewing another agent, the primary, as it works in this
+pub const brief =
+  "You are reviewing another agent, the primary, as it works in this
 workspace. You are shown a feed of what the primary did since your last
 review: its prompts, what it said, the tools it called and what they
 returned. You may read files with the tools you have. You cannot talk to

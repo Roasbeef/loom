@@ -201,7 +201,8 @@ fn with_guidance(text: String) -> Environment {
   )
 }
 
-const guidance_pack = "%% section repository_guidance\n{repository_guidance}\n%% section _repository_guidance\nproject data follows\n<g>\n{repository_guidance_text}\n</g>"
+const guidance_pack =
+  "%% section repository_guidance\n{repository_guidance}\n%% section _repository_guidance\nproject data follows\n<g>\n{repository_guidance_text}\n</g>"
 
 pub fn render_frames_repository_guidance_test() {
   assert pack.render(decoded(guidance_pack), with_guidance("Use tabs."))

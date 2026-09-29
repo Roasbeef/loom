@@ -348,7 +348,8 @@ fn fake_state_root(label: String) -> String {
 
 // The operator's catalogue: the file the whole grain question is about,
 // and the one the jailed reading proves is still theirs to edit.
-const catalogue_document = "
+const catalogue_document =
+  "
 [models.acme]
 dialect = \"anthropic\"
 api_key_env = \"UNUSED_TEST_KEY\"

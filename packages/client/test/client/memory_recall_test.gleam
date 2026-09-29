@@ -60,7 +60,8 @@ import weft/registry as address
 // The decision session A takes, and the word session B goes looking for.
 // Short, so compaction's keep-recent budget evicts it rather than
 // retaining it in the tail.
-const decision = "we settled on msgpack for the durable envelope; "
+const decision =
+  "we settled on msgpack for the durable envelope; "
   <> "the record also preserves this additional implementation detail well "
   <> "beyond the search excerpt: exact-read-canary-132"
 

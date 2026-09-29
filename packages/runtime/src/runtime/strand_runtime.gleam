@@ -1076,9 +1076,8 @@ fn drive_loop(state: State, fuel: Int) -> Outcome {
   }
 }
 
-const out_of_fuel = Halt(
-  "the driver made no durable progress within its fuel bound",
-)
+const out_of_fuel =
+  Halt("the driver made no durable progress within its fuel bound")
 
 fn plan(
   state: State,

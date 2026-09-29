@@ -1194,7 +1194,8 @@ pub fn parse_read_scope(word: String) -> Result(ReadScope, String) {
   }
 }
 
-const mounts_shape = "workspace.mounts must be an array of { path = \"/abs\", access = \"ro\"|\"rw\" } tables"
+const mounts_shape =
+  "workspace.mounts must be an array of { path = \"/abs\", access = \"ro\"|\"rw\" } tables"
 
 fn workspace_mount(item: tom.Toml) -> Result(WorkspaceMount, String) {
   case item {

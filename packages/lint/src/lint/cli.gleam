@@ -50,7 +50,8 @@ type Options {
   )
 }
 
-const usage: String = "loom lint — the house rules gleam check does not know
+const usage: String =
+  "loom lint — the house rules gleam check does not know
 
 usage: gleam run -m lint/cli -- [options] <path>...
 

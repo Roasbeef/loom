@@ -8,13 +8,14 @@ import client/glancepace.{
 import gleam/list
 import gleam/option.{None, Some}
 
-const pace = Pace(
-  every_ms: 20_000,
-  retry_ms: 1000,
-  retry_cap_ms: 5000,
-  concurrency: 2,
-  retire_after_ms: 60_000,
-)
+const pace =
+  Pace(
+    every_ms: 20_000,
+    retry_ms: 1000,
+    retry_cap_ms: 5000,
+    concurrency: 2,
+    retire_after_ms: 60_000,
+  )
 
 // --- first and later requests ----------------------------------------------------
 

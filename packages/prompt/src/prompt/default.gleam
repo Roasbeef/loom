@@ -35,7 +35,8 @@
 /// assert pack.problems(decoded) == []
 /// ```
 ///
-pub const source = "%% loom-prompt-pack 1
+pub const source =
+  "%% loom-prompt-pack 1
 %% version loom-default-9
 %% # The default Loom system prompt.
 %% #

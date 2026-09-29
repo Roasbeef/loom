@@ -36,7 +36,8 @@ import weft/actor
 
 // What the scripted consolidation turn answers with. The exit criterion
 // downstream looks for this text, so it is stated once.
-const consolidated = "preference: the user prefers tabs over spaces\n"
+const consolidated =
+  "preference: the user prefers tabs over spaces\n"
   <> "fact: the gate in this repository is make check"
 
 const extracted = "fact: the release smoke boots with no erl on PATH"

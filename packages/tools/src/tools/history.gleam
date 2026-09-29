@@ -335,7 +335,8 @@ fn search(history: History, args: JsonValue) -> ToolOutcome {
   }
 }
 
-const no_query = "`query` is required to search the repository: give the "
+const no_query =
+  "`query` is required to search the repository: give the "
   <> "words you are looking for, for example {\"query\":\"timeout retry\"}. "
   <> "To list this session's most recent entries instead, omit the query "
   <> "and pass {\"scope\":\"session\"}; use action=read with session and "

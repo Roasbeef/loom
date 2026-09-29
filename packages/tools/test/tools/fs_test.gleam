@@ -1622,7 +1622,8 @@ pub fn edit_success_bounds_many_scattered_regions_test() {
 // with the shift left out, does not carry the rows these ask for, and the
 // chain cannot be completed from it.
 
-const twenty = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\nl16\nl17\nl18\nl19\nl20\n"
+const twenty =
+  "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\nl16\nl17\nl18\nl19\nl20\n"
 
 // Replace line 2 with six lines (+5) and line 15 with one. In the result
 // `H15` is line 20 and the old line 16 is line 21; the two regions are far

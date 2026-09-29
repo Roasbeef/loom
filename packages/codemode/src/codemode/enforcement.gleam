@@ -148,7 +148,8 @@ pub fn unspent(
 
 // Said the same way wherever it is true, so the two paths that reach it
 // cannot drift into two different sentences for one fact.
-const nothing_attributed = "no approved escalation was attributed to this execution"
+const nothing_attributed =
+  "no approved escalation was attributed to this execution"
 
 /// One grant as a short line an operator can read: what it widened, and
 /// to what.

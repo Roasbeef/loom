@@ -83,7 +83,8 @@ const sample_path = "../../docs/examples/stale_symbol_sweep.gleam"
 /// `support/sample_repo`'s fixture: `packages/core` holds the symbol in
 /// two files, `packages/broker` in one, `packages/runtime` in none, and
 /// `tools/build-quick` is the strategy that wins the race.
-const expected_outcome = "packages/core=2 packages/broker=1 packages/runtime=0 build=quick exit=0"
+const expected_outcome =
+  "packages/core=2 packages/broker=1 packages/runtime=0 build=quick exit=0"
 
 /// The order the sweeps must *finish* in: the reverse of the order the
 /// program lists them in, and of the order it reports them in.

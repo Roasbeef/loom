@@ -32,7 +32,8 @@ import tui/workspace
 import tui_test/gateway
 import tui_test/pushed
 
-const label = "Found four bugs: touching intervals are not merged and exact-length gaps are dropped."
+const label =
+  "Found four bugs: touching intervals are not merged and exact-length gaps are dropped."
 
 // --- which blocks, and what their rows read ------------------------------------
 

@@ -184,7 +184,8 @@ pub fn enroll_main(arguments: List(String)) -> Nil {
 }
 
 /// The usage both commands share.
-pub const usage = "usage: loom claim --addr <wss://host[:port]/v2/control> [--label NAME] [--state-dir PATH] [TOKEN]\n       loom enroll --addr <wss://host[:port]/v2/control> [--label NAME] [--state-dir PATH]\n  claim reads the token from standard input unless it is given, so the\n  token stays out of shell history; ws:// is refused for a non-loopback host"
+pub const usage =
+  "usage: loom claim --addr <wss://host[:port]/v2/control> [--label NAME] [--state-dir PATH] [TOKEN]\n       loom enroll --addr <wss://host[:port]/v2/control> [--label NAME] [--state-dir PATH]\n  claim reads the token from standard input unless it is given, so the\n  token stays out of shell history; ws:// is refused for a non-loopback host"
 
 /// Parses `loom claim`'s arguments. The token is optional and positional.
 ///

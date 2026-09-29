@@ -15,7 +15,8 @@ import telemetry/handler
 import telemetry/level
 import telemetry/log
 
-const clearance_hex = "3f5a9c1d7b2e4086af13c5d9e07b6482913ac5de7f024b8619cd3a5e7f01b2c4"
+const clearance_hex =
+  "3f5a9c1d7b2e4086af13c5d9e07b6482913ac5de7f024b8619cd3a5e7f01b2c4"
 
 pub fn a_loom_line_passes_through_the_formatter_verbatim_test() {
   let line =

@@ -366,7 +366,8 @@ pub fn consolidation_prompt(
   <> quoted(rendered_rows(notes))
 }
 
-const line_format = "Answer with one line per item, and nothing else. Each "
+const line_format =
+  "Answer with one line per item, and nothing else. Each "
   <> "line is `fact: …`, `lesson: …` or `preference: …`."
 
 fn rendered_rows(rows: List(memory.Distillate)) -> String {
@@ -1933,7 +1934,8 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
   }
 }
 
-const usage = "usage: loom-distill --config <loom.toml>
+const usage =
+  "usage: loom-distill --config <loom.toml>
   [--session-dir <dir>]    the session directory to distill (default: the current directory)
   [--session <path.db>]    a session file; its directory is the one distilled
 

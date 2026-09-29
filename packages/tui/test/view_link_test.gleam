@@ -7,7 +7,8 @@ import tui/view_link
 
 const ticket = "6f1d0c9e2b7a4f3a8c5e1d0b9a7f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5"
 
-const link = "http://127.0.0.1:4000/ui/sessions/0198c0de-0000-7000-8000-000000000001?ticket="
+const link =
+  "http://127.0.0.1:4000/ui/sessions/0198c0de-0000-7000-8000-000000000001?ticket="
   <> ticket
 
 // Everything `deliver` emits, in order, read back from the subject the test's

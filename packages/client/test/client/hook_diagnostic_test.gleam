@@ -14,7 +14,8 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
 
-const skip = "skip:cgroup-v2: root holds 9 processes; memory.max and pids.max NOT applied"
+const skip =
+  "skip:cgroup-v2: root holds 9 processes; memory.max and pids.max NOT applied"
 
 pub fn degraded_hook_preserves_exact_refusal_and_discards_decision_test() {
   let outcome = run(SkippedLayer)

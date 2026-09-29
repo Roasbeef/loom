@@ -246,7 +246,8 @@ const refused_schemes = ["git://", "ssh://", "file://", "http://", "git+ssh://"]
 
 /// The accepted forms, appended to every refusal so the operator never
 /// has to go looking for them.
-const accepted_forms = "an install takes a local directory, an https:// url ending in .tar.gz or .tgz, or an https://github.com/<owner>/<repo> url"
+const accepted_forms =
+  "an install takes a local directory, an https:// url ending in .tar.gz or .tgz, or an https://github.com/<owner>/<repo> url"
 
 fn refused(text: String) -> String {
   "the source " <> text <> " is refused: " <> accepted_forms

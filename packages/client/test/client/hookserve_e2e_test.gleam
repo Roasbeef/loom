@@ -122,7 +122,8 @@ const marker_name = "marker"
 /// the form ten of the sixteen entries in the reference collection use
 /// and the one that only resolves because the hook process's `HOME` is
 /// the operator's.
-const settings_json = "{
+const settings_json =
+  "{
   \"model\": \"opus\",
   \"hooks\": {
     \"SessionStart\": [

@@ -79,16 +79,17 @@ pub type Pace {
 /// 64-cell digest), a new live request per 4 KiB or 40 lines of growth, a
 /// 32 KiB live window, two settled requests at once and sixteen waiting,
 /// two live requests at once and eight streams tracked.
-pub const default_pace = Pace(
-  floor_bytes: 512,
-  every_bytes: 4096,
-  every_lines: 40,
-  window_bytes: 32_768,
-  settled_concurrency: 2,
-  settled_backlog: 16,
-  live_concurrency: 2,
-  max_streams: 8,
-)
+pub const default_pace =
+  Pace(
+    floor_bytes: 512,
+    every_bytes: 4096,
+    every_lines: 40,
+    window_bytes: 32_768,
+    settled_concurrency: 2,
+    settled_backlog: 16,
+    live_concurrency: 2,
+    max_streams: 8,
+  )
 
 /// What a block's text is, which decides how the summarizer is asked
 /// about it.

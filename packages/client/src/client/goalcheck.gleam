@@ -120,7 +120,8 @@ pub const slot_retry_ms = 25
 /// the one refusal the runner waits on rather than reports, so a feed carrying
 /// this sentence is evidence the wait was spent, not that a check was refused
 /// the moment it asked.
-pub const slot_never_came_free = "another goal check was still finishing, so this one could not start"
+pub const slot_never_came_free =
+  "another goal check was still finishing, so this one could not start"
 
 /// The step every check clears under.
 ///

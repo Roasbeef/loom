@@ -647,7 +647,8 @@ fn announce(logger: Logger, pass: Pass) -> Nil {
   }
 }
 
-const retry_note = "committed head/cursor state is retained; a later authorized "
+const retry_note =
+  "committed head/cursor state is retained; a later authorized "
   <> "trigger or session boot resumes from durable progress"
 
 /// A domain's owner-selected policy and fresh catalogue source resolver.
