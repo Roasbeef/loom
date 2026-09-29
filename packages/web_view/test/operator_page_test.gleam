@@ -547,7 +547,10 @@ pub fn the_frame_is_bar_centre_panel_test() {
     "<footer class=\"dock\">",
     "</main>",
     "<aside aria-label=\"Strand panel\" class=\"panel\" slot=\"right\">",
+    "pane pane-strands",
     "class=\"agent-strip\"",
+    "pane pane-changes",
+    "pane pane-session",
   ])
 }
 

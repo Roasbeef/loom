@@ -24,21 +24,25 @@
 ////    dock or the observer's bar, in the default slot;
 //// 3. the strand panel (`view/panel`), in the `right` slot and the page's
 ////    last child, so that a region added after it in a later change does
-////    not move a path again.
+////    not move a path again. It holds the Strands, Changes and Session panes,
+////    which the element shows one at a time.
 ////
 //// A region names its own slot, since only it can put an attribute on its
 //// element, and the slot is the same in every page that draws the region.
 //// The module decides nothing about the session. Each region is drawn by its
 //// own module and handed in as an element, and this one places them.
 ////
-//// The frame's one attribute, `sidebar`, is a fixed word saying whether the
+//// The frame has two attributes. `sidebar` is a fixed word saying whether the
 //// page has a sidebar, so the element draws no button for a column that is
-//// not there. It is written from the `Sidebar` type and never from session
-//// text.
+//// not there; it is written from the `Sidebar` type. `needing` is the number
+//// of strands waiting on a decision, which the element draws as the badge on
+//// the Strands tab. Neither is ever built from session text: the first is one
+//// of two words and the second is an integer the component counted.
 ////
 //// The module takes plain elements and imports nothing from
 //// `web_view/component`, which imports it.
 
+import gleam/int
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -68,12 +72,12 @@ pub type Sidebar(message) {
 ///
 /// `centre` is the children of the centre column, in order: the transcript
 /// first, so its "Load older" button keeps the path `component.older_path`
-/// names.
+/// names. `needing` is how many strands wait on a decision, for the badge.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel)
+/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel, 0)
 /// ```
 pub fn view(
   audience: Audience,
@@ -81,8 +85,9 @@ pub fn view(
   sidebar: Sidebar(message),
   centre: List(Element(message)),
   panel: Element(message),
+  needing: Int,
 ) -> Element(message) {
-  element.element("loom-shell", frame_attributes(audience, sidebar), [
+  element.element("loom-shell", frame_attributes(audience, sidebar, needing), [
     bar,
     sidebar_element(sidebar),
     html.main([attribute.class("centre")], centre),
@@ -90,12 +95,13 @@ pub fn view(
   ])
 }
 
-// The class for the audience, and the word that says whether there is a
-// sidebar. The operator's frame carries a second class, which the observer's
-// lacks.
+// The class for the audience, the word that says whether there is a sidebar
+// and the count of strands waiting on a decision. The operator's frame carries
+// a second class, which the observer's lacks.
 fn frame_attributes(
   audience: Audience,
   sidebar: Sidebar(message),
+  needing: Int,
 ) -> List(attribute.Attribute(message)) {
   let word = case sidebar {
     Listed(_) -> "listed"
@@ -106,10 +112,12 @@ fn frame_attributes(
       attribute.class("loom-session"),
       attribute.class("operator"),
       attribute.attribute("sidebar", word),
+      attribute.attribute("needing", int.to_string(needing)),
     ]
     Observer -> [
       attribute.class("loom-session"),
       attribute.attribute("sidebar", word),
+      attribute.attribute("needing", int.to_string(needing)),
     ]
   }
 }

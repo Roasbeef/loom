@@ -81,6 +81,31 @@ pub fn the_operators_chips_are_at_the_same_paths_test() {
   assert operator == observer
 }
 
+// The transcript's dots and tags, the breadcrumb's link and a strand view's
+// back link are controls with no handler: each carries a marker, which
+// `<loom-shell>` relays to a card. The page draws them, and the runtime's
+// handler table still holds only the cards' clicks (and the older button),
+// with a strand in focus and without.
+pub fn the_marker_controls_add_no_handler_to_either_page_test() {
+  let model = crowded()
+  let focused =
+    component.update(model, component.FocusRequested(lane_fixture.child)).0
+  list.each([model, focused], fn(page) {
+    assert string.contains(
+      element.to_string(component.view(page)),
+      "data-loom-focus",
+    )
+    let observer = handlers(component.view(page))
+    assert list.length(observer) == 4
+    assert list.all(observer, is_chip_click)
+
+    let operator =
+      handlers(operator_page.view(page))
+      |> list.filter(is_chip_click)
+    assert operator == observer
+  })
+}
+
 // The composer's list and its keys run in the browser, in `<loom-composer>`,
 // which listens to the editor and submits the form. None of that reaches the
 // server as an event of its own: the operator's page still registers only

@@ -163,3 +163,41 @@ export function set_interval(interval, callback) {
 export function clear_interval(timer) {
   clearInterval(timer);
 }
+
+export function click(element) {
+  element.click();
+}
+
+export function get_document() {
+  return document;
+}
+
+// The handler is returned so that `remove_listener` can name it. Unlike
+// `add_passive_listener` it may cancel the event, and it is called with the
+// event.
+export function add_listener(element, event, handler) {
+  element.addEventListener(event, handler);
+  return handler;
+}
+
+export function composed_path(event) {
+  return toList(event.composedPath());
+}
+
+// The path can hold the window, the document and shadow roots, which are not
+// elements: each of these answers an `Error` for one of them.
+export function tag_name(node) {
+  return found(node.localName);
+}
+
+export function attribute(node, name) {
+  return found(node.getAttribute?.(name));
+}
+
+export function is_content_editable(node) {
+  return found(node.isContentEditable);
+}
+
+export function prevent_default(event) {
+  event.preventDefault();
+}

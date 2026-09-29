@@ -46,6 +46,14 @@ for a host with no surfaces.
 
 ## Key Types
 
+- `strand_card.status_line(line)`, `strand_card.needing(lines)` and
+  `strand_card.context_words(tokens)`: the one status line under a strand's
+  name on its card (`Needs approval` for a strand that waits on a decision,
+  whatever the request was; the state word and the activity after ` · ` for a
+  working one; `Finished` and how long it ran), how many strands wait on a
+  decision, the count on the web view's Strands tab, and the words for a
+  strand's context size in its own view. Both hosts can read them so the
+  terminal can word a card the same way.
 - `command.Command`: a parsed draft, `Surface(command.Surface)` for a
   command the host carries out with its own machinery (a panel, the model
   selector, daemon control, a change of strand, the host's exit) or

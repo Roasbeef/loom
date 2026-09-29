@@ -53,11 +53,9 @@ import session_view/operator
 import session_view/snapshot
 import web_view/completion
 import web_view/component
-import web_view/view/changes
 import web_view/view/controls
 import web_view/view/lane
 import web_view/view/nudges
-import web_view/view/session_tab
 import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/strip
@@ -176,15 +174,15 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
     component.heading(model),
     sidebar_place(model),
     [
+      component.crumb(model),
       lane.view(
         component.pieces(model),
         component.live(model),
         component.top(model),
         Observed(component.OlderRequested),
         lane.Replies(Replying),
+        component.marks(model),
       ),
-      changes.view(component.changes(model)),
-      session_tab.view(component.jobs(model), Some(component.viewers(model))),
       html.footer([attribute.class("dock")], [
         component.plan(model),
         nudges.view(component.pending_nudges(model)),
@@ -193,9 +191,12 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         composer(model),
       ]),
     ],
-    component.strands(model, fn(strand) {
-      Observed(component.FocusRequested(strand))
-    }),
+    component.panel(
+      model,
+      fn(strand) { Observed(component.FocusRequested(strand)) },
+      Some(component.viewers(model)),
+    ),
+    component.needing(model),
   )
 }
 
@@ -265,6 +266,12 @@ pub fn control_text(fields: List(#(String, String))) -> Result(String, Nil) {
   }
 }
 
+/// The attribute that marks the region of approval cards. `<loom-shell>`'s key
+/// listener drops every key pressed inside a region that carries it, so no
+/// shortcut acts near a card (protocol-change/051, the addendum on the
+/// keyboard). The word is fixed here and never comes from the session.
+pub const approvals_marker = "loom-approvals"
+
 // The approvals region sits outside the transcript, so nothing the session
 // writes can appear inside it, and it is styled unlike any transcript line.
 // A card is keyed by the sequence its record was drawn at, which is the
@@ -287,6 +294,7 @@ fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
         [
           attribute.class("approvals"),
           attribute.aria_label("Approvals waiting"),
+          attribute.data(approvals_marker, ""),
         ],
         [
           keyed.div(

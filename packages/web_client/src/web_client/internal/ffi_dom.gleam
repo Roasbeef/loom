@@ -408,6 +408,19 @@ pub fn request_submit(form: Element) -> Nil
 @external(javascript, "./dom.mjs", "request_submit_with")
 pub fn request_submit_with(form: Element, submitter: Element) -> Nil
 
+/// Clicks an element as a person's press does, running its click listeners
+/// and, for a button, its activation behaviour (`click`). The shell uses it to
+/// press a strand card on behalf of a control that has no handler of its own,
+/// so the press is an ordinary click on an ordinary handler.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.click(card)
+/// ```
+@external(javascript, "./dom.mjs", "click")
+pub fn click(element: Element) -> Nil
+
 /// The browser's wall clock in Unix milliseconds (`Date.now`). The daemon
 /// states an operation's start on the same scale.
 ///
@@ -439,3 +452,85 @@ pub fn set_interval(interval: Int, callback: fn() -> Nil) -> Timer
 /// ```
 @external(javascript, "./dom.mjs", "clear_interval")
 pub fn clear_interval(timer: Timer) -> Nil
+
+/// The page's `document`, on which a listener hears every key pressed in the
+/// page whatever has focus, `body` included.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let page = ffi_dom.get_document()
+/// ```
+@external(javascript, "./dom.mjs", "get_document")
+pub fn get_document() -> Element
+
+/// Adds a listener that is called with the event and may cancel it
+/// (`addEventListener`, not passive). `remove_listener` stops it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let listener = ffi_dom.add_listener(page, "keydown", fn(event) { Nil })
+/// ```
+@external(javascript, "./dom.mjs", "add_listener")
+pub fn add_listener(
+  element: Element,
+  event: String,
+  handler: fn(Dynamic) -> Nil,
+) -> Listener
+
+/// The nodes an event passed through, from its target outward, shadow trees
+/// included (`composedPath`). A listener on the document sees an event's
+/// target retargeted to the outermost shadow host; the path is how it sees
+/// what was inside.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.composed_path(event)
+/// ```
+@external(javascript, "./dom.mjs", "composed_path")
+pub fn composed_path(event: Dynamic) -> List(Element)
+
+/// A node's tag in lower case (`localName`), or `Error` for a node that has
+/// none: the window, the document and a shadow root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.tag_name(node) == Ok("textarea")
+/// ```
+@external(javascript, "./dom.mjs", "tag_name")
+pub fn tag_name(node: Element) -> Result(String, Nil)
+
+/// A node's attribute (`getAttribute`), `Ok("")` for one that is present and
+/// empty, or `Error` when it is absent or the node is not an element.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.attribute(node, "data-loom-approvals") == Ok("")
+/// ```
+@external(javascript, "./dom.mjs", "attribute")
+pub fn attribute(node: Element, name: String) -> Result(String, Nil)
+
+/// Whether a node's text can be edited (`isContentEditable`), or `Error` for
+/// a node that is not an element.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.is_content_editable(node) == Ok(True)
+/// ```
+@external(javascript, "./dom.mjs", "is_content_editable")
+pub fn is_content_editable(node: Element) -> Result(Bool, Nil)
+
+/// Cancels an event's browser action (`preventDefault`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.prevent_default(event)
+/// ```
+@external(javascript, "./dom.mjs", "prevent_default")
+pub fn prevent_default(event: Dynamic) -> Nil

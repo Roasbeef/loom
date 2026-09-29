@@ -30,16 +30,37 @@ renders again just for it:
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
   form is submitted, which is why they are here.
-- `<loom-shell sidebar="listed">` is the page's frame. The server draws the
-  top bar, the sessions sidebar, the centre and the strand panel as its
-  children, in the slots `bar`, `left`, the default and `right`, and the
+- `<loom-shell sidebar="listed" needing="0">` is the page's frame. The server
+  draws the top bar, the sessions sidebar, the centre and the strand panel as
+  its children, in the slots `bar`, `left`, the default and `right`, and the
   element lays them out and draws a button at each end of the bar that hides
   and shows a side column. Which columns are open is the reader's preference
   and nothing the server holds, so the server never renders it and nothing
   is kept across a reload. A hidden column takes no width and is `inert`, so
   its content leaves the tab order. The `sidebar` attribute is a fixed word
   the server writes (`listed` or `none`), so an observer's page, which has no
-  sidebar, gets no button for one.
+  sidebar, gets no button for one. The strand panel has three tabs, Strands,
+  Changes and Session. The server draws a pane for each, all of them, as
+  children of the panel; the element draws the tab bar above the `right` slot
+  and shows the chosen tab's pane by setting a custom state on itself
+  (`component.set_pseudo_state`, `tab-strands`, `tab-changes` or
+  `tab-session`), which the stylesheet reads to hide the other two
+  (`loom-shell:state(tab-changes) .pane:not(.pane-changes)`). A hidden pane is
+  `display: none`, so its controls leave the tab order too; a browser without
+  custom states shows every pane, stacked. The `needing` attribute is a count
+  the server writes, the number of strands waiting on a decision, which the
+  Strands tab shows as a badge and names in its label; decoding is total.
+  The shell also relays clicks. A server-drawn control that focuses a strand
+  and has no handler (a dot or a tag in the transcript, the breadcrumb's `All
+  strands`, a strand view's back link) carries `data-loom-focus` with the
+  position of a strand card, and each card carries `data-loom-card` with its
+  own. The element hears a `click` that reaches its centre slot or its panel
+  slot, reads `dataset.loomFocus` from the click's own target, decodes it
+  totally (`shell_rule.relay`), shows the panel on its Strands tab where the
+  rule says (`shell_rule.relayed`; position zero, `main`, leaves the layout
+  alone) and presses the card with `ffi_dom.click`. The press is an ordinary
+  click on the card's ordinary handler, so the socket admits nothing new
+  (protocol-change/051, the addendum on the marker relay).
 
 A page that has ended or was refused needs no element here. The server draws
 its notice (`web_view/view/ended`, `web_view/page.refusal`), and the shell's
@@ -131,16 +152,31 @@ time builds anything.
   `Reading` more than `slack` pixels from the bottom, one button, "Jump to
   latest" (`Jumped`), whose wrapper has no height and sticks to the
   scroller's bottom edge.
-- `shell_rule.Region` (`Sidebar` | `Panel`), `State` (`Open` | `Closed`),
-  `Layout(sidebar, panel)`, `Presence` (`Listed` | `Unlisted`) and `Reach`
-  (`Reachable` | `Unreachable`), with `toggled`, `state`, `reach`, `label`,
-  `has_button` and `presence` (a total decoder of the `sidebar` attribute),
-  and `shell.Model(layout, sidebar)` and `shell.Msg` (`Toggled(region)`,
-  `SidebarChanged(presence)`): the shadow root holds the bar (the two buttons
-  around the `bar` slot) and the body (a wrapper per side column around its
-  slot, and the default slot in the centre). A closed column's wrapper is
-  `inert` and the stylesheet gives it no width. The buttons are real buttons
-  with words from `shell_rule.label` and `aria-expanded`.
+- `shell_rule.Region` (`Sidebar` | `Panel`), `Tab` (`Strands` | `Changes` |
+  `Session`), `State` (`Open` | `Closed`), `Layout(sidebar, panel, tab)`,
+  `Presence` (`Listed` | `Unlisted`) and `Reach` (`Reachable` | `Unreachable`),
+  with `toggled`, `chosen`, `state`, `reach`, `label`, `tabs`, `tab_label`,
+  `tab_state`, `has_button`, `presence` (a total decoder of the `sidebar`
+  attribute), `needing` (a total decoder of the `needing` attribute: a plain
+  number of at most four digits, else none), `badge` and `strands_words`,
+  `relay` (a total decoder of a marker: `Relay(card, reveal)` with `Show` or
+  `Keep`), `relayed` and `card_selector`, the keyboard's `Keystroke`
+  (`Modifiers`, `Target` as `Editor | Approvals | Elsewhere`, `Composition`,
+  `Prevention`, `Repetition`), `intent` (`ToggleSidebar | TogglePanel |
+  LeaveStrand`, or nothing), `cancels`, `candidate`, `title`, `shortcuts` and
+  `crumb_link`, and
+  `shell.Model(layout, sidebar, needing, keys)` and `shell.Msg` (`Toggled(region)`,
+  `Chosen(tab)`, `SidebarChanged(presence)`, `NeedingChanged(count)`,
+  `Relayed(relay)`, `Pressed(intent)`, `Connected`, `Disconnected`,
+  `Listening(listener)`): the
+  shadow root holds the bar (the two buttons around the `bar` slot) and the
+  body (a wrapper per side column around its slot, and the default slot in the
+  centre; the panel's wrapper holds the tab bar above the slot). A closed
+  column's wrapper is `inert` and the stylesheet gives it no width. The
+  buttons and the tabs are real buttons, the tabs `aria-pressed`, with words
+  from `shell_rule.label` and `shell_rule.tab_label`. A tab press changes
+  the custom state and nothing else: closing and reopening the panel keeps the
+  tab.
 - `composer.Model(entries, draft, selected, palette, returns)` and
   `composer.Msg` (`Configured`, `Returned`, `Typed`, `Moved`, `Accepted`,
   `Picked`, `Dismissed`, `Sent`, `Ignored`): `commands` is the table the
@@ -172,11 +208,13 @@ time builds anything.
   `children`, `closest`, `query_selector`, `query_selector_all`, `dataset_get`,
   `text_content`, `scroll_top`, `set_scroll_top`, `scroll_by`,
   `scroll_height`, `client_height`, `offset_top`, `offset_height`,
-  `bounding_top`, `add_passive_listener`, `remove_listener`,
+  `bounding_top`, `add_passive_listener`, `add_listener` (called with the
+  event, and may cancel it), `remove_listener`, `get_document`, `composed_path`,
+  `tag_name`, `attribute`, `is_content_editable`, `prevent_default`,
   `resize_observer`, `observe`, `mutation_observer`, `observe_child_list`,
   `disconnect`, `value`, `set_value`, `utf16_length`, `set_selection_range`,
-  `focus`, `request_submit`, `request_submit_with`, `now`, `set_interval` and
-  `clear_interval`. Its types are `Element` (an element, or the shadow root
+  `focus`, `click`, `request_submit`, `request_submit_with`, `now`,
+  `set_interval` and `clear_interval`. Its types are `Element` (an element, or the shadow root
   Lustre hands an `after_paint` effect, which answers queries alike),
   `Listener`, `Observer` and `Timer`. The one decision in `dom.mjs` is
   turning a null or undefined DOM answer into `Error(Nil)`. Add a function
@@ -231,6 +269,9 @@ scroll position, observes the size of itself and its children, and hears
 a pointer press and a key pressed inside itself; it reads no content. `<loom-composer>` listens to its own
 editor's `input` and `keydown`, and writes the editor's value; the one thing
 it sends is the form's submit, which the server already accepts.
+`<loom-shell>` listens to `keydown` on the document while connected, reads the
+event's key fields and, for `Escape` and `B` only, its composed path, and
+sends the server nothing.
 
 ## Invariants
 
@@ -241,12 +282,31 @@ it sends is the form's submit, which the server already accepts.
   The one exception in kind is `<loom-composer commands>`, the static table
   of command names and hints written in `session_view`; the returned
   prompts it takes arrive as text-node children, never as attributes.
-- **No key handling and no focus near an approval card.** Only
-  `<loom-composer>` acts on a key, and only on its own editor, through its
-  slot. `<loom-shell>` holds the dock in its subtree, as the page's frame,
-  but listens for no key, moves no focus, and acts only on the clicks of its
-  own two buttons, which hide and show the side columns; the centre column,
-  where the dock is, has no button. `<loom-follow>` may note that a key was pressed inside the transcript
+- **No key acts inside an approval card, and no key decides, dismisses or
+  focuses one; no focus near an approval card.** `<loom-composer>` acts on a
+  key on its own editor, through its slot. `<loom-shell>` holds the dock in its
+  subtree, as the page's frame, and is the one other element that acts on a
+  key, on three (protocol-change/051, the addendum on the keyboard): Command or
+  Control with `B` hides or shows the sidebar, with Alt too the panel, and
+  `Escape` presses the breadcrumb's `All strands` link. It listens on the
+  document while connected (removed on disconnect), since the page's usual
+  focus is `body`; decodes the keystroke into plain values; reads where it was
+  pressed from the event's composed path (`shell_rule.Step` per node,
+  `shell_rule.target`), because at the document the target is retargeted to
+  the outermost shadow host; and lets `shell_rule.intent` decide. A key that is
+  neither `Escape` nor `KeyB` is dropped before its path is looked at. The rule
+  takes no key at all when the path includes an element marked
+  `data-loom-approvals`, treats the composer and any input, textarea, select or
+  editable text as the editor, and takes none while
+  composing, when the default was cancelled, or while a key repeats; `Escape`
+  does nothing in the composer, and the sidebar shortcut nothing on a page with
+  no sidebar. The toggles cancel the browser's action, `Escape` does not.
+  Nothing takes focus and the element sends the server nothing: no intent
+  decides, sends or focuses, and the server registers no key handler (the
+  socket admits none). Its clicks are its own buttons and tabs and a click
+  whose own target carries a strand marker (which presses a strand card and
+  nothing else); the centre column, where the dock is, has no button, and no
+  approval card carries a marker. `<loom-follow>` may note that a key was pressed inside the transcript
   (a passive `keydown` that reads nothing from the event, never cancels it and
   sends nothing), so a keyboard scroll counts as the reader's. It calls `focus` once, on that editor, when the operator chooses
   a row. The approval cards are outside it, in the dock, and no key it
