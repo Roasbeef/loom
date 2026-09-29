@@ -58,7 +58,7 @@ flowchart LR
         opage["operator_page<br/>adds Submitted, Decided,<br/>composer, cards"]
         page["page<br/>shell, scripts, stylesheet,<br/>policy, keyed paths"]
     end
-    sv["session_view<br/>lane, inbox, operator,<br/>transcript, approval"]
+    sv["session_view<br/>shared step, lane, inbox,<br/>commands, transcript, approval"]
     socket --> comp
     socket --> opage
     router --> page
@@ -79,14 +79,15 @@ flowchart TB
     sel["selectors from init:<br/>relay frames, open outcome, timer"] --> msg
     ev["browser event,<br/>operator page only"] --> msg
     msg{"message"}
-    msg -- "Arrived" --> file["file in the inbox"]
-    file -- "lane idle" --> done["no effect"]
-    file -- "request in flight" --> reduce
-    msg -- "Ticked" --> reduce["reduce: operator.drain,<br/>then session_channel.tick"]
-    msg -- "Submitted, Decided" --> cmd["drain, then operator.submit<br/>or operator.decide"]
-    reduce --> apply["apply Updates:<br/>Captured projects rows once"]
-    cmd --> apply
-    apply --> perform["one effect.from:<br/>Transmit and Shut in order"]
+    clock["update reads the clock once"]
+    msg --> clock
+    clock -- "Arrived" --> file["step.update(Arrived):<br/>file in the inbox"]
+    file --> tick
+    clock -- "Ticked, Opened" --> tick["step.update(Ticked): drain the inbox,<br/>service reads, tick the lane"]
+    clock -- "Submitted, Decided" --> cmd["parse the draft, then<br/>step.update(Acted)"]
+    tick --> refresh["refreshed: rebuild the rows<br/>and strip whose inputs moved"]
+    cmd --> refresh
+    refresh --> perform["one effect.from:<br/>Transmit and Shut in order"]
 ```
 
 ## A tour, in reading order
@@ -94,38 +95,54 @@ flowchart TB
 1. **`component`: the types.** `Start(socket)` is what the daemon supplies:
    the session ID, the `snapshot.Expected` attachment every cut must
    match, and the `Transport`. `Msg(socket)` is `Opened`, `Refused`,
-   `TimerArmed`, `Arrived` and `Ticked`, and holds no command, which is
-   what makes an observer's page unable to send one. `Model(socket)` is
-   opaque: the lane, the inbox of filed frames, the last capture, the
-   keyed rows and approvals projected from it, the connection `Status`,
-   the operator's `Notice` and the count of sent drafts.
+   `TimerArmed`, `Arrived`, `Ticked` and `OlderRequested`, and holds no
+   command, which is what makes an observer's page unable to send one.
+   `Model(socket)` is opaque and holds two records, as the terminal's does.
+   `shared` is `session_view/model.Shared`, the session state the shared
+   step reads and writes: the lane, the inbox of filed frames, the last
+   capture, the history window, the approvals and the shared notice.
+   `view` is what only this host holds: the transport and its timer, the
+   keyed rows and the turns laid out from them, the agent strip, the
+   connection `Status` and the page's own refusal.
 2. **`component.init`, `open` and `arm`.** `init` returns two
-   `server_component.select` effects, one for the transport and one for a
-   250 ms timer, each run once. `connect` must return at once, because
+   `server_component.select` effects, one for the transport and one for the
+   deadline timer, each run once. `connect` must return at once, because
    Lustre gives `init` 1000 ms, so the relay attaches in its own process
-   and answers on the `opened` subject. The clock is read in the
-   selectors' mappings, so `update` reads none.
-3. **`component.update`, `reduce` and `apply`.** `Arrived` files a frame,
-   and reduces at once only while the lane has a request in flight.
-   `Ticked` reduces every filed frame through `operator.drain`, runs the
-   lane's tick, and re-arms the timer. `apply` folds the lane's `Update`s:
-   `Captured` is projected once, with `transcript.project_rows`, into keyed
-   rows for `main`, and its escalations into the approval list.
-4. **`component.submit`, `decide` and `perform`.** The two command arms an
+   and answers on the `opened` subject. The selectors read no clock:
+   `update` reads the transport's once, at its top, and every step the
+   message takes runs at that reading.
+3. **`component.update`, `stepping` and `refreshed`.** Every message
+   reaches the shared step as `step.update`. `Arrived` is a
+   `msg.Arrived` that files the batch and then a tick in the same Lustre
+   message, so a burst is one render. `Ticked` and `Opened` are a tick,
+   which drains every filed frame through the lane, sends the waiting
+   reads and ticks the lane. `refreshed` then derives what the page draws
+   from the record the step left, projecting the transcript with
+   `transcript.branch_blocks` and building the strip only when the inputs
+   each was built from moved, and `rearm` re-arms the timer for the lane's
+   next due reading.
+4. **`component.submit`, `decide` and `perform`.** The two inputs an
    operator's page calls. `submit` refuses empty text and text over
-   256 KiB before it reaches the lane; `decide` answers only the record
-   still pending at the drawn ID and sequence. `perform` runs the lane's
-   outputs inside one `effect.from`, because Lustre's `effect.batch`
-   promises no order and the lane's frames must leave in the order it
-   decided them.
-5. **`component.view` and `transcript_view`.** The observer's page: a
-   heading, the transcript keyed by `transcript.Row.key` and memoized on
-   the rows with `element.memo`, and a fixed read-only line. No event
-   handler anywhere.
+   256 KiB before anything else, parses the draft with
+   `command.parse_with_skills`, and runs a `command.Session` through the
+   step as `msg.Submit`, so a slash command is the command the terminal
+   would run. A `command.Surface`, `/add-dir` and `/add-write-dir` are
+   refused with a notice and send nothing (`page_command`). `decide`
+   answers only the record still pending at the drawn ID and sequence.
+   `perform` runs the step's effects inside one `effect.from`, because
+   Lustre's `effect.batch` promises no order and the lane's frames must
+   leave in the order the step decided them.
+5. **`component.view` and `view/`.** The observer's page: the heading, the
+   agent strip and the transcript lane, one module each under
+   `web_view/view/`. The lane draws keyed turns, each transcript line and
+   card body in its own `element.memo`, and the "Load older" button, the
+   page's one event handler for an observer, above its oldest row. A fixed
+   read-only line takes the place of a composer.
 6. **`operator_page`.** `Msg(socket)` wraps the observer's messages in
    `Observed` and adds `Submitted(text, delivery)` and `Decided(id, seq,
    answer)`. Its view adds the composer, an uncontrolled form whose
-   editor is keyed by the count of sent drafts so a send empties it, and
+   editor is keyed by the count of drafts that left it (`component.drafts`)
+   so a send empties it, and
    the approval cards in a region directly above the composer, both in a
    dock pinned to the bottom of the viewport, Deny first, keyed by
    the record's sequence. `composition` is the total decoder for the
@@ -145,15 +162,19 @@ Paths are relative to `packages/web_view/src/`: `component` is
 
 - **In this package**, `make check-web_view` runs the tests in `test/`.
   `component_test` drives the observer's component through
-  `lustre/dev/simulate`: an awaited reply reduced on arrival, a push to an
-  idle lane waiting for the tick, a refused open, a closed connection, and
-  an observer's page with no handler and no card. `operator_page_test`
-  covers prompts and steers, the form decoder refusing unexpected fields,
-  Enter never deciding, Deny first, decisions carrying the drawn identity
-  and sequence, a stale decision sending nothing, and an observer's
-  attachment sending no command. `page_fixture` runs a page's `update`
-  and performs its effects, so a test can read exactly what the page
-  wrote to its transport.
+  `lustre/dev/simulate`: a reply the lane awaits and a push to an idle
+  lane both reduced on arrival, a batch reduced in order in one message,
+  frames filed before the transport opens, a refused open, a closed
+  connection, and an observer's page with no handler and no card.
+  `operator_page_test` covers prompts and steers, slash commands running as
+  the terminal runs them and terminal surfaces and `/add-dir` refused, the
+  form decoder refusing unexpected fields, Enter never deciding, Deny
+  first, decisions carrying the drawn identity and sequence, a stale
+  decision sending nothing, and an observer's attachment sending no
+  command. `page_fixture` runs a page's `update` and performs its
+  effects, with a settable transport clock, so a test can read exactly
+  what the page wrote to its transport. The shared step's own tests are in
+  `packages/session_view/test/step_test.gleam`.
 - **In `packages/client`**, `web_view_parity_test` checks that the
   component draws the same lines as the terminal's projection for one
   capture and that its HTML carries them escaped and in order, and

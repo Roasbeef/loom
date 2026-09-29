@@ -64,13 +64,19 @@ or dependency. Where the lane has to name one of the host's handles, it
 takes it as a type parameter, `session_channel.Channel(socket, recorder)`,
 and every transition that checks a deadline takes `now` from its caller.
 
-The terminal's step, `tui.step` with `tui/admission` and the reducers it
-calls, is pure in the same sense but lives in `packages/tui`, which R6
-does not cover. It reads no clock, file, mailbox, process or environment
-variable, and returns every effect it decides; that is held by review and
-by tests such as `effects_test` and the replay goldens rather than by the
-lint. ADR-014 lists the four changes that must happen before the step can
-move into `session_view`.
+The session's half of the step lives in `session_view` and is held by
+R6: the record `session_view/model.Shared`, the folds that apply each
+pushed event and each lane update, the commands an operator gives the
+session, the side-surface reads and the settle. It is the step both hosts
+run. The terminal's own half, `tui.step` with `tui/admission`, its
+reducers and the record `tui/model.View`, is pure in the same sense but
+lives in `packages/tui`, which R6 does not cover. It reads no clock,
+file, mailbox, process or environment variable, and returns every effect
+it decides; that is held by review and by tests such as `effects_test`
+and the replay goldens rather than by the lint. ADR-014's four blockers
+to moving the step, which the build-out phase was to close, are closed:
+[its addendum](../adr/014-second-runtime.md#addendum-the-step-moved-into-session_view-2026-09-29)
+says how.
 
 The client-side packages and their dependencies, with the pure ones
 shaded. An arrow points at what a package depends on. The harness
@@ -123,14 +129,15 @@ by different code in the two hosts:
 
 | What the host does | Terminal (`tui`) | Web view (`web_view`, `client/daemon/ui_*`) |
 |---|---|---|
-| Reads the clock | `runtime.message` stamps each input once (`msg.Stamp`) | the component's selector mappings read it when a frame or the timer message is received |
-| Reads socket traffic | `runtime.receive` tops up `tui/buffered` inboxes up to their room, and `tui/admission` files them | a Lustre selector drains up to 64 waiting frames into one `Arrived`, filed into a `session_view/inbox` |
+| Reads the clock | `runtime.message` stamps each input once (`msg.Stamp`) | `component.update` reads the transport's clock once, at its top, and stamps the step's messages with it |
+| Reads socket traffic | `runtime.receive` tops up `tui/buffered` inboxes up to their room, and `tui/admission` files them | a Lustre selector drains up to 64 waiting frames into one `Arrived`, which `step.update` files into a `session_view/inbox` |
 | Learns that traffic arrived | the socket actor sends etui's wake after it files a frame, paced to one per 16 ms (`connection.connect_waking`), and etui hands the wake over as a tick | the selector matching a frame is the wake |
 | Decides when to reduce | a tick or a key, in `tick.update_tick`'s fixed drain order; the poll timeout is the lane's `next_due`, or the paced poll while something moves with time | at once, on each `Arrived`; and on `Ticked`, the one timer armed for the lane's `next_due` |
+| Calls the shared step | one unit at a time, applying its own surface facts between them (`inbound`, `tick`, `submit`) | `session_view/step.update`, once per message, for a whole event |
 | Runs blocking work | `effect.StartJob`, started as a weft run by `tui/job_runner` | the relay process, `ui_relay`, makes the blocking gateway calls |
 | Writes and closes | `terminal_lane.perform` on `Transmit`, `Shut` and `Note` | `component.perform`, one `effect.from` over `Transmit` and `Shut`, through `ui_relay` |
 | Records | `effect.Record` and `recording.append` | nothing; the recorder type is `Nil` |
-| Draws | `tui/render` into etui buffers, with `tui/live_tail` for the growing answer | `component.view` and `operator_page.view` into Lustre elements |
+| Draws | `tui/render` into etui buffers, with `tui/live_tail` for the growing answer | `component.view` and `operator_page.view` into Lustre elements, from what `component.refreshed` derives of the shared record |
 
 ### Two hosts over one engine
 
@@ -138,7 +145,7 @@ by different code in the two hosts:
 flowchart TB
     subgraph engine["session_view: pure, held by R6"]
         lane["session_channel<br/>the credited lane"]
-        op["operator<br/>submit, decide, drain"]
+        shared["model.Shared, folds,<br/>commands, surfaces, step"]
         proj["snapshot, snapshot_view<br/>transcript, transcript_lines"]
     end
     subgraph term["terminal host: packages/tui"]
@@ -153,25 +160,40 @@ flowchart TB
     end
     truntime -- "msg.Msg" --> tstep
     tstep -- "effects" --> truntime
-    tstep --> engine
+    tstep -- "the units, one at a time" --> shared
     render --> proj
-    comp --> engine
+    comp -- "step.update" --> shared
+    shared --> lane
+    shared -- "the effects it decided" --> comp
     comp -- "lane outputs" --> wperf
     wview --> proj
 ```
 
-The terminal runs a whole step around the engine: its own message type,
-admission, the reducers and a model with render caches. The web host has
-no step of its own yet. Its component holds the lane, an inbox and the
-rows projected from the last capture, and calls the engine directly:
-`operator.drain` to hand the lane what arrived, `session_channel.tick`,
-`operator.submit` and `operator.decide` for an operator's commands, and
-`transcript.project_rows` when a capture completes. Both hosts deliver
-traffic as it arrives and wake for the lane's own deadlines only when
+Both hosts keep two records, the shared session state and their own
+(`tui/model.Model(shared, view)` and `component.Model(shared, view)`), and both bind the engine's host handles as type parameters. The
+terminal's step is its own message type, admission, the reducers over the
+whole model and a `View` with render caches; it calls the shared units
+(the folds, the commands, the reads and the settle in `session_view`) one
+at a time, because it applies its surface facts between them and places
+its own drains among them. The web host has no step of its own. Its
+component reads the clock once at the top of `update` and hands the
+shared step a message: `msg.Arrived` files what the relay delivered,
+`msg.Input` with `Ticked` drains the inbox through the lane and ticks it,
+and `msg.Input` with `Acted` runs an operator's command
+(`step.update`, ruling 12 of the step extraction design). What the step
+decides comes back as effects for the component to perform, and the
+component derives the rows, the strip and the status it draws from the
+record the step left, rebuilding a projection only when its inputs moved.
+The operator page parses a draft as the terminal does, so it runs any
+session command except `/add-dir`. Both hosts deliver traffic as it
+arrives and wake for the lane's own deadlines only when
 `session_channel.next_due` says one is due, which revises ADR-013's
 option C (ADR-013, the addendum on event-driven delivery;
 [delivery.md](delivery.md)). `client/web_view_parity_test` holds the two
-hosts to the same transcript lines for the same capture.
+hosts to the same transcript lines for the same capture and to equal
+lane states and approvals after the same script of frames and commands,
+and `session_view/step_test`
+holds `step.update` to the order of the terminal's tick.
 
 ## Current default: one daemon, multiple sessions
 
@@ -1507,7 +1529,7 @@ or `/healthz`.
 | `client/daemon/main.gleam`, `root.gleam`, `manager.gleam` | The default entrypoint, stable root ownership, catalogue admission, and session/domain retirement. |
 | `client/daemon/server.gleam`, `protocol.gleam`, `session_socket.gleam` | Authenticated v2 control codecs and routes, resident-only attachment, and bounded socket admission. |
 | `client/daemon/ui_http.gleam`, `ui_sessions.gleam`, `ui_socket.gleam`, `ui_relay.gleam` | The web view's request checks, its ticket and UI-session actor, the page's WebSocket, and the relay into the gateway ([the web view](web-view.md)). |
-| `packages/web_view/src/web_view/component.gleam`, `operator_page.gleam`, `page.gleam` | The observer's and the operator's Lustre server components, and the page shell, scripts, stylesheet and content security policy. |
+| `packages/web_view/src/web_view/component.gleam`, `operator_page.gleam`, `page.gleam` | The observer's and the operator's Lustre server components, which run the shared step, and the page shell, scripts, stylesheet and content security policy. |
 | `client/protocol.gleam` | Total conversation codecs, credited transfer envelopes, and grant vocabulary. |
 | `client/gateway.gleam`, `client/daemon/transfer.gleam` | Original authenticated connection handles, command admission, authorization, and bounded snapshot/reconciliation state. |
 | `client/worktree_diff.gleam` | Bounded Git observations through the attached workspace's existing broker and read-only policy. |
@@ -1532,10 +1554,12 @@ or `/healthz`.
 | `packages/client/protocol.md` | The normative ClientGateway body document. |
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
 | `packages/tui/src/tui.gleam` | Entry points, launch parsing, and the event dispatch (`update`, `apply_input`, `settle_update`). |
-| `packages/tui/src/tui/model.gleam` | The `Model` record, the types it names, and the helpers every reducer shares. |
+| `packages/tui/src/tui/model.gleam` | The terminal's `Model(shared, view)`, its `View` and the helpers every reducer shares. |
 | `packages/session_view/src/session_view/transcript_lines.gleam`, `transcript.gleam` | Transcript line construction, and the projection of one capture for a host that keeps no presentation state. |
 | `packages/tui/src/tui/render.gleam`, `layout.gleam`, `projection.gleam`, `live_tail.gleam` | Frame painting, screen geometry, the cached transcript projection, and the live answer's incremental rows. |
-| `packages/tui/src/tui/inbound.gleam`, `outbound.gleam`, `surfaces.gleam`, `session_control.gleam` | Channel traffic in and out, side-surface reads, and daemon control requests. |
+| `packages/tui/src/tui/inbound.gleam`, `side_surfaces.gleam`, `session_control.gleam` | The terminal's loop over the lane's updates and the facts they record, the side surfaces' openers, and daemon control requests. |
+| `packages/session_view/src/session_view/model.gleam`, `step.gleam`, `msg.gleam`, `step_effect.gleam` | The shared step: the session record `Shared`, its settle, tick units and whole-event `update`, the messages, and the effects it decides. |
+| `packages/session_view/src/session_view/event_fold.gleam`, `lane_fold.gleam`, `commands.gleam`, `outbound.gleam`, `surfaces.gleam`, `admission.gleam` | The folds of pushed events and lane updates, the operator's commands, the send path, the side-surface reads, and the filing of arrivals, over `Shared` alone. |
 | `packages/tui/src/tui/interaction.gleam`, `submit.gleam`, `tick.gleam` | Key, paste and mouse handling, composer submission, and the periodic drain. |
 | `packages/session_view/src/session_view/agent_view.gleam`, `packages/tui/src/tui/agents.gleam` | Captured task/status projection and identity-based agent inspection. |
 | `packages/tui/src/tui/agent_message_panel.gleam`, `focused_goal_panel.gleam` | Selectable observed-send presentation and the server-owned goal inspector. |

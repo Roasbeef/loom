@@ -114,8 +114,12 @@ flowchart LR
   and writes the runtime's patches to the browser.
 - **The Lustre runtime** runs `web_view/component` for an observer or
   `web_view/operator_page` for an operator. The engine lives inside its
-  model: a `session_channel.Channel`, an inbox of frames not yet reduced,
-  and the rows and approvals projected from the last capture.
+  model, which is two records: the shared session state
+  (`session_view/model.Shared`, holding the `session_channel.Channel`, the
+  inbox of frames not yet reduced, the last capture, the history window,
+  the approvals and the agent rows) and what only the page holds (the
+  transport, the timer, the rows and the strip it draws, the connection's
+  status).
 - **`client/daemon/ui_relay`** stands in for a session socket. It attaches
   to the session's gateway with the page's principal and capped role,
   turns each frame the lane transmits into one bounded
@@ -280,11 +284,15 @@ flowchart LR
   observer's messages in `Observed` and adds `Submitted(text, delivery)`
   and `Decided(id, seq, answer)`. The lane's "Load older" button sends
   the observer's own `OlderRequested`, wrapped. Its model is the
-  observer's model. The commands reach the lane through `component.submit`
-  and `component.decide`, which call the engine's command arms in
-  `session_view/operator`, and the read through `component.older`. The
-  socket forwards only Lustre's `EventFired` for `click` and `submit`,
-  alone or in a batch (`operator_accepts`).
+  observer's model. The inputs reach the shared step through
+  `component.submit` and `component.decide`, which wrap them as the step's
+  commands (`msg.Submit` and `msg.Decide`, run by `session_view/commands`),
+  and the read through `component.older`. The socket forwards only
+  Lustre's `EventFired` for `click` and `submit`, alone or in a batch
+  (`operator_accepts`). A draft may be any session command, since the page
+  parses it as the terminal does; the two handlers, the socket's admitted
+  events and the role checks are as they were (protocol-change/051, the
+  addendum "the operator page runs session commands").
 
 The socket's inbound frame limit follows the role: 64 KiB for an
 observer's page, which is the daemon's observer limit, and 1 MiB for an
@@ -302,19 +310,26 @@ ceiling allow then.
 
 ## The engine inside the component
 
-The component is the lane's host in ADR-014's sense: it reads what the
-engine may not read and performs what the engine decides.
+The component is a host in ADR-014's sense: it reads what the engine may
+not read and performs what the engine decides, and it holds no session
+logic. Its model is two records, as the terminal's is. `shared` is
+`session_view/model.Shared(socket, Nil, Nil, Nil)`, the session state the
+shared step reads and writes; the component has no recorder and its two
+inboxes have no sources to tell apart, so the last three handle parameters
+are `Nil`. `view` is what only this host holds. The component writes
+`shared` in two places, both the page's own: it trims the history window to
+the rows the page draws, and it marks the window as wanting older rows.
 
 **Delivery.** Delivery is event-driven (ADR-013, the addendum on
 event-driven delivery; [delivery.md](delivery.md) traces it end to end).
 The selector's mapping for the relay's inbox drains the inbox behind the
 frame it matched, up to `arrival_batch` (64) frames, and builds one
-`Arrived(messages, at)`. `Arrived` files the batch into a
-`session_view/inbox` and reduces it at once: every filed frame goes to the
-lane, oldest first, through `operator.drain`, the loop the terminal also
-runs, then `session_channel.tick` runs at the batch's reading. One burst
-is one message, and so one render: Lustre renders, diffs and broadcasts
-once per message whatever the message changed
+`Arrived(messages)`. `update` turns it into two step messages in one
+Lustre message: `step.update(msg.Arrived(..))` files the frames into the
+record's `session_view/inbox` and reduces nothing, and a `Ticked` input
+then drains every filed frame to the lane, oldest first, and ticks the
+lane. One burst is one message, and so one render: Lustre renders, diffs
+and broadcasts once per message whatever the message changed
 ([lustre.md](../lustre.md#an-empty-reconcile-is-still-broadcast)), and
 `delivery_test` counts the patches a burst costs.
 
@@ -326,50 +341,101 @@ refresh, which is 250 ms until the daemon has pushed a frame and
 daemon pushes the roster to a page when it subscribes
 ([protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)),
 so a page moves to the 5 s refresh at attach even on a quiet session. When
-the timer fires, `Ticked(at)` runs the same reduction. An idle page wakes
-once every five seconds, where the 250 ms tick woke it four times a
-second.
+the timer fires, `Ticked` runs the same tick. An idle page wakes once
+every five seconds, where the 250 ms tick woke it four times a second.
+`Opened` adopts the lane and ticks, so frames filed before the lane
+existed are drained in order.
 
-**Time.** The clock is read in the selector's mapping, when the timer
-message or the relay's batch is received, so `update` reads no clock. The
-one host action `update` performs is arming the timer, because its
-`Timer` handle has to stay in the model for the next arming to cancel.
+**Time.** `component.update` reads the transport's clock once, at its top,
+and every step the message takes runs at that reading, as the terminal's
+`runtime.message` stamps each input once. The step reads no clock: the
+messages it is given carry the reading as a `msg.Stamp`, and the shared
+record stores it. The component's own messages carry no reading, and
+neither selector mapping reads a clock: `update` takes the reading when it
+takes the message. The one host action `update`
+performs is arming the timer, because its `Timer` handle has to stay in
+the model for the next arming to cancel. Tests give the transport a
+settable clock (`page_fixture.clock`).
 
 **Commands.** `component.submit` refuses empty text and text over 256 KiB
-(`prompt_limit`) with a notice. Otherwise it drains what was filed, then
-calls `operator.submit`, which asks the lane for a `prompt` or a `steer`
-on `main`. `component.decide` finds the pending record with exactly the
-drawn escalation ID and sequence (`operator.drawn`) and encodes an
-`approve` or a `deny` that echoes that record's action digest, grants and
-`expected_seq`. A record that moved after its card was drawn is not
-decided, and the page says so. The lane itself refuses a mutation when the
-attachment's role is observer (`session_channel.can_mutate`), which is a
-third layer under the component's type and the gateway's role check.
+(`prompt_limit`) with a notice, since those are the page socket's limits.
+It then parses the draft with `command.parse_with_skills`, as the terminal
+does. A `command.Session` goes to the shared step as `msg.Submit`, run by
+`commands.act`, so `/compact` is a compaction and `/model`, `/fork`,
+`/goal` and the rest run as they do in the terminal, and an unknown
+command is refused as the terminal refuses it. A `command.Surface` is
+refused with a notice and never sent, and so are `/add-dir` and
+`/add-write-dir`, which name a path on the daemon's host that a browser
+reader can neither see nor pick (`component.page_command`). The page loads
+no skills catalogue, so a skill's slash command is refused as unknown until
+it does. `component.decide` finds the pending record with exactly the drawn
+escalation ID and sequence (`operator.drawn`) and hands the step
+`msg.Decide`, which encodes an `approve` or a `deny` that echoes that
+record's action digest, grants and `expected_seq`. A record that moved after
+its card was drawn is not decided, and the page says so. A decision takes
+the same refusals as any mutation (`outbound.mutation_refusal`): it is
+refused when the strand is unknown, when no conversation is attached, and
+when the lane cannot take a mutation (`session_channel.mutation_available`:
+another mutation is in flight, the queued slot is taken, the attachment is
+read-only, or the lane has not synchronized). The card stays and the
+operator presses again. On a synchronized lane a read in flight does not
+refuse it, and the lane queues the decision behind the read. The lane
+itself refuses a mutation when the attachment's role is observer
+(`session_channel.can_mutate`), which is a third layer under the
+component's type and the gateway's role check. The step leaves the facts a
+command recorded on the record; the component reads `DraftTaken` to know
+the command consumed the composer's draft, then drops them
+(`step.forget_surfaces`).
 
-**Effects.** The lane's outputs, `Transmit(socket, frame)` and
-`Shut(socket)`, are performed through the transport inside one
-`effect.from`, in the order the lane queued them. The component holds no
-recorder, so its recorder type is `Nil` and the lane never queues a
-`Note`. The interpreter has the shape of the terminal's
-`tui/terminal_lane.perform`.
+**Effects.** The step returns the effects it decided, and the component
+performs them through the transport inside one `effect.from`, in the
+order the step decided them: `Transmit(socket, frame)` writes a frame and
+`Shut(socket)` closes the relay. The component holds no recorder, so the
+step never queues a `Note`. The interpreter has the shape of the
+terminal's `tui/terminal_lane.perform`.
 
-**Projection.** When the lane reports `Captured`, `component.apply` folds
-the capture into the page's history window (`history_view.capture`, the
-terminal's `scrollback`), projects the window's branch once, with
-`transcript.branch_blocks`, into keyed blocks for `main`, keeps the newest
-turns that fit the page's row limit (below), and folds the capture's
-escalation cells into the approval list. Only durable records are drawn:
-the component ignores `Streamed` and `ToolStreamed`, so the page shows no
-live answer or tool tail. The terminal's streaming live tail
-(`tui/live_tail`, held in `View.live_tail`) is terminal view state and has
-no counterpart here yet.
+**What the page draws.** `component.refreshed` runs at the end of every
+message and derives what the page draws from the shared record. It
+compares what each projection was built from and rebuilds only what
+moved. The blocks and turns are rebuilt when the capture, the history
+window, the cache notices, the agent rows or the paging differ from the
+inputs of the last projection (`Projected`), and the strip when its inputs
+(`Stripped`, less the roster's clock) or a cache label it draws did. The
+record's `render_revision` is not the signal. It moves for stream fragments
+and tool tails the page does not draw, and a page that re-projected on
+each would project once per batch of a streaming answer. The comparison
+is of state, so an unchanged input is the same term and costs a pointer
+check, and a change of paging forces a reprojection without a `before`
+record. A projection folds the history window's branch into keyed blocks
+for `main` with `transcript.branch_blocks`, keeps the newest turns that fit
+the row limit (below) and lays them out as `turns.Piece` values. Only
+durable records are drawn: the page draws no live answer or tool tail, so
+the terminal's streaming rows (`tui/live_tail`) have no counterpart here
+yet. After a `history` read is answered, refused or abandoned, the window
+is still in the reading mode `history_view.older` set, which the terminal
+leaves until its reader scrolls back; `refreshed` resumes it and folds
+the newest capture in.
 
-Of the lane's updates, the component folds `Captured`, `HistoryPage` (the
-reply to its own history read), `Auxiliary(UsageChanged)`, the outcomes of
-its own commands (`Submission`, `Acknowledged`, `RequestRefused`,
-`UnknownOutcome`) and `Failed`. It drops `LookedUp`, since it sends no
-escalation lookup, the other `Auxiliary` events, `Streamed`,
-`ToolStreamed` and `Noticed`.
+**What the step does for surfaces the page lacks.** The page runs the
+shared step and so does what the step does, including reads for surfaces
+it does not draw. After a first capture it reads the strand's notes, to
+seed a todo board it does not draw, and then the session's context, the
+advisor's pending nudges and the goal, each when the one before is
+answered; it reads the context again when an operation ends and when the
+configuration changes. That is four round trips at load that hold the
+lane's one command slot, and a context read the daemon answers with a
+branch scan on each operation, for every open page. Ruling 12 of the step
+extraction design chose that over choosing which reads a host has a
+surface for. The step's tick leaves out the block-summary read, because
+the daemon may run a summarizer for a label it is asked for and the page
+draws no labels. The composer's notice line shows the shared record's
+`notice`, so it says what the session last said ("notes sent" after that
+first read, "streaming text" during an answer) as often as the outcome of a
+command; only the page's own refusals are drawn as warnings. The facts a
+fold records for surfaces the page lacks are dropped with
+`step.forget_surfaces`. That includes a held prompt the daemon hands back
+(protocol-change/038's custody return): the page has no editor to put it
+in, so the operator does not see it, and it is the prompt's last copy.
 
 ## Paging older history
 
@@ -528,14 +594,16 @@ covered in full in [lustre.md](../lustre.md).
   child's key.** Lists whose items change are keyed by identities the
   engine owns: the transcript by `transcript.Row.key`, which names the
   durable sequence, block and line a row came from; approval cards by the
-  record's sequence; and the composer's editor by the count of sent
-  drafts, which is how the uncontrolled editor is emptied after a send
+  record's sequence; and the composer's editor by the count of drafts that
+  left it (`component.drafts`: the ones the lane sent and the ones a
+  command consumed), which is how the uncontrolled editor is emptied after
+  a send
   ([lustre.md](../lustre.md#only-events-you-attach-can-arrive)).
 - **Every message runs `view` on the whole model and diffs the whole
   tree.** Nothing skips the render when the model did not change, and an
   idle page receives a patch per message, which is why arrivals are
-  batched before `update`. So the rows are projected once, in
-  `apply`, when a capture arrives, and the lane draws every transcript
+  batched before `update`. So the rows are projected only when an input
+  of the projection moved (`refreshed`), and the lane draws every transcript
   line and card body inside its own `element.memo`, so a capture draws,
   parses and diffs only the lines that are new. The memos are the lane's
   leaves with no memo around them, and a turn's work is keyed by its
@@ -555,16 +623,16 @@ browser goes away, because a runtime outlives its last client.
   [protocol-change/052](../../protocol-change/052-web-view-remote-origin.md),
   proposed and not implemented. Today a remote person reaches the page
   through `ssh -L`, which presents a loopback `Host`.
-- **The extracted step.** The page drives the lane and the projection, not
-  the shared step. The step's record and reducers now live in
-  `session_view` (`session_view/model`, the folds, the commands and the
-  settle in `session_view/step`, since S4 of
-  `docs/design-notes/step-extraction.md`), and the terminal runs them; the
-  page keeps its own capture, cache and submission folds until S5 switches
-  it to them. Strand focus, streams and the auxiliary reads wait for that
-  slice. History paging is built on the page's own `history_view.State`,
-  the field the shared record, `session_view/model.Shared`, holds as
-  `scrollback`; the row limit and `Paging` stay the page's view state.
+- **The rest of the page's features.** The page runs the shared step, and
+  what it draws is a small part of what the step knows. Part 2 of
+  [issue #569](https://github.com/Roasbeef/loom/issues/569) builds the
+  page out: a pinned frame that scrolls only the transcript, following the
+  tail, slash-command autocomplete and Cmd/Ctrl+Enter in the composer,
+  a typed notice, returned prompts put back in the composer, expandable
+  rows, the todo panel, live streams, strand focus and the session
+  sidebar. History paging is built on the shared record's `scrollback`
+  (`history_view.State`); the row limit and `Paging` stay the page's view
+  state.
 - **One strand, one session.** The page shows and addresses `main`. The
   routes already carry the session ID, so a later page can mount one
   component per session or agent.
@@ -573,7 +641,7 @@ browser goes away, because a runtime outlives its last client.
 
 | Path | What it owns |
 |---|---|
-| `packages/web_view/src/web_view/component.gleam` | The observer's application: the lane's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the command arms `submit` and `decide`, the history read `older`, projection on `Captured` and `HistoryPage` into the row window (`live_rows`, `held_rows`, `Paging`), and `view`, which lays out the regions below. |
+| `packages/web_view/src/web_view/component.gleam` | The observer's application: the shared step's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the clock read once per message, `submit` and `decide` wrapping the operator's inputs as the step's commands, the history read `older`, `refreshed` deriving the row window (`live_rows`, `held_rows`, `Paging`) and the strip from the record, and `view`, which lays out the regions below. |
 | `packages/web_view/src/web_view/view/heading.gleam` | The heading: the session's name, its workspace and the connection's status, drawn from plain values the component hands it. |
 | `packages/web_view/src/web_view/view/strip.gleam` | The agent strip and its `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces, folded work, the cards, and each transcript line and card body in its own leaf memo. |
@@ -586,7 +654,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role, frame filtering, shutdown. |
 | `packages/client/src/client/daemon/ui_relay.gleam` | The relay into the gateway, the role cap, and the four ways a page ends. |
 | `packages/tui/src/tui.gleam` (`run_view`), `packages/tui/src/tui/view_link.gleam` | `loom ui`: daemon resolution, `ui.link`, printing and opening the link. |
-| `packages/session_view/src/session_view/operator.gleam` | What an operator's input becomes on the wire, shared with the terminal. |
+| `packages/session_view/src/session_view/step.gleam`, `commands.gleam`, `operator.gleam` | The whole-event entry `step.update` the component calls, the commands it runs, and what an operator's input becomes on the wire, shared with the terminal. |
 
 Tests: `web_view/test/component_test` and `operator_page_test` drive the
 components through `lustre/dev/simulate`; `paging_test` holds the row

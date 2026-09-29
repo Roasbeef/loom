@@ -22,7 +22,7 @@ does not open one per strand.
 An **inbox** is what a host has received from one source and not yet handed
 to the lane, oldest first. The terminal's is a `tui/buffered.Inbox` over the
 socket's `Subject`; the web view's is a `session_view/inbox.Inbox` that the
-component fills from its selector.
+shared step fills when the component hands it an `Arrived`.
 
 A **batch** is the set of frames one host step takes from its inbox: at
 most 64 in either host (`tui_model.connection_batch`,
@@ -144,11 +144,11 @@ sequenceDiagram
     participant B as browser
     G->>R: reply or push
     R->>C: connection_event.Message on the inbox subject
-    C->>C: selector mapping in component.open:<br/>the frame, then up to 63 already waiting,<br/>then transport.now()
-    C->>L: one Arrived(messages, at)
-    L->>C: component.update
-    C->>C: inbox.push each, reduce: operator.drain,<br/>session_channel.receive, session_channel.tick
-    C->>C: rearm: cancel_timer, send_after(next_due - at)
+    C->>C: selector mapping in component.open:<br/>the frame, then up to 63 already waiting
+    C->>L: one Arrived(messages)
+    L->>C: component.update, which reads transport.now()
+    C->>C: step.update(Arrived) files the frames,<br/>step.update(Ticked) drains them:<br/>session_channel.receive, session_channel.tick
+    C->>C: refreshed, then rearm:<br/>cancel_timer, send_after(next_due - at)
     L->>L: view, diff, reconcile
     L->>B: one patch per message
 ```
@@ -159,15 +159,23 @@ sequenceDiagram
    in `component.open`.
 2. **The selector drains the burst.** The component's selector matches the
    frame, and its mapping function in `component.open` reads up to 63 more
-   frames already waiting with `process.receive(inbox, 0)` (`waiting`),
-   reads the clock, and builds one `Arrived(messages, at)`.
+   frames already waiting with `process.receive(inbox, 0)` (`waiting`) and
+   builds one `Arrived(messages)`. It reads no clock.
 3. **Lustre runs `update`.** The runtime takes the message
    (`EffectDispatchedMessage`) and calls `component.update`, or
-   `operator_page.update`, which passes it on. `Arrived` files the batch
-   with `inbox.push` and runs `reduce`: `drained` hands every filed frame
-   to `session_channel.receive` through `operator.drain`, then the lane's
-   `tick` runs at `at`, and `component.apply` folds the updates into the
-   model. The lane's outputs become one `effect.from` (`perform`).
+   `operator_page.update`, which passes it on. `update` reads
+   `transport.now()` once, then hands the shared step two messages in
+   order (`stepping`). `step.update(msg.Arrived(..))` files the batch into
+   the record's inbox with `admission.file_frame` and reduces nothing.
+   `step.update(msg.Input(at, msg.Ticked))` then runs the tick: the
+   activity and roster clocks, the drain (`operator.drain` handing every
+   filed frame to `session_channel.receive`, and each update the lane
+   returns applied through `lane_fold` before the next frame is taken), the
+   side-surface reads (`service_reads`), and the lane's `tick` at the
+   reading. The step settles the record against the one it started from
+   and returns the effects it decided, which the component turns into one
+   `effect.from` (`perform`). `component.refreshed` then rebuilds the rows
+   and the strip if their inputs moved.
 4. **The component re-arms its timer.** `rearm` cancels the timer it armed
    before and calls `process.send_after` for `next_due - at`. It does this
    inside `update`, because the `Timer` handle has to be stored in the
@@ -177,9 +185,14 @@ sequenceDiagram
    whether the patch holds a change or not. The page's `ui_socket` writes
    it to the browser, and Lustre's client runtime applies it.
 
-When the timer fires, its selector mapping in `component.arm` reads the
-clock and dispatches `Ticked(at)`, which runs the same `reduce` and then
-brings the strip's cache labels up to `at`.
+When the timer fires, its selector mapping in `component.arm` sends
+`Ticked`, and `update` reads the clock and runs the same tick
+(`step.update(msg.Input(at, msg.Ticked))`). The strip's cache labels come
+up to that reading in `refreshed`. An `Opened` message is a tick too, after
+the lane is adopted, so frames filed before the lane existed are drained
+in order. The terminal's tick runs the same shared units in the same order
+with its own drains among them, and `session_view/step_test` holds the two
+compositions together.
 
 ## When the lane is due
 
@@ -301,8 +314,8 @@ Three things depend on that.
   Event-driven delivery changed when a host ticks, not what a tick does, so
   the model changed only in its prose.
 - **Fake-clock tests.** The property test passes the oracle's own `now`,
-  `poll_timeout_test` sets the model's stamp, and `component_test` passes
-  `at` in the messages it sends. None of them sleeps, and each schedule
+  `poll_timeout_test` sets the model's stamp, and `component_test` sets the
+  transport's clock through `page_fixture.clock`. None of them sleeps, and each schedule
   reproduces from its seed.
 
 ## Debugging latency

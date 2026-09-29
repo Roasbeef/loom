@@ -436,8 +436,9 @@ the daemon, by type in the component, and in the lane. Where the composer
 would be, it draws one fixed line: `Observer · read-only · you can follow
 this session; ask the owner for operator access`. It draws no approval
 cards, and it has no fork, steer, goal or job control: they are absent
-from the tree, not disabled. Switching strands and paging history wait
-for the extracted step.
+from the tree, not disabled. Switching strands waits for strand focus (Part
+2 of issue #569); paging history has shipped for both pages (#590), and the
+page now runs the extracted step.
 
 ## 5. The right pane and secondary surfaces
 
@@ -560,22 +561,22 @@ and each fork's parent are in the cut), collapsed program cards from
 `tool_activity`, folded work (section 3.8), cache rings and cache-miss
 rows (section 3.9), approval cards without buttons for observers, held
 inputs, streams and tool tails, the observer's bar, and the light and dark
-themes. The strand the transcript column shows stays fixed per page until the step
-moves.
+themes. The strand the transcript column shows stays fixed per page until
+strand focus lands (Part 2 of issue #569).
 
 **Phase B: interaction.** Part of this phase shipped ahead of the step,
 with the operator addendum to protocol-change/051: an operator's page
 sends a prompt or a steer and answers an escalation with allow once or
-deny, through the command arms in `session_view/operator`, which the
-terminal uses too. The rest needs the extracted step. Of the four changes
-ADR-014 lists for it, the split of the buffered inbox from its subject is
-done (`session_view/inbox.Inbox(source, a)`); engine-owned key and
-pointer types, the split of the model into engine state and per-host view
-state, and host handles as type parameters remain. After them come abort,
-image prompts, strand focus, fork, history paging, the auxiliary reads
-(`goal_get`, `live_jobs`, `worktree_diff`, `advisor_pending`, `context`,
-`notes`), the model selector, goal controls, job cancel, the changes and
-trace panes, and replies to peers through an existing link.
+deny. The step has since moved into `session_view` (ADR-014, the
+addendum of 2026-09-29) and the page runs it, so an operator's page also
+runs every session command a draft names except adding a directory, and
+its tick sends the auxiliary reads (`advisor_pending`, `context`, `notes`
+and the goal) for surfaces it does not yet draw. What remains is the view
+and the controls for it: abort and the model selector as buttons, image
+prompts, strand focus, fork, the rest of the auxiliary reads (`live_jobs`,
+`worktree_diff`) shown, goal controls, job cancel, the changes and trace
+panes, and replies to peers through an existing link. The issue #569
+tracks the order.
 
 **Phase C: new daemon features.** A control relay for the page (the
 catalogue, invitations, role changes, peer links, and `ui.link` for a

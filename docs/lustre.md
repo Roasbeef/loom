@@ -59,16 +59,20 @@ terminal's; ADR-014 describes how the web host reuses them.
 
 | Loom engine | Terminal host | Web host (Lustre) |
 |---|---|---|
-| Message: `msg.Msg` (`Arrived`, `Input`) | built by `tui/runtime` from etui events | `component.Msg`: `Arrived`, `Ticked` |
-| Step: `tui.step(msg, model) -> #(Model, List(Effect))`; the lane's `session_channel` transitions | called by `tui.update` | called from the component's `update` |
-| Effect: `tui/effect.Effect`, the lane's `session_channel.Out` | performed by `tui/runtime`, `tui/terminal_lane.perform` | performed by one `effect.from` in `component.perform` |
+| Message: `msg.Msg` (`Arrived`, `Input`) | the terminal's own `tui/msg.Msg`, built by `tui/runtime` from etui events | `component.Msg` (`Arrived`, `Ticked`, and the operator's inputs), which `update` turns into `session_view/msg.Msg` |
+| Step: the shared units over `model.Shared`; the terminal's `tui.step(msg, model) -> #(Model, List(Effect))` | called by `tui.update`, which calls the shared units one at a time | `session_view/step.update(shared, msg) -> #(Shared, List(step_effect.Effect))`, called from the component's `update` |
+| Effect: `tui/effect.Effect`, wrapping the shared `step_effect.Effect` (the lane's `session_channel.Out`) | performed by `tui/runtime`, `tui/terminal_lane.perform` | performed by one `effect.from` in `component.perform` |
 | Runtime: reads clocks, mailboxes, sockets; performs effects | `tui/runtime`, `tui/job_runner` | the Lustre runtime process, its `select` subscriptions, `ui_relay` |
 | View | `tui/render` over etui | `component.view` over `lustre/element/html` |
 
-Today the web host drives only the lane (`session_channel`) and
-`transcript.project`; the step itself moves into the engine in the
-build-out (ADR-014, "Why the step waits for the build-out phase"). The
-table's middle column for the web host is what the build-out keeps.
+The web host runs the shared step. `component.Model` is two records,
+`shared` (`session_view/model.Shared`) and the page's own `view`, and the
+component's `update` holds no session logic: it reads the clock, calls
+`step.update`, derives what it draws from the record the step left, and
+performs the effects (ADR-014, the addendum "the step moved into
+`session_view`"). The terminal does not call `step.update`, which composes
+the same units for a host with no surfaces of its own, and a test holds the
+two to one order.
 
 ### What differs
 
@@ -158,11 +162,12 @@ only filed, and reduction happens at a tick or a key in a fixed order. Its
 addendum on event-driven delivery revises that for both hosts, and in the
 component it works like this. The selector that reads the relay's inbox
 drains it in its mapping function: the frame it matched and up to
-`arrival_batch - 1` more already waiting become one `Arrived`, with the
-clock read after the drain. `Arrived` files the batch and reduces it at
-once: every filed frame goes to `session_channel.receive` in arrival
-order, through `operator.drain`, then `session_channel.tick` runs at the
-batch's reading. There is no periodic tick. After each transition the
+`arrival_batch - 1` more already waiting become one `Arrived`. `update`
+reads the clock and files the batch and reduces it at once, in one
+message: `step.update` with `msg.Arrived` files the frames, and with a
+`Ticked` input every filed frame goes to `session_channel.receive` in
+arrival order, through `operator.drain`, and `session_channel.tick` runs at
+the reading. There is no periodic tick. After each transition the
 component arms one `process.send_after` for the lane's
 `session_channel.next_due`, cancelling the timer it armed before, and when
 it fires `Ticked` runs the same reduction. `component_test` and
@@ -357,14 +362,16 @@ selector into the runtime's own ([`lustre/server_component`][doc-sc],
 - **A selector consumes everything it matches**, so the bound on what is
   buffered is the host's to keep (ADR-013 phase 3 addendum; ADR-014,
   "Delivery under option C").
-- **Read host inputs in the mapping.** `component.arm` reads the clock in
-  the selector's mapping function when the timer message is received, so
-  `Ticked` carries the instant of the tick, and `component.open` drains the
-  inbox and reads the clock there too, so `Arrived` carries a whole burst
-  and the reading after it. The one host action `update` performs itself
-  is arming the deadline timer (`component.rearm`): its `Timer` handle has
-  to be in the model for the next arming to cancel it, and handing it back
-  through an effect would cost a second message, and so a second render.
+- **Drain the burst in the mapping, and read the clock in `update`.**
+  `component.open` drains the inbox in its mapping function, so `Arrived`
+  carries a whole burst, and `component.arm`'s mapping turns the timer
+  message into `Ticked`. Neither reads a clock. `component.update` reads
+  the transport's clock once, at its top, when it takes the message, and
+  the step reads none. The one host action `update` performs
+  itself is arming the deadline timer (`component.rearm`): its `Timer`
+  handle has to be in the model for the next arming to cancel it, and
+  handing it back through an effect would cost a second message, and so a
+  second render.
 
 Another process can also reach `update` directly with
 `lustre.send(runtime, lustre.dispatch(message))`
@@ -700,9 +707,13 @@ replaces anything else ([`lustre/element/keyed`][doc-keyed];
 so a stable tree sends little. Three practices keep it stable:
 
 **Derive in `update`, not in `view`.** `view` runs on every message
-(section 2). `component.apply` projects a capture once, when its
-`Captured` update is applied, and keeps the keyed rows in the model, so a
-frame or a tick that brings no capture costs the view no projection.
+(section 2). `component.refreshed` runs at the end of each message,
+compares what the projection and the strip were built from with what the
+shared record holds now, and rebuilds only what differs. The keyed rows and
+pieces stay in the model, so a frame or a tick that changes none of the
+projection's inputs costs the view no projection. The comparison is of
+inputs and not of the record's `render_revision`, which moves for stream
+fragments the page does not draw.
 
 **Key the transcript.** An append-only list diffs well without keys: the
 old lines compare equal and the new ones are inserted at the end. A list
@@ -1006,7 +1017,8 @@ fail. A test that expects a refusal must inspect the history.
 Loom's component starts its transport and timer from `init`'s effects, so
 tests build the simulation around `component.new`, which is `init` without
 effects, and deliver `Opened`, `Arrived` and `Ticked` as messages
-(`component_test`):
+(`component_test`). The clock is the fixture transport's, which a test
+sets with `page_fixture.clock` when it needs a later reading:
 
 ```gleam
 fn simulation() {
@@ -1062,10 +1074,12 @@ there is to run one engine script through both hosts and compare.
 `client/web_view_parity_test` does it for a capture: one fixed capture goes
 through the terminal's reducer and through `component.apply`, the two line
 lists are compared for equality, and the component's HTML is checked to
-hold every line's escaped text in order.
+hold every line's escaped text in order. A second test runs one script of
+frames and commands through both hosts and compares the lanes' states and
+the approvals on offer.
 
-As the build-out moves the step into the engine, extend the pattern rather
-than writing web-only assertions:
+The step is in the engine now, so extend the pattern rather than writing
+web-only assertions:
 
 1. Script the engine's messages once (frames, ticks, and the domain events
    a key or a click becomes).
