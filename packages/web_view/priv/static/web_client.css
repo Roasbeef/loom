@@ -4,7 +4,7 @@
    input b6e41a2a6ac9eb2c184a8fb0fcee7de32243b7d55cfcdf88336005e094213407  packages/web_client/src/web_client.css
    input e8602a3addb30c95ccec9d656cebb3dbd61c7b60e3e2d705a6e9e202af65e9c6  packages/web_client/manifest.toml
    input 2cda7e69088197397afb341540670946dd1ea902e33f198525a471f325af5f73  packages/web_client/src/web_client.gleam
-   input a41491e5ab9a2a713277c631dfd1b2b0125b0d6a85645feb9f421389ff71cb1f  packages/web_client/src/web_client/composer.gleam
+   input 0a1c99d5cb6f34f98f2bd3c1cff09af18f1f84e09b44313a64aee80c6dab16eb  packages/web_client/src/web_client/composer.gleam
    input 14e12d7ae0253a20aab9bcd7fb62cbd7487738edbbfbc368e4e4644030919c6b  packages/web_client/src/web_client/elapsed.gleam
    input 3e038808b473603a4854cbe86c83374a5a42f2a8bc7b7ea58bdfe8f21f76abff  packages/web_client/src/web_client/fold.gleam
    input 259dd652946fbea35a7abeda66b78586f4d4c06b349b9b51120561eacea9c50f  packages/web_client/src/web_client/follow.gleam
@@ -12,7 +12,7 @@
    input 781d0dd518e0ae828906847fcadd7a1b9ab422eb238c2df47cd9df6ffe60031f  packages/web_client/src/web_client/internal/ffi_composer.gleam
    input 71ee208208e8cb75e2fc96a14bcbec6d8c9011572f490bbc3d8200973f376cd1  packages/web_client/src/web_client/internal/ffi_follow.gleam
    input 91220d01533b29cf2c852aab5395535065a70ab8ba09441c7c9136ed9bb0d8c8  packages/web_view/src/web_view/completion.gleam
-   input b8c43bb5f28b6ea169f5bb47eb64a4f7c97ec201fe2c2f53eab747e8bb824632  packages/web_view/src/web_view/component.gleam
+   input 9499b422b8cd7ab34eda90fe0c686380e8b5d9b47899af60b1b4dd714550345a  packages/web_view/src/web_view/component.gleam
    input c84c9143d768322adc419ebde35b903096cd77b2ee3fdf2913b644496dc58072  packages/web_view/src/web_view/markdown_view.gleam
    input c37be7e87e4def1675417f94953f7bf55843a9932accd81c174a0cc48b11ec24  packages/web_view/src/web_view/operator_page.gleam
    input a75c1b298f03bf358f299f489f77e943844fa198e5280df96033873119723ebe  packages/web_view/src/web_view/page.gleam

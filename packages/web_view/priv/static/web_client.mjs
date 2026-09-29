@@ -4,7 +4,7 @@
    input 5a5f20874bba8efde1ac54201651ff032e06fe527b2e202c920c41adfdb3dcb3  packages/web_client/gleam.toml
    input e8602a3addb30c95ccec9d656cebb3dbd61c7b60e3e2d705a6e9e202af65e9c6  packages/web_client/manifest.toml
    input 2cda7e69088197397afb341540670946dd1ea902e33f198525a471f325af5f73  packages/web_client/src/web_client.gleam
-   input a41491e5ab9a2a713277c631dfd1b2b0125b0d6a85645feb9f421389ff71cb1f  packages/web_client/src/web_client/composer.gleam
+   input 0a1c99d5cb6f34f98f2bd3c1cff09af18f1f84e09b44313a64aee80c6dab16eb  packages/web_client/src/web_client/composer.gleam
    input 14e12d7ae0253a20aab9bcd7fb62cbd7487738edbbfbc368e4e4644030919c6b  packages/web_client/src/web_client/elapsed.gleam
    input 3e038808b473603a4854cbe86c83374a5a42f2a8bc7b7ea58bdfe8f21f76abff  packages/web_client/src/web_client/fold.gleam
    input 259dd652946fbea35a7abeda66b78586f4d4c06b349b9b51120561eacea9c50f  packages/web_client/src/web_client/follow.gleam
