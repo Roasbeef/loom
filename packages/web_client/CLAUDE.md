@@ -43,7 +43,11 @@ renders again just for it:
   `layout_rule` for the stored layout (the two columns and the active tab,
   nothing else; the focused strand is never kept, so a reload shows `main`),
   and every change writes it back through `ffi_dom.storage_write`. A page
-  with no digest keeps nothing. The server never learns the layout
+  with no digest keeps nothing. A Theme button in the bar cycles the page
+  through following the system, light and dark (`layout_rule.next_theme`) by
+  setting or removing `data-theme` on `<html>`, which the stylesheet reads;
+  the choice is kept per browser under its own item. The server never learns
+  the layout
   (protocol-change/051, the addendum on the storage decision). A hidden column takes no width and is `inert`, so
   its content leaves the tab order. The `sidebar` attribute is a fixed word
   the server writes (`listed` or `none`), so an observer's page, which has no
@@ -176,7 +180,8 @@ time builds anything.
   `shell.Model(layout, sidebar, needing, workspace, keys)` and `shell.Msg`
   (`Toggled(region)`, `Chosen(tab)`, `SidebarChanged(presence)`,
   `NeedingChanged(count)`, `Relayed(relay)`, `Pressed(intent)`, `Connected`,
-  `Disconnected`, `Listening(listener)`, `Restored(workspace, saved)`).
+  `Disconnected`, `Listening(listener)`, `ThemeCycled`,
+  `Restored(workspace, saved, theme)`).
   `Listening` stops any listener the model still holds as it keeps the new
   one, because `listen` registers after the paint and can arrive after a
   later `Connected`. The
@@ -194,7 +199,11 @@ time builds anything.
   the digest, or nothing), `encode` (a JSON object of three words) and
   `restore` (total: any stored text, or a missing or blocked item, answers a
   `shell_rule.Layout`; the default for malformed text, and the default of one
-  field that is missing or names an unknown word). It imports neither Lustre
+  field that is missing or names an unknown word), and the theme:
+  `Theme` (`System` | `Light` | `Dark`), `theme` (a total decoder of the stored
+  word: anything but `light` and `dark` follows the system), `encode_theme`,
+  `next_theme`, `data_theme` (the root's attribute, or nothing for `System`),
+  `label` and `word` for the button, and `theme_key`. It imports neither Lustre
   nor the DOM binding, and `layout_test` covers it on Node.
 - `composer.Model(entries, draft, selected, palette, returns)` and
   `composer.Msg` (`Configured`, `Returned`, `Typed`, `Moved`, `Accepted`,
@@ -233,7 +242,8 @@ time builds anything.
   `resize_observer`, `observe`, `mutation_observer`, `observe_child_list`,
   `disconnect`, `value`, `set_value`, `utf16_length`, `set_selection_range`,
   `focus`, `click`, `request_submit`, `request_submit_with`, `now`,
-  `set_interval`, `clear_interval`, `storage_read` and `storage_write` (each
+  `set_interval`, `clear_interval`, `document_element`, `set_attribute`,
+  `remove_attribute`, `storage_read` and `storage_write` (each
   one `localStorage` call inside a `try`, answering a `Result`, since storage
   throws when blocked; the only way the package reaches storage). Its types are `Element` (an element, or the shadow root
   Lustre hands an `after_paint` effect, which answers queries alike),
@@ -357,6 +367,16 @@ sends the server nothing.
   `bg-sunk`, `bg-user`, `code`, and the diff backgrounds for `added-text` and
   `danger-text`) in either theme, or if a rule sets `color:` from a mark
   token, `--hue` or `fg-faint`. It has its own self-test.
+- **Tokens live on `:root`; a shadow root only inherits them.** The Theme
+  button sets `data-theme` on `<html>`, and custom properties inherit through
+  every shadow root under it. Tailwind's `@theme` also writes the dark palette
+  on `:host`, which would shadow the inherited value in each element, so the
+  stylesheet ends the palettes with a `:host` rule that sets every token to
+  `inherit` (`web_client.css`, the light tokens). A new token needs a line in
+  the dark `@theme`, in both light palettes (`:root:not([data-theme="dark"])`
+  under the light media query, and `:root[data-theme="light"]`) and in that
+  `:host` rule; the contrast check fails when the light palettes disagree or a
+  token has no `inherit` line.
 - **State the DOM would hold in an expando lives in the model.** The
   returned-prompt bookkeeping (`Seen(taken)`), the scroll bookkeeping (`top`,
   `extent`, `touched`) and the held row are Lustre model fields, never

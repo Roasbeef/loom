@@ -2283,18 +2283,24 @@ interface. The only change to a type the daemon fills in is a new field on
 
 ### What was decided
 
-**What is stored.** One record, and nothing else:
+**What is stored.** Two records, and nothing else:
 
 - The layout of one workspace: whether the sessions sidebar is open, whether
   the strand panel is open, and which of the panel's tabs shows. It is one item
   per workspace, `loom.layout.v1.<digest>`, holding a JSON object of three
   words, for example `{"sidebar":"open","panel":"closed","tab":"changes"}`.
+- The page's theme, per browser and not per workspace: the item
+  `loom.theme.v1`, holding one of the words `system`, `light` and `dark`. The
+  Theme button in the bar moves the page from following the operating system's
+  setting to light, then dark, then back, by setting or removing `data-theme`
+  on the document's root, and a missing or unknown stored word follows the
+  system. It is a per-browser preference, so it has no digest in its name.
 
 The owner ruled (issue #569, 2026-09-29) that the focused strand is not saved
 or restored: a reload shows `main`. The viewed session is not stored either,
 since the page's address names it. **Nothing session-derived is stored.** No
 strand name, session identity, path, transcript text or count reaches storage,
-and the three values the layout holds are words from fixed sets.
+and the values the two records hold are words from fixed sets.
 
 **Where.** Only in `internal/dom.mjs`, through two exports, `storage_read` and
 `storage_write`, which each make one call on `window.localStorage` inside a
@@ -2350,8 +2356,29 @@ restrict storage. Tabs of one workspace share the item, and one tab's change
 reaches another only when that tab loads.
 
 **What the reader sees.** The page draws its default, and the stored layout
-replaces it a frame later, because the read runs after the paint. A reader
-whose columns are stored closed sees them open for that frame.
+and theme replace it a frame later, because the read runs after the paint. A
+reader whose columns are stored closed sees them open for that frame, and one
+who chose the other theme than the system's sees the system's for that frame.
+
+**How the theme reaches every shadow root.** The attribute goes on the
+document's root, because custom properties inherit through a shadow boundary
+and nothing else reaches all of the page's roots: the server component's, and
+one for each client component inside it. The stylesheet had to change for that
+to work. Tailwind writes the dark palette on `:root, :host`, and every shadow
+root adopts the stylesheet, so each host declared its own tokens, and a
+declaration on a host beats the value the host would inherit; a forced light
+theme would have reached the document and no element. The stylesheet now sets
+each token to `inherit` in a `:host` rule (unlayered, so it beats Tailwind's
+layered one), and writes the light palette on `:root` only, twice: once under
+`prefers-color-scheme: light` unless the root says `dark`, and once for
+`data-theme="light"`. Forced dark is the `@theme` palette and needs no block.
+Headless Chrome, given a page with the stylesheet's token rules adopted into a
+shadow root nested in another, resolved every combination of a light or dark
+system setting and no, light and dark attribute to the right value at each
+depth, and resolved forced light to the dark value at both depths when the
+`:host` rule was left out. `scripts/web_client_contrast_check.sh` fails when the
+two light palettes disagree, when a token has no `inherit` line, and, as
+before, when any text token is under 4.5 to 1 in either theme.
 
 ### What was considered
 
@@ -2363,6 +2390,9 @@ whose columns are stored closed sees them open for that frame.
   apply first. The owner chose the browser's storage. If restarts on a new port
   prove a nuisance, a fixed `--bind` or Option B remains open without changing
   what the elements do.
+- **A theme button that swaps light and dark.** It could not say which the
+  page shows without asking the browser what the system prefers, and it could
+  never go back to following the system. Three states cost one more press.
 - **The workspace path as the key.** It is readable in the developer tools and
   in the markup, and the client-component rule keeps attributes to identities
   and numbers.
@@ -2372,13 +2402,17 @@ whose columns are stored closed sees them open for that frame.
 
 ### Cost
 
-- Two items of a few dozen bytes per workspace and browser, never cleaned up: a
-  workspace that is never opened again leaves its item behind.
+- One item of a few dozen bytes per workspace and browser, and one for the
+  theme, never cleaned up: a workspace that is never opened again leaves its
+  item behind.
 - A digest field on `component.Start`, which the tests that build one must
   supply.
 - The layout is lost when the daemon's origin changes, and it is not shared
   between a browser's profiles or machines.
-- The one-frame flash from the default to the stored layout.
+- The one-frame flash from the default to the stored layout and theme.
+- The stylesheet lists each token three times (the dark palette, the light
+  palette twice) and once more for `inherit`. The contrast check holds the
+  copies together, and a new token must be added to each.
 
 ### Verification
 
@@ -2388,5 +2422,8 @@ word, a missing field, the round trip of all twelve layouts, and that text which
 is not a digest names no workspace. `shell_test` (`packages/web_view`) shows the
 frame carries the digest on both pages and none when the host has none.
 `web_client_js_check.sh --self-test` plants each storage violation and a stray
-binding. The element's read and write, and the storage's behaviour in a private
-window, run only in a browser and were not run.
+binding. `layout_test` also covers the theme: a missing or unknown word follows
+the system, the round trip, the cycle, and the root attribute each theme sets.
+The element's read and write, the button, and the storage's behaviour in a
+private window run only in a browser and were not run; the shadow-root token
+check above ran in Chrome on a reduced page and not on the served page.
