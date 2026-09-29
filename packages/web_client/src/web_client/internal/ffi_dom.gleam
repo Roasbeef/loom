@@ -568,3 +568,37 @@ pub fn storage_read(key: String) -> Result(String, Nil)
 /// ```
 @external(javascript, "./dom.mjs", "storage_write")
 pub fn storage_write(key: String, value: String) -> Result(Nil, Nil)
+
+/// The page's root element, `<html>` (`document.documentElement`). Custom
+/// properties set on it reach every shadow root under the page, which is why
+/// the theme's `data-theme` attribute is written here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let root = ffi_dom.document_element()
+/// ```
+@external(javascript, "./dom.mjs", "document_element")
+pub fn document_element() -> Element
+
+/// Sets an attribute on an element (`setAttribute`). The value is text and is
+/// never parsed as markup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.set_attribute(root, "data-theme", "dark")
+/// ```
+@external(javascript, "./dom.mjs", "set_attribute")
+pub fn set_attribute(element: Element, name: String, value: String) -> Nil
+
+/// Removes an attribute from an element (`removeAttribute`), which is nothing
+/// when it has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.remove_attribute(root, "data-theme")
+/// ```
+@external(javascript, "./dom.mjs", "remove_attribute")
+pub fn remove_attribute(element: Element, name: String) -> Nil

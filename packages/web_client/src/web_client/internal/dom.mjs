@@ -223,3 +223,15 @@ export function storage_write(key, value) {
     return new Error(undefined);
   }
 }
+
+export function document_element() {
+  return document.documentElement;
+}
+
+export function set_attribute(element, name, value) {
+  element.setAttribute(name, value);
+}
+
+export function remove_attribute(element, name) {
+  element.removeAttribute(name);
+}

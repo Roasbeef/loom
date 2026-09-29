@@ -1,6 +1,6 @@
 //// What `<loom-shell>` keeps in the browser's storage between page loads:
 //// the two side columns' open state and the panel's active tab, per
-//// workspace.
+//// workspace, and the page's theme, per browser.
 ////
 //// The storage itself is two calls in `web_client/internal/ffi_dom`, one that
 //// reads an item and one that writes an item, which answer a `Result`
@@ -21,7 +21,7 @@
 //// is overwritten by the next change.
 ////
 //// Second, nothing that comes from a session is stored. The layout holds two
-//// column states and a tab. The focused
+//// column states and a tab, and the theme one of three words. The focused
 //// strand and the session viewed are not saved (docs/design-notes/
 //// web-design.md, section 4): a reload shows `main`, and a page's address
 //// names its session. The key carries a digest of the workspace, not the
@@ -40,6 +40,10 @@ import web_client/shell_rule.{
   Strands,
 }
 
+/// The item the theme lives in. The theme is the reader's preference for the
+/// browser and is the same for every workspace, so the item has no digest.
+pub const theme_key = "loom.theme.v1"
+
 /// Which workspace a page belongs to, as far as storage is concerned.
 pub type Workspace {
   /// The page's `workspace` attribute is a workspace digest, and the layout
@@ -50,6 +54,19 @@ pub type Workspace {
   /// Its layout is neither read nor written, so a page that cannot say which
   /// workspace it is for never shares or overwrites another's.
   Anonymous
+}
+
+/// The theme the page draws in.
+pub type Theme {
+  /// The page follows the operating system's setting
+  /// (`prefers-color-scheme`), which is how every page starts.
+  System
+
+  /// The page is light whatever the system says.
+  Light
+
+  /// The page is dark whatever the system says.
+  Dark
 }
 
 /// The workspace the `workspace` attribute names. The daemon writes a
@@ -193,5 +210,109 @@ fn tab_of(word: String) -> Result(Tab, Nil) {
     "changes" -> Ok(Changes)
     "session" -> Ok(Session)
     _ -> Error(Nil)
+  }
+}
+
+/// The theme a page starts with, given what the storage answered. Anything
+/// but the words `light` and `dark`, a missing or blocked item included, is
+/// `System`, so a page whose storage says nothing follows the operating
+/// system's setting.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.theme(Ok("dark")) == layout_rule.Dark
+/// assert layout_rule.theme(Ok("sepia")) == layout_rule.System
+/// assert layout_rule.theme(Error(Nil)) == layout_rule.System
+/// ```
+pub fn theme(stored: Result(String, Nil)) -> Theme {
+  case stored {
+    Ok("light") -> Light
+    Ok("dark") -> Dark
+    Ok(_) | Error(Nil) -> System
+  }
+}
+
+/// The text to store for a theme: the word `theme` reads back.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.encode_theme(layout_rule.Light) == "light"
+/// ```
+pub fn encode_theme(theme: Theme) -> String {
+  case theme {
+    System -> "system"
+    Light -> "light"
+    Dark -> "dark"
+  }
+}
+
+/// The theme after the reader presses the theme button: system, then light,
+/// then dark, then system again. A button that only swapped light and dark
+/// could not say which the page is showing without asking the browser what
+/// the system prefers, and it could never go back to following the system.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.next_theme(layout_rule.System) == layout_rule.Light
+/// assert layout_rule.next_theme(layout_rule.Dark) == layout_rule.System
+/// ```
+pub fn next_theme(theme: Theme) -> Theme {
+  case theme {
+    System -> Light
+    Light -> Dark
+    Dark -> System
+  }
+}
+
+/// The value of the page root's `data-theme` attribute for a theme, or
+/// nothing where the attribute is absent and the system's setting decides.
+/// The stylesheet reads the attribute (`:root[data-theme="light"]`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.data_theme(layout_rule.System) == None
+/// assert layout_rule.data_theme(layout_rule.Dark) == Some("dark")
+/// ```
+pub fn data_theme(theme: Theme) -> Option(String) {
+  case theme {
+    System -> None
+    Light -> Some("light")
+    Dark -> Some("dark")
+  }
+}
+
+/// The words on the theme button: what it shows now and what pressing it
+/// does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.label(layout_rule.System)
+///   == "Theme: following the system. Switch to light."
+/// ```
+pub fn label(theme: Theme) -> String {
+  case theme {
+    System -> "Theme: following the system. Switch to light."
+    Light -> "Theme: light. Switch to dark."
+    Dark -> "Theme: dark. Switch to following the system."
+  }
+}
+
+/// The short word the theme button draws: the theme it is showing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.word(layout_rule.System) == "Auto"
+/// ```
+pub fn word(theme: Theme) -> String {
+  case theme {
+    System -> "Auto"
+    Light -> "Light"
+    Dark -> "Dark"
   }
 }

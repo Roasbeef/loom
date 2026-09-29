@@ -117,3 +117,56 @@ pub fn two_workspaces_do_not_share_a_key_test() {
   assert layout_rule.layout_key(layout_rule.workspace(digest))
     != layout_rule.layout_key(layout_rule.workspace(other))
 }
+
+// The theme is the browser's, not the workspace's, so its item has no digest
+// and cannot collide with a layout's.
+pub fn the_theme_has_its_own_item_test() {
+  assert layout_rule.theme_key == "loom.theme.v1"
+  assert layout_rule.layout_key(Identified(digest))
+    != Some(layout_rule.theme_key)
+}
+
+// A page whose storage says nothing, or something no release wrote, follows
+// the system's setting.
+pub fn a_missing_or_unknown_theme_follows_the_system_test() {
+  assert layout_rule.theme(Error(Nil)) == layout_rule.System
+  assert layout_rule.theme(Ok("")) == layout_rule.System
+  assert layout_rule.theme(Ok("sepia")) == layout_rule.System
+  assert layout_rule.theme(Ok("Dark")) == layout_rule.System
+  assert layout_rule.theme(Ok("{\"theme\":\"dark\"}")) == layout_rule.System
+}
+
+pub fn every_theme_round_trips_test() {
+  list.each(
+    [layout_rule.System, layout_rule.Light, layout_rule.Dark],
+    fn(theme) {
+      assert layout_rule.theme(Ok(layout_rule.encode_theme(theme))) == theme
+    },
+  )
+}
+
+// One button, three themes, and back where it started. Pressing it three
+// times is the identity, so the reader can always return to the system's
+// setting.
+pub fn the_button_cycles_through_all_three_and_back_test() {
+  assert layout_rule.next_theme(layout_rule.System) == layout_rule.Light
+  assert layout_rule.next_theme(layout_rule.Light) == layout_rule.Dark
+  assert layout_rule.next_theme(layout_rule.Dark) == layout_rule.System
+}
+
+// Following the system is the absence of the root's attribute, which is what
+// leaves the stylesheet's `prefers-color-scheme` rule in charge.
+pub fn only_a_chosen_theme_sets_the_root_attribute_test() {
+  assert layout_rule.data_theme(layout_rule.System) == None
+  assert layout_rule.data_theme(layout_rule.Light) == Some("light")
+  assert layout_rule.data_theme(layout_rule.Dark) == Some("dark")
+}
+
+pub fn the_button_says_what_the_page_shows_and_what_pressing_does_test() {
+  assert layout_rule.word(layout_rule.System) == "Auto"
+  assert layout_rule.label(layout_rule.System)
+    == "Theme: following the system. Switch to light."
+  assert layout_rule.label(layout_rule.Light) == "Theme: light. Switch to dark."
+  assert layout_rule.label(layout_rule.Dark)
+    == "Theme: dark. Switch to following the system."
+}
