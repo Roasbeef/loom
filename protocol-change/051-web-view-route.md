@@ -1334,3 +1334,21 @@ trackpad, touch and keys in the transcript are unaffected.
 functions and as sequences of the element's messages. The listeners, the scroll
 events and the DOM calls run only in a browser, which `make check` does not
 have.
+
+## Addendum: expanding a row is client-side (2026-09-29)
+
+The page lets the reader expand a row, as the terminal's `Ctrl+g` does. It
+adds no event to the socket's accepted list and no read: the page already
+holds the records, so the server draws the compact and the full form of a row
+that has more to show, as the children of a new client element,
+`<loom-expand>`, and the element shows one of them. Both forms are session
+text drawn as text nodes (a program is a `<pre><code>`), the element has no
+attribute, handles no key, and its button's words are fixed. Each expanded row
+is cut to 300 lines or 16,000 characters. The content security policy is
+unchanged. Considered and not taken: asking the server for the full row on
+click, which would be a new page event and a round trip for text the page
+holds.
+
+The heading's status now says "connected" where it said "following". It is the
+connection's state, and the word was read as the scroll state, which only
+`<loom-follow>` knows.
