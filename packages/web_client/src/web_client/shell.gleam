@@ -202,9 +202,14 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // before it starts another, so a page that replaced the element leaves
     // nothing listening on the document.
     Connected -> #(model, effect.batch([stop_keys(model.keys), listen()]))
+
+    // `listen` registers after the paint, so this can arrive after a later
+    // `Connected` or a `Disconnected` has already run. Whatever listener the
+    // model still holds is stopped as the new one is kept, so a reconnect
+    // within one frame leaves exactly one listener on the document.
     Listening(listener:) -> #(
       Model(..model, keys: Some(listener)),
-      effect.none(),
+      stop_keys(model.keys),
     )
     Disconnected -> #(Model(..model, keys: None), stop_keys(model.keys))
 
