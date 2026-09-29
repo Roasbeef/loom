@@ -70,6 +70,7 @@ fn start_page(
     component.Start(
       session_id: session,
       label: None,
+      workspace_digest: "",
       expected: snapshot.Expected(session, "epoch", "incarnation"),
       transport: component.Transport(
         connect: fn(inbox, opened) {

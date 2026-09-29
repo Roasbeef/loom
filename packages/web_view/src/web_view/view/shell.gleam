@@ -32,12 +32,19 @@
 //// The module decides nothing about the session. Each region is drawn by its
 //// own module and handed in as an element, and this one places them.
 ////
-//// The frame has two attributes. `sidebar` is a fixed word saying whether the
+//// The frame has three attributes. `sidebar` is a fixed word saying whether the
 //// page has a sidebar, so the element draws no button for a column that is
 //// not there; it is written from the `Sidebar` type. `needing` is the number
 //// of strands waiting on a decision, which the element draws as the badge on
-//// the Strands tab. Neither is ever built from session text: the first is one
-//// of two words and the second is an integer the component counted.
+//// the Strands tab. `workspace` is the digest of the session's workspace that
+//// the daemon computed (`component.Start`), under which the element keeps the
+//// reader's layout in the browser's storage; it is left out when the host has
+//// none. None is ever built from session text: the first is one of two words,
+//// the second an integer the component counted, and the third a hex digest
+//// the daemon made from a path, which is not the path.
+////
+//// The element ignores a `workspace` that is not a 64-digit lower-case hex
+//// string, so nothing here needs to validate it for the browser's sake.
 ////
 //// The module takes plain elements and imports nothing from
 //// `web_view/component`, which imports it.
@@ -73,11 +80,13 @@ pub type Sidebar(message) {
 /// `centre` is the children of the centre column, in order: the transcript
 /// first, so its "Load older" button keeps the path `component.older_path`
 /// names. `needing` is how many strands wait on a decision, for the badge.
+/// `workspace` is the workspace digest, or an empty string for none, in which
+/// case the frame carries no `workspace` attribute.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel, 0)
+/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel, 0, "")
 /// ```
 pub fn view(
   audience: Audience,
@@ -86,39 +95,54 @@ pub fn view(
   centre: List(Element(message)),
   panel: Element(message),
   needing: Int,
+  workspace: String,
 ) -> Element(message) {
-  element.element("loom-shell", frame_attributes(audience, sidebar, needing), [
-    bar,
-    sidebar_element(sidebar),
-    html.main([attribute.class("centre")], centre),
-    panel,
-  ])
+  element.element(
+    "loom-shell",
+    frame_attributes(audience, sidebar, needing, workspace),
+    [
+      bar,
+      sidebar_element(sidebar),
+      html.main([attribute.class("centre")], centre),
+      panel,
+    ],
+  )
 }
 
-// The class for the audience, the word that says whether there is a sidebar
-// and the count of strands waiting on a decision. The operator's frame carries
-// a second class, which the observer's lacks.
+// The class for the audience, the word that says whether there is a sidebar,
+// the count of strands waiting on a decision and, when the host has one, the
+// workspace digest. The operator's frame carries a second class, which the
+// observer's lacks.
 fn frame_attributes(
   audience: Audience,
   sidebar: Sidebar(message),
   needing: Int,
+  workspace: String,
 ) -> List(attribute.Attribute(message)) {
   let word = case sidebar {
     Listed(_) -> "listed"
     Unlisted -> "none"
   }
+  let facts = [
+    attribute.attribute("sidebar", word),
+    attribute.attribute("needing", int.to_string(needing)),
+    ..digest(workspace)
+  ]
   case audience {
     Operator -> [
       attribute.class("loom-session"),
       attribute.class("operator"),
-      attribute.attribute("sidebar", word),
-      attribute.attribute("needing", int.to_string(needing)),
+      ..facts
     ]
-    Observer -> [
-      attribute.class("loom-session"),
-      attribute.attribute("sidebar", word),
-      attribute.attribute("needing", int.to_string(needing)),
-    ]
+    Observer -> [attribute.class("loom-session"), ..facts]
+  }
+}
+
+// The `workspace` attribute, or none where the host has no digest.
+fn digest(workspace: String) -> List(attribute.Attribute(message)) {
+  case workspace {
+    "" -> []
+    digest -> [attribute.attribute("workspace", digest)]
   }
 }
 

@@ -260,6 +260,14 @@ pub type Start(socket) {
     /// What the daemon's catalogue says about the session, or `None` when
     /// the host could not read it.
     label: Option(Label),
+    /// A digest of the canonical workspace path, which the daemon computes:
+    /// the lower-case SHA-256 in hex, 64 digits, or an empty string when the
+    /// host has none. It is the page's storage identity. The frame carries it
+    /// as an attribute (`web_view/view/shell`) and `<loom-shell>` keeps the
+    /// reader's layout under it, so two workspaces do not share a layout and
+    /// a path is never an attribute or a storage key. It is an identity, not
+    /// session text, and the page never draws it.
+    workspace_digest: String,
     /// The attachment the lane must see on every captured cut. A cut for
     /// another session, epoch or incarnation fails the lane rather than
     /// being drawn.
@@ -476,6 +484,7 @@ type Stripped {
 type View(socket) {
   View(
     label: Option(Label),
+    workspace_digest: String,
     expected: snapshot.Expected,
     transport: Transport(socket),
     /// How many rows the page holds. This is the page's own view state.
@@ -632,6 +641,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
     shared:,
     view: View(
       label: start.label,
+      workspace_digest: start.workspace_digest,
       expected: start.expected,
       transport: start.transport,
       paging: Tail,
@@ -2478,6 +2488,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     ],
     panel(model, FocusRequested, None),
     needing(model),
+    workspace_digest(model),
   )
 }
 
@@ -2590,6 +2601,19 @@ pub fn needing(model: Model(socket)) -> Int {
   chips(model.view.strip)
   |> list.map(fn(chip) { chip.line })
   |> strand_card.needing
+}
+
+/// The workspace digest the host handed the component, for the frame's
+/// `workspace` attribute: 64 hex digits, or an empty string when the host had
+/// none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.workspace_digest(model) == ""
+/// ```
+pub fn workspace_digest(model: Model(socket)) -> String {
+  model.view.workspace_digest
 }
 
 /// The todo panel both pages draw above their bottom bar: the followed

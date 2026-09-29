@@ -197,6 +197,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       Some(component.viewers(model)),
     ),
     component.needing(model),
+    component.workspace_digest(model),
   )
 }
 

@@ -151,6 +151,7 @@ fn start() -> component.Start(process.Subject(String)) {
   component.Start(
     session_id: "session",
     label: None,
+    workspace_digest: "",
     expected: snapshot.Expected("session", "epoch", "incarnation"),
     transport: component.Transport(
       connect: fn(_, _) { Nil },
