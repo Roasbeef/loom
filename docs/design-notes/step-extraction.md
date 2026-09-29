@@ -1927,9 +1927,14 @@ terminal's engine.
 - A Steer on an idle strand is an ordinary prompt, as in the terminal. The
   page offers Steer only while the strand runs, so this is reachable only
   through a forged form field, which `composition` already refuses.
-- A decision met by a lane with a request out is refused with the reason,
-  where the page's own arm queued it behind the request. The card stays, and
-  the operator presses the button again. The terminal's dialog behaves so.
+- A decision now takes the same refusals as every other mutation
+  (`outbound.mutation_refusal`). The page's own arm queued a decision behind
+  an in-flight read and refused it behind an in-flight mutation or an
+  occupied queued slot, and the shared step does the same, because
+  `session_channel.mutation_available` is the same predicate in both. The
+  only new refusals are `mutation_refusal`'s two others: an unknown active
+  strand, and an `Attached` peer with no channel. The card stays and the
+  operator presses the button again.
 - A command to a strand the last capture does not list is refused as
   "recipient unavailable". `main` is always listed by a real daemon; the test
   fixtures now list it.
@@ -1939,11 +1944,12 @@ terminal's engine.
   daemon hands back is not shown to the operator on the page. That is the
   ruling on question 12, and it is a loss of the prompt's last copy.
 - What the operator page may send widened from a prompt and a decision to
-  any session command a draft names, including `/add-dir`, `/fork`, `/model`
-  and `/goal`. The two handlers, the socket's accepted events, the
-  Operator ceiling and the gateway's role check are as they were; the
-  protocol-change/051 text that says the page sends a prompt and a decision
-  needs an addendum, which S6 can carry.
+  any session command a draft names, except adding a directory. The two
+  handlers, the socket's accepted events, the Operator ceiling and the
+  gateway's role check are as they were. protocol-change/051's addendum
+  "the operator page runs session commands" (2026-09-29) supersedes the
+  text that says the page has two commands, re-prices a stolen page, and
+  records the refusal of `/add-dir`.
 
 The tests changed in three ways. The message fixtures dropped `at`.
 `page_fixture` gained a settable clock, the three cells that list `main`,

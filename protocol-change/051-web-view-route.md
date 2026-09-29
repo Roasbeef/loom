@@ -951,3 +951,134 @@ path, a batch and malformed frames. `page_events_test` pins the observer's
 one handler. `paging_test` shows an observer's click reaching
 `OlderRequested`, an observer's press writing one `history` frame and no
 command, and a forged submit on the button finding no handler.
+
+## Addendum: the operator page runs session commands (2026-09-29)
+
+**Status**: ACCEPTED, IMPLEMENTED in #618 · **Raised by**: issue #569, the
+shared step's extraction (`docs/design-notes/step-extraction.md`, S5)
+
+**Ruling (owner, 2026-09-29).** The operator page runs every session
+command a draft names, except adding a directory. It parses the draft with
+`command.parse_with_skills` and routes a `command.Session` through
+`commands.act`, as the terminal does. A `command.Surface` command is
+refused on the page with a notice and sends nothing.
+
+This supersedes the statement in "Addendum: operators act from the page"
+that the page "has two commands", `Submit` and `Decide`. Those are still
+the page's two events, and the socket's accepted events are unchanged. What
+changed is what `Submit`'s text may be. Before, the text always became a
+prompt or a steer. Now it may name any session command: `/compact`,
+`/goal ...`, `/model <name>`, `/effort`, `/fork`, `/abort`, `/unschedule`,
+`/approve`, `/deny` and the rest of `command.Session`. The earlier addendum's
+text is left as written.
+
+### What a page is worth now
+
+The operator addendum priced a stolen operator page as the power to send
+prompts that run tools and to approve escalations. It is now worth what a
+terminal attachment with the Operator role is worth, less adding a
+directory. A holder of all three of the cookie, the page key and the nonce
+can also:
+
+- switch the model or the reasoning effort, which changes what the session
+  spends;
+- fork a strand, and abort a running one;
+- set, check, pause, resume and clear the session's goal;
+- compact a strand, and retire a schedule.
+
+Adding a directory (`/add-dir`, `/add-write-dir`, `/add-dir --write`) is
+the one command that widens the session's filesystem scope. The page does
+not run it, so a stolen page cannot widen scope.
+
+What still bounds a page, checked against the branch:
+
+- **Pages are capped at Operator.** `ui_relay.capped`
+  (`packages/client/src/client/daemon/ui_relay.gleam:98`) returns Operator
+  at most and never Owner, and the relay attaches with that role.
+- **The gateway refuses an observer's mutations.** `run_command` answers
+  `forbidden` to a mutation from an observer binding
+  (`packages/client/src/client/gateway.gleam:4201`), classifying commands
+  with `read_only` (`gateway.gleam:2723`). That is its only role gate on
+  mutations. It does not distinguish an operator's page from an operator's
+  terminal.
+- **The one Owner-only gate is worktree observation**
+  (`worktree_owner`, `gateway.gleam:3778`, reached through
+  `observation_allowed`, `gateway.gleam:707`). The page never requests it:
+  the read is requested only when a `WorktreeShown` surface fact arrives
+  (`lane_fold.gleam:1163`, sent at `surfaces.gleam:235`), which the
+  terminal's `/diff` raises. `/diff` is a `command.Surface` command and the
+  page refuses it.
+- **An observer's page carries no command.** `component.Msg` has no command
+  constructor, and `submit` and `decide` are reachable only from
+  `operator_page`. `ui_socket.start_page`
+  (`packages/client/src/client/daemon/ui_socket.gleam:380`) starts that
+  component only for `Operator` or `Owner` authority (`role_of`, line 293).
+  The observer socket admits one event, the Load older click
+  (`observer_accepts`, line 102).
+- **Session content still renders only as text nodes.** The rules in
+  "Nothing from the session becomes markup" are unchanged, and so is the
+  content security policy.
+
+None of these bounds is new. The change is that the Operator role, which
+the earlier addendum treated as prompts and approvals, is now exercised in
+full. The same-origin, cookie, page-key and nonce defences are what stand
+between the agent and the page, and this addendum leaves them as they were.
+
+### What the page refuses
+
+`component.page_command`
+(`packages/web_view/src/web_view/component.gleam:1103`) is the one place
+that names what the page does not run:
+
+- **A `command.Surface` command** (`/help`, `/models`, `/sessions`, `/diff`,
+  `/details` and the rest). The page has no such surface, and sending the
+  words to the model as a prompt would run them as an instruction.
+- **`command.AddDirectory`.** `/add-dir` and `/add-write-dir` name a path on
+  the daemon's host. A browser reader, who may be on another machine
+  ([protocol-change/052](052-web-view-remote-origin.md)), can neither see
+  nor pick one, and these are the only commands that widen the session's
+  filesystem scope. The notice tells the person to add directories from a
+  terminal on the daemon's host.
+
+Each refusal sends no frame and keeps the draft. The empty-draft and
+`prompt_limit` checks in `component.submit` are as they were.
+
+### What differs from the terminal
+
+- **Skill slash commands are refused as unknown.** The page loads no
+  skills catalogue, so `command.parse_with_skills` finds no skill and the
+  shared step answers `unknown command`. The page used to send such a draft
+  to the daemon as a prompt. Reading the catalogue is a follow-up.
+- **A returned prompt is dropped.** When the daemon hands back a held
+  prompt (the custody return of
+  [protocol-change/038](038-held-input-custody-return.md)), the terminal
+  restores it to its editor. The page has no editor to restore it to, and
+  `step.forget_surfaces` drops it, as the owner ruled on question 12 of the
+  step extraction. The text is not shown anywhere on the page, and the page
+  draws no notice for it. The prompt's last copy is lost.
+
+### What was considered
+
+- **Keep the page to a prompt and a decision.** It keeps the price of a
+  stolen page where the operator addendum set it. The page would then need
+  its own parse and its own list of commands, and would drift from the
+  terminal's. Not taken.
+- **Run `/add-dir` on the page.** It is the command most worth a stolen
+  page, and the path it names is a path the browser cannot check. Not taken.
+
+### Cost
+
+- A stolen operator page can change the session's model and effort, fork,
+  abort, and mutate the goal. The bounds above hold it to one session and
+  to the Operator role, for at most the UI session's lifetime.
+- The page's gateway role check treats an operator's page and an operator's
+  terminal alike. A rule that only the terminal may run a command needs a
+  check in the gateway, which this addendum does not add.
+
+### Verification
+
+`operator_page_test` shows `/compact` sending a `compact` command and not a
+prompt, an unknown command refused and sending nothing, a terminal surface
+command (`/models`, `/sessions`, `/details`) refused with a notice, and
+`/add-dir`, `/add-write-dir` and `/add-dir --write` refused with a notice and
+no frame.
