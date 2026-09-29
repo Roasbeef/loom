@@ -82,7 +82,7 @@ type Signal {
   Client(frame: json.Json)
 
   // The relay ended from the gateway's side; the page closes shortly.
-  Ended(reason: String)
+  Ended(reason: ending.Ending)
 
   // The delayed close after `Ended`, once the component has drawn its end,
   // with the close code that ending calls for.
@@ -267,12 +267,11 @@ pub fn upgrade(
           // one message and its broadcast. The reason picks the close code:
           // a reason that names no ending is a failure the person resolves.
           Serving(signals:, ..) as serving, mist.Custom(Ended(reason)) -> {
-            let close =
-              ending.close(ending.from_reason(
-                reason,
-                otherwise: ending.ConnectionFailed,
-              ))
-            process.send_after(signals, ended_grace_ms, Stop(close))
+            process.send_after(
+              signals,
+              ended_grace_ms,
+              Stop(ending.close(reason)),
+            )
             mist.continue(serving)
           }
 
@@ -485,5 +484,5 @@ fn authorize(attachment: server.Attachment(instance)) {
     incarnation: attachment.incarnation,
     digest: attachment.digest,
   )
-  |> result.replace_error("unauthorized")
+  |> result.replace_error(ending.reason(ending.AccessRevoked))
 }

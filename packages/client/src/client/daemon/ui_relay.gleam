@@ -56,8 +56,9 @@
 //// close code from it. The gateway does not say why it closed an attachment,
 //// so the relay asks the attachment's own check once more: a UI session that
 //// is gone is `PageEnded` (a newer link replaced the page, or its eight
-//// hours ran out), and any other refusal is `AccessRevoked`. The gateway
-//// exiting is `SessionStopped`. A refused attach is reported the same way,
+//// hours ran out), and any other refusal, or a role that changed, is
+//// `AccessRevoked`. The gateway exiting, or closing while the check still
+//// passes unchanged, is `SessionStopped`. A refused attach is reported the same way,
 //// as `NotOpen` unless the check named the page's end, and it also tells the
 //// page's socket, which closes with a code the client retries.
 ////
@@ -185,13 +186,18 @@ type State {
     component: process.Monitor,
     inbox: Subject(connection_event.Message),
     opened: Subject(Result(Relay, String)),
-    ended: fn(String) -> Nil,
+    ended: fn(Ending) -> Nil,
   )
   State(
     connection: gateway.ConnectionHandle,
     inbox: Subject(connection_event.Message),
-    ended: fn(String) -> Nil,
+    ended: fn(Ending) -> Nil,
     check: fn() -> Result(#(access.Principal, access.Authority), String),
+    // The authority the attach was made with, already capped, and the cap.
+    // A close whose re-check still passes is a role change only if the
+    // capped authority now differs from this one.
+    held: access.Authority,
+    ceiling: access.Role,
   )
 }
 
@@ -210,7 +216,7 @@ pub fn start(
   inbox: Subject(connection_event.Message),
   component: Pid,
   opened: Subject(Result(Relay, String)),
-  ended: fn(String) -> Nil,
+  ended: fn(Ending) -> Nil,
 ) -> Nil {
   let started =
     actor.new_with_initialiser(1000, fn(subject) {
@@ -232,7 +238,13 @@ pub fn start(
     |> actor.start
   case started {
     Ok(_) -> Nil
-    Error(_) -> process.send(opened, Error("the page's relay did not start"))
+
+    // No relay means no attach, which is the daemon's failure and not the
+    // person's: the socket closes with a code the client retries.
+    Error(_) -> {
+      process.send(opened, Error("the page's relay did not start"))
+      ended(ending.DaemonNotReady)
+    }
   }
 }
 
@@ -267,9 +279,8 @@ fn attached(state: State) -> actor.Next(State, Message) {
         // the code that ending calls for.
         Error(reason) -> {
           upgrade_log.refused(upgrade_log.Page, "attach", reason)
-          let why =
-            ending.reason(ending.from_reason(reason, otherwise: ending.NotOpen))
-          process.send(opened, Error(why))
+          let why = ending.from_reason(reason, otherwise: ending.NotOpen)
+          process.send(opened, Error(ending.reason(why)))
           ended(why)
           actor.stop()
         }
@@ -277,7 +288,14 @@ fn attached(state: State) -> actor.Next(State, Message) {
           let gateway_watch =
             process.monitor(gateway.connection_pid(connection))
           process.send(opened, Ok(Relay(self)))
-          actor.continue(State(connection:, inbox:, ended:, check: attach.check))
+          actor.continue(State(
+            connection:,
+            inbox:,
+            ended:,
+            check: attach.check,
+            held: authority,
+            ceiling: attach.ceiling,
+          ))
           |> actor.with_selector(
             process.new_selector()
             |> process.select(self)
@@ -348,7 +366,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.continue(state)
         }
         Error(_) ->
-          end(state, diagnosed(state, passing: ending.ConnectionFailed))
+          end(state, diagnosed(state, unchanged: ending.ConnectionFailed))
       }
 
     State(inbox:, ..), Push(frame:) -> {
@@ -373,7 +391,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // told, so it closes and shuts the component down.
     State(..), GatewayDown(_) -> end(state, ending.SessionStopped)
     State(..), Closed ->
-      end(state, diagnosed(state, passing: ending.AccessRevoked))
+      end(state, diagnosed(state, unchanged: ending.SessionStopped))
   }
 }
 
@@ -381,19 +399,25 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 // `check` refused, and the gateway does not say what the check said, so the
 // relay asks again. A UI session that is gone answers with the page's own
 // ending, and any other refusal (a credential that no longer authenticates,
-// a membership that is gone) is a revoked access. A check that now passes
-// was refused only while the membership was changing, or the request failed
-// for another reason, and `passing` says which of those the caller saw. The
-// check reads the page's authorization and changes nothing, and this runs
-// once, as the relay ends.
-fn diagnosed(state: State, passing passing: Ending) -> Ending {
+// a membership that is gone) is a revoked access. A check that still passes
+// with a different capped authority is a role change, also revoked access.
+// One that passes with the authority the attach held means the gateway closed
+// for a reason of its own (its snapshot reader failed and the incarnation is
+// stopping), or the request failed for another reason, and `unchanged` says
+// which the caller saw. The check reads the page's authorization and changes
+// nothing, and this runs once, as the relay ends.
+fn diagnosed(state: State, unchanged unchanged: Ending) -> Ending {
   case state {
-    Waiting(..) -> passing
-    State(check:, ..) ->
+    Waiting(..) -> unchanged
+    State(check:, held:, ceiling:, ..) ->
       case check() {
         Error(reason) ->
           ending.from_reason(reason, otherwise: ending.AccessRevoked)
-        Ok(_) -> passing
+        Ok(#(_, current)) ->
+          case capped(current, ceiling) == held {
+            True -> unchanged
+            False -> ending.AccessRevoked
+          }
       }
   }
 }
@@ -404,9 +428,8 @@ fn end(state: State, why: Ending) -> actor.Next(State, Message) {
   case state {
     Waiting(..) -> actor.stop()
     State(connection:, inbox:, ended:, ..) -> {
-      let reason = ending.reason(why)
-      process.send(inbox, connection_event.Closed(reason))
-      ended(reason)
+      process.send(inbox, connection_event.Closed(ending.reason(why)))
+      ended(why)
       gateway.connection_detach(connection)
       actor.stop()
     }

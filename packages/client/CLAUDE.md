@@ -161,7 +161,10 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `web_view/ending` strings: the gateway's exit is `SessionStopped`; a
   `close` (or a request the gateway answered as closed) makes the relay ask
   the attachment's check again, and a UI session that is gone is `PageEnded`
-  where any other refusal is `AccessRevoked`; a refused attach is `NotOpen`
+  where any other refusal or a changed capped authority is `AccessRevoked`,
+  and a check that passes unchanged is `SessionStopped` (the gateway closed
+  for its own reason; a failed request with an unchanged check is
+  `ConnectionFailed`). `ended` carries an `Ending`, not a string; a refused attach is `NotOpen`
   unless the check named the page's end, and it now also calls `ended`, so the
   socket closes. `server`'s refused page requests answer with
   `page.refusal` (`refused_page`) under the status they always had; the
