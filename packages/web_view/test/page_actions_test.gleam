@@ -31,6 +31,13 @@ import web_view/operator_page
 @external(erlang, "page_events_ffi", "handlers")
 fn handlers(view: Element(message)) -> List(String)
 
+// A click beneath the agent strip's list, which is the one handler an
+// observer's page carries besides "Load older" (the strand focus addendum).
+fn is_chip_click(key: String) -> Bool {
+  string.starts_with(key, component.strip_path <> "\t")
+  && string.ends_with(key, "\nclick")
+}
+
 // What the fixture's daemon answers the page's reads with.
 type Boards {
   Boards(nudges: Option(json.JsonValue), goal: Option(json.JsonValue))
@@ -248,7 +255,8 @@ pub fn the_nudge_card_has_no_control_test() {
   assert list.all(names, fn(name) { name == "click" || name == "submit" })
 }
 
-// An observer reads the same card, and its page still carries no handler.
+// An observer reads the same card, and its page still carries no handler
+// but the strip's focus clicks.
 pub fn an_observer_sees_the_nudge_card_read_only_test() {
   let #(model, _) = page("observer", queued())
   let html = element.to_string(component.view(model))
@@ -258,7 +266,7 @@ pub fn an_observer_sees_the_nudge_card_read_only_test() {
     "rebase &lt;b&gt;first&lt;/b&gt;",
     "class=\"observer-bar\"",
   ])
-  assert handlers(component.view(model)) == []
+  assert list.all(handlers(component.view(model)), is_chip_click)
 }
 
 pub fn no_pending_nudge_draws_no_card_test() {
@@ -715,13 +723,13 @@ pub fn an_observer_attachment_sends_no_control_test() {
 }
 
 // An observer's page has none of it: no bar, no form, no button, and still
-// no handler but "Load older".
+// no handler but the strip's focus clicks.
 pub fn an_observer_page_draws_no_controls_test() {
   let #(model, _) = page("observer", pinned("active", json.Null))
   let html = element.to_string(component.view(model))
   assert !string.contains(html, "class=\"controls\"")
   assert !string.contains(html, "control-")
-  assert handlers(component.view(model)) == []
+  assert list.all(handlers(component.view(model)), is_chip_click)
 }
 
 // The bar sits above the approvals and the composer in the dock, and the
