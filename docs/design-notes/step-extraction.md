@@ -13,7 +13,9 @@ it departed from this note, the S2 entry in section 5 says how and why.
 S3 was re-sliced on 2026-09-28, with the owner's approval, after a census
 found that section 3's lists miss much of what the lane and event folds
 reach; section 5's S3 entry gives the census and the new landings, and
-S3a′ to S3e′ have landed.
+S3a′ to S3e′ have landed. The first half of S4 has landed: the shared
+step's modules are in `session_view`, and its entry points wait on
+question 12.
 
 Issue #530 left the terminal and the web view sharing the session lane and
 the transcript projection but not the step. The terminal reduces with
@@ -1670,6 +1672,149 @@ passes with only import lines changed, and the replay is byte-identical.
 *Size:* renames of about seven thousand lines plus `step.gleam`, under
 two hundred lines new.
 
+*S4 as landed, first half: the move.* S4 was to move the shared step's
+modules into `session_view` and write the entry points `tui.step` calls.
+It landed in two, and this is the first: every function the S3 slices put
+over `Shared` now lives in `session_view`, and the terminal calls it there.
+The entry points and the `session_view`-shaped `Msg`, `Arrival` and
+`Event` are the second half, and wait on question 12.
+
+Twelve modules moved with `git mv`, and no code in them changed beyond
+their imports; a later commit rewrote their module comments.
+`tui/session_model` is `session_view/model` and `tui/session_step` is
+`session_view/step`, the names section 2 gives them; `step_effect`,
+`queue_request`, `agent_messages`, `attempt_replay`, `completion_summary`,
+`outbound`, `surfaces`, `event_fold`, `lane_fold` and `commands` kept
+their names. The terminal imports the two renamed modules as
+`session_model` and `session_step`, the names they had, so no function
+body in the terminal changed for the move either. Two modules are new in
+`session_view`: `msg`, which holds `Stamp` and `Command`, the session's
+half of a message, taken out of `tui/msg`; and `admission`, which holds
+`file_frame` and `file_replayed`, taken out of `tui/admission`. The tick's
+three private functions over `Shared` moved into `session_view/step`
+beside the settle: `service_reads`, the eight side-surface reads in the
+order they share the lane's command slot, and `advance_activity_clocks`
+with the generation clock beneath it. A second host's tick needs the same
+units.
+
+Three things the moved code reached could not come with it, because each
+is a module R6 keeps out of `session_view`. In each case the terminal
+keeps the value and the shared code receives what it needs as data, and
+none needed a new type parameter.
+
+- `Shared.client_build` and `Shared.daemon_build` were
+  `host/build_identity.Identity` values. The `host` package reads the
+  environment (`envoy`) and depends on `gleam_erlang`, so `session_view`
+  cannot import it, and moving the type into `session_view` or `core`
+  would change packages this slice does not touch. The only use a shared
+  reducer made of the two builds was `render_cut` drawing the mismatch
+  notice. The terminal now compares them once, in `tui_model.adopt_daemon`,
+  and stores the lines in `Shared.build_notice`, which the cut splices in
+  where it used to call `daemon_build_lines`. The client's build moved to
+  `View.client_build`; the daemon's build is already in `View.daemon_host`.
+  Both inputs change only in `adopt_daemon`, so every cut draws the lines
+  it drew. `build_notice_test` now sets the client's build before the
+  adoption, since that is where the comparison runs.
+- `Shared.workspace` was a `tui/workspace.Context`, a module that reads the
+  filesystem. No shared reducer read it; the footer, the picker's order and
+  a new session's name do, all in the terminal. It moved to
+  `View.workspace`. Section 1's table put it in the session state because
+  "the page's header wants it"; the page has its session's workspace from
+  the daemon and does not read the field.
+- `tui/surfaces` held eight functions over the whole model: the notes
+  target and surface, the note selection, the notes refresh and the
+  summary, goal and context openers. They read the overlay and the panels,
+  and moved to a new terminal module, `tui/side_surfaces`, before the rest
+  of `surfaces` moved.
+
+This departs from the note in five other ways.
+
+1. The effect type is not in `session_view/step`. `Shared.outbox` holds
+   `step_effect.Effect` values, so `session_view/model` imports the type,
+   and the step imports the model; the type in the step would make the two
+   modules import each other. It stays `session_view/step_effect`.
+2. `tui/inbound` and the shared half of `tui/submit`, which section 5's S4
+   plan lists, did not move as modules. Under the ruling on question 11
+   what is left in `tui/inbound` is the host's loop over a drain's updates
+   and the application of the facts, and the shared half of `submit` moved
+   to `commands` in S3e′.
+3. `step.update`, `attach`, `new` and `next_due` were not written, and
+   the `session_view`-shaped `Msg`, `Arrival` and `Event` did not land.
+   Section 2 planned `tui.step` to call `update`, and the ruling on
+   question 11 means it cannot: question 12 has the finding and the
+   options.
+4. `record_cache_valid` is still the flag section 1 planned as a counter;
+   question 3's documentation of the revisions is now in
+   `session_view/model`.
+5. The note's test for the move, "the `tui` suite passes with only import
+   lines changed", holds for every test but `build_notice_test`, one
+   `agent_workspace_test` case and two assertions in `client`'s
+   `tui_v2_persisted_test`, which set or read the fields that moved to
+   `View`.
+
+Measured against `main` at `bfe144ed3`, whose tree is the one #606 merged.
+The `tui` suite passes 976 tests and `session_view` 112 on both; on the
+branch `web_view` passes 81 and `client` 2,297, in `make check-affected`.
+Both committed recordings replay byte-identical with `--all --plain`, and
+the synthesized `tui_perf` replays of 64, 512 and 4,096 frames end on
+identical last frames. The synthesized replays are paced on the host
+clock, so their `--all` output differs between two runs of the same build
+(three runs of `main` gave three different outputs), which is why only
+their last frames are compared. The P model's ten cases find no bug at
+30,000 schedules each, and its ten probes find their witnesses. The twelve
+shipped fixtures among the fifteen tests matching `_shipped_` pass on the
+branch in `make check-affected`'s client lane, which runs them against a
+freshly built `bin/loomd` with an isolated home; they were not re-run
+against `main`'s build.
+
+`scripts/tui_perf.sh`, median of three alternating runs: an idle tick
+costs 7,540 reductions and 9,476 words on both, a key 100,980 reductions
+on both and 213,576 words against 213,570, a 64-frame tick 226,305
+reductions against 226,141 (+0.07%) and 540,622 words against 541,240
+(−0.11%), and a 500-frame burst 5,517.8 reductions per frame against
+5,527.9 (−0.18%) and 11,833.6 words against 11,843.6 (−0.08%). With
+`TUI_PERF_MIN_HEAP=4000000` the idle tick, the key and the 64-frame tick
+cost the same reductions to the unit on both, the burst 5,380.4 per frame
+against 5,380.5, and the words fall by up to 0.12%. No figure allocates
+more, so question 5's two percent is not approached.
+
+Gleam 1.19 leaves the generated module's abstract forms (`.abstr`) beside
+the build rather than `.erl`, so `profile_module.py` finds no source;
+these figures come from `compile:forms` with the `time` option over those
+forms, median of three alternating runs, wall time and
+`core_inline_module`. The terminal's modules: `tui` 0.28 s against 0.30 s
+(0.017 s on both), `tui@inbound` 0.49 s on both (0.022 s),
+`tui@interaction` 1.80 s on both (0.088 s against 0.096 s), `tui@tick`
+0.18 s against 0.20 s (0.008 s against 0.009 s), `tui@submit` 0.37 s on
+both (0.016 s) and `tui@model` 0.27 s against 0.26 s (0.016 s on both).
+The moved modules, against their old names: `session_view@surfaces` 0.33 s
+against 0.44 s (0.023 s against 0.026 s), with the terminal's half in the
+new `tui@side_surfaces` at 0.17 s (0.009 s); `session_view@model` 0.15 s
+on both (0.009 s); `session_view@event_fold` 0.59 s against 0.58 s (0.039
+s against 0.032 s); `session_view@lane_fold` 0.56 s on both (0.038 s
+against 0.031 s); `session_view@commands` 0.30 s on both (0.025 s against
+0.021 s); `session_view@outbound` 0.33 s against 0.32 s (0.015 s against
+0.012 s); and `session_view@step`, with the tick's units, 0.10 s against
+0.08 s (0.004 s against 0.003 s). The inlining of four moved modules rose
+by 3 to 7 ms each with bodies that did not change; none of them holds a
+settle chain. No chain changed: `settle_update` is as it was, and the
+tick's read chain is still applied to `settle_tick`'s parameter, now as
+one call to `session_step.service_reads`.
+
+Lint finds no error-tier finding on either; the census is 927 warnings on
+both, and the 17 that moved with the code left `tui` (96 to 79) for
+`session_view` (66 to 83). `session_view` builds for the JavaScript target
+with the moved modules, and `gleam export package-interface` names types
+from `session_view`, `core`, `machine` and `gleam_stdlib` alone; its
+`@internal` functions are not in the export, so R6's check of the imports
+is what covers them. A report-only review from `bfe144ed3` found no
+behaviour change. Its findings were about documentation: citations the
+later commits pushed past doc-check's window, a statement in
+`docs/architecture/terminal.md` of where the client's build lives, this
+entry, which had not been written, and stale module paths in six
+documents. It also suggested making `daemon_build_lines` private, since
+its one caller is `adopt_daemon` beside it. All five were acted on.
+
 **S5: the web view drives the step.** `component.Model` becomes
 `{shared, view}`; `update` reads the clock at its top; `Opened`,
 `Arrived` and `Ticked` call the step; `submit` and `decide` wrap
@@ -1729,7 +1874,9 @@ them.
    document them in `session_view/model` as revisions a host may compare
    and may ignore, and have the web's `derive` compare `render_revision`
    so it stops re-projecting on a capture that changed nothing, which is
-   an invariant its `CLAUDE.md` already states.
+   an invariant its `CLAUDE.md` already states. *Done in the first half of
+   S4:* kept, and documented in `session_view/model`'s module comment; the
+   web's `derive` is S5's.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
@@ -1765,7 +1912,13 @@ them.
    dispatch moved from `tui@submit`, whose `core_inline_module` fell from
    0.039 s to 0.021 s, to `tui@commands`, where it rose from 0.010 s to
    0.028 s; neither module holds a chain, and `tui` and `tui@tick` are
-   unchanged.
+   unchanged. *Measured in the first half of S4:* no chain changed. The
+   tick's read chain became one call, `session_step.service_reads`, still
+   applied to `settle_tick`'s parameter; `core_inline_module` on `tui`,
+   `tui@inbound`, `tui@submit` and `tui@model` is unchanged and on
+   `tui@tick` and `tui@interaction` it fell by a millisecond or more. Gleam
+   1.19 writes abstract forms rather than `.erl`, so the figures come from
+   `compile:forms` over them; section 5's entry says how.
 
 5. **Allocation per event.** Today one event copies one 152-field record
    per field write. After S1 a shared write copies an 80-field record and
@@ -1774,7 +1927,9 @@ them.
    cheaper and a `render_cut` about the same. *Recommendation:* S1's
    proof includes `tui_perf.sh events`, `burst 500` and `growth 4096`,
    alternating before and after; a rise over two percent on the idle tick
-   is a finding.
+   is a finding. *Measured in the first half of S4:* the move added no
+   allocation; the idle tick is 9,476 words on both and the 64-frame tick
+   and the burst fell by about 0.1%. Section 5's entry has the figures.
 
 6. **The notice's level.** The web draws `Warned` differently from `Said`
    (`web_view/component.gleam:229` (`Notice`)); the shared `notice` is a
@@ -1848,3 +2003,49 @@ them.
     applied between updates. Section 5's "S3d′ as landed, second half"
     entry says how it landed: the three reads inside an update come from a
     `Surroundings` value the host passes in.
+
+12. **What `step.update` is, under the ruling on question 11.** Found in
+    S4 (section 5, the first half's entry). Section 2 planned
+    `update(model, Msg)`, with `Input(at, Ticked | Acted(command))` and
+    `Arrived`, and `tui.step` calling it for the session's half of each
+    event. The terminal cannot call an update of a whole event without a
+    change in behaviour, for two reasons. A tick is not one shared call:
+    the connection drain and the lane's tick are host loops that apply
+    facts between updates (question 11), placed among the terminal's own
+    drains in a fixed order (section 3, the eighth cut). And the terminal
+    runs a command from inside a key handler that writes its own state
+    after the command, while the step's settle runs once, at the end of
+    the event, in `settle_update`. An `update(Acted(..))` that settled
+    would run the three edges in the middle of the event and again at its
+    end, which can send a context, nudge or goal read one event earlier
+    than today. So what S4 moved is the set of units the terminal calls,
+    and the entry point is a question of what the web view needs. Three
+    options:
+
+    - *(a)* `update` is the entry for a host with no surfaces of its own.
+      `Arrived` files through `admission`. `Input(at, Ticked)` stores the
+      stamp, advances the clocks, drains the inbox through
+      `lane_fold.receive` and applies each update with `nothing_shown()`,
+      ticks the lane, runs the side-surface reads, drops the facts such a
+      host has no surface for (`surface_facts`, `queue_notices`,
+      `goal_observations`, `returned_drafts`), and settles against the
+      record it started from. `Input(at, Acted(command))` stores the stamp,
+      runs `commands.act` and settles. The terminal keeps calling the
+      units. The cost is a second composition of the units that only the
+      web view runs.
+    - *(b)* `update` dispatches one unit (`Filed`, `Updated(update,
+      around)`, `Replayed(change, around)`, `Acted(command)`,
+      `Settled(before)`), and both hosts call it wherever they call a unit
+      today. Nothing is composed twice, but every call in the terminal
+      gains a dispatch and a message value, and the web view still writes
+      the loop.
+    - *(c)* No `update`: the units are the step's interface, and S5
+      composes them in `web_view`.
+
+    *Recommendation:* (a), written in S5 with its first caller, as S3e′
+    held the message types for theirs. The composition is the web view's
+    loop, and a test in `session_view` can hold it to the terminal's
+    order: on a scripted drain with no surface state, `update(Input(at,
+    Ticked))` and the terminal's tick leave the same `Shared` and queue
+    the same effects in the same order. It needs the owner's ruling,
+    because it changes what section 2 says `tui.step` calls.
