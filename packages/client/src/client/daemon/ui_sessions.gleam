@@ -57,9 +57,14 @@ pub const session_ms = 28_800_000
 
 /// The most live UI sessions one principal holds for one session.
 ///
-/// Each page is a WebSocket, a relay process and a lane of up to 300 rows,
-/// so the bound is what keeps a stolen or scripted credential from opening
-/// pages until the daemon runs out of memory. Four covers what a person
+/// The bound is on pages in this table, and so on the memory they hold: a
+/// live page keeps a cookie, a key and a nonce, and while its browser is
+/// connected, a socket, a relay process and a lane of up to 300 rows. It does
+/// not bound sockets per page: one page's secrets can open several, as
+/// before, and those are bounded by the root's admission capacity. A page
+/// that is ended, by its deadline or by displacement, has its socket, relay
+/// and lane torn down at its next frame, when the gateway revalidates it
+/// (`check_binding`). Four covers what a person
 /// does with one session: an observer tab, an operator tab, a second device,
 /// and one spare.
 ///
@@ -467,10 +472,10 @@ fn with_room(
       int.compare({ a.1 }.value.serial, { b.1 }.value.serial)
     })
   let surplus = list.length(held) - max_pages + 1
-  case surplus > 0 {
-    True -> dict.drop(sessions, list.map(list.take(held, surplus), pair.first))
-    False -> sessions
-  }
+
+  // A surplus of zero or less takes nothing, so below the bound this drops
+  // no page.
+  dict.drop(sessions, list.map(list.take(held, surplus), pair.first))
 }
 
 // An entry is honoured strictly before its deadline, and the check is made

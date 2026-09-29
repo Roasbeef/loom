@@ -1558,10 +1558,13 @@ first. The ended page said only that a new link had ended it.
   is still one message to the actor, so a ticket is still redeemed once.
 - **A principal holds at most four live pages per session.** The bound is
   `ui_sessions.max_pages`, and `ending.max_pages` is the same number, because
-  the words a page shows name it. A page is a WebSocket, a relay process and a
-  lane of up to 300 rows, so a bound is what keeps a stolen or scripted
-  credential from opening pages until the daemon runs out of memory. Four is an
-  observer tab, an operator tab, a second device and a spare. Pages of another
+  the words a page shows name it. The bound is on pages in the actor's table, not on
+  sockets: one page's secrets can open several sockets, as before this change,
+  and the root's admission capacity bounds those. While its browser is
+  connected a page holds a socket, a relay process and a lane of up to 300
+  rows. A page that ends, by its deadline or by displacement, has them torn
+  down at its next frame, when the gateway revalidates it (`check_binding`),
+  so displacement frees them as late as expiry does. Four is an observer tab, an operator tab, a second device and a spare. Pages of another
   principal or of another session are not counted. An expired page is not
   counted either, at its deadline rather than at the next sweep.
 - **At the bound, the oldest page ends and the new one opens.** The daemon
