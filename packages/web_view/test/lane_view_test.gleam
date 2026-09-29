@@ -254,7 +254,7 @@ pub fn a_delivered_nudge_is_an_advisor_row_test() {
   ])
 }
 
-pub fn a_peer_message_is_stored_never_read_and_has_no_reply_test() {
+pub fn a_peer_message_is_stored_never_read_and_an_observer_cannot_reply_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "class=\"peer-card\">",
@@ -264,10 +264,17 @@ pub fn a_peer_message_is_stored_never_read_and_has_no_reply_test() {
   ])
   assert !string.contains(drawn, ">read<")
 
-  // The operator's page offers no reply: that is the extracted step's.
+  // The observer's page has no message to send, so it draws no Reply.
+  assert !string.contains(drawn, "Reply")
+  assert !string.contains(drawn, "peer-reply")
+
+  // The operator's page draws one, after the body (`page_actions_test`).
   let operator = element.to_string(operator_page.view(settled()))
-  assert !string.contains(operator, "Reply")
-  assert !string.contains(operator, "reply")
+  assert in_order(operator, [
+    "R8 census is &lt;14&gt; &amp; rising",
+    "class=\"peer-reply\"",
+    "Reply to this peer",
+  ])
 }
 
 // Nothing the session wrote reaches the page as markup: each string arrives

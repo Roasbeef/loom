@@ -248,8 +248,10 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   record.
 - `msg.Stamp(now_ms, transport_ms)`: the instant an input is applied at,
   stored as `Shared.stamp`. `msg.Command` is what an operator does to a
-  session from any host: `Submit(draft, command, delivery)`, `Interrupt`,
-  `Stop(strand)`, `Decide(review, choice)`, `SelectModel(name)`, `Quit`.
+  session from any host: `Submit(draft, command, delivery)`,
+  `Control(command)` (a session command chosen by a button, which has no
+  draft), `Interrupt`, `Stop(strand)`, `Decide(review, choice)`,
+  `SelectModel(name)`, `Quit`.
   `msg.Msg(source)` is what a host with no surfaces hands `step.update`:
   `Arrived(List(Arrival))`, traffic to file (`Arrival` is `Frame(source,
   message)` or `Replayed(event)`), or `Input(at: Stamp, event: Event)`,
@@ -294,7 +296,11 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
 - `commands.act(shared, msg.Command)`: `Submit` runs `submit`, the refusal
   before encoding, the `ComposerSubmission` marker, the image prompt and
   the dispatch exhaustive over `command.Session`, then
-  `release_submission`; the others run `interrupt_active`, `stop_strand`,
+  `release_submission`; `Control` runs `control`, the same refusal and the
+  same dispatch with no marker and no `DraftTaken`, so a lane that sends
+  its frame moves no `drafts_sent` and a host has no editor to empty, which
+  is what a button that fires while the operator is typing needs; the others run
+  `interrupt_active`, `stop_strand`,
   `decide_review`, `select_model` and `quit`. `decide` (by ID) is the
   `/approve` and `/deny` arm, and `focus` and `load_strand` are the second
   and third units of a strand switch, after the lane's `cancel_unsent`.

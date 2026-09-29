@@ -1833,3 +1833,142 @@ read on open and its 30-second spacing, escaping, that the sidebar holds no
 handler and adds none to either page, and that an empty list draws
 nothing. `ui_socket_test` also shows the catalogue entry carrying none of
 the registration's private fields. No browser was in the loop.
+
+## Addendum: the page's session controls, the pending nudges and the peer reply (2026-09-29)
+
+**Status**: PROPOSED, IMPLEMENTED with issue #569, part 2 · **Raised by**:
+issue #569 (advisor nudges, peer reply, session actions)
+
+The operator page gains buttons for commands the terminal already runs from a
+typed draft, a card for the advisor's pending nudges, and a Reply button on a
+peer's message. It adds no event to the socket's accepted list and no
+operation to what an operator page may do. The earlier addendum, "the
+operator page runs session commands", already let a draft name `/fork`,
+`/abort` and `/goal ...`. This addendum only lets a click or a small form
+choose them.
+
+### What the page shows and sends
+
+- **Stop.** A button in the dock, always drawn and disabled while the strand
+  is idle. It sends `msg.Interrupt`, which is the terminal's Escape
+  (`commands.interrupt_active`): the strand's running operation is aborted,
+  input queued behind it is held until it settles, and the session stays
+  open. The terminal distinguishes stopping an operation from ending the
+  session, and the page offers only the first. Ending or closing a session is
+  daemon control, which stays in the terminal (the owner's ruling of
+  2026-09-27, recorded in `docs/design-notes/step-extraction.md`). The command is not
+  `/abort`: `/abort` sends the abort frame and nothing else, and Escape also
+  records the interrupt so the composer's queue is held, which is what an
+  operator who presses a button wants.
+- **The goal.** When the session has a goal, the dock shows the terminal's own
+  row for it (`goal_view.row`) and the buttons its status offers: Pause while
+  it is active, Resume while it is held or has hit a limit, Clear in every
+  state. They send `/goal pause`, `/goal resume` and `/goal clear`.
+- **Two forms.** A `<details>` for Fork and one for Set goal, each with one
+  text field. The text goes after `/fork ` or `/goal ` and is parsed with
+  `command.parse`, as a draft is, so the name, `--budget N` and every limit
+  are the command's. The page checks what the parse returned against what the
+  form is for: the goal form accepts only a goal or the command's own complaint
+  about one, so typing `clear` in it does not unpin the goal.
+- **Peer reply.** A peer card in the transcript gets a `Reply to this peer`
+  button. The terminal has no command that answers a peer: the model answers
+  under the owner's link (protocol 048) by calling `peer_send`, at the
+  operator's prompt. So the button drafts the start of that prompt, naming the
+  peer, in the composer, through the channel a returned prompt uses (put in an
+  empty editor, or after the draft, and never over it), and sends nothing. The
+  operator completes it and sends it with Send or Steer.
+- **Pending nudges.** A card for what the advisor has queued for the primary
+  (the `advisor_pending` observation the terminal draws beside its composer),
+  every body received, on both pages. It has no button. The queue has no
+  accept or dismiss command: the only operation on it is the read-only
+  `advisor_pending`, and the primary's next run start drains it, so seeing a
+  nudge neither delivers nor discards it. An accept or a dismiss would be a new
+  gateway command and its own protocol change, which this addendum does not
+  make.
+
+### Which events the socket carries
+
+None is new. The controls and the Reply button are `click` handlers and the
+two forms are `submit` handlers, and `ui_socket.operator_accepts` already
+forwards both events for an operator's page. `page_events_test` and
+`page_actions_test` pin that the operator page registers only clicks and
+submits. An observer's page is unchanged: its message type has no
+`Controlled` or `Replying`, it draws no control, no Reply and no form, and its
+one handler is still the "Load older" click at `component.older_path`. It does
+draw the nudge card, which is text only.
+
+A control's command reaches the shared step as `msg.Control`
+(`session_view/commands.control`) and not as `msg.Submit`. `submit` marks a
+mutating command as the composer's own, so the lane counts the frame it sends
+as a consumed draft and the page empties the editor, and a command that is
+consumed at dispatch records `DraftTaken`, which has the same effect. A Fork or a
+Clear goal pressed while the operator is typing would discard the
+draft. `control` runs the same refusal and the same dispatch, sets no marker
+and drops that fact, and the terminal does not call it.
+
+### What a stolen page is worth
+
+Nothing more than the earlier addendum priced it at. A holder of the cookie,
+the page key and the nonce could already send `/fork`, `/abort` and
+`/goal pause|resume|clear|<objective>` in a draft, and the buttons are the same
+commands. `/add-dir` and `/add-write-dir` are still refused, and no control
+builds one. Every label on the controls is fixed. The one piece of session
+content among them, the goal's row, is a text node. A button's message carries
+no session text: the goal buttons and Stop carry nothing, and the Reply button
+carries the transcript piece's key, which is the engine's.
+
+### What was considered
+
+- **Accept and dismiss buttons on the nudge card.** The issue asked for them
+  "matching the terminal's semantics", and the terminal's semantics are
+  read-only. Building them needs a gateway command that removes or delivers a
+  queued nudge, which is a change to the frozen wire. Not taken here.
+- **Stop as `/abort`.** The same words the composer already accepts. Not taken
+  for the reason above: Escape is the terminal's stop, and it holds the queue.
+- **Run the controls through `msg.Submit`.** It would clear the composer's
+  draft. Not taken.
+- **Prefill Fork and Set goal in the composer instead of forms.** The
+  composer's element joins a prefill after an occupied draft, so the slash
+  command would become the second paragraph of a prompt and be sent to the
+  model as text. The two small forms cannot do that.
+- **A reply form on the peer card that sends at once.** It would send a prompt
+  the operator wrote in a one-line field, without the composer's editor.
+  Drafting in the composer keeps the send in one place.
+- **A new command that sends a message to a peer.** The peer link is directional
+  and owner-granted, and the model holds the tool. An operator command would be
+  a second path around that grant. Not taken.
+
+### Cost
+
+- The dock has one more row (the controls), and the nudge card when a nudge is
+  queued. Both are capped or drawn at fixed places, and the composer is still
+  the dock's last child.
+- A reply's draft is appended to the list the composer's element reads, which
+  keeps every entry for the page's life. A press adds one short string, and
+  the list grows by presses.
+- The composer's element decides where a reply goes and the server cannot see
+  the editor, so it cannot say whether the reply landed in an empty editor or
+  after a draft.
+- The page cannot accept or dismiss a nudge, so an operator who wants a nudge
+  gone must send a prompt, which drains the queue into the run it starts.
+
+### Verification
+
+`page_actions_test` shows: a pending nudge drawn in the dock above the composer
+with every body as escaped text and no button, the same card on an observer's
+page with no handler, and the count of nudges the server left out; Reply
+putting the drafted prompt in the composer's channel, once per press, escaping
+it, sending nothing and refusing a key no piece has, with no Reply button on
+an observer's page; the goal's buttons by status, in an arming row; Pause,
+Resume, Clear, Stop, Fork and Set goal each sending the frame the same words
+typed send, leaving `component.drafts` where it was; Stop disabled while idle
+and a second press refused; the Fork form refusing a missing name and keeping
+its text, an observer's attachment sending no control, and the goal form
+refusing `clear`, `pause`, `resume`, `check ...` and nothing; a form with a
+field it does not offer refused; and the operator page's handlers being only
+clicks and submits. `step_test` shows a command chosen by a control leaving no
+draft fact and moving no draft count.
+
+The visual result, the arming delay on the goal row, the disclosure's open
+state and the composer's element taking a reply are left to a hand check in a
+browser.

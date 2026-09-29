@@ -11,13 +11,17 @@
 ////
 //// The inputs are messages, and the component's state stays the
 //// observer's: `Observed` passes every observer message through
-//// unchanged, and `Submitted` and `Decided` reach the shared step through
-//// `component.submit` and `component.decide`, which wrap them as its
-//// commands (`session_view/commands`). A draft is parsed as the terminal
-//// parses it, so a slash command that names a session command is that
-//// command, and one that opens a terminal surface is refused with a notice.
-//// This module decides nothing about the session. It turns a browser event
-//// into one of those two calls, and draws the composer and the approval
+//// unchanged, and `Submitted`, `Decided` and `Controlled` reach the shared
+//// step through `component.submit`, `component.decide` and
+//// `component.control`, which wrap them as its commands
+//// (`session_view/commands`). A draft is parsed as the terminal parses it,
+//// so a slash command that names a session command is that command, and one
+//// that opens a terminal surface is refused with a notice. The controls are
+//// the same commands chosen by a button or a small form (Stop, the goal's
+//// buttons, Fork, Set goal), and `Replying` puts the start of a reply to a
+//// peer's message in the composer without sending anything. This module
+//// decides nothing about the session. It turns a browser event into one of
+//// those calls, and draws the composer, the controls and the approval
 //// cards.
 ////
 //// The lane's "Load older" button is the observer's own
@@ -49,7 +53,9 @@ import session_view/operator
 import session_view/snapshot
 import web_view/completion
 import web_view/component
+import web_view/view/controls
 import web_view/view/lane
+import web_view/view/nudges
 import web_view/view/sidebar
 import web_view/view/strip
 
@@ -66,6 +72,14 @@ pub type Msg(socket) {
   /// An approval card's button: the escalation's identity, the sequence
   /// the card was drawn at, and the answer.
   Decided(id: String, seq: Int, answer: component.Answer)
+
+  /// A session control: Stop, one of the goal's buttons, or one of the two
+  /// forms, with the text it held.
+  Controlled(control: component.Control)
+
+  /// A peer message's Reply button, by the key of the piece it was drawn
+  /// under. The key is the engine's, never text the peer wrote.
+  Replying(key: String)
 }
 
 /// The Lustre application for one session's operator page.
@@ -105,13 +119,16 @@ pub fn update(
     Observed(message:) -> component.update(model, message)
     Submitted(text:, delivery:) -> component.submit(model, text, delivery)
     Decided(id:, seq:, answer:) -> component.decide(model, id, seq, answer)
+    Controlled(control:) -> component.control(model, control)
+    Replying(key:) -> component.reply(model, key)
   }
   #(model, effect.map(effects, Observed))
 }
 
 /// The operator's page: the heading, the agent strip, the lane, and the
-/// dock, which holds the todo panel, the approvals waiting for a decision,
-/// in a region of their own directly above the composer, and the composer.
+/// dock, which holds the todo panel, the advisor's pending nudges, the
+/// session controls, the approvals waiting for a decision, in a region of
+/// their own directly above the composer, and the composer.
 ///
 /// The page is a fixed frame: the heading and the agent strip at the top,
 /// the dock at the bottom, and the lane between them as the one thing that
@@ -137,6 +154,14 @@ pub fn update(
 /// composer nor cover a transcript row. With no board and no reviewer it is
 /// `element.none()`, as the approvals are.
 ///
+/// The nudges card and the controls come after it. The card shows what the
+/// advisor holds for the primary's next run and has no button, since the queue
+/// has no accept or dismiss (`web_view/view/nudges`). The controls are the
+/// operator's commands as buttons and two small forms
+/// (`web_view/view/controls`), and a peer's message in the lane carries a
+/// Reply button (`lane.view`). All are capped or drawn at fixed
+/// places, so none can move the composer's controls.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -153,14 +178,73 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       component.live(model),
       component.top(model),
       Observed(component.OlderRequested),
+      lane.Replies(Replying),
     ),
     html.footer([attribute.class("dock")], [
       component.plan(model),
+      nudges.view(component.pending_nudges(model)),
+      controls.view(bar(model)),
       approvals(component.pending(model)),
       composer(model),
     ]),
     sidebar.view(component.session_groups(model), component.session_id(model)),
   ])
+}
+
+// The controls, with what each sends. Stop is offered while the strand runs
+// an operation, and the two forms send their text as one field. The bar is
+// drawn in the dock for an operator only: an observer's page has no message
+// for any of it.
+fn bar(model: component.Model(socket)) -> controls.Bar(Msg(socket)) {
+  controls.Bar(
+    strand: component.strand,
+    stop: case component.activity(model) {
+      component.Busy -> Some(Controlled(component.Stop))
+      component.Idle -> None
+    },
+    goal: component.goal(model),
+    pause: Controlled(component.PauseGoal),
+    resume: Controlled(component.ResumeGoal),
+    clear: Controlled(component.ClearGoal),
+    fork: form_submit(component.Fork),
+    pin: form_submit(component.PinGoal),
+    sent: component.sent_forms(model),
+  )
+}
+
+// A control form's submit, carrying the one field it has. Anything else in
+// the form refuses the event, as the composer's decoder refuses an unknown
+// field.
+fn form_submit(
+  control: fn(String) -> component.Control,
+) -> attribute.Attribute(Msg(socket)) {
+  event.on("submit", written(control)) |> event.prevent_default
+}
+
+fn written(
+  control: fn(String) -> component.Control,
+) -> decode.Decoder(Msg(socket)) {
+  use fields <- decode.subfield(["detail", "formData"], decode.list(field()))
+  case control_text(fields) {
+    Ok(text) -> decode.success(Controlled(control(text)))
+    Error(Nil) -> decode.failure(Controlled(control("")), "control form")
+  }
+}
+
+/// The text of a submitted control form's fields, or a refusal: exactly one
+/// field, named `text`, and nothing else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert operator_page.control_text([#("text", "try-a-cache")])
+///   == Ok("try-a-cache")
+/// ```
+pub fn control_text(fields: List(#(String, String))) -> Result(String, Nil) {
+  case fields {
+    [#("text", text)] -> Ok(text)
+    _ -> Error(Nil)
+  }
 }
 
 // The approvals region sits outside the transcript, so nothing the session
@@ -173,8 +257,8 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
 //
 // With nothing pending the region is `element.none()`, an empty text node,
 // rather than nothing at all. The composer therefore stays the dock's
-// third child, after the todo panel's place and this one, whether or not
-// a card is drawn, so the path a browser event
+// last child, after the places of the todo panel, the nudges, the controls
+// and this one, whether or not a card is drawn, so the path a browser event
 // names for the composer's form is the same before and after a card
 // appears, and a submit in flight still reaches the form.
 fn approvals(pending: List(approval.Review)) -> Element(Msg(socket)) {
