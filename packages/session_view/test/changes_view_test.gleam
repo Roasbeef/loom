@@ -250,6 +250,18 @@ pub fn a_long_row_and_a_long_path_are_cut_test() {
   assert string.ends_with(added.text, "…")
 }
 
+pub fn a_row_of_combining_marks_is_bounded_in_bytes_test() {
+  // One base character and a thousand combining marks is one grapheme, so
+  // only a code point cut bounds the row's bytes.
+  let marks = string.repeat("\u{0301}", 1000)
+  let board =
+    changes_view.fold(records([edited("m.txt", "@@ -1 +1 @@\n+a" <> marks)]))
+
+  let assert [file] = board.files as "one file"
+  let assert [_, row] = file.rows as "a header and a row"
+  assert string.byte_size(row.text) <= 4 * changes_view.max_row_characters
+}
+
 pub fn a_file_holds_at_most_its_rows_and_counts_the_rest_test() {
   let lines = list.repeat("+line", 500) |> string.join("\n")
   let board = changes_view.fold(records([edited("big.txt", lines)]))

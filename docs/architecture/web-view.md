@@ -509,7 +509,8 @@ seed a todo board, which the todo panel draws, and then the session's context, t
 advisor's pending nudges and the goal, each when the one before is
 answered; it reads the context again when an operation ends and when the
 configuration changes. From its first tick it also reads the followed
-strand's live jobs, at most every ten seconds, for the Session section:
+strand's live jobs for the Session section, on a tick at most every ten
+seconds (the lane also asks for them whenever a run's completion changes):
 `live_jobs` is one of the gateway's read-only commands, every role may send
 it, and its answer is a snapshot the lane folds like the others, so it adds
 no page event. That is four round trips at load that hold the

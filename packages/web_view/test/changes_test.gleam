@@ -60,7 +60,7 @@ pub fn the_first_file_is_open_and_the_rest_are_collapsed_test() {
   // The fixed `open` attribute is on the first file's details alone.
   assert list.length(string.split(html, "<details")) == 4
   let assert Ok(#(first, second)) = string.split_once(html, "b.gleam")
-  assert string.contains(first, "open")
+  assert string.contains(first, "<details class=\"changes-file\" open>")
   assert !string.contains(second, " open")
 }
 

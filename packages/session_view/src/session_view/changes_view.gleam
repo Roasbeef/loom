@@ -251,11 +251,13 @@ fn group(
   )
 }
 
-// One file: every diff's rows, counted whole and then cut to the file's
-// bound.
+// One file: every diff's raw lines, classified and counted whole, and only
+// the rows the file's bound keeps go through text hygiene. A diff can be as
+// large as a record is, and this runs each time the page projects, so nothing
+// proportional to the diff is done to a row that is not kept.
 fn file(path: String, diffs: List(String)) -> File {
-  let rows = list.flat_map(diffs, diff_rows)
-  let #(added, removed) = counts(rows)
+  let lines = list.flat_map(diffs, string.split(_, "\n"))
+  let #(added, removed) = counts(lines)
 
   File(
     path: text_hygiene.fit_tail(
@@ -264,16 +266,9 @@ fn file(path: String, diffs: List(String)) -> File {
     ),
     added:,
     removed:,
-    rows: list.take(list.map(rows, clipped), max_file_rows),
-    cut: int.max(0, list.length(rows) - max_file_rows),
+    rows: lines |> list.take(max_file_rows) |> list.map(clipped),
+    cut: int.max(0, list.length(lines) - max_file_rows),
   )
-}
-
-// A diff's lines, each with its kind.
-fn diff_rows(diff: String) -> List(#(Kind, String)) {
-  text_hygiene.multiline(diff)
-  |> string.split("\n")
-  |> list.map(fn(line) { #(kind(line), line) })
 }
 
 // A line's kind, from its first characters. A line that begins `+++` or
@@ -288,9 +283,9 @@ fn kind(line: String) -> Kind {
   }
 }
 
-fn counts(rows: List(#(Kind, String))) -> #(Int, Int) {
-  list.fold(rows, #(0, 0), fn(total, row) {
-    case row.0 {
+fn counts(lines: List(String)) -> #(Int, Int) {
+  list.fold(lines, #(0, 0), fn(total, line) {
+    case kind(line) {
       Added -> #(total.0 + 1, total.1)
       Removed -> #(total.0, total.1 + 1)
       Hunk | Context -> total
@@ -298,14 +293,20 @@ fn counts(rows: List(#(Kind, String))) -> #(Int, Int) {
   })
 }
 
-// A row with its text cut to the row bound.
-fn clipped(row: #(Kind, String)) -> Row {
-  let line = text_hygiene.single_line(row.1)
-
-  case string.length(line) > max_row_characters {
-    True -> Row(row.0, string.slice(line, 0, max_row_characters - 1) <> "…")
-    False -> Row(row.0, line)
+// A kept line as a row, its text cut to `max_row_characters` code points.
+// Code points and not graphemes, because one base character with many
+// combining marks is a single grapheme: the cut bounds the row's bytes at four
+// times the limit whatever the line holds.
+fn clipped(line: String) -> Row {
+  let points = string.to_utf_codepoints(line)
+  let text = case list.drop(points, max_row_characters) {
+    [] -> line
+    [_, ..] ->
+      string.from_utf_codepoints(list.take(points, max_row_characters - 1))
+      <> "…"
   }
+
+  Row(kind(line), text_hygiene.single_line(text))
 }
 
 // Cuts the files' rows so that all of them together fit `budget`, taking

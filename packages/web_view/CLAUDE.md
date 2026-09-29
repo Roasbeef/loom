@@ -209,7 +209,8 @@ page keys and nonces, and the relay into the session's gateway.
   strand's live jobs and, where the page shows them, the attached viewers
   (`session_view/session_summary`). The component asks for the jobs on a
   `Ticked` when it has never asked or last asked `jobs_refresh_ms` (10 s) ago
-  and no answer is outstanding: it marks `Shared.jobs_refresh` as requested and
+  and no answer is outstanding (the tick-driven ask only: the lane also
+  requests a read whenever a run's completion changes, `lane_fold`): it marks `Shared.jobs_refresh` as requested and
   the shared step sends the `live_jobs` read once the lane is ready
   (`surfaces.service_jobs_read`). The read is one of the gateway's
   `read_only` commands, every role may send it, and its answer is a snapshot

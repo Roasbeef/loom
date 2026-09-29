@@ -189,6 +189,12 @@ pub fn a_refused_read_is_not_repeated_on_every_tick_test() {
   let model = page_fixture.run(model, component.update, [component.Ticked])
   assert live_jobs_reads(page_fixture.sent(wire)) == []
   assert string.contains(operator(model), "not read yet")
+
+  // The refusal cleared the outstanding ask, so once the interval has passed
+  // the next tick asks exactly once more.
+  page_fixture.set(clock, component.jobs_refresh_ms)
+  let _ = page_fixture.run(model, component.update, [component.Ticked])
+  assert list.length(live_jobs_reads(page_fixture.sent(wire))) == 1
 }
 
 pub fn a_job_command_on_a_page_is_escaped_test() {
