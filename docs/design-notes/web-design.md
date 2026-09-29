@@ -127,7 +127,9 @@ Three things in the mockup's sidebar cannot be drawn from data a page has,
 and are left out of the first build (details in section 9): the `New
 session`, `Goals` and `Jobs` buttons, which need pages of their own; the
 strand bars and the badge on rows of sessions other than the one on screen,
-which need an activity read a page does not make; and the `Scheduled`
+which need an activity read a page does not make (owner, 2026-09-29, issue
+#569: bars show only for the session being viewed, other rows keep name and
+resident or saved state, and no new data is added); and the `Scheduled`
 section, which lists schedules across sessions where a page knows only its own
 session's.
 
@@ -203,8 +205,9 @@ shows its status line in the attention colour and nothing else; a click
 focuses it, which draws its approval card in the dock.
 
 The ring is the cache ring the page draws today. The mockup fills it with a
-hit-rate percentage, which `cache_watch` does not compute, so the ring keeps
-the outlook the page computes today.
+hit-rate percentage. The owner ruled (2026-09-29, issue #569) that the ring
+keeps the cache outlook, the time before the cache expires, and shows no hit
+rate. `cache_watch` computes none.
 
 Clicking a card, or any other strand control, focuses the strand and shows the
 **detail view** in the same tab: a `← Strands` link, a larger ring with the
@@ -216,10 +219,11 @@ name and status, the four figures (`Model`, `Context`, `Cache expires`,
 with its counts. The first file's diff is open and the others are collapsed.
 Where the data comes from is section 6.3.
 
-**Trace.** For the most recent `code_mode` program: a title with its attempt
-and state, one bar per capability call against the program's wall time, and a
-collapsed `Budget` line (`12k of 40k tokens`, the deadline, and the vetting
-state). Section 6.3 says why the first build cannot draw the bars.
+**Trace.** For the most recent `code_mode` program: a title with its state, the
+program's capability calls listed in order from what the page already
+receives, and a collapsed `Budget` line (the budget the call named and the
+vetting state). It has no timing bars (owner, 2026-09-29, issue #569).
+Section 6.3 says why.
 
 **Session.** A key and value list: goal, jobs, schedules, viewers, estimated
 cost; and a collapsed `Cost by strand`. It ends with a note that the layout is
@@ -570,7 +574,7 @@ through each new behaviour and says what covers it.
 | Layout in `localStorage` | none (051 mentions only `sessionStorage` for the nonce) | a 051 addendum (step 7): storage is reached only through two single-call exports in `internal/dom.mjs`, and `scripts/web_client_js_check.sh` keeps refusing any other storage use outside that file |
 | Session switching | proposed in #636's addendum | its own addendum, already planned |
 | Changes from transcript edits | session text drawn as text nodes | nothing new |
-| Trace | no per-call timing is recorded | a `protocol-change/NNN.md`, section 6.3 |
+| Trace | the calls the page already receives, listed in order | nothing; timing bars would need a later `protocol-change/NNN.md`, section 6.3 |
 | Viewers list | the reasoning of #636's list ruling | operator pages only (a default the orchestrator adopted, open to the owner), section 6.4 |
 | Theme toggle | none | storage and theme decisions, section 6.5 |
 
@@ -689,11 +693,13 @@ source and its result, drawn by `code_mode_program` in
 `session_view/transcript_lines`. A search of `session_view` and
 `tools/codemode` found no per-capability-call timing recorded in core events,
 `session_view/tool_activity`, the code-mode result or `cap`, and the terminal
-has no Calls tab. The bars therefore need the daemon to record and publish
+has no Calls tab. The bars would need the daemon to record and publish
 per-call timing, which is a protocol change and needs a
-`protocol-change/NNN.md`, not a page change. Until then the Trace tab shows
-what exists: the latest program, its state and its result, and the budget the
-call named.
+`protocol-change/NNN.md`, not a page change. The owner ruled (2026-09-29,
+issue #569) that Trace ships without timing bars: it lists the program's calls
+in order from what the page already receives, plus the latest program's state
+and result and the budget the call named. Per-call timing is a later
+protocol change, after the redesign.
 
 ### 6.4 The Session tab
 
@@ -839,10 +845,9 @@ The 051 addenda in this series are those of steps 5, 6 and 7, plus the one the
 session-switching follow-up already carries.
 
 Settled strands in the list are their own pull request after this redesign
-(owner, 2026-09-29, issue #569), not part of step 5. The remaining items wait
-on data or a decision, and are not scheduled: Trace bars (which need a
-`protocol-change/NNN.md`), the other sessions' activity bars in the sidebar,
-and the composer target menu of section 3.3.
+(owner, 2026-09-29, issue #569), not part of step 5. Per-call timing for
+Trace, a later protocol change, also follows the redesign. One item is not
+built and has no owner ruling: the composer target menu of section 3.3.
 
 ## 9. Where this note departs from the mockup and from earlier notes
 
@@ -888,19 +893,26 @@ Closed by the tree:
 
 5. What "All strands" shows: `main`'s rows plus the rows where other strands
    crossed in, which is today's projection. No new projection.
-6. The cache ring: `cache_watch` computes no hit rate, so the ring keeps the
-   outlook the page computes today.
-7. The viewed session: a page's address names its session and tickets are
+6. The viewed session: a page's address names its session and tickets are
    single use, so it is not restored.
-8. Trace bars: no per-call timing is recorded, so they need a
-   `protocol-change/NNN.md`.
+
+Also ruled by the owner (2026-09-29, issue #569):
+
+7. Trace ships without timing bars: the program's calls are listed in order
+   from what the page already receives. Per-call timing is a later
+   `protocol-change/NNN.md`, after the redesign.
+8. The strand ring keeps the cache outlook (time before the cache expires),
+   with no hit rate.
+9. The left sidebar's strand bars show only for the session being viewed.
+   Other sessions show name and resident or saved state, as #636 does, with no
+   new data.
 
 Defaults the orchestrator adopted, open to the owner's override:
 
-9. No detail view for `main`. It would need a second piece of server state
-   (which strand's detail is open).
-10. Below a breakpoint the sidebars hide, with no overlay in the first build.
-11. Viewers are shown in the Session tab on operator pages only.
+10. No detail view for `main`. It would need a second piece of server state
+    (which strand's detail is open).
+11. Below a breakpoint the sidebars hide, with no overlay in the first build.
+12. Viewers are shown in the Session tab on operator pages only.
 
 ## 11. Out of scope
 
