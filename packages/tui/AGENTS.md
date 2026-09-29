@@ -453,7 +453,10 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   `recorded` gives the recording line an event is written as. It imports
   nothing of the model. `Command`, what an operator does to the session,
   is `session_view/msg.Command`, which `session_view/commands.act` carries
-  out; the terminal's key and slash-command handlers build one.
+  out; the terminal's key and slash-command handlers build one. This `Msg`
+  is not `session_view/msg.Msg`, which the web view hands `step.update`; the
+  terminal's carries etui's keys and job replies and a wall clock, and its
+  `Arrival` is tagged with the `Subject` it was read from.
 - `tui/keymap`: `translate`, etui's input event to a `msg.Event`. It only
   parses; what a key means stays in the reducer.
 - `tui/admission`: `admit`, the pure filing of arrivals that the step runs
@@ -1259,11 +1262,16 @@ boundaries and the split's measurements under Invariants.
 
 ## Relationships
 
-- **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
+- **Depends on**: `session_view` for the session lane, the protocol and
+  snapshot decoders, the transcript's line builders and the shared step
+  (`model.Shared`, the folds, the commands, the reads and the settle), which
+  the terminal drives and the web view drives as well; `host` for shared OS
+  bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `58d0cbd775aad61b2a42830eb818a83e1a0ad1d8` (the fork's
-  `fix/pack-overwide-grapheme` branch, one commit on `main`) with bounded
+  `c10f6a64b29ef7b59dd3872bb4471c59deeac681` (the fork's stack pinned in
+  `gleam.toml`, whose last commit is etui#5, a linear wrap for a word wider
+  than the row) with bounded
   input bursts,
   POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
   frames, full-screen scroll-region presentation, closed-input EOF,
@@ -1798,6 +1806,23 @@ untouched.
   into `session_view/surfaces`, `tui/inbound`, `tui/projection`, `tui/interaction`
   and `tui/tick`, which the inliner never attempts, but `snap_viewport_for`
   is still local and the boundary stays.
+- **The terminal calls the shared units, not `session_step.update`.**
+  `session_view/step.update` composes the same units for a whole event in a
+  host with no surfaces of its own, and only the web view calls it. The
+  terminal cannot: a tick is not one shared call, since `update_tick` places
+  its replay, control, candidate, reconnect and activity drains among the
+  shared drains and `inbound.settle_surfaces` applies each update's facts
+  before the next update reads the state they change, and a key handler that
+  runs a command writes its own state after the command while the settle runs
+  once, in `settle_update`. The two compositions are held to one order by
+  `packages/session_view/test/step_test.gleam`, which spells this tick over
+  the shared record and compares. A change to the order `update_tick` and
+  `settle_tick` run the shared units in (the activity and roster clocks, the
+  connection drain, `session_step.service_reads`, the lane's tick) must be
+  made in `step.update` and that test as well, or the web view drifts from
+  the terminal without a failure here. `Shared.ended` is written by the lane
+  fold for the web view's heading; the terminal never reads it, and
+  `tui.new_model_with_clock` and `interaction.candidate_outcome`, the adoption, set it to `None`.
 - **Tick settling has the same parameter boundary.** `update_tick` drains
   the replay, control, the candidate, reconnect, the activity poll and the
   connection, in that order, before passing the result to `settle_tick`.
@@ -2391,6 +2416,13 @@ the same rows, and row *n* means the same thing in both.
   reconnection, rendering and recording.
 - [`docs/design-notes/etui-client.md`](../../docs/design-notes/etui-client.md)
   records the measured evaluation and the later adoption decision.
+- [`docs/design-notes/step-extraction.md`](../../docs/design-notes/step-extraction.md)
+  records how the session's half of the step moved into `session_view`: the
+  field split, the facts, the rulings on the host's loop, and the slices.
+  [ADR-014](../../docs/adr/014-second-runtime.md), with its addendum on the
+  step, is the decision.
+- [`docs/architecture/delivery.md`](../../docs/architecture/delivery.md)
+  traces a frame from the socket to the screen in both hosts.
 - [`packages/client/protocol.md`](../client/protocol.md)
   is the normative ClientGateway body document.
 - [`packages/client/CLAUDE.md`](../client/CLAUDE.md) describes the gateway on
