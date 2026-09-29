@@ -162,7 +162,14 @@ for a host with no surfaces.
   the same blocks at their inputs, the lead before the first input and
   then each turn, so a host that holds only the newest turns cuts between
   them. `turns.hue` is a strand's colour from its position, never its
-  name.
+  name. `turns.pieces` takes an `Expansion`: `Skip`, or `Expand(cap)`, where
+  the host's `cap` cuts what a reader who expands a row sees, the rows the
+  terminal's `Ctrl+g` draws (`transcript_lines.expanded_call_lines`, and
+  `assistant_block_lines` at expanded extent for a reasoning row). A `Step`
+  carries the cut rows as `full`, and a `Plain` or `Narrated` piece carries
+  `thoughts` by row key; both are empty when the expansion equals the compact
+  rows, so no piece holds uncapped text. `grouped` skips them. The terminal
+  does not call `turns`.
 - `agent_view.Row`, `agent_activity` and `reviewer_status`: each strand's
   status, task, activity and approvals from one capture, shared by the
   terminal's agent rail and strip and the web view's chips.

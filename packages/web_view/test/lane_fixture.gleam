@@ -731,6 +731,51 @@ pub fn usage_push(
   ))
 }
 
+/// A capture of `main` holding a prompt and one response that reasons over
+/// three lines, calls `code_mode` with `program`, and gets `output` back,
+/// then the answer: the rows an expander is drawn for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.programmed("pub fn main() { 1 }", "1")
+/// ```
+pub fn programmed(program: String, output: String) -> session_channel.Update {
+  let outcome =
+    message.ToolResultMessage(
+      "p1",
+      "code_mode",
+      [message.ToolResultText(output, None)],
+      Some(json.Object([])),
+      None,
+      None,
+      False,
+      12_000,
+    )
+  capture_of(
+    [
+      item(1, 10_000, said("run it", None)),
+      item(
+        2,
+        11_000,
+        assistant([
+          message.AssistantThinking("first <idea>\nsecond\nthird", None, False),
+          call(
+            "p1",
+            "code_mode",
+            json.Object([#("program", json.String(program))]),
+          ),
+        ]),
+      ),
+      item(3, 12_000, outcome),
+      item(4, 13_000, assistant([message.AssistantText("Ran it.", None)])),
+    ],
+    None,
+    [],
+    [],
+  )
+}
+
 fn int_cost(tokens: Int, rate: Float) -> Float {
   case tokens {
     0 -> 0.0

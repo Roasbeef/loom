@@ -186,6 +186,14 @@
   loom-fold.work{display:block;border-top:1px solid var(--color-divider);border-bottom:1px solid var(--color-divider);}
   .fold-toggle{display:flex;align-items:baseline;width:100%;margin:0;padding:4px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);text-align:left;cursor:pointer;}
   .fold-toggle:hover{color:var(--color-fg);}
+  /* An expandable row (web_view/view/lane, web_client/expand): one button,
+     then whichever of its two slots the reader chose. The button sits under
+     a step's head, indented as the step's rows are. */
+  loom-expand.expand{display:block;min-width:0;}
+  .expand-toggle{display:flex;align-items:baseline;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);text-align:left;cursor:pointer;}
+  .expand-toggle:hover{color:var(--color-fg);}
+  .step loom-expand.expand{padding-left:1.6em;}
+  .step loom-expand.expand .line{padding-left:0;}
   .fold-glyph{display:inline-block;width:1.2em;flex:0 0 auto;}
   .fold-body{display:block;}
   .work-divider{min-width:0;overflow-wrap:anywhere;}

@@ -123,6 +123,7 @@ import session_view/transcript
 import session_view/transcript_line.{type CacheNotice, type Line}
 import session_view/transcript_lines
 import session_view/turns
+import web_view/view/expansion
 import web_view/view/heading
 import web_view/view/lane
 import web_view/view/strip
@@ -246,8 +247,12 @@ pub type Status {
   /// The transport is opening, or the first cut has not arrived.
   Connecting
 
-  /// At least one validated cut has been drawn.
-  Following
+  /// At least one validated cut has been drawn. This is the connection's
+  /// state, and the heading words it "connected". It says nothing about
+  /// where the reader is reading: whether the transcript follows its tail
+  /// is known only in the browser (`<loom-follow>`), and the heading once
+  /// said "following" for this, which read as the scroll state.
+  Connected
 
   /// The connection ended, and the last drawn cut stays on the page.
   Ended(reason: String)
@@ -885,7 +890,13 @@ fn relaned(model: Model(socket)) -> Model(socket) {
       let #(blocks, fit) =
         held(lead, opened, branch.unloaded, limit(model.view.paging))
       let latest = turns.latest(view, shared.agent_rows, strand)
-      let pieces = turns.pieces(blocks, view.strands, latest)
+      let pieces =
+        turns.pieces(
+          blocks,
+          view.strands,
+          latest,
+          turns.Expand(expansion.capped),
+        )
       let #(scrollback, earlier) = case fit, branch.unloaded {
         Whole, None -> #(shared.scrollback, Reached)
         Whole, Some(_) ->
@@ -1152,8 +1163,8 @@ fn statused(model: Model(socket)) -> Model(socket) {
   {
     Ended(_), _, _ -> model.view.status
     _, Some(reason), _ -> Ended(reason)
-    Connecting, None, Some(_) -> Following
-    Connecting, None, None | Following, None, _ -> model.view.status
+    Connecting, None, Some(_) -> Connected
+    Connecting, None, None | Connected, None, _ -> model.view.status
   }
   Model(..model, view: View(..model.view, status:))
 }
@@ -1352,7 +1363,7 @@ fn older_at(
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let shared = model.shared
   case top(model), shared.captured, model.view.status {
-    lane.Earlier, Some(#(_, view)), Following -> {
+    lane.Earlier, Some(#(_, view)), Connected -> {
       let branch = history_view.branch(shared.scrollback, view)
       let asked =
         Shared(
@@ -1519,7 +1530,7 @@ pub fn addressed(model: Model(socket)) -> Option(strip.Chip) {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.status(model) == component.Following
+/// // component.status(model) == component.Connected
 /// ```
 pub fn status(model: Model(socket)) -> Status {
   model.view.status
@@ -1739,7 +1750,7 @@ pub fn heading(model: Model(socket)) -> Element(message) {
 fn status_text(status: Status) -> String {
   case status {
     Connecting -> "connecting"
-    Following -> "following"
+    Connected -> "connected"
     Ended(reason:) -> "disconnected: " <> reason
   }
 }

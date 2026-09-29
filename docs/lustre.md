@@ -565,7 +565,9 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   kind: the static table of slash-command names and hints, written in
   `session_view` and built for the page by `web_view/completion`.
 - **Session text reaches it only as the server's children.** `<loom-fold>`
-  shows the divider and the work through a named and a default slot, and
+  shows the divider and the work through a named and a default slot,
+  `<loom-expand>` shows a row's compact or full form through one of two named
+  slots, and
   `<loom-follow>` shows the lane through a default slot; the words are
   light-DOM nodes the server rendered and escaped.
 - **No key handling and no focus near an approval card.** A client

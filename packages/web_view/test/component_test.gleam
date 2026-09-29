@@ -48,10 +48,10 @@ pub fn a_reply_the_lane_awaits_is_reduced_on_arrival_test() {
   assert component.status(simulate.model(opened)) == component.Connecting
 
   let transferred = arrive(opened, page_fixture.transfer("observer", []))
-  assert component.status(simulate.model(transferred)) == component.Following
+  assert component.status(simulate.model(transferred)) == component.Connected
   assert string.contains(
     element.to_string(simulate.view(transferred)),
-    "following",
+    "connected",
   )
 }
 
@@ -78,14 +78,14 @@ pub fn a_push_to_an_idle_lane_is_reduced_on_arrival_test() {
 }
 
 // A batch is handed to the lane in order in one message: the whole first
-// transfer, delivered as one burst, leaves the page following.
+// transfer, delivered as one burst, leaves the page connected.
 pub fn a_batch_is_reduced_in_arrival_order_in_one_message_test() {
   let page =
     simulate.message(simulation(), component.Opened(wire()))
     |> simulate.message(
       component.Arrived(page_fixture.transfer("observer", [])),
     )
-  assert component.status(simulate.model(page)) == component.Following
+  assert component.status(simulate.model(page)) == component.Connected
 }
 
 fn in_flight(simulation) -> Bool {
@@ -104,7 +104,7 @@ pub fn frames_filed_before_the_transport_opens_are_kept_test() {
   assert component.status(simulate.model(idle)) == component.Connecting
 
   let opened = simulate.message(idle, component.Opened(wire()))
-  assert component.status(simulate.model(opened)) == component.Following
+  assert component.status(simulate.model(opened)) == component.Connected
 }
 
 pub fn a_closed_connection_is_drawn_as_it_arrives_test() {

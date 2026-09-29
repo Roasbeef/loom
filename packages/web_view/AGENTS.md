@@ -47,7 +47,9 @@ page keys and nonces, and the relay into the session's gateway.
   and its deadline timer, how much history the page holds (`Paging`), the
   transcript blocks it holds and the turns laid out from them
   (`turns.Piece`), the agent `Strip`, the inputs each was built from, the
-  connection `Status`, the page's own refusal, the outcome of the last
+  connection `Status` (`Connecting`, `Connected`, `Ended`; the heading says
+  "connected", not "following", which read as the scroll state and is the
+  browser's), the page's own refusal, the outcome of the last
   command, the returned prompts and the count of drafts a command consumed.
   The component writes `shared` in four places only: it trims the history
   window to the rows the page draws, it marks the window as wanting older
@@ -73,6 +75,29 @@ page keys and nonces, and the relay into the session's gateway.
   line, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
   exist, and words otherwise.
+- **Expanding a row.** The terminal's `Ctrl+g` shows a call's whole program
+  and result and a reasoning block's whole text. The page holds the same
+  records, and `component.relaned` asks `turns.pieces` for the expansions
+  (`turns.Expand(expansion.capped)`) when it projects a capture, so they are
+  built once per projection and never on a render. A `Step` carries its
+  `full` rows and a `Plain` or `Narrated` piece carries `thoughts`, the full
+  form of each reasoning row by the row's key, both already cut. `lane.view`
+  draws a row that has more to show as one `<loom-expand>` (`web_client`): the
+  compact rows in a child with `slot="compact"`, the full rows in one with
+  `slot="full"`. For a call that is the rows under its summary; for a
+  response it is only the reasoning row, so an answer beside the reasoning is
+  drawn once. A row whose full form equals the compact one (a call whose
+  result is already shown, a one-line reasoning block) has none. The rows are
+  the terminal's own builders (`transcript_lines.expanded_call_lines`, and
+  `assistant_block_lines` at expanded extent). No event, handler or socket
+  read is involved: the text is already in the model, so choosing which form
+  shows is the browser's, as a fold's open state is, and it works on an
+  observer's page. Both forms are in every viewer's document, so
+  `view/expansion.capped` cuts the full rows to `max_lines` (300) lines and
+  `max_characters` (8,000) characters per row and ends a cut row with one
+  line saying so. The rows are memoized per line as the compact ones are.
+  Session text is drawn as text nodes: a program is a Markdown code block,
+  so a `<pre><code>` holding text.
 - `todo_panel.view(board, reviewers)` draws the terminal's pinned todo
   board and reviewer band on both pages, from plain values;
   `component.plan(model)` reads them: `Shared.todo_boards` at
@@ -193,7 +218,7 @@ page keys and nonces, and the relay into the session's gateway.
   record the page holds. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in each chip, `<loom-fold>` around a settled
-  turn's work, and `<loom-follow>` around the lane. The stylesheet pins the
+  turn's work, `<loom-expand>` around a row with more to show, and `<loom-follow>` around the lane. The stylesheet pins the
   page's frame (the heading and the agent strip at the top, the dock or
   the observer's bar at the bottom, the page itself never scrolling) and
   makes `<loom-follow>` the scroll container between them. It keeps the
