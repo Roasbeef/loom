@@ -30,13 +30,13 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import session_view/command
 import session_view/context_view
-import session_view/session_channel
-import session_view/worktree_view
-import tui/queue_request
-import tui/session_model.{
+import session_view/model.{
   type Shared, Attached, ComposerSubmission, ConfirmGoal, Disconnected,
   HoldGoalReport, OverlaySubmission, Preview, Replaying, ReportGoal, Shared,
-}
+} as session_model
+import session_view/queue_request
+import session_view/session_channel
+import session_view/worktree_view
 
 /// Sends one encoded command frame. With a session channel the channel
 /// decides whether it is sent, queued or refused; without one nothing is

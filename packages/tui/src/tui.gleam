@@ -51,12 +51,20 @@ import host/endpoint
 import session_view/advisor_history
 import session_view/agent_roster
 import session_view/attempt
+import session_view/attempt_replay
 import session_view/block_summary
 import session_view/cache_watch
+import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
+import session_view/model.{
+  Disconnected, HoldGoalReport, Preview, Replaying, Shared,
+} as session_model
+import session_view/msg as session_msg
+import session_view/queue_request
 import session_view/session_channel
+import session_view/step as session_step
 import session_view/text_hygiene
 import session_view/transcript_line.{
   Assistant, Line, Reasoning, System, ToolResult,
@@ -66,11 +74,9 @@ import tui/admission
 import tui/agent_strip
 import tui/appearance
 import tui/attachment
-import tui/attempt_replay
 import tui/bootstrap
 import tui/buffered
 import tui/claim
-import tui/completion_summary
 import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
@@ -92,15 +98,10 @@ import tui/note_panel
 import tui/pacing
 import tui/projection
 import tui/queue_editor
-import tui/queue_request
 import tui/recording
 import tui/render
 import tui/runtime
 import tui/session_control
-import tui/session_model.{
-  Disconnected, HoldGoalReport, Preview, Replaying, Shared,
-}
-import tui/session_step
 import tui/session_table
 import tui/summary_panel
 import tui/tick
@@ -1808,7 +1809,7 @@ pub fn step(message: msg.Msg, model: Model) -> #(Model, List(effect.Effect)) {
 // recording holds what the client was given rather than what it made of it,
 // and the input's line is ahead of every line the reducer queues for it.
 fn reduce(
-  at: msg.Stamp,
+  at: session_msg.Stamp,
   wall_ms: Int,
   event: msg.Event,
   model: Model,

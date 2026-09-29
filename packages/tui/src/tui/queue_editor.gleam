@@ -8,8 +8,8 @@
 
 import etui/widgets/textarea
 import gleam/option.{type Option, None, Some}
+import session_view/queue_request
 import session_view/queued_input.{type Document}
-import tui/queue_request
 
 /// Whether the queue inspector or a retained draft is visible.
 pub type Surface {

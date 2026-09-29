@@ -24,9 +24,15 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import session_view/agent_messages
 import session_view/agent_roster
 import session_view/approval
+import session_view/commands
 import session_view/connection_event
+import session_view/event_fold
+import session_view/lane_fold
+import session_view/model.{ReturnedDraft, Shared} as session_model
+import session_view/msg
 import session_view/notes_view
 import session_view/operator
 import session_view/protocol
@@ -34,16 +40,12 @@ import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import tui/agent_message_panel
-import tui/agent_messages
 import tui/agent_strip
 import tui/agents
 import tui/approval_panel
 import tui/bootstrap
 import tui/buffered
-import tui/commands
-import tui/event_fold
 import tui/job
-import tui/lane_fold
 import tui/layout
 import tui/model.{
   type Model, type Reconnect, type StrandWorkspace, AgentInspector,
@@ -52,12 +54,10 @@ import tui/model.{
   ReconnectSpent, StrandWorkspace, View,
 } as tui_model
 import tui/model_selector
-import tui/msg
 import tui/note_panel
 import tui/queue_editor
 import tui/queue_panel
 import tui/render
-import tui/session_model.{ReturnedDraft, Shared}
 import tui/side_surfaces
 import tui/summary_panel
 

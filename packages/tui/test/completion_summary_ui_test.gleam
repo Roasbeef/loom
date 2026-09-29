@@ -12,6 +12,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import session_view/composer
 import session_view/live_jobs
+import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
 import tui
@@ -21,7 +22,6 @@ import tui/inbound
 import tui/model as tui_model
 import tui/queue_editor
 import tui/render
-import tui/session_model
 import tui/side_surfaces
 import tui/summary_panel
 import tui/workspace

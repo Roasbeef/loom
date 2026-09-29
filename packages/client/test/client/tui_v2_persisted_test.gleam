@@ -28,6 +28,7 @@ import gleam/string
 import host/bootstrap
 import provider/http
 import provider/secret
+import session_view/model as session_model
 import session_view/session_channel
 import simplifile
 import storage/domain
@@ -37,7 +38,6 @@ import support/tui_driver
 import telemetry/log
 import tui/attachment
 import tui/model as tui_model
-import tui/session_model
 import weft/poll
 
 type Arrival =

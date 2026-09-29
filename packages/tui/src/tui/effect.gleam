@@ -45,12 +45,12 @@
 
 import gleam/erlang/process.{type Subject}
 import session_view/connection_event
+import session_view/step_effect
 import tui/attachment
 import tui/connection
 import tui/herdr
 import tui/job
 import tui/recording
-import tui/step_effect
 
 /// One side effect a reducer step decided on.
 pub type Effect {

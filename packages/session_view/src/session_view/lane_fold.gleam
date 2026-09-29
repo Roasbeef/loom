@@ -29,38 +29,38 @@ import gleam/set
 import gleam/string
 import machine/strand as machine_strand
 import session_view/advisor_history
+import session_view/agent_messages
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
+import session_view/attempt_replay
 import session_view/block_summary
 import session_view/cache_watch
+import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
+import session_view/event_fold
 import session_view/history_view
 import session_view/inbox
-import session_view/protocol
-import session_view/reviewer_status
-import session_view/session_channel
-import session_view/snapshot
-import session_view/snapshot_view
-import session_view/todo_board
-import session_view/transcript_line.{Line, System}
-import session_view/transcript_lines
-import session_view/worktree_view
-import tui/agent_messages
-import tui/attempt_replay
-import tui/completion_summary
-import tui/event_fold
-import tui/outbound
-import tui/queue_request
-import tui/session_model.{
+import session_view/model.{
   type Interrupt, type Peer, type Shared, type UnconfirmedSubmission,
   AgentMessagesCaptured, ApprovalSettled, ApprovalsPresented, Attached,
   ConnectionLost, Disconnected, GoalReleased, HistoryReleased, HoldGoalReport,
   LookupAnswered, NewSession, OutlookCleared, Preview, QueueRowsCaptured,
   ReplayAdopted, Replaying, SameSession, Shared, UnconfirmedSubmission,
-}
-import tui/surfaces
+} as session_model
+import session_view/outbound
+import session_view/protocol
+import session_view/queue_request
+import session_view/reviewer_status
+import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
+import session_view/surfaces
+import session_view/todo_board
+import session_view/transcript_line.{Line, System}
+import session_view/transcript_lines
+import session_view/worktree_view
 
 /// What the host shows that decides a shared write inside one update.
 ///

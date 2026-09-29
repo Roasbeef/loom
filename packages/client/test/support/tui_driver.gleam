@@ -35,6 +35,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/session_channel
 import tui
 import tui/attachment
@@ -48,7 +49,6 @@ import tui/job
 import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
-import tui/session_model
 import tui/terminal_lane
 import tui/virtual_backend
 import tui/workspace

@@ -15,14 +15,16 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import session_view/command
+import session_view/commands
 import session_view/composer
 import session_view/context_view
+import session_view/model.{ComposerSubmission, OverlaySubmission, Shared} as session_model
+import session_view/msg
 import session_view/operator
 import session_view/protocol
 import session_view/worktree_view
 import tui/agents
 import tui/attachment
-import tui/commands
 import tui/effect
 import tui/inbound
 import tui/job
@@ -33,11 +35,9 @@ import tui/model.{
   ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
 } as tui_model
 import tui/model_selector
-import tui/msg
 import tui/note_panel
 import tui/queue_editor
 import tui/session_control
-import tui/session_model.{ComposerSubmission, OverlaySubmission, Shared}
 import tui/side_surfaces
 
 /// Opens the agent workspace on the active strand.

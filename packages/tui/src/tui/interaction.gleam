@@ -21,27 +21,32 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/agent_messages
 import session_view/agent_roster
 import session_view/approval
 import session_view/cache_watch
 import session_view/command
+import session_view/commands
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
 import session_view/history_view
+import session_view/model.{Attached, OverlaySubmission, Shared} as session_model
+import session_view/msg
+import session_view/outbound
 import session_view/pasted_image
 import session_view/protocol.{ModelInfo, Strand}
+import session_view/queue_request
 import session_view/session_channel
 import session_view/snapshot_view
+import session_view/surfaces
 import session_view/worktree_view
 import tui/agent_message_panel
-import tui/agent_messages
 import tui/agent_strip
 import tui/agents
 import tui/approval_panel
 import tui/attachment
 import tui/buffered
-import tui/commands
 import tui/context_panel
 import tui/daemon/protocol as control_protocol
 import tui/effect
@@ -57,23 +62,18 @@ import tui/model.{
   ReconnectAttempting, ReconnectIdle, ReconnectSpent, TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
-import tui/msg
 import tui/note_panel
-import tui/outbound
 import tui/peer_links
 import tui/projection
 import tui/queue_editor
 import tui/queue_panel
-import tui/queue_request
 import tui/render
 import tui/selection
 import tui/session_control
-import tui/session_model.{Attached, OverlaySubmission, Shared}
 import tui/session_selector
 import tui/side_surfaces
 import tui/submit
 import tui/summary_panel
-import tui/surfaces
 
 /// The rename overlay owns pasted text just as it owns character keys. It
 /// must never leave a pasted title in the hidden conversation composer.

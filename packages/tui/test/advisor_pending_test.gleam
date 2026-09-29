@@ -17,8 +17,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/advisor_pending
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/protocol.{type Strand, Strand}
 import session_view/session_channel
+import session_view/surfaces
 import session_view/transcript_lines
 import session_view/worktree_view
 import tui
@@ -27,8 +29,6 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
-import tui/session_model
-import tui/surfaces
 import tui/workspace
 import tui_test/gateway
 import tui_test/pushed

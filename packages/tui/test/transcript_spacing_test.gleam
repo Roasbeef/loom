@@ -28,6 +28,7 @@ import gleam/option.{None}
 import gleam/result
 import gleam/string
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/transcript_line
 import tui
 import tui/buffered
@@ -35,7 +36,6 @@ import tui/connection
 import tui/frame
 import tui/layout
 import tui/model as tui_model
-import tui/session_model
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway

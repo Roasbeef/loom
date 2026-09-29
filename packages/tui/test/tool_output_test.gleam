@@ -19,11 +19,11 @@ import gleam/list
 import gleam/result
 import gleam/string
 import session_view/connection_event
+import session_view/model as session_model
 import session_view/transcript_line
 import session_view/transcript_lines
 import tui/inbound
 import tui/model as tui_model
-import tui/session_model
 import tui_test/pushed
 
 // Details open, which is where a running command's output window is

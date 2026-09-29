@@ -17,6 +17,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import session_view/context_view
+import session_view/model.{
+  Attached, Disconnected, HoldGoalReport, Preview, Replaying, ReportGoal, Shared,
+}
+import session_view/surfaces
 import session_view/worktree_view
 import tui/agents
 import tui/focused_goal_panel
@@ -26,11 +30,7 @@ import tui/model.{
 } as tui_model
 import tui/queue_editor
 import tui/render
-import tui/session_model.{
-  Attached, Disconnected, HoldGoalReport, Preview, Replaying, ReportGoal, Shared,
-}
 import tui/summary_panel
-import tui/surfaces
 
 /// Inspection has its own target. Reading a worker's notes never changes the
 /// active strand, its parked draft, or the next submitted message.

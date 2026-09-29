@@ -22,6 +22,7 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/attempt
+import session_view/model.{Shared}
 import tui/agents
 import tui/attachment
 import tui/daemon/protocol as control_protocol
@@ -39,7 +40,6 @@ import tui/model.{
 } as tui_model
 import tui/peer_links
 import tui/recording
-import tui/session_model.{Shared}
 import tui/session_selector
 import tui/workspace
 import weft

@@ -25,12 +25,13 @@ import etui/backend
 import etui/widgets/textarea as text_area
 import gleam/dict
 import gleam/option.{None, Some}
+import session_view/attempt_replay
+import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
-import tui/attempt_replay
 import tui/connection
 import tui/focused_goal_panel
 import tui/inbound
@@ -38,7 +39,6 @@ import tui/interaction
 import tui/model.{DiffVisible, GoalInspector, ModelSelector, NoOverlay} as tui_model
 import tui/model_selector
 import tui/queue_editor
-import tui/session_model
 import tui/submit
 import tui/tick
 import tui/workspace

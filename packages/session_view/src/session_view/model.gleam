@@ -21,13 +21,16 @@ import gleam/result
 import gleam/set
 import session_view/advisor_history
 import session_view/advisor_pending
+import session_view/agent_messages
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/approval
 import session_view/attempt
+import session_view/attempt_replay
 import session_view/block_summary
 import session_view/cache_watch
 import session_view/command
+import session_view/completion_summary
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
@@ -35,12 +38,15 @@ import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
 import session_view/live_jobs
+import session_view/msg
 import session_view/notes_view
 import session_view/protocol
+import session_view/queue_request
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/step_effect
 import session_view/tool_activity
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Stream, type Submission, type ToolTail,
@@ -48,12 +54,6 @@ import session_view/transcript_line.{
 }
 import session_view/transcript_lines
 import session_view/worktree_view
-import tui/agent_messages
-import tui/attempt_replay
-import tui/completion_summary
-import tui/msg
-import tui/queue_request
-import tui/step_effect
 
 /// The session state: what a second host showing the same session would need
 /// to show it or act on it correctly.

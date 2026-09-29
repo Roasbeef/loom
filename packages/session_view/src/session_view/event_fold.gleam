@@ -44,9 +44,17 @@ import session_view/composer
 import session_view/context_view
 import session_view/history_view
 import session_view/live_jobs
+import session_view/model.{
+  type Shared, Attached, Disconnected, HoldGoalReport, Interrupt, JobsReplaced,
+  ModelsListed, NotesArrived, OutlookCleared, Preview, Replaying, ReturnedDraft,
+  SessionSynchronized, Shared, WorkspaceSwitched,
+} as session_model
 import session_view/operator
+import session_view/outbound
 import session_view/protocol.{Strand}
+import session_view/queue_request
 import session_view/stream_identity
+import session_view/surfaces
 import session_view/todo_board
 import session_view/transcript_line.{
   type Stream, type Submission, type ToolTail, Assistant, CacheNotice,
@@ -54,14 +62,6 @@ import session_view/transcript_line.{
 }
 import session_view/transcript_lines
 import session_view/worktree_view
-import tui/outbound
-import tui/queue_request
-import tui/session_model.{
-  type Shared, Attached, Disconnected, HoldGoalReport, Interrupt, JobsReplaced,
-  ModelsListed, NotesArrived, OutlookCleared, Preview, Replaying, ReturnedDraft,
-  SessionSynchronized, Shared, WorkspaceSwitched,
-}
-import tui/surfaces
 
 /// Applies one pushed event to the session state.
 ///

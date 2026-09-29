@@ -29,27 +29,22 @@
 //// event is written as, which is the line etui's event was written as
 //// before, so the recording format and its bytes are unchanged.
 ////
-//// The module sits below `tui/model` in the import graph: the model stores
-//// a `Stamp`, and `tui/pacing`, which the model imports, reads events. So it
-//// imports nothing of the model.
+//// The module sits below `tui/model` in the import graph, because
+//// `tui/pacing`, which the model imports, reads events. So it imports
+//// nothing of the model.
 ////
-//// `Command` is the other half of the message: what an operator does to the
-//// session, in the session's terms rather than the terminal's keys. The
-//// terminal's key and slash-command handlers decide which one a key or a
-//// parsed draft means, from what the terminal shows, and hand it to
-//// `commands.act`, which takes the shared record alone. It is the command
-//// set a second host builds from its own controls
-//// (`docs/design-notes/step-extraction.md`, section 2).
+//// The two halves of the message that are the session's rather than the
+//// terminal's live in `session_view/msg`: the `Stamp` an input is applied
+//// at, which the shared record stores, and the `Command` set an operator's
+//// key or slash command becomes, which `session_view/commands` carries out.
 
 import etui/backend
 import etui/keys
 import gleam/erlang/process.{type Subject}
 import gleam/option.{type Option, None, Some}
-import session_view/approval
 import session_view/attempt
-import session_view/command
 import session_view/connection_event
-import session_view/operator
+import session_view/msg.{type Stamp}
 import session_view/pasted_image
 import tui/job
 import tui/recording
@@ -97,29 +92,6 @@ pub type Arrival {
 
   /// One message from a background job, tagged with the job's key.
   JobReplied(arrival: job.Arrival(job.Daemon))
-}
-
-/// The clock readings one event is applied at.
-///
-/// Every reducer reads them from `Model.shared.stamp` instead of calling a
-/// clock, so a step reads no clock and every reducer in one step sees the
-/// same instant. There are two monotonic readings because they time
-/// different things: a test may fix the presentation clock to pin frames
-/// while a live socket in the same test still needs real deadlines. The
-/// wall clock is not here: its one reader is the terminal's session
-/// creation key, so it is carried in `Input.wall_ms` and is stored in the
-/// terminal's view.
-@internal
-pub type Stamp {
-  Stamp(
-    /// The presentation clock, `Model.monotonic_time_ms`: frame pacing,
-    /// activity elapsed time, generation throughput, the cache outlook and
-    /// the jobs and activity-poll ages.
-    now_ms: Int,
-    /// The host's monotonic clock, which times the session lanes' request
-    /// deadlines and idle refresh.
-    transport_ms: Int,
-  )
 }
 
 /// What happened, in the client's own terms.
@@ -181,37 +153,4 @@ pub fn recorded(event: Event) -> Option(recording.Recorded) {
     Released(x:, y:, button:) -> Some(recording.Released(x:, y:, button:))
     Moved(..) | Ticked -> None
   }
-}
-
-/// What an operator does to a session: one call into the shared step's
-/// commands (`commands.act`), which read and write the session state alone.
-///
-/// A change of active strand is not one of them. It is three shared calls
-/// with the host's own writes between them, because the lane's
-/// cancellation of unsent frames yields updates the host applies one at a
-/// time (the ruling on question 11 of the step-extraction note), so the
-/// host drives it (`submit.switch_active_strand`).
-@internal
-pub type Command {
-  /// A submitted draft that parsed as a session command. `draft` is the
-  /// text as typed, which a prompt sends with its attachments expanded, and
-  /// `delivery` is how the host means a prompt to reach a running strand.
-  Submit(draft: String, command: command.Session, delivery: operator.Delivery)
-
-  /// Interrupt the active strand's running operation.
-  Interrupt
-
-  /// Stop one strand's running operation.
-  Stop(strand: String)
-
-  /// Decide the approval `review` as the host showed it, not as the session
-  /// state holds it under the same ID now.
-  Decide(review: approval.Review, choice: operator.Choice)
-
-  /// Switch the active strand to the catalogue model `name`.
-  SelectModel(name: String)
-
-  /// End the session's half of the attachment: close the adopted lane and
-  /// mark the session as ending. The host cancels its own work after it.
-  Quit
 }

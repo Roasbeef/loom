@@ -18,18 +18,20 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import host/bootstrap as host_bootstrap
+import session_view/attempt_replay
 import session_view/cache_miss
 import session_view/cache_watch
+import session_view/lane_fold
+import session_view/model.{type Shared, Shared} as session_model
 import session_view/session_channel
+import session_view/surfaces
 import tui/attachment
-import tui/attempt_replay
 import tui/buffered
 import tui/effect
 import tui/herdr
 import tui/inbound
 import tui/interaction
 import tui/job_runner
-import tui/lane_fold
 import tui/layout
 import tui/model.{
   type Model, type TerminalShared, Caches, FrameCache, Model, View,
@@ -37,8 +39,6 @@ import tui/model.{
 import tui/pacing
 import tui/render
 import tui/session_control
-import tui/session_model.{type Shared, Shared}
-import tui/surfaces
 
 /// Starts the Herdr pane reporter when the launch environment carries a
 /// pane. Started here rather than in `main` so the launchers that are not

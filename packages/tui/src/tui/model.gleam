@@ -79,6 +79,9 @@ import session_view/attempt
 import session_view/composer
 import session_view/connection_event
 import session_view/history_view
+import session_view/model.{type Shared, Shared} as session_model
+import session_view/msg as session_msg
+import session_view/outbound
 import session_view/session_channel
 import session_view/transcript_line.{type Line}
 import session_view/worktree_view
@@ -98,13 +101,11 @@ import tui/live_tail
 import tui/model_selector
 import tui/msg
 import tui/note_panel
-import tui/outbound
 import tui/pacing
 import tui/peer_links
 import tui/queue_editor
 import tui/recording
 import tui/selection
-import tui/session_model.{type Shared, Shared}
 import tui/session_selector
 import tui/summary_panel
 import tui/terminal_lane
@@ -1166,7 +1167,7 @@ pub fn record_arrival(
 @internal
 pub fn start_step(
   model: Model,
-  at: msg.Stamp,
+  at: session_msg.Stamp,
   wall_ms: Int,
   event: msg.Event,
 ) -> Model {

@@ -13,8 +13,8 @@
 //// The module holds that settle alone for now. A later slice moves it into
 //// `session_view/step` beside the step's entry points.
 
-import tui/session_model.{type Shared}
-import tui/surfaces
+import session_view/model.{type Shared}
+import session_view/surfaces
 
 /// Runs the shared edges for one event, from `before` to `after`: the
 /// context read, the pending-nudge read or clear, and the goal read, in that

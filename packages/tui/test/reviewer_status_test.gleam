@@ -16,6 +16,7 @@ import gleam/result
 import gleam/string
 import machine/codec
 import machine/operation
+import session_view/model as session_model
 import session_view/protocol
 import session_view/reviewer_status
 import session_view/snapshot
@@ -25,7 +26,6 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
-import tui/session_model
 import tui/workspace
 
 fn model() {

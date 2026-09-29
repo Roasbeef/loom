@@ -9,13 +9,13 @@ import etui/geometry
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import session_view/model as session_model
 import session_view/transcript_lines
 import tui
 import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/render
-import tui/session_model
 import tui/workspace
 
 fn usage() -> message.Usage {

@@ -47,17 +47,17 @@ import session_view/command
 import session_view/context_view
 import session_view/goal_view
 import session_view/live_jobs
-import session_view/protocol
-import session_view/session_channel
-import session_view/transcript_lines
-import session_view/worktree_view
-import tui/outbound
-import tui/queue_request
-import tui/session_model.{
+import session_view/model.{
   type Shared, Attached, ConfirmGoal, Disconnected, GoalObserved,
   GoalUnavailable, HoldGoalReport, OverlaySubmission, Preview, Replaying,
   ReportGoal, Shared,
-}
+} as session_model
+import session_view/outbound
+import session_view/protocol
+import session_view/queue_request
+import session_view/session_channel
+import session_view/transcript_lines
+import session_view/worktree_view
 
 /// Sends the pending todo seed as an ordinary `notes` read once the read
 /// lane is free. An operator's own notes read goes first, and its reply

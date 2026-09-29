@@ -22,6 +22,7 @@ import gleam/result
 import gleam/string
 import session_view/advisor_history
 import session_view/composer
+import session_view/model.{Shared} as session_model
 import session_view/notes_view
 import session_view/tool_activity
 import session_view/transcript_line.{
@@ -37,7 +38,6 @@ import tui/live_tail
 import tui/markdown
 import tui/model.{type Model, Caches, Model, View} as tui_model
 import tui/render
-import tui/session_model.{Shared}
 import tui/side_surfaces
 import tui/transcript_anchor
 
