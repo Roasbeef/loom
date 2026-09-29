@@ -240,7 +240,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:377`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:389`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -523,6 +523,40 @@ at `component.older_path` and drops every other frame
 (`ui_socket.observer_accepts`). `page_events_test` pins that the
 observer's rendered view registers that one handler at that path.
 
+## Expanding a row
+
+The terminal's `Ctrl+g` expands every row at once; the page lets the reader
+expand one. A code-mode call whose program succeeded shows only its summary
+and a result line, and a reasoning block shows its opening line, so the
+program and the reasoning could not be read from the page.
+
+The full text is already in the model. When `component.relaned` projects a
+capture it asks `turns.pieces` for the terminal's own expanded rows, cut by
+the page's budget, and stores them on the pieces: `Step.full` for a call,
+`thoughts` for a reasoning row. They are built once per projection, not per
+render, and no piece holds the uncapped text. The lane draws a row that has
+more to show as `<loom-expand>` holding both forms as children, and for a
+response only the reasoning row is an expander, so an answer beside it is
+drawn once. A
+button in the element's shadow root chooses which child is slotted. That
+choice is the browser's alone, as a fold's is: no read, no page event and no
+new entry in the socket's accepted list, so it works on an observer's page,
+and the server never renders which form is open, so a later patch leaves the
+reader's choice alone. The alternative, sending the expanded row on request,
+would need a new event and a round trip for text the page already holds.
+
+The cost is that both forms are in every viewer's document whether or not
+anyone opens them, so each expanded row is cut to 300 lines or 8,000
+characters (`view/expansion`), with one line after a cut row saying so. The
+terminal shows all of it. The element emits the fold's toggle event, so
+`<loom-follow>` treats an expansion as the reader's doing: the reader at the
+bottom who expands the newest row keeps the button in view instead of being
+scrolled past it.
+
+The heading's status reads "connected" (it read "following"). It is the
+connection's state, and the word was mistaken for the scroll state, which
+only `<loom-follow>` knows.
+
 ## Security layers
 
 The page is served from loopback, and loopback does not protect a page:
@@ -656,6 +690,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/heading.gleam` | The heading: the session's name, its workspace and the connection's status, drawn from plain values the component hands it. |
 | `packages/web_view/src/web_view/view/strip.gleam` | The agent strip and its `Strip` and `Chip` types: the chips, their elapsed clocks and cache rings, and the hue, ring and status classes. |
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board with the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
+| `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces, folded work, the cards, and each transcript line and card body in its own leaf memo. |
 | `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |
 | `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted` and `Decided`, the uncontrolled composer and its total form decoder, the approval cards. |

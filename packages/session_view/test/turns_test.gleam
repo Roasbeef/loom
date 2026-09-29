@@ -12,6 +12,7 @@ import core/message
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
@@ -241,12 +242,12 @@ fn pieces_of(
     _ -> turns.Running
   }
   transcript.blocks(cut, view, "main", [])
-  |> turns.pieces(strands(), latest)
+  |> turns.pieces(strands(), latest, turns.Skip)
 }
 
 fn shape(piece: turns.Piece) -> String {
   case piece {
-    turns.Plain(block) ->
+    turns.Plain(block, _) ->
       case block.rows {
         [#(_, line), ..] -> "plain:" <> line.text
         [] -> "plain"
@@ -282,8 +283,11 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
   // and the wait are under the divider; the spawn and the child's result
   // are not, and the edits' results are not drawn a second time.
   assert list.length(items) == 4
-  let assert [turns.Narrated(_), turns.Step(summary: edit, standing:, ..), ..] =
-    items
+  let assert [
+    turns.Narrated(_, _),
+    turns.Step(summary: edit, standing:, ..),
+    ..
+  ] = items
   assert edit == "fs_edit · a.gleam"
   assert standing == turns.Done
 }
@@ -344,7 +348,7 @@ pub fn every_piece_keeps_its_key_when_the_turn_settles_test() {
   let keys = fn(laid: List(turns.Piece)) {
     list.map(laid, fn(piece) {
       case piece {
-        turns.Plain(block) | turns.Commentary(block) -> block.key
+        turns.Plain(block, _) | turns.Commentary(block) -> block.key
         turns.Work(key:, ..)
         | turns.Spawned(key:, ..)
         | turns.Returned(key:, ..)
@@ -364,7 +368,7 @@ pub fn a_cache_miss_is_its_own_row_test() {
     transcript_line.CacheNotice("main", id(8), "Cache miss after 12m idle")
   let laid =
     transcript.blocks(cut(items()), view(10, []), "main", [notice])
-    |> turns.pieces(strands(), turns.Settled)
+    |> turns.pieces(strands(), turns.Settled, turns.Skip)
   let shapes = list.map(laid, shape)
   let assert [_, _, _, _, "plain:Done: two files.", "missed", ..] = shapes
 }
@@ -451,4 +455,164 @@ pub fn grouped_splits_the_lane_at_its_inputs_test() {
   assert lead != []
   assert list.length(opened) == 2
   assert list.append(lead, list.flatten(opened)) == inside
+}
+
+// --- expanding a row ---------------------------------------------------------
+
+// The pieces of one turn (a prompt, a response holding `parts`, the result
+// of its call `c` if any, and an answer), built with `expansion`.
+fn expanding(
+  parts: List(message.AssistantBlock),
+  outcome: Option(message.AgentMessage),
+  expansion: turns.Expansion,
+) -> List(turns.Piece) {
+  let bodies =
+    list.flatten([
+      [said("run it", None), assistant(parts)],
+      case outcome {
+        Some(result) -> [result]
+        None -> []
+      },
+      [assistant([message.AssistantText("Ran it.", None)])],
+    ])
+  let items =
+    list.index_map(bodies, fn(body, index) {
+      item(index + 1, 10_000 + index * 1000, body)
+    })
+  transcript.blocks(cut(items), view(list.length(items), []), "main", [])
+  |> turns.pieces(strands(), turns.Settled, expansion)
+}
+
+fn whole() -> turns.Expansion {
+  turns.Expand(fn(lines) { lines })
+}
+
+fn text_result(text: String) -> message.AgentMessage {
+  message.ToolResultMessage(
+    "c",
+    "code_mode",
+    [message.ToolResultText(text, None)],
+    Some(json.Object([])),
+    None,
+    None,
+    False,
+    12_000,
+  )
+}
+
+fn work_items(pieces: List(turns.Piece)) -> List(turns.Item) {
+  let assert [_, turns.Work(items:, ..), ..] = pieces
+    as "a prompt, then the turn's work"
+  items
+}
+
+pub fn a_settled_code_mode_call_expands_to_its_program_and_output_test() {
+  let program =
+    "let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\nlet e = 5\nlet f = 6\nlet g = 7"
+  let pieces =
+    expanding(
+      [
+        call(
+          "c",
+          "code_mode",
+          json.Object([#("program", json.String(program))]),
+        ),
+      ],
+      Some(text_result("all done")),
+      whole(),
+    )
+  let assert [turns.Step(full:, ..)] = work_items(pieces)
+
+  // The whole program is there, where the compact rows dropped it on
+  // success, and the result follows it.
+  assert list.any(full, fn(line) {
+    line.speaker == transcript_line.ToolDetail
+    && string.contains(line.text, "let g = 7")
+    && !string.contains(line.text, "// …")
+  })
+  assert list.any(full, fn(line) { string.contains(line.text, "all done") })
+}
+
+pub fn the_hosts_cap_cuts_what_the_piece_holds_test() {
+  let pieces =
+    expanding(
+      [
+        call(
+          "c",
+          "code_mode",
+          json.Object([#("program", json.String("a\nb\nc"))]),
+        ),
+      ],
+      Some(text_result("out")),
+      turns.Expand(fn(lines) { list.take(lines, 1) }),
+    )
+  let assert [turns.Step(full:, ..)] = work_items(pieces)
+  assert list.length(full) == 1
+}
+
+pub fn a_host_that_skips_gets_no_expansion_test() {
+  let pieces =
+    expanding(
+      [
+        call("c", "code_mode", json.Object([#("program", json.String("a\nb"))])),
+      ],
+      Some(text_result("out")),
+      turns.Skip,
+    )
+  let assert [turns.Step(full:, ..)] = work_items(pieces)
+  assert full == []
+}
+
+pub fn a_long_bash_command_is_shown_whole_when_expanded_test() {
+  let command = string.repeat("echo hello; ", 20) <> "echo the-end"
+  let pieces =
+    expanding(
+      [call("c", "bash", json.Object([#("command", json.String(command))]))],
+      None,
+      whole(),
+    )
+  let assert [turns.Step(full:, ..)] = work_items(pieces)
+  assert list.any(full, fn(line) { string.contains(line.text, "the-end") })
+}
+
+pub fn a_call_with_nothing_more_to_show_has_no_expansion_test() {
+  let pieces =
+    expanding(
+      [call("c", "bash", json.Object([#("command", json.String("ls"))]))],
+      None,
+      whole(),
+    )
+  let assert [turns.Step(full:, ..)] = work_items(pieces)
+  assert full == []
+}
+
+pub fn only_the_reasoning_row_of_a_response_expands_test() {
+  let pieces =
+    expanding(
+      [
+        message.AssistantThinking("first\nsecond\nthird", None, False),
+        message.AssistantText("Ran it, twice.", None),
+      ],
+      None,
+      whole(),
+    )
+  let assert [_, turns.Work(items: [turns.Narrated(block:, thoughts:)], ..), ..] =
+    pieces
+    as "the reasoning is work, the answer stays outside"
+  let assert [#(key, _)] = dict.to_list(thoughts)
+  assert list.key_find(block.rows, key)
+    == Ok(transcript_line.Line(transcript_line.ReasoningDigest, "first"))
+  assert dict.get(thoughts, key)
+    == Ok([
+      transcript_line.Line(transcript_line.Reasoning, "first\nsecond\nthird"),
+    ])
+}
+
+pub fn reasoning_that_is_one_line_has_nothing_more_to_show_test() {
+  let pieces =
+    expanding([message.AssistantThinking("short", None, False)], None, whole())
+  let assert [_, turns.Work(items: [turns.Narrated(thoughts:, ..)], ..), ..] =
+    pieces
+    as "the reasoning is work"
+  assert dict.is_empty(thoughts)
 }

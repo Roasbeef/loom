@@ -5,7 +5,7 @@
 //// drawn from (protocol-change/051, the operator addendum, "Verification").
 ////
 //// The browser is stood in for by the test: it reads the component's
-//// patches to know when the page is following, and dispatches the two
+//// patches to know when the page is connected, and dispatches the two
 //// messages a browser's click and submit decode to.
 
 import broker/escalation as broker_escalation
@@ -90,14 +90,14 @@ fn start_page(
 
 // Reads the component's messages for the browser until one says the page is
 // following the session.
-fn await_following(client, within: Int) -> Nil {
+fn await_connected(client, within: Int) -> Nil {
   let assert Ok(message) = process.receive(client, within)
     as "the page keeps drawing until it follows the session"
   let text =
     gleam_json.to_string(server_component.client_message_to_json(message))
-  case string.contains(text, "following") {
+  case string.contains(text, "\"connected\"") {
     True -> Nil
-    False -> await_following(client, within)
+    False -> await_connected(client, within)
   }
 }
 
@@ -117,7 +117,7 @@ pub fn an_operators_page_prompts_and_denies_through_the_gateway_test() {
   let assert Ok(before) = api.leaf(harness.runtime) as "the leaf reads"
 
   let #(runtime, client) = start_page(harness)
-  await_following(client, 5000)
+  await_connected(client, 5000)
 
   // The composer's submit, as the browser's form event decodes to it.
   lustre.send(

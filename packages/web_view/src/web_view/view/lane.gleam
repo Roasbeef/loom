@@ -20,6 +20,7 @@
 //// lines a render draws, and a change here must leave its counts as they
 //// are.
 
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -189,7 +190,7 @@ fn line_row(
 
 fn piece_key(piece: turns.Piece) -> String {
   case piece {
-    turns.Plain(block:) | turns.Commentary(block:) -> block.key
+    turns.Plain(block:, ..) | turns.Commentary(block:) -> block.key
     turns.Work(key:, ..)
     | turns.Spawned(key:, ..)
     | turns.Returned(key:, ..)
@@ -204,7 +205,7 @@ fn piece_element(
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   case piece {
-    turns.Plain(block:) -> block_element(block, draw)
+    turns.Plain(block:, thoughts:) -> block_element(block, thoughts, draw)
 
     // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
     // collapsed until the reader opens it. The fold opens and closes in the
@@ -315,7 +316,7 @@ fn work_items(
 ) -> List(#(String, Element(message))) {
   list.map(items, fn(item) {
     let key = case item {
-      turns.Narrated(block:) -> block.key
+      turns.Narrated(block:, ..) -> block.key
       turns.Step(key:, ..) -> key
     }
     #(key, item_element(item, draw))
@@ -327,8 +328,8 @@ fn item_element(
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   case item {
-    turns.Narrated(block:) -> block_element(block, draw)
-    turns.Step(standing:, summary:, detail:, ..) ->
+    turns.Narrated(block:, thoughts:) -> block_element(block, thoughts, draw)
+    turns.Step(standing:, summary:, detail:, full:, ..) ->
       html.div([attribute.class("step"), standing_class(standing)], [
         html.p([attribute.class("step-head")], [
           html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
@@ -339,7 +340,7 @@ fn item_element(
             html.text(standing_text(standing)),
           ]),
         ]),
-        ..list.map(detail, line_row(_, draw))
+        ..expander(detail, full, draw)
       ])
   }
 }
@@ -370,15 +371,59 @@ fn standing_text(standing: turns.Standing) -> String {
 
 // A block drawn as the transcript draws it, one line per row. The blank a
 // terminal places between tool groups is spacing here, so a spacer block
-// never reaches the lane.
+// never reaches the lane. A reasoning row that has a full form
+// (`thoughts`, by the row's key) is an expander of its own, so the rest of
+// the block, an answer beside the reasoning, is not drawn twice.
 fn block_element(
   block: transcript_lines.Block,
+  thoughts: Dict(String, List(Line)),
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   html.div(
     [attribute.class("block")],
-    list.map(block.rows, fn(row) { line_row(row.1, draw) }),
+    list.flat_map(block.rows, fn(row) {
+      case dict.get(thoughts, row.0) {
+        Ok(full) -> expander([row.1], full, draw)
+        Error(Nil) -> [line_row(row.1, draw)]
+      }
+    }),
   )
+}
+
+// Rows the reader may expand. With nothing more to show they are the rows,
+// each in its memo. With more (`Step.full`, `Piece.Plain.thoughts`, which
+// `turns` built once for the capture and the host's cap already cut), they
+// are one `<loom-expand>` (`packages/web_client`) holding the compact rows
+// in its `compact` slot and the full ones in its `full` slot. Both are the
+// server's children, escaped text nodes like every other row; the element
+// shows one slot at a time in the browser, so opening it costs no message,
+// and the server never renders which is open. The full rows are memoized
+// per line as the compact ones are, so an unchanged call draws nothing
+// again.
+fn expander(
+  compact: List(Line),
+  full: List(Line),
+  draw: fn(Line) -> Element(message),
+) -> List(Element(message)) {
+  let shown = list.map(compact, line_row(_, draw))
+  case full {
+    [] -> shown
+    [_, ..] -> [
+      element.element("loom-expand", [attribute.class("expand")], [
+        html.div(
+          [
+            attribute.attribute("slot", "compact"),
+            attribute.class("expand-compact"),
+          ],
+          shown,
+        ),
+        html.div(
+          [attribute.attribute("slot", "full"), attribute.class("expand-full")],
+          list.map(full, line_row(_, draw)),
+        ),
+      ]),
+    ]
+  }
 }
 
 fn line_element(line: Line) -> Element(message) {
