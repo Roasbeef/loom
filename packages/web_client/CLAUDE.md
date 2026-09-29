@@ -234,6 +234,19 @@ it sends is the form's submit, which the server already accepts.
   `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, `new Function`,
   `document.write`, `srcdoc`, `DOMParser`, `createContextualFragment` or a
   dynamic `import(`. It has its own self-test.
+- **Words use a `-text` token; marks use the plain one.** The stylesheet's
+  hues come in pairs (`--color-signal` and `--color-signal-text`, and the same
+  for `advisor`, `peer`, `danger`, `added` and `strand-2` to `strand-6`). The
+  plain token is the redesign's colour for a dot, ring, bar or border; the
+  `-text` token is the value for words in that hue, which is darker in the
+  light theme because the design's light hues are under 4.5:1 there
+  (`docs/design-notes/web-design.md`, section 5). A strand's hue is `--hue`
+  for marks and `--hue-text` for words. `--color-fg-faint` is never text.
+  `scripts/web_client_contrast_check.sh`, run by `make lint`, fails if a text
+  token is under 4.5:1 on a surface it is drawn on (`bg`, `bg-raised`,
+  `bg-sunk`, `bg-user`, `code`, and the diff backgrounds for `added-text` and
+  `danger-text`) in either theme, or if a rule sets `color:` from a mark
+  token, `--hue` or `fg-faint`. It has its own self-test.
 - **State the DOM would hold in an expando lives in the model.** The
   returned-prompt bookkeeping (`Seen(taken)`), the scroll bookkeeping (`top`,
   `extent`, `touched`) and the held row are Lustre model fields, never
