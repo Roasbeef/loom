@@ -140,8 +140,9 @@ fn following() {
 }
 
 // The relay's reasons are a closed vocabulary, and each one is drawn as its
-// own ending. A page that ended because a newer link replaced it says so,
-// and says to ask for a fresh link, not to reload: the reload would find no
+// own ending. A page that ended says what ends a page, including that a
+// newer link ends only the oldest of four, and says to ask for a fresh link,
+// not to reload: the reload would find no
 // page session under its key.
 pub fn each_relay_reason_is_drawn_as_its_ending_test() {
   list.each(ending.all(), fn(reason) {
@@ -163,7 +164,7 @@ pub fn each_relay_reason_is_drawn_as_its_ending_test() {
     )
   let html = element.to_string(simulate.view(replaced))
   assert string.contains(html, "This page has ended.")
-  assert string.contains(html, "Opening a new link")
+  assert string.contains(html, "opening another ends the oldest")
 }
 
 // A reason that is not one of the fixed strings, such as the words a lane
