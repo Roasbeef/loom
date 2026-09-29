@@ -238,8 +238,8 @@ pub const strip_path = "0\t3\t0\t1\t0"
 /// sessions). Only the operator's page draws the sidebar, and the observer's
 /// socket admits no click beneath this path
 /// (`client/daemon/ui_socket.observer_accepts`), so an observer's browser
-/// cannot ask for a switch even by forging the path. `page_events_test` and
-/// `sidebar_test` fail if the view moves the sidebar or a button leaves it.
+/// cannot ask for a switch even by forging the path. `session_switch_test`
+/// and `sidebar_test` fail if the view moves the sidebar or a button leaves it.
 pub const sidebar_path = "0\t1"
 
 /// How long the sidebar's list stands before the page reads it again, in

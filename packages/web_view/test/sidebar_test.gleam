@@ -208,7 +208,7 @@ fn listed_page(entries: List(Entry)) {
 }
 
 // The operator's page, the only one that draws the sidebar.
-fn observer_html(model) -> String {
+fn operator_html(model) -> String {
   element.to_string(operator_page.view(model))
 }
 
@@ -216,7 +216,7 @@ fn observer_html(model) -> String {
 // as a title, and each session by name; the session on screen is marked, and
 // a session with no name is named by its identity.
 pub fn the_sidebar_lists_workspaces_and_sessions_test() {
-  let drawn = observer_html(listed_page(listing()))
+  let drawn = operator_html(listed_page(listing()))
   assert string.contains(
     drawn,
     "<aside aria-label=\"Sessions\" class=\"sidebar\" slot=\"left\">",
@@ -241,7 +241,7 @@ pub fn the_sidebar_lists_workspaces_and_sessions_test() {
 // The catalogue's fields are drawn as text, never as markup.
 pub fn the_sidebar_escapes_what_the_catalogue_holds_test() {
   let drawn =
-    observer_html(
+    operator_html(
       listed_page([
         entry("A", "<b>bold</b> & co", "/src/<x>", 1, Live),
         entry("F", "<script>alert(1)</script>", "/src/<x>", 2, Saved),
@@ -255,7 +255,7 @@ pub fn the_sidebar_escapes_what_the_catalogue_holds_test() {
 
 // A page whose read found nothing draws no sidebar.
 pub fn an_empty_list_draws_no_sidebar_test() {
-  let drawn = observer_html(listed_page([]))
+  let drawn = operator_html(listed_page([]))
   assert !string.contains(drawn, "class=\"sidebar\"")
   assert string.contains(drawn, "sidebar=\"none\"")
   assert !string.contains(drawn, "<aside aria-label=\"Sessions\"")
@@ -284,7 +284,7 @@ pub fn the_sidebar_adds_only_its_session_buttons_test() {
     && string.ends_with(key, "\nclick")
   })
 
-  let assert Ok(sidebar) = sidebar_of(observer_html(listed))
+  let assert Ok(sidebar) = sidebar_of(operator_html(listed))
   assert !string.contains(sidebar, "<a ")
   assert !string.contains(sidebar, "<form")
   assert !string.contains(sidebar, "href")
