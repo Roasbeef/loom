@@ -126,7 +126,9 @@ starting any of it. Items 1 to 3 are in the order that work is running.
    session sidebar, advisor nudges, changes and trace panes, peer reply,
    session actions (fork, stop, goals), images, the admin page and CLI (053
    steps 2 onward), share and invite from the page (needs a narrow 051
-   addendum), and a visual design pass. Also open there: an ended page must
+   addendum), and a visual design pass (specified in
+   [the web design note](design-notes/web-design.md), with its pull request
+   breakdown). Also open there: an ended page must
    say so, a decision on more than one page per principal per session, and
    whether the memory context the daemon attaches to each prompt belongs in
    the transcript.

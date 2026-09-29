@@ -9,6 +9,12 @@ go and is open to change. What the page does today is described in
 note describes today's page it was checked against the code on
 2026-09-27. Everything else here is proposed.
 
+The layout and colour of the page are now specified in
+[the web design note](web-design.md), which turns the owner's approved mockup
+into a build plan. Where the two differ on the sidebar, the agent strip, the
+warp margin, the right pane or the tokens (sections 2, 3.1, 5 and 6.1 here),
+that note governs; its section 9 lists each difference.
+
 The spec is grounded in `docs/loom-design.md`, in the architecture docs
 for the terminal, multiplayer, messaging, async collaboration, code mode,
 the advisor, goals, approvals and durability, and in
