@@ -31,6 +31,7 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_relay
+import client/daemon/upgrade_log
 import client/gateway
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -337,8 +338,19 @@ fn admit(
       transport:,
     )
   let started = case transferred {
-    Error(_) -> Error(Nil)
-    Ok(Nil) -> start_page(attachment.authority, start)
+    Error(reason) -> {
+      upgrade_log.closed_early(upgrade_log.Page, "transfer", reason)
+      Error(Nil)
+    }
+    Ok(Nil) ->
+      start_page(attachment.authority, start)
+      |> result.map_error(fn(_) {
+        upgrade_log.closed_early(
+          upgrade_log.Page,
+          "start_page",
+          "the component did not start",
+        )
+      })
   }
   case started {
     Error(Nil) -> mist.stop()

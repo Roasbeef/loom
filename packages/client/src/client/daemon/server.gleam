@@ -21,6 +21,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_http
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
+import client/daemon/upgrade_log
 import client/peer_mail
 import client/peers
 import core/ids
@@ -331,15 +332,19 @@ fn page_grant(
     False -> Error(plain(403, "page session names another session"))
   })
   use state <- result.try(
-    root.ready(config.daemon, within: 1000)
+    ready(config, upgrade_log.Page)
     |> result.map_error(fn(_) { plain(503, "daemon unavailable") }),
   )
   use _principal <- result.try(
-    manager.authenticate(state.registry, grant.credential)
+    asked(upgrade_log.Page, "authenticate", fn() {
+      manager.authenticate(state.registry, grant.credential)
+    })
     |> result.map_error(fn(_) { plain(401, "credential revoked") }),
   )
   use _authority <- result.try(
-    manager.session_authority(state.registry, grant.credential, id)
+    asked(upgrade_log.Page, "session_authority", fn() {
+      manager.session_authority(state.registry, grant.credential, id)
+    })
     |> result.map_error(fn(_) { plain(403, "not a member of this session") }),
   )
   Ok(#(state, page, cookie))
@@ -354,12 +359,18 @@ fn document(status: Int, content_type: String, body: String) {
 fn authenticated(config: Config(instance), request, target) {
   // A root which has fenced readiness cannot create another control or session
   // attachment, even when a previously read credential remains valid.
-  let ready = root.ready(config.daemon, within: 1000)
+  let route = case target {
+    None -> upgrade_log.Control
+    Some(_) -> upgrade_log.Session
+  }
+  let ready = ready(config, route)
   let identity = {
     use state <- result.try(ready)
     use digest <- result.try(credential(request))
     use principal <- result.try(
-      manager.authenticate(state.registry, digest)
+      asked(route, "authenticate", fn() {
+        manager.authenticate(state.registry, digest)
+      })
       |> result.replace_error("unauthorized"),
     )
     Ok(#(state, digest, principal))
@@ -426,24 +437,31 @@ fn resident_upgrade(
   upgrade: fn(Request(mist.Connection), Attachment(instance)) ->
     Response(mist.ResponseData),
 ) {
+  let route = case role {
+    MembershipRole -> upgrade_log.Session
+    PageRole(..) -> upgrade_log.Page
+  }
+
   // Resolve metadata first, then compare the observed incarnation in one actor
   // turn. A stop/reopen between those calls must refuse this upgrade.
   let target = {
     use _ <- result.try(
       ids.parse_session_id(id) |> result.replace_error(manager.Unavailable),
     )
-    use #(principal, authority) <- result.try(manager.session_authority(
-      state.registry,
-      digest,
-      id,
-    ))
-    use view <- result.try(manager.get(state.registry, id))
-    use incarnation <- result.try(resident(view.status))
-    use instance <- result.try(manager.resolve_incarnation(
-      state.registry,
-      id,
-      incarnation,
-    ))
+    use #(principal, authority) <- result.try(
+      asked(route, "session_authority", fn() {
+        manager.session_authority(state.registry, digest, id)
+      }),
+    )
+    use view <- result.try(
+      asked(route, "get", fn() { manager.get(state.registry, id) }),
+    )
+    use incarnation <- result.try(resident(route, view.status))
+    use instance <- result.try(
+      asked(route, "resolve_incarnation", fn() {
+        manager.resolve_incarnation(state.registry, id, incarnation)
+      }),
+    )
     Ok(#(principal, authority, incarnation, instance, view.registration))
   }
   case target {
@@ -457,8 +475,15 @@ fn resident_upgrade(
         access.Participant(access.Observer) -> root.Observer
         access.Owner | access.Participant(access.Operator) -> root.Operator
       }
-      case root.acquire(config.daemon, class, within: 1000) {
-        Error(reason) -> plain(503, reason)
+      case
+        upgrade_log.timed(route, "acquire", fn() {
+          root.acquire(config.daemon, class, within: 1000)
+        })
+      {
+        Error(reason) -> {
+          upgrade_log.refused(route, "acquire", reason)
+          plain(503, reason)
+        }
         Ok(permit) -> {
           let #(connection_id, _) = ids.mint_op(config.generator())
           let response =
@@ -486,14 +511,71 @@ fn resident_upgrade(
   }
 }
 
-fn resident(status) {
-  case status {
+// A session that is not resident answers 409, which a browser reports as a
+// bare failed socket. The status is what says why, and a page whose session
+// was stopped stays refused until something opens it again.
+fn resident(route: upgrade_log.Route, status) {
+  let refusal = case status {
     manager.Resident(incarnation) -> Ok(incarnation)
-    manager.Reserved
-    | manager.Saved
-    | manager.Opening(_)
-    | manager.Stopping(_)
-    | manager.RecoveryBlocked(_) -> Error(manager.Unavailable)
+    manager.Reserved -> Error("session is reserved")
+    manager.Saved -> Error("session is saved, not open")
+    manager.Opening(_) -> Error("session is opening")
+    manager.Stopping(_) -> Error("session is stopping")
+    manager.RecoveryBlocked(_) -> Error("session recovery is blocked")
+  }
+  case refusal {
+    Ok(incarnation) -> Ok(incarnation)
+    Error(reason) -> {
+      upgrade_log.refused(route, "resident", reason)
+      Error(manager.Unavailable)
+    }
+  }
+}
+
+// The root's readiness, timed and, when the daemon is the one refusing,
+// written down. Every refusal here is the daemon's own: a root that is
+// starting, stopping, fenced or slow to answer.
+fn ready(config: Config(instance), route: upgrade_log.Route) {
+  upgrade_log.timed(route, "ready", fn() {
+    root.ready(config.daemon, within: 1000)
+  })
+  |> result.map_error(fn(reason) {
+    upgrade_log.refused(route, "ready", reason)
+    reason
+  })
+}
+
+// One registry question, timed and, when the registry could not answer it,
+// written down. A credential or membership the catalogue does not hold is the
+// caller's and is passed through unrecorded.
+fn asked(
+  route: upgrade_log.Route,
+  step: String,
+  question: fn() -> Result(answer, manager.Error),
+) -> Result(answer, manager.Error) {
+  let answer = upgrade_log.timed(route, step, question)
+  case answer {
+    Ok(_) -> Nil
+    Error(error) ->
+      case registry_refusal(error) {
+        Some(reason) -> upgrade_log.refused(route, step, reason)
+        None -> Nil
+      }
+  }
+  answer
+}
+
+fn registry_refusal(error: manager.Error) -> Option(String) {
+  case error {
+    manager.Catalogue(catalogue.Missing) -> None
+    manager.Catalogue(_) -> Some("catalogue failed")
+    manager.Unavailable -> Some("registry did not answer or is stopping")
+    manager.NotInitialized -> Some("session is not initialized")
+    manager.SessionArchived -> Some("session is archived")
+    manager.Capacity -> Some("registry is at capacity")
+    manager.StaleOperation -> Some("operation was overtaken")
+    manager.StartFailed(_) -> Some("session start failed")
+    manager.Preparation(_) -> Some("session preparation failed")
   }
 }
 
@@ -540,7 +622,7 @@ fn control_upgrade(
           handler: fn(_, message, socket) {
             case message {
               mist.Custom(Admit) ->
-                admit(config.daemon, permit, settled, fn() {
+                admit(config.daemon, upgrade_log.Control, permit, settled, fn() {
                   send(
                     socket,
                     protocol.event(
@@ -738,7 +820,7 @@ fn claim_socket(
       handler: fn(_, message, socket) {
         case message {
           mist.Custom(AdmitClaim) ->
-            admit(config.daemon, permit, settled, fn() {
+            admit(config.daemon, upgrade_log.Claim, permit, settled, fn() {
               send(
                 socket,
                 protocol.event(
@@ -851,6 +933,7 @@ fn claim_error_code(error: manager.ClaimError) -> String {
 // the ones the initializer would have named.
 fn admit(
   daemon,
+  route: upgrade_log.Route,
   permit,
   settled: process.Subject(Nil),
   then: fn() -> mist.Next(Nil, signal),
@@ -864,7 +947,10 @@ fn admit(
     // A failed transfer must not leave an unaccounted active socket actor. A
     // stop from a handler turn is terminal, and the root keeps its charge
     // until the DOWN, so the refusal frees nothing here.
-    Error(_) -> mist.stop()
+    Error(reason) -> {
+      upgrade_log.closed_early(route, "transfer", reason)
+      mist.stop()
+    }
     Ok(Nil) -> then()
   }
 }

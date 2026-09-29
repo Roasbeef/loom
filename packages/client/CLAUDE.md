@@ -118,6 +118,15 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   attachment's authority with `ui_relay.capped` and admits it with that
   role's parser permit. `UiLink` mints a ticket for a member of the
   session.
+- `daemon/upgrade_log`: the record of an upgrade the daemon itself slowed
+  or refused. `server` times each root and registry question on the way to
+  an upgrade (`ready`, `authenticate`, `session_authority`, `get`,
+  `resolve_incarnation`, `acquire`) and writes `daemon.upgrade_slow` for a
+  step of 250 ms or more and `daemon.upgrade_refused` when the daemon was
+  the one that could not answer, including a session that is not resident
+  (the 409). A socket closed before its first frame writes
+  `daemon.socket_closed_early`. Lines carry a route class, a step and a
+  fixed reason, never a credential, key, nonce or ticket.
 - `daemon/ui_socket`: the page's mist socket. It transfers the permit in
   its first handler turn and starts `web_view/component` for an observer's
   attachment or `web_view/operator_page` for an operator's, with a

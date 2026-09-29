@@ -581,6 +581,7 @@ the daemon stays blocked until a person restarts it.
 | `client/daemon/listener.gleam` | The parked Mist owner and its bounded close. |
 | `client/daemon/server.gleam` | HTTP routing, bearer authentication, the control socket and command dispatch. |
 | `client/daemon/session_socket.gleam` | The session socket: permit transfer, gateway attach, per-frame authorization, pushed frames. |
+| `client/daemon/upgrade_log.gleam` | The `daemon.upgrade_slow`, `daemon.upgrade_refused` and `daemon.socket_closed_early` lines: which step of a control, session, page or claim upgrade the daemon slowed or refused, with a fixed reason. |
 | `client/daemon/ui_http.gleam`, `ui_sessions.gleam`, `ui_socket.gleam`, `ui_relay.gleam` | The web view, with `--ui`: request checks, the ticket and UI-session actor, the page's socket and component, and the relay into the gateway. |
 | `web_view/component.gleam`, `web_view/operator_page.gleam`, `web_view/page.gleam` | The Lustre server components a page runs, and the documents served around them. |
 | `client/daemon/protocol.gleam` | The v2 control envelope and command decoder. |
