@@ -1396,12 +1396,7 @@ fn dispatch_class(
       Ok(#(
         "ui.link",
         json.Object([
-          #(
-            "path",
-            json.String(
-              page.prefix <> "/sessions/" <> id <> "?ticket=" <> issued.ticket,
-            ),
-          ),
+          #("path", json.String(page.exchange_path(id, issued.ticket))),
           #("expires_in_ms", json.Int(issued.expires_in_ms)),
         ]),
       ))

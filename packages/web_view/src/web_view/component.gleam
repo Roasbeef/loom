@@ -231,6 +231,17 @@ pub const older_path = "0\t2\t1\t0\t0"
 /// if the view moves the panel or the buttons leave the list.
 pub const strip_path = "0\t3\t0\t1\t0"
 
+/// The Lustre event path of the sidebar, on the operator's page: the sidebar
+/// is the second child of the page's frame (`view/shell`). Every handler
+/// beneath it is one session row's button, which asks the daemon for a ticket
+/// to open that session (protocol-change/051, the addendum on switching
+/// sessions). Only the operator's page draws the sidebar, and the observer's
+/// socket admits no click beneath this path
+/// (`client/daemon/ui_socket.observer_accepts`), so an observer's browser
+/// cannot ask for a switch even by forging the path. `page_events_test` and
+/// `sidebar_test` fail if the view moves the sidebar or a button leaves it.
+pub const sidebar_path = "0\t1"
+
 /// How long the sidebar's list stands before the page reads it again, in
 /// milliseconds of the transport's clock. The list changes when a session is
 /// created, renamed, archived or opened, which is rare, and a read is a
@@ -321,6 +332,14 @@ pub type Transport(socket) {
     /// `sessions_refresh_ms` after, and it must not run long: the page's
     /// runtime waits for it.
     sessions: fn() -> List(sessions.Entry),
+    /// Asks the daemon for a ticket to open the named session, for an
+    /// operator's page that pressed its row: the daemon checks that the page's
+    /// principal holds that session and that a process runs it, and mints a
+    /// ticket with the page's own ceiling. It answers `Declined` for an
+    /// observer's page without asking. It runs in the component's process
+    /// when the operator presses a row, and it must not run long: the page's
+    /// runtime waits for it.
+    open: fn(String) -> sessions.Answer,
   )
 }
 
@@ -522,6 +541,11 @@ type View(socket) {
     /// so the next one waits `sessions_refresh_ms`.
     groups: List(sessions.Group),
     listed_at: Option(Int),
+    /// The ticket exchange the daemon minted for the session the operator
+    /// chose, which `<loom-switch>` navigates to. It stays until the next
+    /// switch replaces it: the ticket is single use and lives 60 seconds, so
+    /// a value left behind is spent.
+    departure: Option(String),
     /// When the page opened or last asked for the strand's live jobs, on the
     /// transport's clock, so the next ask waits `jobs_refresh_ms` whether or
     /// not the daemon answered. A refused read is therefore not repeated on
@@ -608,6 +632,11 @@ pub type Msg(socket) {
   /// effect's own message, dispatched from the component's process, and no
   /// handler carries it, so a browser cannot send one.
   SessionsListed(entries: List(sessions.Entry))
+
+  /// The daemon answered a request to open another session. It is the
+  /// effect's own message, dispatched from the component's process, and no
+  /// handler carries it, so a browser cannot send one.
+  Linked(answer: sessions.Answer)
 }
 
 /// The Lustre application for one session's observer page.
@@ -662,6 +691,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       status: Connecting,
       groups: [],
       listed_at: None,
+      departure: None,
       jobs_asked_at: None,
       refusal: None,
       outcome: "",
@@ -831,6 +861,36 @@ pub fn update(
       ),
       effect.none(),
     )
+
+    Linked(answer:) -> #(linked(model, answer), effect.none())
+  }
+}
+
+// The daemon's answer to a request to open another session. A ticket becomes
+// the address `<loom-switch>` navigates to. A refusal is shown in the
+// composer's notice in the fixed words for its reason, and a switch that
+// succeeded says so in the same place until the browser has left.
+fn linked(model: Model(socket), answer: sessions.Answer) -> Model(socket) {
+  case answer {
+    sessions.Ticketed(path:) ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          departure: Some(path),
+          refusal: None,
+          outcome: "Opening that session.",
+        ),
+      )
+    sessions.Declined(reason:) ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          refusal: Some(sessions.reason_words(reason)),
+          outcome: "",
+        ),
+      )
   }
 }
 
@@ -1919,6 +1979,90 @@ fn took_draft(fact: session_model.SurfaceFact) -> Bool {
   case fact {
     session_model.DraftTaken(..) -> True
     _ -> False
+  }
+}
+
+/// Asks the daemon to open another session for this page's operator, when a
+/// sidebar row or a peer message's "Open" button was pressed.
+///
+/// A switch is a navigation, not a change of this page. The page asks the
+/// daemon for a ticket for the session `target` names, and the answer
+/// arrives as `Linked`: a ticket becomes the address `<loom-switch>` moves
+/// the browser to, and a refusal is worded in the composer's notice. This
+/// page's lane, draft and record are not touched, so the page left behind is
+/// as it was and stays open until its own deadline. The session named is the
+/// message's, drawn from the catalogue's list and never from the browser or
+/// from a peer's text, and the daemon checks it again against the
+/// principal's memberships, so a stale row asks for nothing it may not have.
+///
+/// Pressing the row of the session already on screen asks for nothing.
+///
+/// This is an operator's message. The observer's page draws no sidebar and
+/// carries no handler that reaches it, and the daemon's answer for an
+/// observer's page is a refusal all the same
+/// (`client/daemon/ui_socket.opened_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.switch_to(model, "0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a71")
+/// ```
+pub fn switch_to(
+  model: Model(socket),
+  target: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case target == model.shared.session {
+    True -> #(model, effect.none())
+    False -> #(
+      Model(
+        ..model,
+        view: View(..model.view, refusal: None, outcome: "Asking to open it."),
+      ),
+      asking(model.view.transport, target),
+    )
+  }
+}
+
+// The daemon's answer, in the component's process, as a message.
+fn asking(transport: Transport(socket), target: String) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  dispatch(Linked(transport.open(target)))
+}
+
+/// The address `<loom-switch>` is to move the browser to, once the daemon has
+/// minted a ticket for the session the operator chose. `None` until then.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.departure(model) == None
+/// ```
+pub fn departure(model: Model(socket)) -> Option(String) {
+  model.view.departure
+}
+
+/// The listed session `id` names, when the page may offer to open it: another
+/// session than this one, that a process runs. A peer's message names its
+/// source session, which is the peer's text and never becomes an
+/// attribute or a handler; the page offers "Open" only when that identity is
+/// one of the principal's own listed sessions, and then the button's
+/// message carries the catalogue's identity and the catalogue's name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.openable(model, "0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a71")
+/// ```
+pub fn openable(model: Model(socket), id: String) -> Option(sessions.Entry) {
+  case id == model.shared.session {
+    True -> None
+    False ->
+      model.view.groups
+      |> list.flat_map(fn(group) { group.entries })
+      |> list.find(fn(entry) {
+        entry.id == id && entry.residency == sessions.Live
+      })
+      |> option.from_result
   }
 }
 

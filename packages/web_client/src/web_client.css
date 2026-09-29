@@ -370,6 +370,12 @@
   .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-mono);}
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
+  /* A row that opens its session is a button filling the row, drawn like the
+     row's text until it is hovered or focused. */
+  li.session:has(>.session-open){padding:0;}
+  .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:4px 8px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
+  .session-open:hover{background:var(--color-bg-raised);}
+  .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .ring{display:inline-block;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
   .ring.ring-head{border-color:var(--color-current);background:color-mix(in srgb,var(--color-current) 25%,transparent);}
   .ring.ring-tail{border-color:var(--color-divider);border-top-color:var(--color-signal);transform:rotate(45deg);}
@@ -617,7 +623,8 @@
   form.control-input{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0 0;}
   form.control-input input{flex:1 1 14em;min-width:0;background:var(--color-bg);color:var(--color-fg); border:1px solid var(--color-divider);border-radius:4px;padding:5px 8px;font:13px/1.4 var(--font-sans);}
   p.card-actions{margin:8px 0 0 0;}
-  button.peer-reply{border-color:var(--color-fg-quiet);color:var(--color-fg-quiet);font-size:12px;}
+  button.peer-reply,button.peer-open{border-color:var(--color-fg-quiet);color:var(--color-fg-quiet);font-size:12px;}
+  button.peer-open{margin-left:8px;}
   /* The dock: the operator's approvals and composer, pinned to the bottom of
      the frame. It is the last item of the page's column and the transcript
      takes what is left above it, so a card appearing or the editor growing

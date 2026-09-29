@@ -1,9 +1,10 @@
 //// The session sidebar: how the principal's sessions are grouped and
 //// ordered, when a page reads the list, and what the sidebar draws.
 ////
-//// The list is read-only. These tests pin that it draws every name as
-//// escaped text, marks the session on screen, holds no handler of any kind,
-//// and leaves the paths the observer's socket admits where they were.
+//// These tests pin that the sidebar draws every name as escaped text, marks
+//// the session on screen, adds no handler but the session buttons beneath
+//// `component.sidebar_path` (`session_switch_test` reads what pressing one
+//// does), and leaves the paths the observer's socket admits where they were.
 
 import gleam/erlang/process
 import gleam/list
@@ -260,24 +261,35 @@ pub fn an_empty_list_draws_no_sidebar_test() {
   assert !string.contains(drawn, "<aside aria-label=\"Sessions\"")
 }
 
-// The sidebar is read-only: no row is a link, a button or a form, and it adds
-// no handler to either page, so the paths the observer's socket admits and
-// the operator's composer are exactly where they were.
-pub fn the_sidebar_carries_no_handler_test() {
+// The sidebar adds one handler to the operator's page for each running
+// session other than the one on screen, a click beneath its own path, and none
+// to the observer's. No row is a link or a form, and the paths the observer's
+// socket admits and the operator's composer are exactly where they were.
+pub fn the_sidebar_adds_only_its_session_buttons_test() {
   let bare =
     component.new(page_fixture.start())
     |> component.apply([lane_fixture.captured(10, None)])
   let listed = listed_page(listing())
   assert handlers(component.view(listed)) == handlers(component.view(bare))
-  assert handlers(operator_page.view(listed))
-    == handlers(operator_page.view(bare))
+
+  // `B` is the only running session that is not on screen.
+  let others = handlers(operator_page.view(bare))
+  let added =
+    list.filter(handlers(operator_page.view(listed)), fn(key) {
+      !list.contains(others, key)
+    })
+  assert list.length(added) == 1
+  assert list.all(added, fn(key) {
+    string.starts_with(key, component.sidebar_path <> "\t")
+    && string.ends_with(key, "\nclick")
+  })
 
   let assert Ok(sidebar) = sidebar_of(observer_html(listed))
   assert !string.contains(sidebar, "<a ")
-  assert !string.contains(sidebar, "<button")
   assert !string.contains(sidebar, "<form")
   assert !string.contains(sidebar, "href")
   assert !string.contains(sidebar, "onclick")
+  assert list.length(string.split(sidebar, "<button")) == 2
 }
 
 // The markup of the sidebar alone: from its opening tag to the first closing

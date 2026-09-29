@@ -29,6 +29,7 @@ import core/json
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/erlang/process
+import gleam/http/request as req
 import gleam/http/response
 import gleam/int
 import gleam/list
@@ -45,6 +46,7 @@ import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import web_view/ending
 import web_view/page
+import web_view/sessions
 import weft
 import weft/poll
 
@@ -53,6 +55,12 @@ import weft/poll
 type Upgrade {
   Stubbed
   Real
+
+  /// The upgrade asks the daemon for a ticket to open the session a header
+  /// names, as an operator's page does when its sidebar row is pressed, and
+  /// answers with the outcome: 290 and the ticket's address, or 291 and the
+  /// reason.
+  Switching
 }
 
 // A daemon whose router serves the web view, with the owner credential and
@@ -112,6 +120,8 @@ fn fixture_with(
                   access.Owner -> stub(297, "not capped")
                 }
 
+              Switching -> switching(sessions, request, attachment, ceiling)
+
               // The session is resident but its gateway is not running: the
               // relay's attach is refused, as it is when a session is
               // stopped between the router's check and the attach.
@@ -121,6 +131,7 @@ fn fixture_with(
                   request,
                   attachment,
                   gateway.Gateway(name: addresses.new()),
+                  sessions,
                   open,
                   ceiling,
                 )
@@ -148,6 +159,26 @@ fn fixture_with(
   let assert [weft.Completed(0, _)] = outcomes
     as "the fixture body ran to completion inside its own deadline"
   Nil
+}
+
+// The page's upgrade as a session switch asks for one: the same two calls the
+// page socket's transport makes, `opened_for` with the role the router
+// admitted and `ticket_for` with the attachment and ceiling it handed over,
+// for the session the request's header names.
+fn switching(tickets, request, attachment: server.Attachment(String), ceiling) {
+  let role = case attachment.authority {
+    access.Participant(access.Observer) -> ui_socket.Observing
+    access.Participant(access.Operator) | access.Owner -> ui_socket.Operating
+  }
+  let target = result.unwrap(req.get_header(request, "x-switch-target"), "")
+  case
+    ui_socket.opened_for(role, fn() {
+      ui_socket.ticket_for(attachment, tickets, ceiling, target)
+    })
+  {
+    sessions.Ticketed(path) -> stub(290, path)
+    sessions.Declined(reason) -> stub(291, string.inspect(reason))
+  }
 }
 
 fn stub(status: Int, text: String) {
@@ -363,6 +394,19 @@ fn member(
   assert access.grant(store, principal.id, session, role) == Ok(Nil)
   assert catalogue.close(store) == Ok(Nil)
   credential
+}
+
+// A member that already exists, given a role in another session.
+fn also_holds(
+  ready: root.Ready(String),
+  member: String,
+  session: String,
+  role: access.Role,
+) -> Nil {
+  let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+    as "fixture administration opens the durable catalogue"
+  assert access.grant(store, member, session, role) == Ok(Nil)
+  assert catalogue.close(store) == Ok(Nil)
 }
 
 fn referrer_policy(answer: Answer) -> Result(String, Nil) {
@@ -918,6 +962,115 @@ pub fn a_ticket_for_another_session_is_refused_and_signs_nothing_out_test() {
 
     // The first page still opens with the cookie it had.
     assert open_page(port, page).status == 200
+  })
+}
+
+// The page's socket as a switch asks for a ticket: the upgrade of the page
+// `entered` is asked for `target`, and answers with what the daemon decided.
+fn ask(port: Int, entered: Entered, target: String) -> Answer {
+  get(port, entered.page <> "/ws?csrf-token=" <> entered.nonce, [
+    host(port),
+    #("cookie", "loom_ui=" <> entered.cookie),
+    #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+    #("x-switch-target", target),
+  ])
+}
+
+// The daemon answers an operator's page holding another session with a ticket
+// for it, which is exchanged like any other into a new page that carries the
+// page's own ceiling. The page left behind stays open, and is not the one a
+// new page for the other session could displace.
+pub fn an_operators_page_opens_a_session_its_principal_holds_test() {
+  fixture_with(Switching, fn(ready, port, _) {
+    let left = create_session(ready, "left", 931)
+    let target = create_session(ready, "target", 932)
+    let operator = member(ready, "ui-switcher", left, access.Operator)
+    also_holds(ready, "ui-switcher", target, access.Operator)
+
+    let page_left = enter(port, operate(port, operator, left))
+    let asked = ask(port, page_left, target)
+    assert asked.status == 290
+    assert string.starts_with(
+      asked.body,
+      "/ui/sessions/" <> target <> "?ticket=",
+    )
+
+    // The ticket opens a page of the target session, and the page left behind
+    // is still open.
+    let page_target = enter(port, asked.body)
+    assert open_page(port, page_target).status == 200
+    assert open_page(port, page_left).status == 200
+    assert page_target.cookie != page_left.cookie
+
+    // The new page is an operator's: the ceiling the switch carried is the
+    // page's own.
+    assert ask(port, page_target, left).status == 290
+
+    // The ticket is spent once.
+    let again = get(port, asked.body, [host(port), #("sec-fetch-site", "none")])
+    assert again.status == 401
+  })
+}
+
+// A ticket is minted only for a session the page's principal holds: a session
+// it has no membership in, one that does not exist and text that is not a
+// session identity are all the same refusal, so a page learns nothing about
+// sessions it cannot open.
+pub fn a_page_cannot_open_a_session_its_principal_does_not_hold_test() {
+  fixture_with(Switching, fn(ready, port, _) {
+    let held = create_session(ready, "held", 933)
+    let other = create_session(ready, "other", 934)
+    let operator = member(ready, "ui-narrow", held, access.Operator)
+    let page = enter(port, operate(port, operator, held))
+    list.each(
+      [
+        other,
+        "01900000-0000-7000-8000-000000000000",
+        "not a session",
+        "",
+      ],
+      fn(target) {
+        let refused = ask(port, page, target)
+        assert refused.status == 291
+        assert refused.body == "NotHeld"
+      },
+    )
+  })
+}
+
+// An observer's page asks and is refused in the same words, although its
+// principal holds the target, and no ticket exists for a later redemption.
+pub fn an_observers_page_cannot_open_a_session_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let left = create_session(ready, "watching", 935)
+    let target = create_session(ready, "watched", 936)
+    let observed = enter(port, link(port, credential, left))
+    let refused = ask(port, observed, target)
+    assert refused.status == 291
+    assert refused.body == "NotHeld"
+  })
+}
+
+// A session no process runs has no page to show, so the daemon says so
+// instead of minting a ticket for a page that would be refused at its socket.
+pub fn a_saved_session_is_not_opened_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let left = create_session(ready, "running", 937)
+    let target = create_session(ready, "saved", 938)
+    let assert Ok(_) = manager.stop_session(ready.registry, target)
+      as "stop requested"
+    assert poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.get(ready.registry, target) {
+          Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
+          Ok(_) -> poll.Retry
+          Error(error) -> poll.Fail(error)
+        }
+      })
+      == poll.Answered(Nil)
+    let page = enter(port, operate(port, credential, left))
+    let refused = ask(port, page, target)
+    assert refused.status == 291
+    assert refused.body == "NotRunning"
   })
 }
 

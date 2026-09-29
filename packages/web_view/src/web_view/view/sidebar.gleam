@@ -2,15 +2,22 @@
 //// newest first, on the operator's page only.
 ////
 //// The sidebar draws a list the daemon's catalogue supplied
-//// (`web_view/sessions`) and decides nothing. It is read-only: no row is a
-//// link, a button or a handler, because a page is bound to one session by its
-//// key and opening another needs a link the page cannot make
-//// (protocol-change/051, the addendum on the session sidebar). It is the
-//// second child of the page's frame (`view/shell`), between the top bar and
-//// the centre column, in the frame's `left` slot. It has no handler, so the
-//// paths `component.older_path` and `component.strip_path` name are those of
-//// regions after it, and they count on it keeping its place as
-//// `element.none()` when it is not drawn.
+//// (`web_view/sessions`) and decides nothing. A page is bound to one session
+//// by its key, so opening another is a navigation to a new page
+//// (protocol-change/051, the addendum on switching sessions), and the row of a
+//// session that can be opened is a button whose one handler sends the
+//// message its caller gave, naming that row's session. A row is a button only
+//// where pressing it can work: a session that a process runs and that is not
+//// the one on screen. The session on screen and a saved session are text, so
+//// the sidebar never offers a press the daemon would refuse or that would do
+//// nothing. The session named by a button's message is the catalogue's
+//// identity, drawn when the tree was, and never a value the browser sends.
+////
+//// The sidebar is the second child of the page's frame (`view/shell`),
+//// between the top bar and the centre column, in the frame's `left` slot.
+//// `component.sidebar_path` names its path, and the paths `component.older_path`
+//// and `component.strip_path` name are those of regions after it, so it keeps
+//// its place as `element.none()` when it is not drawn.
 ////
 //// Each workspace is a section with its own label, which the stylesheet draws
 //// as a small eyebrow above the group and separates from the next group by a
@@ -35,21 +42,29 @@ import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/event
 import web_view/sessions.{type Entry, type Group, Live, Saved}
 
-/// The sidebar for `groups`, with the session named `current` marked.
+/// The sidebar for `groups`, with the session named `current` marked, and
+/// `open` the message a press of another live session's row sends, given that
+/// session's identity.
 ///
 /// With no group it is `element.none()`, so a page whose daemon listed
 /// nothing, or could not, draws no empty column. The result is memoized on
 /// the groups and the identity, so a page that re-read an unchanged list
-/// diffs nothing.
+/// diffs nothing. `open` is not part of the memo's key, so a caller passes
+/// the same function every time, as a constructor is.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.view(component.session_groups(model), component.session_id(model))
+/// // sidebar.view(component.session_groups(model), component.session_id(model), Opening)
 /// ```
-pub fn view(groups: List(Group), current: String) -> Element(message) {
+pub fn view(
+  groups: List(Group),
+  current: String,
+  open: fn(String) -> message,
+) -> Element(message) {
   use <- element.memo([element.ref(groups), element.ref(current)])
   case groups {
     [] -> element.none()
@@ -62,13 +77,17 @@ pub fn view(groups: List(Group), current: String) -> Element(message) {
         ],
         [
           html.h2([attribute.class("sidebar-title")], [html.text("Sessions")]),
-          ..list.map(groups, group(_, current))
+          ..list.map(groups, group(_, current, open))
         ],
       )
   }
 }
 
-fn group(group: Group, current: String) -> Element(message) {
+fn group(
+  group: Group,
+  current: String,
+  open: fn(String) -> message,
+) -> Element(message) {
   html.section([attribute.class("workspace-group")], [
     html.h3([attribute.class("workspace"), attribute.title(group.workspace)], [
       html.text(basename(group.workspace)),
@@ -78,40 +97,58 @@ fn group(group: Group, current: String) -> Element(message) {
     ]),
     html.ul(
       [attribute.class("sessions")],
-      list.map(group.entries, entry(_, current)),
+      list.map(group.entries, entry(_, current, open)),
     ),
   ])
 }
 
-fn entry(entry: Entry, current: String) -> Element(message) {
+// One row. The session on screen is marked and is text. Another session that
+// a process runs is a button, since a page for it can be opened; a saved
+// session is text, since the daemon would refuse a ticket for it and a page
+// opened for it would have nothing to show.
+fn entry(
+  entry: Entry,
+  current: String,
+  open: fn(String) -> message,
+) -> Element(message) {
   let residency = case entry.residency {
     Live -> #("live", "●", "resident")
     Saved -> #("saved", "○", "saved")
   }
-  let attributes = case entry.id == current {
-    True -> [
-      attribute.class("session"),
-      attribute.class("current"),
-      attribute.attribute("aria-current", "true"),
-    ]
-    False -> [attribute.class("session")]
-  }
-  html.li(attributes, [
-    html.span([attribute.class("session-name")], [html.text(name(entry))]),
+  let words = [
+    html.span([attribute.class("session-name")], [
+      html.text(sessions.label(entry)),
+    ]),
     html.span([attribute.class("residency"), attribute.class(residency.0)], [
       html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
         html.text(residency.1),
       ]),
       html.text(residency.2),
     ]),
-  ])
-}
-
-// A session with no name is named by its identity's first eight characters.
-fn name(entry: Entry) -> String {
-  case entry.name {
-    "" -> "Session " <> string.slice(entry.id, 0, 8)
-    named -> named
+  ]
+  case entry.id == current, entry.residency {
+    True, _ ->
+      html.li(
+        [
+          attribute.class("session"),
+          attribute.class("current"),
+          attribute.attribute("aria-current", "true"),
+        ],
+        words,
+      )
+    False, Live ->
+      html.li([attribute.class("session")], [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("session-open"),
+            attribute.title("Open this session"),
+            event.on_click(open(entry.id)),
+          ],
+          words,
+        ),
+      ])
+    False, Saved -> html.li([attribute.class("session")], words)
   }
 }
 

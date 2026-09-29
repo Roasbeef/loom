@@ -78,6 +78,20 @@ pub fn session_path(key: String, session_id: String) -> String {
   keyed_prefix(key) <> "/sessions/" <> session_id
 }
 
+/// The address that exchanges a ticket for a page of one session. `loom ui`
+/// opens it, and an operator's page navigates to it to open another session
+/// (protocol-change/051, the addendum on switching sessions). The client's
+/// `web_client/switch_rule` accepts exactly this shape and no other.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.exchange_path("S", "t") == "/ui/sessions/S?ticket=t"
+/// ```
+pub fn exchange_path(session_id: String, ticket: String) -> String {
+  prefix <> "/sessions/" <> session_id <> "?ticket=" <> ticket
+}
+
 /// The page for one session: a shell holding one server component, and the
 /// script that connects it with the tab's nonce. The component carries no
 /// `route` of its own; the script sets its `csrf-token` and then its

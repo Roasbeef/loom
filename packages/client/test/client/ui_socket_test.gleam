@@ -34,6 +34,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       shut: ui_relay.shut,
       now: fn() { 0 },
       sessions: fn() { [] },
+      open: fn(_) { sessions.Declined(sessions.NotHeld) },
     ),
   )
 }
@@ -296,5 +297,61 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
   assert ui_socket.listed_for(ui_socket.Observing, read) == []
   assert process.receive(asked, 0) == Error(Nil)
   assert ui_socket.listed_for(ui_socket.Operating, read) == [entry]
+  assert process.receive(asked, 0) == Ok(Nil)
+}
+
+// Protocol-change/051, the addendum on switching sessions: the sessions
+// sidebar is the frame's second child, so its buttons are at paths beneath
+// `component.sidebar_path`. An observer's page has no sidebar, and its socket
+// drops a click at any of those paths, at the sidebar's own path and at a path
+// that only shares its digits, so a forged click asks for no switch.
+pub fn an_observer_socket_drops_a_click_beneath_the_sidebar_test() {
+  let click_at = fn(path) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\"click\",\"event\":{}}"
+  }
+  list.each(
+    [
+      component.sidebar_path,
+      component.sidebar_path <> "\t1\t1\t0\t0",
+      component.sidebar_path <> "\t2\t1\t3\t0",
+      component.sidebar_path <> "0",
+    ],
+    fn(path) {
+      assert !ui_socket.observer_accepts(click_at(path))
+    },
+  )
+}
+
+// The operator's socket admits a click at a session button like any other
+// click, and only as a click: Lustre dispatches it only to a handler the page
+// drew there.
+pub fn an_operator_socket_admits_a_session_button_click_test() {
+  let at = fn(name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(component.sidebar_path <> "\t1\t1\t0\t0"))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  assert ui_socket.operator_accepts(at("click"))
+  assert !ui_socket.operator_accepts(at("keydown"))
+}
+
+// An observer's page asks for no ticket even if a request reached the daemon:
+// the third layer refuses without asking, so no ticket is minted. An
+// operator's page is given what the daemon decides.
+pub fn only_an_operators_page_may_ask_for_a_ticket_test() {
+  let asked = process.new_subject()
+  let ask = fn() {
+    process.send(asked, Nil)
+    sessions.Ticketed("/ui/sessions/x?ticket=y")
+  }
+  assert ui_socket.opened_for(ui_socket.Observing, ask)
+    == sessions.Declined(sessions.NotHeld)
+  assert process.receive(asked, 0) == Error(Nil)
+  assert ui_socket.opened_for(ui_socket.Operating, ask)
+    == sessions.Ticketed("/ui/sessions/x?ticket=y")
   assert process.receive(asked, 0) == Ok(Nil)
 }
