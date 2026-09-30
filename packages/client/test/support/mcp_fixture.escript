@@ -53,8 +53,8 @@ record_pid([PidFile | _Rest]) ->
 record_pid([]) ->
     ok.
 
-%% Exits cleanly when stdin closes, which is what `mcp/transport`'s
-%% `close` does first when a client stops.
+%% Exits cleanly if stdin closes. The library client retains its native
+%% port until exit and currently requests termination with SIGKILL.
 loop() ->
     case io:get_line(standard_io, "") of
         eof ->
@@ -90,8 +90,12 @@ dispatch({ok, #{<<"method">> := Method} = Message}) ->
 dispatch(_Other) ->
     ok.
 
-respond(Id, <<"initialize">>, _Params) ->
+%% The production adapter owns its identity after the library extraction.
+%% Refusing the library default makes the real-process E2E prove the override.
+respond(Id, <<"initialize">>, #{<<"clientInfo">> := #{<<"name">> := <<"loom">>}}) ->
     reply(Id, initialize_result());
+respond(Id, <<"initialize">>, _Params) ->
+    reply_error(Id, -32602, <<"expected loom client identity">>);
 respond(Id, <<"tools/list">>, _Params) ->
     reply(Id, #{<<"tools">> => tools()});
 respond(Id, <<"tools/call">>, Params) ->

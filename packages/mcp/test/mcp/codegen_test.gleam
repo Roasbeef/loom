@@ -1,12 +1,12 @@
-import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import gleam_mcp/json.{type JsonValue}
+import gleam_mcp/protocol
 import mcp/codegen
 import mcp/fixtures/github
-import mcp/protocol
 import mcp/schema
 
 // --- the injected digest -------------------------------------------------

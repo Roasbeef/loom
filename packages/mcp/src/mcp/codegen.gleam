@@ -45,8 +45,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam_mcp/protocol
 import mcp/name
-import mcp/protocol
 import mcp/schema
 
 /// The most tools one server module will carry; a longer listing refuses

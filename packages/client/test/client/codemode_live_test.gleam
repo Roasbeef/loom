@@ -49,8 +49,8 @@ import gleam/list
 import gleam/option
 import gleam/result
 import gleam/string
+import gleam_mcp/client as mcp_client
 import machine/operation
-import mcp/client as mcp_client
 import mcp/codegen
 import provider/secret
 import runtime/api
@@ -302,7 +302,7 @@ pub fn a_program_calls_a_configured_mcp_server_test() {
 // What is fake is the server's *transport* and nothing else: the client
 // actor, the handshake, the framing, the JSON-RPC correlation and the
 // result decoding are the production ones, over
-// `mcp/transport.ChannelTransport`. Spawning a third-party binary is
+// `gleam_mcp/transport.ChannelTransport`. Spawning a third-party binary is
 // what the fake replaces, and it is the one part of this path that has
 // no bearing on whether a generated façade compiles and dispatches.
 fn run_mcp(ready: Ready) -> Nil {
@@ -705,9 +705,9 @@ const proc_root = "/proc"
 
 const poll_interval_ms = 50
 
-// Two seconds of polling. `mcp/transport`'s close shuts the child's
-// stdin and then signals it, and neither the exit nor the reap is
-// synchronous with the call that asked for them.
+// Two seconds of polling. `gleam_mcp/transport` requests native termination
+// while retaining the port. Neither exit nor reap is synchronous with
+// the call that requested it.
 const teardown_polls = 40
 
 fn recorded_pid(pid_file: String) -> String {

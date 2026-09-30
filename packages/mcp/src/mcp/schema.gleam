@@ -1,7 +1,7 @@
 //// `mcp/schema` — total interpretation of a tool's `inputSchema` into a
 //// typed parameter plan.
 ////
-//// `mcp/protocol` carries a listed tool's input schema raw and untrusted;
+//// `gleam_mcp/protocol` carries a listed tool's input schema raw and untrusted;
 //// this module is the one place that reads it, and it reads it into an
 //// intermediate plan that both the code generator and the prompt-surface
 //// renderer consume. The interpretation is deliberately three-tiered and
@@ -29,12 +29,12 @@
 //// they surface as `Optional` notes and travel through the generated
 //// façade's one `options` argument, keyed by original wire name.
 
-import core/json.{type JsonValue}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set.{type Set}
+import gleam_mcp/json.{type JsonValue}
 
 /// The four scalar shapes the typed subset admits.
 pub type Scalar {

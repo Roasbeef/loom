@@ -6,7 +6,7 @@
 //// compiles the module generated from it.
 
 /// The whole `tools/list` result as compact JSON, ready for
-/// `core/json.parse` and `mcp/protocol.decode_tools_page`.
+/// `gleam_mcp/json.parse` and `gleam_mcp/protocol.decode_tools_page`.
 pub fn tools_json() -> String {
   "{\"tools\":[{\"name\":\"create_issue\",\"description\":\"Create a "
   <> "new issue in a GitHub repository.\",\"inputSchema\":{\"type\":\"ob"

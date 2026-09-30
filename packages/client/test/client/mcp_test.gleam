@@ -2,7 +2,7 @@
 //// turns into on the way out, and what a server's answer turns into on
 //// the way back.
 ////
-//// Every test here drives a *real* `mcp/client` actor over the real
+//// Every test here drives a *real* `gleam_mcp/client` actor over the real
 //// `ChannelTransport` seam, so the whole round trip — argument
 //// translation, framing, JSON-RPC correlation, result decoding, result
 //// translation — runs exactly as it does against a spawned server. What
@@ -28,17 +28,17 @@ import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/clock
 import core/ids
-import core/json
 import core/msgpack
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option
 import gleam/string
-import mcp/client as mcp_client
+import gleam_mcp/client as mcp_client
+import gleam_mcp/json
+import gleam_mcp/protocol
+import gleam_mcp/transport
 import mcp/codegen
-import mcp/protocol
-import mcp/transport
 import support/addresses
 import support/fake_mcp
 import tools/codemode as codemode_tool
@@ -307,7 +307,7 @@ pub fn structured_content_crosses_back_test() {
   mcp.stop(layer)
 }
 
-pub fn a_non_text_block_keeps_its_kind_test() {
+pub fn a_non_text_block_keeps_its_kind_and_drops_its_payload_test() {
   let layer =
     layer_of(
       always(
@@ -316,7 +316,11 @@ pub fn a_non_text_block_keeps_its_kind_test() {
             #(
               "content",
               json.Array([
-                json.Object([#("type", json.String("image"))]),
+                json.Object([
+                  #("type", json.String("image")),
+                  #("data", json.String("aW1hZ2U=")),
+                  #("mimeType", json.String("image/png")),
+                ]),
                 json.Object([
                   #("type", json.String("text")),
                   #("text", json.String("caption")),
@@ -335,7 +339,10 @@ pub fn a_non_text_block_keeps_its_kind_test() {
   assert list.length(blocks) == 2
   let assert [image, ..] = blocks as "the image block came first"
   assert field(image, "type") == Ok(msgpack.StringValue("image"))
-  assert field(image, "text") == Error(Nil)
+  assert image
+    == msgpack.MapValue([
+      #(msgpack.StringValue("type"), msgpack.StringValue("image")),
+    ])
   mcp.stop(layer)
 }
 
@@ -374,7 +381,7 @@ pub fn a_structured_value_that_does_not_cross_fails_the_result_test() {
 // the result map the value sits in.
 const deepest_carriable = 253
 
-// Both depths below survive `core/json.parse` on the way in — a JSON-RPC
+// Both depths below survive `gleam_mcp/json.parse` on the way in — a JSON-RPC
 // response costs two levels before `structuredContent`, and 254 + 2 is
 // the parser's own ceiling — which is the whole point: what a server can
 // legally *say* is deeper than what this wire can legally carry.
@@ -398,7 +405,7 @@ pub fn a_result_at_the_frame_depth_limit_still_crosses_test() {
 
 // The size half. Driven through `tool_result` directly because the ways
 // in are all bounded below the ceiling: a fake server's line has to
-// survive `mcp/stdio`'s own 16 MiB cap, and it is the *re-encoding* that
+// survive `gleam_mcp/stdio`'s own 16 MiB cap, and it is the *re-encoding* that
 // grows past the frame cap.
 pub fn a_result_too_large_for_one_frame_is_refused_test() {
   let assert framing.CapErr(code:, message:) =
@@ -490,7 +497,7 @@ pub fn a_dead_server_is_unavailable_test() {
 // --- boot: concurrent bring-up preserves catalogue order --------------------
 //
 // `mcp.start` has no seam for a fake transport — `start_one` always spawns
-// a real OS process through `mcp/transport.PortTransport` — so proving its
+// a real OS process through `gleam_mcp/transport.PortTransport` — so proving its
 // *success* path through `mcp.start` itself needs a real spoken-protocol
 // server, which only `codemode_live_test.gleam`'s escript fixture provides,
 // entangled with that suite's codemode helper and seed prerequisites that

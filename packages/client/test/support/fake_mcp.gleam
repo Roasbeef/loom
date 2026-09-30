@@ -1,6 +1,6 @@
 //// A stateless in-process MCP server for the wiring's tests.
 ////
-//// It plugs into the real `mcp/transport.ChannelTransport` seam, so the
+//// It plugs into the real `gleam_mcp/transport.ChannelTransport` seam, so the
 //// client actor under it runs its production path — framing, decoding,
 //// id correlation, the death latch — with no OS process anywhere. The
 //// answer is computed inside the connection's own `send`, which runs on
@@ -9,20 +9,20 @@
 //// iteration: no second process, no scheduling to wait on, and a whole
 //// `tools/call` round trip that is deterministic.
 ////
-//// `packages/mcp` has a scripted fake of its own for the client's own
+//// The external `gleam_mcp` library has a scripted fake for its client
 //// tests. This one is deliberately smaller: what these tests need is a
 //// server that answers correctly so that the *translation* on either
 //// side of it can be asserted on.
 
-import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, Some}
-import mcp/jsonrpc
-import mcp/protocol
-import mcp/stdio
-import mcp/transport
+import gleam_mcp/json.{type JsonValue}
+import gleam_mcp/jsonrpc
+import gleam_mcp/protocol
+import gleam_mcp/stdio
+import gleam_mcp/transport
 
 /// What the fake answers one `tools/call` with.
 pub type Answer {
@@ -32,7 +32,7 @@ pub type Answer {
   Fails(code: Int, message: String)
 }
 
-/// The transport to hand `mcp/client.start`: a server declaring `tools`,
+/// The transport to hand `gleam_mcp/client.start`: a server declaring `tools`,
 /// listing `tools`, and answering every `tools/call` through `call`.
 pub fn seam(
   tools tools: List(JsonValue),

@@ -1,5 +1,5 @@
-import core/json
 import core/msgpack
+import gleam_mcp/json
 import mcp/interchange
 
 // --- msgpack out to JSON --------------------------------------------------
@@ -13,7 +13,7 @@ pub fn scalars_cross_to_json_test() {
 }
 
 pub fn a_msgpack_integer_always_fits_json_test() {
-  // The largest thing msgpack can carry still crosses: `core/json.Int` is
+  // The largest thing msgpack can carry still crosses: `gleam_mcp/json.Int` is
   // arbitrary precision, so this direction has no range to refuse.
   assert interchange.to_json(msgpack.IntValue(interchange.max_msgpack_int))
     == Ok(json.Int(interchange.max_msgpack_int))
