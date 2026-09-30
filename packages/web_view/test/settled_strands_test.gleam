@@ -103,7 +103,7 @@ pub fn a_page_with_only_live_strands_draws_no_group_test() {
 }
 
 // With no other strand running, the reviewer and the tester are settled. They
-// are listed newest first, the group is a `details` with no `open` attribute
+// are listed in reverse row order, the group is a `details` with no `open` attribute
 // so it starts closed, and its title counts them.
 pub fn a_page_with_only_settled_strands_draws_a_closed_group_test() {
   let drawn = html(page([]))
@@ -115,7 +115,7 @@ pub fn a_page_with_only_settled_strands_draws_a_closed_group_test() {
   assert string.contains(group, "Settled · 2")
   assert !string.contains(group, "open")
 
-  // The tester joined the session after the reviewer.
+  // The tester's row follows the reviewer's, so it is listed first.
   let assert Ok(#(before_tests, after_tests)) =
     string.split_once(group, ">tests<")
   assert !string.contains(before_tests, "review")
@@ -226,7 +226,7 @@ pub fn a_settled_card_says_how_the_strand_ended_test() {
 // A strip with no settled strand draws no group, whatever `earlier` says of
 // a strip that was never built that way.
 pub fn no_settled_strands_no_group_test() {
-  let drawn = view(strip_of([], 0))
+  let drawn = view(strip_of([], 3))
   assert !string.contains(drawn, "settled-group")
   assert string.contains(drawn, "data-loom-card=\"0\"")
 }

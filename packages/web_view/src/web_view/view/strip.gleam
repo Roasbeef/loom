@@ -58,7 +58,9 @@
 //// at which the operation ended, so any figure here would be wrong.
 //// Focusing a settled strand makes it the active one, and the roster lists
 //// the active strand with the live cards, so the card moves out of the group
-//// while it is shown and back when the reader leaves it.
+//// while it is shown and back when the reader leaves it. The group's open
+//// state does not survive its emptying: focusing the only settled strand
+//// removes the group, and it is recreated closed when a strand settles again.
 ////
 //// The list's children are keyed by fixed words, `card-<n>`, `advisor` and
 //// `settled`, never by a strand's name. The group must stay the same element
@@ -117,7 +119,8 @@ pub type Strip {
     chips: List(Chip),
     /// The advisor, when the capture holds its strand.
     advisor: Option(Chip),
-    /// The newest settled strands, newest first, at most `settled_limit`.
+    /// The settled strands in reverse row order (`agent_roster.Chips`), at most
+    /// `settled_limit`.
     settled: List(Chip),
     /// How many settled strands are older than the ones in `settled` and are
     /// named only by this count.
@@ -165,7 +168,7 @@ pub fn cards(strip: Strip) -> List(Chip) {
   }
 }
 
-/// Every settled card the group draws, newest first: the cards which follow
+/// Every settled card the group draws, in the strip's order: the cards which follow
 /// the live ones in `positions`.
 ///
 /// ## Examples

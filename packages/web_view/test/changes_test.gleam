@@ -69,8 +69,28 @@ pub fn the_first_file_is_open_and_the_rest_are_collapsed_test() {
   // The fixed `open` attribute is on the first file's details alone.
   assert list.length(string.split(html, "<details")) == 3
   let assert Ok(#(first, second)) = string.split_once(html, "b.gleam")
-  assert string.contains(first, "<details class=\"changes-file\" open>")
+  assert string.contains(
+    first,
+    "<details data-lustre-key=\"file:a.gleam\" class=\"changes-file\" open>",
+  )
   assert !string.contains(second, " open")
+}
+
+// A file's `details` keeps the reader's open or closed choice in the browser,
+// so it must stay the same element when a file appears before it: each file
+// is keyed by its path, and the key does not move with its index.
+pub fn a_file_is_keyed_by_its_path_not_its_place_test() {
+  let later = drawn(board([file("b.gleam", []), file("c.gleam", [])]))
+  let earlier =
+    drawn(
+      board([file("a.gleam", []), file("b.gleam", []), file("c.gleam", [])]),
+    )
+  list.each([later, earlier], fn(html) {
+    assert string.contains(html, "data-lustre-key=\"file:b.gleam\"")
+    assert string.contains(html, "data-lustre-key=\"file:c.gleam\"")
+  })
+  assert !string.contains(later, "file:a.gleam")
+  assert string.contains(earlier, "data-lustre-key=\"file:a.gleam\"")
 }
 
 pub fn rows_carry_a_class_from_their_kind_and_their_text_test() {

@@ -118,10 +118,12 @@ pub type Chips {
     listed: List(Line),
     /// The advisor, when the capture holds its strand.
     advisor: Option(Line),
-    /// Strands that are neither listed nor the advisor: settled work. Newest
-    /// first, since a strand joins the roster after the strand that spawned
-    /// it and the roster keeps that order. A host draws as many as it has
-    /// room for and counts the rest.
+    /// Strands that are neither listed nor the advisor: settled work, in
+    /// reverse row order. Rows keep the order strands were first seen, so a
+    /// strand seen to join while the page was open comes before the strands
+    /// that were present at the first capture, and those follow the store's
+    /// key order, reversed. Rows carry no join time, so this is not a recency
+    /// order. A host draws as many as it has room for and counts the rest.
     settled: List(Line),
   )
 }
@@ -361,7 +363,7 @@ pub fn lines(
 }
 
 /// The strip as chips: `lines` for everything but the advisor, the advisor
-/// on its own, and the strands that settled out of the strip, newest first.
+/// on its own, and the strands that settled out of the strip, in reverse row order.
 ///
 /// The listed lines are exactly `lines`' when the advisor is not the active
 /// strand; when it is, it is not listed twice.

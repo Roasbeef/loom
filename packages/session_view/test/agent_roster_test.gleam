@@ -2,7 +2,7 @@
 //// read. The terminal's own tests drive `lines` through its strip
 //// (`agent_strip_test`); these pin `chips`, the web view's layout of the same
 //// rule: `main` first, working agents after it, the advisor on its own and
-//// settled strands listed newest first.
+//// settled strands listed in reverse row order.
 
 import gleam/option.{None, Some}
 import session_view/agent_roster
@@ -49,7 +49,7 @@ pub fn chips_lead_with_main_and_fold_settled_strands_test() {
   assert ids(chips.settled) == ["sub:main/lint-4d5e6f"]
 }
 
-pub fn settled_strands_are_listed_newest_first_test() {
+pub fn settled_strands_are_listed_in_reverse_row_order_test() {
   let rows = [
     row("main", agent_view.Idle),
     row("sub:main/a-1a2b3c", agent_view.Finished),
