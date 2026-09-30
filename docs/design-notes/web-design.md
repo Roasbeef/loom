@@ -301,6 +301,14 @@ strip also feels, as well as a change to #636's admitted-path rule. The owner
 ruled (2026-09-29, issue #569) that it is a later pull request of its own,
 after this redesign, and not part of step 5.
 
+That pull request landed as a collapsed group below the live cards, newest
+six with `+n earlier` as text. `agent_roster.chips` already saw every
+strand, so it needed no retention change; it now returns the settled lines
+instead of their count. A settled card names how the strand ended and shows
+no duration or time, since a finished operation's clock keeps running and no
+capture records when it ended; the group's open state is the browser's and is
+not stored (protocol-change/051, the addendum on settled strands).
+
 ### 3.2 The breadcrumb, `Esc` and the way back
 
 The breadcrumb reads `<session name> ▸ <strand>`, with `All strands` and the
