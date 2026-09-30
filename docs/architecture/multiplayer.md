@@ -81,6 +81,17 @@ invitee out of band before relying on a new member, and recovers from a
 claim redeemed by the wrong person with `loomd access rotate PRINCIPAL`,
 which revokes that credential and issues a new claim.
 
+The owner sees who has access with `loom access list` and `loom access show
+PRINCIPAL` (or the same words after `loomd access`). A principal's line gives
+its credential's fingerprint and, when a claim bound it, the instant the claim
+was redeemed (`claimed_at_ms`); an unredeemed claim shows as `claim_open` with
+its remaining life, or `claim_expired`. Those are the checks the paragraph above
+asks the owner to make, and neither command prints a claim or a credential.
+Both are refused to a member. `loom access --addr ADDRESS --token-file FILE`
+runs the same commands against a remote daemon; the token file is the owner
+credential, so this works only where the owner has copied it, and `ssh HOST loom
+access …` avoids the copy.
+
 For an operator invitation the owner can skip the claim entirely: the
 invitee runs `loom enroll --addr ADDRESS`, sends the printed digest, the
 two confirm its fingerprint over a second channel, and the owner invites

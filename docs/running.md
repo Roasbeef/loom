@@ -139,6 +139,41 @@ The owner then runs `loomd access invite SESSION_ID alice operator Alice
 --credential-digest HEX`, and the invitee launches with the stored
 credential as above.
 
+## Seeing who has access, and administering remotely
+
+`loom access` takes the same commands as `loomd access` and prints the same
+lines, and adds two that only read:
+
+```sh
+loom access list                 # one JSON line per principal
+loom access show alice           # one JSON line per session alice can reach
+```
+
+Each `list` line gives the principal's `kind` and one `credential` state:
+`active` with a `fingerprint` (and `claimed_at_ms`, the instant a claim was
+redeemed, when a claim bound it), `claim_open` with the time it has left,
+`claim_expired` for a claim nobody redeemed in time, or `none`. Compare the
+fingerprint with the invitee's out of band before relying on a new member.
+When a page is full the last line is `{"next":"PRINCIPAL"}`; pass it back as
+`--after PRINCIPAL` (`--after SESSION` for `show`). Neither command prints a
+claim or a credential, and a member's credential is refused.
+
+Both binaries run against the daemon on the same host. `loom access` also
+runs against a remote daemon, given its control address and a file holding
+the owner token:
+
+```sh
+loom access --addr wss://loom.example.com/v2/control \
+  --token-file ~/owner.token list
+```
+
+The token file must be readable by you alone. This adds no authority, but
+it only works if the owner token has been copied to the second machine, and
+the token then sits on that machine. Running `ssh HOST loom access ...`
+keeps the token where it is. In remote mode `invite` and `rotate` print a
+`claim_command` for the address you connected to unless `--claim-addr` says
+otherwise.
+
 ## The server
 
 `loomd` opens the catalogue and owner credential, then publishes one
