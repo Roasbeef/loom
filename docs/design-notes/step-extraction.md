@@ -658,7 +658,7 @@ The worst cases in the code, and the cut for each:
    its remaining steps to `updated` as it does now
    (`packages/tui/src/tui.gleam:2018` (`apply_input`)).
 
-8. **The tick** (`tui/tick.gleam:126` (`update_tick`)) is a fixed
+8. **The tick** (`tui/tick.gleam:132` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
    reconnect, activity poll, configuration, connection, then the settle
    chain. The order is kept by having the terminal's tick call the shared

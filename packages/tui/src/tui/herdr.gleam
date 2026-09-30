@@ -4,9 +4,11 @@
 //// A pane running an agent inherits three environment variables
 //// (`HERDR_ENV=1`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`), and the agent
 //// reports its lifecycle as newline-delimited JSON requests over that
-//// unix socket: `pane.report_agent_session` when the session identity
-//// first becomes known and again on every switch, then `pane.report_agent`
-//// as the agent moves between working, blocked and idle. Until a session is
+//// unix socket: `pane.report_agent` as the agent moves between working,
+//// blocked and idle — a blocked report naming what the operator is
+//// being asked to decide, in the `message` field Herdr shows beside a
+//// waiting pane — `pane.report_agent_session` when the session
+//// `pane.release_agent` when the terminal quits. Until a session is
 //// attached there is no identity to report, and nothing is sent at all.
 ////
 //// Herdr's contract splits integrations in two, and this one is on the
@@ -37,10 +39,10 @@
 //// exchange into the reporter, so the pane's agent label is gone before
 //// the process that owned it is.
 ////
-//// The module is split so the loop-facing half is pure: `state_for` maps the
-//// model onto the pane state and `encode_*` build the wire bytes, which
-//// the tests pin, while the reporter process and the socket exchange are
-//// the only effects.
+//// The module is split so the loop-facing half is pure: `state_for` maps
+//// the model onto the pane state and `encode_*` build the wire bytes,
+//// which the tests pin, while the reporter process and the socket
+//// exchange are the only effects.
 
 import core/json
 import gleam/erlang/process.{type Subject}
@@ -107,7 +109,7 @@ pub type Config {
   Config(
     /// Herdr's own pane identifier, echoed back on every report.
     pane_id: String,
-    /// The unix socket the pane's client daemon listens on.
+    /// The unix socket the pane's daemon listens on.
     socket_path: String,
     /// Wall-clock process start time in milliseconds, the seed of the
     /// ascending report sequence Herdr uses to drop reordered reports.
@@ -141,9 +143,12 @@ pub type PaneState {
 
 /// The last report sent, so the loop publishes only on a change. The
 /// session id rides along because a session switch at the same state is
-/// still a new report: resume must follow the new session.
+/// still a new report: the resume command has to follow the new session.
+/// The message rides along for the same reason: a second approval
+/// arriving while the pane is already `blocked` changes nothing else, and
+/// the pane should not keep showing the first approval's words.
 pub type Publication {
-  Publication(state: PaneState, session: String)
+  Publication(state: PaneState, session: String, message: String)
 }
 
 /// What the reporter is asked to do.
@@ -156,10 +161,9 @@ pub type Message {
 
   /// Report the session identity without a state claim. Sent when the
   /// session identity first becomes known — so a pane opened onto an idle
-  /// session still resumes — and again on every switch, because `herdr
-  /// session` resume keys off the announced id and a switch moves it.
-  /// Nothing is announced while no session is attached: an empty
-  /// `agent_session_id` names no session to resume.
+  /// session still announces — and again on every switch. Nothing is
+  /// announced while no session is attached: an empty `agent_session_id`
+  /// names nothing.
   Announce(session: String)
 
   /// Clear the pane's agent and resume command, and answer once the
@@ -275,32 +279,86 @@ pub fn state_for(
   }
 }
 
-/// Whether a derived state differs from the last one published.
+/// The message a blocked report carries, naming what the operator is
+/// being asked to decide. The first pending approval is the one the
+/// approval surface is showing; an empty answer means nothing is pending
+/// and the report's message is omitted on the wire.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.message_for([])
+/// // -> ""
+/// ```
+pub fn message_for(approvals: List(approval.Review)) -> String {
+  let pending =
+    list.filter(approvals, fn(review) { review.status == approval.Pending })
+  case pending {
+    [] -> ""
+
+    // An approval with no tool is one the panel renders from its preview
+    // alone, and `pending approval` is what names it — first in the
+    // queue or alone, so a toolless head never renders as a dangling
+    // `: preview`.
+    [first, ..rest] if first.tool == "" ->
+      case rest {
+        [] -> "pending approval"
+        _ ->
+          "pending approval (" <> int.to_string(list.length(rest)) <> " more)"
+      }
+
+    [first] -> first.tool <> ": " <> first.preview
+
+    // Several approvals are waiting: name the first and say how many
+    // others follow, since the pane shows one line and the operator
+    // should know the queue is longer than it reads.
+    [first, ..rest] ->
+      first.tool
+      <> ": "
+      <> first.preview
+      <> " ("
+      <> int.to_string(list.length(rest))
+      <> " more)"
+  }
+}
+
+/// Whether a derived report differs from the last one published. All
+/// three fields count: the state, the session the resume command names,
+/// and the message — a second approval queuing behind the first changes
+/// only the message, and a pane stuck on the first approval's words is
+/// the pane disagreeing with the operator's screen.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// herdr.changed(
-///   Some(herdr.Publication(herdr.Idle, "a")),
-///   herdr.Publication(herdr.Idle, "b"),
+///   Some(herdr.Publication(herdr.Idle, "a", "")),
+///   herdr.Publication(herdr.Idle, "b", ""),
+/// )
+/// // -> True
+///
+/// herdr.changed(
+///   Some(herdr.Publication(herdr.Blocked, "a", "bash: run it")),
+///   herdr.Publication(herdr.Blocked, "a", "bash: run it (1 more)"),
 /// )
 /// // -> True
 /// ```
 pub fn changed(last: Option(Publication), next: Publication) -> Bool {
   case last {
     Some(previous) ->
-      previous.state != next.state || previous.session != next.session
+      previous.state != next.state
+      || previous.session != next.session
+      || previous.message != next.message
     None -> True
   }
 }
 
 /// Whether this publication has to announce the session before its report.
 ///
-/// `pane.report_agent_session` is the call `herdr session` resume keys off,
-/// so the announcement follows the session id rather than the first
-/// publish: it is sent when the identity first becomes known and again
-/// whenever it moves. A publication with no session attached announces
-/// nothing, because an empty `agent_session_id` names no session to resume.
+/// The announcement follows the session id rather than the first publish:
+/// it is sent when the identity first becomes known and again whenever it
+/// moves. A publication with no session attached announces nothing,
+/// because an empty `agent_session_id` names nothing.
 ///
 /// ## Examples
 ///
