@@ -561,8 +561,20 @@ would refuse them anyway. Rendered Markdown follows the same rule: the
 engine parses an answer into a closed tree (`session_view/markdown`) and
 the view maps each variant to a fixed element (`web_view/markdown_view`).
 HTML in the source is text, a link is drawn as its label followed by its
-destination as text with no `href`, an image is text and is never loaded,
-and every class comes from a closed type.
+destination as text with no `href`, a Markdown image is text and is never
+loaded, and every class comes from a closed type.
+
+A transcript image is a different thing from a Markdown one. It is a
+`Block`'s or a `Step`'s `UserImage` or `ToolResultImage`, and the lane draws
+each raster one as an `<img>` after the row's text (`view/lane`). Its `src` is
+the one attribute the view builds that is not a class, and it is made of the
+page's own session, the engine's name for the row and a number, never of
+anything the session wrote, so the rule that no `src` comes from the session
+holds in the sense it was written for. The address is same-origin, so the
+policy's `img-src 'self'` admits it and no `data:` or `blob:` source exists.
+The daemon answers it only after the page grant, the fetch-site check and its
+own check of the bytes (`web_view/image.serve`); see the addendum on images in
+`protocol-change/051`.
 
 ### Client components inside the server component
 

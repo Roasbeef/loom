@@ -511,6 +511,11 @@ is 1 MiB for an operator's page, not the terminal's 32 MiB. The page sends
 Lustre events, and this milestone's largest is a text prompt. Pasted images,
 which are what need the terminal's limit, are not in this milestone.
 
+**Superseded (2026-09-29, see "Addendum: images in the transcript and the
+composer"): an operator's page socket now takes 12 MiB, which holds a draft and
+8 MiB of images.** The paragraph above is the rule as first written, kept so
+the reason for it stays findable.
+
 ### Two components, chosen by role at admission
 
 The page socket starts one of two Lustre applications. It chooses from the
@@ -649,7 +654,9 @@ script, no `unsafe-eval`) together with these rules for the view:
   `href`, `src`, `action` or `on*` value comes from the session. A path or
   URL in the transcript is drawn as text. List keys come from identities
   the daemon assigns (an escalation's ID and sequence) or from positions,
-  never from text.
+  never from text. (The one `src` the view builds, for a transcript image,
+  is made of the page's own session, the engine's name for a row and a
+  number; see "Addendum: images in the transcript and the composer".)
 - The observer's reason for having no composer is a fixed string from the
   component.
 
@@ -2696,3 +2703,277 @@ an identity, an observer page, and a saved session each refused in the reason's
 own word. No browser was in the loop: `<loom-switch>` navigating, the
 exchange landing on the new page and the layout restoring without a slide run
 only in one and were not run.
+
+
+## Addendum: images in the transcript and the composer (2026-09-29)
+
+**Status**: IMPLEMENTED in the change that adds it · **Raised by**: issue #569,
+the web UI redesign's images milestone (`docs/design-notes/web-design.md`)
+
+The wire already carries images. A user message holds `UserImage` blocks, a tool
+result holds `ToolResultImage` blocks, and the terminal attaches and sends
+them. The page drew only their `[image image/png]` text rows and could send
+none. This addendum records how the page draws them and how an operator's page
+sends them, and why the content security policy is unchanged.
+
+The change adds one route, one form field, one client element and one
+capability in the UI-session table. It adds no kind of socket event and
+changes no frozen Part-1 interface: the daemon's v2 protocol already had
+`prompt_content`, and the page sends it through the same command path as the
+terminal. Two earlier statements change, and they are named where they occur:
+the rule that no `src` comes from the session, and the operator socket's 1 MiB
+frame limit.
+
+### The transcript: an image is a same-origin fetch
+
+A row that carries images draws each raster image as a thumbnail after its
+text, on an observer's page and an operator's alike. The thumbnail is a
+`<details>` around an `<img>`. The browser opens and closes a `<details>`
+itself, so a click grows the picture and the page hears nothing: no script,
+no handler, and no new event for an observer's socket to admit.
+
+The `<img>`'s `src` is `<session>/image/<row>/<position>`, relative to the
+page's own address `/ui/p/<key>/sessions/<session>`. The page key is a secret
+the component never holds, and a relative reference resolves against the
+address the browser already has, so the browser sends the request to
+`/ui/p/<key>/sessions/<session>/image/<row>/<position>`.
+
+- **`<row>`** names the row the image belongs to: the key of the block or step
+  that `session_view/turns` gives it, digits, `.`, `~` and `-`
+  (`transcript_image.ref`). A step's key has a `/` between its block and its
+  call, which a path cannot carry, and the name has a `-` there.
+- **`<position>`** is the image's place among that row's images, from zero.
+
+**The policy is unchanged.** `img-src 'self'` has been in the policy since the
+proposal, and a request to the page's own origin is what it admits. No `data:`
+or `blob:` address is drawn, so neither is added.
+
+**A `src` now comes from the page.** The operator addendum's rule says no
+`href`, `src`, `action` or `on*` value comes from the session. The image's
+`src` is built from the page's own session identity, the engine's key for a
+row and a number. Those are the identities that rule already allows for list
+keys and handler messages. Nothing the session wrote, and no image's own
+declared type, is in it. The rule stands for every other attribute. The
+`alt` is a fixed string, and an image whose declared type is not one of the
+four raster types draws no picture and keeps its `[image <type>]` text row.
+
+### The route
+
+`GET /ui/p/<key>/sessions/<id>/image/<row>/<position>`, present only with
+`--ui`, answered in this order. Each refusal ends the request.
+
+1. **Host** is loopback, as for every `/ui` route.
+2. **Shape.** `<row>` is 1 to 48 characters of digits, `.`, `~` and `-`, and
+   `<position>` is an integer from 0 to 255. Anything else is not routed and
+   answers `404`, so no request costs the daemon a comparison against a long or
+   odd name.
+3. **Fetch site.** `Sec-Fetch-Site` is `same-origin` (the page's own `<img>`) or
+   `none` (an image opened on its own). `same-site`, `cross-site` and a missing
+   header answer `403`, so another page's `<img src>` aimed at the daemon cannot
+   have the browser fetch the person's images. The cookie is `SameSite=Strict`,
+   so it would not go with such a request either.
+4. **The page grant**, the same call the page itself makes: a live UI session
+   under this key, for the session in the path, whose credential still
+   authenticates and is still a member. `401` or `403` as for the page.
+5. **The page's reader.** The daemon asks the page's component whether it drew
+   an image at `<row>` and `<position>`. It answers `404` when no socket has
+   registered a reader for the page, when the socket's process is gone, when the
+   component does not answer within two seconds, and when the lane drew no image
+   there.
+6. **The bytes.** The daemon checks the image the component holds before it
+   answers with it (`web_view/image.serve`): the declared type is one of `image/png`,
+   `image/jpeg`, `image/gif` and `image/webp`; the base64 decodes; the size is at
+   most 20 MiB, the terminal's own image limit; and the bytes' magic number says
+   the declared type. A failure of the type, the decoding or the magic number
+   answers `415`, and a size over the limit answers `413`.
+
+A success is `200` with `Content-Type` set to the checked type and
+`Content-Disposition: inline`, and the response headers every `/ui` response
+carries: the policy, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer` and `Cache-Control: no-store`. The type is the
+checked one and `nosniff` is on, so the browser draws what the daemon checked
+and does not sniff another type from the bytes. SVG is not among the four
+because it is markup, and an image the browser rendered as a document from the
+page's own origin would run script under it.
+
+**Observer and operator.** Both roles are served. An observer's page draws
+pictures, so it must be able to fetch them, and a page reads only images its
+own component drew, which are rows of a transcript the page's role already
+reads. The route makes no check that depends on the role, and the tests show
+both.
+
+**How the daemon reaches the component.** The request arrives in an HTTP
+handler that holds the page's cookie and nothing of the component, and the
+component holds the lane whose images were drawn. The page socket registers,
+under the page's cookie in the UI-session table, a function that sends its own
+component a message (`ImageRequested`) with `lustre.dispatch`, and the handler
+reads that function back after its own checks (`ui_sessions.register_images`
+and `ui_sessions.images`). The message is a Lustre message sent from the
+daemon's side. A browser frame decodes to Lustre's own runtime messages and
+never to a component's, so no frame can produce one, which is why the observer
+component has the message and an observer's socket still admits nothing new.
+
+The component answers from the pieces it draws (`turns.picture`), so the daemon
+serves an image only where the page shows one. It reads and changes nothing. A
+registration is found only through a live UI session, is replaced by a reload's
+new socket, and is dropped by the table's sweep with the page. It costs one
+map entry and one closure per open page.
+
+### The composer: one field, in the submit event
+
+An operator's composer draws `<loom-attach name="images" limits="...">`
+(`packages/web_client`) inside its keyed editor. The element has an Attach image
+button that opens the file picker, listens for a paste into the composer's form,
+draws a chip with a Remove button for each image, and reads each file's bytes in
+the browser. It is form-associated, so it submits its images under its `name` as
+one field, a JSON array of base64 strings, in the same `submit` event as the
+draft. Nothing is submitted when it holds none. The event is the one the socket
+already admits from an operator (`operator_accepts`), so this adds no event and
+no admitted path, and no HTTP route performs a command.
+
+An image is sent as an upload route would send it, so the choice is recorded. An
+event carries it and no route does, because a route that took a body would be
+the first place a page's cookie alone could send a command, and the operator
+addendum's rule is that a command reaches the daemon only as an event on a socket
+opened with the cookie, the key and the nonce.
+
+**The limits.** They are the terminal's count and a lower byte total, bounded by
+what one frame carries:
+
+| Limit | Value |
+|---|---|
+| Images per prompt | 4, the terminal's `composer.max_image_attachments` |
+| Bytes of images per prompt, before base64 | 8 MiB (the terminal admits 20 MiB) |
+| Types | PNG, JPEG, GIF and WebP |
+| An operator page's inbound frame | 12 MiB, up from 1 MiB |
+| An observer page's inbound frame | 64 KiB, unchanged |
+
+The operator addendum said image prompts would need the frame limit raised
+under their own review, and this is that review. Eight MiB of images is 10.7 MiB
+as base64 text, and a draft of at most 256 KiB and the event's own framing come
+to less than 12 MiB. The permit an operator's page holds is charged for the
+operator class's own message limit of 32 MiB and its 8 MiB of delivery
+(`root.message_limit`, `connection_charge`), so the limit is inside what
+admission already reserved. The frame limit is per socket, so it does not raise
+the number of sockets, which the root's capacity bounds as before.
+
+**The daemon checks every image, and the browser is not trusted.**
+`web_view/image.admit` runs in `component.submit` before anything is sent:
+
+- more than 4 images, or a total over 8 MiB, is refused;
+- an image whose base64 does not decode is refused;
+- an image's type is read from its own magic number, and anything but the four
+  raster types is refused. The browser's declared type is never used. The
+  element checks the declared type, the count and the sizes first, so a file that
+  would be refused is not read into memory, but a declared type is a guess from a
+  file name and this check is the authority;
+- one bad image refuses the whole prompt with a notice, and nothing is sent;
+- the base64 sent on to the provider is the canonical encoding of the bytes that
+  were checked, and never the browser's text.
+
+The composition decoder refuses an `images` field that is not an array of
+strings, a repeated `images` field, and every other unknown field, as it did.
+Empty text with images is a prompt. A steer carries no images, as in the
+terminal, where an image is new prompt content and never live-turn steering. A
+session command with images is refused by the shared step, which has nowhere to
+put one. The page keeps no attachments between submits: each submit's images are
+set for that one step and cleared after it whatever it decided, so a refused
+submit whose element still holds its images sends them once with the next submit
+and never twice.
+
+**Per role.** An observer's page draws no `<loom-attach>`, has no `images` field
+in a form, and its socket drops every submit, so an observer sends nothing. The
+gateway refuses a mutation from an observer's binding whatever reaches it, as it
+always has.
+
+### What a stolen page is worth now
+
+An operator's page could already send any prompt. It can now send up to 8 MiB of
+images with one, which is one more thing the credential's holder could already do
+from `loom` in a terminal. An observer's page can read images it could already
+read as text rows, and the route serves an image only to a request that carries
+the page's cookie and key and a first-party fetch site, and only if the page's
+component drew it.
+
+### What was considered
+
+- **`img-src data:`, with the bytes in the page.** It loosens the policy, puts up
+  to 20 MiB per image in every patch, and makes the bytes session content in an
+  attribute. Not taken, by the standing rule.
+- **`blob:` URLs made in the browser.** It needs the bytes in the page first and
+  a script that turns them into a URL, and it loosens the policy. Not taken.
+- **An address by the image's digest.** The address would need a hash of every
+  image on every render, and a lookup by digest would let a page ask for an image
+  by content, including one it did not draw. The name of a row and a place is
+  cheaper and is what the page drew. Not taken.
+- **The daemon reads the durable store.** A resident holds the gateway's address
+  and no store handle (`serve.Resident`), and a second reader of the session's
+  database from an HTTP handler is a second owner of it. Not taken.
+- **A new v2 command that reads an entry.** It is a change to a frozen Part-1
+  interface for a read the component already holds in memory. Not taken.
+- **An upload route for the composer.** Named above. Not taken.
+- **A click handler for the thumbnail.** It would give an observer's socket a
+  second admitted path, and the browser already opens a `<details>`. Not taken.
+- **Sniffing the type from the bytes in the browser too.** It would repeat the
+  daemon's check in a second language with nothing to keep the two equal. The
+  element checks the declared type and the daemon reads the bytes. Not taken.
+
+### Cost
+
+- A page's socket registers a closure in the UI-session table, and a request for
+  an image waits up to two seconds for its component. A page with images draws
+  each thumbnail with its own request, and the browser loads them lazily.
+- The operator socket's frame limit is 12 MiB where it was 1 MiB. A page that
+  sends a frame that size holds it in memory for the duration of the decode and
+  the command, on the class's existing reservation.
+- The bytes of an attached image are in the browser's memory as base64 while the
+  draft is open, up to about 11 MiB, and in the component's for the length of one
+  submit.
+- Two pages of the same principal and session share nothing: an image is served
+  through the socket that registered for its own cookie, so a second page whose
+  socket has not opened answers `404` for every image until it does. A page has
+  one nonce per tab, so in practice a page has one socket.
+- An image the lane drew and the window then dropped answers `404`, and its
+  thumbnail is a broken image until the row leaves the page.
+- The thumbnail is a fixed size and does not show the image's own dimensions.
+
+### Verification
+
+`image_test` (`packages/web_view`) holds the address's shape and the row name's
+character set and length, the four types drawn and SVG and HTML not, the checks
+`serve` makes (a declared type that the bytes contradict, SVG declared as an SVG
+and as a PNG, HTML declared as a GIF, text that is not base64, the largest
+admissible image served, one byte more refused after the decode, and text longer
+than any admissible image refused before it), and the checks `admit` makes for
+the composer (the count, the total, each type from its bytes, base64, and the
+canonical encoding). `image_view_test` draws a capture holding a prompt with a
+PNG, an image declared SVG and one declared with a type holding markup, and a
+tool result with a WebP: the PNG and the WebP get thumbnails whose `src` is the
+page's own address on both pages, the others keep their escaped text rows, no
+`data:` or `blob:` appears, and the component answers for an image it drew and
+for no other, through the observer's message and the operator's.
+`turns_test` covers the rows that carry images and the lookup.
+`operator_page_test` sends an image prompt as `prompt_content` with the image
+block, an image alone as a prompt, and refuses HTML that claims to be an image,
+text that is not base64, a fifth image, a steer with an image and a slash
+command with one, each with its notice, shows a refused submit leaves no
+attachment behind, refuses each malformed `images` field, and shows the operator's
+composer draws `<loom-attach>` in its form with the daemon's limits while an
+observer's page does not. `attach_test` (`packages/web_client`) holds the
+element's rules under Node. `ui_http_test` holds the route's shape.
+`ui_sessions_test` holds the registry: found through a live page, per page,
+replaced by a reload, absent for a cookie that names no live page and for a page
+that ended. `ui_route_test`, on a real listener, shows an image served with the
+view's headers, for an observer's page and an operator's, `404` before the page's
+socket has opened, no reading through another page's reader, `415` and `413` for
+what the daemon will not send, the malformed shapes not routed, and a refusal
+without the page's own cookie, key and session, from a foreign host, from a
+`same-site` or `cross-site` fetch, after the page expired, and after the
+credential was revoked. `ui_socket_test` shows both roles' components answering
+the daemon's question and a reader answering at once once its socket is gone, and
+that the operator's frame holds a full prompt of images.
+
+No browser was in the loop. Thumbnails drawing and growing on a click, the file
+picker, a paste of an image, the chips, the form-associated field reaching the
+server in a submit, and a 10 MiB frame crossing a real socket run only in one and
+were not run.

@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:179`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:186`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:687`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:721`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -313,10 +313,33 @@ flowchart LR
   because the queue has no accept or dismiss command.
 
 The socket's inbound frame limit follows the role: 64 KiB for an
-observer's page, which is the daemon's observer limit, and 1 MiB for an
-operator's (`operator_frame_limit`), well below a terminal operator's
-32 MiB. The largest thing a page sends is a text prompt; image prompts
-are not offered from the page.
+observer's page, which is the daemon's observer limit, and 12 MiB for an
+operator's (`operator_frame_limit`), below a terminal operator's 32 MiB. The
+largest thing a page sends is a draft with up to four images and 8 MiB of them,
+at their base64 size, in one `submit` event (051, the addendum on images).
+
+## Images
+
+A row that carries images draws each raster one as a thumbnail, on both pages.
+`session_view/transcript_image` names them (a row's key and a position) and
+`view/lane` draws a `<details><img>` whose `src` is
+`<session>/image/<row>/<position>`, relative to the page's address, so the
+policy's `img-src 'self'` admits it and no `data:` or `blob:` source exists. The
+daemon answers `GET /ui/p/<key>/sessions/<id>/image/<row>/<position>` after the
+host, the shape, the fetch site (`same-origin` or `none`) and the page grant,
+by asking the page's component whether it drew that image: the page socket
+registers, under the page's cookie in `ui_sessions`, a function that sends the
+component `ImageRequested` with `lustre.dispatch`. What comes back is checked by
+`web_view/image.serve` (a raster type, base64 that decodes, at most 20 MiB, and a
+magic number that says the type) and sent with the view's headers, so the browser
+draws what was checked.
+
+An operator's composer draws `<loom-attach>`, which reads files and pasted images
+in the browser and submits them as one form field, a JSON array of base64
+strings, with the draft. `component.submit` runs `web_view/image.admit` on them,
+which reads each type from its bytes and bounds the count and the total, and the
+prompt goes out as `prompt_content` through the shared step. One bad image
+refuses the whole prompt with a notice.
 
 The role does not change while a page is open. The relay's binding
 carries the capped role, and its `check` recomputes the same minimum from
