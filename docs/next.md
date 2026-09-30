@@ -2,7 +2,8 @@
 
 The MCP extraction is based on `01f14ef8f36f1fa87f7fb7977470d8ad34c28943`
 and records source/dependency baseline
-`7b8cd39f9744181d95f856f33b8b880f982dd11e`. The earlier extraction
+`7b8cd39f9744181d95f856f33b8b880f982dd11e`, followed by fixture correction
+`b69de8672`. The earlier extraction
 candidate used an old local main; its focused tests and four reproduced
 Git-launcher failures belong to that old baseline. Current main already
 contains the launcher fix. Those results are not signoff for this head.
@@ -53,19 +54,41 @@ each with its own zero exit status. The full local `make check` also exited
 zero through the public SDK/Mist/Glisten pins with that fresh seed and the
 CI-matching patched Gleam 1.19.0-rc2 compiler. All packages, native tests,
 static gates and lint passed; lint reported zero errors and 943 warnings.
-Final publication, hosted CI and fresh Linux native MCP/configured-server
-code-mode exchanges remain pending for this baseline.
+Published extraction head `6de0188aaea01ede036082d0d5c19ce0d06dd5af`
+passed the required Linux gate and macOS advisory package check in
+[run 36767905423](https://github.com/Roasbeef/loom/actions/runs/36767905423).
+A fresh public Linux checkout built its helper and seed, then passed 102
+adapter tests, 29 native client MCP tests and both actual MCP/configured-server
+code-mode exchanges with no skips. An independent rerun of both E2Es passed
+at that same head. These results belong to `6de0188`, rather than being
+reassigned to the subsequent fixture correction.
 
-The preceding published extraction head `589a2cdff` passed the required
-hosted Linux gate and advisory macOS check in
-[run 36717464125](https://github.com/Roasbeef/loom/actions/runs/36717464125).
-Its hosted macOS e2e and aggregate gate remain red. The e2e failure at
-`worktree_diff_test.gleam:95` also fails on
-[exact base main `01f14ef8`](https://github.com/Roasbeef/loom/actions/runs/36694588061/job/109820029705)
-with the same assertion and GitFailed(128) diagnostic. The relevant code and
-workflow are unchanged; this classifies the blocker without declaring macOS
-green. Hosted results and fresh jailed MCP exchanges belong to the exact
-published head that produced them.
+The first macOS e2e attempt timed out observing the shipped multiplayer tool's
+return to idle after its final answer was visible. The original shipped-bootstrap
+target passed locally, followed by five fresh runs of the original multiplayer
+module. The hosted rerun also passed bootstrap. The first timeout remains
+intermittent with no established source cause; no deadline or assertion changed.
+
+The macOS rerun then failed `worktree_diff_test.gleam:95` with GitFailed(128),
+matching [exact base main `01f14ef8`](https://github.com/Roasbeef/loom/actions/runs/36694588061/job/109820029705).
+The earlier assumption that repository layout alone explained this failure was
+incomplete. A normal local clone still passed under Apple Git 2.39; changing
+only the Git version to 2.55 reproduced the failure. Both independent runs
+used the original source and helper: fourteen tests passed under 2.39, while
+2.55 failed one with `fatal: error reading '<checkout>/.git'`.
+
+The uninitialized fixture was beneath the source checkout, so it did not
+satisfy its outside-Git premise. Seatbelt correctly denied reads of ancestor
+repository metadata, and Git 2.55 treats that discovery denial as fatal.
+Correction `b69de8672` constructs private fixtures under `/var/tmp`, following
+the existing shipped-jobs convention and avoiding Linux's `/tmp` scratch mount.
+All fourteen assertions pass on the changed source under Git 2.55 with no skips.
+The full client gate also passed under Git 2.55: 2,398 tests, formatting and
+warning-free compilation. The documentation check exited zero.
+The sandbox grants, production error classification and test deadlines remain
+unchanged. Independent review found no additional affected assertion. Require
+hosted macOS and actual Linux enforcement checks at the correction's published
+head; the preceding macOS aggregate gate remains red.
 
 [Jevelin MCP](https://github.com/Roasbeef/jevelin-mcp) consumes the SDK and
 existing Jevelin library directly. Published application head
