@@ -1,4 +1,4 @@
-# protocol-change/057: explicit session-lifetime jobs
+# protocol-change/058: explicit session-lifetime jobs
 
 **Status**: Implemented and independently reviewed; hosted signoff required
 before landing.

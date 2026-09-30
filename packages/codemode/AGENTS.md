@@ -840,7 +840,7 @@ selection.
 
 ## Explicit session-lifetime background jobs
 
-Protocol-change/057 records the lifetime contract. Finite jobs retain their
+Protocol-change/058 records the lifetime contract. Finite jobs retain their
 existing default and fixed deadline. Bash `mode: "background", lifetime:
 "session"` and `cap/job.start_for_session` explicitly request no wall deadline.
 Code-mode callers declare `permissions.wall_s: 0`; the launching action must

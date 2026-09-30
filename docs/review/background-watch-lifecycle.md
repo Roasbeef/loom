@@ -24,7 +24,7 @@ Settled session tokens are revoked and reclaimed.
 One independent adversarial source review checked authorization, deadlines,
 clearance, drain, token reclamation and nearby stale-clock variants. It found
 no confirmed defects. A focused follow-up reviewed the real-helper and
-shipped-daemon acceptance tests and protocol-change/057, with no findings.
+shipped-daemon acceptance tests and protocol-change/058, with no findings.
 Source review and executed validation remain separate evidence.
 
 ## Executed acceptance

@@ -368,7 +368,7 @@ listing is never permission to activate a saved target.
 ## Background watcher lifetime work
 
 The background-watch-lifecycle branch is based on `01f14ef8f` after #667.
-Protocol-change/057 adds an explicitly approved session lifetime for Bash and
+Protocol-change/058 adds an explicitly approved session lifetime for Bash and
 code-mode background jobs, retaining finite defaults. It also fixes cancellation
 grace measured from a stale timestamp before a quiet receive. The installed
 `loom-herdr-update` session still runs its earlier release and finite jobs;
