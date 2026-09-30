@@ -56,7 +56,10 @@ callers own launch timing, authentication policy, and application messages.
   only `Loom` accepts). `run(arguments, program, check)` prints through a
   `Console` and answers `Succeeded` or `Failed`; the binary turns that into
   its exit status, and `check` lets `loomd` add the daemon's own decoder as a
-  further refusal. Replies are re-encoded from checked fields: a listing row
+  further refusal. `principal_lines` and `membership_lines` are the listing
+  checks on their own, and `invite_line` and `rotate_line` render the `loom
+  access` lines the terminal's `/access` overlay shows in place of granting
+  (phase 3). Replies are re-encoded from checked fields: a listing row
   keeps a 16-hex fingerprint and never a longer value, a claim is printed only
   for an invitation or rotation that asked for one, and any other field the
   daemon sent is dropped. `raw_request`, `discover` and `exchange` are the
