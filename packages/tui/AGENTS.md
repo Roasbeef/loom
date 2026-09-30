@@ -1623,6 +1623,12 @@ untouched.
 
 ## Invariants
 
+- **Speaker padding preserves cells.** Transcript rows paint their content
+  before writing the speaker-colored padding directly to the buffer. Padding
+  has a known cell width and does not pass through span width measurement.
+  `transcript_padding_test` compares the previous padded-paragraph output by
+  complete cells, including links, continuation cells and both repaint phases.
+
 - **A successful settle never changes the transcript's height in compact
   mode.** A live region and the durable projection that replaces it occupy
   the same number of wrapped rows, so a reader following the tail sees text

@@ -611,28 +611,46 @@ fn render_rows(
     |> list.drop(offset)
     |> list.take(area.size.height)
     |> list.reverse
-    |> list.map(fn(line) {
-      case line.spans {
-        [first, ..]
-          if first.style.bg == theme.user_background
-          || first.style.bg == theme.assistant_background
-        ->
-          span.Line(
-            ..line,
-            spans: list.append(line.spans, [
-              span.span_styled(
-                string.repeat(
-                  " ",
-                  int.max(0, area.size.width - span.line_width(line)),
-                ),
-                first.style,
-              ),
-            ]),
-          )
-        _ -> line
-      }
-    })
-  paragraph.render_styled(buf, area, visible)
+    |> list.index_map(fn(line, row) { #(line, row) })
+  list.fold(visible, buf, fn(buf, row) {
+    render_transcript_row(buf, area, row.0, row.1)
+  })
+}
+
+// The speaker's background continues to the right edge. Padding has a known
+// cell width, so it can be written directly instead of segmented and measured
+// as another span. Writing it after the content preserves the span renderer's
+// ordering, including its behavior at wide-grapheme boundaries.
+fn render_transcript_row(
+  buf: buffer.Buffer,
+  area: Rect,
+  line: span.Line,
+  row: Int,
+) -> buffer.Buffer {
+  let position = geometry.Position(area.position.x, area.position.y + row)
+  case line.spans {
+    [first, ..]
+      if first.style.bg == theme.user_background
+      || first.style.bg == theme.assistant_background
+    -> {
+      let width = span.line_width(line)
+
+      // Appending padding used to make a colored row occupy the whole width,
+      // so even centered and right-aligned rows started at the left edge.
+      buf
+      |> span.render_line(
+        position,
+        span.Line(..line, alignment: text.Left),
+        area.size.width,
+      )
+      |> buffer.set_string(
+        geometry.Position(position.x + width, position.y),
+        string.repeat(" ", int.max(0, area.size.width - width)),
+        first.style,
+      )
+    }
+    _ -> span.render_line(buf, position, line, area.size.width)
+  }
 }
 
 fn transcript_title(model: Model) -> String {
