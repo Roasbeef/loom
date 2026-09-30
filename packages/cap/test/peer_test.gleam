@@ -170,3 +170,29 @@ pub fn denial_and_transport_categories_are_preserved_test() {
   assert peer.roster() == Error(peer.PeerUnavailable("offline"))
   dispatch.reset()
 }
+
+pub fn custom_metadata_key_collisions_preserve_the_complete_value_test() {
+  list.each(
+    [
+      "{\"session_id\":\"" <> identity <> "\",\"label\":\"embedded\"}",
+      "{\"unavailable\":{\"reason\":\"custom\"}}",
+      "{\"unavailable\":\"custom\",\"label\":\"embedded\"}",
+    ],
+    fn(metadata) {
+      let assert Ok(expected) = report.decode_json(metadata)
+        as "the custom metadata fixture is valid JSON"
+      install(
+        "[{\"session\":\""
+        <> identity
+        <> "\",\"target_strand\":\"main\",\"metadata\":"
+        <> metadata
+        <> ",\"exported_strands\":null}]",
+      )
+      let assert Ok([peer.Link(metadata: peer.CustomMetadata(actual), ..)]) =
+        peer.roster()
+        as "partial known keys must not claim an open metadata object"
+      assert actual == expected
+    },
+  )
+  dispatch.reset()
+}

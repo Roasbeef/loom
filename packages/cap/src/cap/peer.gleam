@@ -746,20 +746,27 @@ fn decode_link(value: Value) -> Result(Link, String) {
 }
 
 fn decode_metadata(value: Value) -> Result(Metadata, String) {
-  case wire.field(value, "unavailable"), wire.field(value, "session_id") {
-    Ok(_), _ ->
+  // Metadata is open JSON; only complete known envelopes claim a typed shape.
+  let known = case value {
+    msgpack.MapValue([_]) ->
       wire.string_field(value, "unavailable") |> result.map(MetadataUnavailable)
-    Error(_), Error(_) -> Ok(CustomMetadata(value))
-    Error(_), Ok(_) -> {
-      use session <- result.try(session_field(value, "session_id"))
-      use workspace <- result.try(wire.string_field(value, "workspace"))
-      use name <- result.try(wire.string_field(value, "name"))
-      use created_at <- result.try(nonnegative(value, "created_at"))
-      use status <- result.try(wire.field(value, "status"))
-      use status <- result.try(decode_lifecycle(status))
-      Ok(Catalogue(session:, workspace:, name:, created_at:, status:))
-    }
+    msgpack.MapValue([_, _, _, _, _]) -> decode_catalogue(value)
+    _ -> Error("custom metadata")
   }
+  case known {
+    Ok(metadata) -> Ok(metadata)
+    Error(_) -> Ok(CustomMetadata(value))
+  }
+}
+
+fn decode_catalogue(value: Value) -> Result(Metadata, String) {
+  use session <- result.try(session_field(value, "session_id"))
+  use workspace <- result.try(wire.string_field(value, "workspace"))
+  use name <- result.try(wire.string_field(value, "name"))
+  use created_at <- result.try(nonnegative(value, "created_at"))
+  use status <- result.try(wire.field(value, "status"))
+  use status <- result.try(decode_lifecycle(status))
+  Ok(Catalogue(session:, workspace:, name:, created_at:, status:))
 }
 
 fn decode_lifecycle(value: Value) -> Result(Lifecycle, String) {
