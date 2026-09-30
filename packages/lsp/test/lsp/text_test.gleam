@@ -232,7 +232,8 @@ pub fn symbol_position_line_out_of_range_test() {
 
 // --- apply -------------------------------------------------------------
 
-const greet_module = "pub fn greet(name: String) -> String {
+const greet_module =
+  "pub fn greet(name: String) -> String {
   \"Hello, \" <> name
 }
 

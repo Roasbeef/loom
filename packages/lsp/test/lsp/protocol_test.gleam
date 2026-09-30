@@ -27,9 +27,11 @@ fn span(a: Int, b: Int, c: Int, d: Int) -> range.Range {
 
 // --- initialize -------------------------------------------------------------
 
-const gleam_initialize = "{\"capabilities\": {\"codeActionProvider\": true, \"completionProvider\": {\"triggerCharacters\": [\".\"]}, \"definitionProvider\": true, \"documentFormattingProvider\": true, \"documentHighlightProvider\": true, \"documentSymbolProvider\": true, \"foldingRangeProvider\": true, \"hoverProvider\": true, \"referencesProvider\": true, \"renameProvider\": {\"prepareProvider\": true}, \"signatureHelpProvider\": {\"triggerCharacters\": [\"(\", \",\", \":\"]}, \"textDocumentSync\": {\"change\": 1, \"openClose\": true, \"save\": {\"includeText\": false}}, \"typeDefinitionProvider\": true, \"workspace\": {\"fileOperations\": {\"willRename\": {\"filters\": [{\"pattern\": {\"glob\": \"**/*.gleam\", \"matches\": \"file\"}, \"scheme\": \"file\"}]}}}}}"
+const gleam_initialize =
+  "{\"capabilities\": {\"codeActionProvider\": true, \"completionProvider\": {\"triggerCharacters\": [\".\"]}, \"definitionProvider\": true, \"documentFormattingProvider\": true, \"documentHighlightProvider\": true, \"documentSymbolProvider\": true, \"foldingRangeProvider\": true, \"hoverProvider\": true, \"referencesProvider\": true, \"renameProvider\": {\"prepareProvider\": true}, \"signatureHelpProvider\": {\"triggerCharacters\": [\"(\", \",\", \":\"]}, \"textDocumentSync\": {\"change\": 1, \"openClose\": true, \"save\": {\"includeText\": false}}, \"typeDefinitionProvider\": true, \"workspace\": {\"fileOperations\": {\"willRename\": {\"filters\": [{\"pattern\": {\"glob\": \"**/*.gleam\", \"matches\": \"file\"}, \"scheme\": \"file\"}]}}}}}"
 
-const gopls_initialize = "{\"capabilities\": {\"textDocumentSync\": {\"openClose\": true, \"change\": 2, \"save\": {}}, \"completionProvider\": {\"triggerCharacters\": [\".\"]}, \"hoverProvider\": true, \"definitionProvider\": true, \"typeDefinitionProvider\": true, \"implementationProvider\": true, \"referencesProvider\": true, \"documentHighlightProvider\": true, \"documentSymbolProvider\": true, \"codeActionProvider\": true, \"codeLensProvider\": {}, \"workspaceSymbolProvider\": true, \"renameProvider\": {\"prepareProvider\": true}, \"callHierarchyProvider\": true, \"typeHierarchyProvider\": true, \"workspace\": {\"workspaceFolders\": {\"supported\": true, \"changeNotifications\": \"workspace/didChangeWorkspaceFolders\"}}}, \"serverInfo\": {\"name\": \"gopls\", \"version\": \"{\\\"GoVersion\\\":\\\"go1.26.8\\\"}\"}}"
+const gopls_initialize =
+  "{\"capabilities\": {\"textDocumentSync\": {\"openClose\": true, \"change\": 2, \"save\": {}}, \"completionProvider\": {\"triggerCharacters\": [\".\"]}, \"hoverProvider\": true, \"definitionProvider\": true, \"typeDefinitionProvider\": true, \"implementationProvider\": true, \"referencesProvider\": true, \"documentHighlightProvider\": true, \"documentSymbolProvider\": true, \"codeActionProvider\": true, \"codeLensProvider\": {}, \"workspaceSymbolProvider\": true, \"renameProvider\": {\"prepareProvider\": true}, \"callHierarchyProvider\": true, \"typeHierarchyProvider\": true, \"workspace\": {\"workspaceFolders\": {\"supported\": true, \"changeNotifications\": \"workspace/didChangeWorkspaceFolders\"}}}, \"serverInfo\": {\"name\": \"gopls\", \"version\": \"{\\\"GoVersion\\\":\\\"go1.26.8\\\"}\"}}"
 
 pub fn gleam_initialize_result_test() {
   let assert Ok(result) =
@@ -543,7 +545,8 @@ pub fn prepare_rename_default_and_null_test() {
 
 // --- call hierarchy ---------------------------------------------------------
 
-const gopls_greet_item = "{\"name\": \"Greet\", \"kind\": 12, \"detail\": \"example.com/m • main.go\", \"uri\": \"file:///go/main.go\", \"range\": {\"start\": {\"line\": 3, \"character\": 5}, \"end\": {\"line\": 3, \"character\": 10}}, \"selectionRange\": {\"start\": {\"line\": 3, \"character\": 5}, \"end\": {\"line\": 3, \"character\": 10}}, \"data\": {\"opaque\": [1, 2]}}"
+const gopls_greet_item =
+  "{\"name\": \"Greet\", \"kind\": 12, \"detail\": \"example.com/m • main.go\", \"uri\": \"file:///go/main.go\", \"range\": {\"start\": {\"line\": 3, \"character\": 5}, \"end\": {\"line\": 3, \"character\": 10}}, \"selectionRange\": {\"start\": {\"line\": 3, \"character\": 5}, \"end\": {\"line\": 3, \"character\": 10}}, \"data\": {\"opaque\": [1, 2]}}"
 
 pub fn gopls_prepare_call_hierarchy_test() {
   let raw = parse(gopls_greet_item)
