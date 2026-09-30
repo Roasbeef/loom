@@ -1,6 +1,7 @@
 # protocol-change/056: inspect delivery and interleave steering
 
-**Status**: User-authorized implementation, pending independent review.
+**Status**: Implemented; independent Sol and Astra review complete.
+Full exact-head integration gates remain required before landing.
 **Affects**: code-mode capability vocabulary and orchestration checkpoint policy.
 
 ## Problem

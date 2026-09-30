@@ -128,6 +128,37 @@ The toolchain is Gleam 1.19.0-rc2 (`.github/workflows/ci.yml`). `make
 check-affected BASE=origin/main` runs only the gates a change can affect; a
 change to the daemon's package also needs `make signoff`.
 
+## Caller-owned messaging inspection and fair delivery
+
+The messaging work is based on `e79f722de`; its implementation and focused
+validation were checked at `54aeb10b4` on 2026-09-29. The upstream web and
+issue #569 priorities below retain their order. The original handoff baseline
+above describes those upstream priorities rather than claiming this feature
+has landed or that its final integration gates have passed.
+
+The default code-mode host now exposes caller-owned pending and transcript
+inspection through `cap/peer`, existing recipient admission receipt history,
+and linked sender receipt lookup. The router supplies session and strand
+identity; `peer.roster` still means authorized outgoing remote links. A queued
+steer is eligible after the current complete tool batch and before the next
+provider request. This removes repeated-tool starvation without preemption.
+
+Inspection is read-only. Admission is not a read receipt. No new local
+post-abort retention or acknowledgement was added. Receipt cursors order hash
+keys, so pollers rescan and reconcile identities rather than treating them as
+arrival watermarks. Protocol 056 records the decision; the independent review
+and focused gate evidence are in
+[the messaging review](review/message-inspection-and-steering.md).
+
+The six ownership/pagination/abort tests, seventy-two production code-mode
+wiring tests, cap marshalling, model-visible discovery, and real jailed
+cap-channel proof passed. The next-request runtime regression checks exact
+local and remote bodies after a blocked tool completes. Full `make check` and
+platform signoff must run on the final rebased head before landing; these
+focused results do not replace them. Hosted macOS currently has a separately
+confirmed baseline `worktree_diff_test` ancestor-read failure; do not describe
+that CI as fully green or change messaging scope to work around it.
+
 ## Next actions, in order
 
 **Check open pull requests and branches first.** Work on the first lanes
