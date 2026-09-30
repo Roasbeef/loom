@@ -173,7 +173,7 @@ api_key_env = "GITHUB_TOKEN"
 # holds one of its `root_markers`, and this table is the whole of what
 # that jail grants beyond the project. The table key follows the
 # [mcp.<name>] rule ([a-z][a-z0-9_]*). A table is a language profile
-# (docs/adr/014-language-profiles.md): an extension may ship the same
+# (docs/adr/016-language-profiles.md): an extension may ship the same
 # table, and both are decoded by one decoder.
 #
 #   command       the argv, executable first. An ARRAY, never a shell

@@ -1,12 +1,12 @@
-# ADR-014: a language server is a profile, and profiles ship as extensions
+# ADR-016: a language server is a profile, and profiles ship as extensions
 
 **Status**: accepted · **Date**: 2026-09-25 · **Supersedes**: nothing ·
-**Builds on**: ADR-013 (language servers as jailed leases), ADR-007
+**Builds on**: ADR-015 (language servers as jailed leases), ADR-007
 (extension tiers) · **Issue**: #515
 
 ## The question
 
-ADR-013 made Loom's language-server path language-neutral in its
+ADR-015 made Loom's language-server path language-neutral in its
 mechanism: the protocol, the jail, settlement, rename through hashline
 and the symbol-addressed tools know no language. What a language needs
 beyond that lives in an `[lsp.<name>]` table the operator writes into
@@ -44,7 +44,7 @@ Three answers were on the table (#515):
    streaming stdio, extension state across calls, concurrent calls into
    one satellite, a conditional write for rename's stale check, and
    code-mode reach into extension tools. Each widens what extensions
-   may do. It would also move the safety properties of ADR-013
+   may do. It would also move the safety properties of ADR-015
    (hashline landing, the exfiltration gate on server-named paths, the
    enforcement probe, the lease cap) out of the one place they are
    audited.
@@ -67,7 +67,7 @@ from an extension into `loom.toml` means exactly what it meant there.
 
 ### 2. The schema grows four optional keys and one path form
 
-Each key's default is exactly the behaviour ADR-013 shipped, so every
+Each key's default is exactly the behaviour ADR-015 shipped, so every
 existing table means what it meant.
 
 - **`language_id`** — the `languageId` a document is opened with.
@@ -76,7 +76,7 @@ existing table means what it meant.
 - **`qualifier_separators`** — the separators a qualified symbol is
   split on, e.g. `["::"]`. Default `["."]`. Longest first when several
   are listed. Each is non-empty, holds no whitespace, and is not `/`.
-  `/` keeps its ADR-013 meaning of a path inside a qualifier
+  `/` keeps its ADR-015 meaning of a path inside a qualifier
   (`pkg/mod.name`).
 - **`module_case`** — how a qualifier's segments are compared with
   directory and file names. `"as-written"` (default) compares them
@@ -101,7 +101,7 @@ existing table means what it meant.
   expanded where `~/` is, against the daemon's own environment, once.
 
 Nothing else is added. Code actions, formatting and completion are
-still not built (ADR-013). Server-specific `initializationOptions` are
+still not built (ADR-015). Server-specific `initializationOptions` are
 the next candidate, and wait for a server that needs them.
 
 ### 3. Profiles ship as `profile`-tier extensions
@@ -174,12 +174,12 @@ profile whose server name `loom.toml` does not use:
   continues. The operator's own tables are never the refused side.
 - **Refusal, not first-wins.** Install order is not an order anybody
   chose, so letting one win would decide by accident.
-- **Within `loom.toml`,** a conflict stays a parse error, as ADR-013
+- **Within `loom.toml`,** a conflict stays a parse error, as ADR-015
   made it.
 
 ### 5. A profile proves itself against its own fixture
 
-A profile is a claim about a server's behaviour, and ADR-013 was built
+A profile is a claim about a server's behaviour, and ADR-015 was built
 by measuring servers rather than reading their documentation. So a
 profile extension may carry checks:
 
@@ -200,7 +200,7 @@ as a set fails that check, naming both sets, and the verb exits 1.
 
 Checks are for authors and for CI. They are not run at install or at
 boot: an install is not a benchmark, and starting a server at boot is
-what ADR-013 §1 made lazy.
+what ADR-015 §1 made lazy.
 
 ### 6. First-party profiles are extensions, not built-ins
 

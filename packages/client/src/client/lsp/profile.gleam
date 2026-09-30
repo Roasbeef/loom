@@ -1,4 +1,4 @@
-//// A language profile: one `[lsp.<name>]` table, decoded (ADR-014 §§1–2).
+//// A language profile: one `[lsp.<name>]` table, decoded (ADR-016 §§1–2).
 ////
 //// # Why this is its own module
 ////
@@ -26,7 +26,7 @@
 //// differently: the `languageId` a document is opened with, the separators
 //// a qualified symbol is split on, how a qualifier's segments meet
 //// directory names, and a one-line hint for the model. Each key's default
-//// is exactly what ADR-013 shipped before the key existed, so a table
+//// is exactly what ADR-015 shipped before the key existed, so a table
 //// written for that release means what it meant.
 ////
 //// # How a table is decoded
@@ -96,7 +96,7 @@ pub type LspPath {
 /// module `MyApp.Accounts` and keep it in `my_app/accounts.ex`, so a
 /// qualifier has to be mapped before it can meet the path.
 pub type ModuleCase {
-  /// Segments are compared as written. The default, and what ADR-013
+  /// Segments are compared as written. The default, and what ADR-015
   /// shipped.
   AsWritten
 
@@ -108,7 +108,7 @@ pub type ModuleCase {
 
 /// One configured language server: an `[lsp.<name>]` table.
 ///
-/// Servers are configured, never discovered (ADR-013 §6). Each is the
+/// Servers are configured, never discovered (ADR-015 §6). Each is the
 /// only owner of the file extensions it lists, and is jailed with the
 /// project it serves plus exactly the extra roots written here.
 ///
@@ -313,7 +313,7 @@ pub fn decode_server(
   use Nil <- result.try(disjoint_roots(place, readable, writable))
   use env <- result.try(env(fields, place))
 
-  // The profile keys. Each default is the behaviour ADR-013 shipped
+  // The profile keys. Each default is the behaviour ADR-015 shipped
   // before the key existed, so an older table decodes to a server that
   // behaves exactly as it did.
   use language_id <- result.try(language_id(fields, place, extensions))
@@ -773,7 +773,7 @@ const language_id_tail = "abcdefghijklmnopqrstuvwxyz0123456789+._-"
 const max_language_id_length = 40
 
 // The `languageId` a document is opened with. The default is the one
-// ADR-013 hard-wired, the first extension without its dot, and is not
+// ADR-015 hard-wired, the first extension without its dot, and is not
 // held to the grammar: an extension such as `.h++` is a legal suffix
 // today, and a table that names none of the new keys must keep the id it
 // had. A written id is held to a grammar every id the LSP specification
@@ -904,7 +904,7 @@ const max_hint_bytes = 200
 // the cached prefix of every request. One printable line keeps it from
 // forging structure there (a line break could start what reads as a new
 // paragraph of instructions) and 200 bytes bounds what one server adds to
-// every request of every session that configures it (ADR-014, "What it
+// every request of every session that configures it (ADR-016, "What it
 // costs"). The line break is refused by name before the general control
 // check, since it is the one an operator is likely to write.
 fn hint(

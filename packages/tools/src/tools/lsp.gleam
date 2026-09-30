@@ -99,7 +99,7 @@ pub type RenameMode {
 /// workspace should pay nothing for them (ADR-015 §6).
 ///
 /// `hints` are the configured servers' profile hints, as `#(server name,
-/// hint)` in the order they should be read (ADR-014 §2). Each tells the
+/// hint)` in the order they should be read (ADR-016 §2). Each tells the
 /// model how its language spells a qualified name, and they are appended
 /// once, as one "Language notes:" block, to `lsp_definition`'s description
 /// and nowhere else: every other symbol-taking tool addresses symbols the

@@ -2286,7 +2286,7 @@ fn lsp_places() -> profile.Places {
 
 // The profile hints of the servers the plane serves, as
 // `#(server name, hint)` in name order, for `lsp_definition`'s
-// description (ADR-014 §2). They are read from the wired servers rather
+// description (ADR-016 §2). They are read from the wired servers rather
 // than the whole catalogue, so a server refused at boot for roots that
 // would not resolve does not describe a language the session cannot ask
 // about.

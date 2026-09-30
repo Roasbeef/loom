@@ -319,7 +319,7 @@ was asked.
   `Never`/`Exclusive`, the other six `Safe`/`Concurrent`, and all seven ask
   the broker for nothing: the door clears its own server.
   `tools(door, hints)` takes the configured servers' profile hints as
-  `#(server name, hint)` (ADR-014 §2) and appends them once, as a
+  `#(server name, hint)` (ADR-016 §2) and appends them once, as a
   "Language notes:" block of `name: hint` lines, to `lsp_definition`'s
   description and to no other tool's. **Invariant: with no hints every
   description is byte-identical to the hint-less one**, since the tool

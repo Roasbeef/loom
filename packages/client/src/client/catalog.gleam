@@ -103,7 +103,7 @@
 ////
 //// An `[lsp.<name>]` table is a language profile, and it is not decoded
 //// here: `client/lsp/profile` owns the one decoder, which an extension
-//// manifest's profiles will go through too (ADR-014 §1). Its key follows
+//// manifest's profiles will go through too (ADR-016 §1). Its key follows
 //// the `[mcp.<name>]` grammar, so one server name reads the same
 //// wherever the harness prints it. The table is the language server's
 //// whole authority: its `readable` and `writable` roots are what the
@@ -884,7 +884,7 @@ fn mcp_command(
 // must be a table of [lsp.<name>] tables, and they are decoded by
 // `client/lsp/profile`, the one decoder an extension manifest's profiles
 // will go through as well, so the two can never accept different things
-// (ADR-014 §1).
+// (ADR-016 §1).
 fn parse_lsp_servers(
   document: Dict(String, tom.Toml),
 ) -> Result(List(LspServer), String) {

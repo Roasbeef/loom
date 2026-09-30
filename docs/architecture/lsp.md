@@ -42,7 +42,7 @@ because an operator configured one.
 
 What a language spells differently is data, not code. Two facts that
 used to be hard-wired defaults are now keys of a server's table, its
-**language profile** (`docs/adr/014-language-profiles.md`), and each
+**language profile** (`docs/adr/016-language-profiles.md`), and each
 key's default is exactly the behaviour it replaced, so a table written
 before the keys existed means what it meant:
 
@@ -640,8 +640,8 @@ at boot, as does a relative path, a `..` component, or a bare `~/` or
 `<cache>/`.
 
 Four optional keys carry what a language spells differently. They make
-the table a **language profile** (ADR-014), and each default is what
-ADR-013 shipped before the key existed:
+the table a **language profile** (ADR-016), and each default is what
+ADR-015 shipped before the key existed:
 
 | Key | Default | What it says |
 |---|---|---|
@@ -661,7 +661,7 @@ that with a test.
 
 `client/lsp/profile` decodes the tables, and `client/catalog` hands it
 the `[lsp]` table's entries. It is the one decoder, which an extension
-that ships a profile will go through too (ADR-014 §1), and it is pure:
+that ships a profile will go through too (ADR-016 §1), and it is pure:
 the daemon's `HOME` and cache directory reach it as `profile.Places`,
 read by `client/serve`. `docs/examples/loom.toml` carries the annotated
 version.

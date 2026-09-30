@@ -4709,7 +4709,7 @@ retains its collection margin so a verdict at the proof cutoff can be observed.
 
 ## Language servers
 
-ADR-015 is the ruling, and ADR-014 §§1–2 makes a server's table a
+ADR-015 is the ruling, and ADR-016 §§1–2 makes a server's table a
 language profile; these are the pieces that carry both in this package.
 
 - `client/lsp/profile.{LspServer, ProjectAccess, LspPath, ModuleCase,

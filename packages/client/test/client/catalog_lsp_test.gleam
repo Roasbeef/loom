@@ -487,7 +487,7 @@ pub fn a_cache_root_meets_the_home_root_rules_test() {
 
 // --- the profile keys ----------------------------------------------------------
 
-// A table naming none of the four keys decodes to exactly what ADR-013
+// A table naming none of the four keys decodes to exactly what ADR-015
 // shipped: the first extension as the id, `.` as the one separator,
 // qualifiers compared as written, and no hint.
 pub fn the_profile_keys_default_to_the_old_behaviour_test() {
