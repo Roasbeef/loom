@@ -1079,6 +1079,94 @@ pub fn snapshot_register_value_decoder() -> decode.Decoder(
   decode.success(SnapshotRegisterValue(value:))
 }
 
+pub type SnapshotRegisterPageBudget {
+  SnapshotRegisterPageBudget(cell_count: Int, total_bytes: Int)
+}
+
+pub fn snapshot_register_page_budget(
+  namespace namespace: String,
+  prefix prefix: String,
+  after_key after_key: String,
+  prefix_upper prefix_upper: String,
+  page_size page_size: Int,
+) {
+  let sql =
+    "SELECT COUNT(*) AS cell_count,
+  CAST(COALESCE(SUM(value_bytes + key_bytes + ns_bytes + 65), 0) AS INTEGER) AS total_bytes
+FROM (
+  SELECT length(value) AS value_bytes, length(CAST(key AS BLOB)) AS key_bytes,
+    length(CAST(ns AS BLOB)) AS ns_bytes
+  FROM registers
+  WHERE ns = ?1
+  AND key >= MAX(CAST(?2 AS TEXT), CAST(?3 AS TEXT))
+  AND key <> ?3 AND key <
+    CASE WHEN CAST(?4 AS TEXT) = '' THEN CAST('' AS BLOB)
+    ELSE CAST(?4 AS TEXT) END
+  ORDER BY key LIMIT ?5
+)"
+  #(
+    sql,
+    [
+      dev.ParamString(namespace),
+      dev.ParamString(prefix),
+      dev.ParamString(after_key),
+      dev.ParamString(prefix_upper),
+      dev.ParamInt(page_size),
+    ],
+    snapshot_register_page_budget_decoder(),
+  )
+}
+
+pub fn snapshot_register_page_budget_decoder() -> decode.Decoder(
+  SnapshotRegisterPageBudget,
+) {
+  use cell_count <- decode.field(0, decode.int)
+  use total_bytes <- decode.field(1, decode.int)
+  decode.success(SnapshotRegisterPageBudget(cell_count:, total_bytes:))
+}
+
+pub type SnapshotRegisterPageHeaders {
+  SnapshotRegisterPageHeaders(key: String, seq: Int, value_bytes: Option(Int))
+}
+
+pub fn snapshot_register_page_headers(
+  namespace namespace: String,
+  prefix prefix: String,
+  after_key after_key: String,
+  prefix_upper prefix_upper: String,
+  page_size page_size: Int,
+) {
+  let sql =
+    "SELECT key, seq, length(value) AS value_bytes
+FROM registers
+WHERE ns = ?1
+AND key >= MAX(CAST(?2 AS TEXT), CAST(?3 AS TEXT))
+AND key <> ?3 AND key <
+  CASE WHEN CAST(?4 AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(?4 AS TEXT) END
+ORDER BY key LIMIT ?5"
+  #(
+    sql,
+    [
+      dev.ParamString(namespace),
+      dev.ParamString(prefix),
+      dev.ParamString(after_key),
+      dev.ParamString(prefix_upper),
+      dev.ParamInt(page_size),
+    ],
+    snapshot_register_page_headers_decoder(),
+  )
+}
+
+pub fn snapshot_register_page_headers_decoder() -> decode.Decoder(
+  SnapshotRegisterPageHeaders,
+) {
+  use key <- decode.field(0, decode.string)
+  use seq <- decode.field(1, decode.int)
+  use value_bytes <- decode.field(2, decode.optional(decode.int))
+  decode.success(SnapshotRegisterPageHeaders(key:, seq:, value_bytes:))
+}
+
 pub type SnapshotRegisterHeader {
   SnapshotRegisterHeader(seq: Int, value_bytes: Option(Int))
 }
