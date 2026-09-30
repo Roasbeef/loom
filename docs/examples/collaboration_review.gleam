@@ -53,7 +53,8 @@ fn review(input: Review) -> Result(Nil, String) {
         #("run", report.string(input.run)),
       ]),
     )
-    |> result.map(fn(_) { Nil }),
+    |> result.map(fn(_) { Nil })
+    |> result.map_error(fn(_) { "Progress publication refused." }),
   )
   use joined <- result.try(
     strand.wait([security, performance], within_ms: 1000)
@@ -82,6 +83,7 @@ fn review(input: Review) -> Result(Nil, String) {
     ]),
   )
   |> result.map(fn(_) { Nil })
+  |> result.map_error(fn(_) { "Progress publication refused." })
 }
 
 fn has_pending(joined: List(strand.Waited)) -> Bool {

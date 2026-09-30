@@ -2655,12 +2655,17 @@ fn run_message_inspection(ready: Ready) -> Nil {
     <> "    Ok(id), Ok(source), Ok(unlinked) -> inspect(id, source, unlinked)\n    _, _, _ -> report.failure(\"bad persisted identity\")\n  }\n}\n"
     <> "fn inspect(id: peer.EntryId, source: peer.SessionId, unlinked: peer.SessionId) -> report.Outcome {\n"
     <> "  case peer.inbox(after: peer.first_pending(), limit: 12), peer.inbox_get(id: id), peer.history(before: peer.first_history(), limit: 64), peer.received(after: peer.first_receipt(), limit: 64), peer.received_get(source_session: source, source_strand: \"reviewer\", message_id: \"proof\"), peer.roster(), peer.sent_receipt(session: unlinked, message_id: \"proof\") {\n"
-    <> "    Ok(pending), Ok(Some(peer.Pending(id: exact, queue: peer.Steer, ..))), Ok(history), Ok(received), Ok(Some(peer.Admitted(request:, ..))), Ok([]), Error(peer.PeerDenied(..)) -> {\n"
-    <> "      case exact == id && list.length(pending.items) == 2 && list.length(history.items) == 1 && list.length(received.items) == 1 && request.body == \"remote receipt proof\" && peer.entry_id_to_string(exact) == \""
+    <> "    Ok(pending), Ok(Some(peer.Pending(id: exact, queue: peer.Steer, payload: local_payload))), Ok(history), Ok(received), Ok(Some(peer.Admitted(request:, ..))), Ok([]), Error(peer.PeerDenied(..)) -> {\n"
+    <> "      case exact == id && list.length(pending.items) == 2 && list.length(history.items) == 1 && list.length(received.items) == 1 && pending_text(local_payload) == Ok(\"local pending proof\") && list.any(pending.items, fn(input) { case input { peer.Pending(payload:, ..) -> pending_text(payload) == Ok(\"remote receipt proof\") peer.Materialized(..) -> False } }) && list.any(history.items, fn(input) { case input { peer.Materialized(entry:, ..) -> materialized_text(entry) == Ok(\"own transcript proof\") peer.Pending(..) -> False } }) && list.any(received.items, fn(item) { let peer.Admitted(page_request, _) = item.receipt page_request.body == \"remote receipt proof\" }) && request.body == \"remote receipt proof\" && peer.entry_id_to_string(exact) == \""
     <> id
     <> "\" { True -> report.text(\"inspection channel proved\") False -> report.failure(\"missing owned body\") }\n"
     <> "    }\n    _, _, _, _, _, _, _ -> report.failure(\"inspection capability refused\")\n  }\n}\n"
-  let source = "import gleam/option.{Some}\n" <> source
+  let source =
+    source
+    <> "fn pending_text(payload: report.Value) -> Result(String, Nil) { use message <- result.try(report.field(payload, \"payload\")) message_text(message) }\n"
+    <> "fn materialized_text(entry: report.Value) -> Result(String, Nil) { use message <- result.try(report.field(entry, \"message\")) message_text(message) }\n"
+    <> "fn message_text(message: report.Value) -> Result(String, Nil) { use content <- result.try(report.field(message, \"content\")) use blocks <- result.try(report.as_list(content)) case blocks { [block] -> { use text <- result.try(report.field(block, \"text\")) report.as_string(text) } _ -> Error(Nil) } }\n"
+  let source = "import gleam/option.{Some}\nimport gleam/result\n" <> source
   list.each(["workspace", "orchestration"], fn(selection) {
     let outcome =
       codemode_tool.tool_for(mode).run(

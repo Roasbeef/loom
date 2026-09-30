@@ -2585,6 +2585,7 @@ fn number_endpoint(
       )
       execution.progress(report.int(sum))
       |> result.map(fn(_) { Nil })
+      |> result.map_error(fn(_) { \"progress publication failed\" })
     },
   )
   |> result.map_error(fn(_) { \"invalid endpoint\" })
@@ -2736,14 +2737,16 @@ fn run_collaboration_exchange(
     start_harness_on(Hangs, fn(config) { config }, wall, wall, fn(sess) { sess })
   let second =
     start_harness_on(Hangs, fn(config) { config }, wall, wall, fn(sess) { sess })
-  let first_peer = agency.peer_endpoint(first.config, "specialist-a")
-  let second_peer = agency.peer_endpoint(second.config, "specialist-b")
+  let first_peer =
+    agency.peer_endpoint(first.config, "00000000-0000-7000-8000-000000000001")
+  let second_peer =
+    agency.peer_endpoint(second.config, "00000000-0000-7000-8000-000000000002")
   let directory =
     peers.Directory(
       resolve: fn(id) {
         case id {
-          "specialist-a" -> Ok(first_peer)
-          "specialist-b" -> Ok(second_peer)
+          "00000000-0000-7000-8000-000000000001" -> Ok(first_peer)
+          "00000000-0000-7000-8000-000000000002" -> Ok(second_peer)
           _ -> Error("not resident")
         }
       },
@@ -2816,7 +2819,11 @@ fn run_collaboration_exchange(
       first_record.id,
       codemode_tool.SendTo(
         "finding",
-        finding("specialist-b", "one", "security found a gap"),
+        finding(
+          "00000000-0000-7000-8000-000000000002",
+          "one",
+          "security found a gap",
+        ),
       ),
       0,
     )
@@ -2833,7 +2840,7 @@ fn run_collaboration_exchange(
   let assert Ok(_) =
     second_peer.call(
       peer_mail.Revoke(peer_mail.Grant(
-        "specialist-a",
+        "00000000-0000-7000-8000-000000000001",
         "main",
         "main",
         peer_mail.BusyOnly,
@@ -2846,7 +2853,11 @@ fn run_collaboration_exchange(
       first_record.id,
       codemode_tool.SendTo(
         "finding",
-        finding("specialist-b", "revoked", "security found a gap"),
+        finding(
+          "00000000-0000-7000-8000-000000000002",
+          "revoked",
+          "security found a gap",
+        ),
       ),
       0,
     )
@@ -2864,7 +2875,11 @@ fn run_collaboration_exchange(
       second_record.id,
       codemode_tool.SendTo(
         "finding",
-        finding("specialist-a", "early-reply", "performance confirmed it"),
+        finding(
+          "00000000-0000-7000-8000-000000000001",
+          "early-reply",
+          "performance confirmed it",
+        ),
       ),
       0,
     )
@@ -2879,7 +2894,11 @@ fn run_collaboration_exchange(
       first_record.id,
       codemode_tool.SendTo(
         "finding",
-        finding("specialist-b", "two", "security found a gap"),
+        finding(
+          "00000000-0000-7000-8000-000000000002",
+          "two",
+          "security found a gap",
+        ),
       ),
       0,
     )
@@ -2889,7 +2908,11 @@ fn run_collaboration_exchange(
       second_record.id,
       codemode_tool.SendTo(
         "finding",
-        finding("specialist-a", "reply", "performance confirmed it"),
+        finding(
+          "00000000-0000-7000-8000-000000000001",
+          "reply",
+          "performance confirmed it",
+        ),
       ),
       0,
     )
@@ -2899,13 +2922,13 @@ fn run_collaboration_exchange(
     as "the second satellite must receive its peer admission receipt"
   assert_queued_peer_message(
     second,
-    "specialist-a",
+    "00000000-0000-7000-8000-000000000001",
     "main",
     "security found a gap",
   )
   assert_queued_peer_message(
     first,
-    "specialist-b",
+    "00000000-0000-7000-8000-000000000002",
     "main",
     "performance confirmed it",
   )
