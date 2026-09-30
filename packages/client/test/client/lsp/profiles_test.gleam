@@ -1,4 +1,4 @@
-//// ADR-014 §4's precedence, driven with values: which servers a session
+//// ADR-016 §4's precedence, driven with values: which servers a session
 //// runs when `loom.toml` and installed profile extensions both name some,
 //// and which installed profiles are refused. Also the profile's JSON form,
 //// which an install record keeps.

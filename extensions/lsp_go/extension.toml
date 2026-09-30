@@ -1,4 +1,4 @@
-# gopls as a Loom language profile (ADR-014). The [lsp.go] table is
+# gopls as a Loom language profile (ADR-016). The [lsp.go] table is
 # exactly what `loom.toml` would carry; installing this extension
 # approves it, and `loom ext check lsp_go` proves it against the module
 # in fixture/.

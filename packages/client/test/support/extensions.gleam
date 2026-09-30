@@ -282,7 +282,7 @@ pub fn hostile_secret_host() -> List(#(String, String)) {
   )
 }
 
-/// A profile extension (ADR-014 §3): one `gopls` profile, one check, the
+/// A profile extension (ADR-016 §3): one `gopls` profile, one check, the
 /// fixture the check runs against, and the clutter a repository carries
 /// beside them. A stray `.gleam` file under `src/` and a `docs/` note are
 /// there to be pruned, never vetted or kept: a profile's installed tree is

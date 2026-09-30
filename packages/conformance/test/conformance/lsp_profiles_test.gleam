@@ -1,11 +1,11 @@
-//// The first-party language profiles (ADR-014 §6) proving themselves, the
+//// The first-party language profiles (ADR-016 §6) proving themselves, the
 //// way `loom ext check` proves them: installed from the repository's own
 //// `extensions/` directory, then each profile's `[[check]]`s asked of its
 //// real server through the session's jailed manager.
 ////
 //// Nothing here is a second path. The install is `install.run` with a
 //// build seam that fails the test if it is called, because a profile
-//// compiles nothing (ADR-014 §3). The run is `client/extension/check.run`,
+//// compiles nothing (ADR-016 §3). The run is `client/extension/check.run`,
 //// the function the CLI verb calls: the same scratch workspace under the
 //// extensions root's staging area, the same helper pool and broker over
 //// the build plane's base, the same enforcement probe, and the same

@@ -1,5 +1,5 @@
 //// `loom ext check`: a profile extension proving itself against its own
-//// fixture, through the jail a session would give its server (ADR-014
+//// fixture, through the jail a session would give its server (ADR-016
 //// §5).
 ////
 //// A profile is data an operator approved: a command, the files it
@@ -290,7 +290,7 @@ fn checkable(
             name
             <> " declares no [[check]], so there is nothing to run; a "
             <> "profile proves itself with checks against a fixture "
-            <> "(ADR-014 §5)",
+            <> "(ADR-016 §5)",
           )
         manifest.Profile, [_, ..] -> Ok(#(written, decoded, tree))
       }

@@ -544,7 +544,7 @@ fn verify_command(arguments: List(String)) -> Result(List(String), String) {
 
 // --- check -------------------------------------------------------------------
 
-// A profile proving itself (ADR-014 §5). The refusals — an extension that
+// A profile proving itself (ADR-016 §5). The refusals — an extension that
 // does not load, a jailed one, a profile with no checks — come back from
 // `check.run` before anything is started, so they cost nothing and read
 // like `verify`'s. A run with a failed check is an exit-1 answer whose

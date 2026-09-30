@@ -1329,7 +1329,7 @@ jobs:
           "$(go env GOPATH)/bin/gopls" version
 
       # rust-analyzer, rust-src and the standard library's dependencies for
-      # the first-party lsp_rust profile (ADR-014 §6), which `make e2e`
+      # the first-party lsp_rust profile (ADR-016 §6), which `make e2e`
       # checks in the jail beside lsp_gleam and lsp_go; without them it
       # skips, and this lane's census refuses the skip. The script is
       # shared with the Linux client bucket and says why each piece is

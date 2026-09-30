@@ -60,7 +60,7 @@ repository,
 | 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **Built**: the satellite host, the frame pair (`protocol-change/012-hook-call.md`, ACCEPTED), the typed hook vocabulary, the bus, the runtime slots, and the manifest and record halves, with the bus's invoker wired onto the session's hosts |
 | 4 | Tier H: the harness-resident loader, the artifact import check, rollback | Freeze proven (#204); loader deferred (#32). #33's two mechanisms are gated tests over the package graph, both prelude source trees and both vetting seams, recorded in `docs/review/extension-zone.md`. The loader is deferred because no surveyed extension needs in-VM residency |
 | 5 | LSP and DAP as extensions | Named, not commissioned (#26) |
-| P | The profile tier: language-server profiles shipped as data (ADR-014 §§3–4) | **Built**: `tier = "profile"`, an install that neither vets nor compiles, record format 3, the load's profile comparison, the session's precedence over `loom.toml`, the `[[check]]` runner and `loom ext check` (ADR-014 §5), and the first-party profiles `extensions/lsp_gleam`, `lsp_go` and `lsp_rust` (§6) |
+| P | The profile tier: language-server profiles shipped as data (ADR-016 §§3–4) | **Built**: `tier = "profile"`, an install that neither vets nor compiles, record format 3, the load's profile comparison, the session's precedence over `loom.toml`, the `[[check]]` runner and `loom ext check` (ADR-016 §5), and the first-party profiles `extensions/lsp_gleam`, `lsp_go` and `lsp_rust` (§6) |
 
 A section that describes phase 3 or later says so in its first sentence,
 so a reader who wants only the tree as it stands can skip it on sight.
@@ -90,7 +90,7 @@ an error naming the tier; it is not installed and silently ignored. That
 distinction is what `an_unknown_tier_is_refused_test`
 (`client/test/client/extension_test.gleam:56`) pins.
 
-**The profile tier** (ADR-014 §3) holds data and nothing that runs: one or
+**The profile tier** (ADR-016 §3) holds data and nothing that runs: one or
 more `[lsp.<name>]` language profiles, the same tables an operator writes
 into `loom.toml`, and optionally the `[[check]]`s that prove one against a
 fixture. It is strictly narrower than tier J, with one authority tier J
@@ -253,7 +253,7 @@ deny-by-default the whole design rests on.
 
 ### A profile manifest
 
-**Built** (ADR-014 §3). A `tier = "profile"` manifest declares language
+**Built** (ADR-016 §3). A `tier = "profile"` manifest declares language
 profiles instead of tools:
 
 ```toml
@@ -275,7 +275,7 @@ env = ["GOFLAGS"]
 
 That is `extensions/lsp_go/extension.toml` without its comments and
 checks; the repository ships it, `lsp_gleam` and `lsp_rust` as the
-first-party profiles (ADR-014 §6), each with a fixture and checks.
+first-party profiles (ADR-016 §6), each with a fixture and checks.
 
 The two tiers declare disjoint tables, and each refuses the other's **by
 name** rather than ignoring them. A profile manifest refuses `[[tool]]`,
@@ -291,7 +291,7 @@ the decoder `loom.toml`'s catalogue uses, so a profile means the same
 thing in either file and is refused in the same words. Extension
 ownership is judged within the manifest exactly as within `loom.toml`.
 
-A `[[check]]` (ADR-014 §5 has an example) is decoded and kept, and
+A `[[check]]` (ADR-016 §5 has an example) is decoded and kept, and
 `loom ext check` runs it; nothing runs one at install or at boot. Its keys are `server`, which must name one of the
 manifest's own `[lsp]` servers; `fixture`, a directory of the tree that
 holds at least one file, `fixture` by default; `query`, `definition` or
@@ -354,7 +354,7 @@ loses a working extension to a failed reinstall.
 
 ### Installing a profile
 
-**Built** (ADR-014 §3). A profile extension's install is fetch, extract,
+**Built** (ADR-016 §3). A profile extension's install is fetch, extract,
 manifest and record: no vetting, no compile, and no artifact directory.
 `install.run` reads the tier from the fetched tree's `extension.toml`
 before anything else touches the tree (`manifest.declared_tier`), because
@@ -545,7 +545,7 @@ recomputed, an operator's approval would silently follow the harness's
 current definition of the seam. Storing it means a widened seam becomes a
 question the operator is asked again.
 
-**Record format 3** (ADR-014 §3) adds `tier` and `lsp`, the approved
+**Record format 3** (ADR-016 §3) adds `tier` and `lsp`, the approved
 profiles in full, encoded and decoded totally by `client/lsp/profile`
 (`encode_server`, `server_decoder`). Every field is written, the
 defaulted ones included, so a default that changes in a later release
@@ -577,7 +577,7 @@ Discovery's other caller is the boot itself: `client/serve` reads the same
 records `loom ext list` and `loom ext verify` read, and the dispatch
 section below says what it does with them.
 
-**The session's language servers** (ADR-014 §4). The boot discovers
+**The session's language servers** (ADR-016 §4). The boot discovers
 once, and two readers take that one answer: the language-server plane
 takes every loaded profile, and the tool registry takes every loaded
 jailed extension; a profile extension contributes no tool and hosts no
@@ -619,7 +619,7 @@ missing a layer must say so rather than let the absence read as success.
 
 ### `loom ext check`
 
-**Built** (ADR-014 §5). A profile is a claim about how a server behaves
+**Built** (ADR-016 §5). A profile is a claim about how a server behaves
 in a jail, and `check` measures it. `client/extension/check.run` loads
 the extension with `installed.verified` and refuses, before anything starts,
 one that does not load, a jailed extension (it has no profiles), and a
@@ -1537,7 +1537,7 @@ whose door serves the `lsp_*` tools and `cap/lsp` alike (ADR-015,
 | `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:324`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
 | `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:231`), the staging discipline, and the generated satellite entry that serves this manifest's tools and hooks. |
 | `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:134`), `terms`, `root_for`. Format 2 carries the hooks an operator approved; format 3 adds the tier and the approved language profiles, and format 2 is still read. |
-| `client/lsp/profiles.gleam` | ADR-014 §4's precedence as one pure function: `effective_lsp_servers` over the `loom.toml` tables and the installed profiles, and the `Refusal` the boot logs as `lsp.profile_refused`. |
+| `client/lsp/profiles.gleam` | ADR-016 §4's precedence as one pure function: `effective_lsp_servers` over the `loom.toml` tables and the installed profiles, and the `Refusal` the boot logs as `lsp.profile_refused`. |
 | `client/extension/hooks.gleam` | The hook bus: the `Event` type, `Invoker`/`HookFailure`, the five fan-out events, the two folds, the fence an injection is rendered in, and `wire`, which composes the bus into a session's `Effects`. |
 | `packages/ext/src/ext/hook.gleam` | The extension's side: the typed `Hook` behaviours, `Verdict`, `rendered`, and the JSON marshalling of every event's payload. |
 | `client/extension/installed.gleam` | Discovery and the five re-derivations: `check` (`extension/installed.gleam:267`), `artifact_matches`, `summarise`. |

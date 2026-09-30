@@ -1,7 +1,7 @@
 # lsp_gleam
 
 The Gleam language server, `gleam lsp`, as a Loom language profile
-(ADR-014). It is the maintained version of the `[lsp.gleam]` example in
+(ADR-016). It is the maintained version of the `[lsp.gleam]` example in
 `docs/examples/loom.toml`.
 
 ```sh

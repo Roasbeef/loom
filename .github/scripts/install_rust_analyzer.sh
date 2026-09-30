@@ -5,7 +5,7 @@
 #
 # Two jobs run such tests, and both call this so the two cannot drift: the
 # jailed Linux lane (`make e2e` checks the first-party lsp_rust profile,
-# ADR-014 §6) and the Linux client bucket (the language-server manager's
+# ADR-016 §6) and the Linux client bucket (the language-server manager's
 # live rust-analyzer fixture).
 #
 # Why each piece:
@@ -17,7 +17,7 @@
 #     fresh one is installed otherwise, from a pinned rustup-init checked
 #     against a SHA-256 recorded here rather than a script piped to sh.
 #   - A pinned toolchain, 1.94.1. It is the version the lsp_rust profile
-#     and the manager fixture were measured with (ADR-014 §7: the
+#     and the manager fixture were measured with (ADR-016 §7: the
 #     readiness wait, the registry grant, the println! reference), as
 #     gopls@v0.23.0 is pinned for the Go variants. `stable` would move
 #     under both on the next release, and a rust-analyzer that answered

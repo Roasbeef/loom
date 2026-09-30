@@ -1,4 +1,4 @@
-# The Gleam language server as a Loom language profile (ADR-014). The
+# The Gleam language server as a Loom language profile (ADR-016). The
 # [lsp.gleam] table is exactly what `loom.toml` would carry; installing
 # this extension approves it, and `loom ext check lsp_gleam` proves it
 # against the project in fixture/.

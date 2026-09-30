@@ -372,7 +372,7 @@ pub fn connect_jailed(
 // preparation lives, and the private caches belong with it rather than at
 // boot: the probe, a search and the server all clear through here, so a
 // directory made here exists before any policy that binds it is cleared,
-// and a server nobody queries costs no directory, which is ADR-013 §1's
+// and a server nobody queries costs no directory, which is ADR-015 §1's
 // laziness kept. The scratch directory's `tmp` is made for the same reason;
 // the relay makes it only for the server itself.
 fn jail_for(

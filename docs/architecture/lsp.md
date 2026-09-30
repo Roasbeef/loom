@@ -670,7 +670,7 @@ hint = "Qualify a name with its package name as imported: util.Greet"
 
 Both tables are examples. Neither is built in, and a workspace that
 wants neither configures neither. **The maintained versions are the
-first-party profiles** (ADR-014 §6): `extensions/lsp_gleam` and
+first-party profiles** (ADR-016 §6): `extensions/lsp_gleam` and
 `extensions/lsp_go` carry exactly these tables, and `extensions/lsp_rust`
 the Rust one, each with a fixture and the checks that prove it.
 `loom ext install ./extensions/lsp_go` approves the table without
@@ -776,7 +776,7 @@ steps, and the third is the one that makes it trustworthy.
    project the server can load offline and read-only (a Rust crate needs
    its `Cargo.lock`), and `[[check]]`s: a `definition` or `references`
    query, a symbol spelled as the model would spell it, and the
-   `path:line` sites the answer must equal as a set (ADR-014 §5).
+   `path:line` sites the answer must equal as a set (ADR-016 §5).
    Qualify a symbol the way the language does, since that is what
    `qualifier_separators` and `module_case` exist for.
 3. **Run `loom ext check`.** `loom ext install ./my-profile`, then
@@ -839,7 +839,7 @@ window; none is a change to the mechanism.
 | `client/lsp/resolve.gleam` | Ownership, containment, qualified symbols (per-server separators and module case), outline lookup, containers, display paths. |
 | `client/lsp/profile.gleam` | The one `[lsp.<name>]` decoder: `LspServer`, `LspPath`, `ModuleCase`, `Places`, the extension-ownership check, `expand_path` and `cache_place`. Pure. |
 | `client/lsp/jail.gleam` | `policy_for`, executable location and mounts, and the jailed `ChannelTransport`. |
-| `client/lsp/profile_check.gleam` | A profile's `[[check]]`s asked through the door and judged as sets of `path:line` (ADR-014 §5). |
+| `client/lsp/profile_check.gleam` | A profile's `[[check]]`s asked through the door and judged as sets of `path:line` (ADR-016 §5). |
 | `client/extension/check.gleam` | `loom ext check`: the scratch workspace, the check plane, the probe's jail line, and a manager over one server. |
 | `client/lsp/leases.gleam` | The per-session cap on session-lived helper leases. |
 | `client/lsp/codemode_rename.gleam` | A program's applied rename, over the tools' landing and the program's write boundary. |

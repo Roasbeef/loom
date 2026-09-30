@@ -2622,7 +2622,7 @@ The rest of the path is phase 1's own, and each module is one question:
   Unknown keys are errors in *every* table, which is what refuses the
   `[client]` table the design note reserves for a later ruling without a
   special case for it. `tier` decodes `"jailed"` (`Jailed`) and
-  `"profile"` (`Profile`, ADR-014 §3). Three rules need
+  `"profile"` (`Profile`, ADR-016 §3). Three rules need
   the tree beside the manifest, so `decode` takes a `Surroundings`: a
   tool's `parameters` must be a path under `schema/` that exists and
   parses as JSON, its `entry` must name a module `src/` ships, and a
@@ -2736,7 +2736,7 @@ The rest of the path is phase 1's own, and each module is one question:
   environment; a failed check is an exit-1 error whose text is the whole
   report.
 - `client/extension/check.{Setup, Run, Report, run, lines, failed, total,
-  enforcement_line, release_wait_ms}` — `loom ext check` (ADR-014 §5).
+  enforcement_line, release_wait_ms}` — `loom ext check` (ADR-016 §5).
   `run(root, name, setup)` refuses, before starting anything, an
   extension `installed.verified` refuses, a jailed one, and a profile
   with no `[[check]]`; then per `(server, fixture)` group it writes the
@@ -4828,7 +4828,7 @@ language profile; these are the pieces that carry both in this package.
   because `catalog`, which imports this module, shares them for its
   `[mcp.<name>]` and `[tools]` checks.
 - `client/lsp/profiles.{Claimant, Conflict, Refusal,
-  effective_lsp_servers, describe_claimant, describe_conflict}` — ADR-014
+  effective_lsp_servers, describe_claimant, describe_conflict}` — ADR-016
   §4, pure. `effective_lsp_servers(configured:, installed:)` returns the
   session's servers sorted by name plus the refused installed profiles.
   **Invariant: the operator's file wins whole, and conflicts refuse every

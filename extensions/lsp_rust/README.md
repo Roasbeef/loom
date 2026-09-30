@@ -1,6 +1,6 @@
 # lsp_rust
 
-`rust-analyzer` as a Loom language profile (ADR-014). Rust is here
+`rust-analyzer` as a Loom language profile (ADR-016). Rust is here
 because Loom's old defaults could not serve it: it qualifies names with
 `::`, which the profile's `qualifier_separators` configures.
 

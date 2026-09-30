@@ -50,7 +50,7 @@
 //// # The approved form
 ////
 //// A profile that arrives in an extension is approved at install, and the
-//// install record keeps it in full (ADR-014 §3), so this module also owns
+//// install record keeps it in full (ADR-016 §3), so this module also owns
 //// the profile's JSON form: `encode_server` writes it and `server_decoder`
 //// reads it back totally. The record is read by a later server run, so the
 //// decoder refuses a malformed value rather than crashing on it; it does
@@ -1548,7 +1548,7 @@ pub fn server_decoder() -> Decoder(LspServer) {
 /// extra roots, the environment names it passes, the private caches it
 /// is given and, when there is one, the hint the model will read.
 ///
-/// That is the whole of the grant ADR-014 §3 says an approval covers,
+/// That is the whole of the grant ADR-016 §3 says an approval covers,
 /// including the two parts the jail derives rather than reads from a key:
 /// the executable's own directory, mounted read-only (a link's target
 /// directory as well, never an install prefix), and each `cache_env`

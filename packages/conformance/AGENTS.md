@@ -525,7 +525,7 @@ have; `.github/declared-skips*`):
   `serve.open_instance` from a `loom.toml` with an `[lsp]` table, a
   scripted model renaming across a Gleam fixture (and a stale apply), and
   `gopls` through the tool path.
-- `lsp_profiles_test` — ADR-014 §6: each first-party profile under the
+- `lsp_profiles_test` — ADR-016 §6: each first-party profile under the
   repository's `extensions/` (`lsp_gleam`, `lsp_go`, `lsp_rust`) installed
   by `install.run` with a build seam that panics if called, into an
   extensions root under `build/lsp-profiles/` (never `/tmp`, which the

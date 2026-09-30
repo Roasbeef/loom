@@ -15,7 +15,7 @@
 ////
 //// # A profile extension skips the two steps it has no subject for
 ////
-//// A `tier = "profile"` extension (ADR-014 §3) ships language profiles
+//// A `tier = "profile"` extension (ADR-016 §3) ships language profiles
 //// and runs nothing, so its install is
 ////
 //// ```

@@ -1,6 +1,6 @@
 # lsp_go
 
-`gopls` as a Loom language profile (ADR-014). It is the maintained
+`gopls` as a Loom language profile (ADR-016). It is the maintained
 version of the `[lsp.go]` example in `docs/examples/loom.toml`.
 
 ```sh

@@ -19,7 +19,7 @@
 ////    what is on disk and refuses the extension when they disagree, so an
 ////    install is content-addressed from the moment it is written —
 ////    whatever the remote does afterwards, and whatever edits the
-////    directory later. A profile extension (ADR-014 §3) has no allowlist,
+////    directory later. A profile extension (ADR-016 §3) has no allowlist,
 ////    artifact or net policy to approve; what it has instead is the
 ////    language profiles themselves, kept in full beside the tier.
 ////
@@ -88,7 +88,7 @@ pub const staging_directory = ".staging"
 /// to ask them again. The cost is one `loom ext install` per installed
 /// extension, and extensions have shipped in exactly one phase.
 ///
-/// Version 3 added `tier` and `lsp` (ADR-014 §3). A version-2 record is
+/// Version 3 added `tier` and `lsp` (ADR-016 §3). A version-2 record is
 /// still read, as `legacy_format_version`, and the reasoning that refused
 /// version 1 is what admits it: a format-2 record cannot hold a profile,
 /// so reading it as a jailed extension with none loses nothing the

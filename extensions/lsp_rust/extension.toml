@@ -1,4 +1,4 @@
-# rust-analyzer as a Loom language profile (ADR-014). The [lsp.rust]
+# rust-analyzer as a Loom language profile (ADR-016). The [lsp.rust]
 # table is exactly what `loom.toml` would carry; installing this
 # extension approves it, and `loom ext check lsp_rust` proves it against
 # the crate in fixture/. README.md says what the host must hold first.

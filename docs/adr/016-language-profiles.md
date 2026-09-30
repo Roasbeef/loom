@@ -306,7 +306,7 @@ extensions as the maintained versions.
 ### 7. A freshly started server is not queried until it is ready
 
 Measuring `rust-analyzer` for its profile found a behaviour neither
-ADR-013 server has. It answers requests while it is still loading the
+ADR-015 server has. It answers requests while it is still loading the
 Cargo workspace, and answers them with **empty results rather than
 errors**:
 

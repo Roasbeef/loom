@@ -2213,7 +2213,7 @@ type LspWiring {
 // A boot with no `[lsp.<name>]` table and no installed profile builds
 // nothing and logs nothing: an unconfigured workspace pays nothing
 // (ADR-015 §6). The servers are the `loom.toml` tables plus every
-// installed profile that survives ADR-014 §4's precedence
+// installed profile that survives ADR-016 §4's precedence
 // (`lsp_profiles.effective_lsp_servers`), and from there an installed
 // profile is treated exactly as a table is: the same root resolution, the
 // same plane and the same hints. A refused profile is one

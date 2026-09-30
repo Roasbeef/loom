@@ -43,7 +43,7 @@
 //// # The two tiers declare disjoint things
 ////
 //// A jailed extension is code: at least one `[[tool]]`, any `[[hook]]`s,
-//// and a `[net]` policy. A profile extension (ADR-014 §3) is data: at
+//// and a `[net]` policy. A profile extension (ADR-016 §3) is data: at
 //// least one `[lsp.<name>]` language profile and any `[[check]]`s that
 //// prove one against a fixture. Each tier refuses the other's tables by
 //// name rather than ignoring them, because a table ignored is a promise
@@ -71,7 +71,7 @@ pub const schema_directory = "schema/"
 /// The tier whose body runs in a jailed satellite.
 pub const jailed_tier = "jailed"
 
-/// The tier that ships language profiles and runs nothing (ADR-014 §3).
+/// The tier that ships language profiles and runs nothing (ADR-016 §3).
 pub const profile_tier = "profile"
 
 /// The directory a `[[check]]` runs against when it names none.
@@ -143,7 +143,7 @@ pub type Tier {
 
   /// A profile extension: language-server profiles and the checks that
   /// prove them, and nothing that runs. Its install neither vets nor
-  /// compiles, so it needs no code-mode toolchain (ADR-014 §3).
+  /// compiles, so it needs no code-mode toolchain (ADR-016 §3).
   Profile
 }
 
@@ -170,7 +170,7 @@ pub type Site {
 
 /// One `[[check]]`: a query the profile's server must answer with exactly
 /// the expected sites, as a set, against a fixture the extension ships
-/// (ADR-014 §5).
+/// (ADR-016 §5).
 ///
 /// Decoded and kept at install; nothing runs one at install or at boot.
 pub type Check {

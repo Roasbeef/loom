@@ -1,6 +1,6 @@
 //// Which language servers a session runs: the operator's `loom.toml`
 //// tables and every installed profile that does not collide with them
-//// (ADR-014 §4).
+//// (ADR-016 §4).
 ////
 //// # Why this is its own module
 ////
@@ -24,7 +24,7 @@
 //// profiles sharing a server name, or a file extension claimed twice
 //// across the whole combined set. The operator's own tables are never the
 //// refused side; within `loom.toml` a conflict is already a parse error
-//// (ADR-013). Nothing is first-wins. Install order is not an order anybody
+//// (ADR-015). Nothing is first-wins. Install order is not an order anybody
 //// chose, so letting the earlier install keep `.go` would decide by
 //// accident which server answers for every Go file. Judging every
 //// candidate against the whole candidate set, rather than removing losers

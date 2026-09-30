@@ -26,7 +26,7 @@
 ////
 //// # A profile extension is checked for what it has
 ////
-//// A `tier = "profile"` extension (ADR-014 §3) has no source to vet, no
+//// A `tier = "profile"` extension (ADR-016 §3) has no source to vet, no
 //// seam it was vetted against and no artifact, so its load skips those
 //// three and asks one question in their place: do the manifest's
 //// language profiles still equal the ones the record approved? The

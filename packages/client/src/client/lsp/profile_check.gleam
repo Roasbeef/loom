@@ -1,9 +1,9 @@
 //// A profile's `[[check]]`s, asked of a running server through the door
-//// the tools use (ADR-014 §5).
+//// the tools use (ADR-016 §5).
 ////
 //// A language profile is a claim about how a server behaves in a jail:
 //// that with exactly these roots and this environment it loads a project
-//// and answers. ADR-013 was built by measuring servers rather than by
+//// and answers. ADR-015 was built by measuring servers rather than by
 //// reading their documentation, so a profile carries its own measurement:
 //// a fixture project and the answers the server must give about it. This
 //// module asks those questions and judges the answers. It is the part of
@@ -21,7 +21,7 @@
 ////
 //// # Why a set
 ////
-//// A server's answer has no order ADR-013 fixes, and two references on
+//// A server's answer has no order ADR-015 fixes, and two references on
 //// one line (`util.greet(a) <> util.greet(b)`) are two sites with one
 //// `path:line`. An author writes what a reader of the fixture sees: which
 //// lines mention the symbol. So both sides are compared as sets of

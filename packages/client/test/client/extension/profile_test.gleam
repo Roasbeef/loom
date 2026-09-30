@@ -1,4 +1,4 @@
-//// The profile tier (ADR-014 §3), end to end through the extension
+//// The profile tier (ADR-016 §3), end to end through the extension
 //// pipeline: the manifest's two tiers and every refusal that keeps them
 //// apart, the `[[check]]` decoder, an install that never vets and never
 //// builds, record format 3 and the format-2 records it still reads, and a
