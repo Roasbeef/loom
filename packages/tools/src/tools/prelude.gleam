@@ -25,27 +25,27 @@
 //// names the file that moved:
 ////
 ////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
-////   567357378f5204bff4465a57c21e1af492013f63a49fe18d46ab8f61bc572ce7  packages/cap/src/cap/execution.gleam
+////   c983a1d854d70c42e45e8d609bf12e6b909af10344a65a6fbc3f2cd5e4d24efa  packages/cap/src/cap/execution.gleam
 ////   17119de5a23f5b9a19fa25ed70d56921ae4588ff097408e124d31bc81b70c365  packages/cap/src/cap/fs.gleam
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
-////   604d5568410892e284cce7f0b7e65e681bb741d106d7909e22a4a3b0c8ed43c7  packages/cap/src/cap/job.gleam
+////   dc1de7c9d376c1224193be85eb0ccbbf980dde14ab12532d8c718c570dfe62db  packages/cap/src/cap/job.gleam
 ////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
 ////   967a79fcb93b977deaa5f159f7b2263aa7f1a0b96626ecb0d4bbc74aa66149b5  packages/cap/src/cap/lsp.gleam
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
-////   73343f624e4793f98e366fabebfc625aefb730456ea43b08c53bf2d2176062fa  packages/cap/src/cap/peer.gleam
+////   0eda878e119bf29d06713dce954b0c03155e05fe7e18f5a655e403c2f76710f8  packages/cap/src/cap/peer.gleam
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
 ////   17c973c36d2ca3e184f54a7540a90eedf7b6090ffbdc762524a78cf184b98a8f  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
-////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
+////   4e046bfdd44b9b7093ed0e787f55aa8792c433537a68e420bd30d0064dbd5cad  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
-////   fae6983eaf3f00e8bf69b6072b74b29d144eae91a0515effe2992bce08e9cb54  packages/cap/src/cap/strand.gleam
+////   e922628d7dbfd50c867f1a49af0384950e906dbb9f377c3e74b6abb66b17cbcf  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
-////   4e2446b2d42545449a4c977aca0c71a129e22d694460cd37999fa9429841dd21  packages/cap/src/cap/workflow.gleam
-////   b3b58fee4cd1fb3ac91be3c441df7483ebfbf342fe92fe456f8d14f49d4c681d  scripts/gen-prelude.py
+////   ecf0eb240894825490bf17c4607e30d291d247279fef3b0a3feac44802d143bd  packages/cap/src/cap/workflow.gleam
+////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 4702ee67299686c926e9b900203c273947739f3b697fe43ad6765c875a2a05ef
+//// Body digest (every line after the marker): cea6dedb2702476cc834f54da348fde9aa2397798746add4e51cf0d8a736a389
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -138,6 +138,19 @@ pub type EndpointError {
   /// Names are 1..64 ASCII bytes from `[a-z0-9._-]`.
   InvalidEndpointName(name: String)
 }
+/// Failure categories preserved across the execution capability boundary.
+pub type ExecutionError {
+  /// The host refused under a stable denial code.
+  ExecutionDenied(code: String, message: String)
+  /// The capability transport was unavailable.
+  ExecutionUnavailable(reason: String)
+  /// A successful response violated the execution envelope contract.
+  ExecutionResultMalformed(reason: String)
+  /// A caller supplied a negative persisted input position.
+  InvalidInputCursor(sequence: Int)
+}
+/// A cursor belonging only to the ordered execution input journal.
+pub type InputCursor
 /// The host's acknowledgement of a published progress snapshot.
 pub type Progress {
   Progress(observed_sequence: Int, observed_updated_ms: Int)
@@ -145,11 +158,11 @@ pub type Progress {
 /// A bounded receive distinguishes silence from a closed execution.
 pub type Received {
   /// One committed input and the cursor for the next receive.
-  Message(sequence: Int, value: report.Value)
+  Message(sequence: InputCursor, value: report.Value)
   /// No input arrived within this call's wait budget.
   TimedOut
   /// The harness has closed the execution's input channel.
-  Closed
+  Closed(reason: String)
 }
 /// Why a typed serving loop could not continue.
 pub type ServeError {
@@ -162,11 +175,11 @@ pub type ServeError {
   /// The idle lifetime was outside 1..300000 milliseconds.
   InvalidIdleWithin(milliseconds: Int)
   /// The host refused or could not persist readiness.
-  ReadyFailed(reason: String)
+  ReadyFailed(error: ExecutionError)
   /// The ordered input journal could not be read.
-  ReceiveFailed(reason: String)
+  ReceiveFailed(error: ExecutionError)
   /// The host could not record the latest delivery status.
-  DeliveryFailed(reason: String)
+  DeliveryFailed(error: ExecutionError)
 }
 /// Why a typed serving loop ended normally.
 pub type ServeExit {
@@ -174,7 +187,7 @@ pub type ServeExit {
   /// elapsed.
   Idle
   /// The host closed this execution's input channel.
-  InputClosed
+  InputClosed(reason: String)
 }
 /// The largest endpoint set one execution may register.
 pub const max_endpoints: Int
@@ -186,18 +199,26 @@ pub const max_idle_within_ms: Int
 /// delivers the same private `message` type. This permits a heterogeneous
 /// endpoint list without exposing a raw BEAM subject.
 pub fn endpoint(name: String, decode: fn(report.Value) -> Result(a, String), deliver: fn(a) -> Result(Nil, String)) -> Result(Endpoint, EndpointError)
+/// Starts reading at the beginning of the input journal.
+pub fn first_input() -> InputCursor
+/// Restores a nonnegative cursor from a previously observed input
+/// sequence.
+pub fn input_cursor(Int) -> Result(InputCursor, ExecutionError)
+/// Renders the sequence for persistence without changing its journal
+/// identity.
+pub fn input_sequence(InputCursor) -> Int
 /// Publishes the execution's latest bounded progress snapshot.
 ///
 /// Progress is volatile and coalesced by the host. The acknowledgement
 /// names the snapshot currently published by the host. The submitted
 /// value may still be pending, and a later update may supersede it before
 /// publication.
-pub fn progress(report.Value) -> Result(Progress, String)
+pub fn progress(report.Value) -> Result(Progress, ExecutionError)
 /// Reads input committed after the supplied cursor, initially zero. This
 /// never changes the execution's original lifetime or permissions.
 /// Calling it before typed `serve` publishes legacy readiness for
 /// `default`.
-pub fn receive(after: Int, within_ms: Int) -> Result(Received, String)
+pub fn receive(after: InputCursor, within_ms: Int) -> Result(Received, ExecutionError)
 /// Registers typed endpoints and drains the execution-owned input
 /// journal.
 ///
@@ -326,7 +347,7 @@ after the program itself has returned.
 
 /// Where a poll left off in each stream.
 pub type Cursors {
-  Cursors(stdout: Int, stderr: Int)
+  Cursors(stdout: StdoutCursor, stderr: StderrCursor)
 }
 /// The helper's own report of how a job's command ended.
 ///
@@ -341,7 +362,7 @@ pub type Exit {
 }
 /// One job, as `poll` reads it.
 pub type Job {
-  Job(id: String, state: State, age_ms: Int, deadline_ms: Int, stdout: Stream, stderr: Stream, spill: Spill)
+  Job(id: JobId, state: State, age_ms: Int, deadline_ms: Int, stdout: Stream(StdoutCursor), stderr: Stream(StderrCursor), spill: Spill)
 }
 /// Why a background-job call failed.
 ///
@@ -363,10 +384,16 @@ pub type JobError {
   /// The host denied the call for a reason this module has no variant
   /// for. `code` is the host's own, carried verbatim.
   JobDenied(code: String, message: String)
+  /// The host answered, but the payload violates this API.
+  JobResultMalformed(reason: String)
   /// The capability channel could not carry the call, or the host runs no
   /// background-jobs plane at all.
   JobUnavailable(reason: String)
 }
+/// A job's validated identity: nonempty text with no register separator.
+/// The host owns authorization; possessing this value grants no
+/// authority.
+pub type JobId
 /// Why a job can no longer be spoken for: nobody ended it on purpose and
 /// no exit was ever observed, so what became of the process is unknown
 /// rather than reported.
@@ -380,7 +407,7 @@ pub type LostReason {
 }
 /// One row of this strand's job listing.
 pub type Row {
-  Row(id: String, state: State, age_ms: Int, deadline_ms: Int)
+  Row(id: JobId, state: State, age_ms: Int, deadline_ms: Int)
 }
 /// Where a finished job's whole output was stored.
 ///
@@ -394,7 +421,7 @@ pub type Spill {
 }
 /// A job that has been admitted and is running.
 pub type Started {
-  Started(id: String, deadline_ms: Int, wall_ms: Int)
+  Started(id: JobId, deadline_ms: Int, wall_ms: Int)
 }
 /// Where a job is in its life.
 ///
@@ -417,6 +444,10 @@ pub type State {
   /// The job can no longer be spoken for, and no exit was observed.
   Lost(reason: LostReason)
 }
+/// A nonnegative stderr byte position, never a stdout cursor.
+pub type StderrCursor
+/// A nonnegative stdout byte position, never a stderr cursor.
+pub type StdoutCursor
 /// Why a job is being stopped, or was stopped.
 ///
 /// Carried separately from the exit report because the report cannot say
@@ -432,9 +463,10 @@ pub type StopCause {
   /// An operator aborted the operation that started the job.
   ByOperationAbort
 }
-/// One stream's answer to a poll.
-pub type Stream {
-  Stream(bytes: BitArray, cursor: Int, dropped: Int)
+/// One stream's answer to a poll. `Job` fixes the cursor type separately
+/// for stdout and stderr, so swapping them cannot compile.
+pub type Stream(a) {
+  Stream(bytes: BitArray, cursor: a, dropped: Int)
 }
 /// The cursors one poll's answer leaves behind, to hand to the next.
 pub fn after(Job) -> Cursors
@@ -442,6 +474,8 @@ pub fn after(Job) -> Cursors
 pub fn from_start() -> Cursors
 /// Whether a job in this state is one to come back to.
 pub fn is_pending(State) -> Bool
+/// Renders the identity for storage in a later program's input.
+pub fn job_id_to_string(JobId) -> String
 /// Stops one job: TERM to the payload and its descendants, then KILL of
 /// the group — the same ladder a cancelled foreground command climbs.
 ///
@@ -451,7 +485,7 @@ pub fn is_pending(State) -> Bool
 /// `Exit.cancelled` is the helper's own witness that it climbed.
 ///
 /// Capability: `job.kill`.
-pub fn kill(String) -> Result(Nil, JobError)
+pub fn kill(JobId) -> Result(Nil, JobError)
 /// Lists every job this strand owns, live and terminal alike, with its
 /// state and how long it has been alive.
 ///
@@ -461,6 +495,13 @@ pub fn kill(String) -> Result(Nil, JobError)
 ///
 /// Capability: `job.list`.
 pub fn list() -> Result(List(Row), JobError)
+/// Parses a saved job identity using the host's register-key grammar.
+pub fn parse_job_id(String) -> Result(JobId, String)
+/// Restores a saved stderr position; a negative position is invalid.
+pub fn parse_stderr_cursor(Int) -> Result(StderrCursor, String)
+/// Restores a saved stdout position; a negative position is invalid.
+/// Prefer `after` when continuing directly from a poll.
+pub fn parse_stdout_cursor(Int) -> Result(StdoutCursor, String)
 /// Reads one job: its state, and what each stream has printed since
 /// `cursors`.
 ///
@@ -471,7 +512,7 @@ pub fn list() -> Result(List(Row), JobError)
 /// and it costs at least one slice per turn whatever it passes.
 ///
 /// Capability: `job.poll`.
-pub fn poll(String, Int, Cursors) -> Result(Job, JobError)
+pub fn poll(JobId, Int, Cursors) -> Result(Job, JobError)
 /// Writes bytes to a job's standard input, leaving it open.
 ///
 /// Nothing is appended, so write the newline yourself if the program
@@ -479,14 +520,14 @@ pub fn poll(String, Int, Cursors) -> Result(Job, JobError)
 /// watch; a foreground command has stdin closed from the start.
 ///
 /// Capability: `job.send`.
-pub fn send(String, BitArray) -> Result(Nil, JobError)
+pub fn send(JobId, BitArray) -> Result(Nil, JobError)
 /// `send`, closing the job's stdin after this write.
 ///
 /// Closing is what makes a program reading to end-of-input finish.
 /// Nothing can be written afterwards.
 ///
 /// Capability: `job.send`.
-pub fn send_last(String, BitArray) -> Result(Nil, JobError)
+pub fn send_last(JobId, BitArray) -> Result(Nil, JobError)
 /// Starts `command` as a background job with the host's default wall.
 ///
 /// It runs as `bash -lc` in the workspace, under exactly the sandbox
@@ -514,6 +555,10 @@ pub fn start_for_session(String) -> Result(Started, JobError)
 ///
 /// Capability: `job.start`.
 pub fn start_within(String, Int) -> Result(Started, JobError)
+/// Renders a stderr position for persistence between programs.
+pub fn stderr_cursor_to_int(StderrCursor) -> Int
+/// Renders a stdout position for persistence between programs.
+pub fn stdout_cursor_to_int(StdoutCursor) -> Int
 ",
   ),
   #(
@@ -713,63 +758,196 @@ pub fn put(String, report.Value) -> Result(Nil, NotesError)
     "### cap/peer
 Caller-owned message inspection and authorized resident peer delivery.
 
-/// Pages materialized user inputs on the caller's conversation branch.
-/// `before` is an exclusive sequence cursor; zero starts at the current
-/// leaf. Limit is 1..64 scanned message entries. Follow JSON next even
-/// when items is empty: assistant/tool entries also advance the scanned
-/// window.
-///
-/// All bodies are complete; oversized responses fail explicitly.
-pub fn history(before: Int, limit: Int) -> Result(String, String)
-/// Pages caller-owned pending strand inputs, including local and remote
-/// sends. `after` is an exclusive ID cursor, empty for the first page;
-/// limit is 1..12. JSON has revision, items, total, and next. Follow next
-/// even on an empty page. Reads do not consume inputs. Pending bodies
-/// disappear on operation abort.
-///
-/// All bodies are complete; oversized responses fail explicitly.
-pub fn inbox(after: String, limit: Int) -> Result(String, String)
-/// Reads one caller-owned pending or materialized input by its reserved
-/// entry ID. JSON null means absent from these caller-owned stores.
-/// Consumption racing inspection resolves against the ownership capture's
-/// transcript leaf.
-///
-/// All bodies are complete; oversized responses fail explicitly.
-pub fn inbox_get(id: String) -> Result(String, String)
-/// Pages retained cross-session admission receipts addressed to this
-/// caller. `after` is the opaque cursor from JSON next, empty initially;
-/// limit is 1..64. The cursor scans global receipt records before
-/// recipient filtering. Continue through next on empty pages; other
-/// recipients' bodies are never returned. Receipt keys are hashes, not
-/// arrival order. Start a fresh scan to observe new admissions and
-/// reconcile stable message identities across scans. Receipts retain
-/// bodies after abort and prove admission, never consumption. Same-
-/// session sends have no receipt history; use inbox and history for them.
-///
-/// All bodies are complete; oversized responses fail explicitly.
-pub fn received(after: String, limit: Int) -> Result(String, String)
-/// Reads an existing remote admission receipt only if its recipient is
-/// this caller. Source fields select the send identity and confer no read
-/// authority. JSON null means missing or addressed to another strand.
-///
-/// All bodies are complete; oversized responses fail explicitly.
-pub fn received_get(source_session: String, source_strand: String, message_id: String) -> Result(String, String)
-/// Returns linked session metadata and authorized exports as JSON text.
-/// This lists remote links, never an inbox; an empty roster says nothing
-/// about same-session strand sends or pending inputs.
-pub fn roster() -> Result(String, String)
-/// Sends one message with a stable retry identity and returns its JSON
-/// receipt. Reuse an identity only with the same recipient and body. The
-/// receipt means admitted durably, not read or completed by the
-/// recipient.
-pub fn send(session: String, strand: String, message_id: String, text: String) -> Result(String, String)
-/// Reads this caller's existing receipt from a linked resident remote
-/// session. The harness binds source session and strand. An outgoing link
-/// is required; the call never sends a message or opens a saved
-/// recipient.
-///
-/// All bodies are complete; oversized responses fail explicitly.
-pub fn sent_receipt(session: String, message_id: String) -> Result(String, String)
+/// A durable message entry identity, usable from the peer module alone.
+pub type EntryId
+/// A durable operation identity, usable from the peer module alone.
+pub type OpId
+/// A canonical session identity, usable without importing core.
+pub type SessionId
+/// Stable observed activity with open model claims and git observation
+/// payloads.
+pub type Activity {
+  Activity(strand: String, state_commit_sequence: Int, current_operation: option.Option(OpId), last_terminal: option.Option(Terminal), model_claim: ModelClaim, git_observation: report.Value)
+}
+/// One strand explicitly exported to this sender.
+pub type Export {
+  Export(strand: String, parent: option.Option(String), current_operation: option.Option(OpId), wake: Wake, activity: Activity)
+}
+/// Resident resolution can fail without removing an authorized link.
+pub type Exports {
+  /// The resident returned its authorized strand exports.
+  Exported(strands: List(Export))
+  /// No current resident was resolved.
+  NotResident
+  /// The resident endpoint refused export discovery.
+  ExportsUnavailable(reason: String)
+}
+/// A transcript cursor belongs only to the caller's materialized branch.
+pub type HistoryCursor
+/// Materialized inputs with a cursor advancing over all scanned message
+/// entries.
+pub type HistoryPage {
+  HistoryPage(items: List(Input), next: option.Option(HistoryCursor))
+}
+/// One coherent live-set page, which may be short after concurrent
+/// consumption.
+pub type InboxPage {
+  InboxPage(revision: Int, items: List(Input), total: Int, next: option.Option(PendingCursor))
+}
+/// A caller-owned input; bodies retain their existing extensible codecs.
+pub type Input {
+  /// The pending payload is a machine pending-entry value.
+  Pending(id: EntryId, queue: Queue, payload: report.Value)
+  /// The materialized payload is a core entry value on the caller's
+  /// branch.
+  Materialized(id: EntryId, entry: report.Value)
+}
+/// Catalogue lifecycle observations are separate from model activity.
+pub type Lifecycle {
+  /// The catalogue holds a reservation without an initialized store.
+  Reserved
+  /// The saved session is not currently resident.
+  Saved
+  /// A manager operation is assembling the resident.
+  Opening(operation: String)
+  /// The resident is identified by its manager incarnation.
+  Resident(incarnation: String)
+  /// A manager operation is stopping the resident.
+  Stopping(operation: String)
+  /// Recovery requires operator intervention.
+  RecoveryBlocked
+}
+/// One authorized outgoing link, never an inbound mailbox row.
+pub type Link {
+  Link(session: SessionId, target_strand: String, metadata: Metadata, exports: Exports)
+}
+/// Catalogue metadata has a closed envelope; custom host metadata remains
+/// open.
+pub type Metadata {
+  Catalogue(session: SessionId, workspace: String, name: String, created_at: Int, status: Lifecycle)
+  /// Catalogue lookup failed without removing the outgoing link.
+  MetadataUnavailable(reason: String)
+  /// A custom host supplies an intentionally extensible metadata value.
+  CustomMetadata(value: report.Value)
+}
+/// A model claim is attributed separately from host-observed state.
+pub type ModelClaim {
+  ModelClaim(author: String, description: report.Value)
+}
+/// Categories a caller can distinguish without parsing diagnostic prose.
+pub type PeerError {
+  /// The host refused under this denial code.
+  PeerDenied(code: String, message: String)
+  /// The capability channel could not carry the request.
+  PeerUnavailable(reason: String)
+  /// A successful host response violated the stable envelope contract.
+  PeerResultMalformed(reason: String)
+  /// A persisted selector is not valid in this cursor or identity domain.
+  InvalidSelector(reason: String)
+}
+/// A pending input cursor belongs only to the caller's live input set.
+pub type PendingCursor
+/// The durable queue which currently owns an input.
+pub type Queue {
+  /// Input waiting for the next operation.
+  NextRun
+  /// Steering waiting at an active checkpoint.
+  Steer
+  /// Follow-up input for the active operation.
+  FollowUp
+  /// Steering retained by cancellation cleanup.
+  CancelledSteer
+  /// Follow-up input retained by cancellation cleanup.
+  CancelledFollowUp
+}
+/// An admission receipt proves durable acceptance, never consumption or
+/// reading.
+pub type Receipt {
+  Admitted(request: Request, source: option.Option(Metadata))
+}
+/// A receipt cursor orders hash keys, never arrival times.
+pub type ReceiptCursor
+/// Foreign-only pages still carry the cursor needed to make progress.
+pub type ReceiptPage {
+  ReceiptPage(items: List(ReceivedReceipt), next: option.Option(ReceiptCursor))
+}
+/// One retained receipt and its position in the global bounded scan.
+pub type ReceivedReceipt {
+  ReceivedReceipt(cursor: ReceiptCursor, receipt: Receipt)
+}
+/// A stable retry identity and the complete admitted body.
+pub type Request {
+  Request(source_session: SessionId, source_strand: String, target_strand: String, message_id: String, body: String)
+}
+/// One terminal observation; outcome remains host-rendered diagnostic
+/// text.
+pub type Terminal {
+  Terminal(commit_sequence: Int, operation: OpId, outcome: String)
+}
+/// Owner-granted permission to wake an idle recipient.
+pub type Wake {
+  /// Delivery requires an already active recipient.
+  BusyOnly
+  /// Delivery may start a new recipient operation.
+  MayWake
+}
+/// Renders a message identity for persistence.
+pub fn entry_id_to_string(EntryId) -> String
+/// Starts from the caller's current transcript leaf.
+pub fn first_history() -> HistoryCursor
+/// Starts a fresh traversal of current pending inputs.
+pub fn first_pending() -> PendingCursor
+/// Starts a fresh scan; receipt hash cursors are not arrival watermarks.
+pub fn first_receipt() -> ReceiptCursor
+/// Pages materialized inputs; scanned assistant messages may produce
+/// empty pages.
+pub fn history(before: HistoryCursor, limit: Int) -> Result(HistoryPage, PeerError)
+/// Restores a positive exclusive transcript sequence cursor.
+pub fn history_before(Int) -> Result(HistoryCursor, PeerError)
+/// Renders the transcript sequence for persistence; zero means the
+/// current leaf.
+pub fn history_sequence(HistoryCursor) -> Int
+/// Pages current pending inputs without consuming them; follow next on
+/// empty pages.
+pub fn inbox(after: PendingCursor, limit: Int) -> Result(InboxPage, PeerError)
+/// Reads a caller-owned pending or materialized input; absence is None.
+pub fn inbox_get(id: EntryId) -> Result(option.Option(Input), PeerError)
+/// Renders an observed operation identity for persistence.
+pub fn op_id_to_string(OpId) -> String
+/// Parses a persisted message identity without importing another
+/// capability.
+pub fn parse_entry_id(String) -> Result(EntryId, PeerError)
+/// Parses an observed operation identity.
+pub fn parse_op_id(String) -> Result(OpId, PeerError)
+/// Parses a canonical session identity for sending or exact receipt
+/// lookup.
+pub fn parse_session_id(String) -> Result(SessionId, PeerError)
+/// Restores a pending cursor from a valid entry identity.
+pub fn pending_after(EntryId) -> PendingCursor
+/// Renders a pending cursor for persistence; empty means a fresh scan.
+pub fn pending_cursor_text(PendingCursor) -> String
+/// Restores one exact receipt-key cursor without admitting arbitrary
+/// prefixes.
+pub fn receipt_after(String) -> Result(ReceiptCursor, PeerError)
+/// Renders a receipt cursor for persistence without changing its meaning.
+pub fn receipt_cursor_text(ReceiptCursor) -> String
+/// Pages durable admission receipts; rescan and reconcile IDs for new
+/// admissions.
+pub fn received(after: ReceiptCursor, limit: Int) -> Result(ReceiptPage, PeerError)
+/// Looks up an existing receipt only when addressed to the caller;
+/// absence is None.
+pub fn received_get(source_session: SessionId, source_strand: String, message_id: String) -> Result(option.Option(Receipt), PeerError)
+/// Returns authorized outgoing links; an empty list says nothing about
+/// inboxes.
+pub fn roster() -> Result(List(Link), PeerError)
+/// Admits a stable retry identity; reuse it only for the same recipient
+/// and body.
+pub fn send(session: SessionId, strand: String, message_id: String, text: String) -> Result(Receipt, PeerError)
+/// Reads a linked resident recipient's receipt with host-bound sender
+/// identity.
+pub fn sent_receipt(session: SessionId, message_id: String) -> Result(option.Option(Receipt), PeerError)
+/// Renders an identity for persistence or display.
+pub fn session_id_to_string(SessionId) -> String
 ",
   ),
   #(
@@ -1044,13 +1222,31 @@ pub type Bounds {
   /// The bounds this program wants, each at or under the host's ceiling.
   Bounds(max_fires: Int, expires_after_s: Int)
 }
+/// The host-resolved timing, separate from its human-readable
+/// description. Relative one-shots arrive as their resolved UTC instant,
+/// so callers never need to parse display text or guess when the host
+/// read its clock.
+pub type Cadence {
+  /// A recurring epoch-aligned grid with both expiry bounds active.
+  Interval(seconds: Int, expiry: Expiry)
+  /// A five-field expression read at a fixed UTC offset, without DST
+  /// changes.
+  Cron(expression: String, utc_offset_s: Int, expiry: Expiry)
+  /// One occurrence, carrying no recurring expiry.
+  OneShot(at_unix_s: Int)
+}
 /// What a `create` actually produced.
 pub type Created {
-  Created(name: String, target: String, when: String, wake: Wake)
+  Created(name: String, target: String, when: String, cadence: Cadence, wake: Wake)
+}
+/// Both mandatory limits of a recurring schedule; the first reached ends
+/// it.
+pub type Expiry {
+  Expiry(max_fires: Int, expires_after_s: Int)
 }
 /// One schedule this strand owns.
 pub type Schedule {
-  Schedule(name: String, target: String, when: String, wake: Wake, fired: Int, body: String)
+  Schedule(name: String, target: String, when: String, cadence: Cadence, wake: Wake, fired: Int, body: String)
 }
 /// Why a scheduling call failed.
 pub type ScheduleError {
@@ -1061,6 +1257,8 @@ pub type ScheduleError {
   ScheduleDenied(code: String, message: String)
   /// The capability channel could not carry the call.
   ScheduleUnavailable(reason: String)
+  /// The host answered with a malformed stable schedule record.
+  MalformedScheduleResult(reason: String)
 }
 /// What a schedule is allowed to do to this strand when it is idle at the
 /// moment the schedule fires.
@@ -1392,6 +1590,10 @@ pub fn stat(String) -> Result(Entry, SearchError)
 `cap/strand` starts, joins, and addresses other agents from inside a code-
 mode program.
 
+/// A validated durable entry identity, shared with the harness.
+pub type EntryId
+/// A validated durable operation identity, shared with the harness.
+pub type OpId
 /// One assignment, built up before it is spawned.
 ///
 /// Opaque, so a non-empty purpose and brief hold by construction and the
@@ -1401,13 +1603,13 @@ pub type Assignment
 /// How a `send` payload landed.
 pub type Delivery {
   /// The target had an open run: the message is a durable steer on it.
-  Steered(entry: String)
+  Steered(entry: EntryId)
   /// The target was idle: the message was accepted as a fresh run.
-  Started(operation: String)
+  Started(operation: OpId)
 }
 /// One field of the result shape a spawn demands of its child.
 pub type Field {
-  Field(name: String, expects: FieldType, required: Bool)
+  Field(name: String, expects: FieldType, required: Requirement)
 }
 /// The closed set of types a declared result field may have — the same
 /// vocabulary the harness enforces, and no wider. A schema the harness
@@ -1432,7 +1634,7 @@ pub type FieldType {
 /// A durable reference to one child operation, as `spawn` minted it. It
 /// names nothing process-local, so it survives a restart.
 pub type Handle {
-  Handle(strand: String, operation: String)
+  Handle(strand: String, operation: OpId)
 }
 /// One assignment's result from a bounded map, in input order.
 pub type Mapped {
@@ -1477,9 +1679,16 @@ pub type Relation {
   /// A strand the caller spawned.
   ChildOf
 }
+/// Whether the child's result must contain a declared field.
+pub type Requirement {
+  /// A result without the field fails its declared schema.
+  Required
+  /// The field may be absent, but a present value must match its type.
+  Optional
+}
 /// Why a call was refused.
 ///
-/// Every variant but the last two is one of the harness's own refusal
+/// Every variant but the last three is one of the harness's own refusal
 /// names, carrying the harness's own sentence verbatim: the authorization
 /// model this seam runs under is `client/agency`'s, reused rather than
 /// re-derived, and a refusal renamed on the way out would be a second
@@ -1538,6 +1747,8 @@ pub type StrandError {
   AdmissionCeilingReached(message: String)
   /// Any other in-band refusal, its code preserved.
   StrandRefused(code: String, message: String)
+  /// The host answered, but its payload did not satisfy this API.
+  StrandResultMalformed(reason: String)
   /// The capability channel could not carry the call.
   StrandUnavailable(reason: String)
 }
@@ -1583,6 +1794,8 @@ pub const wait_margin_ms: Int
 pub fn assignment(purpose: String, brief: String) -> Assignment
 /// Detaches the child, so the calling strand's run end does not reap it.
 pub fn detached(Assignment) -> Assignment
+/// Renders an entry identity in its canonical wire form.
+pub fn entry_id_to_string(EntryId) -> String
 /// A one-line rendering of a refusal, for a program building a report out
 /// of what went wrong rather than branching on it.
 pub fn error_text(StrandError) -> String
@@ -1620,8 +1833,14 @@ pub fn note(key: String, value: report.Value) -> Result(Nil, StrandError)
 ///
 /// Capability: `strand.notes`.
 pub fn notes(option.Option(String)) -> Result(List(#(String, report.Value)), StrandError)
+/// Renders an operation identity in its canonical wire form.
+pub fn op_id_to_string(OpId) -> String
 /// A field the child may report.
 pub fn optional(String, FieldType) -> Field
+/// Parses a UUIDv7 entry identity from a saved reference.
+pub fn parse_entry_id(String) -> Result(EntryId, String)
+/// Parses a UUIDv7 operation identity without importing harness modules.
+pub fn parse_op_id(String) -> Result(OpId, String)
 /// How long a join actually waited, summed over the handles still pending
 /// — a program pacing itself against its own deadline needs the number
 /// and would otherwise fold it out of `Waited` by hand.
@@ -1724,11 +1943,20 @@ pub fn race(List(fn() -> Result(a, b))) -> Result(a, Failure(b))
     "### cap/workflow
 Named, durable child steps for background orchestration programs.
 
+/// Why a durable workflow admission could not be recovered.
+pub type WorkflowError {
+  /// The host refused the operation under its stable denial code.
+  WorkflowDenied(code: String, message: String)
+  /// The capability transport could not carry the request.
+  WorkflowUnavailable(reason: String)
+  /// A successful response did not contain a valid typed handle.
+  WorkflowResultMalformed(reason: String)
+}
 /// Starts or recovers a named child step in the current background
 /// execution. Join the returned handle with strand.wait, whose result is
 /// durable. Other completed steps retain their handles when a failed step
 /// is retried by name.
-pub fn step(String, String, String, String, strand.Assignment) -> Result(strand.Handle, String)
+pub fn step(String, String, String, String, strand.Assignment) -> Result(strand.Handle, WorkflowError)
 ",
   ),
 ]
@@ -1796,6 +2024,19 @@ pub type EndpointError {
   /// Names are 1..64 ASCII bytes from `[a-z0-9._-]`.
   InvalidEndpointName(name: String)
 }
+/// Failure categories preserved across the execution capability boundary.
+pub type ExecutionError {
+  /// The host refused under a stable denial code.
+  ExecutionDenied(code: String, message: String)
+  /// The capability transport was unavailable.
+  ExecutionUnavailable(reason: String)
+  /// A successful response violated the execution envelope contract.
+  ExecutionResultMalformed(reason: String)
+  /// A caller supplied a negative persisted input position.
+  InvalidInputCursor(sequence: Int)
+}
+/// A cursor belonging only to the ordered execution input journal.
+pub type InputCursor
 /// The host's acknowledgement of a published progress snapshot.
 pub type Progress {
   Progress(observed_sequence: Int, observed_updated_ms: Int)
@@ -1803,11 +2044,11 @@ pub type Progress {
 /// A bounded receive distinguishes silence from a closed execution.
 pub type Received {
   /// One committed input and the cursor for the next receive.
-  Message(sequence: Int, value: report.Value)
+  Message(sequence: InputCursor, value: report.Value)
   /// No input arrived within this call's wait budget.
   TimedOut
   /// The harness has closed the execution's input channel.
-  Closed
+  Closed(reason: String)
 }
 /// Why a typed serving loop could not continue.
 pub type ServeError {
@@ -1820,11 +2061,11 @@ pub type ServeError {
   /// The idle lifetime was outside 1..300000 milliseconds.
   InvalidIdleWithin(milliseconds: Int)
   /// The host refused or could not persist readiness.
-  ReadyFailed(reason: String)
+  ReadyFailed(error: ExecutionError)
   /// The ordered input journal could not be read.
-  ReceiveFailed(reason: String)
+  ReceiveFailed(error: ExecutionError)
   /// The host could not record the latest delivery status.
-  DeliveryFailed(reason: String)
+  DeliveryFailed(error: ExecutionError)
 }
 /// Why a typed serving loop ended normally.
 pub type ServeExit {
@@ -1832,7 +2073,7 @@ pub type ServeExit {
   /// elapsed.
   Idle
   /// The host closed this execution's input channel.
-  InputClosed
+  InputClosed(reason: String)
 }
 ",
   ),
@@ -1913,7 +2154,7 @@ after the program itself has returned.
 
 /// Where a poll left off in each stream.
 pub type Cursors {
-  Cursors(stdout: Int, stderr: Int)
+  Cursors(stdout: StdoutCursor, stderr: StderrCursor)
 }
 /// The helper's own report of how a job's command ended.
 ///
@@ -1928,7 +2169,7 @@ pub type Exit {
 }
 /// One job, as `poll` reads it.
 pub type Job {
-  Job(id: String, state: State, age_ms: Int, deadline_ms: Int, stdout: Stream, stderr: Stream, spill: Spill)
+  Job(id: JobId, state: State, age_ms: Int, deadline_ms: Int, stdout: Stream(StdoutCursor), stderr: Stream(StderrCursor), spill: Spill)
 }
 /// Why a background-job call failed.
 ///
@@ -1950,10 +2191,16 @@ pub type JobError {
   /// The host denied the call for a reason this module has no variant
   /// for. `code` is the host's own, carried verbatim.
   JobDenied(code: String, message: String)
+  /// The host answered, but the payload violates this API.
+  JobResultMalformed(reason: String)
   /// The capability channel could not carry the call, or the host runs no
   /// background-jobs plane at all.
   JobUnavailable(reason: String)
 }
+/// A job's validated identity: nonempty text with no register separator.
+/// The host owns authorization; possessing this value grants no
+/// authority.
+pub type JobId
 /// Why a job can no longer be spoken for: nobody ended it on purpose and
 /// no exit was ever observed, so what became of the process is unknown
 /// rather than reported.
@@ -1967,7 +2214,7 @@ pub type LostReason {
 }
 /// One row of this strand's job listing.
 pub type Row {
-  Row(id: String, state: State, age_ms: Int, deadline_ms: Int)
+  Row(id: JobId, state: State, age_ms: Int, deadline_ms: Int)
 }
 /// Where a finished job's whole output was stored.
 ///
@@ -1981,7 +2228,7 @@ pub type Spill {
 }
 /// A job that has been admitted and is running.
 pub type Started {
-  Started(id: String, deadline_ms: Int, wall_ms: Int)
+  Started(id: JobId, deadline_ms: Int, wall_ms: Int)
 }
 /// Where a job is in its life.
 ///
@@ -2004,6 +2251,10 @@ pub type State {
   /// The job can no longer be spoken for, and no exit was observed.
   Lost(reason: LostReason)
 }
+/// A nonnegative stderr byte position, never a stdout cursor.
+pub type StderrCursor
+/// A nonnegative stdout byte position, never a stderr cursor.
+pub type StdoutCursor
 /// Why a job is being stopped, or was stopped.
 ///
 /// Carried separately from the exit report because the report cannot say
@@ -2019,9 +2270,10 @@ pub type StopCause {
   /// An operator aborted the operation that started the job.
   ByOperationAbort
 }
-/// One stream's answer to a poll.
-pub type Stream {
-  Stream(bytes: BitArray, cursor: Int, dropped: Int)
+/// One stream's answer to a poll. `Job` fixes the cursor type separately
+/// for stdout and stderr, so swapping them cannot compile.
+pub type Stream(a) {
+  Stream(bytes: BitArray, cursor: a, dropped: Int)
 }
 ",
   ),
@@ -2166,6 +2418,140 @@ pub type NotesError {
     "cap/peer",
     "### cap/peer
 Caller-owned message inspection and authorized resident peer delivery.
+
+/// A durable message entry identity, usable from the peer module alone.
+pub type EntryId
+/// A durable operation identity, usable from the peer module alone.
+pub type OpId
+/// A canonical session identity, usable without importing core.
+pub type SessionId
+/// Stable observed activity with open model claims and git observation
+/// payloads.
+pub type Activity {
+  Activity(strand: String, state_commit_sequence: Int, current_operation: option.Option(OpId), last_terminal: option.Option(Terminal), model_claim: ModelClaim, git_observation: report.Value)
+}
+/// One strand explicitly exported to this sender.
+pub type Export {
+  Export(strand: String, parent: option.Option(String), current_operation: option.Option(OpId), wake: Wake, activity: Activity)
+}
+/// Resident resolution can fail without removing an authorized link.
+pub type Exports {
+  /// The resident returned its authorized strand exports.
+  Exported(strands: List(Export))
+  /// No current resident was resolved.
+  NotResident
+  /// The resident endpoint refused export discovery.
+  ExportsUnavailable(reason: String)
+}
+/// A transcript cursor belongs only to the caller's materialized branch.
+pub type HistoryCursor
+/// Materialized inputs with a cursor advancing over all scanned message
+/// entries.
+pub type HistoryPage {
+  HistoryPage(items: List(Input), next: option.Option(HistoryCursor))
+}
+/// One coherent live-set page, which may be short after concurrent
+/// consumption.
+pub type InboxPage {
+  InboxPage(revision: Int, items: List(Input), total: Int, next: option.Option(PendingCursor))
+}
+/// A caller-owned input; bodies retain their existing extensible codecs.
+pub type Input {
+  /// The pending payload is a machine pending-entry value.
+  Pending(id: EntryId, queue: Queue, payload: report.Value)
+  /// The materialized payload is a core entry value on the caller's
+  /// branch.
+  Materialized(id: EntryId, entry: report.Value)
+}
+/// Catalogue lifecycle observations are separate from model activity.
+pub type Lifecycle {
+  /// The catalogue holds a reservation without an initialized store.
+  Reserved
+  /// The saved session is not currently resident.
+  Saved
+  /// A manager operation is assembling the resident.
+  Opening(operation: String)
+  /// The resident is identified by its manager incarnation.
+  Resident(incarnation: String)
+  /// A manager operation is stopping the resident.
+  Stopping(operation: String)
+  /// Recovery requires operator intervention.
+  RecoveryBlocked
+}
+/// One authorized outgoing link, never an inbound mailbox row.
+pub type Link {
+  Link(session: SessionId, target_strand: String, metadata: Metadata, exports: Exports)
+}
+/// Catalogue metadata has a closed envelope; custom host metadata remains
+/// open.
+pub type Metadata {
+  Catalogue(session: SessionId, workspace: String, name: String, created_at: Int, status: Lifecycle)
+  /// Catalogue lookup failed without removing the outgoing link.
+  MetadataUnavailable(reason: String)
+  /// A custom host supplies an intentionally extensible metadata value.
+  CustomMetadata(value: report.Value)
+}
+/// A model claim is attributed separately from host-observed state.
+pub type ModelClaim {
+  ModelClaim(author: String, description: report.Value)
+}
+/// Categories a caller can distinguish without parsing diagnostic prose.
+pub type PeerError {
+  /// The host refused under this denial code.
+  PeerDenied(code: String, message: String)
+  /// The capability channel could not carry the request.
+  PeerUnavailable(reason: String)
+  /// A successful host response violated the stable envelope contract.
+  PeerResultMalformed(reason: String)
+  /// A persisted selector is not valid in this cursor or identity domain.
+  InvalidSelector(reason: String)
+}
+/// A pending input cursor belongs only to the caller's live input set.
+pub type PendingCursor
+/// The durable queue which currently owns an input.
+pub type Queue {
+  /// Input waiting for the next operation.
+  NextRun
+  /// Steering waiting at an active checkpoint.
+  Steer
+  /// Follow-up input for the active operation.
+  FollowUp
+  /// Steering retained by cancellation cleanup.
+  CancelledSteer
+  /// Follow-up input retained by cancellation cleanup.
+  CancelledFollowUp
+}
+/// An admission receipt proves durable acceptance, never consumption or
+/// reading.
+pub type Receipt {
+  Admitted(request: Request, source: option.Option(Metadata))
+}
+/// A receipt cursor orders hash keys, never arrival times.
+pub type ReceiptCursor
+/// Foreign-only pages still carry the cursor needed to make progress.
+pub type ReceiptPage {
+  ReceiptPage(items: List(ReceivedReceipt), next: option.Option(ReceiptCursor))
+}
+/// One retained receipt and its position in the global bounded scan.
+pub type ReceivedReceipt {
+  ReceivedReceipt(cursor: ReceiptCursor, receipt: Receipt)
+}
+/// A stable retry identity and the complete admitted body.
+pub type Request {
+  Request(source_session: SessionId, source_strand: String, target_strand: String, message_id: String, body: String)
+}
+/// One terminal observation; outcome remains host-rendered diagnostic
+/// text.
+pub type Terminal {
+  Terminal(commit_sequence: Int, operation: OpId, outcome: String)
+}
+/// Owner-granted permission to wake an idle recipient.
+pub type Wake {
+  /// Delivery requires an already active recipient.
+  BusyOnly
+  /// Delivery may start a new recipient operation.
+  MayWake
+}
 ",
   ),
   #(
@@ -2317,13 +2703,31 @@ pub type Bounds {
   /// The bounds this program wants, each at or under the host's ceiling.
   Bounds(max_fires: Int, expires_after_s: Int)
 }
+/// The host-resolved timing, separate from its human-readable
+/// description. Relative one-shots arrive as their resolved UTC instant,
+/// so callers never need to parse display text or guess when the host
+/// read its clock.
+pub type Cadence {
+  /// A recurring epoch-aligned grid with both expiry bounds active.
+  Interval(seconds: Int, expiry: Expiry)
+  /// A five-field expression read at a fixed UTC offset, without DST
+  /// changes.
+  Cron(expression: String, utc_offset_s: Int, expiry: Expiry)
+  /// One occurrence, carrying no recurring expiry.
+  OneShot(at_unix_s: Int)
+}
 /// What a `create` actually produced.
 pub type Created {
-  Created(name: String, target: String, when: String, wake: Wake)
+  Created(name: String, target: String, when: String, cadence: Cadence, wake: Wake)
+}
+/// Both mandatory limits of a recurring schedule; the first reached ends
+/// it.
+pub type Expiry {
+  Expiry(max_fires: Int, expires_after_s: Int)
 }
 /// One schedule this strand owns.
 pub type Schedule {
-  Schedule(name: String, target: String, when: String, wake: Wake, fired: Int, body: String)
+  Schedule(name: String, target: String, when: String, cadence: Cadence, wake: Wake, fired: Int, body: String)
 }
 /// Why a scheduling call failed.
 pub type ScheduleError {
@@ -2334,6 +2738,8 @@ pub type ScheduleError {
   ScheduleDenied(code: String, message: String)
   /// The capability channel could not carry the call.
   ScheduleUnavailable(reason: String)
+  /// The host answered with a malformed stable schedule record.
+  MalformedScheduleResult(reason: String)
 }
 /// What a schedule is allowed to do to this strand when it is idle at the
 /// moment the schedule fires.
@@ -2459,6 +2865,10 @@ pub type SearchError {
 `cap/strand` starts, joins, and addresses other agents from inside a code-
 mode program.
 
+/// A validated durable entry identity, shared with the harness.
+pub type EntryId
+/// A validated durable operation identity, shared with the harness.
+pub type OpId
 /// One assignment, built up before it is spawned.
 ///
 /// Opaque, so a non-empty purpose and brief hold by construction and the
@@ -2468,13 +2878,13 @@ pub type Assignment
 /// How a `send` payload landed.
 pub type Delivery {
   /// The target had an open run: the message is a durable steer on it.
-  Steered(entry: String)
+  Steered(entry: EntryId)
   /// The target was idle: the message was accepted as a fresh run.
-  Started(operation: String)
+  Started(operation: OpId)
 }
 /// One field of the result shape a spawn demands of its child.
 pub type Field {
-  Field(name: String, expects: FieldType, required: Bool)
+  Field(name: String, expects: FieldType, required: Requirement)
 }
 /// The closed set of types a declared result field may have — the same
 /// vocabulary the harness enforces, and no wider. A schema the harness
@@ -2499,7 +2909,7 @@ pub type FieldType {
 /// A durable reference to one child operation, as `spawn` minted it. It
 /// names nothing process-local, so it survives a restart.
 pub type Handle {
-  Handle(strand: String, operation: String)
+  Handle(strand: String, operation: OpId)
 }
 /// One assignment's result from a bounded map, in input order.
 pub type Mapped {
@@ -2544,9 +2954,16 @@ pub type Relation {
   /// A strand the caller spawned.
   ChildOf
 }
+/// Whether the child's result must contain a declared field.
+pub type Requirement {
+  /// A result without the field fails its declared schema.
+  Required
+  /// The field may be absent, but a present value must match its type.
+  Optional
+}
 /// Why a call was refused.
 ///
-/// Every variant but the last two is one of the harness's own refusal
+/// Every variant but the last three is one of the harness's own refusal
 /// names, carrying the harness's own sentence verbatim: the authorization
 /// model this seam runs under is `client/agency`'s, reused rather than
 /// re-derived, and a refusal renamed on the way out would be a second
@@ -2605,6 +3022,8 @@ pub type StrandError {
   AdmissionCeilingReached(message: String)
   /// Any other in-band refusal, its code preserved.
   StrandRefused(code: String, message: String)
+  /// The host answered, but its payload did not satisfy this API.
+  StrandResultMalformed(reason: String)
   /// The capability channel could not carry the call.
   StrandUnavailable(reason: String)
 }
@@ -2656,6 +3075,16 @@ pub type Failure(a) {
     "cap/workflow",
     "### cap/workflow
 Named, durable child steps for background orchestration programs.
+
+/// Why a durable workflow admission could not be recovered.
+pub type WorkflowError {
+  /// The host refused the operation under its stable denial code.
+  WorkflowDenied(code: String, message: String)
+  /// The capability transport could not carry the request.
+  WorkflowUnavailable(reason: String)
+  /// A successful response did not contain a valid typed handle.
+  WorkflowResultMalformed(reason: String)
+}
 ",
   ),
 ]
