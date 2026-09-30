@@ -72,6 +72,16 @@ pub type PeerWake {
   MayWake
 }
 
+/// The two roles a member can hold in a session, as `sessions.set_role`
+/// names them. The owner holds neither; it has no memberships.
+pub type MemberRole {
+  /// May answer the session's escalations and send prompts.
+  OperatorRole
+
+  /// May read the session and nothing more.
+  ObserverRole
+}
+
 /// Requests are explicit; metadata reads never imply an open.
 /// What a web page may do: the ceiling `ui.link` asks for. An operator's
 /// page is asked for only with `loom ui --operate`.
@@ -231,6 +241,47 @@ pub type Command {
     target_session: String,
     /// Exact recipient strand.
     target_strand: String,
+  )
+
+  /// Lists one page of principals and their credential state
+  /// (`protocol-change/053`). Owner-only; a member is refused `forbidden`.
+  ListPrincipals(
+    /// The last principal of the previous page, absent for the first.
+    after: Option(String),
+  )
+
+  /// Lists one page of the sessions a principal holds a role in
+  /// (`protocol-change/053`). Owner-only.
+  PrincipalMemberships(
+    /// The principal whose memberships are listed.
+    principal: String,
+    /// The last session of the previous page, absent for the first.
+    after: Option(String),
+  )
+
+  /// Sets a member's role in one session, adding the membership if the
+  /// member has none there. Owner-only.
+  SetMemberRole(
+    /// Canonical session whose membership changes.
+    session_id: String,
+    /// The member whose role changes.
+    principal: String,
+    /// The role the member holds afterwards.
+    role: MemberRole,
+  )
+
+  /// Removes a member's role in one session. Owner-only.
+  RevokeMembership(
+    /// Canonical session the member leaves.
+    session_id: String,
+    /// The member who leaves it.
+    principal: String,
+  )
+
+  /// Revokes every credential of a member, and any open claim. Owner-only.
+  RevokeCredentials(
+    /// The member whose credentials are revoked.
+    principal: String,
   )
 
   /// Asks what the named resident sessions are doing (`protocol-change/050`).
@@ -462,6 +513,21 @@ pub type Reply {
     document: json.JsonValue,
   )
 
+  /// One page of the owner's access listing, either principals or one
+  /// principal's memberships. The body is checked by `host/access` where it
+  /// is drawn, not here.
+  AccessListingReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
+
+  /// One acknowledged access change: a role set, a membership revoked, or
+  /// credentials revoked. The body names the principal and never a secret.
+  AccessChangeReply(
+    /// The daemon's reply body, unread.
+    document: json.JsonValue,
+  )
+
   /// What each resident session named by `SessionActivity` is doing, in
   /// request order. A requested session missing here is not resident.
   ActivityReply(
@@ -526,6 +592,11 @@ pub fn name(command: Command) -> String {
     InspectPeers(..) -> "peers.inspect"
     LinkPeers(..) -> "peers.link"
     UnlinkPeers(..) -> "peers.unlink"
+    ListPrincipals(..) -> "principals.list"
+    PrincipalMemberships(..) -> "principals.memberships"
+    SetMemberRole(..) -> "sessions.set_role"
+    RevokeMembership(..) -> "sessions.revoke"
+    RevokeCredentials(..) -> "credentials.revoke"
     SessionActivity(..) -> "sessions.activity"
     Shutdown -> "daemon.shutdown"
   }
@@ -548,6 +619,8 @@ pub fn mutates(command: Command) -> Bool {
     | WorkspaceDefault(..)
     | GetOperation(..)
     | InspectPeers(..)
+    | ListPrincipals(..)
+    | PrincipalMemberships(..)
     | SessionActivity(..) -> False
     SetDefault(..)
     | RenameSession(..)
@@ -559,6 +632,9 @@ pub fn mutates(command: Command) -> Bool {
     | RestoreSession(..)
     | LinkPeers(..)
     | UnlinkPeers(..)
+    | SetMemberRole(..)
+    | RevokeMembership(..)
+    | RevokeCredentials(..)
     | Shutdown -> True
   }
 }
@@ -706,6 +782,45 @@ fn command_fields(command: Command, epoch: Epoch) {
         )
       ])
     }
+    ListPrincipals(after) -> optional_text_field(after, "after", 128)
+    PrincipalMemberships(principal, after) -> {
+      use identity <- result.try(principal_field(principal))
+      use cursor <- result.try(case after {
+        None -> Ok([])
+        Some(id) -> {
+          use Nil <- result.try(valid_id(id))
+          Ok([#("after", json.String(id))])
+        }
+      })
+      Ok(list.append(identity, cursor))
+    }
+    SetMemberRole(id, principal, role) -> {
+      use session <- result.try(identity_fields(id))
+      use identity <- result.try(principal_field(principal))
+      let role = case role {
+        OperatorRole -> "operator"
+        ObserverRole -> "observer"
+      }
+      Ok([
+        #("epoch", json.String(epoch_value)),
+        ..list.append(
+          session,
+          list.append(identity, [#("role", json.String(role))]),
+        )
+      ])
+    }
+    RevokeMembership(id, principal) -> {
+      use session <- result.try(identity_fields(id))
+      use identity <- result.try(principal_field(principal))
+      Ok([
+        #("epoch", json.String(epoch_value)),
+        ..list.append(session, identity)
+      ])
+    }
+    RevokeCredentials(principal) -> {
+      use identity <- result.try(principal_field(principal))
+      Ok([#("epoch", json.String(epoch_value)), ..identity])
+    }
     SessionActivity(sessions) -> {
       use Nil <- result.try(activity_sessions(sessions))
       Ok([
@@ -753,6 +868,25 @@ fn peer_session_field(id: String, key: String) {
   use Nil <- result.try(valid_id(id))
   Ok([#(key, json.String(id))])
 }
+
+// A principal ID is 1 to 128 bytes of the daemon's identifier alphabet. The
+// daemon applies the same rule and answers `bad_request`, so a value that
+// fails it here is refused without a round trip.
+fn principal_field(principal: String) {
+  case
+    string.byte_size(principal) > 0
+    && string.byte_size(principal) <= 128
+    && list.all(string.to_graphemes(principal), fn(char) {
+      string.contains(principal_alphabet, char)
+    })
+  {
+    True -> Ok([#("principal_id", json.String(principal))])
+    False -> Error("invalid principal id")
+  }
+}
+
+const principal_alphabet =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."
 
 fn peer_strand_field(strand: String, key: String) {
   use Nil <- result.try(
@@ -877,6 +1011,9 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.delete" -> result.map(deletion(body), DeletedReply)
     "peers.inspect" -> Ok(PeersInspectionReply(body))
     "peers.link" | "peers.unlink" -> Ok(PeersMutationReply(body))
+    "principals.list" | "principals.memberships" -> Ok(AccessListingReply(body))
+    "sessions.set_role" | "sessions.revoke" | "credentials.revoke" ->
+      Ok(AccessChangeReply(body))
     "sessions.activity" -> result.map(activity(body), ActivityReply)
     "daemon.shutdown" ->
       case field(body, "state") {

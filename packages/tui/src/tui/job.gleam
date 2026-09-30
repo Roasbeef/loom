@@ -241,6 +241,20 @@ pub type ControlOutcome {
 
   /// A link or unlink acknowledgement whose body preserves partial results.
   PeerOperationCompleted(document: json.JsonValue)
+
+  /// One page of principals for the access overlay, and the cursor it was
+  /// read after, absent for the first page.
+  AccessListed(document: json.JsonValue, after: Option(String))
+
+  /// One page of a principal's memberships for the access overlay.
+  MembershipsListed(
+    document: json.JsonValue,
+    principal: String,
+    after: Option(String),
+  )
+
+  /// The daemon acknowledged one access change.
+  AccessChanged(document: json.JsonValue)
 }
 
 /// The ADT keeps a confirmed permanent deletion distinct from reversible
@@ -291,6 +305,14 @@ pub type ControlJob {
 
   /// Sends one link or unlink.
   MutatePeers(command: control_protocol.Command)
+
+  /// Reads one page of the owner's access listing: `ListPrincipals` or
+  /// `PrincipalMemberships`.
+  ReadAccess(command: control_protocol.Command)
+
+  /// Sends one access change: `SetMemberRole`, `RevokeMembership` or
+  /// `RevokeCredentials`.
+  ChangeAccess(command: control_protocol.Command)
 }
 
 /// Which job to start. The runtime turns each variant into a weft task.

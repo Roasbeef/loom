@@ -922,20 +922,84 @@ pub fn success(
       use line <- result.map(member_success(fields, address, request))
       [line]
     }
-    PrincipalListing -> {
-      use fields <- result.try(object_fields(body))
-      page_lines(fields, "principals", listing_row)
-    }
-    MembershipListing -> {
-      use fields <- result.try(object_fields(body))
-      use Nil <- result.try(equal_field(
-        fields,
-        "principal_id",
-        json.String(request.subject),
-      ))
-      page_lines(fields, "memberships", membership_row)
-    }
+    PrincipalListing -> principal_lines(body)
+    MembershipListing -> membership_lines(body, request.subject)
   }
+}
+
+/// Checks a `principals.list` reply body and answers its lines: one checked
+/// row per principal, then `{"next": CURSOR}` when the daemon says another
+/// page follows.
+///
+/// This is the check `loom access list` prints through, exposed so a caller
+/// that draws the listing itself, such as the terminal's `/access` overlay,
+/// accepts exactly the rows the command line would print. A row that fails
+/// its check fails the whole reply.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.principal_lines(body)
+/// ```
+pub fn principal_lines(body: JsonValue) -> Result(List(JsonValue), String) {
+  use fields <- result.try(object_fields(body))
+  page_lines(fields, "principals", listing_row)
+}
+
+/// Checks a `principals.memberships` reply body for `principal` and answers
+/// its lines, in the shape `principal_lines` answers.
+///
+/// A reply that names another principal is refused, so a late answer to an
+/// earlier request cannot be drawn under the wrong principal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.membership_lines(body, "alice")
+/// ```
+pub fn membership_lines(
+  body: JsonValue,
+  principal: String,
+) -> Result(List(JsonValue), String) {
+  use fields <- result.try(object_fields(body))
+  use Nil <- result.try(equal_field(
+    fields,
+    "principal_id",
+    json.String(principal),
+  ))
+  page_lines(fields, "memberships", membership_row)
+}
+
+/// The `loom access` line that invites a new member to `session`, with
+/// placeholders where the owner chooses the new member's identity.
+///
+/// The owner runs it in a shell. Nothing in Loom's terminal runs it or holds
+/// its output, because an invitation prints a claim.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert access.invite_line("")
+///   == "loom access invite SESSION PRINCIPAL ROLE NAME"
+/// ```
+pub fn invite_line(session: String) -> String {
+  let session = case session {
+    "" -> "SESSION"
+    id -> id
+  }
+  "loom access invite " <> session <> " PRINCIPAL ROLE NAME"
+}
+
+/// The `loom access` line that rotates `principal`'s credential, which
+/// prints a new claim for the owner to send.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert access.rotate_line("alice") == "loom access rotate alice"
+/// ```
+pub fn rotate_line(principal: String) -> String {
+  "loom access rotate " <> principal
 }
 
 // A member reply is re-encoded from checked fields rather than echoed. A claim

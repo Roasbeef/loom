@@ -39,8 +39,9 @@ import tui/agent_strip
 import tui/agents
 import tui/diff_panel
 import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, DaemonSelector, DiffHidden,
-  DiffVisible, GoalInspector, ModelSelector, NoOverlay, PeerLinkManager,
+  type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
+  DiffHidden, DiffVisible, GoalInspector, ModelSelector, NoOverlay,
+  PeerLinkManager,
 } as tui_model
 import tui/queue_editor
 import tui/queue_panel
@@ -966,6 +967,7 @@ pub fn diff_borrow_eligible(model: Model) -> Bool {
     | GoalInspector(_)
     | DaemonSelector(_)
     | PeerLinkManager(_)
+    | AccessManager(_)
     | ApprovalInspector(_) -> False
   }
   && !model.view.notes_open

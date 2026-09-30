@@ -333,7 +333,7 @@ the shared step an `Acted`. The `JobReplied` arrival
 it is filed into does.
 
 `Stamp` loses `wall_ms`. The one reader is the session creation key
-(`tui/session_control.gleam:634` (`wall_ms`)), which stays in the
+(`tui/session_control.gleam:643` (`wall_ms`)), which stays in the
 terminal, and the terminal's stamp gains it back beside the shared one. The web shell sets `now_ms` and `transport_ms` to the same
 reading.
 
@@ -459,7 +459,7 @@ terminal halves of the splits. A terminal reducer that calls into the
 shared step stores the result through `hold_shared`, the same discipline
 as `hold_channel`: the shared outbox is moved into the terminal's at the
 point of the call, so a step that decides a lane close, then a terminal
-`Discard`, then a lane write (`tui/interaction.gleam:333` (`Discard`))
+`Discard`, then a lane write (`tui/interaction.gleam:339` (`Discard`))
 still performs them in that order. The terminal's effect type gains one
 variant, `Step(step.Effect(Connection, Recorder))`,
 and `perform_io` gains two arms (`tui/runtime.gleam:433`
@@ -650,7 +650,7 @@ The worst cases in the code, and the cut for each:
    (`tui/inbound.gleam:1046` (`request_visible_worktree`) reads
    `layout.diff_shown`); `request_history_for_view`, which becomes
    `Acted(OlderHistory)` for the same reason
-   (`tui/interaction.gleam:1806` (`request_history_for_view`) reads the
+   (`tui/interaction.gleam:1813` (`request_history_for_view`) reads the
    viewport); `publish_herdr`; `refresh_render_cache`; the viewport snap;
    and `refresh_frame_cache`. The compile-time boundary the comment above
    `apply_input` describes keeps its shape: the shared `update` applies
@@ -676,7 +676,7 @@ The worst cases in the code, and the cut for each:
    terminal function over `TuiModel`, and the calls it makes into shared
    reducers become `Acted` commands or direct calls through `hold_shared`.
    `update_ready_key`'s order, Escape before the drain
-   (`tui/interaction.gleam:1454` (`update_ready_key`)), is kept because
+   (`tui/interaction.gleam:1461` (`update_ready_key`)), is kept because
    the shell decides when to call the shared drain, as it does today.
 
 ## 4. What the web view deletes

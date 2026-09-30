@@ -520,3 +520,38 @@ pub fn the_owner_token_file_is_read_as_a_private_bounded_credential_test() {
   let assert Error(_) = access.execute(remote_list(root <> "/missing"))
   assert simplifile.delete(root) == Ok(Nil)
 }
+
+// The listing checks are what `loom access list` and `show` print through and
+// what the terminal's `/access` overlay accepts, so both surfaces refuse the
+// same replies.
+pub fn the_public_listing_checks_accept_and_refuse_what_the_commands_do_test() {
+  let assert Ok(page) =
+    json.parse(
+      "{\"principals\":[{\"principal_id\":\"alice\",\"name\":\"Alice\",\"kind\":\"member\",\"credential\":{\"state\":\"none\"}}],\"next\":\"alice\"}",
+    )
+  let assert Ok([row, next]) = access.principal_lines(page)
+  assert json.to_string(row)
+    == "{\"principal_id\":\"alice\",\"name\":\"Alice\",\"kind\":\"member\",\"credential\":{\"state\":\"none\"}}"
+  assert json.to_string(next) == "{\"next\":\"alice\"}"
+
+  let assert Ok(memberships) =
+    json.parse(
+      "{\"principal_id\":\"alice\",\"memberships\":[{\"session_id\":\""
+      <> session
+      <> "\",\"name\":\"Review\",\"role\":\"observer\"}]}",
+    )
+  let assert Ok([_]) = access.membership_lines(memberships, "alice")
+  let assert Error(_) = access.membership_lines(memberships, "bob")
+    as "a reply for another principal is refused"
+}
+
+pub fn the_lines_the_overlay_shows_parse_in_the_shared_grammar_test() {
+  let assert Ok(_) = access.parse(["rotate", "alice"], access.Loom)
+  assert access.rotate_line("alice") == "loom access rotate alice"
+  assert access.invite_line("")
+    == "loom access invite SESSION PRINCIPAL ROLE NAME"
+  assert access.invite_line(session)
+    == "loom access invite " <> session <> " PRINCIPAL ROLE NAME"
+  let assert Ok(_) =
+    access.parse(["invite", session, "carol", "observer", "Carol"], access.Loom)
+}

@@ -56,10 +56,11 @@ import tui/inbound
 import tui/job
 import tui/layout
 import tui/model.{
-  type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Caches,
-  DaemonSelector, DiffHidden, DiffVisible, FrameCache, GoalInspector, Model,
-  ModelSelector, Newer, NoClipboard, NoOverlay, Older, PeerLinkManager,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, TerminalClipboard, View,
+  type Model, type ScrollDirection, AccessManager, AgentInspector,
+  ApprovalInspector, Caches, DaemonSelector, DiffHidden, DiffVisible, FrameCache,
+  GoalInspector, Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older,
+  PeerLinkManager, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
+  TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -104,7 +105,8 @@ pub fn handle_paste(
     | GoalInspector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_)
-    | PeerLinkManager(_) -> model
+    | PeerLinkManager(_)
+    | AccessManager(_) -> model
   }
 }
 
@@ -501,6 +503,8 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
         DaemonSelector(selector) -> update_daemon_selector(key, model, selector)
         PeerLinkManager(state) ->
           session_control.update_peer_link_manager(key, model, state)
+        AccessManager(state) ->
+          session_control.update_access_overlay(key, model, state)
         ApprovalInspector(panel) ->
           case approval_panel.update(key, panel) {
             approval_panel.Close ->

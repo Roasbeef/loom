@@ -51,6 +51,7 @@ import session_view/transcript_line.{
 }
 import session_view/transcript_lines
 import session_view/worktree_view
+import tui/access_overlay
 import tui/agent_message_panel
 import tui/agent_strip
 import tui/agents
@@ -64,9 +65,9 @@ import tui/layout
 import tui/live_tail
 import tui/markdown
 import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, DaemonSelector, FrameCache,
-  GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
+  type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
+  FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
+  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -216,6 +217,7 @@ pub fn render_frame(
       )
     DaemonSelector(selector) -> session_selector.render(base, screen, selector)
     PeerLinkManager(state) -> peer_links.render(base, screen, state)
+    AccessManager(state) -> access_overlay.render(base, screen, state)
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
   }
 
@@ -270,6 +272,7 @@ pub fn render_frame(
     | GoalInspector(_), _
     | DaemonSelector(_), _
     | PeerLinkManager(_), _
+    | AccessManager(_), _
     | ApprovalInspector(_), _
     -> Error(Nil)
   }
@@ -1230,6 +1233,7 @@ fn note_context(model: Model, target: String) -> List(String) {
             | GoalInspector(_)
             | DaemonSelector(_)
             | PeerLinkManager(_)
+            | AccessManager(_)
             | ApprovalInspector(_) -> ["No observed notes for " <> target]
           }
       }
@@ -1246,6 +1250,7 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
     | GoalInspector(_)
     | DaemonSelector(_)
     | PeerLinkManager(_)
+    | AccessManager(_)
     | ApprovalInspector(_) -> ["No observed notes for " <> target]
   }
 }
@@ -1841,6 +1846,7 @@ fn render_command_palette(
     | _, GoalInspector(_)
     | _, DaemonSelector(_)
     | _, PeerLinkManager(_)
+    | _, AccessManager(_)
     | _, ApprovalInspector(_)
     -> buf
     _, NoOverlay -> {
