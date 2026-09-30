@@ -421,5 +421,17 @@ pub fn an_operators_frame_holds_a_full_prompt_of_images_test() {
   assert encoded + quoting + component.prompt_limit + 4096
     < ui_socket.operator_frame_limit
   assert ui_socket.operator_frame_limit < root.message_limit(root.Operator)
+  assert ui_socket.operator_frame_limit == root.message_limit(root.PageOperator)
   assert root.message_limit(root.Observer) == 65_536
+}
+
+// The operator class is charged for the peak of one submit of a full frame:
+// the frame, the event string, the parsed images, the decoded bytes and the
+// re-encoding, five copies. The other classes keep their own charge.
+pub fn an_operators_charge_covers_a_submits_peak_test() {
+  assert root.charge(root.PageOperator) >= 5 * ui_socket.operator_frame_limit
+  assert root.charge(root.PageOperator) == root.operator_peak
+  assert root.charge(root.Observer) == 65_536 + 8_388_608
+  assert root.charge(root.Operator) == 33_554_432 + 8_388_608
+  assert root.charge(root.Control) == 65_536
 }

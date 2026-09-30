@@ -27,6 +27,7 @@
 
 import core/json
 import gleam/bit_array
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -210,20 +211,26 @@ pub fn admit(
         <> " images. Nothing was sent.",
       )
     [] -> {
+      let text = list.fold(encoded, 0, fn(n, one) { n + string.byte_size(one) })
+      use <- bool.guard(
+        text > max_attached_bytes / 3 * 4 + 4 * max_attached,
+        Error(too_large()),
+      )
       use images <- result.try(list.try_map(encoded, decoded))
       let total =
         list.fold(images, 0, fn(total, image) { total + image.byte_size })
       case total > max_attached_bytes {
-        True ->
-          Error(
-            "The images total more than "
-            <> int.to_string(max_attached_bytes / 1_048_576)
-            <> " MiB. Nothing was sent.",
-          )
+        True -> Error(too_large())
         False -> Ok(images)
       }
     }
   }
+}
+
+fn too_large() -> String {
+  "The images total more than "
+  <> int.to_string(max_attached_bytes / 1_048_576)
+  <> " MiB. Nothing was sent."
 }
 
 fn decoded(text: String) -> Result(pasted_image.Image, String) {

@@ -2851,10 +2851,16 @@ what one frame carries:
 The operator addendum said image prompts would need the frame limit raised
 under their own review, and this is that review. Eight MiB of images is 10.7 MiB
 as base64 text, and a draft of at most 256 KiB and the event's own framing come
-to less than 12 MiB. The permit an operator's page holds is charged for the
-operator class's own message limit of 32 MiB and its 8 MiB of delivery
-(`root.message_limit`, `connection_charge`), so the limit is inside what
-admission already reserved. The frame limit is per socket, so it does not raise
+to less than 12 MiB. One such submit is held at once as the frame, the Lustre
+event's string, the parsed images, their decoded bytes and their canonical
+re-encoding, five copies and about 60 MiB at its peak. The operator class was
+charged 40 MiB (its 32 MiB message limit and 8 MiB of delivery), which did not
+cover that. An operator's page is therefore admitted under its own connection
+class, `PageOperator`, charged `root.operator_peak`, 64 MiB. Only page sockets
+change: an observer, the control connection, a claim and a terminal operator
+keep their classes and charges (`Operator` is still 40 MiB), and the daemon's
+default budget still holds twelve terminal operator and control pairs. The
+frame limit and the image caps are unchanged. The frame limit is per socket, so it does not raise
 the number of sockets, which the root's capacity bounds as before.
 
 **The daemon checks every image, and the browser is not trusted.**
@@ -2936,6 +2942,13 @@ component drew it.
 - An image the lane drew and the window then dropped answers `404`, and its
   thumbnail is a broken image until the row leaves the page.
 - The thumbnail is a fixed size and does not show the image's own dimensions.
+- Every image fetch repeats the page grant's authentication and membership reads,
+  as every page request does; a page with many images pays that for each.
+- A reader's reply that arrives after the two-second wait is left in the asking
+  handler's mailbox until that handler ends, which is one request.
+- The daemon serves images up to 20 MiB, the terminal's limit, while the
+  composer accepts 8 MiB per prompt, so a page can show an image it could not
+  send.
 
 ### Verification
 

@@ -160,8 +160,8 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   forwards only the
   click and submit events its page attaches (`operator_accepts`) and takes
   frames up to `operator_frame_limit` (12 MiB, which holds a draft and 8 MiB of
-  images at their base64 size, inside the 32 MiB the operator class is charged
-  for; an observer's stays 64 KiB). It registers the page's image reader with
+  images at their base64 size; an operator's page is admitted as
+  `root.PageOperator`, charged `root.operator_peak`, 64 MiB, for a submit's five-copy peak; an observer's stays 64 KiB). It registers the page's image reader with
   `register` when its component starts (`Page.images`: a `lustre.dispatch` of
   `ImageRequested`, answered on the asking handler's subject within two
   seconds, and refused at once when the socket's process is gone). It closes on the relay's

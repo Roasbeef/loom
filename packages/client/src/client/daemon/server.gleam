@@ -384,13 +384,14 @@ fn image_of(
   ref: String,
   position: Int,
 ) {
-  case page_grant(config, ui, request, key, id) {
-    Error(response) -> response
-    Ok(#(_, _, cookie)) ->
-      case ui_sessions.images(ui.sessions, cookie) {
-        Ok(read) -> picture(read(ref, position))
-        Error(Nil) -> plain(404, "unknown image")
-      }
+  let found = {
+    use #(_, _, cookie) <- result.try(page_grant(config, ui, request, key, id))
+    ui_sessions.images(ui.sessions, cookie)
+    |> result.map(fn(read) { picture(read(ref, position)) })
+    |> result.replace_error(plain(404, "unknown image"))
+  }
+  case found {
+    Ok(answer) | Error(answer) -> answer
   }
 }
 
@@ -401,18 +402,27 @@ fn image_of(
 // already `nosniff`, so the browser draws what was checked and nothing it
 // might sniff from the bytes.
 fn picture(found: Result(transcript_image.Image, Nil)) {
-  case found {
-    Error(Nil) -> plain(404, "unknown image")
-    Ok(held) ->
-      case image.serve(held) {
-        Ok(image.Served(mime_type:, bytes:)) ->
-          response.new(200)
-          |> response.set_header("content-type", mime_type)
-          |> response.set_header("content-disposition", "inline")
-          |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(bytes)))
-        Error(image.NotAnImage) -> plain(415, "not a supported image")
-        Error(image.TooLarge) -> plain(413, "image too large")
-      }
+  let served = {
+    use held <- result.try(result.replace_error(
+      found,
+      plain(404, "unknown image"),
+    ))
+    use image.Served(mime_type:, bytes:) <- result.map(
+      image.serve(held)
+      |> result.map_error(fn(refusal) {
+        case refusal {
+          image.NotAnImage -> plain(415, "not a supported image")
+          image.TooLarge -> plain(413, "image too large")
+        }
+      }),
+    )
+    response.new(200)
+    |> response.set_header("content-type", mime_type)
+    |> response.set_header("content-disposition", "inline")
+    |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(bytes)))
+  }
+  case served {
+    Ok(answer) | Error(answer) -> answer
   }
 }
 
@@ -553,9 +563,14 @@ fn resident_upgrade(
         MembershipRole -> membership
         PageRole(ceiling:) -> ui_relay.capped(membership, ceiling)
       }
-      let class = case authority {
-        access.Participant(access.Observer) -> root.Observer
-        access.Owner | access.Participant(access.Operator) -> root.Operator
+      let class = case authority, role {
+        access.Participant(access.Observer), _ -> root.Observer
+        access.Owner, MembershipRole
+        | access.Participant(access.Operator), MembershipRole
+        -> root.Operator
+        access.Owner, PageRole(..)
+        | access.Participant(access.Operator), PageRole(..)
+        -> root.PageOperator
       }
       case
         upgrade_log.timed(route, "acquire", fn() {
