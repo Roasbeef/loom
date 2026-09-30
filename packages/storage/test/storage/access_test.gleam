@@ -1022,7 +1022,8 @@ pub fn memberships_page_names_sessions_and_pages_by_session_test() {
   let ids = list.map(page.entries, fn(row) { row.session_id })
   assert ids == list.sort(ids, string.compare)
   let assert Ok(last) = list.last(page.entries)
-  let assert Ok(rest) = access.memberships_page(store, member.id, last.session_id)
+  let assert Ok(rest) =
+    access.memberships_page(store, member.id, last.session_id)
     as "second page"
   assert list.length(rest.entries) == 5
   assert rest.remainder == access.Exhausted
@@ -1041,7 +1042,8 @@ pub fn memberships_page_names_sessions_and_pages_by_session_test() {
 }
 
 pub fn memberships_page_refuses_unknown_principals_and_lists_none_for_owner_test() {
-  let #(_file, store, _session, _member) = claim_fixture("membership-owner", 953)
+  let #(_file, store, _session, _member) =
+    claim_fixture("membership-owner", 953)
   let assert Ok(_) =
     access.bootstrap_owner(store, "owner", "Owner", digest("0"))
     as "the owner is created"
