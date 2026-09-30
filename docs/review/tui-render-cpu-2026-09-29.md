@@ -52,7 +52,7 @@ pass.
 
 `paint` builds one frame. `scroll40` applies forty wheel events with the
 fixture clock advancing 50 ms per event: ten up, ten down, then twenty up.
-It ends at offset 60 in a 262-row transcript. The clock advance makes each
+At 200×50 it ends at offset 60 in a 262-row transcript. The clock advance makes each
 event eligible for a frame; independent tracing confirmed forty frame
 builds. This measures update and frame work for spaced events, not a burst
 of queued real input, terminal writes or end-to-end input latency.

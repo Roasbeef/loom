@@ -60,7 +60,7 @@ main([Label, Scenario | Args]) ->
 
 %% --- scenarios --------------------------------------------------------------
 
-%% Full painting and a real wheel burst over a decoded six-agent capture.
+%% Full painting and spaced wheel updates over a decoded six-agent capture.
 %% Timings exclude setup, tracing and the cell witness. The witness includes
 %% styles, links, continuation cells and cursor, not just the visible text.
 run("render", [WidthS, HeightS], Label) ->
