@@ -23,20 +23,22 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/attempt
 import session_view/model.{Shared}
+import tui/access_overlay
 import tui/agents
 import tui/attachment
 import tui/daemon/protocol as control_protocol
 import tui/inbound
 import tui/job.{
-  PageLoaded, PeerInspectionLoaded, PeerOperationCompleted, PeerSessionsLoaded,
+  AccessChanged, AccessListed, MembershipsListed, PageLoaded,
+  PeerInspectionLoaded, PeerOperationCompleted, PeerSessionsLoaded,
   PeerWorkspaceLoaded, SessionArchived, SessionDeleted, SessionRenamed,
   SessionRestored,
 }
 import tui/model.{
-  type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
-  ApprovalInspector, ControlRequest, DaemonSelector, GoalInspector, Model,
-  ModelSelector, NoOverlay, PeerLinkManager, ReconnectAttempting, ReconnectIdle,
-  ReconnectSpent, View,
+  type Model, AccessManager, ActivityAsking, ActivityDue, ActivityResting,
+  AgentInspector, ApprovalInspector, ControlRequest, DaemonSelector,
+  GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, View,
 } as tui_model
 import tui/peer_links
 import tui/recording
@@ -450,7 +452,8 @@ fn finish_control(model: Model, result) {
           | AgentInspector(_)
           | GoalInspector(_)
           | ApprovalInspector(_)
-          | PeerLinkManager(_) -> model.view.overlay
+          | PeerLinkManager(_)
+          | AccessManager(_) -> model.view.overlay
         }),
       )
       |> tui_model.invalidate_frame
@@ -465,6 +468,11 @@ fn finish_control(model: Model, result) {
       finish_peer_inspection(model, document, after)
     Some(Ok(PeerOperationCompleted(document))) ->
       finish_peer_operation(model, document)
+    Some(Ok(AccessListed(document, after))) ->
+      finish_access_listing(model, document, after)
+    Some(Ok(MembershipsListed(document, principal, after))) ->
+      finish_memberships(model, document, principal, after)
+    Some(Ok(AccessChanged(document))) -> finish_access_change(model, document)
     Some(Ok(SessionDeleted(id))) ->
       catalogue_removed(model, id, "deleted session ")
     Some(Ok(SessionArchived(id))) ->
@@ -490,7 +498,8 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
       | AgentInspector(_)
       | GoalInspector(_)
       | ApprovalInspector(_)
-      | PeerLinkManager(_) -> model.view.overlay
+      | PeerLinkManager(_)
+      | AccessManager(_) -> model.view.overlay
     }),
   )
   |> tui_model.invalidate_frame
@@ -938,7 +947,8 @@ fn finish_peer_workspace(
     | AgentInspector(_)
     | GoalInspector(_)
     | DaemonSelector(_)
-    | ApprovalInspector(_) -> model
+    | ApprovalInspector(_)
+    | AccessManager(_) -> model
   }
 }
 
@@ -1008,7 +1018,8 @@ fn finish_peer_inspection(
     | AgentInspector(_)
     | GoalInspector(_)
     | DaemonSelector(_)
-    | ApprovalInspector(_) -> model
+    | ApprovalInspector(_)
+    | AccessManager(_) -> model
   }
 }
 
@@ -1031,7 +1042,8 @@ fn finish_peer_operation(model: Model, document: json.JsonValue) {
     | AgentInspector(_)
     | GoalInspector(_)
     | DaemonSelector(_)
-    | ApprovalInspector(_) -> model
+    | ApprovalInspector(_)
+    | AccessManager(_) -> model
   }
 }
 
@@ -1046,12 +1058,221 @@ fn finish_control_failure(model: Model, reason: String) {
         ),
       )
       |> tui_model.invalidate_frame
+    AccessManager(state) ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          overlay: AccessManager(access_overlay.failed(state, reason)),
+        ),
+      )
+      |> tui_model.invalidate_frame
     NoOverlay
     | ModelSelector(_)
     | AgentInspector(_)
     | GoalInspector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_) -> tui_model.append_error(model, reason)
+  }
+}
+
+/// Opens the owner's `/access` overlay and reads its first page.
+///
+/// The overlay does not need an attached session, only the daemon's control
+/// connection. Whether that connection is the owner's is the daemon's
+/// judgment: a member is refused `forbidden` and the overlay says so.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.begin_access(model)
+/// ```
+pub fn begin_access(model: Model) -> Model {
+  case model.view.daemon_host, model.view.control_request {
+    _, Some(_) ->
+      tui_model.append_error(model, "another daemon control request is running")
+    None, None ->
+      tui_model.append_error(model, "daemon owner control is unavailable")
+    Some(host), None -> {
+      let model =
+        start_control(
+          model,
+          host,
+          job.ReadAccess(control_protocol.ListPrincipals(None)),
+        )
+      Model(
+        ..model,
+        view: View(..model.view, overlay: AccessManager(access_overlay.new())),
+      )
+      |> tui_model.invalidate_frame
+    }
+  }
+}
+
+/// Applies one key to the access overlay and starts the request it asks for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.update_access_overlay(key, model, state)
+/// ```
+pub fn update_access_overlay(key, model: Model, state: access_overlay.State) {
+  case access_overlay.update(key, state) {
+    access_overlay.Continue(next) -> show_access(model, next)
+    access_overlay.Close ->
+      Model(
+        shared: Shared(..model.shared, notice: "access overlay closed"),
+        view: View(..model.view, overlay: NoOverlay),
+      )
+      |> tui_model.invalidate_frame
+    access_overlay.ReadPrincipals(next, after) ->
+      begin_access_request(
+        model,
+        next,
+        job.ReadAccess(control_protocol.ListPrincipals(after)),
+      )
+    access_overlay.ReadMemberships(next, principal, after) ->
+      begin_access_request(
+        model,
+        next,
+        job.ReadAccess(control_protocol.PrincipalMemberships(principal, after)),
+      )
+    access_overlay.Apply(next, change) ->
+      begin_access_request(
+        model,
+        next,
+        job.ChangeAccess(access_command(change)),
+      )
+  }
+}
+
+// The control command for one reviewed change. The epoch is added where the
+// command is encoded, from the hello of the connection that sends it.
+fn access_command(change: access_overlay.Change) -> control_protocol.Command {
+  case change {
+    access_overlay.SetRole(session_id:, principal_id:, role:, ..) ->
+      control_protocol.SetMemberRole(session_id, principal_id, role)
+    access_overlay.RevokeMembership(session_id:, principal_id:, ..) ->
+      control_protocol.RevokeMembership(session_id, principal_id)
+    access_overlay.RevokeCredentials(principal_id:, ..) ->
+      control_protocol.RevokeCredentials(principal_id)
+  }
+}
+
+fn show_access(model: Model, state: access_overlay.State) -> Model {
+  Model(..model, view: View(..model.view, overlay: AccessManager(state)))
+  |> tui_model.invalidate_frame
+}
+
+// One control request at a time. When another is running, nothing is sent and
+// the overlay says so on its own notice line; a reviewed change that meets a
+// busy slot returns to browsing unsent, so the operator can repeat it.
+fn begin_access_request(
+  model: Model,
+  state: access_overlay.State,
+  request: job.ControlJob,
+) -> Model {
+  case model.view.control_request, model.view.daemon_host {
+    Some(_), _ ->
+      show_access(
+        model,
+        access_overlay.failed(
+          state,
+          "another daemon control request is running",
+        ),
+      )
+    None, None ->
+      show_access(
+        model,
+        access_overlay.failed(state, "daemon owner control is unavailable"),
+      )
+    None, Some(host) -> show_access(start_control(model, host, request), state)
+  }
+}
+
+fn finish_access_listing(
+  model: Model,
+  document: json.JsonValue,
+  after: Option(String),
+) -> Model {
+  case model.view.overlay {
+    AccessManager(state) ->
+      case access_overlay.decode_principals(document) {
+        Ok(page) ->
+          show_access(model, access_overlay.listed(state, page, after))
+        Error(reason) ->
+          show_access(model, access_overlay.failed(state, reason))
+      }
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | DaemonSelector(_)
+    | PeerLinkManager(_)
+    | ApprovalInspector(_) -> model
+  }
+}
+
+fn finish_memberships(
+  model: Model,
+  document: json.JsonValue,
+  principal: String,
+  after: Option(String),
+) -> Model {
+  case model.view.overlay {
+    AccessManager(state) ->
+      case access_overlay.decode_memberships(document, principal) {
+        Ok(page) ->
+          show_access(
+            model,
+            access_overlay.memberships_listed(state, principal, page, after),
+          )
+        Error(reason) ->
+          show_access(model, access_overlay.failed(state, reason))
+      }
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | DaemonSelector(_)
+    | PeerLinkManager(_)
+    | ApprovalInspector(_) -> model
+  }
+}
+
+// An acknowledged change is followed by the read that shows its effect. The
+// acknowledgement itself is drawn by the overlay from what was reviewed. A
+// change acknowledged after the overlay closed leaves one transcript line.
+fn finish_access_change(model: Model, document: json.JsonValue) -> Model {
+  case model.view.overlay {
+    AccessManager(state) ->
+      case access_overlay.changed(state, document) {
+        access_overlay.ReadPrincipals(next, after) ->
+          begin_access_request(
+            model,
+            next,
+            job.ReadAccess(control_protocol.ListPrincipals(after)),
+          )
+        access_overlay.ReadMemberships(next, principal, after) ->
+          begin_access_request(
+            model,
+            next,
+            job.ReadAccess(control_protocol.PrincipalMemberships(
+              principal,
+              after,
+            )),
+          )
+        access_overlay.Continue(next) -> show_access(model, next)
+        access_overlay.Close | access_overlay.Apply(..) -> model
+      }
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | DaemonSelector(_)
+    | PeerLinkManager(_)
+    | ApprovalInspector(_) ->
+      tui_model.append_system(model, "access change acknowledged")
   }
 }
 

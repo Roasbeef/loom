@@ -161,6 +161,7 @@ fn start() -> component.Start(process.Subject(String)) {
       now: fn() { 0 },
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
+      invite: None,
     ),
   )
 }
@@ -515,7 +516,7 @@ fn on_page(
   let messages = case step {
     Frame(message) -> [operator_page.Observed(component.Arrived([message]))]
     Tick -> [operator_page.Observed(component.Ticked)]
-    Prompt(text) -> [operator_page.Submitted(text, operator.Prompt)]
+    Prompt(text) -> [operator_page.Submitted(text, operator.Prompt, [])]
     Deny(id) ->
       case list.find(component.pending(page), fn(record) { record.id == id }) {
         Ok(record) -> [operator_page.Decided(id, record.seq, component.Deny)]

@@ -99,6 +99,15 @@ with `--credential-digest HEX`. Nothing secret crosses the channel.
 `credentials.revoke` voids an unredeemed claim as well as revoking every
 credential.
 
+An owner's web page can make the same invitation, for the page's own
+session only ([051, the addendum on inviting from the session
+page](../../protocol-change/051-web-view-route.md)). The page shows the
+claim token and the command once, in copy boxes, with a claim that lives an
+hour instead of a day and observer as the default role. The owner still sends
+both outside Loom, and confirms the fingerprint with the invitee as above. The
+page has no other parameters, a credential may mint three an hour from its
+pages, and the session must already be isolated and running.
+
 Membership does not isolate the filesystem. An invitation exposes the
 existing transcript and whatever the session's tools and memory can bring
 into it, so overlapping workspace grants and deliberately shared memory

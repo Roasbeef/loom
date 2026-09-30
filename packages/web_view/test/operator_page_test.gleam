@@ -8,6 +8,7 @@
 //// through Lustre's simulator, which dispatches only to handlers the
 //// rendered tree carries, as the browser runtime does.
 
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
@@ -82,7 +83,9 @@ fn simulation(role: String, cells) {
 pub fn an_operator_submits_a_prompt_to_main_test() {
   let #(model, wire) = page("operator", [])
   let model =
-    send(model, [operator_page.Submitted("inspect the tree", operator.Prompt)])
+    send(model, [
+      operator_page.Submitted("inspect the tree", operator.Prompt, []),
+    ])
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "one prompt is one command"
   assert string.contains(frame, "\"cmd\":\"prompt\"")
@@ -96,7 +99,7 @@ pub fn an_operator_submits_a_prompt_to_main_test() {
 // strand the same words are an ordinary prompt.
 pub fn a_steer_is_sent_as_a_steer_test() {
   let #(model, wire) = running("operator")
-  let _ = send(model, [operator_page.Submitted("go left", operator.Steer)])
+  let _ = send(model, [operator_page.Submitted("go left", operator.Steer, [])])
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "one steer is one command"
   assert string.contains(frame, "\"cmd\":\"steer\"")
@@ -107,7 +110,8 @@ pub fn a_steer_is_sent_as_a_steer_test() {
 // `/compact` was an instruction to the model rather than a compaction.
 pub fn a_slash_command_is_the_command_and_not_a_prompt_test() {
   let #(model, wire) = page("operator", [])
-  let _ = send(model, [operator_page.Submitted("/compact", operator.Prompt)])
+  let _ =
+    send(model, [operator_page.Submitted("/compact", operator.Prompt, [])])
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "one command is one frame"
   assert string.contains(frame, "\"cmd\":\"compact\"")
@@ -120,7 +124,9 @@ pub fn a_slash_command_is_the_command_and_not_a_prompt_test() {
 pub fn an_unknown_slash_command_is_refused_not_sent_test() {
   let #(model, wire) = page("operator", [])
   let model =
-    send(model, [operator_page.Submitted("/frobnicate now", operator.Prompt)])
+    send(model, [
+      operator_page.Submitted("/frobnicate now", operator.Prompt, []),
+    ])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
   assert component.notice(model)
     == component.Said("unknown command /frobnicate")
@@ -133,9 +139,9 @@ pub fn a_terminal_surface_command_is_refused_with_a_notice_test() {
   let drafts = component.drafts(model)
   let model =
     send(model, [
-      operator_page.Submitted("/models", operator.Prompt),
-      operator_page.Submitted("/sessions", operator.Prompt),
-      operator_page.Submitted("/details", operator.Prompt),
+      operator_page.Submitted("/models", operator.Prompt, []),
+      operator_page.Submitted("/sessions", operator.Prompt, []),
+      operator_page.Submitted("/details", operator.Prompt, []),
     ])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
   let assert component.Warned(text) = component.notice(model)
@@ -153,9 +159,9 @@ pub fn adding_a_directory_is_refused_with_a_notice_test() {
   let drafts = component.drafts(model)
   let model =
     send(model, [
-      operator_page.Submitted("/add-dir /tmp/x", operator.Prompt),
-      operator_page.Submitted("/add-write-dir /tmp/x", operator.Prompt),
-      operator_page.Submitted("/add-dir --write /tmp/x", operator.Prompt),
+      operator_page.Submitted("/add-dir /tmp/x", operator.Prompt, []),
+      operator_page.Submitted("/add-write-dir /tmp/x", operator.Prompt, []),
+      operator_page.Submitted("/add-dir --write /tmp/x", operator.Prompt, []),
     ])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
   let assert component.Warned(text) = component.notice(model)
@@ -169,7 +175,8 @@ pub fn adding_a_directory_is_refused_with_a_notice_test() {
 pub fn a_command_that_sends_nothing_still_takes_the_draft_test() {
   let #(model, wire) = page("operator", [])
   let drafts = component.drafts(model)
-  let model = send(model, [operator_page.Submitted("/clear", operator.Prompt)])
+  let model =
+    send(model, [operator_page.Submitted("/clear", operator.Prompt, [])])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
   assert component.drafts(model) == drafts + 1
 }
@@ -204,7 +211,7 @@ pub fn enter_in_the_composer_never_decides_an_approval_test() {
     as "the editor holds no key handler"
 
   let #(model, wire) = page("operator", pending())
-  let model = send(model, [operator_page.Submitted("y", operator.Prompt)])
+  let model = send(model, [operator_page.Submitted("y", operator.Prompt, [])])
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "a submitted draft is one prompt"
   assert string.contains(frame, "\"cmd\":\"prompt\"")
@@ -252,7 +259,7 @@ pub fn an_observer_attachment_sends_no_command_test() {
   let #(model, wire) = page("observer", pending())
   let _ =
     send(model, [
-      operator_page.Submitted("hello", operator.Prompt),
+      operator_page.Submitted("hello", operator.Prompt, []),
       operator_page.Decided("esc-1", 7, component.Deny),
     ])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
@@ -262,10 +269,11 @@ pub fn an_empty_or_oversized_draft_is_refused_before_the_lane_test() {
   let #(model, wire) = page("operator", [])
   let _ =
     send(model, [
-      operator_page.Submitted("   ", operator.Prompt),
+      operator_page.Submitted("   ", operator.Prompt, []),
       operator_page.Submitted(
         string.repeat("x", component.prompt_limit + 1),
         operator.Prompt,
+        [],
       ),
     ])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
@@ -276,10 +284,10 @@ pub fn an_empty_or_oversized_draft_is_refused_before_the_lane_test() {
 // "sent" by the daemon's acknowledgement of it.
 pub fn a_later_outcome_replaces_the_notice_test() {
   let #(model, wire) = page("operator", [])
-  let model = send(model, [operator_page.Submitted("   ", operator.Prompt)])
+  let model = send(model, [operator_page.Submitted("   ", operator.Prompt, [])])
   assert component.notice(model) == component.Warned("Nothing to send.")
 
-  let model = send(model, [operator_page.Submitted("hi", operator.Prompt)])
+  let model = send(model, [operator_page.Submitted("hi", operator.Prompt, [])])
   assert component.notice(model) == component.Said("prompt sent")
 
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
@@ -296,7 +304,8 @@ pub fn a_later_outcome_replaces_the_notice_test() {
 // message is the daemon's own text, and the page draws it as text only.
 pub fn a_refusal_replaces_the_sent_notice_test() {
   let #(model, wire) = running("operator")
-  let model = send(model, [operator_page.Submitted("go left", operator.Steer)])
+  let model =
+    send(model, [operator_page.Submitted("go left", operator.Steer, [])])
   assert component.notice(model) == component.Said("steer sent")
 
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
@@ -346,7 +355,7 @@ pub fn a_page_that_has_only_loaded_says_nothing_test() {
 // own, does not replace the words of the command the operator ran.
 pub fn background_events_do_not_speak_over_a_command_test() {
   let #(model, _) = page("operator", [])
-  let model = send(model, [operator_page.Submitted("hi", operator.Prompt)])
+  let model = send(model, [operator_page.Submitted("hi", operator.Prompt, [])])
   let model =
     component.apply(model, [
       session_channel.Streamed("main", "op-1", "gen-1", "text", "hello"),
@@ -362,14 +371,15 @@ pub fn a_silent_command_does_not_repeat_an_older_notice_test() {
     component.apply(model, [
       session_channel.Streamed("main", "op-1", "gen-1", "text", "hello"),
     ])
-  let model = send(model, [operator_page.Submitted("/clear", operator.Prompt)])
+  let model =
+    send(model, [operator_page.Submitted("/clear", operator.Prompt, [])])
   assert component.notice(model) == component.Said("local view cleared")
 }
 
 // A refused automatic read is nobody's command outcome. A refused command is.
 pub fn only_a_commands_refusal_is_drawn_test() {
   let #(model, wire) = page("operator", [])
-  let model = send(model, [operator_page.Submitted("hi", operator.Prompt)])
+  let model = send(model, [operator_page.Submitted("hi", operator.Prompt, [])])
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "one prompt is one command"
   let model =
@@ -395,12 +405,12 @@ pub fn only_a_commands_refusal_is_drawn_test() {
 
 pub fn the_composer_refuses_any_field_it_does_not_offer_test() {
   assert operator_page.composition([#("draft", "hi")])
-    == Ok(operator_page.Submitted("hi", operator.Prompt))
+    == Ok(operator_page.Submitted("hi", operator.Prompt, []))
   assert operator_page.composition([
       #("draft", "hi"),
       #("delivery", "steer"),
     ])
-    == Ok(operator_page.Submitted("hi", operator.Steer))
+    == Ok(operator_page.Submitted("hi", operator.Steer, []))
   list.each(
     [
       [],
@@ -495,7 +505,7 @@ pub fn a_closed_connection_refuses_commands_test() {
         component.Arrived([connection_event.Closed("access was revoked")]),
       ),
       operator_page.Observed(component.Ticked),
-      operator_page.Submitted("hello", operator.Prompt),
+      operator_page.Submitted("hello", operator.Prompt, []),
     ])
   assert page_fixture.commands(page_fixture.sent(wire)) == []
 }
@@ -564,4 +574,168 @@ fn in_order(html: String, parts: List(String)) -> Bool {
         Error(Nil) -> False
       }
   }
+}
+
+// --- images from the composer (protocol-change/051, the addendum on images) --
+
+// The bytes of a PNG as `<loom-attach>` submits them: base64 text.
+fn attached_png() -> String {
+  lane_fixture.png
+}
+
+pub fn an_image_prompt_is_sent_as_one_ordered_turn_test() {
+  let #(model, wire) = page("operator", [])
+  let model =
+    send(model, [
+      operator_page.Submitted("what is this", operator.Prompt, [attached_png()]),
+    ])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one image prompt is one command"
+  assert string.contains(frame, "\"cmd\":\"prompt_content\"")
+  assert string.contains(frame, "\"strand\":\"main\"")
+  assert string.contains(frame, "what is this")
+  assert string.contains(frame, "\"type\":\"image\"")
+  assert string.contains(frame, "\"mimeType\":\"image/png\"")
+  assert string.contains(frame, attached_png())
+  assert component.drafts(model) == 1
+}
+
+pub fn an_image_alone_is_a_prompt_test() {
+  let #(model, wire) = page("operator", [])
+  let _ =
+    send(model, [operator_page.Submitted("", operator.Prompt, [attached_png()])])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "an image with no words is still a prompt"
+  assert string.contains(frame, "\"cmd\":\"prompt_content\"")
+}
+
+// The type is the bytes' own. A browser that says `image/png` of a page of
+// HTML is refused, and the notice says what is allowed.
+pub fn a_file_that_is_not_an_image_is_refused_with_a_notice_test() {
+  let #(model, wire) = page("operator", [])
+  let html = bit_array.base64_encode(<<"<html><script/></html>":utf8>>, True)
+  let model =
+    send(model, [operator_page.Submitted("look", operator.Prompt, [html])])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  assert component.notice(model)
+    == component.Warned(
+      "Only PNG, JPEG, GIF and WebP images can be attached. Nothing was sent.",
+    )
+  assert component.drafts(model) == 0
+}
+
+pub fn text_that_is_not_base64_is_refused_with_a_notice_test() {
+  let #(model, wire) = page("operator", [])
+  let model =
+    send(model, [operator_page.Submitted("look", operator.Prompt, ["!!"])])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  assert component.notice(model)
+    == component.Warned(
+      "An attached image is not valid base64. Nothing was sent.",
+    )
+}
+
+pub fn a_fifth_image_refuses_the_whole_prompt_test() {
+  let #(model, wire) = page("operator", [])
+  let five = list.repeat(attached_png(), 5)
+  let model =
+    send(model, [operator_page.Submitted("look", operator.Prompt, five)])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  assert component.notice(model)
+    == component.Warned("A prompt carries at most 4 images. Nothing was sent.")
+}
+
+pub fn a_steer_carries_no_images_test() {
+  let #(model, wire) = running("operator")
+  let model =
+    send(model, [
+      operator_page.Submitted("look", operator.Steer, [attached_png()]),
+    ])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  assert component.notice(model)
+    == component.Warned(
+      "Images go with Send or Queue, not Steer. Nothing was sent.",
+    )
+}
+
+// An image is new prompt content. A session command has nowhere to put one,
+// and the shared step refuses it rather than dropping the image.
+pub fn a_slash_command_with_an_image_is_refused_test() {
+  let #(model, wire) = page("operator", [])
+  let _ =
+    send(model, [
+      operator_page.Submitted("/compact", operator.Prompt, [attached_png()]),
+    ])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+}
+
+// The page keeps no attachments between submits. A refused submit whose
+// element still holds its images sends them once, with the next submit.
+pub fn a_refused_submit_leaves_no_attachment_behind_test() {
+  let #(model, wire) = page("operator", [])
+  let model =
+    send(model, [
+      operator_page.Submitted("/frobnicate", operator.Prompt, [attached_png()]),
+    ])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  let _ =
+    send(model, [operator_page.Submitted("plain words", operator.Prompt, [])])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "the later prompt is text alone"
+  assert string.contains(frame, "\"cmd\":\"prompt\"")
+  assert !string.contains(frame, "image")
+}
+
+pub fn the_composer_form_accepts_an_images_field_test() {
+  assert operator_page.composition([
+      #("draft", "hi"),
+      #("images", "[\"QUFB\",\"QkJC\"]"),
+    ])
+    == Ok(operator_page.Submitted("hi", operator.Prompt, ["QUFB", "QkJC"]))
+  assert operator_page.composition([
+      #("draft", "hi"),
+      #("delivery", "steer"),
+      #("images", "[]"),
+    ])
+    == Ok(operator_page.Submitted("hi", operator.Steer, []))
+}
+
+pub fn the_composer_form_refuses_a_malformed_images_field_test() {
+  list.each(
+    [
+      [#("draft", "a"), #("images", "not json")],
+      [#("draft", "a"), #("images", "{\"a\":1}")],
+      [#("draft", "a"), #("images", "[1,2]")],
+      [#("draft", "a"), #("images", "[\"a\",null]")],
+      [#("draft", "a"), #("images", "\"QUFB\"")],
+      [#("draft", "a"), #("images", "[]"), #("images", "[]")],
+      [#("draft", "a"), #("images", "[]"), #("image", "x")],
+      [#("images", "[]")],
+    ],
+    fn(fields) {
+      let assert Error(Nil) = operator_page.composition(fields)
+        as "a forged images field refuses the event"
+    },
+  )
+}
+
+// The operator's composer draws the element that attaches images, inside its
+// form and keyed with its draft, and an observer's page has neither.
+pub fn only_the_operators_composer_draws_the_attach_element_test() {
+  let #(model, _) = page("operator", [])
+  let html = element.to_string(operator_page.view(model))
+  let assert Ok(#(_, from_form)) =
+    string.split_once(html, "aria-label=\"Composer\"")
+    as "the page draws a composer form"
+  let assert Ok(#(form, _)) = string.split_once(from_form, "</form>")
+    as "the form is closed"
+  assert string.contains(form, "<loom-attach")
+  assert string.contains(form, "name=\"images\"")
+  assert string.contains(form, "limits=\"")
+  assert string.contains(form, "&quot;count&quot;:4")
+  assert string.contains(form, "image/webp")
+
+  let observer = element.to_string(component.view(model))
+  assert !string.contains(observer, "loom-attach")
+  assert !string.contains(observer, "images")
 }

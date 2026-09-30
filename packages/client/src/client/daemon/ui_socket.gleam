@@ -20,6 +20,25 @@
 //// only the events it attaches, a click and a submit; anything else is
 //// dropped here too.
 ////
+//// The socket also makes the one way the page's images are read. A request
+//// for an image (`GET .../image/<row>/<position>`) arrives on an HTTP handler
+//// that knows the page's cookie and nothing of the component, whose lane holds
+//// the images the page drew. When the component starts, the socket registers,
+//// under the page's cookie, a function that asks it (`ui_sessions.Images`),
+//// and the handler reads that function back after its own checks
+//// (protocol-change/051, the addendum on images). The question is a Lustre
+//// message sent from the daemon's side with `lustre.dispatch`, which a browser
+//// frame cannot produce, so an observer's socket, which forwards almost
+//// nothing, still answers it.
+////
+//// A third role is an operator's page whose principal is the daemon's owner
+//// (`Owning`). A page never carries owner authority, but its principal may be
+//// the owner, and only that page draws the invitation control and is handed
+//// the capability to use it (`invite_for`; the addendum on inviting from the
+//// session page). The socket admits a click beneath `component.invite_path`
+//// only for it, so a member operator's browser cannot press the control even
+//// by forging the path.
+////
 //// One component per connection. It is started from this socket's process
 //// and linked to it, and the socket shuts it down when the browser goes
 //// away, which is what ends its relay (the relay monitors the component).
@@ -38,9 +57,11 @@
 //// decides which is which, one closed type for both the words and the code
 //// (protocol-change/051, the addendum on an ended page).
 
+import broker/token
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
+import client/daemon/ui_http
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
@@ -53,26 +74,42 @@ import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/json
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import host/claim
 import lustre
 import lustre/server_component
 import mist
 import session_view/snapshot
+import session_view/transcript_image
 import storage/access
 import storage/catalogue
 import web_view/component
 import web_view/ending
+import web_view/invites
 import web_view/operator_page
 import web_view/page
 import web_view/sessions
 
-/// The inbound frame limit on an operator's page socket: a text prompt fits,
-/// a pasted image does not, and a browser's events are far smaller than the
-/// terminal's 32 MiB (protocol-change/051, the operator addendum).
-pub const operator_frame_limit = 1_048_576
+/// The inbound frame limit on an operator's page socket: 12 MiB, which holds
+/// a text prompt and up to `web_view/image.max_attached_bytes` of images (8 MiB
+/// before base64, a third more after) in one submit event, and is well under
+/// the terminal's 32 MiB. It was 1 MiB while the page sent text alone
+/// (protocol-change/051, the operator addendum); the addendum on images raised
+/// it and says why. An observer's page keeps the 64 KiB an observer's
+/// connection class has. The permit an operator's page holds is charged
+/// `root.operator_peak` (64 MiB, the `PageOperator` class), which covers the transient peak of one such
+/// submit: the frame, the event string, the parsed images, their decoded bytes
+/// and the re-encoding, five copies of at most 12 MiB.
+pub const operator_frame_limit = 12_582_912
+
+// How long a request for an image waits for the component's answer, in
+// milliseconds. The component answers from a lane it holds in memory, so a
+// second is long; a component that does not answer in that time is gone or
+// stuck, and the request is refused rather than held.
+const image_wait_ms = 2000
 
 // How long a page's socket stays open after the relay reports the page
 // ended, in milliseconds. The component reduces the close as it arrives,
@@ -151,14 +188,17 @@ fn observer_path(path: String) -> Bool {
   || string.starts_with(path, component.strip_path <> "\t")
 }
 
-/// The browser messages an operator's page takes: Lustre's `EventFired` for
-/// the events its view attaches, a `click` and a `submit`, alone or batched.
-/// Every other message is dropped before it reaches the component. A click
-/// is admitted at any path, so the session buttons beneath
-/// `component.sidebar_path` and a peer message's Open button need no entry
-/// of their own; Lustre dispatches the event only to a handler the page drew
-/// at that path, and the daemon checks the session again before it mints a
-/// ticket (`ticket_for`).
+/// The browser messages a member operator's page takes: Lustre's `EventFired`
+/// for the events its view attaches, a `click` and a `submit`, alone or
+/// batched. Every other message is dropped before it reaches the component. A
+/// click is admitted at any path but one, so the session buttons beneath
+/// `component.sidebar_path` and a peer message's Open button need no entry of
+/// their own; Lustre dispatches the event only to a handler the page drew at
+/// that path, and the daemon checks the session again before it mints a ticket
+/// (`ticket_for`). The one path it drops is `component.invite_path` and
+/// anything beneath it, the invitation control, which is an owner's and which
+/// this page does not draw (`owner_accepts`; the addendum on inviting from the
+/// session page). A message in a batch that reaches it drops the whole batch.
 ///
 /// ## Examples
 ///
@@ -166,27 +206,72 @@ fn observer_path(path: String) -> Bool {
 /// assert ui_socket.operator_accepts("{\"kind\":1,\"name\":\"click\"}")
 /// ```
 pub fn operator_accepts(frame: String) -> Bool {
-  case json.parse(frame, accepted()) {
+  accepts(frame, ExceptInvite)
+}
+
+/// The browser messages an owner's page takes: what `operator_accepts` takes,
+/// and a click at or beneath `component.invite_path` as well. It is the one
+/// socket that admits the invitation control's buttons, and it is started
+/// only for a page whose principal is the daemon's owner.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.owner_accepts("{\"kind\":1,\"name\":\"submit\"}")
+/// ```
+pub fn owner_accepts(frame: String) -> Bool {
+  accepts(frame, Everywhere)
+}
+
+// Where an operator-class socket admits a click.
+type Reach {
+  // At any path: an owner's page.
+  Everywhere
+
+  // At any path but the invitation control's: a member operator's page.
+  ExceptInvite
+}
+
+fn accepts(frame: String, reach: Reach) -> Bool {
+  case json.parse(frame, accepted(reach)) {
     Ok(accepted) -> accepted
     Error(_) -> False
   }
 }
 
-fn accepted() -> decode.Decoder(Bool) {
+// An event names its path when the browser sent one. A frame with none
+// cannot name a handler and is judged as a click at no path, which the
+// runtime drops if nothing is drawn there.
+fn accepted(reach: Reach) -> decode.Decoder(Bool) {
   use kind <- decode.field("kind", decode.int)
   case kind {
     1 -> {
       use name <- decode.field("name", decode.string)
-      decode.success(name == "click" || name == "submit")
+      use path <- decode.optional_field("path", "", decode.string)
+      decode.success(
+        { name == "click" || name == "submit" } && reaches(reach, path),
+      )
     }
     3 -> {
       use messages <- decode.field(
         "messages",
-        decode.list(decode.recursive(accepted)),
+        decode.list(decode.recursive(fn() { accepted(reach) })),
       )
       decode.success(messages != [] && list.all(messages, fn(ok) { ok }))
     }
     _ -> decode.success(False)
+  }
+}
+
+// Whether a socket of this reach admits an event at `path`. The invitation
+// control's own path is included, and so is anything beneath it, with the
+// separator so that a path that merely begins with the same digits is not.
+fn reaches(reach: Reach, path: String) -> Bool {
+  case reach {
+    Everywhere -> True
+    ExceptInvite ->
+      path != component.invite_path
+      && !string.starts_with(path, component.invite_path <> "\t")
   }
 }
 
@@ -204,12 +289,13 @@ pub fn upgrade(
   hub: gateway.Gateway,
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
+  register: fn(ui_sessions.Images) -> Nil,
   ceiling: access.Role,
 ) -> Response(mist.ResponseData) {
-  let role = role_of(attachment.authority)
+  let role = role_of(attachment)
   let limit = case role {
     Observing -> root.message_limit(root.Observer)
-    Operating -> operator_frame_limit
+    Operating | Owning -> operator_frame_limit
   }
   let attach =
     ui_relay.Attach(
@@ -247,6 +333,16 @@ pub fn upgrade(
   // The barrier that orders the permit's custody transfer against the
   // HTTP process's release, exactly as in `session_socket`.
   let settled = process.new_subject()
+
+  // The capability to invite exists only on an owner's page. Any other page
+  // has none to draw a control for or to call. It is made here, from the
+  // request's own host, so the address the command names is the one the page
+  // was reached at.
+  let address = claim_address(request)
+  let invite =
+    invite_capability(role, fn(chosen) {
+      invite_for(attachment, tickets, open, address, chosen)
+    })
   let response =
     mist.websocket_with_options(
       request:,
@@ -271,6 +367,8 @@ pub fn upgrade(
               attach,
               tickets,
               open,
+              register,
+              invite,
               expected,
               signals,
               settled,
@@ -342,10 +440,20 @@ pub fn upgrade(
   response
 }
 
-/// Whether the admitted page is an observer's or an operator's.
+/// What the admitted page is: an observer's, an operator's, or an operator's
+/// whose principal is the daemon's owner.
 pub type Role {
+  /// Read-only. The page's authority, capped by its ceiling, is observer.
   Observing
+
+  /// The page may send prompts and answer approvals, for a member.
   Operating
+
+  /// An operator's page whose principal is the owner: the page that draws the
+  /// invitation control and holds the capability behind it. A page's
+  /// authority never becomes `Owner`, so this is a fact about the principal
+  /// and never about what the page's role permits.
+  Owning
 }
 
 // The lower-case SHA-256 of a workspace path in hex, which the page carries
@@ -360,13 +468,26 @@ fn digest(workspace: String) -> String {
   |> string.lowercase
 }
 
-// The role the admitted authority gives the page. The router has already
-// capped it, so `Owner` does not reach here from a page; it is read as an
-// operator's for totality.
-fn role_of(authority: access.Authority) -> Role {
-  case authority {
-    access.Participant(access.Observer) -> Observing
-    access.Owner | access.Participant(access.Operator) -> Operating
+/// The role the admitted authority and the principal give the page. The
+/// router has already capped the authority, so `Owner` does not reach here
+/// from a page; it is read as a member operator's for totality, which never
+/// lets it invite. A page is `Owning` only when it is an operator's and its
+/// principal is the daemon's owner, so an owner who asked for an observer's
+/// page has no control either.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.role_of(attachment) == ui_socket.Owning
+/// ```
+@internal
+pub fn role_of(attachment: server.Attachment(instance)) -> Role {
+  case attachment.authority, attachment.principal.kind {
+    access.Participant(access.Observer), _ -> Observing
+    access.Owner, _
+    | access.Participant(access.Operator), access.MemberPrincipal
+    -> Operating
+    access.Participant(access.Operator), access.OwnerPrincipal -> Owning
   }
 }
 
@@ -382,10 +503,13 @@ fn admit(
   attach: ui_relay.Attach,
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
+  register: fn(ui_sessions.Images) -> Nil,
+  invite: Option(fn(invites.Role) -> invites.Answer),
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
   settled: process.Subject(Nil),
 ) -> mist.Next(Phase, Signal) {
+  let role = role_of(attachment)
   let transferred = root.transfer(daemon, attachment.permit, within: 1000)
   process.send(settled, Nil)
   let transport =
@@ -398,14 +522,13 @@ fn admit(
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
-      sessions: fn() {
-        listed_for(role_of(attachment.authority), fn() { listed(attachment) })
-      },
+      sessions: fn() { listed_for(role, fn() { listed(attachment) }) },
       open: fn(target) {
-        opened_for(role_of(attachment.authority), fn() {
+        opened_for(role, fn() {
           ticket_for(attachment, tickets, attach.ceiling, open, target)
         })
       },
+      invite:,
     )
   let start =
     component.Start(
@@ -427,7 +550,7 @@ fn admit(
       Error(Nil)
     }
     Ok(Nil) ->
-      start_page(attachment.authority, start)
+      start_page(role, start)
       |> result.map_error(fn(_) {
         upgrade_log.closed_early(
           upgrade_log.Page,
@@ -442,13 +565,18 @@ fn admit(
     // close is one the client runtime retries, so a tab that hit one is not
     // left empty for good behind a final close (1000).
     Error(Nil) -> closing(ending.close(ending.DaemonNotReady))
-    Ok(Page(forward:, shutdown:, frames:)) ->
+
+    // The page's images are readable from the moment its component is, and a
+    // reload's new socket replaces the reader the old one left.
+    Ok(Page(forward:, shutdown:, frames:, images:)) -> {
+      register(images)
       mist.continue(Serving(forward, shutdown, signals))
       |> mist.with_selector(
         process.new_selector()
         |> process.select(signals)
         |> process.merge_selector(process.map_selector(frames, Client)),
       )
+    }
   }
 }
 
@@ -508,7 +636,7 @@ pub fn listed_for(
 ) -> List(sessions.Entry) {
   case role {
     Observing -> []
-    Operating -> read()
+    Operating | Owning -> read()
   }
 }
 
@@ -533,7 +661,7 @@ pub fn listed_for(
 pub fn opened_for(role: Role, ask: fn() -> sessions.Answer) -> sessions.Answer {
   case role {
     Observing -> sessions.Declined(sessions.NotHeld)
-    Operating -> ask()
+    Operating | Owning -> ask()
   }
 }
 
@@ -613,6 +741,234 @@ pub fn ticket_for(
   }
 }
 
+/// The daemon's answer to an owner's page asking to invite a person to the
+/// page's own session: an invitation, or the reason there is none
+/// (protocol-change/051, the addendum on inviting from the session page).
+///
+/// It is the `sessions.invite` the control endpoint runs, through the same
+/// manager dispatch and the same claim, made on the page's behalf and for its
+/// own session only. Each step is the daemon's and is made afresh, with the
+/// digest of the credential the page was admitted under, and nothing is taken
+/// from the page but the role its button named:
+///
+/// 0. The asking page must still be open. A page that ended but whose socket
+///    is still up invites nobody (`NotOwner`).
+/// 1. The page's principal must be the daemon's owner, read from the
+///    principal the router authenticated and never from the page.
+/// 2. The claim's address must be known: the page was reached at a loopback
+///    host, and `loom claim` accepts the address made from it.
+/// 3. The credential must have an invitation left
+///    (`ui_sessions.reserve_invite`), counted for the credential and not for
+///    the page. A page taken by a program is held to the same count as the
+///    owner's own, and opening or switching pages does not reset it.
+/// 4. `manager.administer` invites a new principal into this session with a
+///    claim that lives `invites.claim_ttl_ms`. It authenticates the credential
+///    and the epoch a second time and needs the owner, so it is the last word
+///    on who may. A refusal that made nothing gives the invitation back; an
+///    unknown outcome (the registry did not answer) keeps it spent, since a
+///    principal may have been made.
+///
+/// The principal's ID and name are the daemon's, `guest-` and eight
+/// hexadecimal digits, so the page chooses neither. The claim exists in this
+/// function's result and nowhere else: it is not logged, stored or put in a
+/// URL, and the catalogue holds only its digest.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.invite_for(attachment, tickets, open, Ok(address), invites.Observer)
+/// ```
+@internal
+pub fn invite_for(
+  attachment: server.Attachment(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  address: Result(String, Nil),
+  chosen: invites.Role,
+) -> invites.Answer {
+  case may_invite(open, attachment.principal, address) {
+    Error(reason) -> invites.Declined(reason)
+    Ok(address) ->
+      case ui_sessions.reserve_invite(tickets, attachment.digest) {
+        Error(Nil) -> invites.Declined(invites.TooMany)
+        Ok(Nil) ->
+          case invited(attachment, address, chosen) {
+            Ok(invitation) -> invites.Minted(invitation)
+            Error(refusal) -> {
+              give_back(tickets, attachment, refusal)
+              invites.Declined(reason_of(refusal))
+            }
+          }
+      }
+  }
+}
+
+/// The capability a page of `role` is handed: `ask` for an owner's page and
+/// none for any other, which is the whole of who may draw and call the
+/// invitation control.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
+/// ```
+@internal
+pub fn invite_capability(
+  role: Role,
+  ask: fn(invites.Role) -> invites.Answer,
+) -> Option(fn(invites.Role) -> invites.Answer) {
+  case role {
+    Owning -> Some(ask)
+    Observing | Operating -> None
+  }
+}
+
+/// The first three steps of `invite_for`, which reach neither the allowance
+/// nor the manager: the page must still be open, its principal must be the
+/// owner, and the claim address must be known. Returns the address.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.may_invite(fn() { Ok(0) }, member, Error(Nil)) == Error(invites.NotOwner)
+/// ```
+@internal
+pub fn may_invite(
+  open: fn() -> Result(Int, Nil),
+  principal: access.Principal,
+  address: Result(String, Nil),
+) -> Result(String, invites.Reason) {
+  use _ <- result.try(open() |> result.replace_error(invites.NotOwner))
+  use _ <- result.try(owner_principal(principal))
+  address |> result.replace_error(invites.Unavailable)
+}
+
+// Only the daemon's owner invites. A member operator's page is refused here
+// even if a message reached it.
+fn owner_principal(principal: access.Principal) -> Result(Nil, invites.Reason) {
+  case principal.kind {
+    access.OwnerPrincipal -> Ok(Nil)
+    access.MemberPrincipal -> Error(invites.NotOwner)
+  }
+}
+
+// Why an invitation was not made, in the daemon's own terms: the manager's
+// refusal, or that no claim could be drawn.
+type Refusal {
+  Managed(error: manager.AdminError)
+  Undrawn
+}
+
+// The dispatch. The claim is drawn here and handed to the registry as a
+// digest, and the token comes back only in the invitation the caller shows.
+fn invited(
+  attachment: server.Attachment(instance),
+  address: String,
+  chosen: invites.Role,
+) -> Result(invites.Invitation, Refusal) {
+  use #(enrollment, claim_token) <- result.try(
+    server.claim_enrollment(invites.claim_ttl_ms)
+    |> result.replace_error(Undrawn),
+  )
+  let id =
+    "guest-"
+    <> {
+      token.production_entropy()(4)
+      |> bit_array.base16_encode
+      |> string.lowercase
+    }
+  let member = case chosen {
+    invites.Observer -> access.Observer
+    invites.Operator -> access.Operator
+  }
+  use principal <- result.map(
+    manager.administer(
+      attachment.registry,
+      attachment.digest,
+      attachment.epoch,
+      manager.Invite(
+        id,
+        "Guest " <> string.drop_start(id, 6),
+        enrollment,
+        attachment.session_id,
+        member,
+      ),
+    )
+    |> result.map_error(Managed),
+  )
+  invites.Invitation(
+    principal: principal.id,
+    role: chosen,
+    command: "loom claim --addr " <> address,
+    token: claim_token,
+    expires_in_ms: invites.claim_ttl_ms,
+  )
+}
+
+// A refusal that made nothing gives the invitation back. The registry not
+// answering leaves an unknown outcome, in which a principal may exist, so that
+// one stays counted.
+fn give_back(
+  tickets: ui_sessions.Sessions,
+  attachment: server.Attachment(instance),
+  refusal: Refusal,
+) -> Nil {
+  case refusal {
+    Managed(manager.AdminUnavailable) -> Nil
+    Managed(manager.IsolationRequired)
+    | Managed(manager.AdminForbidden)
+    | Managed(manager.AdminStaleEpoch)
+    | Managed(manager.AdminBusy)
+    | Managed(manager.AdminForeignPath)
+    | Managed(manager.AdminMetadata(..))
+    | Undrawn -> ui_sessions.release_invite(tickets, attachment.digest)
+  }
+}
+
+// The fixed reason a page words for a refusal. A stale epoch, a busy session
+// and a metadata refusal are the daemon's to sort out and read alike.
+fn reason_of(refusal: Refusal) -> invites.Reason {
+  case refusal {
+    Managed(manager.IsolationRequired) -> invites.NotIsolated
+    Managed(manager.AdminForbidden) -> invites.NotOwner
+    Managed(manager.AdminStaleEpoch)
+    | Managed(manager.AdminUnavailable)
+    | Managed(manager.AdminBusy)
+    | Managed(manager.AdminForeignPath)
+    | Managed(manager.AdminMetadata(..))
+    | Undrawn -> invites.Unavailable
+  }
+}
+
+/// The address a page's claim command names: `ws://` and the `Host` the page
+/// was reached at, then `/v2/control`, when `loom claim` accepts it.
+///
+/// The router has already required the host to be a loopback name
+/// (`ui_http.loopback_host`), and `localhost` is written as `127.0.0.1`
+/// because `loom claim` refuses a `ws` address that is not a literal loopback
+/// one. The command therefore works on the machine that runs the daemon,
+/// which the page says. A daemon reached through a proxy on another origin
+/// would need its own address, which no page can learn from a `Host` that the
+/// router refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.claim_address(request) == Ok("ws://127.0.0.1:4000/v2/control")
+/// ```
+@internal
+pub fn claim_address(request: Request(body)) -> Result(String, Nil) {
+  use host <- result.try(ui_http.loopback_host(request))
+  let literal = case string.lowercase(host) {
+    "localhost" <> rest -> "127.0.0.1" <> rest
+    other -> other
+  }
+  let address = "ws://" <> literal <> "/v2/control"
+  claim.remote_address(address)
+  |> result.replace(address)
+  |> result.replace_error(Nil)
+}
+
 // A refused membership check: the catalogue holds no such membership, or the
 // registry could not answer.
 fn not_held(error: manager.Error) -> sessions.Reason {
@@ -672,38 +1028,59 @@ pub type Page {
     shutdown: fn() -> Nil,
     /// The component's messages for the browser, as JSON.
     frames: process.Selector(json.Json),
+    /// Asks the component for the image its lane drew at a row's name and
+    /// position. It answers `Error(Nil)` for any other, and at once when the
+    /// socket that owns the component has ended.
+    images: ui_sessions.Images,
   )
 }
 
-/// Starts the component an attachment with `authority` gets: an observer's
-/// page, which takes no browser message, or an operator's, which takes only
-/// the events its view attaches. Called from the socket's own process, which
-/// then owns the subject the component's messages arrive on.
+// The message that asks an operator's page for an image, in its own message
+// type.
+fn operator_image(
+  ref: String,
+  at: Int,
+  reply: process.Subject(Result(transcript_image.Image, Nil)),
+) -> operator_page.Msg(ui_relay.Relay) {
+  operator_page.Observed(component.ImageRequested(ref, at, reply))
+}
+
+/// Starts the component a page of `role` gets: an observer's page, which
+/// takes one click at two places, or an operator's, which takes only the
+/// events its view attaches, with an owner's also taking the invitation
+/// control's. Called from the socket's own process, which then owns the
+/// subject the component's messages arrive on.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.start_page(access.Participant(access.Observer), start)
+/// // ui_socket.start_page(ui_socket.Observing, start)
 /// ```
 @internal
 pub fn start_page(
-  authority: access.Authority,
+  role: Role,
   start: component.Start(ui_relay.Relay),
 ) -> Result(Page, Nil) {
-  case role_of(authority) {
-    Observing -> serve(component.app(), start, observer_accepts)
-    Operating -> serve(operator_page.app(), start, operator_accepts)
+  case role {
+    Observing ->
+      serve(component.app(), start, observer_accepts, component.ImageRequested)
+    Operating ->
+      serve(operator_page.app(), start, operator_accepts, operator_image)
+    Owning -> serve(operator_page.app(), start, owner_accepts, operator_image)
   }
 }
 
 // Starts one component and returns what the socket needs of it: how a
 // browser frame reaches it, how to shut it down, and a selector over the
 // subject its client messages arrive on, encoding each as it is received.
-// `admits` says which browser frames reach it.
+// `admits` says which browser frames reach it, and `ask` builds the message
+// that asks it for an image, in the application's own message type.
 fn serve(
   app: lustre.App(component.Start(ui_relay.Relay), model, message),
   start: component.Start(ui_relay.Relay),
   admits: fn(String) -> Bool,
+  ask: fn(String, Int, process.Subject(Result(transcript_image.Image, Nil))) ->
+    message,
 ) -> Result(Page, Nil) {
   case lustre.start_server_component(app, start) {
     Error(_) -> Error(Nil)
@@ -725,10 +1102,28 @@ fn serve(
             }
         }
       }
+
+      // The reader belongs to this socket's process, which owns the
+      // component and ends with it. A request that arrives after the socket
+      // ended is refused without a message, and one that arrives while it is
+      // up waits for the component's own answer on a subject of the asking
+      // process.
+      let socket = process.self()
+      let images = fn(ref, position) {
+        case process.is_alive(socket) {
+          False -> Error(Nil)
+          True -> {
+            let reply = process.new_subject()
+            lustre.send(runtime, lustre.dispatch(ask(ref, position, reply)))
+            process.receive(reply, image_wait_ms) |> result.flatten
+          }
+        }
+      }
       Ok(Page(
         forward:,
         shutdown: fn() { lustre.send(runtime, lustre.shutdown()) },
         frames: encoded,
+        images:,
       ))
     }
   }

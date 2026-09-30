@@ -83,6 +83,12 @@ pub type ConnectionClass {
   /// A session operator may submit the larger supported input messages.
   Operator
 
+  /// An operator's web page, whose socket takes a submit that carries images
+  /// (protocol-change/051, the addendum on images). Its message limit is the
+  /// page's own and its charge covers a submit's transient peak
+  /// (`operator_peak`); terminal operators keep `Operator` and its charge.
+  PageOperator
+
   /// A `/v2/claim` socket for one claim digest (protocol-change/053). It
   /// accepts one message of at most `protocol.max_claim_bytes`, and the root
   /// admits at most one reservation per digest at a time, so a spent claim
@@ -417,6 +423,7 @@ pub fn message_limit(class: ConnectionClass) -> Int {
   case class {
     Control | Observer -> 65_536
     Operator -> 33_554_432
+    PageOperator -> 12_582_912
     Claim(_) -> protocol.max_claim_bytes
   }
 }
@@ -425,12 +432,39 @@ pub fn message_limit(class: ConnectionClass) -> Int {
 // encodings, two 190KiB fragments and 40KiB replies, plus descriptor/presence
 // identifiers and one 24KiB ephemeral slot. The 8MiB allowance rounds this
 // retained payload upward; it does not claim to measure JSON-term heap size.
+//
+// An operator connection is also charged for the peak of one page submit that
+// carries images (protocol-change/051, the addendum on images). A submit of
+// the page's 12 MiB frame is held at once as the frame, the Lustre event's
+// string, the parsed images, their decoded bytes and their canonical
+// re-encoding: five copies, about 60 MiB, so the class is charged 64 MiB. The
+// figure is `operator_peak`, charged to `PageOperator` alone; a terminal
+// operator keeps its 40 MiB.
 fn connection_charge(class: ConnectionClass) -> Int {
   let delivery = case class {
     Control | Claim(_) -> 0
-    Observer | Operator -> 8_388_608
+    Observer | Operator | PageOperator -> 8_388_608
   }
-  message_limit(class) + delivery
+  case class {
+    PageOperator -> operator_peak
+    Control | Observer | Operator | Claim(_) -> message_limit(class) + delivery
+  }
+}
+
+/// The charge, in bytes, an operator page's connection reserves at admission:
+/// 64 MiB, which covers five simultaneous copies of a 12 MiB page frame.
+pub const operator_peak = 67_108_864
+
+/// What admission reserves for one connection of `class`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert root.charge(root.Observer) == 65_536 + 8_388_608
+/// ```
+@internal
+pub fn charge(class: ConnectionClass) -> Int {
+  connection_charge(class)
 }
 
 /// Reserves capacity in the calling HTTP handler before sending an upgrade.
@@ -1043,7 +1077,7 @@ fn claim_in_flight(book: Book(instance), class: ConnectionClass) -> Bool {
     Claim(_) ->
       dict.values(book.allocations)
       |> list.any(fn(allocation) { allocation.class == class })
-    Control | Observer | Operator -> False
+    Control | Observer | Operator | PageOperator -> False
   }
 }
 
@@ -1251,7 +1285,7 @@ fn cancel_session_connections(book: Book(instance)) {
   dict.each(book.allocations, fn(owner, allocation) {
     case allocation.class {
       Control -> Nil
-      Observer | Operator | Claim(_) -> process.kill(owner)
+      Observer | Operator | PageOperator | Claim(_) -> process.kill(owner)
     }
   })
 }

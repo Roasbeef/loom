@@ -36,11 +36,13 @@
 //// operator types, and one submit carries it to the server, where its
 //// fields are decoded totally and anything unexpected refuses the event.
 
+import core/json
 import core/origin
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
@@ -53,10 +55,13 @@ import session_view/operator
 import session_view/snapshot
 import web_view/completion
 import web_view/component
+import web_view/image
+import web_view/invites
 import web_view/sessions
 import web_view/view/controls
 import web_view/view/lane
 import web_view/view/nudges
+import web_view/view/share
 import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/strip
@@ -68,8 +73,11 @@ pub type Msg(socket) {
   Observed(message: component.Msg(socket))
 
   /// The composer was submitted with this text, to be sent as a prompt or a
-  /// steer, or run as the slash command it names.
-  Submitted(text: String, delivery: operator.Delivery)
+  /// steer, or run as the slash command it names, and with these images,
+  /// each the base64 text `<loom-attach>` submitted. The images are the
+  /// browser's claim: the daemon decodes them and reads their types from
+  /// their bytes (`web_view/image.admit`) before any becomes a command.
+  Submitted(text: String, delivery: operator.Delivery, images: List(String))
 
   /// An approval card's button: the escalation's identity, the sequence
   /// the card was drawn at, and the answer.
@@ -89,6 +97,17 @@ pub type Msg(socket) {
   /// wrote. The daemon decides whether the page's principal may have it
   /// (protocol-change/051, the addendum on switching sessions).
   Opening(session: String)
+
+  /// One of the invitation control's two buttons: the owner asks the daemon
+  /// to invite a person to this session, in the role the button names. The
+  /// role is the message's, fixed when the tree was drawn, and the control is
+  /// drawn only on an owner's page (protocol-change/051, the addendum on
+  /// inviting from the session page).
+  Inviting(role: invites.Role)
+
+  /// The invitation control's "Hide the token" button: the owner has copied
+  /// the invitation and the page drops it.
+  Dismissing
 }
 
 /// The Lustre application for one session's operator page.
@@ -126,11 +145,14 @@ pub fn update(
 ) -> #(component.Model(socket), Effect(Msg(socket))) {
   let #(model, effects) = case message {
     Observed(message:) -> component.update(model, message)
-    Submitted(text:, delivery:) -> component.submit(model, text, delivery)
+    Submitted(text:, delivery:, images:) ->
+      component.submit(model, text, delivery, images)
     Decided(id:, seq:, answer:) -> component.decide(model, id, seq, answer)
     Controlled(control:) -> component.control(model, control)
     Replying(key:) -> component.reply(model, key)
     Opening(session:) -> component.switch_to(model, session)
+    Inviting(role:) -> component.invite(model, role)
+    Dismissing -> #(component.dismiss_invitation(model), effect.none())
   }
   #(model, effect.map(effects, Observed))
 }
@@ -193,6 +215,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           openable(model, session)
         }),
         component.marks(model),
+        component.session_id(model),
       ),
       html.footer([attribute.class("dock")], [
         component.plan(model),
@@ -207,6 +230,14 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       model,
       fn(strand) { Observed(component.FocusRequested(strand)) },
       Some(component.viewers(model)),
+      share.view(
+        component.share(model),
+        share.Presses(
+          observer: Inviting(invites.Observer),
+          operator: Inviting(invites.Operator),
+          done: Dismissing,
+        ),
+      ),
     ),
     component.needing(model),
     component.workspace_digest(model),
@@ -452,7 +483,7 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
     [
       identity(model),
       keyed.div([attribute.class("editor")], [
-        #("draft-" <> int.to_string(component.drafts(model)), editor(model)),
+        #("draft-" <> int.to_string(component.drafts(model)), draft(model)),
       ]),
       html.div([attribute.class("composer-actions")], [
         notice(component.notice(model)),
@@ -460,6 +491,29 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
       ]),
     ],
   )
+}
+
+// The draft a sent prompt replaces: the editor, and the element that attaches
+// images to it. Both are keyed together by how many drafts have been sent, so
+// a sent draft leaves with its attachments and a refused one keeps them.
+//
+// `<loom-attach>` is form-associated, so its images join the form as one
+// field named `images`, in the same submit as the draft
+// (protocol-change/051, the addendum on images). Its `limits` attribute is the
+// daemon's own numbers and media types (`web_view/image.limits_attribute`) and
+// holds no session text.
+fn draft(model: component.Model(socket)) -> Element(Msg(socket)) {
+  html.div([attribute.class("draft")], [
+    editor(model),
+    element.element(
+      "loom-attach",
+      [
+        attribute.name("images"),
+        attribute.attribute("limits", image.limits_attribute()),
+      ],
+      [],
+    ),
+  ])
 }
 
 // The editor, inside `<loom-composer>` (`packages/web_client`), which lists
@@ -613,7 +667,7 @@ fn composed() -> decode.Decoder(Msg(socket)) {
   case composition(fields) {
     Ok(message) -> decode.success(message)
     Error(Nil) ->
-      decode.failure(Submitted("", operator.Prompt), "composer form")
+      decode.failure(Submitted("", operator.Prompt, []), "composer form")
   }
 }
 
@@ -625,25 +679,58 @@ fn field() -> decode.Decoder(#(String, String)) {
 
 /// The message a submitted composer form's fields stand for, or a refusal.
 ///
+/// The form has three fields and no others: exactly one `draft`, at most one
+/// `delivery`, which is `prompt` or `steer`, and at most one `images`, which
+/// `<loom-attach>` submits as a JSON array of base64 strings. An `images`
+/// that is not that array refuses the event, and so does any other field, a
+/// repeated one or an unknown delivery. What the strings hold is not judged
+/// here: the daemon decodes them and refuses the ones that are not images
+/// with a notice (`component.submit`).
+///
 /// ## Examples
 ///
 /// ```gleam
 /// assert operator_page.composition([#("draft", "hi")])
-///   == Ok(operator_page.Submitted("hi", operator.Prompt))
+///   == Ok(operator_page.Submitted("hi", operator.Prompt, []))
 /// ```
 pub fn composition(
   fields: List(#(String, String)),
 ) -> Result(Msg(socket), Nil) {
   let drafts = list.filter(fields, fn(field) { field.0 == "draft" })
   let deliveries = list.filter(fields, fn(field) { field.0 == "delivery" })
+  let attached = list.filter(fields, fn(field) { field.0 == "images" })
   let others =
     list.filter(fields, fn(field) {
-      field.0 != "draft" && field.0 != "delivery"
+      field.0 != "draft" && field.0 != "delivery" && field.0 != "images"
     })
-  case drafts, deliveries, others {
-    [#(_, text)], [], [] -> Ok(Submitted(text, operator.Prompt))
-    [#(_, text)], [#(_, "prompt")], [] -> Ok(Submitted(text, operator.Prompt))
-    [#(_, text)], [#(_, "steer")], [] -> Ok(Submitted(text, operator.Steer))
-    _, _, _ -> Error(Nil)
+  case drafts, deliveries, attached, others {
+    [#(_, text)], _, _, [] -> {
+      use images <- result.try(case attached {
+        [] -> Ok([])
+        [#(_, encoded)] -> image_list(encoded)
+        _ -> Error(Nil)
+      })
+      case deliveries {
+        [] -> Ok(Submitted(text, operator.Prompt, images))
+        [#(_, "prompt")] -> Ok(Submitted(text, operator.Prompt, images))
+        [#(_, "steer")] -> Ok(Submitted(text, operator.Steer, images))
+        _ -> Error(Nil)
+      }
+    }
+    _, _, _, _ -> Error(Nil)
+  }
+}
+
+// The strings of a JSON array of strings, or a refusal for anything else.
+fn image_list(encoded: String) -> Result(List(String), Nil) {
+  case json.parse(encoded) {
+    Ok(json.Array(items)) ->
+      list.try_map(items, fn(item) {
+        case item {
+          json.String(text) -> Ok(text)
+          _ -> Error(Nil)
+        }
+      })
+    _ -> Error(Nil)
   }
 }

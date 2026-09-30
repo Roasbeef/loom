@@ -21,6 +21,7 @@ import client/daemon/server
 import client/daemon/ui_assets
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/daemon_claim_test
 import client/daemon_server_test
 import client/gateway
 import core/clock
@@ -28,6 +29,7 @@ import core/ids
 import core/json
 import gleam/bit_array
 import gleam/bytes_tree
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http/request as req
 import gleam/http/response
@@ -37,14 +39,19 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import host/claim
 import mist
+import session_view/transcript_image
 import simplifile
+import sqlight
 import storage/access
 import storage/catalogue
+import storage/domain
 import support/addresses
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import web_view/ending
+import web_view/invites
 import web_view/page
 import web_view/sessions
 import weft
@@ -56,11 +63,28 @@ type Upgrade {
   Stubbed
   Real
 
+  /// As `Stubbed`, and the upgrade registers a reader for the page's images
+  /// that knows a fixed table (`held`), as the page socket registers its
+  /// component's. The upgrade registers before it answers, so a test that
+  /// opened the socket may then ask for an image.
+  Pictured
+
   /// The upgrade asks the daemon for a ticket to open the session a header
   /// names, as an operator's page does when its sidebar row is pressed, and
   /// answers with the outcome: 290 and the ticket's address, or 291 and the
   /// reason.
   Switching
+
+  /// The upgrade does what the page socket does for an invitation: it reads
+  /// the role the router admitted (`ui_socket.role_of`) and, for an owner's
+  /// page, asks the daemon to invite as the page's transport would, with the
+  /// role a header names. The answer is 292 and the invitation's fields one
+  /// to a line, or 293 and the reason. A page the transport gives no
+  /// capability is answered 294 for a member operator's and 295 for an
+  /// observer's. `x-invite-force` asks the daemon anyway, as a page whose
+  /// capability was wrongly handed out would, and `x-switch-ended` asks as
+  /// a page that has ended.
+  Inviting
 }
 
 // A daemon whose router serves the web view, with the owner credential and
@@ -71,6 +95,16 @@ fn fixture(run: fn(root.Ready(String), Int, String) -> Nil) -> Nil {
 
 fn fixture_with(
   serving: Upgrade,
+  run: fn(root.Ready(String), Int, String) -> Nil,
+) -> Nil {
+  fixture_lasting(serving, ui_sessions.session_ms, run)
+}
+
+// `fixture_with` for pages that live `session_ms` milliseconds, so a test can
+// see one expire.
+fn fixture_lasting(
+  serving: Upgrade,
+  session_ms: Int,
   run: fn(root.Ready(String), Int, String) -> Nil,
 ) -> Nil {
   let directory =
@@ -94,7 +128,12 @@ fn fixture_with(
   let assert Ok(credential) = root.listener_credential(daemon)
     as "only the fixture receives plaintext owner credential"
   let assert Ok(sessions) =
-    ui_sessions.start(ui_sessions.production(bootstrap.monotonic_time_ms))
+    ui_sessions.start(ui_sessions.Settings(
+      now: bootstrap.monotonic_time_ms,
+      entropy: token.production_entropy(),
+      ticket_ms: ui_sessions.ticket_ms,
+      session_ms:,
+    ))
     as "the web view's tables start"
   let assert Ok(assets) = ui_assets.load()
     as "the web view's assets are in web_view's and lustre's priv"
@@ -109,19 +148,21 @@ fn fixture_with(
         server.Ui(
           sessions:,
           assets:,
-          upgrade: fn(request, attachment, open, ceiling) {
+          upgrade: fn(request, attachment, open, register, ceiling) {
             case serving {
               // The router hands the page's upgrade the capped role. The
               // stub reports what it was given.
-              Stubbed ->
-                case attachment.authority {
-                  access.Participant(access.Observer) -> stub(299, "observer")
-                  access.Participant(access.Operator) -> stub(298, "operator")
-                  access.Owner -> stub(297, "not capped")
-                }
+              Stubbed -> capped(attachment)
+
+              Pictured -> {
+                register(held)
+                capped(attachment)
+              }
 
               Switching ->
                 switching(sessions, request, attachment, ceiling, open)
+
+              Inviting -> inviting(sessions, request, attachment, open)
 
               // The session is resident but its gateway is not running: the
               // relay's attach is refused, as it is when a session is
@@ -134,6 +175,7 @@ fn fixture_with(
                   gateway.Gateway(name: addresses.new()),
                   sessions,
                   open,
+                  register,
                   ceiling,
                 )
             }
@@ -160,6 +202,15 @@ fn fixture_with(
   let assert [weft.Completed(0, _)] = outcomes
     as "the fixture body ran to completion inside its own deadline"
   Nil
+}
+
+// What the stubbed upgrade answers: the role the router capped the page to.
+fn capped(attachment: server.Attachment(String)) {
+  case attachment.authority {
+    access.Participant(access.Observer) -> stub(299, "observer")
+    access.Participant(access.Operator) -> stub(298, "operator")
+    access.Owner -> stub(297, "not capped")
+  }
 }
 
 // The page's upgrade as a session switch asks for one: the same two calls the
@@ -203,14 +254,74 @@ fn switching(
   })
 }
 
+// The page's upgrade as an invitation asks for one: what `ui_socket.upgrade`
+// does with the role it admitted, without the Lustre component in the way.
+fn inviting(
+  tickets,
+  request,
+  attachment: server.Attachment(String),
+  open: fn() -> Result(Int, Nil),
+) {
+  let chosen = case req.get_header(request, "x-invite-role") {
+    Ok("operator") -> invites.Operator
+    Ok(_) | Error(Nil) -> invites.Observer
+  }
+  let open = case req.get_header(request, "x-switch-ended") {
+    Ok(_) -> fn() { Error(Nil) }
+    Error(Nil) -> open
+  }
+  let ask = fn() {
+    case
+      ui_socket.invite_for(
+        attachment,
+        tickets,
+        open,
+        ui_socket.claim_address(request),
+        chosen,
+      )
+    {
+      invites.Minted(invitation) ->
+        stub(
+          292,
+          string.join(
+            [
+              invitation.command,
+              invitation.token,
+              invitation.principal,
+              invites.role_word(invitation.role),
+              int.to_string(invitation.expires_in_ms),
+            ],
+            "\n",
+          ),
+        )
+      invites.Declined(reason) -> stub(293, string.inspect(reason))
+    }
+  }
+  case
+    ui_socket.role_of(attachment),
+    req.get_header(request, "x-invite-force")
+  {
+    ui_socket.Owning, _ -> ask()
+    _, Ok(_) -> ask()
+    ui_socket.Operating, Error(Nil) -> stub(294, "no capability")
+    ui_socket.Observing, Error(Nil) -> stub(295, "no capability")
+  }
+}
+
 fn stub(status: Int, text: String) {
   response.new(status)
   |> response.set_body(mist.Bytes(bytes_tree.from_string(text)))
 }
 
-/// One HTTP response: its status, its headers (lowercased names) and body.
+/// One HTTP response: its status, its headers (lowercased names), its body as
+/// text where it is text, and its body's bytes.
 type Answer {
-  Answer(status: Int, headers: List(#(String, String)), body: String)
+  Answer(
+    status: Int,
+    headers: List(#(String, String)),
+    body: String,
+    raw: BitArray,
+  )
 }
 
 // A raw GET, so a test can send any Host, Origin, Sec-Fetch-Site or cookie
@@ -246,17 +357,16 @@ fn get(port: Int, path: String, headers: List(#(String, String))) -> Answer {
     list.key_find(parsed, "content-length")
     |> result.try(int.parse)
     |> result.unwrap(0)
-  let body = case length > 0 && status != 101 {
+  let raw = case length > 0 && status != 101 {
     True -> {
       let assert Ok(bytes) = ffi_ws.tcp_receive(socket, length, 1000)
         as "the body arrives"
-      let assert Ok(text) = bit_array.to_string(bytes) as "the body is text"
-      text
+      bytes
     }
-    False -> ""
+    False -> <<>>
   }
   let _ = ffi_ws.tcp_close(socket)
-  Answer(status, parsed, body)
+  Answer(status, parsed, result.unwrap(bit_array.to_string(raw), ""), raw)
 }
 
 fn read_head(socket, accumulated: String) -> String {
@@ -1183,4 +1293,585 @@ pub fn a_refused_host_still_carries_the_policy_test() {
     assert string.contains(policy, "default-src 'none'")
     assert !string.contains(policy, "evil.example")
   })
+}
+
+// --- images (protocol-change/051, the addendum on images) ------------------
+
+const png_bytes = <<0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3>>
+
+// The images the stubbed page's reader knows, as the page socket's component
+// would answer for a lane that drew them: a PNG, an SVG declared as such, an
+// HTML document declared as a PNG, and a PNG one byte over the limit's text.
+fn held(ref: String, position: Int) -> Result(transcript_image.Image, Nil) {
+  case ref, position {
+    "1.0", 0 ->
+      Ok(transcript_image.Image(
+        "image/png",
+        bit_array.base64_encode(png_bytes, True),
+      ))
+    "1.0", 1 ->
+      Ok(transcript_image.Image(
+        "image/svg+xml",
+        bit_array.base64_encode(<<"<svg><script/></svg>":utf8>>, True),
+      ))
+    "1.0", 2 ->
+      Ok(transcript_image.Image(
+        "image/png",
+        bit_array.base64_encode(<<"<html><script/></html>":utf8>>, True),
+      ))
+    "2.0", 0 ->
+      Ok(transcript_image.Image("image/png", string.repeat("A", 28_000_000)))
+    _, _ -> Error(Nil)
+  }
+}
+
+// An image of the page, asked for as the page's own `<img>` asks.
+fn picture(port: Int, page: Entered, ref: String, position: String) -> Answer {
+  get(port, page.page <> "/image/" <> ref <> "/" <> position, [
+    host(port),
+    #("sec-fetch-site", "same-origin"),
+    #("cookie", "loom_ui=" <> page.cookie),
+  ])
+}
+
+// A page whose socket has opened, so its reader is registered.
+fn opened(port: Int, path: String) -> Entered {
+  let page = enter(port, path)
+  let status = open_socket(port, page, page.nonce).status
+  assert status == 298 || status == 299
+  page
+}
+
+pub fn a_page_reads_its_image_with_the_headers_of_the_view_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "pictures", 940)
+    let page = opened(port, operate(port, credential, session))
+    let answer = picture(port, page, "1.0", "0")
+    assert answer.status == 200
+    assert answer.raw == png_bytes
+    assert list.key_find(answer.headers, "content-type") == Ok("image/png")
+    assert list.key_find(answer.headers, "x-content-type-options")
+      == Ok("nosniff")
+    assert list.key_find(answer.headers, "cache-control") == Ok("no-store")
+    assert list.key_find(answer.headers, "referrer-policy") == Ok("no-referrer")
+    assert list.key_find(answer.headers, "content-security-policy")
+      == Ok(policy(port))
+  })
+}
+
+// An image is read for either role: an observer's page draws pictures too,
+// and neither reader can name anything the page did not draw.
+pub fn an_observers_page_reads_its_image_too_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "watchers", 941)
+    let observer = opened(port, link(port, credential, session))
+    assert picture(port, observer, "1.0", "0").status == 200
+    let operator = opened(port, operate(port, credential, session))
+    assert picture(port, operator, "1.0", "0").status == 200
+  })
+}
+
+pub fn an_image_is_unknown_until_the_pages_socket_has_opened_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "early", 942)
+    let page = enter(port, operate(port, credential, session))
+    let answer = picture(port, page, "1.0", "0")
+    assert answer.status == 404
+    assert answer.raw == <<"unknown image":utf8>>
+  })
+}
+
+// Each page reads its own component's images. A second page of the same
+// principal and session whose socket never opened has no reader, however the
+// first page's readers answer.
+pub fn a_page_cannot_read_through_another_pages_reader_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "twins", 943)
+    let first = opened(port, operate(port, credential, session))
+    let second = enter(port, operate(port, credential, session))
+    assert picture(port, first, "1.0", "0").status == 200
+    assert picture(port, second, "1.0", "0").status == 404
+    assert get(port, first.page <> "/image/1.0/0", [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> second.cookie),
+      ]).status
+      == 401
+  })
+}
+
+pub fn the_daemon_serves_only_what_it_has_checked_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "checked", 944)
+    let page = opened(port, operate(port, credential, session))
+
+    // The page drew nothing at this name or place.
+    assert picture(port, page, "9.0", "0").status == 404
+    assert picture(port, page, "1.0", "7").status == 404
+
+    // A non-raster type, however declared, and bytes that are not the type
+    // they were declared as.
+    assert picture(port, page, "1.0", "1").status == 415
+    assert picture(port, page, "1.0", "2").status == 415
+
+    // More than the terminal's own limit.
+    assert picture(port, page, "2.0", "0").status == 413
+  })
+}
+
+pub fn a_malformed_image_address_is_not_routed_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "shapes", 945)
+    let page = opened(port, operate(port, credential, session))
+    assert picture(port, page, "1.0", "-1").status == 404
+    assert picture(port, page, "1.0", "x").status == 404
+    assert picture(port, page, "1.0", "9999").status == 404
+    assert picture(port, page, "..%2Fx", "0").status == 404
+    assert picture(port, page, "a.b", "0").status == 404
+    assert picture(port, page, string.repeat("1", 49), "0").status == 404
+  })
+}
+
+pub fn an_image_needs_the_pages_own_cookie_key_and_session_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "guarded", 946)
+    let elsewhere = create_session(ready, "elsewhere", 947)
+    let page = opened(port, operate(port, credential, session))
+    let other = opened(port, operate(port, credential, elsewhere))
+    let address = page.page <> "/image/1.0/0"
+    let same_origin = #("sec-fetch-site", "same-origin")
+
+    // No cookie, a planted one, and another page's.
+    assert get(port, address, [host(port), same_origin]).status == 401
+    assert get(port, address, [
+        host(port),
+        same_origin,
+        #("cookie", "loom_ui=planted"),
+      ]).status
+      == 401
+    assert get(port, address, [
+        host(port),
+        same_origin,
+        #("cookie", "loom_ui=" <> other.cookie),
+      ]).status
+      == 401
+
+    // The page's own key with another session's identity in the path.
+    let crossed =
+      string.replace(page.page, session, elsewhere) <> "/image/1.0/0"
+    assert get(port, crossed, [
+        host(port),
+        same_origin,
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+      == 403
+
+    // A host that is not loopback.
+    assert get(port, address, [
+        #("host", "evil.example"),
+        same_origin,
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+      == 403
+  })
+}
+
+// Another page cannot have the browser fetch the person's images: the fetch
+// must be this origin's own, or one the person opened from outside a page.
+pub fn an_image_is_only_a_fetch_of_this_origin_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "origins", 948)
+    let page = opened(port, operate(port, credential, session))
+    let address = page.page <> "/image/1.0/0"
+    let cookie = #("cookie", "loom_ui=" <> page.cookie)
+    let with = fn(site) {
+      get(port, address, [host(port), #("sec-fetch-site", site), cookie])
+    }
+    assert with("same-origin").status == 200
+    assert with("none").status == 200
+    assert with("same-site").status == 403
+    assert with("cross-site").status == 403
+    assert get(port, address, [host(port), cookie]).status == 403
+  })
+}
+
+pub fn an_expired_page_reads_no_image_test() {
+  fixture_lasting(Pictured, 1500, fn(ready, port, credential) {
+    let session = create_session(ready, "expiring", 949)
+    let page = opened(port, operate(port, credential, session))
+    assert picture(port, page, "1.0", "0").status == 200
+    assert poll.until(within: 5000, every: 100, attempt: fn() {
+        case picture(port, page, "1.0", "0").status {
+          401 -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      == poll.Answered(Nil)
+  })
+}
+
+pub fn a_revoked_credential_reads_no_image_test() {
+  fixture_with(Pictured, fn(ready, port, _) {
+    let session = create_session(ready, "revoked-pictures", 950)
+    let credential = member(ready, "ui-picture", session, access.Operator)
+    let page = opened(port, operate(port, credential, session))
+    assert picture(port, page, "1.0", "0").status == 200
+
+    let assert Ok(digest) =
+      credential
+      |> bit_array.from_string
+      |> bootstrap.sha256
+      |> bit_array.base16_encode
+      |> string.lowercase
+      |> access.credential_digest
+      as "member digest is valid"
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the durable catalogue"
+    assert access.revoke_credential(store, digest) == Ok(Nil)
+    assert catalogue.close(store) == Ok(Nil)
+    assert picture(port, page, "1.0", "0").status == 401
+  })
+}
+
+pub fn without_ui_the_image_route_does_not_exist_test() {
+  daemon_server_test.fixture(fn(_, _, port, _) {
+    let session = "0198c0de-0000-7000-8000-000000000001"
+    assert get(port, "/ui/p/k/sessions/" <> session <> "/image/1.0/0", [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+      ]).status
+      == 404
+  })
+}
+
+// --- inviting from an owner's page (protocol-change/051, the addendum) --------
+
+// A session that is shared (`SessionOnly`) and resident, which is the only
+// kind the daemon lets anyone else into.
+fn create_shared_session(
+  ready: root.Ready(String),
+  key: String,
+  seed: Int,
+) -> String {
+  let assert Ok(created) =
+    manager.create_scoped(
+      ready.registry,
+      manager.Creation(key, ready.state_root, key, ""),
+      directory: ready.sessions_directory,
+      generator: ids.generator(clock.fixed(0), seed),
+      scope: domain.SessionOnly,
+      configuration: "",
+    )
+    as "the shared session is created"
+  let id = created.registration.id
+  let assert poll.Answered(_) =
+    poll.until(within: 2000, every: 1, attempt: fn() {
+      case manager.resolve(ready.registry, id) {
+        Ok(instance) -> poll.Done(instance)
+        Error(_) -> poll.Retry
+      }
+    })
+    as "the session becomes resident"
+  id
+}
+
+// What an invitation answer carries, one field to a line.
+type Minted {
+  Minted(
+    command: String,
+    token: String,
+    principal: String,
+    role: String,
+    expires_in_ms: Int,
+  )
+}
+
+fn minted(answer: Answer) -> Minted {
+  assert answer.status == 292
+  let assert [command, token, principal, role, expires] =
+    string.split(answer.body, "\n")
+    as "an invitation is five lines"
+  let assert Ok(expires_in_ms) = int.parse(expires) as "a lifetime"
+  Minted(command:, token:, principal:, role:, expires_in_ms:)
+}
+
+// The page's socket as an invitation asks for one, for the role named.
+fn invite(port: Int, entered: Entered, role: String) -> Answer {
+  invite_with(port, entered, role, [])
+}
+
+fn invite_with(
+  port: Int,
+  entered: Entered,
+  role: String,
+  more: List(#(String, String)),
+) -> Answer {
+  get(port, entered.page <> "/ws?csrf-token=" <> entered.nonce, [
+    host(port),
+    #("cookie", "loom_ui=" <> entered.cookie),
+    #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+    #("x-invite-role", role),
+    ..more
+  ])
+}
+
+fn catalogue_rows(
+  state_root: String,
+  query: String,
+  with: List(sqlight.Value),
+) {
+  let assert Ok(db) = sqlight.open(state_root <> "/catalogue.db")
+    as "a read connection opens"
+  let assert Ok(rows) =
+    sqlight.query(
+      query,
+      on: db,
+      with:,
+      expecting: decode.at([0], decode.string),
+    )
+    as "the catalogue answers"
+  assert sqlight.close(db) == Ok(Nil)
+  rows
+}
+
+fn members(state_root: String) -> List(String) {
+  catalogue_rows(
+    state_root,
+    "SELECT principal_id FROM access_principals WHERE kind = 'member' ORDER BY principal_id",
+    [],
+  )
+}
+
+fn role_in(
+  state_root: String,
+  principal: String,
+  session: String,
+) -> List(String) {
+  catalogue_rows(
+    state_root,
+    "SELECT role FROM access_memberships WHERE principal_id = ? AND session_id = ?",
+    [sqlight.text(principal), sqlight.text(session)],
+  )
+}
+
+fn grants_of(state_root: String, principal: String) -> List(String) {
+  catalogue_rows(
+    state_root,
+    "SELECT session_id FROM access_memberships WHERE principal_id = ?",
+    [sqlight.text(principal)],
+  )
+}
+
+// An owner's operator page asks the daemon to invite and is given the same
+// claim `loomd access invite` makes: a principal the daemon named, a member
+// role in this session and no other, an open claim that lives an hour, and a
+// command that names this daemon's loopback address and not the token.
+pub fn an_owners_operator_page_invites_into_its_own_session_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "invite-one", 951)
+    let other = create_shared_session(ready, "invite-two", 952)
+    let page = enter(port, operate(port, credential, session))
+    let answer = minted(invite(port, page, "observer"))
+
+    assert claim.validate_token(answer.token) == Ok(Nil)
+    assert string.starts_with(answer.principal, "guest-")
+    assert string.length(answer.principal) == 14
+    assert answer.role == "observer"
+    assert answer.expires_in_ms == 3_600_000
+    assert answer.command
+      == "loom claim --addr ws://127.0.0.1:"
+      <> int.to_string(port)
+      <> "/v2/control"
+    assert !string.contains(answer.command, "loomclaim_")
+
+    // The membership is this session's alone, at the role asked for.
+    assert role_in(ready.state_root, answer.principal, session) == ["observer"]
+    assert grants_of(ready.state_root, answer.principal) == [session]
+    assert role_in(ready.state_root, answer.principal, other) == []
+
+    // The claim is open and expires an hour from now, on the wall clock.
+    let expiry =
+      catalogue_rows(
+        ready.state_root,
+        "SELECT CAST(expires_at_ms AS TEXT) FROM access_claims WHERE principal_id = ? AND state = 'open'",
+        [sqlight.text(answer.principal)],
+      )
+    let assert [text] = expiry as "one open claim"
+    let assert Ok(expires_at) = int.parse(text) as "an instant"
+    let remaining = expires_at - bootstrap.system_time_ms()
+    assert remaining > 3_500_000 && remaining <= 3_600_000
+  })
+}
+
+// The owner may pick operator, and the role reaches the catalogue as asked.
+// Owner is not a role the control has, so there is nothing to forge.
+pub fn the_owner_may_invite_an_operator_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "invite-role", 953)
+    let page = enter(port, operate(port, credential, session))
+    let answer = minted(invite(port, page, "operator"))
+    assert answer.role == "operator"
+    assert role_in(ready.state_root, answer.principal, session) == ["operator"]
+
+    // Anything else a header says is the default, an observer.
+    let default = minted(invite(port, page, "owner"))
+    assert default.role == "observer"
+    assert role_in(ready.state_root, default.principal, session) == ["observer"]
+  })
+}
+
+// Which pages the capability is given to, decided from the router's own
+// admission: only an operator's page of the owner's principal. An owner who
+// asked for an observer's page, a member operator and a member observer get
+// none.
+pub fn only_an_owners_operator_page_is_offered_the_capability_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "invite-offer", 954)
+    let operator = member(ready, "ui-op", session, access.Operator)
+    let watcher = member(ready, "ui-watch", session, access.Observer)
+
+    let owning = enter(port, operate(port, credential, session))
+    assert invite(port, owning, "observer").status == 292
+    let owner_watching = enter(port, link(port, credential, session))
+    assert invite(port, owner_watching, "observer").status == 295
+    let operating = enter(port, operate(port, operator, session))
+    assert invite(port, operating, "observer").status == 294
+
+    // A member who asked for an operator's page only observes.
+    let watching = enter(port, operate(port, watcher, session))
+    assert invite(port, watching, "observer").status == 295
+
+    // Only the one invitation was made.
+    assert list.length(members(ready.state_root)) == 3
+  })
+}
+
+// The daemon refuses again if the capability reached a page it was not meant
+// for, by the principal and never by the page: a member operator's page that
+// asked anyway is `NotOwner`, and nothing is made.
+pub fn the_daemon_refuses_a_member_that_reaches_it_anyway_test() {
+  fixture_with(Inviting, fn(ready, port, _) {
+    let session = create_shared_session(ready, "invite-member", 955)
+    let operator = member(ready, "ui-forced", session, access.Operator)
+    let page = enter(port, operate(port, operator, session))
+    let before = members(ready.state_root)
+    let refused =
+      invite_with(port, page, "operator", [#("x-invite-force", "1")])
+    assert refused.status == 293
+    assert refused.body == "NotOwner"
+    assert members(ready.state_root) == before
+  })
+}
+
+// A page that has ended but whose socket is still up invites nobody.
+pub fn an_ended_page_invites_nobody_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "invite-ended", 956)
+    let page = enter(port, operate(port, credential, session))
+    let before = members(ready.state_root)
+    let refused =
+      invite_with(port, page, "observer", [#("x-switch-ended", "yes")])
+    assert refused.status == 293
+    assert refused.body == "NotOwner"
+    assert members(ready.state_root) == before
+  })
+}
+
+// A session that still shares its history with its workspace is not shared
+// with anyone, and the daemon says how to change that. A refusal that made
+// nothing costs none of the credential's invitations, so the owner who hit it
+// three times can still invite once the session is isolated.
+pub fn a_session_that_is_not_shared_is_refused_and_costs_nothing_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let private = create_session(ready, "invite-private", 957)
+    let shared = create_shared_session(ready, "invite-shared", 958)
+    let before = members(ready.state_root)
+    let private_page = enter(port, operate(port, credential, private))
+    list.each(list.repeat(Nil, 5), fn(_) {
+      let refused = invite(port, private_page, "observer")
+      assert refused.status == 293
+      assert refused.body == "NotIsolated"
+    })
+    assert members(ready.state_root) == before
+
+    let shared_page = enter(port, operate(port, credential, shared))
+    assert invite(port, shared_page, "observer").status == 292
+  })
+}
+
+// The limit is the credential's: `ui_sessions.invite_limit` invitations from
+// any of its pages in the window, and the next is `TooMany` on the same page,
+// on a second page of the same session, and on a page of another session.
+pub fn the_limit_is_the_credentials_across_pages_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let first = create_shared_session(ready, "limit-one", 959)
+    let second = create_shared_session(ready, "limit-two", 960)
+    let page = enter(port, operate(port, credential, first))
+    list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
+      assert invite(port, page, "observer").status == 292
+    })
+    let made = members(ready.state_root)
+    assert list.length(made) == ui_sessions.invite_limit
+
+    let refused = invite(port, page, "observer")
+    assert refused.status == 293
+    assert refused.body == "TooMany"
+
+    // A fresh page for the same session, and a page of another session,
+    // start with nothing left.
+    let again = enter(port, operate(port, credential, first))
+    assert invite(port, again, "observer").body == "TooMany"
+    let elsewhere = enter(port, operate(port, credential, second))
+    assert invite(port, elsewhere, "operator").body == "TooMany"
+    assert members(ready.state_root) == made
+  })
+}
+
+// The claim an invitation carries is real: an invitee redeems it once on
+// `/v2/claim`, and the daemon keeps only its digest. Neither the token nor
+// the invitee's credential is in any file under the state root.
+pub fn the_claim_redeems_and_only_its_digest_is_kept_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "invite-claim", 961)
+    let page = enter(port, operate(port, credential, session))
+    let answer = minted(invite(port, page, "observer"))
+    let invitee = claim.random_credential()
+    let redeemed =
+      daemon_claim_test.redeem(port, answer.token, claim.digest(invitee))
+    let assert json.Object(fields) = redeemed as "a reply"
+    assert list.key_find(fields, "event")
+      == Ok(json.String("credentials.claim"))
+
+    // A second binding with another credential is refused: a claim is single
+    // use.
+    let other = claim.digest(claim.random_credential())
+    let assert json.Object(refusal) =
+      daemon_claim_test.redeem(port, answer.token, other)
+      as "a refusal"
+    assert list.key_find(refusal, "event") == Ok(json.String("error"))
+
+    let assert Ok(files) = simplifile.get_files(ready.state_root)
+      as "the state root is readable"
+    list.each(files, fn(path) {
+      let assert Ok(bytes) = simplifile.read_bits(path) as "a state file reads"
+      assert !holds(bytes, bit_array.from_string(answer.token))
+      assert !holds(bytes, bit_array.from_string(invitee))
+    })
+  })
+}
+
+fn holds(haystack: BitArray, needle: BitArray) -> Bool {
+  let size = bit_array.byte_size(needle)
+  holds_from(haystack, needle, size, 0, bit_array.byte_size(haystack) - size)
+}
+
+fn holds_from(haystack, needle, size, offset, last) -> Bool {
+  case offset > last {
+    True -> False
+    False ->
+      case bit_array.slice(haystack, offset, size) == Ok(needle) {
+        True -> True
+        False -> holds_from(haystack, needle, size, offset + 1, last)
+      }
+  }
 }

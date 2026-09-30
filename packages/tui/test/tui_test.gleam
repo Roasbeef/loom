@@ -476,6 +476,19 @@ pub fn agents_test() {
   assert command.parse("/agents") == command.Surface(command.Agents)
 }
 
+// `/access` is a terminal surface: the daemon's control connection is the
+// terminal's, and the page refuses every surface command
+// (`web_view/completion_test`), which keeps owner administration out of the
+// browser (protocol-change/053).
+pub fn access_test() {
+  assert command.parse("/access") == command.Surface(command.Access)
+  assert list.contains(
+    list.map(command.suggestions("/acc"), fn(row) { row.command }),
+    "/access",
+  )
+  assert string.contains(command.help_text(), "/access")
+}
+
 /// The operator's schedule surface: a listing with no argument, and a
 /// cancellation whose target defaults to the strand being watched.
 pub fn schedule_commands_test() {

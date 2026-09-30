@@ -20,16 +20,23 @@
 //// - `<loom-composer>` (`web_client/composer`) wraps the operator's editor:
 ////   it lists slash commands as the draft grows, sends the draft on Command
 ////   or Control with Enter, and puts a returned prompt back in the editor.
+//// - `<loom-attach name="images">` (`web_client/attach`) is the composer's
+////   image attachments: a file picker, a paste, a chip for each image with
+////   a Remove button, and the images as one form field.
 //// - `<loom-shell sidebar="listed">` (`web_client/shell`) is the page's
 ////   frame. It lays the server's regions out in its slots and draws the two
 ////   buttons that hide and show the sidebar and the strand panel.
 //// - `<loom-switch to="...">` (`web_client/switch`) moves the browser to
 ////   another session's page when the server writes a ticket exchange's
 ////   address into its attribute.
+//// - `<loom-copy subject="token" text="...">` (`web_client/copy`) draws one
+////   of an invitation's two texts and copies it to the clipboard when the
+////   owner presses its button.
 ////
 //// Every element keeps the page's rules (protocol-change/051): it renders
 //// only what its own attributes say, and those hold daemon identities or
-//// numbers (or, for the composer, the static table of command names), never
+//// numbers (or, for the composer, the static table of command names, and for
+//// the copy box the one text it was handed, of a shape it checks), never
 //// session text; text inside a fold is the server's children, projected
 //// through a slot; nothing handles a key or takes focus near an approval
 //// card, and the composer handles keys only in its own editor; and Lustre
@@ -37,7 +44,9 @@
 //// `web_view`'s `priv/static`, which the page loads under the unchanged
 //// policy (`script-src 'self'`).
 
+import web_client/attach
 import web_client/composer
+import web_client/copy
 import web_client/elapsed
 import web_client/expand
 import web_client/fold
@@ -54,7 +63,12 @@ import web_client/switch
 /// // web_client.main()
 /// ```
 pub fn main() -> Nil {
+  // The operator's composer: its editor and its image attachments.
+  let _ = attach.register()
   let _ = composer.register()
+  let _ = copy.register()
+
+  // The transcript, the strand panel and the page's frame.
   let _ = elapsed.register()
   let _ = expand.register()
   let _ = fold.register()

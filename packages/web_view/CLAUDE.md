@@ -39,19 +39,25 @@ page keys and nonces, and the relay into the session's gateway.
   (the daemon's authorized catalogue read, `[]` on failure), and
   `open(id)`, a request to open another session that answers a
   `sessions.Answer` (a ticket's exchange path, or a `Declined` reason; an
-  observer's page is always declined). All run in the component's process.
+  observer's page is always declined), and `invite`, an `Option` of a request
+  to invite a person to the page's session in an `invites.Role` that answers
+  an `invites.Answer`. `invite` is `Some` only on an owner's operator page
+  (`ui_socket.Owning`). All run in the component's process.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
   read), `FocusRequested(strand)` (a strip chip, a change of what the page
   shows), `SessionsListed(entries)` (the sidebar read's own answer) and
-  `Linked(answer)` (the daemon's answer to a request to open a session), both
+  `Linked(answer)` (the daemon's answer to a request to open a session) and
+  `Invited(answer)` (its answer to a request to invite), all three
   dispatched by an effect and carried by no handler. It holds no command.
   `component.older_path` and `component.strip_path` are the Lustre event
   paths the socket admits an observer's click at: the button, and anything
   beneath the strip's chip list. `component.sidebar_path` is where an
   operator page's session buttons are, and the observer's socket admits no
-  click beneath it.
+  click beneath it. `component.invite_path` (`0\t3\t2\t2`) is the invitation
+  control's region in the Session pane, and only an owner's socket admits a
+  click at or beneath it.
 - **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
   `step.focus`, the shared step's change of strand, plus what only this host
   holds: the history read owed for the strand being left is dropped
@@ -97,6 +103,29 @@ page keys and nonces, and the relay into the session's gateway.
   Open button, no element, no handler beneath `component.sidebar_path`.
   `session_switch_test` reads it, and `session_isolation_test` shows a page
   built after another holds none of the other's text.
+- **Inviting from the session page.** An owner's operator page draws an
+  invitation control as the last child of the Session pane
+  (protocol-change/051, the addendum on inviting from the session page).
+  `web_view/invites` holds its vocabulary: `Role` (`Observer | Operator`,
+  never an owner), `Invitation(principal, role, command, token,
+  expires_in_ms)`, `Reason` (`NotOwner | TooMany | NotIsolated |
+  Unavailable`) with the fixed words of `reason_words`, `Answer` (`Minted |
+  Declined`), `claim_ttl_ms` (one hour) and `Share`, the control's state:
+  `Withheld` (no capability, nothing drawn), `Ready`, `Asking`,
+  `Showing(invitation)` and `Refused(reason)`. `Model.view.share` starts
+  `Withheld` unless `Transport.invite` is `Some`. On the operator's page
+  `operator_page.Inviting(role)` reaches `component.invite`, which moves
+  `Ready` or `Refused` to `Asking` and asks the transport; `Invited(answer)`
+  moves `Asking` to `Showing` or `Refused` and is dropped in any other state,
+  so a token is only ever taken into a state that asked for one. A press in
+  `Asking` or `Showing` asks nothing. `Dismissing` reaches
+  `component.dismiss_invitation`, which replaces `Showing` and so drops the
+  token from the model. `view/share` draws the control: two buttons, or the
+  invitation with a `<loom-copy>` box for the command and for the token
+  (`subject` and `text` attributes, no children) and fixed words for handing
+  them over. The observer's view draws nothing there
+  (`component.panel(model, focus, viewers, share)` takes `element.none()`).
+  `invite_test` reads all of it.
 - `component.Model(socket)` (opaque): two records, as the terminal's is.
   `shared` is `session_view/model.Shared(socket, Nil, Nil, Nil)`, the
   session state the shared step reads and writes: the lane, the inbox, the
@@ -153,9 +182,10 @@ page keys and nonces, and the relay into the session's gateway.
   `panel.view(count, strands, changes, session)` is the panel's `aside`, a
   tabbed panel of three panes, always all drawn and always in this order: the
   Strands pane (a title, then the strip's list), `changes.view`'s pane and
-  `session_tab.view`'s pane. `component.panel(model, focus, viewers)` builds
-  it for both pages, the operator's passing `Some(viewers)` and the observer's
-  `None`. The tab bar is not drawn here: `<loom-shell>` draws it, keeps which
+  `session_tab.view`'s pane. `component.panel(model, focus, viewers, share)`
+  builds it for both pages, the operator's passing `Some(viewers)` and the
+  observer's `None`, and the operator's its invitation control (an owner's) or
+  `element.none()` as `share`. The tab bar is not drawn here: `<loom-shell>` draws it, keeps which
   tab is chosen and hides the panes of the others with a custom state, so the
   server never learns which shows. The panel carries no decision control: its
   only handlers are the strand cards' focus clicks, a strand waiting on a
@@ -295,8 +325,10 @@ page keys and nonces, and the relay into the session's gateway.
   it is the heading and one line saying so, so the pane is always drawn and
   the panes after it never move. It reads no worktree: the daemon serves
   worktree bytes to an Owner binding only.
-- `session_tab.view(goal, cost, jobs, viewers)` draws the Session pane, the
-  panel's third: the goal (the terminal's own row, `goal_view.row`, or
+- `session_tab.view(goal, cost, jobs, viewers, share)` draws the Session pane,
+  the panel's third. Its children are the title, a memoized list of rows and
+  `share`, the invitation control's place, in that order so the control's path
+  never moves. The rows are the goal (the terminal's own row, `goal_view.row`, or
   `none`), the followed strand's live jobs, where the page shows them the
   attached viewers (`session_view/session_summary`) and the estimated cost the
   top bar shows. Schedules are not a row: the shared record keeps a schedule
@@ -398,12 +430,32 @@ page keys and nonces, and the relay into the session's gateway.
   `reply`. `component.pending_nudges(model)` and `component.goal(model)` read
   `Shared.nudges` and `Shared.goal`.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
-  delivery)`, `Decided(id, seq, answer)`, `Controlled(component.Control)` and
+  delivery, images)`, `Decided(id, seq, answer)`, `Controlled(component.Control)` and
   `Replying(key)`. The lane's "Load older"
   button sends `Observed(component.OlderRequested)`.
   `composition(fields)` is the total decoder of the composer form's
-  fields, and `control_text(fields)` of a control form's: exactly one
-  `text` field.
+  fields (one `draft`, at most one `delivery` and at most one `images`, a JSON
+  array of base64 strings, and nothing else), and `control_text(fields)` of a
+  control form's: exactly one `text` field.
+- `image` (protocol-change/051, the addendum on images): the transcript's
+  images as the page addresses them and the daemon serves them. `address(session,
+  ref, position)` is the one `src` the view builds, relative to the page's own
+  address; `drawn` is the four raster types; `plausible_ref` is the shape check
+  the route makes before it asks the page for anything; `serve(image)` checks
+  what the daemon will answer with (raster type, base64, at most 20 MiB, and a
+  magic number that says the declared type: `Served` or `NotAnImage` or
+  `TooLarge`). For the composer it holds `admit(encoded)`, which decodes each
+  image `<loom-attach>` submitted, reads its type from its bytes, bounds the
+  count (4) and the total (8 MiB) and returns the shared step's
+  `pasted_image.Image`s or the notice, and `limits_attribute()`, the
+  daemon's numbers and types as the element's `limits` attribute.
+  `component.ImageRequested(ref, position, reply)` is the daemon's question
+  (sent with `lustre.dispatch`, so no browser frame can produce one); the
+  component answers from `turns.picture` over its pieces. `lane.view` takes the
+  session's identity and draws a `<details><img>` per drawn image after a row's
+  text and a step's detail; `component.submit` takes the images, refuses a
+  steer that has any, and sets them as the shared step's attachments for that
+  one submit and clears them after.
 - `completion.rows()` and `completion.table()`: the slash commands the
   composer offers, built from `session_view/command.suggestions` (the
   one-word commands, and the argument rows of every word that has some once
@@ -631,7 +683,7 @@ page keys and nonces, and the relay into the session's gateway.
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever
   `html.text`; nothing uses `unsafe_raw_html`. Rendered Markdown keeps the
   same rule: a link is its label and its destination as text, never an
-  `href`; an image is text and is never loaded; an ordered list's numbers
+  `href`; a Markdown image is text and is never loaded; an ordered list's numbers
   and a fence's language are text; classes come from closed types.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
   in its own region outside the transcript, directly above the composer in

@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:179`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:186`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:687`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1060`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -313,10 +313,33 @@ flowchart LR
   because the queue has no accept or dismiss command.
 
 The socket's inbound frame limit follows the role: 64 KiB for an
-observer's page, which is the daemon's observer limit, and 1 MiB for an
-operator's (`operator_frame_limit`), well below a terminal operator's
-32 MiB. The largest thing a page sends is a text prompt; image prompts
-are not offered from the page.
+observer's page, which is the daemon's observer limit, and 12 MiB for an
+operator's (`operator_frame_limit`), below a terminal operator's 32 MiB. The
+largest thing a page sends is a draft with up to four images and 8 MiB of them,
+at their base64 size, in one `submit` event (051, the addendum on images).
+
+## Images
+
+A row that carries images draws each raster one as a thumbnail, on both pages.
+`session_view/transcript_image` names them (a row's key and a position) and
+`view/lane` draws a `<details><img>` whose `src` is
+`<session>/image/<row>/<position>`, relative to the page's address, so the
+policy's `img-src 'self'` admits it and no `data:` or `blob:` source exists. The
+daemon answers `GET /ui/p/<key>/sessions/<id>/image/<row>/<position>` after the
+host, the shape, the fetch site (`same-origin` or `none`) and the page grant,
+by asking the page's component whether it drew that image: the page socket
+registers, under the page's cookie in `ui_sessions`, a function that sends the
+component `ImageRequested` with `lustre.dispatch`. What comes back is checked by
+`web_view/image.serve` (a raster type, base64 that decodes, at most 20 MiB, and a
+magic number that says the type) and sent with the view's headers, so the browser
+draws what was checked.
+
+An operator's composer draws `<loom-attach>`, which reads files and pasted images
+in the browser and submits them as one form field, a JSON array of base64
+strings, with the draft. `component.submit` runs `web_view/image.admit` on them,
+which reads each type from its bytes and bounds the count and the total, and the
+prompt goes out as `prompt_content` through the shared step. One bad image
+refuses the whole prompt with a notice.
 
 The role does not change while a page is open. The relay's binding
 carries the capped role, and its `check` recomputes the same minimum from
@@ -661,6 +684,42 @@ sessions). Only an operator page does it.
   (`session_isolation_test`); the sidebar is the one region that lists the
   others. The observer's socket drops a click beneath `component.sidebar_path`.
 
+## Inviting from the session page
+
+An owner's operator page has one control that a member's page and every
+observer's page lack: "invite to this session" (051, the addendum on inviting
+from the session page). It is the last child of the Session pane, at
+`component.invite_path`.
+
+- **Who has it.** `ui_socket.role_of` gives a page the role `Owning` when its
+  authority is operator and its principal is the daemon's owner. Only `Owning`
+  gets `Transport.invite`; the component draws nothing and ignores the message
+  without it. The socket admits a click at or beneath the path only for an
+  owner (`owner_accepts`), `invite_for` reads the principal again, and
+  `manager.administer` authenticates the credential as the owner a last time.
+- **The request.** Two buttons, observer and operator, send
+  `operator_page.Inviting(role)`; a third, "Hide the token", sends
+  `Dismissing`. `component.invite` moves the control from `Ready` to `Asking`,
+  and the daemon's answer returns as `Invited`. A press while a request is out
+  or an invitation is on screen asks nothing.
+- **The daemon.** `ui_socket.invite_for` checks that the page is still open and
+  that the principal is the owner, takes one of the credential's three
+  invitations an hour (`ui_sessions.reserve_invite`), and runs
+  `manager.Invite` for a new `guest-` principal in the page's own session with
+  a claim that lives an hour (`server.claim_enrollment`). The answer is an
+  `invites.Invitation` or a `Declined` reason with fixed words.
+- **The browser.** The control shows the role, the principal, the lifetime, the
+  command and the token, and the words for handing them over. The command and
+  the token are each a `<loom-copy>` box (`subject` and `text` attributes),
+  which draws its text and copies it to the clipboard only when it has exactly
+  the shape the daemon writes (`copy_rule.text`).
+- **What holds.** The token is in the component's state only while the
+  invitation shows and is dropped when the owner hides it. It is not in the
+  session's transcript, the shared record, a log, a URL, the catalogue (which
+  holds its digest) or another page. A stolen owner page can mint three
+  invitations an hour for its credential, and each is a membership that
+  outlives the page; 051's addendum prices that.
+
 ## Expanding a row
 
 The terminal's `Ctrl+g` expands every row at once; the page lets the reader
@@ -871,6 +930,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board as one line (`Todo · n of m done · <active task>`, a `<loom-fold>` summary) which opens to the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/changes.gleam` | The Changes pane: the files the session's own `fs_edit` results named and their diffs (`session_view/changes_view`), the panel's second pane on both pages, bounded and drawn as text nodes with a class from a closed row kind. It reads no worktree. |
 | `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane: the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |
+| `packages/web_view/src/web_view/invites.gleam` | The invitation an owner's page may mint: `Role` (observer or operator, never an owner), `Invitation`, `Reason` with its fixed words, `Answer`, the control's `Share` state and `claim_ttl_ms` (one hour). |
+| `packages/web_view/src/web_view/view/share.gleam` | The invitation control in the Session pane: two buttons, or the invitation with a `<loom-copy>` box for the command and for the token. Drawn on an owner's page only; the messages its buttons send are values handed in. |
 | `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn on both pages and has no handler. |
 | `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: Stop, the goal row with its buttons, and the Fork and Set goal forms. It takes the messages its buttons send and the forms' submit handlers as values. |
 | `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |
@@ -880,8 +941,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
-| `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep. |
-| `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role, frame filtering, shutdown. |
+| `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
+| `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session ticket and the invitation the daemon makes for a page, shutdown. |
 | `packages/client/src/client/daemon/ui_relay.gleam` | The relay into the gateway, the role cap, and the four ways a page ends. |
 | `packages/tui/src/tui.gleam` (`run_view`), `packages/tui/src/tui/view_link.gleam` | `loom ui`: daemon resolution, `ui.link`, printing and opening the link. |
 | `packages/session_view/src/session_view/step.gleam`, `commands.gleam`, `operator.gleam` | The whole-event entry `step.update` the component calls, the commands it runs, and what an operator's input becomes on the wire, shared with the terminal. |
@@ -894,4 +955,6 @@ the lines a capture, a slide and a prepended page draw; `client/web_view_parity_
 checks that the component draws the lines the terminal's projection draws
 for the same capture; `client/ui_http_test`, `ui_route_test`,
 `ui_sessions_test`, `ui_socket_test`, `ui_relay_test` and
-`web_operator_page_test` cover the route's defences and the relay's ends.
+`web_operator_page_test` cover the route's defences and the relay's ends;
+`web_view/test/invite_test` and the invitation tests in `ui_route_test` cover
+the owner's control.

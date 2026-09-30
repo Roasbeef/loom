@@ -236,8 +236,57 @@ export function remove_attribute(element, name) {
   element.removeAttribute(name);
 }
 
+// The files of a `FileList`, as the change event of a file input holds them.
+export function file_list(files) {
+  return toList(Array.from(files));
+}
+
+// The files an event's clipboard holds: none for an event with no clipboard,
+// as a `paste` in a browser that withholds it is.
+export function clipboard_files(event) {
+  return toList(Array.from(event.clipboardData?.files ?? []));
+}
+
+export function file_name(file) {
+  return file.name;
+}
+
+export function file_type(file) {
+  return file.type;
+}
+
+export function file_size(file) {
+  return file.size;
+}
+
+// One read of a file as a `data:` URL, which answers `done` once with the URL
+// or with an `Error`. The URL is text the browser made from the file's bytes;
+// nothing here is put in the page.
+export function read_data_url(file, done) {
+  const reader = new FileReader();
+  reader.onload = () => done(new Ok(reader.result));
+  reader.onerror = () => done(new Error(undefined));
+  reader.readAsDataURL(file);
+}
+
 // One navigation that replaces the current history entry. The address was
 // checked in Gleam before it got here.
 export function replace_location(address) {
   window.location.replace(address);
+}
+
+// One clipboard write, with the outcome handed to `done` as a Result. The
+// browser answers after the fact, and the call throws at once when the API is
+// missing or the page is not a secure context, so both outcomes are reported
+// the same way and no exception leaves. The text was checked in Gleam
+// (`web_client/copy_rule`) before it got here.
+export function write_clipboard(text, done) {
+  try {
+    navigator.clipboard.writeText(text).then(
+      () => done(new Ok(undefined)),
+      () => done(new Error(undefined)),
+    );
+  } catch (_) {
+    done(new Error(undefined));
+  }
 }

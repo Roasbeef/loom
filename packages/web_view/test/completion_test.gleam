@@ -64,7 +64,7 @@ pub fn the_argument_rows_are_offered_test() {
 pub fn a_command_the_page_refuses_is_not_offered_test() {
   let offered = commands(completion.rows())
   list.each(
-    ["/help", "/model", "/sessions", "/add-dir", "/add-write-dir"],
+    ["/help", "/model", "/sessions", "/access", "/add-dir", "/add-write-dir"],
     fn(name) {
       assert !list.contains(offered, name)
     },
@@ -81,6 +81,14 @@ pub fn a_command_the_page_refuses_is_not_offered_test() {
     let assert Error(_) = component.page_command(command.parse(draft))
       as row.command
   })
+}
+
+// Owner administration stays in the terminal. The page refuses `/access`
+// itself, so a page an agent took has no path to the owner's overlay.
+pub fn the_page_refuses_the_owner_access_overlay_test() {
+  let assert Error(reason) = component.page_command(command.parse("/access"))
+  assert string.contains(reason, "terminal surface")
+  assert string.contains(reason, "Nothing was sent")
 }
 
 pub fn the_table_is_json_the_element_can_read_test() {

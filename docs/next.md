@@ -162,11 +162,15 @@ the terminal revamp. Remote access and trace timing do not block closing
    - **Settled strands in the Strands list.** `agent_roster` keeps only a
      count of settled strands today (design note, section 3.1), so the
      roster's shape changes, and each settled strand needs a card handler.
-   - **Share and invite from the session page.** Pages are capped below Owner
-     and inviting is an owner-only action, so this needs a narrow 051
-     addendum: shown only to the session's owner, one fixed action, observer
-     by default with a short expiry, and the claim command shown once and
-     never logged. It builds on the 053 claim flow.
+   - **Share and invite from the session page.** Built, with 051's addendum on
+     inviting from the session page: an owner's operator page has an "invite to
+     this session" control with an observer button and an operator button, a
+     claim that lives an hour, and the command and token shown once in copy
+     boxes. What a stolen owner page is worth under it is the addendum's
+     "What a stolen owner page is worth": each invitation is a durable
+     membership, three an hour for the credential, and the operator button is
+     where the worst case lives. No browser drove it, so the clipboard write
+     and the control's layout are unverified.
 2. **The terminal revamp, [#655](https://github.com/Roasbeef/loom/issues/655).**
    Starts after #569 closes. It takes the web design (A2) as its reference
    and begins with a design note and screenshots for the owner's sign-off, as

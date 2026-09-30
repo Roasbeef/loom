@@ -13,10 +13,12 @@
 import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import web_view/image
 import web_view/page
 
 /// The cookie that carries a UI session.
@@ -38,6 +40,12 @@ pub type Route {
   /// `GET /ui/p/<key>/sessions/<id>/ws`: the component's socket. `nonce`
   /// is the socket URL's `csrf-token`, the page nonce the tab kept.
   Socket(key: String, session_id: String, nonce: Option(String))
+
+  /// `GET /ui/p/<key>/sessions/<id>/image/<ref>/<position>`: one image of the
+  /// page's transcript. `ref` is a row's name and `position` an image's place
+  /// in the row (protocol-change/051, the addendum on images). Neither is
+  /// trusted: the page answers for a name and place it drew and no other.
+  Image(key: String, session_id: String, ref: String, position: Int)
 
   /// `GET /ui/assets/<name>`, for one of the fixed asset names.
   Asset(asset: Asset)
@@ -64,6 +72,11 @@ pub type Asset {
   Client
 }
 
+/// The most images one row may carry that the route will ask the page for.
+/// A person's message and a tool's result hold a handful; the bound keeps a
+/// request from naming a position no row could have.
+pub const max_position = 256
+
 /// Routes a `/ui` request; every route is a `GET`. The session ID is returned as the path gave it;
 /// the caller parses it as a canonical ID before using it.
 ///
@@ -84,6 +97,12 @@ pub fn route(request: Request(body)) -> Route {
     http.Get, ["ui", "p", key, "sessions", id] -> Page(key, id)
     http.Get, ["ui", "p", key, "sessions", id, "ws"] ->
       Socket(key, id, query(request, "csrf-token"))
+    http.Get, ["ui", "p", key, "sessions", id, "image", ref, position] ->
+      case image.plausible_ref(ref), int.parse(position) {
+        True, Ok(place) if place >= 0 && place < max_position ->
+          Image(key, id, ref, place)
+        _, _ -> Unknown
+      }
     http.Get, ["ui", "assets", name] ->
       case name {
         _ if name == page.runtime_asset -> Asset(Runtime)
@@ -167,6 +186,13 @@ pub fn exchange_allowed(request: Request(body)) -> Bool {
 /// or bookmark opened from outside a page. A missing header, `same-site`
 /// (another loopback port) or `cross-site` is refused, so no other page can
 /// put the keyed page in front of the person.
+///
+/// The image route asks the same question. The page's own `<img>` is
+/// `same-origin`, and an image opened on its own is `none`; another page's
+/// `<img src>` aimed at the daemon is `same-site` or `cross-site` and is
+/// refused, so another origin cannot have the browser fetch the person's
+/// images on its behalf (and the cookie, which is `SameSite=Strict`, would
+/// not go with it in any case).
 ///
 /// ## Examples
 ///

@@ -40,6 +40,7 @@ import session_view/composer
 import session_view/protocol
 import session_view/snapshot_view
 import session_view/tool_activity
+import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{type Line}
 import session_view/transcript_lines.{type Block}
 
@@ -143,6 +144,10 @@ pub type Item {
     /// equals `detail`, so the host draws an expander only where there is
     /// more to read.
     full: List(Line),
+    /// The images the call's result carries, in the order it returned them.
+    /// The result's rows say `[image image/png]` for each; a host that can
+    /// draw a picture draws these beneath the call (`transcript_image`).
+    images: List(Image),
   )
 }
 
@@ -288,6 +293,65 @@ pub fn pieces(
     lay_out(turn, folding)
   })
   |> list.flatten
+}
+
+/// The rows of a lane that carry images, each with the name a host gives it
+/// (`transcript_image.ref`) and its images: a person's message, a result
+/// whose call is outside the window, and a step's result.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.pictured([]) == []
+/// ```
+pub fn pictured(pieces: List(Piece)) -> List(#(String, List(Image))) {
+  pieces
+  |> list.flat_map(fn(piece) {
+    case piece {
+      Plain(block:, ..) -> [picture_row(block)]
+      Work(items:, ..) ->
+        list.map(items, fn(item) {
+          case item {
+            Narrated(block:, ..) -> picture_row(block)
+            Step(key:, images:, ..) -> #(transcript_image.ref(key), images)
+          }
+        })
+      Spawned(..)
+      | Returned(..)
+      | Nudged(..)
+      | Commentary(..)
+      | Peer(..)
+      | Missed(..) -> []
+    }
+  })
+  |> list.filter(fn(row) { row.1 != [] })
+}
+
+fn picture_row(block: Block) -> #(String, List(Image)) {
+  #(transcript_image.ref(block.key), transcript_image.of_block(block))
+}
+
+/// The image named `ref` and `index` in a lane, or `Error(Nil)` when no row
+/// the lane holds has that name or the row has fewer images. A host that
+/// serves an image asks here, so it serves only an image the lane draws.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.picture([], "7.0", 0) == Error(Nil)
+/// ```
+pub fn picture(
+  pieces: List(Piece),
+  ref: String,
+  index: Int,
+) -> Result(Image, Nil) {
+  use #(_, images) <- result.try(
+    pictured(pieces) |> list.find(fn(row) { row.0 == ref }),
+  )
+  case index >= 0 {
+    True -> list.drop(images, index) |> list.first
+    False -> Error(Nil)
+  }
 }
 
 /// The blocks of a lane split at its inputs, as `pieces` splits it into
@@ -813,6 +877,7 @@ fn step(
     summary: transcript_lines.call_summary(call),
     detail:,
     full:,
+    images: transcript_image.of_outcome(call.outcome),
   )
 }
 

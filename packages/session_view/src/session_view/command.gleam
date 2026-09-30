@@ -52,6 +52,9 @@ pub type Surface {
   /// Inspect and administer owner-granted peer links.
   PeerLinks
 
+  /// Inspect and reduce who has access to this daemon. Owner-only.
+  Access
+
   /// Choose another locally managed session.
   Sessions
 
@@ -394,6 +397,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/deny", "reject an exact displayed request", True),
     Suggestion("/steer", "inject into the live operation", True),
     Suggestion("/queue", "inspect queued inputs; /queue text adds one", False),
+    Suggestion("/access", "owner: see and reduce who has access", False),
     Suggestion("/clear", "clear this local transcript", False),
     Suggestion("/quit", "leave the client", False),
   ]
@@ -440,6 +444,7 @@ pub fn parse(input: String) -> Command {
     "/unschedule" -> Session(MissingArgument("unschedule"))
     "/agents" -> Surface(Agents)
     "/peers" -> Surface(PeerLinks)
+    "/access" -> Surface(Access)
     "/sessions" -> Surface(Sessions)
     "/rename" -> Session(MissingArgument("rename"))
     "/rename " <> rest ->
@@ -693,6 +698,7 @@ pub fn help_text() -> String {
   <> "/model <name>     switch the active strand model\n"
   <> "/agents           inspect agents and sub-agents\n"
   <> "/peers            manage directional agent links\n"
+  <> "/access           owner: see and reduce who has access\n"
   <> "/sessions         switch locally managed sessions (← on an empty prompt)\n"
   <> "/rename <name>    rename the current session\n"
   <> "/notes            refresh current agent notes\n"

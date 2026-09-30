@@ -40,10 +40,12 @@ import host/bootstrap
 import host/build_identity
 import host/claim
 import mist
+import session_view/transcript_image
 import storage/access
 import storage/catalogue
 import storage/domain
 import web_view/ending.{type Ending}
+import web_view/image
 import web_view/page
 import weft
 
@@ -78,12 +80,15 @@ pub type Ui(instance) {
     /// `session_upgrade`, it transfers the attachment's permit. The third
     /// argument answers the page's deadline while its UI session is still
     /// live, which the socket checks with every authorization and carries onto
-    /// a ticket it mints for a switch; the fourth is the page's
-    /// ceiling, which the relay caps every authorization with.
+    /// a ticket it mints for a switch; the fourth records how the page's images
+    /// are read, under the page's cookie (`ui_sessions.register_images`); the
+    /// fifth is the page's ceiling, which the relay caps every authorization
+    /// with.
     upgrade: fn(
       Request(mist.Connection),
       Attachment(instance),
       fn() -> Result(Int, Nil),
+      fn(ui_sessions.Images) -> Nil,
       access.Role,
     ) -> Response(mist.ResponseData),
   )
@@ -232,6 +237,7 @@ fn web_socket(
     Error(response) -> ui_http.secured(response, host)
     Ok(#(state, grant, cookie)) -> {
       let open = ui_sessions.open_until(ui.sessions, cookie, grant)
+      let register = ui_sessions.register_images(ui.sessions, cookie, _)
       resident_upgrade(
         config,
         request,
@@ -240,7 +246,7 @@ fn web_socket(
         id,
         PageRole(grant.ceiling),
         fn(request, attachment) {
-          ui.upgrade(request, attachment, open, grant.ceiling)
+          ui.upgrade(request, attachment, open, register, grant.ceiling)
         },
       )
     }
@@ -270,6 +276,18 @@ fn web_document(
             Error(response) -> response
             Ok(_) -> document(200, "text/html; charset=utf-8", page.shell(id))
           }
+      }
+
+    // One image of the page's transcript. It is a fetch of this origin's own
+    // (`navigation_allowed`), and it is answered only for a page that passes
+    // every check the page itself does (`page_grant`): a live UI session under
+    // this key, for this session, whose credential still authenticates and is
+    // still a member. The page's component then says whether it drew an image
+    // at that row and place; the bytes are the daemon's to check (`picture`).
+    ui_http.Image(key, id, ref, position) ->
+      case ui_http.navigation_allowed(request) {
+        False -> plain(403, "forbidden fetch")
+        True -> image_of(config, ui, request, key, id, ref, position)
       }
 
     // A ticket presented against another session's path is spent without a
@@ -352,6 +370,61 @@ fn page_grant(
     |> result.map_error(fn(_) { refused_page(403, ending.AccessRevoked, id) }),
   )
   Ok(#(state, page, cookie))
+}
+
+// The page's image at a row's name and position, for a request that already
+// passed the fetch-site check: the page grant, then the reader the page's
+// socket registered under its cookie. A page whose socket has not opened has
+// no reader and so no image.
+fn image_of(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  key: String,
+  id: String,
+  ref: String,
+  position: Int,
+) {
+  let found = {
+    use #(_, _, cookie) <- result.try(page_grant(config, ui, request, key, id))
+    ui_sessions.images(ui.sessions, cookie)
+    |> result.map(fn(read) { picture(read(ref, position)) })
+    |> result.replace_error(plain(404, "unknown image"))
+  }
+  case found {
+    Ok(answer) | Error(answer) -> answer
+  }
+}
+
+// The answer for one image the page drew, or the refusal for one it did not
+// or one the daemon will not send. `image.serve` is the check: a raster type,
+// bytes that decode, at most the terminal's limit and a magic number that
+// says the declared type. The type is the served one and the response is
+// already `nosniff`, so the browser draws what was checked and nothing it
+// might sniff from the bytes.
+fn picture(found: Result(transcript_image.Image, Nil)) {
+  let served = {
+    use held <- result.try(result.replace_error(
+      found,
+      plain(404, "unknown image"),
+    ))
+    use image.Served(mime_type:, bytes:) <- result.map(
+      image.serve(held)
+      |> result.map_error(fn(refusal) {
+        case refusal {
+          image.NotAnImage -> plain(415, "not a supported image")
+          image.TooLarge -> plain(413, "image too large")
+        }
+      }),
+    )
+    response.new(200)
+    |> response.set_header("content-type", mime_type)
+    |> response.set_header("content-disposition", "inline")
+    |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(bytes)))
+  }
+  case served {
+    Ok(answer) | Error(answer) -> answer
+  }
 }
 
 // The answer to a page request that cannot be served: the status the check
@@ -491,9 +564,14 @@ fn resident_upgrade(
         MembershipRole -> membership
         PageRole(ceiling:) -> ui_relay.capped(membership, ceiling)
       }
-      let class = case authority {
-        access.Participant(access.Observer) -> root.Observer
-        access.Owner | access.Participant(access.Operator) -> root.Operator
+      let class = case authority, role {
+        access.Participant(access.Observer), _ -> root.Observer
+        access.Owner, MembershipRole
+        | access.Participant(access.Operator), MembershipRole
+        -> root.Operator
+        access.Owner, PageRole(..)
+        | access.Participant(access.Operator), PageRole(..)
+        -> root.PageOperator
       }
       case
         upgrade_log.timed(route, "acquire", fn() {
@@ -1606,18 +1684,36 @@ fn enrollment(
     protocol.EnrollDigest(credential:) ->
       Ok(#(access.DigestEnrollment(credential), None))
     protocol.IssueClaim(ttl_ms:) -> {
-      let issued = claim.mint_token(token.production_entropy())
-      use digest <- result.try(
-        access.claim_digest(claim.digest(issued))
-        |> result.replace_error("unavailable"),
+      use #(enrollment, issued) <- result.try(
+        claim_enrollment(ttl_ms) |> result.replace_error("unavailable"),
       )
-      let expires_at_ms = bootstrap.system_time_ms() + ttl_ms
-      Ok(#(
-        access.ClaimEnrollment(digest, expires_at_ms),
-        Some(Issued(issued, ttl_ms)),
-      ))
+      Ok(#(enrollment, Some(Issued(issued, ttl_ms))))
     }
   }
+}
+
+/// Draws one claim token and the enrollment the catalogue stores for it: the
+/// token's digest and an expiry `ttl_ms` from now, as a wall-clock instant.
+/// This is the one place a claim is drawn. The control command's invitation
+/// and a page's invitation (`ui_socket.invite_for`) both come here, so a claim
+/// has the same entropy, shape and digest whichever asked. The token is the
+/// caller's alone to hand on; only the digest goes to the registry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(#(enrollment, token)) = server.claim_enrollment(3_600_000)
+/// ```
+@internal
+pub fn claim_enrollment(
+  ttl_ms: Int,
+) -> Result(#(access.Enrollment, String), Nil) {
+  let issued = claim.mint_token(token.production_entropy())
+  use digest <- result.try(
+    access.claim_digest(claim.digest(issued)) |> result.replace_error(Nil),
+  )
+  let expires_at_ms = bootstrap.system_time_ms() + ttl_ms
+  Ok(#(access.ClaimEnrollment(digest, expires_at_ms), issued))
 }
 
 // Only an explicitly successful invitation or rotation returns a claim, and

@@ -116,6 +116,7 @@ fn submit_surface(model: Model, surface: command.Surface) -> Model {
     | True, command.Strands
     | True, command.Agents
     | True, command.PeerLinks
+    | True, command.Access
     | True, command.Sessions
     | True, command.Rename(_)
     | True, command.Notes
@@ -196,6 +197,7 @@ fn surface_command(model: Model, surface: command.Surface) -> Model {
     }
     command.Strands | command.Agents -> open_agents(cleared)
     command.PeerLinks -> session_control.begin_peer_workspace(cleared)
+    command.Access -> session_control.begin_access(cleared)
     command.Sessions -> open_session_selector(cleared)
     command.Rename(name) ->
       case cleared.shared.session {

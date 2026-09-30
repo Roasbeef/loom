@@ -511,6 +511,11 @@ is 1 MiB for an operator's page, not the terminal's 32 MiB. The page sends
 Lustre events, and this milestone's largest is a text prompt. Pasted images,
 which are what need the terminal's limit, are not in this milestone.
 
+**Superseded (2026-09-29, see "Addendum: images in the transcript and the
+composer"): an operator's page socket now takes 12 MiB, which holds a draft and
+8 MiB of images.** The paragraph above is the rule as first written, kept so
+the reason for it stays findable.
+
 ### Two components, chosen by role at admission
 
 The page socket starts one of two Lustre applications. It chooses from the
@@ -649,7 +654,9 @@ script, no `unsafe-eval`) together with these rules for the view:
   `href`, `src`, `action` or `on*` value comes from the session. A path or
   URL in the transcript is drawn as text. List keys come from identities
   the daemon assigns (an escalation's ID and sequence) or from positions,
-  never from text.
+  never from text. (The one `src` the view builds, for a transcript image,
+  is made of the page's own session, the engine's name for a row and a
+  number; see "Addendum: images in the transcript and the composer".)
 - The observer's reason for having no composer is a fixed string from the
   component.
 
@@ -2714,3 +2721,646 @@ an identity, an observer page, and a saved session each refused in the reason's
 own word. No browser was in the loop: `<loom-switch>` navigating, the
 exchange landing on the new page and the layout restoring without a slide run
 only in one and were not run.
+
+
+## Addendum: images in the transcript and the composer (2026-09-29)
+
+**Status**: IMPLEMENTED in the change that adds it · **Raised by**: issue #569,
+the web UI redesign's images milestone (`docs/design-notes/web-design.md`)
+
+The wire already carries images. A user message holds `UserImage` blocks, a tool
+result holds `ToolResultImage` blocks, and the terminal attaches and sends
+them. The page drew only their `[image image/png]` text rows and could send
+none. This addendum records how the page draws them and how an operator's page
+sends them, and why the content security policy is unchanged.
+
+The change adds one route, one form field, one client element and one
+capability in the UI-session table. It adds no kind of socket event and
+changes no frozen Part-1 interface: the daemon's v2 protocol already had
+`prompt_content`, and the page sends it through the same command path as the
+terminal. Two earlier statements change, and they are named where they occur:
+the rule that no `src` comes from the session, and the operator socket's 1 MiB
+frame limit.
+
+### The transcript: an image is a same-origin fetch
+
+A row that carries images draws each raster image as a thumbnail after its
+text, on an observer's page and an operator's alike. The thumbnail is a
+`<details>` around an `<img>`. The browser opens and closes a `<details>`
+itself, so a click grows the picture and the page hears nothing: no script,
+no handler, and no new event for an observer's socket to admit.
+
+The `<img>`'s `src` is `<session>/image/<row>/<position>`, relative to the
+page's own address `/ui/p/<key>/sessions/<session>`. The page key is a secret
+the component never holds, and a relative reference resolves against the
+address the browser already has, so the browser sends the request to
+`/ui/p/<key>/sessions/<session>/image/<row>/<position>`.
+
+- **`<row>`** names the row the image belongs to: the key of the block or step
+  that `session_view/turns` gives it, digits, `.`, `~` and `-`
+  (`transcript_image.ref`). A step's key has a `/` between its block and its
+  call, which a path cannot carry, and the name has a `-` there.
+- **`<position>`** is the image's place among that row's images, from zero.
+
+**The policy is unchanged.** `img-src 'self'` has been in the policy since the
+proposal, and a request to the page's own origin is what it admits. No `data:`
+or `blob:` address is drawn, so neither is added.
+
+**A `src` now comes from the page.** The operator addendum's rule says no
+`href`, `src`, `action` or `on*` value comes from the session. The image's
+`src` is built from the page's own session identity, the engine's key for a
+row and a number. Those are the identities that rule already allows for list
+keys and handler messages. Nothing the session wrote, and no image's own
+declared type, is in it. The rule stands for every other attribute. The
+`alt` is a fixed string, and an image whose declared type is not one of the
+four raster types draws no picture and keeps its `[image <type>]` text row.
+
+### The route
+
+`GET /ui/p/<key>/sessions/<id>/image/<row>/<position>`, present only with
+`--ui`, answered in this order. Each refusal ends the request.
+
+1. **Host** is loopback, as for every `/ui` route.
+2. **Shape.** `<row>` is 1 to 48 characters of digits, `.`, `~` and `-`, and
+   `<position>` is an integer from 0 to 255. Anything else is not routed and
+   answers `404`, so no request costs the daemon a comparison against a long or
+   odd name.
+3. **Fetch site.** `Sec-Fetch-Site` is `same-origin` (the page's own `<img>`) or
+   `none` (an image opened on its own). `same-site`, `cross-site` and a missing
+   header answer `403`, so another page's `<img src>` aimed at the daemon cannot
+   have the browser fetch the person's images. The cookie is `SameSite=Strict`,
+   so it would not go with such a request either.
+4. **The page grant**, the same call the page itself makes: a live UI session
+   under this key, for the session in the path, whose credential still
+   authenticates and is still a member. `401` or `403` as for the page.
+5. **The page's reader.** The daemon asks the page's component whether it drew
+   an image at `<row>` and `<position>`. It answers `404` when no socket has
+   registered a reader for the page, when the socket's process is gone, when the
+   component does not answer within two seconds, and when the lane drew no image
+   there.
+6. **The bytes.** The daemon checks the image the component holds before it
+   answers with it (`web_view/image.serve`): the declared type is one of `image/png`,
+   `image/jpeg`, `image/gif` and `image/webp`; the base64 decodes; the size is at
+   most 20 MiB, the terminal's own image limit; and the bytes' magic number says
+   the declared type. A failure of the type, the decoding or the magic number
+   answers `415`, and a size over the limit answers `413`.
+
+A success is `200` with `Content-Type` set to the checked type and
+`Content-Disposition: inline`, and the response headers every `/ui` response
+carries: the policy, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer` and `Cache-Control: no-store`. The type is the
+checked one and `nosniff` is on, so the browser draws what the daemon checked
+and does not sniff another type from the bytes. SVG is not among the four
+because it is markup, and an image the browser rendered as a document from the
+page's own origin would run script under it.
+
+**Observer and operator.** Both roles are served. An observer's page draws
+pictures, so it must be able to fetch them, and a page reads only images its
+own component drew, which are rows of a transcript the page's role already
+reads. The route makes no check that depends on the role, and the tests show
+both.
+
+**How the daemon reaches the component.** The request arrives in an HTTP
+handler that holds the page's cookie and nothing of the component, and the
+component holds the lane whose images were drawn. The page socket registers,
+under the page's cookie in the UI-session table, a function that sends its own
+component a message (`ImageRequested`) with `lustre.dispatch`, and the handler
+reads that function back after its own checks (`ui_sessions.register_images`
+and `ui_sessions.images`). The message is a Lustre message sent from the
+daemon's side. A browser frame decodes to Lustre's own runtime messages and
+never to a component's, so no frame can produce one, which is why the observer
+component has the message and an observer's socket still admits nothing new.
+
+The component answers from the pieces it draws (`turns.picture`), so the daemon
+serves an image only where the page shows one. It reads and changes nothing. A
+registration is found only through a live UI session, is replaced by a reload's
+new socket, and is dropped by the table's sweep with the page. It costs one
+map entry and one closure per open page.
+
+### The composer: one field, in the submit event
+
+An operator's composer draws `<loom-attach name="images" limits="...">`
+(`packages/web_client`) inside its keyed editor. The element has an Attach image
+button that opens the file picker, listens for a paste into the composer's form,
+draws a chip with a Remove button for each image, and reads each file's bytes in
+the browser. It is form-associated, so it submits its images under its `name` as
+one field, a JSON array of base64 strings, in the same `submit` event as the
+draft. Nothing is submitted when it holds none. The event is the one the socket
+already admits from an operator (`operator_accepts`), so this adds no event and
+no admitted path, and no HTTP route performs a command.
+
+An image is sent as an upload route would send it, so the choice is recorded. An
+event carries it and no route does, because a route that took a body would be
+the first place a page's cookie alone could send a command, and the operator
+addendum's rule is that a command reaches the daemon only as an event on a socket
+opened with the cookie, the key and the nonce.
+
+**The limits.** They are the terminal's count and a lower byte total, bounded by
+what one frame carries:
+
+| Limit | Value |
+|---|---|
+| Images per prompt | 4, the terminal's `composer.max_image_attachments` |
+| Bytes of images per prompt, before base64 | 8 MiB (the terminal admits 20 MiB) |
+| Types | PNG, JPEG, GIF and WebP |
+| An operator page's inbound frame | 12 MiB, up from 1 MiB |
+| An observer page's inbound frame | 64 KiB, unchanged |
+
+The operator addendum said image prompts would need the frame limit raised
+under their own review, and this is that review. Eight MiB of images is 10.7 MiB
+as base64 text, and a draft of at most 256 KiB and the event's own framing come
+to less than 12 MiB. One such submit is held at once as the frame, the Lustre
+event's string, the parsed images, their decoded bytes and their canonical
+re-encoding, five copies and about 60 MiB at its peak. The operator class was
+charged 40 MiB (its 32 MiB message limit and 8 MiB of delivery), which did not
+cover that. An operator's page is therefore admitted under its own connection
+class, `PageOperator`, charged `root.operator_peak`, 64 MiB. Only page sockets
+change: an observer, the control connection, a claim and a terminal operator
+keep their classes and charges (`Operator` is still 40 MiB), and the daemon's
+default budget still holds twelve terminal operator and control pairs. The
+frame limit and the image caps are unchanged. The frame limit is per socket, so it does not raise
+the number of sockets, which the root's capacity bounds as before.
+
+**The daemon checks every image, and the browser is not trusted.**
+`web_view/image.admit` runs in `component.submit` before anything is sent:
+
+- more than 4 images, or a total over 8 MiB, is refused;
+- an image whose base64 does not decode is refused;
+- an image's type is read from its own magic number, and anything but the four
+  raster types is refused. The browser's declared type is never used. The
+  element checks the declared type, the count and the sizes first, so a file that
+  would be refused is not read into memory, but a declared type is a guess from a
+  file name and this check is the authority;
+- one bad image refuses the whole prompt with a notice, and nothing is sent;
+- the base64 sent on to the provider is the canonical encoding of the bytes that
+  were checked, and never the browser's text.
+
+The composition decoder refuses an `images` field that is not an array of
+strings, a repeated `images` field, and every other unknown field, as it did.
+Empty text with images is a prompt. A steer carries no images, as in the
+terminal, where an image is new prompt content and never live-turn steering. A
+session command with images is refused by the shared step, which has nowhere to
+put one. The page keeps no attachments between submits: each submit's images are
+set for that one step and cleared after it whatever it decided, so a refused
+submit whose element still holds its images sends them once with the next submit
+and never twice.
+
+**Per role.** An observer's page draws no `<loom-attach>`, has no `images` field
+in a form, and its socket drops every submit, so an observer sends nothing. The
+gateway refuses a mutation from an observer's binding whatever reaches it, as it
+always has.
+
+### What a stolen page is worth now
+
+An operator's page could already send any prompt. It can now send up to 8 MiB of
+images with one, which is one more thing the credential's holder could already do
+from `loom` in a terminal. An observer's page can read images it could already
+read as text rows, and the route serves an image only to a request that carries
+the page's cookie and key and a first-party fetch site, and only if the page's
+component drew it.
+
+### What was considered
+
+- **`img-src data:`, with the bytes in the page.** It loosens the policy, puts up
+  to 20 MiB per image in every patch, and makes the bytes session content in an
+  attribute. Not taken, by the standing rule.
+- **`blob:` URLs made in the browser.** It needs the bytes in the page first and
+  a script that turns them into a URL, and it loosens the policy. Not taken.
+- **An address by the image's digest.** The address would need a hash of every
+  image on every render, and a lookup by digest would let a page ask for an image
+  by content, including one it did not draw. The name of a row and a place is
+  cheaper and is what the page drew. Not taken.
+- **The daemon reads the durable store.** A resident holds the gateway's address
+  and no store handle (`serve.Resident`), and a second reader of the session's
+  database from an HTTP handler is a second owner of it. Not taken.
+- **A new v2 command that reads an entry.** It is a change to a frozen Part-1
+  interface for a read the component already holds in memory. Not taken.
+- **An upload route for the composer.** Named above. Not taken.
+- **A click handler for the thumbnail.** It would give an observer's socket a
+  second admitted path, and the browser already opens a `<details>`. Not taken.
+- **Sniffing the type from the bytes in the browser too.** It would repeat the
+  daemon's check in a second language with nothing to keep the two equal. The
+  element checks the declared type and the daemon reads the bytes. Not taken.
+
+### Cost
+
+- A page's socket registers a closure in the UI-session table, and a request for
+  an image waits up to two seconds for its component. A page with images draws
+  each thumbnail with its own request, and the browser loads them lazily.
+- The operator socket's frame limit is 12 MiB where it was 1 MiB. A page that
+  sends a frame that size holds it in memory for the duration of the decode and
+  the command, on the class's existing reservation.
+- The bytes of an attached image are in the browser's memory as base64 while the
+  draft is open, up to about 11 MiB, and in the component's for the length of one
+  submit.
+- Two pages of the same principal and session share nothing: an image is served
+  through the socket that registered for its own cookie, so a second page whose
+  socket has not opened answers `404` for every image until it does. A page has
+  one nonce per tab, so in practice a page has one socket.
+- An image the lane drew and the window then dropped answers `404`, and its
+  thumbnail is a broken image until the row leaves the page.
+- The thumbnail is a fixed size and does not show the image's own dimensions.
+- Every image fetch repeats the page grant's authentication and membership reads,
+  as every page request does; a page with many images pays that for each.
+- A reader's reply that arrives after the two-second wait is left in the asking
+  handler's mailbox until that handler ends, which is one request.
+- The daemon serves images up to 20 MiB, the terminal's limit, while the
+  composer accepts 8 MiB per prompt, so a page can show an image it could not
+  send.
+
+### Verification
+
+`image_test` (`packages/web_view`) holds the address's shape and the row name's
+character set and length, the four types drawn and SVG and HTML not, the checks
+`serve` makes (a declared type that the bytes contradict, SVG declared as an SVG
+and as a PNG, HTML declared as a GIF, text that is not base64, the largest
+admissible image served, one byte more refused after the decode, and text longer
+than any admissible image refused before it), and the checks `admit` makes for
+the composer (the count, the total, each type from its bytes, base64, and the
+canonical encoding). `image_view_test` draws a capture holding a prompt with a
+PNG, an image declared SVG and one declared with a type holding markup, and a
+tool result with a WebP: the PNG and the WebP get thumbnails whose `src` is the
+page's own address on both pages, the others keep their escaped text rows, no
+`data:` or `blob:` appears, and the component answers for an image it drew and
+for no other, through the observer's message and the operator's.
+`turns_test` covers the rows that carry images and the lookup.
+`operator_page_test` sends an image prompt as `prompt_content` with the image
+block, an image alone as a prompt, and refuses HTML that claims to be an image,
+text that is not base64, a fifth image, a steer with an image and a slash
+command with one, each with its notice, shows a refused submit leaves no
+attachment behind, refuses each malformed `images` field, and shows the operator's
+composer draws `<loom-attach>` in its form with the daemon's limits while an
+observer's page does not. `attach_test` (`packages/web_client`) holds the
+element's rules under Node. `ui_http_test` holds the route's shape.
+`ui_sessions_test` holds the registry: found through a live page, per page,
+replaced by a reload, absent for a cookie that names no live page and for a page
+that ended. `ui_route_test`, on a real listener, shows an image served with the
+view's headers, for an observer's page and an operator's, `404` before the page's
+socket has opened, no reading through another page's reader, `415` and `413` for
+what the daemon will not send, the malformed shapes not routed, and a refusal
+without the page's own cookie, key and session, from a foreign host, from a
+`same-site` or `cross-site` fetch, after the page expired, and after the
+credential was revoked. `ui_socket_test` shows both roles' components answering
+the daemon's question and a reader answering at once once its socket is gone, and
+that the operator's frame holds a full prompt of images.
+
+No browser was in the loop. Thumbnails drawing and growing on a click, the file
+picker, a paste of an image, the chips, the form-associated field reaching the
+server in a submit, and a 10 MiB frame crossing a real socket run only in one and
+were not run.
+
+## Addendum: inviting from the session page (2026-09-29)
+
+**Status**: ACCEPTED under the owner's request of 2026-09-28 on issue #569
+("share/invite from the session page"), and IMPLEMENTED in the same change ·
+**Raised by**: issue #569 · **Builds on**:
+[053](053-owner-admin-and-claims.md), step 1 (the claim flow), and the addenda
+above on operators acting from the page and on several pages per principal
+
+An owner's page gains one control, "invite to this session". It makes the
+same invitation `loomd access invite` makes, and shows the claim token and the
+command the invitee runs, once. Inviting is an owner-only control action and a
+page never carries owner authority, so this addendum records the one fixed
+path by which a page now reaches it, who sees it, what it can be made to do,
+and what a stolen page is worth as a result.
+
+The change adds no HTTP route, no kind of socket event and no frozen
+interface. It adds one field on `component.Transport` (`invite`), one event
+path (`component.invite_path`), one admission rule in `ui_socket`, one
+allowance in the ticket table (`ui_sessions.reserve_invite`), and one client
+element (`<loom-copy>`). Part 1 is unchanged: the daemon runs the
+`sessions.invite` of 053 through its manager, and the page only asks for it.
+
+**This narrows two sentences of 053 for the session page, and no more.** 053
+says an admin page "has no path to a grant" and that a claim "never travels
+through a Loom session or page". Those describe the admin page of 053's
+phase 4, which is not built and is not changed here. The session page now has
+exactly one path to a grant, this one, and the claim it mints passes through
+that owner's own page and nowhere else it did not before: not the session's
+transcript, not another viewer's page, not a log and not a URL.
+
+### Who sees it
+
+A page draws the control and holds the capability behind it only when both
+hold:
+
+- **Its principal is the daemon's owner.** The router read the principal when
+  it authenticated the page's credential (`Attachment.principal.kind` is
+  `OwnerPrincipal`). The daemon decides this. The page carries no claim about
+  who it is.
+- **Its role is operator.** The role is the smallest of the membership, the
+  ceiling and Operator, as before, so an owner sees the control only on a page
+  opened with `loom --ui --operate`. An owner who opened an observer's page has
+  none. A page never carries `Owner`, and this addendum does not change that:
+  `ui_socket.Role` gains a third value, `Owning`, which is a fact about the
+  principal of an operator's page and no grant of authority.
+
+An observer's page, a member operator's page, and an owner's observer page
+never see or can send it. Five layers keep it so, and each alone is enough to
+refuse the request:
+
+1. `Transport.invite` is `None` unless the page is `Owning`
+   (`ui_socket.upgrade` builds the capability, and `admit` puts it in the
+   transport). The component draws nothing and ignores the message
+   when it holds no capability (`component.invite`).
+2. The observer's component has no message that asks and its view draws no
+   control, whatever its transport holds.
+3. `ui_socket.operator_accepts`, the socket of a member operator's page, drops
+   a click at `component.invite_path` and beneath it, alone or in a batch.
+   `ui_socket.owner_accepts`, the owner's socket, is the only one that admits
+   it. The observer's socket admits no click there either.
+4. `ui_socket.invite_for` reads the page's principal again and refuses a
+   member (`NotOwner`), and refuses a page that ended but whose socket is
+   still up.
+5. `manager.administer` authenticates the credential and the daemon epoch a
+   second time and requires the owner, in the same dispatch as the mutation.
+   It is the last word on who may.
+
+### What the event carries
+
+The control is the third child of the Session pane (`view/session_tab`), so its
+handlers are at `component.invite_path`, `0\t3\t2\t2`, and beneath it. There
+are three buttons and no field, so the browser has nothing to send but a click
+at a path the server drew:
+
+- **Invite an observer** and **Invite an operator** send
+  `operator_page.Inviting(role)`. The role is the message's, fixed when the
+  tree was drawn. `invites.Role` has two values, `Observer` and `Operator`.
+  There is no owner role to name.
+- **Hide the token** sends `operator_page.Dismissing`.
+
+The daemon's answer reaches the component as `component.Invited`, dispatched
+from the component's own process. No handler carries it, so a browser cannot
+send one and cannot place a token in the page. An answer that arrives when no
+request is out is dropped.
+
+### The one fixed action
+
+The action is "invite to this session", and it takes no other parameters:
+
+- **The session** is the page's own. A page cannot invite into another
+  session.
+- **The role** is the button's: observer first, and operator as a second,
+  labelled button.
+- **The principal** is chosen by the daemon: `guest-` and eight hexadecimal
+  digits from the daemon's entropy, named `Guest ` and the same digits. The
+  owner learns it from the invitation and uses it to revoke.
+- **The lifetime** is one hour (`invites.claim_ttl_ms`). 053's default is a
+  day and allows five minutes to a week. An hour is long enough to paste the
+  command and the token into a message and for the person to read it between
+  other things, and short enough that a token left in a chat window, a
+  clipboard history or a scrollback is dead before the day ends. An owner whose
+  invitee missed the hour presses the button again, which costs one of the
+  credential's invitations (below).
+- **The claim** is drawn by `server.claim_enrollment`, the one place a claim
+  is drawn. `sessions.invite` on the control endpoint calls the same function,
+  so a page's claim has the entropy, shape and digest of any other.
+
+The daemon refuses with a reason, and the page words each in a fixed sentence
+(`invites.reason_words`) that holds nothing from the daemon or the session:
+
+| Reason | Cause |
+|---|---|
+| `NotOwner` | The principal is not the owner, or the page has ended. |
+| `TooMany` | The credential has used its invitations for the hour (below). |
+| `NotIsolated` | The session still shares its history with its workspace. Isolating a session needs it stopped (`manager.isolate`), so a page, which is attached to a running session, can invite only into one that was isolated and resumed. |
+| `Unavailable` | The daemon could not answer or record the invitation. |
+
+### What the page shows, and where the claim lives
+
+The invitation replaces the buttons and shows, in fixed words and the daemon's
+values: the role, the principal, the lifetime, the command, the token, and
+what to do next. The words say to send both over a channel outside Loom, never
+through the session, because text sent there becomes transcript the agent can
+read and use first (053, "Claim tokens"). They say to ask the invitee for the
+credential fingerprint `loom claim` prints, and to compare it before relying on
+the new member, because the page cannot see a credential that has not been
+bound yet. They give `loomd access revoke-credentials PRINCIPAL` to void an
+unused claim. The command and the token are each in a `<loom-copy>` box with a
+Copy button.
+
+The command is `loom claim --addr ws://<Host>/v2/control`. The control
+command's reply carries the claim and its lifetime and not `claim_command`,
+which `loomd access` builds itself, so the daemon builds it here from the
+request's `Host`, which the router already required to be a loopback name
+(`ui_socket.claim_address`; `localhost` is written `127.0.0.1` because `loom
+claim` refuses `ws` to any other host, and `claim.remote_address` checks the
+result). It therefore works on the machine that runs the daemon, which the page
+says. A daemon reached through a TLS proxy would need the proxy's address in
+the command, which the daemon does not know and a `Host` header the router
+refused cannot supply. That is issue #654's, not this change's.
+
+The token exists in these places and no others:
+
+- the daemon's reply, in the component's process;
+- the component's state, `View.share = Showing`, from the answer until the owner
+  presses Hide, which replaces the state;
+- the browser's copy of the page, as the `text` attribute of one `<loom-copy>`
+  element, and the owner's clipboard once they press Copy.
+
+It is not logged: nothing on this path writes a log line, and `upgrade_log`
+carries only fixed words. It is not stored: the catalogue holds its digest
+(`the_claim_redeems_and_only_its_digest_is_kept_test` reads every file under
+the state root for the token and finds none). It is not in a URL: it travels
+in a socket frame to the one browser. It is not in the session: the invitation
+touches the component's view state and never the lane, the shared record, the
+outbox or the gateway (`another_page_never_holds_the_invitation_test`). And it
+is on no other viewer's page, because each page is its own component and
+nothing is published to the session.
+
+Two exposures remain and are not removable from here. The system clipboard
+keeps what the owner copied until something replaces it, and a page cannot
+clear it. And an OTP crash report of the component or the Lustre runtime while
+the invitation shows would write the state to `daemon.log`, which 053 accepts
+for the control handler in the same words: the claim is single use and lives an
+hour.
+
+`Transport.invite` runs in the component's process, and `manager.administer`
+waits up to five seconds. That blocks the page's runtime for as long as the
+daemon takes, as `Transport.open` and `Transport.sessions` do, and
+`docs/lustre.md`'s checklist prefers a relay process for blocking work. The
+call is one registry dispatch, a press is rare and is refused while one is
+out, so the addendum follows the switching precedent and does not add a
+process.
+
+### Limits
+
+`ui_sessions.invite_limit` is three invitations for each credential in any one
+hour (`invite_window_ms`, the claim's own lifetime). The count is kept in the
+ticket table, keyed by the credential's fingerprint and not by any page, so
+that a reload, a second page or a switch to another session does not reset
+it: a program holding a page's secrets could otherwise open a new page for each
+three and mint without bound. One reservation is one message, so two pages
+asking at once cannot both take the last place. A refusal that minted nothing
+gives its place back. An unknown outcome (the registry did not answer, so a
+principal may have been made) keeps it spent. One page can therefore mint
+three an hour and at most 24 in the eight hours a page lives, and the control
+shows at most one invitation at a time: a press while one is out or on screen
+is ignored, so one press mints at most one.
+
+A daemon restart resets the allowance. That is acceptable because every page
+cookie and ticket lives in the same actor and dies with it, so no page
+survives to spend a fresh count.
+
+An owner who needs more invites from a terminal with `loomd access invite`,
+which has no such limit and is not a page.
+
+### Why a page may now reach an owner-only action
+
+The control command needs the owner's credential, and a page already holds its
+principal's credential digest: the relay attaches with it and the gateway
+re-authenticates it on every frame. The daemon runs the invitation with that
+digest through `manager.administer`, so the authority a page uses here is the
+authority its credential already had, exercised through the path the owner's
+own `loomd access` uses. The page adds no role and no ceiling. Its role stays
+Operator, the gateway sees nothing of the invitation, and every other page is
+unchanged.
+
+What changes is where the action can be started from. 053 declined to build a
+page that grants, because a grant outlives the page. This addendum builds one,
+on the owner's request, and narrows it as far as the request allows: one
+fixed action, for the page's own session, observer first, with a short life, a
+count kept for the credential, and a claim that is shown once. It is opt-in in
+the way operator pages are: it exists only on a page opened with `--operate` by
+the owner.
+
+### What a stolen owner page is worth
+
+The page is worth what any operator page is worth (051, the operator
+addendum), for up to eight hours or until the credential is revoked or the
+principal's standing changes. To take it, a program needs the cookie, the page
+key and the nonce, and the page must be an owner's operator page. With it the
+program could already send prompts that run tools and answer approvals.
+
+The new worth is durable. Each invitation is a principal with a membership
+that outlives the page. A program that mints an observer invitation and
+redeems it on `/v2/claim`, which the agent's tools can reach on loopback unless
+the session runs with `--network off`, holds a read-only credential until the
+owner notices. One that mints an operator invitation holds an operator
+credential, and can send prompts and answer the session's escalations after
+the stolen page has closed. This is the case 053 named in its argument
+against an owner page that can invite: the session's agent takes the page,
+invites a principal it controls as an operator of its own session, claims it,
+and answers its own escalations from then on.
+
+The design does not remove that. It bounds it: three invitations an hour for
+the credential and 24 in a page's life, an hour for a claim to be redeemed,
+membership in the page's own session only, and no reach to the owner's other
+sessions or to owner authority. It also makes the invitations findable: each
+principal is named `guest-` and its digits, and the owner can revoke it with
+`loomd access revoke-credentials`. The owner sees nothing on the page itself
+when a program mints one, and the listing that would show every principal
+(`principals.list`, 053 step 2) is not built yet.
+
+The owner's choices that shrink the exposure are the ones that were already
+theirs: to open an owner's page without `--operate`, which has no control, and
+to run the session with `--network off`. The operator button is a second,
+labelled button and could be removed in a later change without touching the
+rest, which leaves a stolen page able to mint only read-only invitations. That
+is the owner's call, and this addendum records that the button is where the
+worst case lives.
+
+### What was considered
+
+- **The page renders the `loomd access invite` line and never mints.** It is
+  053's own fourth option for grants, and it keeps a stolen page to reductions.
+  The owner asked for the page to show the claim itself, so this was not taken.
+  It stays available as the smaller change if the owner withdraws the request.
+- **A separate owner-grade page with its own ticket table, cookie and 15
+  minute life (053 phase 4).** A heavier build for a page that grants, and it
+  would not change what one stolen page can mint. Not taken.
+- **A proposal on the page confirmed in the terminal.** 053 rejected it
+  because an agent holding the page could lodge a proposal and then ask the
+  owner to confirm it. Not taken.
+- **Widening a page's ceiling to Owner.** It would give a page every owner
+  action and end the cap this whole series rests on. Not taken.
+- **A count kept for the page.** A reload, a second page or a switch would
+  each start it again. Kept for the credential instead.
+- **053's default of a day.** A token that sits in a chat log for a day works
+  for a day. One hour.
+- **Letting the owner choose the name, the principal or the lifetime.** Each is
+  a field a stolen page could fill and a decoder to keep total. None is needed
+  for the action the owner asked for. Not taken.
+- **Reading the text for `<loom-copy>` from its children.** Then the copy would
+  run after the next paint, outside the press's own turn, where some browsers
+  refuse the clipboard. The text is an attribute, which the element checks
+  against the exact shape for its subject (a command that is `loom claim
+  --addr` and an address made of address characters, a token that is
+  `loomclaim_` and 64 hexadecimal digits) and refuses anything else, including
+  a newline, which a terminal would run on paste.
+- **A relay process for the blocking call.** See above. Not taken.
+
+### Cost
+
+- A page can, for an owner, start a grant. The durable worst case above is
+  the price, and it is the owner's to accept, which is what the request was.
+- The page holds a claim token in its state while an invitation shows. The
+  clipboard and a crash report are the two copies the daemon cannot clear.
+- `manager.administer` blocks the owner's page for up to five seconds.
+- A session must already be isolated and running. The page says how to
+  isolate one and does not do it.
+- The command names a loopback address, so an invitee on another machine needs
+  the address of the proxy until #654 lands.
+- Each invitation is a principal that stays in the catalogue, revoked or not.
+  Three an hour is the bound, and the listing that would show them is step 2 of
+  053.
+- One more socket admission rule, one more transport field and a fifth layer
+  to keep in step.
+
+### Verification
+
+`invite_test` (`packages/web_view`) draws an owner's page and shows the control
+inside the Session pane, that its two buttons are the only handlers beneath
+`component.invite_path`, that a page with no capability draws nothing and
+asks nothing whatever message reaches it, that the observer's view draws none
+even with a capability in its transport, that each button sends its own role
+once, that a second press while a request is out or an invitation is showing
+mints nothing, that the invitation shows the command and the token once each and
+the words for handing them over, that hiding it removes the token from the page
+and from the component's state, that a refusal is worded in its own fixed
+sentence and can be tried again, that an unrequested answer is dropped, and
+that another page of the same session holds nothing of it.
+`ui_socket_test` shows the owner's socket admitting a click at the path and
+beneath it and the member operator's socket dropping it, alone and in a batch,
+while admitting its neighbours, and a forged click at the path on a member
+operator's page redrawing nothing. `ui_sessions_test` shows the allowance: the
+limit, the rolling hour, the release, concurrent reservations, and the sweep.
+`ui_route_test`, on a real listener and registry, shows an owner's operator
+page inviting into its own session and no other with a claim that lives an
+hour and a command naming the loopback address, the operator role reaching the
+catalogue, which pages the capability is given to (an owner's observer page, a
+member operator and a member observer get none), the daemon refusing a member
+that reaches it anyway, an ended page inviting nobody, a session that is not
+shared refused without spending an invitation, the limit holding across pages of
+one credential, and the claim redeeming once and no file under the state root
+holding the token or the invitee's credential. `copy_test`
+(`packages/web_client`) holds the two shapes `<loom-copy>` copies and the
+refusal of anything else.
+
+Mutations, each applied alone and reverted, each fail a named test: the
+member's socket admits the invitation path
+(`only_an_owners_socket_admits_the_invitation_click_test`); a member
+operator's page is given the capability
+(`only_an_owners_operator_page_is_offered_the_capability_test`, which pins
+`role_of`, since the route tests replace `upgrade` with a stub; the choice of
+capability from the role is `invite_capability`, pinned by
+`only_an_owning_page_is_handed_the_capability_test`); the allowance
+is skipped (`the_limit_is_the_credentials_across_pages_test`); the release of
+a reservation does nothing
+(`a_session_that_is_not_shared_is_refused_and_costs_nothing_test`);
+the component takes an answer nobody asked for
+(`an_unrequested_answer_is_dropped_test`); hiding leaves the token in the state
+(`hiding_the_invitation_drops_the_token_test`); the copy rule accepts a newline
+(`anything_else_is_not_copyable_as_a_command_test`).
+
+Layers 4 and 5 of "Who sees it" are redundant on purpose. The route test
+`the_daemon_refuses_a_member_that_reaches_it_anyway_test` pins their combined
+outcome and would pass with either removed, because `manager.administer`
+refuses the same request with the same reason.
+`the_principal_check_refuses_a_member_on_its_own_test` pins layer 4 alone: it
+calls `may_invite`, which reaches neither the allowance nor the manager, with
+a member, and would get `Unavailable` if the check were removed.
+
+No browser was in the loop. The clipboard write, the control's layout in the
+Session pane, and the copy box's look in both themes run only in one and were
+not run.

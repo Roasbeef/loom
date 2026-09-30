@@ -7,17 +7,21 @@
 //// and a submit and nothing else.
 
 import client/daemon/manager
+import client/daemon/root
 import client/daemon/ui_relay
 import client/daemon/ui_socket
 import gleam/erlang/process
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
+import host/bootstrap
 import session_view/snapshot
 import storage/access
 import storage/catalogue
 import web_view/component
+import web_view/image
+import web_view/invites
 import web_view/sessions
 
 // A page whose transport never opens: what is under test is which
@@ -35,6 +39,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       now: fn() { 0 },
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
+      invite: None,
     ),
   )
 }
@@ -48,8 +53,7 @@ fn mounted(page: ui_socket.Page) -> String {
 }
 
 pub fn an_observer_gets_the_observers_page_test() {
-  let assert Ok(page) =
-    ui_socket.start_page(access.Participant(access.Observer), start())
+  let assert Ok(page) = ui_socket.start_page(ui_socket.Observing, start())
     as "the observer's page starts"
   let tree = mounted(page)
   assert string.contains(tree, "observer-bar")
@@ -66,8 +70,8 @@ pub fn an_observer_gets_the_observers_page_test() {
 }
 
 pub fn an_operator_gets_the_operators_page_test() {
-  list.each([access.Participant(access.Operator), access.Owner], fn(authority) {
-    let assert Ok(page) = ui_socket.start_page(authority, start())
+  list.each([ui_socket.Operating, ui_socket.Owning], fn(role) {
+    let assert Ok(page) = ui_socket.start_page(role, start())
       as "the operator's page starts"
     let tree = mounted(page)
     assert string.contains(tree, "composer")
@@ -218,6 +222,91 @@ pub fn an_operator_socket_accepts_only_its_two_events_test() {
   )
 }
 
+// A click at `path` on the page.
+fn click_on(path: String) -> String {
+  "{\"kind\":1,\"path\":"
+  <> json.to_string(json.string(path))
+  <> ",\"name\":\"click\",\"event\":{}}"
+}
+
+// Protocol-change/051, the addendum on inviting from the session page: only
+// an owner's socket admits a click at or beneath the invitation control's
+// path. A member operator's socket drops it, alone or inside a batch, and
+// still admits the same click anywhere else, so the sidebar's buttons and the
+// approval cards are unaffected.
+pub fn only_an_owners_socket_admits_the_invitation_click_test() {
+  let at = component.invite_path
+  let beneath = at <> "\t1"
+  list.each([at, beneath, at <> "\t2\t0"], fn(path) {
+    assert ui_socket.owner_accepts(click_on(path))
+    assert !ui_socket.operator_accepts(click_on(path))
+    assert !ui_socket.observer_accepts(click_on(path))
+    assert !ui_socket.operator_accepts(
+      "{\"kind\":3,\"messages\":["
+      <> click_on(component.sidebar_path <> "\t0")
+      <> ","
+      <> click_on(path)
+      <> "]}",
+    )
+    assert ui_socket.owner_accepts(
+      "{\"kind\":3,\"messages\":["
+      <> click_on(component.sidebar_path <> "\t0")
+      <> ","
+      <> click_on(path)
+      <> "]}",
+    )
+  })
+
+  // Neighbours of the path are not the control: the pane's title, its list, a
+  // sibling pane and a path that only begins with the same digits.
+  list.each(
+    [
+      "0\t3\t2\t0",
+      "0\t3\t2\t1",
+      "0\t3\t1\t2",
+      "0\t3\t2\t20",
+      component.sidebar_path <> "\t2",
+    ],
+    fn(path) {
+      assert ui_socket.operator_accepts(click_on(path))
+    },
+  )
+}
+
+// The owner's socket takes the same two events and no more: a key, an input
+// or a frame of another kind is dropped there too.
+pub fn an_owners_socket_takes_no_more_than_the_operators_events_test() {
+  assert ui_socket.owner_accepts("{\"kind\":1,\"name\":\"click\"}")
+  assert ui_socket.owner_accepts("{\"kind\":1,\"name\":\"submit\"}")
+  list.each(
+    [
+      "{\"kind\":1,\"name\":\"keydown\"}",
+      "{\"kind\":1,\"name\":\"input\"}",
+      "{\"kind\":3,\"messages\":[]}",
+      "{\"kind\":2,\"name\":\"value\"}",
+      "not json",
+    ],
+    fn(frame) {
+      assert !ui_socket.owner_accepts(frame)
+    },
+  )
+}
+
+// A forged click at the control's path on a member operator's page is dropped
+// before the component sees it, so nothing is redrawn.
+pub fn a_member_operators_page_drops_the_invitation_click_test() {
+  let assert Ok(page) = ui_socket.start_page(ui_socket.Operating, start())
+    as "the member operator's page starts"
+  let _ = mounted(page)
+  page.forward(
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(component.invite_path <> "\t0"))
+    <> ",\"name\":\"click\",\"event\":{}}",
+  )
+  assert process.selector_receive(page.frames, 200) == Error(Nil)
+  page.shutdown()
+}
+
 fn view(status: manager.Status) -> manager.View {
   manager.View(
     registration: catalogue.Registration(
@@ -354,4 +443,112 @@ pub fn only_an_operators_page_may_ask_for_a_ticket_test() {
   assert ui_socket.opened_for(ui_socket.Operating, ask)
     == sessions.Ticketed("/ui/sessions/x?ticket=y")
   assert process.receive(asked, 0) == Ok(Nil)
+}
+
+// Protocol-change/051, the addendum on images: each page's socket holds the
+// one way its images are read, a question sent to its own component from the
+// daemon's side. Both roles' components answer it, and a lane that drew
+// nothing answers that it drew nothing, at once and not after the wait.
+pub fn both_roles_answer_for_an_image_the_page_never_drew_test() {
+  list.each(
+    [ui_socket.Observing, ui_socket.Operating, ui_socket.Owning],
+    fn(role) {
+      let assert Ok(page) = ui_socket.start_page(role, start())
+        as "the page starts"
+      let _ = mounted(page)
+      let before = bootstrap.monotonic_time_ms()
+      assert page.images("1.0", 0) == Error(Nil)
+      assert page.images("", -1) == Error(Nil)
+      assert bootstrap.monotonic_time_ms() - before < 1000
+      page.shutdown()
+    },
+  )
+}
+
+// A socket that has ended answers no request, and does not make the asking
+// handler wait for a component that is gone.
+pub fn a_reader_answers_nothing_once_its_socket_has_ended_test() {
+  let started = process.new_subject()
+  let owner =
+    process.spawn(fn() {
+      let assert Ok(page) = ui_socket.start_page(ui_socket.Observing, start())
+        as "the page starts"
+      let ended = process.new_subject()
+      process.send(started, #(page.images, ended))
+      let assert Ok(Nil) = process.receive(ended, 5000) as "told to end"
+      Nil
+    })
+  let monitor = process.monitor(owner)
+  let assert Ok(#(images, ended)) = process.receive(started, 2000)
+    as "the reader and the way to end its owner"
+  assert images("1.0", 0) == Error(Nil)
+  process.send(ended, Nil)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "the owner ends"
+  let before = bootstrap.monotonic_time_ms()
+  assert images("1.0", 0) == Error(Nil)
+  assert bootstrap.monotonic_time_ms() - before < 500
+}
+
+// Protocol-change/051, the addendum on images: an operator's frame holds the
+// largest submit the page allows, a full draft with the images `admit` takes
+// at their base64 size, and is still under the terminal's limit and the class
+// the permit is charged for. An observer's frame limit is unchanged.
+pub fn an_operators_frame_holds_a_full_prompt_of_images_test() {
+  let encoded = image.max_attached_bytes / 3 * 4 + 4
+  let quoting = image.max_attached * 4
+  assert encoded + quoting + component.prompt_limit + 4096
+    < ui_socket.operator_frame_limit
+  assert ui_socket.operator_frame_limit < root.message_limit(root.Operator)
+  assert ui_socket.operator_frame_limit == root.message_limit(root.PageOperator)
+  assert root.message_limit(root.Observer) == 65_536
+}
+
+// The operator class is charged for the peak of one submit of a full frame:
+// the frame, the event string, the parsed images, the decoded bytes and the
+// re-encoding, five copies. The other classes keep their own charge.
+pub fn an_operators_charge_covers_a_submits_peak_test() {
+  assert root.charge(root.PageOperator) >= 5 * ui_socket.operator_frame_limit
+  assert root.charge(root.PageOperator) == root.operator_peak
+  assert root.charge(root.Observer) == 65_536 + 8_388_608
+  assert root.charge(root.Operator) == 33_554_432 + 8_388_608
+  assert root.charge(root.Control) == 65_536
+}
+
+// Layer 4 alone: with a member's principal, an open page and no known address,
+// `may_invite` says `NotOwner`. Without its principal check it would fall
+// through to the address and say `Unavailable`. Neither the allowance nor the
+// manager is reachable from it.
+pub fn the_principal_check_refuses_a_member_on_its_own_test() {
+  let member =
+    access.Principal(
+      id: "guest",
+      display_name: "Guest",
+      kind: access.MemberPrincipal,
+    )
+  let owner =
+    access.Principal(
+      id: "o",
+      display_name: "Owner",
+      kind: access.OwnerPrincipal,
+    )
+  assert ui_socket.may_invite(fn() { Ok(0) }, member, Error(Nil))
+    == Error(invites.NotOwner)
+  assert ui_socket.may_invite(fn() { Ok(0) }, owner, Error(Nil))
+    == Error(invites.Unavailable)
+  assert ui_socket.may_invite(fn() { Ok(0) }, owner, Ok("ws://a"))
+    == Ok("ws://a")
+  assert ui_socket.may_invite(fn() { Error(Nil) }, owner, Ok("ws://a"))
+    == Error(invites.NotOwner)
+}
+
+// The capability is handed to an owner's page and to no other.
+pub fn only_an_owning_page_is_handed_the_capability_test() {
+  let ask = fn(_) { invites.Declined(invites.Unavailable) }
+  assert ui_socket.invite_capability(ui_socket.Observing, ask) == None
+  assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
+  let assert Some(_) = ui_socket.invite_capability(ui_socket.Owning, ask)
 }

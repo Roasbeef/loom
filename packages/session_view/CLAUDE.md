@@ -186,6 +186,17 @@ for a host with no surfaces.
   `thoughts` by row key; both are empty when the expansion equals the compact
   rows, so no piece holds uncapped text. `grouped` skips them. The terminal
   does not call `turns`.
+- `transcript_image`: the images a lane row carries, which the rows draw as
+  `[image <type>]` text. `Image(mime_type, data)` holds the entry's own base64
+  text (nothing is copied). `of_entry`, `of_message`, `of_outcome` and
+  `of_block` read a user message's `UserImage` blocks or a tool result's
+  `ToolResultImage` blocks, and `ref(key)` names a row as one path segment (a
+  step key's `/` becomes `-`). `turns.Step` carries `images`, `turns.pictured`
+  lists the rows that carry any by name and `turns.picture(pieces, ref,
+  position)` finds one, so a host that serves an image serves only one the lane
+  draws. `pasted_image.media_type` (PNG, JPEG, GIF or WebP by magic number, the
+  terminal's own sniff, which `tui/image_drop` delegates to) and
+  `pasted_image.is_raster` are the allowlist both hosts share.
 - `agent_view.Row`, `agent_activity` and `reviewer_status`: each strand's
   status, task, activity and approvals from one capture, shared by the
   terminal's agent rail and strip and the web view's chips.

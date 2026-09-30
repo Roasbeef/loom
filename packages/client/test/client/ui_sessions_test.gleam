@@ -11,6 +11,7 @@ import gleam/list
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import session_view/transcript_image
 import storage/access
 
 type Clock {
@@ -376,4 +377,169 @@ pub fn a_ticket_for_another_session_is_spent_and_inserts_nothing_test() {
   assert looked_up(sessions, held.cookie) == Ok(grant("s1"))
   assert ui_sessions.redeem(sessions, other, "s2")
     == Error(ui_sessions.UnknownTicket)
+}
+
+// --- the readers of a page's images ----------------------------------------
+
+// A reader that answers every request with one image, so a test can tell
+// which reader it was handed by what it answers.
+fn reader(data: String) -> ui_sessions.Images {
+  fn(_, _) { Ok(transcript_image.Image("image/png", data)) }
+}
+
+fn answer(images: ui_sessions.Images) -> Result(String, Nil) {
+  images("1.0", 0) |> result.map(fn(image) { image.data })
+}
+
+fn read(sessions, cookie) -> Result(String, Nil) {
+  ui_sessions.images(sessions, cookie) |> result.try(answer)
+}
+
+fn live_page(sessions, session) -> ui_sessions.Redeemed {
+  let assert Ok(redeemed) =
+    ui_sessions.redeem(sessions, mint(sessions, session), session)
+    as "a page is live"
+  redeemed
+}
+
+pub fn a_reader_is_found_through_its_live_page_test() {
+  let sessions = table(clock())
+  let page = live_page(sessions, "s1")
+  assert read(sessions, page.cookie) == Error(Nil)
+  ui_sessions.register_images(sessions, page.cookie, reader("one"))
+  assert read(sessions, page.cookie) == Ok("one")
+  assert read(sessions, "not-a-cookie") == Error(Nil)
+}
+
+pub fn each_page_has_its_own_reader_and_a_new_socket_replaces_it_test() {
+  let sessions = table(clock())
+  let first = live_page(sessions, "s1")
+  let second = live_page(sessions, "s1")
+  ui_sessions.register_images(sessions, first.cookie, reader("first"))
+  ui_sessions.register_images(sessions, second.cookie, reader("second"))
+  assert read(sessions, first.cookie) == Ok("first")
+  assert read(sessions, second.cookie) == Ok("second")
+
+  // A reload opens a new socket for the same page, which replaces the reader
+  // the old socket left and leaves the other page's alone.
+  ui_sessions.register_images(sessions, first.cookie, reader("reloaded"))
+  assert read(sessions, first.cookie) == Ok("reloaded")
+  assert read(sessions, second.cookie) == Ok("second")
+}
+
+pub fn a_cookie_that_names_no_live_page_leaves_no_reader_test() {
+  let time = clock()
+  let sessions = table(time)
+  let page = live_page(sessions, "s1")
+  ui_sessions.register_images(sessions, "not-a-cookie", reader("stray"))
+  assert read(sessions, "not-a-cookie") == Error(Nil)
+
+  // A page that has ended is not read through, and a socket that registers
+  // after its page ended leaves nothing behind.
+  ui_sessions.register_images(sessions, page.cookie, reader("live"))
+  assert read(sessions, page.cookie) == Ok("live")
+  process.send(time, Advance(28_800_000))
+  assert read(sessions, page.cookie) == Error(Nil)
+  ui_sessions.register_images(sessions, page.cookie, reader("late"))
+  assert read(sessions, page.cookie) == Error(Nil)
+}
+
+pub fn a_sweep_does_not_end_a_live_pages_reader_test() {
+  let time = clock()
+  let sessions = table(time)
+  let page = live_page(sessions, "s1")
+  ui_sessions.register_images(sessions, page.cookie, reader("kept"))
+  process.send(time, Advance(60_000))
+  ui_sessions.sweep(sessions)
+  assert read(sessions, page.cookie) == Ok("kept")
+}
+
+// A credential's digest for the allowance's tests, distinct per letter.
+fn credential(letter: String) -> access.Digest {
+  let assert Ok(digest) = access.credential_digest(string.repeat(letter, 64))
+    as "the fixture digest is valid"
+  digest
+}
+
+// The allowance is counted for a credential: `invite_limit` reservations are
+// granted and the next is refused, whichever page asks, and another
+// credential's count is its own.
+pub fn a_credential_may_reserve_only_the_invite_limit_test() {
+  let sessions = table(clock())
+  let owner = credential("a")
+  list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
+    assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  })
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  assert ui_sessions.reserve_invite(sessions, credential("c")) == Ok(Nil)
+}
+
+// The window rolls: a place is free again an hour after it was taken, and not
+// a moment before, so a stolen page cannot mint faster than the limit.
+pub fn a_reservation_frees_an_hour_after_it_was_taken_test() {
+  let time = clock()
+  let sessions = table(time)
+  let owner = credential("a")
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  process.send(time, Advance(1_800_000))
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+
+  // The first reservation leaves the window at one hour.
+  process.send(time, Advance(1_799_999))
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  process.send(time, Advance(1))
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+}
+
+// An invitation that minted nothing gives its place back.
+pub fn a_released_reservation_is_free_again_test() {
+  let sessions = table(clock())
+  let owner = credential("a")
+  list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
+    assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  })
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+  ui_sessions.release_invite(sessions, owner)
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  assert ui_sessions.reserve_invite(sessions, owner) == Error(Nil)
+
+  // Releasing a credential that holds nothing is harmless.
+  ui_sessions.release_invite(sessions, credential("d"))
+  assert ui_sessions.reserve_invite(sessions, credential("d")) == Ok(Nil)
+}
+
+// Many pages asking at once cannot take more than the limit between them:
+// the count and the taking are one message.
+pub fn concurrent_reservations_never_exceed_the_limit_test() {
+  let sessions = table(clock())
+  let owner = credential("a")
+  let results = process.new_subject()
+  list.each(list.repeat(Nil, 20), fn(_) {
+    process.spawn(fn() {
+      process.send(results, ui_sessions.reserve_invite(sessions, owner))
+    })
+  })
+  let outcomes =
+    list.map(list.repeat(Nil, 20), fn(_) {
+      let assert Ok(outcome) = process.receive(results, 5000)
+        as "every reservation answers"
+      outcome
+    })
+  assert list.count(outcomes, fn(outcome) { outcome == Ok(Nil) })
+    == ui_sessions.invite_limit
+}
+
+// The sweep reclaims a credential whose reservations all aged out.
+pub fn the_sweep_drops_aged_reservations_test() {
+  let time = clock()
+  let sessions = table(time)
+  let owner = credential("a")
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
+  process.send(time, Advance(ui_sessions.invite_window_ms + 1))
+  ui_sessions.sweep(sessions)
+  assert ui_sessions.reserve_invite(sessions, owner) == Ok(Nil)
 }

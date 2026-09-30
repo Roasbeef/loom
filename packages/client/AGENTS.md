@@ -97,14 +97,28 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   digests in an opaque `Page`. `keyed` and `admits` compare a presented
   key or nonce by digest in constant time. `still_open` is the check an
   open page runs with every frame. `actor.periodic` sweeps; every read
-  checks the deadline itself.
+  checks the deadline itself. It also holds each page's reader of its images
+  (`register_images`, `images`; protocol-change/051, the addendum on images):
+  the page socket registers, under the page's cookie, a function that asks its
+  own component, and the image route reads it back. It is found only through a
+  live UI session, is replaced by a reload's new socket, and is dropped by the
+  sweep with the page.
+  The same actor keeps the page-minted
+  invitations' allowance: `reserve_invite` and `release_invite`, keyed by the
+  credential's fingerprint and not by any page, at most `invite_limit` (three)
+  in any `invite_window_ms` (an hour, the claim's own lifetime), counted and
+  taken in one message.
 - `daemon/ui_http`: pure checks. `route` (the exchange at
   `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
   its socket at `.../ws` with the `csrf-token` query, and five assets),
   `loopback_host`, `exchange_allowed` and `navigation_allowed`
   (`Sec-Fetch-Site` is `none` or `same-origin`), `origin_matches`, the
   `loom_ui` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/ui/p/<key>`) and
-  `secured`, whose `Referrer-Policy: no-referrer` is load-bearing.
+  `secured`, whose `Referrer-Policy: no-referrer` is load-bearing. `route`
+  also routes `Image(key, id, ref, position)` for
+  `/ui/p/<key>/sessions/<id>/image/<ref>/<position>` (a name of digits, `.`,
+  `~` and `-` up to 48 characters, and a position below `max_position`;
+  anything else is `Unknown`).
 - `daemon/ui_assets`: the page's stylesheet, bootstrap scripts and client
   components' bundle (from `web_view`'s `priv/static`, `page.static_file`,
   built from `web_client` by `make gen-client`) and Lustre's client runtime
@@ -119,7 +133,13 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   goes through `resident_upgrade` with `PageRole(ceiling)`, which caps the
   attachment's authority with `ui_relay.capped` and admits it with that
   role's parser permit. `UiLink` mints a ticket for a member of the
-  session.
+  session. The image route (`web_document`'s `Image` arm) requires a fetch
+  site of `same-origin` or `none`, then `page_grant`, then the page's registered
+  reader, and answers what `web_view/image.serve` allows: 200 with the checked
+  type and the view's headers, 404 for an image the page did not draw or a page
+  with no reader, 415 for a type or bytes that are not a raster image and 413 for
+  one over 20 MiB. `Ui.upgrade` takes the registration function as its fourth
+  argument, ahead of the ceiling.
 - `daemon/upgrade_log`: the record of an upgrade the daemon itself slowed
   or refused. `server` times each root and registry question on the way to
   an upgrade (`ready`, `authenticate`, `session_authority`, `get`,
@@ -144,7 +164,12 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   protocol-change/051, the addendum on history paging); an operator's
   forwards only the
   click and submit events its page attaches (`operator_accepts`) and takes
-  frames up to `operator_frame_limit` (1 MiB). It closes on the relay's
+  frames up to `operator_frame_limit` (12 MiB, which holds a draft and 8 MiB of
+  images at their base64 size; an operator's page is admitted as
+  `root.PageOperator`, charged `root.operator_peak`, 64 MiB, for a submit's five-copy peak; an observer's stays 64 KiB). It registers the page's image reader with
+  `register` when its component starts (`Page.images`: a `lustre.dispatch` of
+  `ImageRequested`, answered on the asking handler's subject within two
+  seconds, and refused at once when the socket's process is gone). It closes on the relay's
   `Ended`, with the close code `web_view/ending.close` gives that reason (1000
   after a quarter second for an ending the person resolves, 4000, through
   `mist.stop_abnormal`, for one that may clear), and shuts the component down
@@ -167,6 +192,23 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   Unavailable)`). `observer_accepts` still drops a click beneath
   `component.sidebar_path`; `operator_accepts` admits any click, as before.
   `ui.link` and a switch build the exchange path with `page.exchange_path`.
+  An owner's operator page can also invite (protocol-change/051, the addendum
+  on inviting from the session page). `ui_socket.Role` has a third value,
+  `Owning`, an operator's page whose principal is the daemon's owner
+  (`role_of(attachment)`, from `Attachment.principal.kind`, never from the
+  page), and `upgrade` builds a `Transport.invite` for that page only (and `admit` puts it in the transport), which calls
+  `invite_for(attachment, tickets, open, address, role)`: the page must still
+  be open, the principal must be the owner, the claim address must be known
+  (`claim_address(request)`, `ws://` and the loopback `Host` and
+  `/v2/control`, `localhost` written `127.0.0.1`), the credential must have an
+  invitation left (`ui_sessions.reserve_invite`), and then
+  `manager.administer` runs `manager.Invite` for a `guest-` principal in the
+  page's own session with a claim from `server.claim_enrollment` that lives
+  `invites.claim_ttl_ms`. A refusal that made nothing gives the reservation
+  back and an unknown outcome keeps it. The socket's admission is split:
+  `operator_accepts` drops a click at or beneath `component.invite_path`,
+  `owner_accepts` admits it, and the observer's socket admits neither.
+  `start_page` takes the `Role`.
 - `daemon/ui_relay`: the page's stand-in for a session socket. `start`
   returns before the attach, which runs as the relay's first message and
   answers on the component's `opened` subject, so a slow gateway cannot

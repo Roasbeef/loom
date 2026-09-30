@@ -162,3 +162,41 @@ pub fn every_ui_response_carries_the_policy_test() {
   assert response.get_header(secured, "referrer-policy") == Ok("no-referrer")
   assert response.get_header(secured, "cache-control") == Ok("no-store")
 }
+
+// The image route is a keyed path with a row's name and a place, and only a
+// name and place of the right shape is routed at all.
+pub fn an_image_is_a_keyed_get_with_a_named_row_and_a_place_test() {
+  assert ui_http.route(get("/ui/p/k1/sessions/abc/image/7.0/0", []))
+    == ui_http.Image("k1", "abc", "7.0", 0)
+  assert ui_http.route(get("/ui/p/k1/sessions/abc/image/7.0-2/3", []))
+    == ui_http.Image("k1", "abc", "7.0-2", 3)
+  assert ui_http.route(
+      request.new()
+      |> request.set_method(http.Post)
+      |> request.set_path("/ui/p/k1/sessions/abc/image/7.0/0"),
+    )
+    == ui_http.Unknown
+}
+
+pub fn a_name_or_place_of_the_wrong_shape_is_not_routed_test() {
+  let at = fn(ref, place) {
+    ui_http.route(get("/ui/p/k/sessions/s/image/" <> ref <> "/" <> place, []))
+  }
+  assert at("7.0", "-1") == ui_http.Unknown
+  assert at("7.0", "x") == ui_http.Unknown
+  assert at("7.0", "1.5") == ui_http.Unknown
+  assert at("7.0", "") == ui_http.Unknown
+  assert at("7.0", "256") == ui_http.Unknown
+  assert at("7.0", "255") == ui_http.Image("k", "s", "7.0", 255)
+  assert at("..", "0") == ui_http.Unknown
+  assert at("a", "0") == ui_http.Unknown
+  assert at("7.0%2F2", "0") == ui_http.Unknown
+  assert at(string.repeat("1", 49), "0") == ui_http.Unknown
+  assert at(string.repeat("1", 48), "0")
+    == ui_http.Image("k", "s", string.repeat("1", 48), 0)
+  assert ui_http.route(get("/ui/p/k/sessions/s/image/7.0", []))
+    == ui_http.Unknown
+  assert ui_http.route(get("/ui/p/k/sessions/s/image/7.0/0/x", []))
+    == ui_http.Unknown
+  assert ui_http.route(get("/ui/sessions/s/image/7.0/0", [])) == ui_http.Unknown
+}
