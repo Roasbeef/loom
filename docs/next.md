@@ -6,6 +6,17 @@ on 2026-09-30. Tracker state was read with `gh` the same day. Every claim
 below was checked against that tree or that tracker; a claim that could not be
 checked says so.
 
+## Background watcher lifetime work
+
+The background-watch-lifecycle branch is based on `01f14ef8f` after #667.
+Protocol-change/057 adds an explicitly approved session lifetime for Bash and
+code-mode background jobs, retaining finite defaults. It also fixes cancellation
+grace measured from a stale timestamp before a quiet receive. The installed
+`loom-herdr-update` session still runs its earlier release and finite jobs;
+this branch does not upgrade that daemon or replay its watcher commands.
+Local validation and independent review are recorded in the PR, with hosted
+signoff required before landing.
+
 ## What the previous edition got wrong
 
 The previous edition was pinned to `3088ee3ce`, before the last three lanes of

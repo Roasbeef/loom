@@ -4743,3 +4743,16 @@ session and strand. Admission proves neither consumption nor a model read.
 Protocol 056 records the public capability expansion and checkpoint policy.
 The production next-request regression proves that queued local and remote
 bodies appear in the first request after the current whole tool batch completes.
+
+## Explicit session-lifetime background jobs
+
+Protocol-change/057 records the lifetime contract. Finite jobs retain their
+existing default and fixed deadline. Bash `mode: "background", lifetime:
+"session"` and `cap/job.start_for_session` explicitly request no wall deadline.
+Code-mode callers declare `permissions.wall_s: 0`; the launching action must
+receive the missing wall grant before execution, and the job captures it.
+Zero job wall/deadline denotes this authorized lifetime. Clearance and drain
+remain bounded, other resource limits remain active, and session shutdown,
+owner kill or originating-operation abort cancels the execution. Quiet waiting
+has no completion or heartbeat wake unless the caller explicitly asks for the
+existing idle heartbeat. A VM restart loses the job and never replays it.
