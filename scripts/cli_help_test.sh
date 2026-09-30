@@ -109,6 +109,9 @@ run_help loom "usage: loom replay" help replay
 run_help loom "usage: loom sessions" sessions --help
 run_help loom "usage: loom sessions" sessions -h
 run_help loom "usage: loom sessions" help sessions
+run_help loom "usage: loom access" access --help
+run_help loom "usage: loom access" access -h
+run_help loom "usage: loom access" help access
 run_help loom "usage: loom ext" ext --help
 cp "$scratch/loom.stdout" "$scratch/loom-ext.stdout"
 LOOM_SERVER="$scratch/no-loomd" run_help loom "usage: loom ext" ext --help
