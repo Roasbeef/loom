@@ -813,7 +813,13 @@ boundaries and the split's measurements under Invariants.
   sends and refuses outright when standard input is not a terminal, unless
   `--yes` was given. `ClaimAccess` and `Enroll` are `loom claim` and `loom
   enroll` (protocol-change/053), which hand their arguments to `tui/claim`
-  and install no terminal state. `Remote`'s bearer comes from
+  and install no terminal state. `Access` is `loom access`
+  (protocol-change/053 phase 2): `tui/access` hands its arguments to
+  `host/access`, which `loomd access` runs too, so both print the same lines.
+  It also installs no terminal state; it is the owner's command, run against
+  the local daemon or, with `--addr` and `--token-file`, a remote one, and its
+  `--help` is answered only when `access` is the first word (it is also a
+  plausible session or display name). `Remote`'s bearer comes from
   `launch_token`: `--token-file` is read through
   `host/bootstrap.read_private_bounded`, which refuses a link, another user's
   file and a group- or world-readable file, and both `--token-file` and

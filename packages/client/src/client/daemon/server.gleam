@@ -33,6 +33,7 @@ import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/pair
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -1024,6 +1025,8 @@ fn control(
             | protocol.UnlinkPeers(..)
             | protocol.SendPeer(..)
             | protocol.Status
+            | protocol.ListPrincipals(_)
+            | protocol.PrincipalMemberships(..)
             | protocol.UiLink(..)
             | protocol.ListSessions(..)
             | protocol.SessionActivity(..)
@@ -1062,6 +1065,8 @@ fn control(
 fn control_use(command: protocol.Command) {
   case command {
     protocol.Status
+    | protocol.ListPrincipals(_)
+    | protocol.PrincipalMemberships(..)
     | protocol.UiLink(..)
     | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
@@ -1354,6 +1359,52 @@ fn dispatch_class(
         "credentials.revoke",
         None,
       )
+    protocol.ListPrincipals(after) -> {
+      use Nil <- result.try(owner(principal))
+      use page <- result.try(
+        manager.principal_page(
+          state.registry,
+          digest,
+          after:,
+          now_ms: bootstrap.system_time_ms(),
+        )
+        |> result.map_error(admin_error_code),
+      )
+      let rows =
+        list.map(page.entries, fn(row) {
+          #(row.principal.id, listing_json(row))
+        })
+      use #(bounded, more) <- result.try(bounded_rows(rows, page.remainder))
+      Ok(#(
+        "principals.list",
+        json.Object(list.append(
+          [#("principals", json.Array(list.map(bounded, pair.second)))],
+          next_field(bounded, more),
+        )),
+      ))
+    }
+    protocol.PrincipalMemberships(id, after) -> {
+      use Nil <- result.try(owner(principal))
+      use page <- result.try(
+        manager.membership_page(state.registry, digest, id, after:)
+        |> result.map_error(admin_error_code),
+      )
+      let rows =
+        list.map(page.entries, fn(row) {
+          #(row.session_id, membership_json(row))
+        })
+      use #(bounded, more) <- result.try(bounded_rows(rows, page.remainder))
+      Ok(#(
+        "principals.memberships",
+        json.Object(list.append(
+          [
+            #("principal_id", json.String(id)),
+            #("memberships", json.Array(list.map(bounded, pair.second))),
+          ],
+          next_field(bounded, more),
+        )),
+      ))
+    }
     protocol.Status -> {
       use summary <- result.try(
         manager.summary(state.registry) |> result.map_error(error_code),
@@ -1680,6 +1731,101 @@ fn page_prefix(views: List(manager.View), remaining: Int, accumulated) {
       }
     }
   }
+}
+
+// Keeps the longest prefix of the listing rows that fits the 60,000-byte
+// page budget, always ending on a whole row so the next request can resume
+// after the last row emitted. A row cut off by the budget makes the page
+// incomplete exactly as a row cut off by the storage limit does. A first row
+// that alone exceeds the budget is refused rather than skipped, as in
+// `page_prefix`; principal and session rows are far smaller than the budget,
+// so that refusal is unreachable with the bounds the catalogue enforces.
+fn bounded_rows(
+  rows: List(#(String, JsonValue)),
+  remainder: access.Remainder,
+) -> Result(#(List(#(String, JsonValue)), access.Remainder), String) {
+  bounded_rows_loop(rows, 60_000, [], remainder)
+}
+
+fn bounded_rows_loop(rows, remaining, accumulated, remainder) {
+  case rows {
+    [] -> Ok(#(list.reverse(accumulated), remainder))
+    [#(_, value) as row, ..rest] -> {
+      let bytes = json.to_string(value) |> string.byte_size
+      case bytes <= remaining, accumulated {
+        True, _ ->
+          bounded_rows_loop(
+            rest,
+            remaining - bytes - 1,
+            [row, ..accumulated],
+            remainder,
+          )
+        False, [] -> Error("metadata_too_large")
+        False, [_, ..] -> Ok(#(list.reverse(accumulated), access.Remaining))
+      }
+    }
+  }
+}
+
+// `next` appears only when another page follows, and names the last row of
+// this one.
+fn next_field(rows: List(#(String, JsonValue)), remainder: access.Remainder) {
+  case remainder, list.last(rows) {
+    access.Remaining, Ok(#(id, _)) -> [#("next", json.String(id))]
+    access.Remaining, Error(Nil) | access.Exhausted, _ -> []
+  }
+}
+
+// One principal as the owner's listing shows it. The credential is a fingerprint
+// and a lifetime, never a bearer or a claim: neither is stored in a form this
+// function could read.
+fn listing_json(row: access.Listing) -> JsonValue {
+  let kind = case row.principal.kind {
+    access.OwnerPrincipal -> "owner"
+    access.MemberPrincipal -> "member"
+  }
+  json.Object([
+    #("principal_id", json.String(row.principal.id)),
+    #("name", json.String(row.principal.display_name)),
+    #("kind", json.String(kind)),
+    #("credential", credential_json(row.credential)),
+  ])
+}
+
+fn credential_json(summary: access.CredentialSummary) -> JsonValue {
+  case summary {
+    access.CredentialActive(fingerprint:, claimed_at_ms: None) ->
+      json.Object([
+        #("state", json.String("active")),
+        #("fingerprint", json.String(fingerprint)),
+      ])
+    access.CredentialActive(fingerprint:, claimed_at_ms: Some(claimed)) ->
+      json.Object([
+        #("state", json.String("active")),
+        #("fingerprint", json.String(fingerprint)),
+        #("claimed_at_ms", json.Int(claimed)),
+      ])
+    access.CredentialClaimOpen(expires_in_ms:) ->
+      json.Object([
+        #("state", json.String("claim_open")),
+        #("expires_in_ms", json.Int(expires_in_ms)),
+      ])
+    access.CredentialClaimExpired ->
+      json.Object([#("state", json.String("claim_expired"))])
+    access.CredentialNone -> json.Object([#("state", json.String("none"))])
+  }
+}
+
+fn membership_json(row: access.MembershipEntry) -> JsonValue {
+  let role = case row.role {
+    access.Operator -> "operator"
+    access.Observer -> "observer"
+  }
+  json.Object([
+    #("session_id", json.String(row.session_id)),
+    #("name", json.String(row.name)),
+    #("role", json.String(role)),
+  ])
 }
 
 pub fn view_json(view: manager.View) -> JsonValue {

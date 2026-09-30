@@ -51,3 +51,23 @@ SELECT digest FROM access_credentials WHERE principal_id = ? AND state = 'active
 
 -- name: ClaimMemberships :many
 SELECT session_id, role FROM access_memberships WHERE principal_id = ? ORDER BY session_id LIMIT 16;
+
+-- name: PrincipalListing :many
+SELECT principal_id, display_name, kind FROM access_principals WHERE principal_id > ? ORDER BY principal_id LIMIT 101;
+
+-- name: PrincipalActiveCredential :many
+SELECT c.digest, k.claimed_at_ms FROM access_credentials AS c
+LEFT JOIN access_claims AS k ON k.credential_digest = c.digest
+WHERE c.principal_id = ? AND c.state = 'active'
+ORDER BY c.digest LIMIT 1;
+
+-- name: PrincipalOpenClaim :many
+SELECT expires_at_ms FROM access_claims WHERE principal_id = ? AND state = 'open' LIMIT 1;
+
+-- name: PrincipalMemberships :many
+SELECT m.session_id, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, m.role
+FROM access_memberships AS m
+JOIN catalogue_sessions AS s ON s.session_id = m.session_id
+LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
+WHERE m.principal_id = ? AND m.session_id > ?
+ORDER BY m.session_id LIMIT 101;

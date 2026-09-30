@@ -176,6 +176,16 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   assert field(reply, "claim_command")
     == json.String("loom claim --addr " <> address)
 
+  // The owner's listing shows the open claim and prints neither the claim
+  // nor any credential.
+  let #(listed, before_claim) =
+    access_output(server, directory, paths, ["list"])
+  assert listed == 0
+  assert string.contains(before_claim, "\"principal_id\":\"alice\"")
+  assert string.contains(before_claim, "\"state\":\"claim_open\"")
+  assert !string.contains(before_claim, issued)
+  assert !string.contains(before_claim, "loomclaim_")
+
   // The invitee claims with its own state directory; the credential it
   // stores attaches to the session as an operator.
   let assert Ok(remote) =
@@ -193,6 +203,18 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   assert string.contains(response, "101 Switching Protocols")
   let begin = wire.subscribe(socket, 1, session, within_ms: wire_read_ms)
   assert field(field(begin, "body"), "role") == json.String("operator")
+
+  // After the claim the listing shows the credential's fingerprint and when
+  // the claim was redeemed, and still not the credential.
+  let #(relisted, after_claim) =
+    access_output(server, directory, paths, ["list"])
+  assert relisted == 0
+  assert string.contains(after_claim, "\"claimed_at_ms\":")
+  assert string.contains(
+    after_claim,
+    "\"fingerprint\":\"" <> claimed.fingerprint <> "\"",
+  )
+  assert !string.contains(after_claim, credential)
 
   // The spent claim buys nothing: another credential is refused, and the
   // claim string is not a bearer.
@@ -329,6 +351,24 @@ fn access(
       }
     })
   #(status, result.unwrap(reply, json.Null))
+}
+
+// The same command, answering its exit status and its whole standard output,
+// for a command that prints more than one line.
+fn access_output(
+  server: String,
+  directory: String,
+  paths: endpoint.Paths,
+  arguments: List(String),
+) -> #(Int, String) {
+  let assert Ok(result) =
+    ffi_proc.run(
+      server,
+      ["access", "--state-dir", paths.root, ..arguments],
+      in: directory,
+    )
+    as "the shipped access command runs"
+  result
 }
 
 // Reads frames until a close frame or TCP close; a pushed text frame before

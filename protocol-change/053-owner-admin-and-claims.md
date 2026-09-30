@@ -1,7 +1,8 @@
 # protocol-change/053: claim tokens, `loom access`, and an owner's admin view
 
-**Status**: ACCEPTED 2026-09-27 (owner); step 1, the claim flow, is
-implemented ("Step 1 as built" below) · **Affects**: Part 1.6 client
+**Status**: ACCEPTED 2026-09-27 (owner); step 1, the claim flow, and step 2,
+`loom access` and the listing, are implemented ("Step 1 as built" and "Step 2
+as built" below) · **Affects**: Part 1.6 client
 protocol (a `/v2/claim` route; the `sessions.invite`, `credentials.rotate`
 and `credentials.revoke` replies or semantics; new control commands; in
 later phases, `/ui/admin` routes) and the `access` command lines of `loomd`
@@ -756,7 +757,8 @@ already omits the six administration commands
 
 Each phase ships on its own and leaves the tree consistent. The owner
 accepted this proposal on 2026-09-27 and asked for phase 1 to be built
-first; phases 2 to 4 wait for their own go-ahead.
+first; phases 2 to 4 wait for their own go-ahead. The owner gave phase 2's on
+2026-09-29; phases 3 and 4 still wait.
 
 1. **Claims.** The `access_claims` table and the version 4 migration; the
    new `sessions.invite`, `credentials.rotate` and `credentials.revoke`;
@@ -931,6 +933,89 @@ not check an item yet, it did this:
   step 2; step 1 records `claimed_at_ms` and a test reads it from the row. The
   drive through a real TLS proxy was not run; the end-to-end drive used the
   daemon's loopback listener with `ws://`.
+
+## Step 2 as built
+
+Step 2 follows "`loom access`" and "Listing principals" above. The owner gave
+the go-ahead on 2026-09-29. Where the code had to choose, it chose the
+narrower, owner-only option:
+
+- **Only `loom access` reaches a remote daemon.** `loomd access` takes
+  `--state-dir` and nothing else: given `--addr` or `--token-file` it refuses
+  and names `loom access`. Both binaries call the one module, `host/access`,
+  and differ only in that option and in the program name in the usage line.
+  `--addr` and `--token-file` are required together and exclude `--state-dir`.
+  The address passes `claim.remote_address`, the rule `loom claim` uses, so
+  `ws` works only to a literal loopback address.
+- **The daemon's own decoder stays in `loomd`.** `host/access` checks what it
+  can name (identifiers, roles, canonical session IDs, `--ttl`, addresses, a
+  digest's shape) and `loomd` additionally refuses anything
+  `client/daemon/protocol.decode` refuses, before connecting, as it did
+  before. `loom access` leaves the rest to the daemon's `bad_request`, as the
+  proposal says.
+- **A remote command adopts the hello's epoch.** A local command has the
+  epoch from the endpoint record and requires the daemon's `hello` to match
+  it. A remote command has no earlier source, so it fences its mutations with
+  the epoch the authenticated connection announces. The owner token is what
+  authenticates that connection; the epoch only stops a request from meeting a
+  different daemon lifetime than the one whose state the caller read a moment
+  before, which a single connection cannot do.
+- **`list` and `show` print one page and the cursor.** They do not follow
+  `next` themselves. The last line is `{"next":CURSOR}` when another page
+  exists, and the owner passes it back with `--after`. A script that wants
+  every row loops on that line.
+- **The reads carry no `epoch`.** The bodies in "Listing principals" have
+  none, so neither command fences on one. Both are `ControlRead`, which keeps
+  them available on an existing socket during a drain, as `sessions.list` is.
+- **Refusal precedes judgment.** A member is refused `forbidden` before the
+  request's parameters are looked at, so a member cannot tell a real principal
+  from an unknown one. The registry authenticates the owner again in its own
+  dispatch, like every administration, so a credential revoked a moment ago
+  reads nothing.
+- **A page is cut on a whole row.** A page holds at most 100 rows and at most
+  60,000 bytes of them. A row that would cross either limit is the first row
+  of the next page, and `next` is the last row emitted. A single row larger
+  than the budget cannot occur under the catalogue's own bounds (128-byte IDs,
+  256-byte names) and would be refused as `metadata_too_large`.
+- **The owner is listed.** Its row has `kind: "owner"` and an `active`
+  credential with a fingerprint and no `claimed_at_ms`. Its principal ID is
+  `"owner-"` followed by 64 random hexadecimal characters, 70 characters in
+  all, chosen at first start. That is an identity and not a credential, but it
+  contains the one 64-character hexadecimal run in a listing, so the test for
+  "no 64-character credential" sets it aside by name.
+- **`principals.memberships` lists every session the principal holds,
+  archived ones included,** with the session's current display name, since it
+  is the owner's view of grants and an archived session still holds them.
+- **Credential state is partly read without an index.** An open claim is found
+  through `access_one_open_claim`, which is indexed by principal. Two lookups
+  are not: `access_credentials` by `principal_id`, and the left join on
+  `access_claims.credential_digest`. Each listed principal therefore costs a
+  scan of those tables, and a page of up to 100 principals runs up to about 200
+  such scans synchronously inside the registry actor. That actor also answers
+  `manager.authenticate` for every socket frame, so a very large principal
+  table stalls other registry calls for the length of a page. The tables hold
+  one row per enrollment, so an index and a catalogue version 5 are deferred;
+  revisit if a daemon ever has thousands of members.
+- **The client re-encodes every row.** `loom access` prints a listing row from
+  checked fields: a fingerprint must be exactly 16 lowercase hexadecimal
+  characters, a state must be one of the four, and a row that fails its check
+  fails the whole reply rather than printing the rows before it.
+- **The owner token file.** `--token-file` is read through
+  `read_private_bounded` (a link, another user's file, or a group- or
+  world-readable file is refused), trimmed of a trailing newline, and must be
+  64 lowercase hexadecimal characters. A file holding a claim token is refused
+  with a sentence that names the mistake and does not repeat the token.
+- **`loom access --help` answers only in first position** (or after `help`),
+  because `access` is also a plausible session or display name.
+
+Two things in "Verification required" are still not met. The drive of the
+claim flow through a real TLS proxy, from step 1, was not run: this step's
+tests use the daemon's loopback listener, with `ws://` where a remote address is
+involved, so the `wss` path of `loom access --addr` is checked only up to the
+address rule and the token-file reads. And `loomd access X` against `loom
+access X` was compared in-process, against a real listener with a published
+endpoint record and through `--addr` with a token file, and not between the
+two shipped executables, which the local signoff is the place to run.
 
 ## Open
 

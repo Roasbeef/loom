@@ -77,6 +77,7 @@ import session_view/transcript_line.{
   Assistant, Line, Reasoning, System, ToolResult,
 }
 import session_view/worktree_view
+import tui/access as access_command
 import tui/admission
 import tui/agent_strip
 import tui/appearance
@@ -168,6 +169,11 @@ type Launch {
   // opens one short socket to `/v2/claim`, and enroll opens none.
   ClaimAccess(arguments: List(String))
   Enroll(arguments: List(String))
+
+  // `loom access …` is the owner's side: the same commands as `loomd access`,
+  // from the client shipment, against the local daemon or, with `--addr` and
+  // `--token-file`, a remote one. It installs no terminal state either.
+  Access(arguments: List(String))
 
   // `loom sessions …` installs no terminal state either. It reaches the
   // control endpoint as the owner over the same bootstrap ladder the picker
@@ -270,6 +276,7 @@ pub fn main() {
         | ["sessions", ..]
         | ["claim", ..]
         | ["enroll", ..]
+        | ["access", ..]
         | ["ui", ..]
         | ["--ui", ..]
         | ["update", ..]
@@ -289,6 +296,7 @@ pub fn main() {
         Sessions(options:, command:) -> run_sessions(options, command)
         ClaimAccess(arguments:) -> claim.claim_main(arguments)
         Enroll(arguments:) -> claim.enroll_main(arguments)
+        Access(arguments:) -> access_command.main(arguments)
         View(request:) -> run_view(request)
         Invalid(reason) -> rejected_launch(reason)
         Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
@@ -370,16 +378,26 @@ fn help_for(arguments: List(String)) -> Option(String) {
   case asks {
     False -> None
     True ->
-      case list.find(arguments, is_topic) {
-        Ok("replay") -> Some(replay_usage())
-        Ok("sessions") -> Some(sessions_usage())
-        Ok("claim") | Ok("enroll") -> Some(claim.usage)
-        Ok("ext") -> Some(extension_usage())
-        Ok("update") -> Some(update_options.usage())
-        Ok("version") -> Some(version_usage())
-        Ok("ui") | Ok("--ui") -> Some(ui_usage())
-        Ok(_other) | Error(Nil) -> Some(launch_usage())
+      case arguments {
+        // `access` is a topic only in first position, or after `help`. It is
+        // also a plausible session name or principal display name, so
+        // finding it anywhere would steal `--help` from another command.
+        ["access", ..] | ["help", "access", ..] -> Some(access_command.usage())
+        _ -> help_topic(arguments)
       }
+  }
+}
+
+fn help_topic(arguments: List(String)) -> Option(String) {
+  case list.find(arguments, is_topic) {
+    Ok("replay") -> Some(replay_usage())
+    Ok("sessions") -> Some(sessions_usage())
+    Ok("claim") | Ok("enroll") -> Some(claim.usage)
+    Ok("ext") -> Some(extension_usage())
+    Ok("update") -> Some(update_options.usage())
+    Ok("version") -> Some(version_usage())
+    Ok("ui") | Ok("--ui") -> Some(ui_usage())
+    Ok(_other) | Error(Nil) -> Some(launch_usage())
   }
 }
 
@@ -706,6 +724,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Sessions(..)
     | ClaimAccess(..)
     | Enroll(..)
+    | Access(..)
     | View(..)
     | Demo -> base
     Local(options, selected) -> {
@@ -885,6 +904,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["sessions", ..rest] -> parse_sessions(rest)
     ["claim", ..rest] -> ClaimAccess(arguments: rest)
     ["enroll", ..rest] -> Enroll(arguments: rest)
+    ["access", ..rest] -> Access(arguments: rest)
 
     // `--ui` is the web view command's older spelling, kept so existing
     // scripts keep working. It is looked for anywhere rather than only first,
@@ -1530,6 +1550,9 @@ fn launch_usage() -> String {
   <> "                      unless --operate, which lets an operator act.\n"
   <> "                      --open also opens it in the default browser.\n"
   <> "                      --ui is still accepted as another spelling.\n"
+  <> "  access <command>    Owner access: list, show, invite, rotate, revoke.\n"
+  <> "                      Runs against the local daemon, or a remote one\n"
+  <> "                      with --addr and --token-file.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
