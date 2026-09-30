@@ -86,9 +86,39 @@ All fourteen assertions pass on the changed source under Git 2.55 with no skips.
 The full client gate also passed under Git 2.55: 2,398 tests, formatting and
 warning-free compilation. The documentation check exited zero.
 The sandbox grants, production error classification and test deadlines remain
-unchanged. Independent review found no additional affected assertion. Require
-hosted macOS and actual Linux enforcement checks at the correction's published
-head; the preceding macOS aggregate gate remains red.
+unchanged. Independent review found no additional affected assertion.
+Published correction head `314c3071c` passed its required Linux gate. Its actual
+Linux jail ran all fourteen observations under Git 2.55 with eleven enforcement
+layers active and zero skips, and its terminal-observation skip census was clean.
+
+That head's macOS run passed multiplayer, then failed the shipped-confinement
+turn at `daemon_shipped_confinement_test.gleam:353` before reaching the corrected
+Git fixture. The interval between the token tool-use and final-text provider
+announcements was 7.887702 seconds; the final announcement preceded the original
+eight-second UI timeout by only 32.902 ms. That interval includes transport,
+durable transitions, tool execution and the next provider request, so it cannot
+be attributed to shell execution from the uploaded evidence. Five fresh local
+runs of the original confinement fixture passed. Neither this timeout nor the
+earlier multiplayer timeout has an established source cause.
+
+Diagnostic commit `759ab088d` uses the existing terminal recorder in those two
+fixtures, with unique session/role paths. Their assertions and deadlines remain
+identical. `LOOM_TEST_TIMING=1` adds a second stock OTP handler only to the private
+shipped daemon launcher; it retains UTC event timestamps and existing debug
+provider/tool dispatch and settlement events without changing the JSON handler.
+Terminal recordings are unconditional in the two fixtures; the extra daemon
+handler is opt-in. Its 8,192-character limit applies per event, not to the file.
+The actual local confinement and multiplayer suites passed with this handler,
+and their generated logs and raw frames were inspected. Independent review
+approved the unchanged cleanup, grants and assertions. The complete local
+client gate also passed all 2,398 tests, formatting and warning-free compilation;
+the documentation check exited zero.
+
+CI commit `a0300e896` enables this evidence for shipped bootstrap and uploads the
+private effect logs and terminal recordings. The original hard macOS terminal
+observations run before bootstrap so its failure cannot hide their result; the
+zero-skip census and failing fan-in are unchanged. Require exact-head hosted
+verification for these diagnostics. The preceding macOS aggregate remains red.
 
 [Jevelin MCP](https://github.com/Roasbeef/jevelin-mcp) consumes the SDK and
 existing Jevelin library directly. Published application head
