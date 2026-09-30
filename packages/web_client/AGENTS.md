@@ -34,7 +34,8 @@ renders again just for it:
   another session's page. The operator's page draws it hidden and writes `to`
   once the daemon has minted a ticket; `switch_rule.target` accepts exactly
   that address shape and nothing else, and the element then calls
-  `location.assign` (one export in `dom.mjs`). It renders nothing, takes no
+  `location.replace` (one export in `dom.mjs`), so the old page leaves no
+  history entry for Back to reopen without a nonce. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
 - `<loom-shell sidebar="listed" needing="0" workspace="<digest>">` is the
