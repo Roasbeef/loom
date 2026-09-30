@@ -462,7 +462,7 @@ point of the call, so a step that decides a lane close, then a terminal
 `Discard`, then a lane write (`tui/interaction.gleam:339` (`Discard`))
 still performs them in that order. The terminal's effect type gains one
 variant, `Step(step.Effect(Connection, Recorder))`,
-and `perform_io` gains two arms (`tui/runtime.gleam:433`
+and `perform_io` gains two arms (`tui/runtime.gleam:439`
 (`perform_io`)).
 
 The web's `component.Model(socket)` becomes
@@ -524,7 +524,7 @@ they reach that it misses.
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
 - The command arms: `interrupt_active` (`session_view/commands.gleam:80`),
-  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:517`),
+  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:528`),
   `select_model`, `decide` (`session_view/commands.gleam:168`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from

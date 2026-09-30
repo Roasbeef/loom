@@ -24,14 +24,18 @@
 //// may whitelist the source, and because the session id still ties the
 //// state reports and the resume command to one conversation.
 ////
-////
 //// This terminal is a self-contained binary with no hook directory for
 //// Herdr's installer to drop a script into, so the adapter is compiled in
 //// and gated at runtime by the same three variables. Every other
-//// integration's adapter is fire-and-forget, and this one keeps the rule:
-//// the reporter is a dedicated process, each exchange carries a deadline,
-//// a failed delivery is retried once and then dropped, and nothing here
-//// can stall or fail the terminal's own connection to the daemon.
+//// integration's adapter is fire-and-forget, and the state reports keep
+//// the rule: the reporter is a dedicated process, each exchange carries a
+//// deadline, a failed delivery is retried once and then dropped, and
+//// nothing here can stall or fail the terminal's own connection to the
+//// daemon. The one deliberate exception is release: a report the socket
+//// never sees is a report that never happened, and after release the
+//// terminal is about to halt the VM. Release is a bounded synchronous
+//// exchange into the reporter, so the pane's agent label is gone before
+//// the process that owned it is.
 ////
 //// The module is split so the loop-facing half is pure: `state_for` maps the
 //// model onto the pane state and `encode_*` build the wire bytes, which
@@ -62,6 +66,11 @@ const agent = "loom"
 const attempt_timeout_ms = 500
 
 const retry_timeout_ms = 1500
+
+/// Release is the one synchronous exchange, and it pays the same two
+/// deadlines a retried report would. Bounded so a dead socket cannot
+/// hold the terminal's own shutdown for more than the pair.
+const release_timeout_ms = 2000
 
 /// The command Herdr replays in the pane's directory after a server
 /// restart, per `resume_argv`'s contract: the first word must be a plain
@@ -152,6 +161,13 @@ pub type Message {
   /// Nothing is announced while no session is attached: an empty
   /// `agent_session_id` names no session to resume.
   Announce(session: String)
+
+  /// Clear the pane's agent and resume command, and answer once the
+  /// exchange is done. Release is the one caller that waits: it runs on
+  /// the quit path, where the next step halts the VM, so the reply is
+  /// what proves the pane is clear of this terminal before the process
+  /// that cleared it is gone.
+  Release(reply: Subject(Nil))
 }
 
 /// The reporter's own state: the config it was born with and the sequence
@@ -348,6 +364,26 @@ pub fn announce(reporter: Option(Reporter), session: String) -> Nil {
   }
 }
 
+/// Clears the pane's agent label, state and resume command, and waits for
+/// the exchange to finish. Silent when there is no reporter. A dead or
+/// wedged reporter is a pane Herdr clears itself once the pane returns to
+/// its idle shell, which is its documented safety net and the reason
+/// this may give up rather than keep the terminal from quitting.
+pub fn release(reporter: Option(Reporter)) -> Nil {
+  case reporter {
+    None -> Nil
+    Some(reporter) -> {
+      let reply = process.new_subject()
+      process.send(reporter.inner.data, Release(reply))
+      let _ =
+        process.new_selector()
+        |> process.select(reply)
+        |> process.selector_receive(release_timeout_ms)
+      Nil
+    }
+  }
+}
+
 fn handle(
   state: ReporterState,
   message: Message,
@@ -368,6 +404,19 @@ fn handle(
     Announce(session:) -> {
       let seq = state.seq + 1
       deliver(state.config, encode_announce(state.config, seq, session))
+      actor.continue(ReporterState(..state, seq:))
+    }
+
+    // Release is FIFO like every other message, so reports queued ahead of
+    // it run first and their dead-socket deadlines eat into the caller's
+    // budget. That is the honest cost of in-order delivery, and the
+    // caller's own deadline is the bound: a release that times out was
+    // not delivered, and Herdr's idle-shell safety net clears the pane
+    // a second later — the same fallback an uncaught crash gets.
+    Release(reply:) -> {
+      let seq = state.seq + 1
+      deliver(state.config, encode_release(state.config, seq))
+      process.send(reply, Nil)
       actor.continue(ReporterState(..state, seq:))
     }
   }
@@ -424,6 +473,11 @@ pub fn encode_announce(config: Config, seq: Int, session: String) -> String {
   encode(config, seq, "pane.report_agent_session", [
     #("agent_session_id", json.String(session)),
   ])
+}
+
+/// Encodes one `pane.release_agent` request as one line of JSON.
+pub fn encode_release(config: Config, seq: Int) -> String {
+  encode(config, seq, "pane.release_agent", [])
 }
 
 // The envelope both methods share: a monotonically sequenced request with

@@ -1,7 +1,7 @@
 //// Pins the Herdr pane contract this terminal speaks: the launch gate and
 //// the sequence seed it admits, the derivation from the terminal's own
 //// lifecycle signals, the change and announcement rules that decide what
-//// reaches the socket, and the exact bytes of the wire calls.
+//// reaches the socket, and the exact bytes of all three wire calls.
 
 import gleam/int
 import gleam/list
@@ -119,6 +119,27 @@ pub fn session_switch_at_same_state_changes_test() {
   |> should.be_true
 }
 
+pub fn source_leaves_the_reserved_prefix_alone_test() {
+  // Herdr reserves the `herdr:` source prefix for the integrations it
+  // ships itself; a third-party agent that reports under it is claiming
+  // an identity Herdr's own routing keys on. The pane contract is pinned
+  // through the encoded request, so this holds for every call.
+  [
+    herdr.encode_report(config(), 1, herdr.Idle, "s", ""),
+    herdr.encode_announce(config(), 2, "s"),
+    herdr.encode_release(config(), 3),
+  ]
+  |> list.each(fn(line) {
+    line
+    |> string.contains("\"source\":\"herdr:")
+    |> should.be_false
+
+    line
+    |> string.contains("\"source\":\"loom:terminal\"")
+    |> should.be_true
+  })
+}
+
 pub fn encode_report_carries_the_pane_contract_test() {
   herdr.encode_report(config(), 42, herdr.Working, "sess-1", "")
   |> should.equal(
@@ -145,6 +166,18 @@ pub fn encode_announce_has_no_state_claim_test() {
     "{\"id\":\"loom:terminal:3\",\"method\":\"pane.report_agent_session\","
     <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"loom:terminal\","
     <> "\"agent\":\"loom\",\"seq\":3,\"agent_session_id\":\"sess-9\"}}\n",
+  )
+}
+
+pub fn encode_release_clears_the_pane_test() {
+  // Release is the request that clears this terminal's label, state and
+  // resume command from the pane at quit, rather than waiting for Herdr's
+  // own safety net to notice the pane went back to a shell prompt.
+  herdr.encode_release(config(), 4)
+  |> should.equal(
+    "{\"id\":\"loom:terminal:4\",\"method\":\"pane.release_agent\","
+    <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"loom:terminal\","
+    <> "\"agent\":\"loom\",\"seq\":4}}\n",
   )
 }
 
@@ -209,6 +242,7 @@ pub fn every_report_carries_a_non_negative_seq_test() {
   [
     herdr.encode_announce(config, first, "sess-1"),
     herdr.encode_report(config, first, herdr.Working, "sess-1", ""),
+    herdr.encode_release(config, first),
   ]
   |> list.each(fn(line) {
     line
