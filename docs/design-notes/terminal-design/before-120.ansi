@@ -1,0 +1,40 @@
+[1m ◆ loom [0mdemo · ~/gocode/src/github.com/roasbeef/loom/.claude/worktrees/loom-checkout-… baseten-kimi-k3 · Ctrl+g details
+ transcript / main
+ ◇ etui input and gateway paths ready
+
+
+ ∴ Reasoning Mapped the frozen ClientGateway events onto one immutable view model.
+
+ └ read · packages/client/CLAUDE.md
+
+ [1m◆ Native client                                                                                                       [0m
+ [1m                                                                                                                      [0m
+ [1m  [0mThe pure-Gleam path is live. Use /model to switch models or /help for the command map.[1m                              [0m
+ [1m                                                                                                                      [0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+─ To main · enter queues · tab steers                                                                                  ─
+ ◒ streaming (4s)
+ [1m [0m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ interactive design preview · baseten-kimi-k3 · ctx — · est $0.00                     3 agents · 2 working · 0 attention
+[1m› [0m● [1mmain                   [0mstreaming
+[1m  [0m● catalog audit          running tools
