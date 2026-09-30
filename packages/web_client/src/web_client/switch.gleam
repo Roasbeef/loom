@@ -18,6 +18,14 @@
 //// same-origin request the browser makes, whose answer is a new page. The
 //// ticket is single use and lives 60 seconds, so a value the page left in the
 //// attribute after the navigation is spent.
+////
+//// The navigation replaces the page's history entry instead of adding one.
+//// The old page's nonce is overwritten by the new page's in the tab's
+//// `sessionStorage`, so Back to the old page's address would open a page
+//// with no valid nonce and show only its waiting notice. With the entry
+//// replaced, Back leaves the session pages for whatever the tab held before
+//// them, and the operator returns to an earlier session by choosing it in
+//// the sidebar, which mints a fresh ticket.
 
 import gleam/result
 import lustre
@@ -71,7 +79,7 @@ fn update(model: Nil, message: Msg) -> #(Nil, Effect(Msg)) {
 
 fn navigate(address: String) -> Effect(Msg) {
   use _ <- effect.from
-  ffi_dom.assign_location(address)
+  ffi_dom.replace_location(address)
 }
 
 fn view(_: Nil) -> Element(Msg) {

@@ -75,7 +75,7 @@ pub fn an_unclosed_fence_stays_in_its_row_test() {
   let html = page(["```\nlet x = 1\n**not bold**", "**bold**"])
   assert string.contains(
     html,
-    "<pre><code>let x = 1\n**not bold**</code></pre>",
+    "<pre><code><span>let x = 1\n</span><span>**not bold**</span></code></pre>",
   )
   assert string.contains(html, "<strong>bold</strong>")
 }
@@ -105,7 +105,7 @@ pub fn a_code_fence_labels_its_language_as_text_test() {
   let html = drawn("```gleam\npub fn main() { <b> }\n```")
   assert string.contains(
     html,
-    "<div class=\"md-code\"><span class=\"md-code-lang\">gleam</span><pre><code>pub fn main() { &lt;b&gt; }</code></pre></div>",
+    "<div class=\"md-code\"><span class=\"md-code-lang\">gleam</span><pre><code><span>pub fn main() { &lt;b&gt; }</span></code></pre></div>",
   )
 }
 

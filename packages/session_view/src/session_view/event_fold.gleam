@@ -101,6 +101,9 @@ pub fn apply_event(
         usage:,
         records: list.reverse(entries),
         streams: [],
+        // A new session or strand has its own generations; the previous
+        // view's start time is not theirs.
+        generation_started_ms: None,
         tool_tails: [],
         record_cache_epoch: shared.record_cache_epoch + 1,
         compact_call_cache: dict.new(),
@@ -317,9 +320,22 @@ pub fn apply_event(
       // Gemini does — can deliver a short reply as one burst at the end
       // of a generation, and a clock started on that burst measured a
       // millisecond and reported six-figure tokens per second.
-      let generation_started_ms = case phase {
-        "assistant" -> generation_clock(shared, strand)
-        _other -> shared.generation_started_ms
+      //
+      // Settlement is not the only way a generation ends. A refused or
+      // aborted request never reports usage, so its start time would
+      // outlive it and be read as the next generation's. A turn that
+      // finishes (`done`) drops the clock of its own strand, and an
+      // `assistant` phase entered from any other phase begins a new
+      // generation and restarts it. A repeated `assistant` transition
+      // is the same generation and leaves the clock alone.
+      let generation_started_ms = case phase, strand == shared.active_strand {
+        "done", True -> None
+        "assistant", True ->
+          case strand_was_generating(shared.strands, strand) {
+            True -> generation_clock(shared, strand)
+            False -> Some(shared.stamp.now_ms)
+          }
+        _other, _ -> shared.generation_started_ms
       }
 
       let updated =
@@ -592,6 +608,18 @@ fn set_strand_phase(
       True, _ -> Strand(..strand, live_phase: Some(phase))
       False, _ -> strand
     }
+  })
+}
+
+// Whether the strand's last reported phase was already `assistant`, which
+// makes a further `assistant` transition a repeat rather than a new
+// generation.
+fn strand_was_generating(
+  strands: List(protocol.Strand),
+  target: String,
+) -> Bool {
+  list.any(strands, fn(strand) {
+    strand.id == target && strand.live_phase == Some("assistant")
   })
 }
 

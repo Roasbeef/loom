@@ -2643,10 +2643,14 @@ accepted that for operator pages.
   `ui_sessions.mint`: a page that presses many rows mints a ticket for each,
   and the table's `actor.periodic` sweep reclaims them at 60 seconds.
 - The tab keeps one nonce in `sessionStorage`, and a switch in the same tab
-  replaces it with the new page's. Reloading the page left behind, by history
-  Back, shows the waiting paragraph and does not reconnect, because its nonce is
-  gone. The sidebar row of that session opens a new page, and the left page's
-  daemon-side page is unaffected and is reclaimed at its own deadline.
+  replaces it with the new page's. The left page's daemon-side page is
+  unaffected and is reclaimed at its own deadline. *Addendum:* `<loom-switch>`
+  first used `location.assign`, which kept the left page's entry in the history,
+  and Back to it showed the waiting paragraph and did not reconnect, because its
+  nonce was gone. It now calls `location.replace`, so no entry names a page
+  whose nonce is spent, and Back leaves the session pages. The sidebar row of
+  the earlier session opens it through a fresh ticket. No rule about tickets,
+  deadlines or the operator-only switch changed.
 - A saved session is text in the sidebar, marked "saved", so a person who wants
   to open it resumes it from a terminal first.
 - The list is read every 30 seconds, so a row can name a session stopped since.

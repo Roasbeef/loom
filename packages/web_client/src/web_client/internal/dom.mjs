@@ -236,7 +236,8 @@ export function remove_attribute(element, name) {
   element.removeAttribute(name);
 }
 
-// One navigation. The address was checked in Gleam before it got here.
-export function assign_location(address) {
-  window.location.assign(address);
+// One navigation that replaces the current history entry. The address was
+// checked in Gleam before it got here.
+export function replace_location(address) {
+  window.location.replace(address);
 }
