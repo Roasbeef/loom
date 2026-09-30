@@ -178,7 +178,7 @@ cannot hide the capability error. This does not grant the program a new effect.
   its target and creator checks still run in the host. An explicit effect-only
   host also admits it because scheduling does not require child custody.
 - `cap/job.{Started, State, StopCause, LostReason, Exit, Stream, Spill,
-  Job, Row, Cursors, JobError}` with `start`, `start_within`, `poll`,
+  Job, Row, Cursors, JobError}` with `start`, `start_within`, `start_for_session`, `poll`,
   `list`, `kill`, `send`, `send_last`, `from_start`, `after`,
   `is_pending` — background jobs a program starts, watches, feeds and
   stops, the code-mode half of the door `bash`'s `mode` argument and the
@@ -191,7 +191,8 @@ cannot hide the capability error. This does not grant the program a new effect.
   its own token, so a program that starts one and returns has neither
   leaked anything nor waited for anything — if the point was the output,
   either `poll` until `is_pending` is false or use `proc.run`. The
-  deadline is fixed at `start` and never renewed; `Started.wall_ms` is
+  finite deadline is fixed at `start` and never renewed. Session lifetime
+  reports zero in `Started.wall_ms` and `Started.deadline_ms`; otherwise the wall is
   what the host actually granted after its own clamp and the session
   policy's narrowing, and is not always what was asked for.
   This is the thing `proc.run` cannot be: `run` blocks for the whole
@@ -466,3 +467,16 @@ views; they neither acknowledge nor consume messages. Empty `roster` means no
 outgoing remote links and says nothing about the caller's inbound messages.
 Pending IDs and receipt keys paginate live sets; receipt hash cursors are not
 arrival watermarks. Full bodies that exceed the response ceiling fail explicitly.
+
+## Explicit session-lifetime background jobs
+
+Protocol-change/058 records the lifetime contract. Finite jobs retain their
+existing default and fixed deadline. Bash `mode: "background", lifetime:
+"session"` and `cap/job.start_for_session` explicitly request no wall deadline.
+Code-mode callers declare `permissions.wall_s: 0`; the launching action must
+receive the missing wall grant before execution, and the job captures it.
+Zero job wall/deadline denotes this authorized lifetime. Clearance and drain
+remain bounded, other resource limits remain active, and session shutdown,
+owner kill or originating-operation abort cancels the execution. Quiet waiting
+has no completion or heartbeat wake unless the caller explicitly asks for the
+existing idle heartbeat. A VM restart loses the job and never replays it.

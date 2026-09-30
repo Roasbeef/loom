@@ -2524,3 +2524,141 @@ pub fn a_default_wall_honours_the_captured_grant_test() {
     as "the job must be admitted under its captured policy"
   assert started.wall_ms == 30_000
 }
+
+// Only the runner's first fold reads 1000. Its next read observes a quiet
+// minute having passed; other harness clocks stay fixed for bookkeeping.
+type QuietClockMessage {
+  MarkQuietRunner(pid: process.Pid, reply: Subject(Nil))
+  QuietNow(pid: process.Pid, reply: Subject(Int))
+}
+
+fn quiet_clock() -> #(Clock, Subject(QuietClockMessage)) {
+  let assert Ok(started) =
+    actor.new(#(None, 0))
+    |> actor.on_message(fn(state, message) {
+      case message {
+        MarkQuietRunner(pid:, reply:) -> {
+          process.send(reply, Nil)
+          actor.continue(#(Some(pid), 0))
+        }
+        QuietNow(pid:, reply:) -> {
+          let targeted = state.0 == Some(pid)
+          let now = case targeted && state.1 > 0 {
+            True -> 61_000
+            False -> 1000
+          }
+          process.send(reply, now)
+          actor.continue(
+            #(state.0, case targeted {
+              True -> state.1 + 1
+              False -> state.1
+            }),
+          )
+        }
+      }
+    })
+    |> actor.start
+    as "the quiet clock starts"
+  #(
+    clock.from_function(fn() {
+      process.call(started.data, waiting: 1000, sending: fn(reply) {
+        QuietNow(pid: process.self(), reply:)
+      })
+    }),
+    started.data,
+  )
+}
+
+pub fn a_quiet_job_receives_fresh_settlement_grace_test() {
+  let #(time, readings) = quiet_clock()
+  let runtime = open_runtime(time)
+  let fake = start_fake_broker()
+  let spill = start_fake_spill()
+  let name = addresses.new()
+  let clear = clear_seam(fake)
+  let base = fake_wiring(runtime, fake, spill, time)
+  let assert Ok(owner) =
+    jobs.start(
+      name,
+      jobs.Wiring(..base, clear_call: fn(spec, events) {
+        assert process.call(readings, waiting: 1000, sending: fn(reply) {
+            MarkQuietRunner(pid: process.self(), reply:)
+          })
+          == Nil
+        clear(spec, events)
+      }),
+    )
+    as "the jobs owner starts"
+  let harness =
+    Harness(name:, fake:, spill:, runtime:, operation: an_op(), pid: owner.pid)
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand: "main",
+      operation: harness.operation,
+      request: jobs.Request(
+        command: "quiet watcher",
+        wall_ms: Some(60),
+        captured_policy: None,
+        audience: jobs.NotifyOwner,
+        stdin: jobs.KeepStdinOpen,
+        idle_wake: job.QuietUntilDone,
+      ),
+      waiting: 10_000,
+    )
+    as "the finite quiet job starts"
+
+  // Do not poll while it waits: a tail request would shorten the quiet
+  // receive and conceal the stale timestamp. The delayed helper answers
+  // inside the fresh grace, after the old grace has already disappeared.
+  process.sleep(180)
+  settle_with(harness, started, cancelled_result())
+  let assert jobstate.Killed(by: jobstate.ByDeadline, result:) =
+    settled_state(harness, "main", started)
+    as "quiet timeout settlement must retain the helper's exit report"
+  assert result.cancelled
+  assert string.contains(context_text(harness, "main"), "lifetime: \"session\"")
+  process.trap_exits(True)
+  process.send_abnormal_exit(owner.pid, "shutdown")
+}
+
+pub fn a_session_lifetime_job_stays_quiet_and_stops_with_its_session_test() {
+  let harness = start_harness()
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand: "main",
+      operation: harness.operation,
+      request: jobs.Request(
+        command: "watch mail",
+        wall_ms: Some(0),
+        captured_policy: None,
+        audience: jobs.NotifyOwner,
+        stdin: jobs.KeepStdinOpen,
+        idle_wake: job.QuietUntilDone,
+      ),
+      waiting: 10_000,
+    )
+    as "the scripted authorized session job starts"
+  assert started.deadline_ms == 0
+  assert started.wall_ms == 0
+  let assert [spec] = specs(harness) as "one execution is cleared"
+  assert spec.budget.deadline_ms == 0
+  assert spec.requirements.limits.wall_s == 0
+  process.sleep(100)
+  assert poll(harness, "main", started).state == jobstate.Running
+  assert !notified(harness, started)
+  process.trap_exits(True)
+  let gone = process.monitor(harness.pid)
+  process.send_abnormal_exit(harness.pid, "shutdown")
+  assert await_cancel(harness, started, 200) == 1
+  settle_with(harness, started, cancelled_result())
+  let assert Ok(_down) =
+    process.selector_receive(
+      process.new_selector()
+        |> process.select_specific_monitor(gone, fn(down) { down }),
+      5000,
+    )
+    as "session close joins the job"
+  assert !notified(harness, started)
+}

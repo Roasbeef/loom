@@ -32,12 +32,16 @@
 //// program was the command's output, either `poll` until it is terminal
 //// or use `proc.run`.
 ////
-//// The deadline is fixed at `start` and is never renewed: the token, the
+//// A finite deadline is fixed at `start` and is never renewed: the token, the
 //// relay, the helper's own wall timer and the budget ledger all read one
 //// number, and a program that needs longer starts another job. `start`
 //// answers with the wall it was actually **granted**, which is what was
 //// asked for clamped by the host's ceiling and narrowed by the session's
 //// policy — read `Started.wall_ms` rather than assuming the request.
+//// `start_for_session` explicitly requests no wall deadline under approved
+//// authority. Its zero wall and deadline do not remove ownership, other
+//// resource limits, or cancellation; the job ends when stopped, when its
+//// command exits, or when its session closes.
 ////
 //// ## The tail is bounded and the spill is not
 ////
@@ -109,10 +113,10 @@ pub type Started {
     /// The handle every other function here takes.
     id: String,
     /// The absolute instant its wall expires at, in milliseconds on the
-    /// session's own time base.
+    /// session's own time base. Zero denotes authorized session lifetime.
     deadline_ms: Int,
     /// The wall actually granted, which is not always what was asked
-    /// for — see the module doc.
+    /// for. Zero denotes authorized session lifetime.
     wall_ms: Int,
   )
 }
@@ -331,6 +335,29 @@ pub fn start_within(
   wall_ms: Int,
 ) -> Result(Started, JobError) {
   started([#("command", wire.string(command)), #("wall_ms", wire.int(wall_ms))])
+}
+
+/// Starts an explicitly authorized job without a wall deadline.
+///
+/// The code_mode invocation must declare permissions.wall_s: 0 and obtain
+/// approval, or already hold equivalent sandbox authority. The job remains
+/// owned by this strand and stops on job.kill, initiating-operation abort,
+/// session shutdown, or loss of its owning runtime. Quiet runtime causes no
+/// model turns. Started.deadline_ms and Started.wall_ms are zero.
+///
+/// Capability: job.start.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(watching) = job.start_for_session("substrate watch --session-id ...")
+/// ```
+///
+pub fn start_for_session(command: String) -> Result(Started, JobError) {
+  started([
+    #("command", wire.string(command)),
+    #("lifetime", wire.string("session")),
+  ])
 }
 
 fn started(fields: List(#(String, MsgPackValue))) -> Result(Started, JobError) {

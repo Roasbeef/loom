@@ -305,7 +305,7 @@ fn ask_permission(
 ) -> Result(Ctx, ToolOutcome) {
   let denial =
     escalation.Denial(
-      reason: "This invocation requests additional filesystem or network access.",
+      reason: "This invocation requests additional sandbox authority.",
       source: escalation.PolicyDenial,
       wanted: policy.wanted_grants(missing),
     )

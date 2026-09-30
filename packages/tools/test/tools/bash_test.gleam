@@ -710,3 +710,75 @@ fn remaining_specs(recorded: process.Subject(fake_broker.Recorded)) -> Int {
       remaining_specs(recorded)
   }
 }
+
+fn session_watch_args() -> json.JsonValue {
+  json.Object([
+    #("command", json.String("substrate watch")),
+    #("mode", json.String("background")),
+    #("lifetime", json.String("session")),
+  ])
+}
+
+pub fn session_lifetime_is_authorized_before_the_job_starts_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let asked = process.new_subject()
+  let launched = process.new_subject()
+  let original =
+    fake_broker.ctx(workspace:, filesystem:, now:, script: [], recorded:)
+  let ctx =
+    tool.Ctx(..original, raise_refusal: fn(request: tool.RaisedRefusal) {
+      assert process.receive(launched, 0) == Error(Nil)
+      process.send(asked, request.denial.wanted)
+      tool.Resume(request.denial.wanted)
+    })
+  let plane =
+    job.Jobs(..job.unavailable(), start: fn(ctx: tool.Ctx, command, wall, wake) {
+      assert command == "substrate watch"
+      assert wall == Some(0)
+      assert wake == job.QuietUntilDone
+      assert list.contains(ctx.grants, policy.GrantLimit(policy.WallSeconds, 0))
+      process.send(launched, Nil)
+      Ok(job.Started(id: "session-watch", deadline_ms: 0, wall_ms: 0))
+    })
+  let outcome = bash.tool(plane).run(ctx, session_watch_args())
+  assert !outcome.is_error
+  assert string.contains(first_text(outcome), "until the session closes")
+  assert process.receive(asked, 1000)
+    == Ok([policy.GrantLimit(policy.WallSeconds, 0)])
+  assert process.receive(launched, 1000) == Ok(Nil)
+
+  // The approval is for this invocation. Rejecting the same request on a
+  // fresh context must leave the jobs plane untouched.
+  assert bash.tool(plane).run(original, session_watch_args()).is_error
+  assert process.receive(launched, 0) == Error(Nil)
+}
+
+pub fn session_lifetime_cannot_disguise_a_finite_or_foreground_timeout_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let ctx =
+    fake_broker.ctx(workspace:, filesystem:, now:, script: [], recorded:)
+  let plane =
+    job.Jobs(..job.unavailable(), start: fn(_ctx, _command, _wall, _wake) {
+      panic as "invalid arguments must never launch a job"
+    })
+  let assert json.Object(fields) = session_watch_args()
+    as "watch arguments are an object"
+  assert bash.tool(plane).run(
+    ctx,
+    json.Object([#("timeout_ms", json.Int(0)), ..fields]),
+  ).is_error
+  assert bash.tool(plane).run(
+    ctx,
+    json.Object([#("timeout_ms", json.Int(1000)), ..fields]),
+  ).is_error
+  assert bash.tool(plane).run(
+    ctx,
+    json.Object([
+      #("command", json.String("watch")),
+      #("lifetime", json.String("session")),
+      #("mode", json.String("foreground")),
+    ]),
+  ).is_error
+}

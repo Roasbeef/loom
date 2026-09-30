@@ -97,3 +97,12 @@ pub fn churn_never_exceeds_cap_test() {
     })
   assert budget.outstanding(final) <= cap
 }
+
+pub fn session_lifetime_preserves_the_outstanding_cap_test() {
+  let unlimited = budget.open(budget.Budget(max_outstanding: 1, deadline_ms: 0))
+  let assert Ok(held) = budget.reserve(unlimited, now: 9_000_000_000_000)
+    as "zero means no temporal deadline"
+  assert budget.reserve(held, now: 9_000_000_000_001)
+    == Error(budget.OutstandingCapReached(cap: 1))
+  assert budget.outstanding(budget.settle(held)) == 0
+}

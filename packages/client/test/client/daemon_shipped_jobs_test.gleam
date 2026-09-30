@@ -80,6 +80,7 @@ import gleam/result
 import gleam/string
 import host/bootstrap as native
 import host/endpoint
+import session_view/approval
 import session_view/session_channel
 import simplifile
 import support/enforcement
@@ -218,7 +219,22 @@ pub fn daemon_shipped_job_record_outlives_its_program_test_() -> EunitTest {
   Timeout(30, fn() {
     case shipped_prerequisites() {
       None -> Nil
-      Some(shipped) -> code_mode_fixture(shipped)
+      Some(shipped) -> code_mode_fixture(shipped, FiniteJob)
+    }
+  })
+}
+
+/// Proves explicit session lifetime crosses the default code-mode host,
+/// requires approval, survives its satellite, and remains cancellable.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match daemon_shipped_session_job`.
+pub fn daemon_shipped_session_job_outlives_its_program_test_() -> EunitTest {
+  Timeout(30, fn() {
+    case shipped_prerequisites() {
+      None -> Nil
+      Some(shipped) -> code_mode_fixture(shipped, SessionJob)
     }
   })
 }
@@ -605,13 +621,48 @@ fn program_arguments(source: String) -> json.JsonValue {
   ])
 }
 
-fn code_mode_script(identity: PayloadIdentity) -> List(provider.Exchange) {
+type ProgramJobLifetime {
+  FiniteJob
+  SessionJob
+}
+
+// The finite fixture stays unchanged. Session lifetime declares authority
+// on the outer invocation before its program can ask the job capability.
+fn starting_arguments(
+  identity: PayloadIdentity,
+  lifetime: ProgramJobLifetime,
+) -> json.JsonValue {
+  let source = starting_program(identity)
+  case lifetime {
+    FiniteJob -> program_arguments(source)
+    SessionJob -> {
+      let source =
+        string.replace(source, "job.start(", "job.start_for_session(")
+      let source =
+        string.replace(
+          source,
+          "Ok(started) -> report.text(\"started \" <> started.id)",
+          "Ok(started) -> case started.wall_ms == 0 && started.deadline_ms == 0 { True -> report.text(\"started \" <> started.id) False -> report.failure(\"session lifetime was narrowed\") }",
+        )
+      json.Object([
+        #("program", json.String(source)),
+        #("within_ms", json.Int(240_000)),
+        #("permissions", json.Object([#("wall_s", json.Int(0))])),
+      ])
+    }
+  }
+}
+
+fn code_mode_script(
+  identity: PayloadIdentity,
+  lifetime: ProgramJobLifetime,
+) -> List(provider.Exchange) {
   [
     provider.ToolUseExchange(
       "start the watcher",
       "start-program",
       "code_mode",
-      program_arguments(starting_program(identity)),
+      starting_arguments(identity, lifetime),
     ),
     answered("start-program", "started"),
     provider.ToolUseExchange(
@@ -627,7 +678,7 @@ fn code_mode_script(identity: PayloadIdentity) -> List(provider.Exchange) {
 // The daemon boots before the provider does here, because whether this
 // server registers `code_mode` at all is a question only its own log
 // answers, and a script cannot be chosen after it has been handed over.
-fn code_mode_fixture(shipped: Shipped) -> Nil {
+fn code_mode_fixture(shipped: Shipped, lifetime: ProgramJobLifetime) -> Nil {
   let directory = shallow_root()
   let assert Ok(paths) = endpoint.paths(directory <> "/state")
     as "cleanup retains its endpoint before launch"
@@ -635,7 +686,7 @@ fn code_mode_fixture(shipped: Shipped) -> Nil {
   let outcomes =
     weft.new([
       fn() {
-        exercise_code_mode(shipped, directory, paths)
+        exercise_code_mode(shipped, directory, paths, lifetime)
         Ok(Nil)
       },
     ])
@@ -652,13 +703,21 @@ fn exercise_code_mode(
   shipped: Shipped,
   directory: String,
   paths: endpoint.Paths,
+  lifetime: ProgramJobLifetime,
 ) -> Nil {
   let workspace = prepare_workspace(directory, "http://127.0.0.1:1/unused")
   let connected = connect_with_seed(shipped.server, directory, paths)
   let probe = attach(connected, "jobs-probe", workspace, config_of(directory))
   let registered = await_code_mode(paths)
   stop_driver(probe.driver)
-  report_code_mode(connected, shipped.payload, registered, directory, workspace)
+  report_code_mode(
+    connected,
+    shipped.payload,
+    registered,
+    directory,
+    workspace,
+    lifetime,
+  )
   daemon.close(connected.control)
 }
 
@@ -671,6 +730,7 @@ fn report_code_mode(
   registered: CodeMode,
   directory: String,
   workspace: String,
+  lifetime: ProgramJobLifetime,
 ) -> Nil {
   case registered {
     CodeModeUnavailable ->
@@ -681,8 +741,15 @@ fn report_code_mode(
 
     CodeModeReady -> {
       let #(Nil, report) =
-        provider.with_server(code_mode_script(identity), fn(url) {
-          drive_programs(connected, identity, directory, workspace, url)
+        provider.with_server(code_mode_script(identity, lifetime), fn(url) {
+          drive_programs(
+            connected,
+            identity,
+            directory,
+            workspace,
+            url,
+            lifetime,
+          )
         })
       let assert Ok(requests) = report
         as "only the four scripted code-mode requests occur"
@@ -700,11 +767,35 @@ fn drive_programs(
   directory: String,
   workspace: String,
   url: String,
+  lifetime: ProgramJobLifetime,
 ) -> Nil {
   let config = config_of(directory)
   assert simplifile.write(config, configuration(url)) == Ok(Nil)
   let session = attach(connected, "jobs-programs", workspace, config)
   prompt(session.driver, "start the watcher")
+  case lifetime {
+    FiniteJob -> Nil
+    SessionJob -> {
+      let review =
+        poll.until(within: 15_000, every: 20, attempt: fn() {
+          let sample = tui_driver.play(session.driver.data, [])
+          case
+            list.find(sample.model.shared.approvals, fn(review) {
+              review.status == approval.Pending
+            })
+          {
+            Ok(review) -> poll.Done(review)
+            Error(Nil) -> poll.Retry
+          }
+        })
+      let assert poll.Answered(review) = review
+        as "session lifetime asks before the program launches"
+      // Close the automatic inspector before typing the explicit approval
+      // command. Its Enter key otherwise belongs to the inspector itself.
+      let _ = tui_driver.play(session.driver.data, [backend.KeyPress("esc")])
+      prompt(session.driver, "/approve " <> review.id)
+    }
+  }
   let started = settled_within(session.driver, ["started"], 60_000)
   let assert Ok(#(_before, id)) =
     string.split_once(program_value(started), on: "started ")

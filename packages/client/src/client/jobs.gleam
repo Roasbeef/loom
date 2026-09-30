@@ -4,7 +4,8 @@
 ////
 //// A background job is a jailed process the harness started on a model's
 //// behalf that is allowed to outlive the tool call which started it,
-//// bounded by a wall deadline fixed at start, owned by a strand, and
+//// bounded by a fixed wall unless session lifetime was explicitly authorized,
+//// owned by a strand, and
 //// killable through the same TERM-then-KILL ladder a foreground call
 //// has. `client/jobstate` is the state space and the durable codec, and
 //// holds no process; this module is everything that needs one.
@@ -81,7 +82,10 @@
 ////
 //// ## The deadline, and who enforces it
 ////
-//// The wall deadline is fixed at start and never renewed, and four
+//// A finite wall deadline is fixed at start and never renewed. An explicitly
+//// authorized session lifetime carries zero instead of a deadline; streaming
+//// waits then have no temporal expiry, while clearance and drain remain bounded.
+//// For a finite job, four
 //// parties agree on it because they all read the same number: the
 //// capability token, the broker relay's receive deadline, the helper's
 //// own wall timer, and the budget ledger. The relay cancels the execution
@@ -326,11 +330,13 @@ pub type Started {
     id: JobId,
     /// The absolute instant the job's wall expires at, on the session's
     /// own time base.
+    /// Zero denotes explicitly authorized session lifetime.
     deadline_ms: Int,
     /// The wall actually granted: what the caller asked for clamped by
     /// the operator's ceiling, or — for a caller that asked for nothing —
     /// the default hour met with the session policy's own wall. Either
     /// way the caller is told what it got rather than left to assume.
+    /// Zero denotes explicitly authorized session lifetime.
     wall_ms: Int,
   )
 }
@@ -1356,7 +1362,10 @@ fn admitted(
         requested_wall_ms: option.unwrap(request.wall_ms, default_wall_ms),
       ),
       started_at_ms: now,
-      deadline_ms: now + wall_ms,
+      deadline_ms: case wall_ms {
+        0 -> 0
+        _finite -> now + wall_ms
+      },
       state: jobstate.Starting,
       spill: jobstate.no_spill(),
     )
@@ -1456,6 +1465,9 @@ fn granted_wall(
   requested: Option(Int),
 ) -> Int {
   case requested {
+    // Zero is requested only by the explicit session-lifetime surface. The
+    // broker still refuses it unless the captured policy grants wall_s=0.
+    Some(0) -> 0
     Some(asked) -> int.clamp(asked, min: 1, max: wiring.policy.max_wall_ms)
 
     None -> meet_wall(default_wall_ms, running_under.limits.wall_s * 1000)
@@ -1576,9 +1588,16 @@ fn spawn_runner(
     )
   let home = state.self
   let backstop = wiring.clearance_ms + wall_ms + settle_grace_ms
-  weft.new([fn() { run(wiring, record, home, stdin) }])
-  |> weft.deadline(backstop)
-  |> weft.start_relayed(to: reports)
+  let run = weft.new([fn() { run(wiring, record, home, stdin) }])
+
+  // A session-lifetime job keeps its scope until execution ends. Clearance
+  // retains its own finite waiting budget; owner death and session shutdown
+  // still cancel the scope and the broker's monitored execution.
+  let run = case wall_ms {
+    0 -> run
+    _finite -> weft.deadline(run, backstop)
+  }
+  weft.start_relayed(run, to: reports)
 }
 
 // Everything one runner does, in one process: clear, publish, fold,
@@ -1675,7 +1694,12 @@ fn fold(runner: Runner) -> Result(Settlement, RunnerFault) {
   // zero timeout would spin the phase change against a settlement already
   // sitting in the mailbox.
   let window = int.max(runner.until - now, 0) + 1
-  case process.selector_receive(selector, window) {
+  let wake = case runner.phase, runner.until {
+    Streaming, 0 -> Ok(process.selector_receive_forever(selector))
+    Streaming, _finite | Draining, _deadline ->
+      process.selector_receive(selector, window)
+  }
+  case wake {
     Ok(FromCall(broker.CallOutput(stream:, data:, total_bytes: _, truncated: _))) ->
       fold(absorb(runner, stream, data))
 
@@ -1686,7 +1710,12 @@ fn fold(runner: Runner) -> Result(Settlement, RunnerFault) {
       fold(runner)
     }
 
-    Error(Nil) -> expired(runner, now)
+    Error(Nil) -> {
+      // The receive can spend the whole wall. Its starting instant cannot
+      // anchor the grace that begins only after that wait has expired.
+      let #(expired_at, _clock) = clock.read(runner.wiring.clock)
+      expired(runner, expired_at)
+    }
   }
 }
 
@@ -1840,7 +1869,10 @@ fn call_spec(wiring: Wiring, record: JobRecord, now: Int) -> CallSpec {
       bash.requirements(wiring.workspace),
       wiring.base_policy,
     )
-  let wall_ms = int.max(record.deadline_ms - now, 1)
+  let wall_ms = case record.deadline_ms {
+    0 -> 0
+    _finite -> int.max(record.deadline_ms - now, 1)
+  }
   let wall_s = { wall_ms + 999 } / 1000
 
   // The shell asks for every root the session base already grants, the
@@ -1982,7 +2014,10 @@ fn started_of(record: JobRecord) -> Started {
   Started(
     id: record.id,
     deadline_ms: record.deadline_ms,
-    wall_ms: record.deadline_ms - record.started_at_ms,
+    wall_ms: case record.deadline_ms {
+      0 -> 0
+      _finite -> record.deadline_ms - record.started_at_ms
+    },
   )
 }
 
@@ -2887,11 +2922,28 @@ fn completion_text(record: JobRecord, streams: Streams) -> String {
   <> "\n\nCommand: "
   <> command_excerpt([command])
   <> ran_line(record.state)
+  <> timeout_guidance(record.state)
   <> quoted("stdout", streams.stdout)
   <> quoted("stderr", streams.stderr)
   <> "\n\nRead the rest with `job_poll` (id "
   <> id
   <> "), which also names where the whole output was stored."
+}
+
+// A timeout is finite-job policy, not proof that a watcher crashed. An
+// explicit new invocation lets the operator authorize the longer lifetime;
+// this notice never restarts an arbitrary shell command automatically.
+fn timeout_guidance(state: JobState) -> String {
+  case state {
+    jobstate.Killed(by: jobstate.ByDeadline, ..) ->
+      "\nFor a long-running watcher, start a fresh bash call with mode: \"background\" and lifetime: \"session\", or request a higher timeout_ms. Session lifetime requires authorization and stays quiet until completion; job_kill still stops it."
+    jobstate.Starting
+    | jobstate.Running
+    | jobstate.Draining(..)
+    | jobstate.Exited(..)
+    | jobstate.Killed(..)
+    | jobstate.Lost(..) -> ""
+  }
 }
 
 // How long the job ran, from the helper's own report. A lost job has no
@@ -2924,7 +2976,7 @@ fn ended_phrase(state: JobState) -> String {
     jobstate.Lost(reason: jobstate.OwnerRestart) ->
       "was lost when the jobs service restarted; what became of it is unknown"
     jobstate.Lost(reason: jobstate.HelperLoss) ->
-      "was lost when its sandbox helper went away without reporting an exit"
+      "was lost because no terminal execution report was received"
     jobstate.Starting | jobstate.Running | jobstate.Draining(..) ->
       "is still running"
   }

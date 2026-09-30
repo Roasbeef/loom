@@ -12,6 +12,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import weft/actor
 
 fn op() -> ids.OpId {
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 3)
@@ -1077,4 +1078,147 @@ pub fn every_exec_failure_has_a_pinned_denial_verdict_test() {
   // the `case` in `denial_for_failure` breaks the build on a
   // fifteenth, and this count says the test must be extended too.
   assert list.length(escalated) + list.length(settled) == 14
+}
+
+// A quiet wait spans a minute in logical time while taking only 120 ms of
+// real time. Reads before the relay parks stay at 1000; subsequent reads
+// stay at 61000. That isolates stale grace without a multi-second test.
+type DrainClockRead {
+  ReadDrainClock(reply: Subject(Int))
+}
+
+fn drain_clock() -> #(clock.Clock, Subject(Nil)) {
+  let parked = process.new_subject()
+  let assert Ok(counter) =
+    actor.new(0)
+    |> actor.on_message(fn(reads, message) {
+      let ReadDrainClock(reply:) = message
+      let now = case reads < 3 {
+        True -> 1000
+        False -> 61_000
+      }
+      process.send(reply, now)
+
+      // Clear's caller and broker read first; the third read starts the
+      // relay's quiet wait. Caller-death tests kill only after this point.
+      case reads == 2 {
+        True -> process.send(parked, Nil)
+        False -> Nil
+      }
+      actor.continue(reads + 1)
+    })
+    |> actor.start
+    as "the drain clock starts"
+  #(
+    clock.from_function(fn() {
+      process.call(counter.data, waiting: 1000, sending: ReadDrainClock)
+    }),
+    parked,
+  )
+}
+
+pub fn a_quiet_deadline_receives_fresh_cancellation_grace_test() {
+  let #(time, _parked) = drain_clock()
+  let helper = fake_helper.start_helper(fake_helper.SlowCancel(100))
+  let checkins = process.new_subject()
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: time,
+        checkout: fn() { Ok(helper) },
+        checkin: fn(helper) { process.send(checkins, helper) },
+      ),
+    )
+    as "the broker starts"
+  let bounded =
+    broker.CallSpec(
+      ..spec(op()),
+      budget: budget.Budget(max_outstanding: 1, deadline_ms: 1100),
+    )
+  let events = process.new_subject()
+  let assert Ok(_handle) =
+    broker.clear_call(started, bounded, events:, waiting: 2000)
+    as "the quiet execution is admitted"
+  let assert Ok(broker.CallSettled(broker.CallExited(result))) =
+    process.receive(events, 2000)
+    as "a delayed exit must arrive inside cancellation grace"
+  assert result.signal == 15
+  assert process.receive(checkins, 1000) == Ok(helper)
+  broker.stop(started)
+}
+
+pub fn a_quiet_caller_death_receives_fresh_cancellation_grace_test() {
+  let #(time, parked) = drain_clock()
+  let helper = fake_helper.start_helper(fake_helper.SlowCancel(100))
+  let checkins = process.new_subject()
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: time,
+        checkout: fn() { Ok(helper) },
+        checkin: fn(helper) { process.send(checkins, helper) },
+      ),
+    )
+    as "the broker starts"
+  let ready = process.new_subject()
+  let caller =
+    process.spawn_unlinked(fn() {
+      let events = process.new_subject()
+      let assert Ok(handle) =
+        broker.clear_call(started, spec(op()), events:, waiting: 2000)
+        as "the caller's execution is admitted"
+      process.send(ready, handle)
+      process.receive_forever(process.new_subject())
+    })
+  let assert Ok(_handle) = process.receive(ready, 2000)
+    as "the caller publishes its handle"
+  assert process.receive(parked, 1000) == Ok(Nil)
+  process.kill(caller)
+
+  // A reclaimed helper has already accepted a new call only if the earlier
+  // cancellation reached its real exit report, rather than grace escalation.
+  assert process.receive(checkins, 2000) == Ok(helper)
+  let events = process.new_subject()
+  let assert Ok(next) =
+    broker.clear_call(started, spec(op()), events:, waiting: 2000)
+    as "a helper returned only after its exit accepts the next execution"
+  broker.cancel(started, next)
+  let assert Ok(broker.CallSettled(broker.CallExited(_))) =
+    process.receive(events, 2000)
+    as "the replacement execution also drains"
+  broker.stop(started)
+}
+
+pub fn session_lifetime_has_no_deadline_but_remains_cancellable_test() {
+  let #(started, helper, checkins) =
+    broker_with(fake_helper.SleepUntilCancel, at: 1000)
+  let unlimited =
+    policy.SandboxPolicy(
+      ..policy.workspace_default("/work"),
+      limits: policy.Limits(
+        ..policy.workspace_default("/work").limits,
+        wall_s: 0,
+      ),
+    )
+  let bounded =
+    broker.CallSpec(
+      ..spec(op()),
+      requirements: unlimited,
+      grants: [policy.GrantLimit(policy.WallSeconds, 0)],
+      budget: budget.Budget(max_outstanding: 1, deadline_ms: 0),
+    )
+  let events = process.new_subject()
+  let assert Ok(handle) =
+    broker.clear_call(started, bounded, events:, waiting: 2000)
+    as "explicit wall authority permits session lifetime"
+  assert process.receive(events, 150) == Error(Nil)
+  broker.cancel(started, handle)
+  let assert Ok(broker.CallSettled(broker.CallExited(result))) =
+    process.receive(events, 2000)
+    as "session lifetime still climbs the cancel ladder"
+  assert result.cancelled
+  assert process.receive(checkins, 1000) == Ok(helper)
+  broker.stop(started)
 }

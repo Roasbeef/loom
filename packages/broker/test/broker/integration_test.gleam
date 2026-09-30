@@ -9,10 +9,15 @@
 //// enforcement report rather than demanding a jail the kernel cannot
 //// provide here.
 
+import broker/broker
+import broker/budget
 import broker/exec
 import broker/framing
 import broker/internal/ffi_os
 import broker/policy
+import broker/token
+import core/clock
+import core/ids
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/io
@@ -512,4 +517,73 @@ fn collect_settled(
     Ok(event) -> Ok(event)
     Error(Nil) -> Error(Nil)
   }
+}
+
+// One second is the finite control wall. The explicitly granted zero wall
+// must still be live after that interval, then settle through cancellation.
+pub fn real_broker_session_lifetime_remains_jailed_and_cancellable_test() {
+  use helper <- with_real_helper("real_broker_session_lifetime")
+  let assert Ok(here) = simplifile.current_directory()
+    as "the fixture workspace exists"
+  let workspace = here <> "/build/integration"
+  let base = base_policy(workspace)
+  let base =
+    policy.SandboxPolicy(
+      ..base,
+      limits: policy.Limits(..base.limits, wall_s: 1),
+    )
+  let wanted =
+    policy.SandboxPolicy(
+      ..base,
+      limits: policy.Limits(..base.limits, wall_s: 0),
+    )
+  let time = clock.fixed(at: 1_700_000_000_000)
+  let #(operation, _) = ids.mint_op(ids.generator(time, seed: 11))
+  let returned = process.new_subject()
+  let assert Ok(owner) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: time,
+        checkout: fn() { Ok(helper) },
+        checkin: fn(helper) { process.send(returned, helper) },
+      ),
+    )
+    as "the real-helper broker starts"
+  let events = process.new_subject()
+  let spec =
+    broker.CallSpec(
+      op_id: operation,
+      step_id: "session-watch",
+      base_policy: base,
+      requirements: wanted,
+      grants: [],
+      response: broker.RefuseNarrowed,
+      demand: exec.BestEffort,
+      argv: ["/bin/sleep", "30"],
+      env: [#("PATH", "/usr/bin:/bin")],
+      cwd: workspace <> "/work",
+      budget: budget.Budget(max_outstanding: 1, deadline_ms: 0),
+    )
+  let assert Error(broker.PolicyRefused(..)) =
+    broker.clear_call(owner, spec, events:, waiting: 2000)
+    as "finite base authority refuses session lifetime before dispatch"
+  let assert Ok(handle) =
+    broker.clear_call(
+      owner,
+      broker.CallSpec(..spec, grants: [policy.GrantLimit(policy.WallSeconds, 0)]),
+      events:,
+      waiting: 3000,
+    )
+    as "explicit wall authority launches the jailed watcher"
+  assert process.receive(events, 1200) == Error(Nil)
+  broker.cancel(owner, handle)
+  let assert Ok(broker.CallSettled(broker.CallExited(exit))) =
+    process.receive(events, 5000)
+    as "the real helper acknowledges cancellation"
+  assert exit.cancelled
+  assert exit.enforcement != []
+  let assert Ok(_helper) = process.receive(returned, 2000)
+    as "settlement returns the helper"
+  broker.stop(owner)
 }

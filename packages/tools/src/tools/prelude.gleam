@@ -28,7 +28,7 @@
 ////   567357378f5204bff4465a57c21e1af492013f63a49fe18d46ab8f61bc572ce7  packages/cap/src/cap/execution.gleam
 ////   17119de5a23f5b9a19fa25ed70d56921ae4588ff097408e124d31bc81b70c365  packages/cap/src/cap/fs.gleam
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
-////   6ec7b03a7b85d73c56e3520fc66e5a699e5859deca01bcefd5aa1463a0bcbfaf  packages/cap/src/cap/job.gleam
+////   604d5568410892e284cce7f0b7e65e681bb741d106d7909e22a4a3b0c8ed43c7  packages/cap/src/cap/job.gleam
 ////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
 ////   967a79fcb93b977deaa5f159f7b2263aa7f1a0b96626ecb0d4bbc74aa66149b5  packages/cap/src/cap/lsp.gleam
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
@@ -45,7 +45,7 @@
 ////   4e2446b2d42545449a4c977aca0c71a129e22d694460cd37999fa9429841dd21  packages/cap/src/cap/workflow.gleam
 ////   b3b58fee4cd1fb3ac91be3c441df7483ebfbf342fe92fe456f8d14f49d4c681d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): ea178e2ffc3af90d128670c221b4100d590780bf05dfbe6f79198d1d11aee9a5
+//// Body digest (every line after the marker): 4702ee67299686c926e9b900203c273947739f3b697fe43ad6765c875a2a05ef
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -495,6 +495,17 @@ pub fn send_last(String, BitArray) -> Result(Nil, JobError)
 ///
 /// Capability: `job.start`.
 pub fn start(String) -> Result(Started, JobError)
+/// Starts an explicitly authorized job without a wall deadline.
+///
+/// The code_mode invocation must declare permissions.wall_s: 0 and obtain
+/// approval, or already hold equivalent sandbox authority. The job
+/// remains owned by this strand and stops on job.kill, initiating-
+/// operation abort, session shutdown, or loss of its owning runtime.
+/// Quiet runtime causes no model turns. Started.deadline_ms and
+/// Started.wall_ms are zero.
+///
+/// Capability: job.start.
+pub fn start_for_session(String) -> Result(Started, JobError)
 /// `start`, asking for a particular wall in milliseconds.
 ///
 /// The host clamps it to its own ceiling and the session's policy narrows

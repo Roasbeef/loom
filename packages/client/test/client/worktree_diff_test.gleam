@@ -1,6 +1,6 @@
 //// Worktree observations through the real session broker and jailed Git.
 ////
-//// The fixtures own their repositories beneath the build directory. Git setup
+//// The fixtures own their repositories outside the source checkout. Git setup
 //// uses the same broker as capture, under the writable fixture policy; capture
 //// must demote that policy before invoking Git. Exact pathname and net-change
 //// assertions distinguish filesystem observations from captured tool history.
@@ -472,9 +472,14 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
   case enforcement.probe(repository <> "/bin/loom", "worktree observation") {
     enforcement.EnforcementAbsent -> Nil
     enforcement.EnforcementLive -> {
+      // A non-repository fixture must have no ancestor Git metadata. Denying
+      // reads of the source checkout's metadata instead produces a genuine
+      // permission failure on macOS. The jail replaces /tmp with scratch, so
+      // /var/tmp retains the fixture's path inside both enforcement backends.
       let directory =
-        here
-        <> "/build/worktree-observation-"
+        "/var/tmp/loom-worktree-observation-"
+        <> int.to_string(bootstrap.current_process_id())
+        <> "-"
         <> label
         <> "-"
         <> int.to_string(bootstrap.system_time_ms())

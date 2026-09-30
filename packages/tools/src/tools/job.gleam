@@ -98,10 +98,12 @@ pub type Started {
     id: String,
     /// The absolute instant its wall expires at, on the session's own
     /// time base.
+    /// Zero denotes explicitly authorized session lifetime.
     deadline_ms: Int,
     /// The wall actually granted, which is what was asked for clamped by
     /// the host's ceiling and narrowed by policy. A caller that asked
     /// for more is told what it got rather than left to assume.
+    /// Zero denotes explicitly authorized session lifetime.
     wall_ms: Int,
   )
 }

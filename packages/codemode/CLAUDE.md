@@ -837,3 +837,16 @@ The notes and orchestration value adapter delegates to core/json_wire, sharing
 lossless conversion with satellite report helpers. Offering both server
 surfaces does not change either import allowlist or the per-submission seam
 selection.
+
+## Explicit session-lifetime background jobs
+
+Protocol-change/058 records the lifetime contract. Finite jobs retain their
+existing default and fixed deadline. Bash `mode: "background", lifetime:
+"session"` and `cap/job.start_for_session` explicitly request no wall deadline.
+Code-mode callers declare `permissions.wall_s: 0`; the launching action must
+receive the missing wall grant before execution, and the job captures it.
+Zero job wall/deadline denotes this authorized lifetime. Clearance and drain
+remain bounded, other resource limits remain active, and session shutdown,
+owner kill or originating-operation abort cancels the execution. Quiet waiting
+has no completion or heartbeat wake unless the caller explicitly asks for the
+existing idle heartbeat. A VM restart loses the job and never replays it.

@@ -162,7 +162,7 @@ pub fn check(
     None -> Error(UnknownToken)
     Some(Entry(bytes: _, binding: _, revoked: True)) -> Error(Revoked)
     Some(Entry(bytes: _, binding:, revoked: False)) ->
-      case now > binding.deadline_ms {
+      case binding.deadline_ms != 0 && now > binding.deadline_ms {
         True -> Error(Expired(deadline_ms: binding.deadline_ms))
         False -> Ok(binding)
       }
@@ -264,7 +264,10 @@ pub fn drop_expired(
 ) -> Vault {
   let entries =
     list.filter(vault.entries, fn(entry) {
-      entry.binding.deadline_ms + grace_ms >= now
+      case entry.binding.deadline_ms {
+        0 -> !entry.revoked
+        _finite -> entry.binding.deadline_ms + grace_ms >= now
+      }
     })
   Vault(..vault, entries:)
 }

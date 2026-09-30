@@ -37,6 +37,12 @@ pub fn schema() -> json.JsonValue {
         ),
       ),
       #(
+        "wall_s",
+        tool.integer_property(
+          "Requested wall in seconds for this invocation. Zero explicitly requests session-lifetime background jobs; approval is required when the base policy has a finite wall.",
+        ),
+      ),
+      #(
         "network",
         tool.enum_property(
           ["full"],
@@ -112,6 +118,13 @@ fn decode(
       use read <- result.try(tool.optional_string_list(value, "readable_roots"))
       use write <- result.try(tool.optional_string_list(value, "writable_roots"))
       use network <- result.try(tool.optional_string(value, "network"))
+      use wall <- result.try(tool.optional_int(value, "wall_s"))
+      use <- bool.guard(
+        when: option.unwrap(wall, 0) < 0,
+        return: Error(
+          "permissions.wall_s must be zero or a positive number of seconds",
+        ),
+      )
       let read = option.unwrap(read, [])
       let write = option.unwrap(write, [])
       use <- bool.guard(
@@ -151,6 +164,10 @@ fn decode(
             writable,
           )),
           network:,
+          limits: policy.Limits(
+            ..ctx.base_policy.limits,
+            wall_s: option.unwrap(wall, ctx.base_policy.limits.wall_s),
+          ),
         ),
       )
     }

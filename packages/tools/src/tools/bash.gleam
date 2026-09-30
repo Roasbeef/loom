@@ -218,6 +218,13 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
           ),
         ),
         #(
+          "lifetime",
+          tool.enum_property(
+            ["finite", "session"],
+            "Finite is the default, met with the session sandbox wall (normally 600 seconds). For watchers use session with mode: background and omit timeout_ms: explicitly authorizes no wall deadline, remains cancellable, and stays quiet until completion. Approval may be required.",
+          ),
+        ),
+        #(
           "heartbeat",
           tool.boolean_property(
             "whether to wake you periodically while you are idle and this "
@@ -261,22 +268,73 @@ fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use requested <- tool.with_arg(tool.optional_int(args, "timeout_ms"))
   use mode <- tool.with_arg(requested_mode(args))
   use wake <- tool.with_arg(requested_wake(args))
+  use requested <- tool.with_arg(requested_lifetime(args, mode, requested))
 
   // The floor is shared and the ceiling is not: a timeout under a
   // millisecond is nonsense in either mode, while the ceiling belongs to
   // whichever plane will run the command. See the module doc.
   use <- bool.guard(
-    when: option.unwrap(requested, default_timeout_ms) < 1,
+    when: option.unwrap(requested, default_timeout_ms) < 1
+      && requested != Some(0),
     return: tool.failure("invalid arguments: `timeout_ms` must be >= 1"),
   )
 
   use ctx <- tool.or_outcome(permissions.authorize(ctx, args), fn(outcome) {
     outcome
   })
+  use ctx <- tool.or_outcome(authorize_wall(ctx, mode, requested), fn(outcome) {
+    outcome
+  })
   case mode {
     Auto -> attended(jobs, ctx, command, requested, wake)
     Background -> background(jobs, ctx, command, requested, wake)
     Foreground -> foreground(ctx, command, requested)
+  }
+}
+
+// Session lifetime is a distinct request rather than timeout_ms=0, so an
+// invalid finite timeout cannot accidentally disable its enforcement.
+fn requested_lifetime(
+  args: JsonValue,
+  mode: Mode,
+  requested: Option(Int),
+) -> Result(Option(Int), String) {
+  use lifetime <- result.try(tool.optional_string(args, "lifetime"))
+  case lifetime, mode, requested {
+    None, _mode, _wall | Some("finite"), _mode, _wall -> {
+      use <- bool.guard(
+        when: option.unwrap(requested, 1) < 1,
+        return: Error("timeout_ms must be >= 1"),
+      )
+      Ok(requested)
+    }
+    Some("session"), Background, None -> Ok(Some(0))
+    Some("session"), _mode, _wall ->
+      Error("lifetime: session requires mode: background and no timeout_ms")
+    Some(_unknown), _mode, _wall -> Error("lifetime must be finite or session")
+  }
+}
+
+// Approval is bound to the launching command's arguments, before the jobs
+// plane can claim or execute it. A later job receives only that snapshot.
+fn authorize_wall(
+  ctx: Ctx,
+  mode: Mode,
+  requested: Option(Int),
+) -> Result(Ctx, ToolOutcome) {
+  case mode, requested {
+    Background, Some(ms) -> {
+      let wall_s = { ms + 999 } / 1000
+      tool.authorize_policy(
+        ctx,
+        ctx.base_policy,
+        policy.SandboxPolicy(
+          ..ctx.base_policy,
+          limits: policy.Limits(..ctx.base_policy.limits, wall_s:),
+        ),
+      )
+    }
+    Auto, _wall | Foreground, _wall | Background, None -> Ok(ctx)
   }
 }
 
@@ -639,9 +697,14 @@ fn background(
   tool.success(
     "started background job "
     <> started.id
-    <> ", with a wall of "
-    <> int.to_string({ started.wall_ms + 999 } / 1000)
-    <> "s. It is running now; read it with `"
+    <> case started.wall_ms {
+      0 -> ", until the session closes or you stop it"
+      _finite ->
+        ", with a wall of "
+        <> int.to_string({ started.wall_ms + 999 } / 1000)
+        <> "s"
+    }
+    <> ". It is running now; read it with `"
     <> job.poll_tool_name
     <> "`.",
   )

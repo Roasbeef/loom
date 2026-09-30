@@ -24,6 +24,9 @@ pub type Script {
   StdinEcho
   /// Runs forever; a cancel settles it with signal 15.
   SleepUntilCancel
+
+  /// Reports cancellation after a controlled delay, exercising relay drain grace.
+  SlowCancel(delay_ms: Int)
   /// Runs forever and ignores cancel — forcing the broker-side
   /// escalation to kill it.
   IgnoreCancel
@@ -355,7 +358,7 @@ fn exec_start(
           )
           state
         }
-        SleepUntilCancel | IgnoreCancel | StdinEcho ->
+        SleepUntilCancel | SlowCancel(..) | IgnoreCancel | StdinEcho ->
           FakeState(..state, running: Some(#(id, <<>>)))
         Truncating -> {
           let state =
@@ -509,6 +512,11 @@ fn stdin(state: FakeState, data: BitArray, eof: Bool) -> FakeState {
 }
 
 fn cancelled(state: FakeState) -> FakeState {
+  case state.script {
+    SlowCancel(delay_ms:) -> process.sleep(delay_ms)
+    _immediate -> Nil
+  }
+
   case state.running, state.script {
     _, IgnoreCancel -> state
     Some(#(id, _)), _ -> {

@@ -399,6 +399,17 @@ listing is never permission to activate a saved target.
 - The test fixture `pushed.attached()` is a replaying peer with a lane, a
   state the shipped client never reaches.
 
+## Background watcher lifetime work
+
+The background-watch-lifecycle branch is based on `01f14ef8f` after #667.
+Protocol-change/058 adds an explicitly approved session lifetime for Bash and
+code-mode background jobs, retaining finite defaults. It also fixes cancellation
+grace measured from a stale timestamp before a quiet receive. The installed
+`loom-herdr-update` session still runs its earlier release and finite jobs;
+this branch does not upgrade that daemon or replay its watcher commands.
+Local validation and independent review are recorded in the PR, with hosted
+signoff required before landing.
+
 ## Earlier collaboration follow-ups
 
 The collaboration stack landed through #510 at `645b8faf`; protocols 048
