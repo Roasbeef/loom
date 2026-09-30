@@ -23,6 +23,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/advisor_pending
+import session_view/agent_roster
 import session_view/agent_view
 import session_view/composer
 import session_view/context_view
@@ -231,7 +232,13 @@ pub fn strip_lines(model: Model) -> List(agent_strip.Line) {
 /// The rows the agent strip takes on this screen.
 @internal
 pub fn strip_height(model: Model) -> Int {
-  agent_strip.height(strip_lines(model), model.view.height)
+  agent_strip.height_for_count(
+    agent_roster.listed_count(
+      displayed_agents(model),
+      model.shared.active_strand,
+    ),
+    model.view.height,
+  )
 }
 
 fn footer_height(model: Model) -> Int {

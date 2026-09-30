@@ -4,6 +4,7 @@
 //// rule: `main` first, working agents after it, the advisor on its own and
 //// settled strands listed in reverse row order.
 
+import gleam/list
 import gleam/option.{None, Some}
 import session_view/agent_roster
 import session_view/agent_view
@@ -80,6 +81,27 @@ pub fn the_listed_chips_are_the_strip_lines_test() {
   let roster = agent_roster.new()
   assert agent_roster.chips(roster, rows, "main").listed
     == agent_roster.lines(roster, rows, "main")
+}
+
+pub fn geometry_counts_the_same_members_as_painting_test() {
+  let statuses = [
+    agent_view.Working, agent_view.Waiting, agent_view.NeedsInput,
+    agent_view.Halted, agent_view.Finished, agent_view.Failed, agent_view.Idle,
+    agent_view.Unavailable,
+  ]
+  list.each(statuses, fn(status) {
+    let rows = [
+      row("main", status),
+      row("advisor", status),
+      row("sub:main/a", status),
+      row("sub:main/b", agent_view.Idle),
+    ]
+    list.each(["main", "advisor", "sub:main/a", "sub:main/b"], fn(active) {
+      let lines = agent_roster.lines(agent_roster.new(), rows, active)
+      assert agent_roster.listed_count(rows, active) == list.length(lines)
+    })
+  })
+  assert agent_roster.listed_count([], "main") == 0
 }
 
 pub fn a_capture_without_an_advisor_has_no_advisor_chip_test() {

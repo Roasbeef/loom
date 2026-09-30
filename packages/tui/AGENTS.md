@@ -1189,6 +1189,9 @@ boundaries and the split's measurements under Invariants.
   `Model.shared.roster` and the focus in `Model.view.strip_focus`;
   `tui_model.strip` rebuilds the `State` and `tui_model.store_strip` stores
   one back. Session replacement resets both.
+  `layout.strip_height` uses `agent_roster.listed_count` and
+  `agent_strip.height_for_count`, so geometry never formats task text or
+  elapsed figures. Painting still obtains the same membership through `lines`.
 - The prompt cache: `Model.shared.cache` is a `session_view/cache_watch.Ledger`
   (each strand's watch, the pushed-row cursor, held rows and model-switch
   fences), which the reducer feeds through `admit`, `settle`, `capture`,
