@@ -878,16 +878,27 @@ boundaries and the split's measurements under Invariants.
   `pane.report_agent_session` over the pane's unix socket, sent only on
   change by a dedicated unlinked reporter process that delivers them in
   arrival order, each retried once and then dropped: the terminal's own
-  session always wins over a pane report. Two rules decide what reaches the
+  session always wins over a pane report, and `pane.release_agent` is
+  sent on quit through a bounded synchronous exchange, so the pane is
+  clear of this terminal before the VM halts. The integration reports
+  under the third-party source `loom:terminal` — Herdr reserves the
+  `herdr:` prefix for the integrations it ships itself, and a source it
+  does not know earns none of its built-in session restore: the
+  `agent_session_id` Loom sends is display metadata there, and the
+  `resume_argv` the report carries (`["loom", "--session", <id>]`) is
+  what actually reopens the conversation after a Herdr server restart,
+  from Herdr 0.9.2 on. A blocked report names the pending approval in
+  its `message`, the field Herdr shows beside a pane that is waiting on
+  the operator. Two rules decide what reaches the
   socket, and both are pure functions the tests pin. `announces` says the
   session identity is announced when it first becomes known and again on
-  every switch, because `herdr session` resume keys off the announced id;
-  nothing at all is published while no session is attached, which is the
-  state the session picker is in. `config_for` refuses a `started_ms` below
-  zero: the sequence is seeded from the wall clock, `seq` is an unsigned
-  integer in Herdr's request schema, and the BEAM monotonic clock is an
-  arbitrary-offset counter that is negative on macOS, so a monotonic seed
-  would make the daemon reject every report. The
+  every switch, so the identity a resume command names is the one the
+  pane is showing; nothing at all is published while no session is
+  attached, which is the state the session picker is in. `config_for`
+  refuses a `started_ms` below zero: the sequence is seeded from the wall
+  clock, `seq` is an unsigned integer in Herdr's request schema, and the
+  BEAM monotonic clock is an arbitrary-offset counter that is negative on
+  macOS, so a monotonic seed would make the daemon reject every report. The
   one external is `tui/internal/ffi_herdr.exchange`, a deadline-bounded
   `gen_tcp` unix-domain round trip, because no stdlib or weft surface opens
   one.
