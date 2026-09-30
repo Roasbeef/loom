@@ -457,3 +457,12 @@ through core/json_wire. `strand.map` runs bounded batches with one output per
 assignment; pending/failed joins and refused admissions stop further spawning
 while retaining known handles and unstarted assignments. It introduces no
 process machinery or new capability.
+
+
+`cap/peer` also exposes caller-owned `inbox`, `inbox_get`, and `history` for
+same-session and remote inputs, plus existing remote admission `received`,
+`received_get`, and linked sender `sent_receipt` views. These are read-only JSON
+views; they neither acknowledge nor consume messages. Empty `roster` means no
+outgoing remote links and says nothing about the caller's inbound messages.
+Pending IDs and receipt keys paginate live sets; receipt hash cursors are not
+arrival watermarks. Full bodies that exceed the response ceiling fail explicitly.

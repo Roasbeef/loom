@@ -2206,9 +2206,9 @@ fn complete_ready_calls(
 ///
 /// The continuation turns on whether *every* call terminated the run. If
 /// so the batch itself is the run's conclusion and no final assistant
-/// message is included; otherwise another assistant turn is owed —
-/// carrying, faithfully to pi, `skip_inbox_once`, so the results reach
-/// the model before newly queued input does.
+/// message is included; otherwise another assistant turn is owed. The
+/// checkpoint admits queued steering before that generation, after every
+/// tool outcome has materialized, so repeated tool turns cannot starve it.
 fn close_batch(
   pass: RunPass,
   calls: List(ToolCallState),
@@ -2227,10 +2227,6 @@ fn close_batch(
     True -> MayFinish(include_final_assistant: False)
     False -> NeedAssistant(overflow_recovery_used: False)
   }
-  let skip_inbox_once = case every_terminates {
-    True -> False
-    False -> True
-  }
   let next =
     run_state(
       pass,
@@ -2238,7 +2234,7 @@ fn close_batch(
         continuation:,
         trigger: newest,
         threshold_checked: None,
-        skip_inbox_once:,
+        skip_inbox_once: False,
       )),
     )
   let args_deletes = list.map(in.tool_args_keys, build.delete_tool_args_key)

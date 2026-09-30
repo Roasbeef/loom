@@ -485,6 +485,17 @@ pub fn wait(
 /// ephemeral, so a message to a strand that is not running now is drained
 /// at its next checkpoint rather than lost.
 ///
+/// An active run consumes steering after its complete current tool batch and
+/// before the next generation. Inspection does not require waiting for that
+/// checkpoint: `cap/peer.inbox` reads caller-owned pending inputs, and
+/// `cap/peer.history` reads materialized inputs. Acceptance is not a read receipt.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strand.send(to: "main", text: "Review ready.")
+/// ```
+///
 /// Capability: `strand.send`.
 pub fn send(to to: String, text text: String) -> Result(Delivery, StrandError) {
   let args = wire.args([#("to", wire.string(to)), #("text", wire.string(text))])

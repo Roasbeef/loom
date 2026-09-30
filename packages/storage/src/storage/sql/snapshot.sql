@@ -46,6 +46,34 @@ END;
 SELECT value FROM registers
 WHERE ns = @namespace AND key = @key AND seq = @seq;
 
+-- The cursor and limit narrow the header window before either budget
+-- accounting or payload fetching, so retained history outside this page
+-- cannot make a small read exceed the metadata budget.
+-- name: SnapshotRegisterPageBudget :one
+SELECT COUNT(*) AS cell_count,
+  CAST(COALESCE(SUM(value_bytes + key_bytes + ns_bytes + 65), 0) AS INTEGER) AS total_bytes
+FROM (
+  SELECT length(value) AS value_bytes, length(CAST(key AS BLOB)) AS key_bytes,
+    length(CAST(ns AS BLOB)) AS ns_bytes
+  FROM registers
+  WHERE ns = @namespace
+  AND key >= MAX(CAST(@prefix AS TEXT), CAST(@after_key AS TEXT))
+  AND key <> @after_key AND key <
+    CASE WHEN CAST(@prefix_upper AS TEXT) = '' THEN CAST('' AS BLOB)
+    ELSE CAST(@prefix_upper AS TEXT) END
+  ORDER BY key LIMIT @page_size
+);
+
+-- name: SnapshotRegisterPageHeaders :many
+SELECT key, seq, length(value) AS value_bytes
+FROM registers
+WHERE ns = @namespace
+AND key >= MAX(CAST(@prefix AS TEXT), CAST(@after_key AS TEXT))
+AND key <> @after_key AND key <
+  CASE WHEN CAST(@prefix_upper AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(@prefix_upper AS TEXT) END
+ORDER BY key LIMIT @page_size;
+
 -- name: SnapshotRegisterHeader :one
 SELECT seq, length(value) AS value_bytes FROM registers
 WHERE ns = @namespace AND key = @key;

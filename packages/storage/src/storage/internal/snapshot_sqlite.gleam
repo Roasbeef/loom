@@ -81,6 +81,9 @@ fn capture_cut(
       headers: fn(namespace, prefix, predicate) {
         headers(conn, namespace, prefix, predicate)
       },
+      page_headers: fn(namespace, prefix, after, limit) {
+        page_headers(conn, namespace, prefix, after, limit)
+      },
       header: fn(namespace, key) { header(conn, namespace, key) },
       cell: fn(header) { cell(conn, header) },
     ),
@@ -146,6 +149,50 @@ fn headers(
       upper,
       field,
       expected,
+    ),
+  ))
+  list.try_map(rows, fn(row) {
+    use byte_length <- result.map(required(row.value_bytes))
+    snapshot.Header(namespace, row.key, row.seq, byte_length)
+  })
+}
+
+// A page's budget counts only its indexed key window. Both queries remain in
+// the capture's transaction, so admitted lengths and the copied headers refer
+// to the same cells; neither neighboring receipts nor their payloads are read.
+fn page_headers(
+  conn: sqlight.Connection,
+  namespace: register.RegisterNs,
+  prefix: String,
+  after: String,
+  limit: Int,
+) -> Result(List(snapshot.Header), Error) {
+  use upper <- result.try(prefix_successor(prefix))
+  let upper = option.unwrap(upper, "")
+  let namespace_text = register.ns_to_string(namespace)
+  use budget <- result.try(one(
+    conn,
+    sql.snapshot_register_page_budget(
+      namespace_text,
+      prefix,
+      after,
+      upper,
+      limit,
+    ),
+  ))
+  use Nil <- result.try(snapshot.check_budget(
+    budget.cell_count,
+    budget.total_bytes,
+  ))
+
+  use rows <- result.try(query(
+    conn,
+    sql.snapshot_register_page_headers(
+      namespace_text,
+      prefix,
+      after,
+      upper,
+      limit,
     ),
   ))
   list.try_map(rows, fn(row) {

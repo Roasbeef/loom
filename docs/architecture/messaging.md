@@ -423,3 +423,25 @@ pattern reuses, `docs/architecture/orchestration.md` covers admission,
 doorbells, and the drive loop. For the store beneath it all,
 `docs/architecture/durability.md` covers commits, registers, and the
 single writer.
+
+
+## Caller-owned inspection and checkpoint delivery
+
+The default code-mode host exposes `cap/peer` inspection on both program seams.
+`inbox` pages current caller-owned input IDs without consuming them;
+`inbox_get` also reads a materialized user message after verifying membership
+in the caller's captured transcript branch. `history` pages that branch.
+The host supplies session and strand identity independently of program arguments.
+Remote `received` and `received_get` reuse durable admission receipts, while
+`sent_receipt` queries a linked resident destination using the bound sender.
+Acceptance is neither consumption nor a model read.
+
+Receipt discovery selects bounded register-key pages before copying bodies.
+Foreign-only pages advance their global cursor. These keys are hashes, so a
+poller rescans and reconciles message identities rather than treating a cursor
+as an arrival watermark. Oversized responses fail explicitly.
+
+Queued steering becomes eligible after the current complete tool batch, before
+the next model request. Parallel result materialization keeps source order;
+current provider requests and tool execution are never preempted. This policy
+and the read-only capability contracts are recorded in Protocol 056.

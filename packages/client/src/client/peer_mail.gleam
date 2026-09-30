@@ -5,6 +5,7 @@
 //// from another session. The recipient's grant sequence and receipt absence
 //// are compared in the same writer transaction as the delivered prompt.
 
+import client/internal/message_inspection
 import core/clock
 import core/entry
 import core/glance
@@ -27,6 +28,7 @@ import runtime/escalation
 import runtime/lineage
 import runtime/writer
 import session/session
+import storage/snapshot
 import storage/storage
 import tools/blob
 
@@ -92,6 +94,29 @@ pub type Command {
   Describe(strand: String, description: String)
   Activity(strand: String)
   Roster(source_session: String, source_strand: String)
+
+  /// Reads the authenticated caller's pending inputs without consuming them.
+  Inbox(strand: String, after: String, limit: Int)
+
+  /// Looks up an ID only within the authenticated caller's pending queues.
+  InboxGet(strand: String, entry: String)
+
+  /// Pages materialized user inputs on the caller's conversation branch.
+  History(strand: String, before: Int, limit: Int)
+
+  /// Pages existing admission receipts addressed to the caller.
+  Received(strand: String, after: String, limit: Int)
+
+  /// Looks up a receipt only when its recorded recipient is the caller.
+  ReceivedGet(
+    strand: String,
+    source_session: String,
+    source_strand: String,
+    message_id: String,
+  )
+
+  /// Looks up an existing receipt for a harness-authenticated sending identity.
+  SentReceipt(source_session: String, source_strand: String, message_id: String)
 
   /// Summarizes the whole session for the owner's cross-session view
   /// (`protocol-change/050`). It reads and never writes, and its answer is
@@ -202,6 +227,17 @@ pub fn handle(
   command: Command,
 ) -> Result(JsonValue, String) {
   case command {
+    History(strand, before, limit) ->
+      message_inspection.history(runtime.session, strand, before, limit)
+    Inbox(strand, after, limit) ->
+      message_inspection.inbox(runtime.session, strand, after, limit)
+    InboxGet(strand, id) ->
+      message_inspection.inbox_get(runtime.session, strand, id)
+    Received(strand, after, limit) -> received(runtime, strand, after, limit)
+    ReceivedGet(strand, source_session, source_strand, id) ->
+      receipt(runtime, source_session, source_strand, id, Some(strand))
+    SentReceipt(source_session, source_strand, id) ->
+      receipt(runtime, source_session, source_strand, id, None)
     Allow(grant) -> {
       use config <- result.try(
         session.strand_configuration(runtime.session, grant.target_strand)
@@ -325,15 +361,7 @@ fn deliver(
       #("message_id", json.String(id)),
       #("body", json.String(body)),
     ])
-  let receipt_key =
-    receipt_prefix
-    <> digest(
-      json.Array([
-        json.String(source.session),
-        json.String(source.strand),
-        json.String(id),
-      ]),
-    )
+  let receipt_key = receipt_key(source.session, source.strand, id)
   let receipt =
     json.Object([
       #("request", request),
@@ -747,4 +775,111 @@ fn fit_overview(
     False, [], json.Null -> row
     False, [], _ -> fit_overview(base, json.Null, [])
   }
+}
+
+// Admission history survives operation cleanup. A receipt's stored request
+// owns authorization; neither an opaque key nor an input argument grants read
+// access to another recipient. Sender calls arrive only from the peer router.
+fn receipt_key(
+  source_session: String,
+  source_strand: String,
+  id: String,
+) -> String {
+  receipt_prefix
+  <> digest(
+    json.Array([
+      json.String(source_session),
+      json.String(source_strand),
+      json.String(id),
+    ]),
+  )
+}
+
+fn receipt(
+  runtime: api.Runtime,
+  source_session: String,
+  source_strand: String,
+  id: String,
+  recipient: Option(String),
+) -> Result(JsonValue, String) {
+  use found <- result.try(
+    api.fact(runtime, receipt_key(source_session, source_strand, id))
+    |> result.map_error(string.inspect),
+  )
+  case found {
+    None -> Ok(json.Null)
+    Some(value) -> {
+      use request <- result.try(field(value, "request"))
+      use source <- result.try(text(request, "source_session"))
+      use strand <- result.try(text(request, "source_strand"))
+      use target <- result.try(text(request, "target_strand"))
+      use message_id <- result.try(text(request, "message_id"))
+      let permitted =
+        source == source_session
+        && strand == source_strand
+        && message_id == id
+        && case recipient {
+          None -> True
+          Some(own) -> target == own
+        }
+      case permitted {
+        True -> message_inspection.bounded(value)
+        False -> Ok(json.Null)
+      }
+    }
+  }
+}
+
+fn received(
+  runtime: api.Runtime,
+  strand: String,
+  after: String,
+  limit: Int,
+) -> Result(JsonValue, String) {
+  use Nil <- result.try(message_inspection.valid_limit(limit, 64))
+  use cut <- result.try(
+    runtime.session.snapshot_reader.capture(
+      snapshot.Plan(
+        selections: [
+          snapshot.KeyPage(
+            register.FactCustom,
+            receipt_prefix,
+            after,
+            limit + 1,
+          ),
+        ],
+        references: [],
+        recent_entries: 0,
+      ),
+      5000,
+    )
+    |> result.map_error(string.inspect),
+  )
+  use rows <- result.try(
+    list.try_map(cut.cells, fn(cell) {
+      use request <- result.try(field(cell.register.value.payload, "request"))
+      use target <- result.try(text(request, "target_strand"))
+      Ok(#(cell.key, target, cell.register.value.payload))
+    }),
+  )
+  let scanned = rows |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  let window = list.take(scanned, limit)
+  let page = list.filter(window, fn(row) { row.1 == strand })
+  let next = case list.last(window), list.length(scanned) > limit {
+    Ok(row), True -> json.String(row.0)
+    _, _ -> json.Null
+  }
+  message_inspection.bounded(
+    json.Object([
+      #(
+        "items",
+        json.Array(
+          list.map(page, fn(row) {
+            json.Object([#("cursor", json.String(row.0)), #("receipt", row.2)])
+          }),
+        ),
+      ),
+      #("next", next),
+    ]),
+  )
 }

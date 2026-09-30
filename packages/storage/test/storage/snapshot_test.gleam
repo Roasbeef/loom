@@ -338,6 +338,10 @@ pub fn exact_key_preflight_refuses_before_fetch_and_never_scans_prefix_test() {
         process.send(fetched, "prefix")
         Error(snapshot.InvalidRequest)
       },
+      page_headers: fn(_, _, _, _) {
+        process.send(fetched, "page")
+        Error(snapshot.InvalidRequest)
+      },
       header: fn(namespace, key) {
         process.send(fetched, "header")
         Ok(snapshot.Header(namespace, key, 1, snapshot.metadata_bytes_limit + 1))
@@ -811,6 +815,8 @@ pub fn conversation_schema_and_generated_queries_match_sources_test() {
     sql.snapshot_register_headers("", "", "", "", "").0,
     sql.snapshot_register_budget("", "", "", "", "").0,
     sql.snapshot_register_value("", "", 0).0,
+    sql.snapshot_register_page_budget("", "", "", "", 1).0,
+    sql.snapshot_register_page_headers("", "", "", "", 1).0,
     sql.snapshot_register_header("", "").0,
     sql.snapshot_entry_page(Some(0), Some(1), 1).0,
     sql.snapshot_recent_entries(Some(1), 1).0,
@@ -860,6 +866,7 @@ fn normalized_sql(source: String) -> String {
         "prefix",
         "field",
         "expected",
+        "after_key",
         "key",
         "seq",
         "after_seq",
@@ -887,6 +894,159 @@ fn normalized_sql(source: String) -> String {
 
 fn range(first: Int, last: Int) -> List(Int) {
   int.range(first, last + 1, [], fn(acc, n) { [n, ..acc] }) |> list.reverse
+}
+
+pub fn key_pages_survive_history_beyond_capture_budget_test() {
+  list.each([Memory, Sqlite], fn(backend) {
+    let fixture = open(backend, "key-pages")
+    let prefix = "mail%_/"
+    let body = register.value(json.String(string.repeat("x", 2048)))
+    let writes =
+      list.map(range(1, 1100), fn(n) {
+        tx.SetRegister(
+          register.FactCustom,
+          prefix <> int.to_string(10_000 + n),
+          body,
+        )
+      })
+    let _committed =
+      write(fixture, [
+        tx.SetRegister(register.FactCustom, "mail%X/00000", body),
+        tx.SetRegister(register.FactName, prefix <> "10001", body),
+        tx.SetRegister(
+          register.FactCustom,
+          prefix <> "zz",
+          register.value(
+            json.String(string.repeat("y", snapshot.metadata_bytes_limit)),
+          ),
+        ),
+        ..writes
+      ])
+
+    // Complete capture must refuse this history. A key page still admits only
+    // its window, preserving literal prefixes, ordering and the namespace.
+    assert fixture.reader.capture(
+        snapshot.Plan(
+          [snapshot.Selection(register.FactCustom, prefix, snapshot.All)],
+          [],
+          0,
+        ),
+        5000,
+      )
+      == Error(snapshot.MetadataTooLarge)
+    let first =
+      snapshot.Plan(
+        [snapshot.KeyPage(register.FactCustom, prefix, "", 7)],
+        [],
+        0,
+      )
+    let assert Ok(cut) = fixture.reader.capture(first, 5000)
+      as "a small page ignores the history's total size"
+    assert cut.metadata_bytes < 20_000
+    assert cell_keys(cut)
+      == list.map(range(10_001, 10_007), fn(n) { prefix <> int.to_string(n) })
+
+    // A removed cursor remains an exclusive key boundary, rather than an
+    // offset into the mutable list. A larger neighbor is still not fetched.
+    let _deleted =
+      write(fixture, [tx.DeleteRegister(register.FactCustom, prefix <> "10007")])
+    let second =
+      snapshot.Plan(
+        [snapshot.KeyPage(register.FactCustom, prefix, prefix <> "10007", 3)],
+        [],
+        0,
+      )
+    let assert Ok(cut) = fixture.reader.capture(second, 5000)
+      as "deleting the cursor never skips the next keys"
+    assert cell_keys(cut)
+      == [prefix <> "10008", prefix <> "10009", prefix <> "10010"]
+
+    // Oversize is still an explicit refusal when that cell enters the page.
+    let oversized =
+      snapshot.Plan(
+        [snapshot.KeyPage(register.FactCustom, prefix, prefix <> "11100", 1)],
+        [],
+        0,
+      )
+    assert fixture.reader.capture(oversized, 5000)
+      == Error(snapshot.MetadataTooLarge)
+    assert fixture.close() == Ok(Nil)
+  })
+}
+
+fn cell_keys(cut: snapshot.Cut) -> List(String) {
+  list.map(cut.cells, fn(cell) { cell.key }) |> list.sort(string.compare)
+}
+
+pub fn key_page_validation_and_budget_precede_payload_fetch_test() {
+  let fetched = process.new_subject()
+  let source =
+    snapshot.Source(
+      headers: fn(_, _, _) { Error(snapshot.InvalidRequest) },
+      page_headers: fn(namespace, _, _, _) {
+        process.send(fetched, "headers")
+        Ok([
+          snapshot.Header(
+            namespace,
+            "large",
+            1,
+            snapshot.metadata_bytes_limit + 1,
+          ),
+        ])
+      },
+      header: fn(_, _) { Error(snapshot.InvalidRequest) },
+      cell: fn(_) {
+        process.send(fetched, "payload")
+        Error(snapshot.InvalidRequest)
+      },
+    )
+  let plan =
+    snapshot.Plan([snapshot.KeyPage(register.FactCustom, "", "", 1)], [], 0)
+  assert snapshot.collect(plan, source, 0) == Error(snapshot.MetadataTooLarge)
+  assert process.receive(fetched, 0) == Ok("headers")
+  assert process.receive(fetched, 0) == Error(Nil)
+
+  list.each([0, -1, 101], fn(limit) {
+    let invalid =
+      snapshot.Plan(
+        [snapshot.KeyPage(register.FactCustom, "", "", limit)],
+        [],
+        0,
+      )
+    assert snapshot.collect(invalid, source, 0)
+      == Error(snapshot.InvalidRequest)
+    assert process.receive(fetched, 0) == Error(Nil)
+  })
+}
+
+pub fn sqlite_key_pages_use_an_indexed_bounded_window_test() {
+  let assert Ok(conn) = sqlight.open(path("key-page-plan"))
+    as "query-plan fixture opens"
+  assert sqlight.exec(session_schema.schema, on: conn) == Ok(Nil)
+  let statements = [
+    sql.snapshot_register_page_budget("", "", "", "", 1).0,
+    sql.snapshot_register_page_headers("", "", "", "", 1).0,
+  ]
+  list.each(statements, fn(statement) {
+    let assert Ok(plan) =
+      sqlight.query(
+        "EXPLAIN QUERY PLAN " <> statement,
+        on: conn,
+        with: [
+          sqlight.text("fact.custom"),
+          sqlight.text("mail/"),
+          sqlight.text("mail/01"),
+          sqlight.text("mail0"),
+          sqlight.int(1),
+        ],
+        expecting: decode.at([3], decode.string),
+      )
+      as "SQLite explains the bounded header window"
+    assert list.any(plan, string.contains(_, "SEARCH registers"))
+    assert list.any(plan, string.contains(_, "key>? AND key<?"))
+    assert !list.any(plan, string.contains(_, "TEMP B-TREE FOR ORDER BY"))
+  })
+  assert sqlight.close(conn) == Ok(Nil)
 }
 
 pub fn reference_expansion_spends_the_same_metadata_budget_test() {

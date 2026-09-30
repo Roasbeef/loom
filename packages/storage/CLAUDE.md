@@ -124,6 +124,10 @@ with these forks: they define the same modules.
   Each function takes a final wait budget in milliseconds, capped at 5,000.
   The shared monitored exchange in `internal/snapshot_call` returns
   `ReadTimedOut` or `ReaderUnavailable` instead of panicking.
+  `KeyPage(namespace, prefix, after, limit)` selects at most 100 ascending
+  register headers after an exclusive key cursor, before values are copied.
+  Every page is a fresh coherent cut; a removed cursor still names the same
+  key boundary, and pagination retains no transaction between calls.
 - `storage/sql` contains parrot/sqlc-generated catalogue and snapshot queries.
   `storage/sql_schema` embeds catalogue `sql/schema.sql`; `session_schema`
   embeds conversation `sql/session.sql`; `catalogue_names_schema` embeds the
@@ -308,6 +312,12 @@ with these forks: they define the same modules.
   most 190 KiB; a record above 32 MiB is refused before its payload is fetched.
   These are representation bounds, not a VM RSS limit. The memory backend
   already owns decoded entries and serializes one selected entry for slicing.
+  A `KeyPage` accounts only its indexed key window, so metadata outside that
+  page cannot exhaust its budget. The SQLite budget and header queries share
+  the capture transaction and both apply the prefix, cursor and limit before
+  returning data. Memory walks existing keys with a bounded retained window
+  and serializes only the selected values. A selected oversized cell remains
+  an explicit refusal rather than a truncated or omitted record.
 - **The snapshot cut outlives no transaction.** SQLite captures mutable cells,
   stats and `next_seq` in one short deferred transaction. Later pages stay
   below that cut and read write-once entries. The gateway, not storage, owns

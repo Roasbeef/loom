@@ -15,6 +15,7 @@ import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/order
 import gleam/result
 import gleam/string
 import storage/snapshot.{type Error}
@@ -50,6 +51,9 @@ pub fn capture(view: View, plan: snapshot.Plan) -> Result(snapshot.Cut, Error) {
     snapshot.Source(
       headers: fn(namespace, prefix, predicate) {
         headers(view, namespace, prefix, predicate)
+      },
+      page_headers: fn(namespace, prefix, after, limit) {
+        page_headers(view, namespace, prefix, after, limit)
       },
       header: fn(namespace, key) { header(view, namespace, key) },
       cell: fn(header) { cell(view, header) },
@@ -107,6 +111,32 @@ fn headers(
   result.map(selected, fn(headers) {
     list.sort(headers, fn(a, b) { string.compare(a.key, b.key) })
   })
+}
+
+// The ephemeral backend already owns every decoded cell, but the page walk
+// retains only bounded keys. It serializes values only after their keys survive
+// the window, so oversized neighbors cannot poison a small metadata page.
+fn page_headers(
+  view: View,
+  namespace: RegisterNs,
+  prefix: String,
+  after: String,
+  limit: Int,
+) -> Result(List(snapshot.Header), Error) {
+  let cells =
+    dict.get(view.registers, register.ns_to_string(namespace))
+    |> result.lazy_unwrap(dict.new)
+  let keys =
+    dict.fold(cells, [], fn(acc, key, _) {
+      case
+        string.starts_with(key, prefix)
+        && string.compare(key, after) == order.Gt
+      {
+        False -> acc
+        True -> [key, ..acc] |> list.sort(string.compare) |> list.take(limit)
+      }
+    })
+  list.try_map(keys, fn(key) { header(view, namespace, key) })
 }
 
 fn make_header(

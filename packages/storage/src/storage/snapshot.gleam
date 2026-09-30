@@ -93,6 +93,19 @@ pub type Selection {
     /// One exact key, never interpreted as a prefix or SQL pattern.
     key: String,
   )
+
+  /// Selects one ascending key window before copying any register values.
+  /// Repeated captures page current metadata, rather than pinning a transaction.
+  KeyPage(
+    /// The closed core namespace.
+    namespace: RegisterNs,
+    /// A literal prefix, with the same semantics as a complete selection.
+    prefix: String,
+    /// An exclusive key cursor; empty begins at the prefix's first key.
+    after: String,
+    /// At most one hundred headers, accounted before payload fetch.
+    limit: Int,
+  )
 }
 
 /// Missing or malformed predicate fields are corruption, not a non-match.
@@ -207,6 +220,9 @@ pub type Source {
   Source(
     /// Returns at most 1025 headers, including malformed predicate candidates.
     headers: fn(RegisterNs, String, Predicate) -> Result(List(Header), Error),
+    /// Returns one bounded ascending key window without copying values.
+    page_headers: fn(RegisterNs, String, String, Int) ->
+      Result(List(Header), Error),
     /// Resolves an exact reference without copying its payload.
     header: fn(RegisterNs, String) -> Result(Header, Error),
     /// Fetches and totally decodes a cell whose header was admitted.
@@ -234,6 +250,16 @@ pub fn validate(plan: Plan) -> Result(Nil, Error) {
     list.try_map(plan.selections, fn(selection) {
       case selection {
         ExactKey(_, key) -> check_budget(1, string.byte_size(key) + 65)
+        KeyPage(_, prefix, after, limit) -> {
+          use <- bool.guard(
+            limit < 1 || limit > page_limit,
+            Error(InvalidRequest),
+          )
+          check_budget(
+            1,
+            string.byte_size(prefix) + string.byte_size(after) + 65,
+          )
+        }
         Selection(_, _, All) -> Ok(Nil)
         Selection(_, _, StringFieldEquals(field, _)) -> validate_field(field)
       }
@@ -318,6 +344,8 @@ fn selection_headers(
   case selection {
     Selection(namespace, prefix, predicate) ->
       source.headers(namespace, prefix, predicate)
+    KeyPage(namespace, prefix, after, limit) ->
+      source.page_headers(namespace, prefix, after, limit)
     ExactKey(namespace, key) ->
       case source.header(namespace, key) {
         Ok(header) -> Ok([header])
@@ -333,7 +361,7 @@ fn validate_predicates(
 ) -> Result(Nil, Error) {
   list.try_fold(selections, Nil, fn(_, selection) {
     case selection {
-      ExactKey(_, _) -> Ok(Nil)
+      ExactKey(_, _) | KeyPage(_, _, _, _) -> Ok(Nil)
       Selection(namespace, prefix, predicate) -> {
         use <- bool.guard(
           namespace != cell.namespace || !string.starts_with(cell.key, prefix),

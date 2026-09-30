@@ -4720,3 +4720,26 @@ An empty list means a successful scan found no cells. Child joins propagate
 that same refusal when loading saved notes, so a failed scan cannot fabricate
 an absent structured result for a completed child. Code-mode get/list and
 virtual note reads use this shared path and retain the refusal.
+
+
+## Caller-owned code-mode message inspection
+
+`client/internal/message_inspection` reads current input membership from coherent
+snapshot cuts, rechecks membership when copying pending payloads, and falls back
+to the same captured caller leaf for materialized user messages. The router in
+`peers` binds the launching strand; program arguments cannot select another
+recipient. `peer.inbox` uses exclusive ID cursors and a twelve-item ceiling;
+`peer.history` uses exclusive transcript sequence cursors and a sixty-four-item
+ceiling. Both inspect without consuming or retaining new records.
+
+`peer_mail` reads existing remote admission receipts through bounded
+`snapshot.KeyPage` selections. It sorts captured cells by key before selecting
+the scanned window and filtering recipient ownership. Foreign-only pages still
+advance. Receipt keys are hashes, so a fresh poll must rescan and reconcile IDs;
+the cursor is not an arrival watermark. Exact recipient lookups enforce target
+identity, and sender lookups require a current outgoing link and bind the source
+session and strand. Admission proves neither consumption nor a model read.
+
+Protocol 056 records the public capability expansion and checkpoint policy.
+The production next-request regression proves that queued local and remote
+bodies appear in the first request after the current whole tool batch completes.

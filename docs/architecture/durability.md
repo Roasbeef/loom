@@ -306,6 +306,14 @@ because allocating a seq range reads `session.next_seq` before writing it.
 A deferred transaction could take a read snapshot it cannot upgrade, and
 waiting longer for a lock would not repair that stale snapshot.
 
+The internal snapshot reader can capture bounded register pages through
+`storage/snapshot.KeyPage`: a literal namespace/prefix, an exclusive key
+cursor, and at most 100 headers. SQLite applies the key range and limit
+before accounting the page's bytes and copying values, within the capture's
+short deferred transaction. Each later page takes a fresh cut; no transaction
+stays open between calls. Complete selections keep their original metadata
+budget, and a selected page still refuses an oversized cell explicitly.
+
 ### Shared SQLite tuning and transaction intent
 
 `storage/sqlite_policy` is the common tuning point for the session,

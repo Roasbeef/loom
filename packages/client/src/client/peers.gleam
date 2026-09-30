@@ -12,6 +12,7 @@ import codemode/internal/args
 import codemode/satellite
 import core/json.{type JsonValue}
 import core/msgpack
+import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order
@@ -510,7 +511,10 @@ fn text(value: JsonValue, key: String) -> Result(String, String) {
 }
 
 /// The peer calls this router services on every installed program mode.
-pub const serviced_caps = ["peer.roster", "peer.send"]
+pub const serviced_caps = [
+  "peer.roster", "peer.send", "peer.inbox", "peer.inbox_get", "peer.history",
+  "peer.received", "peer.received_get", "peer.sent_receipt",
+]
 
 /// Routes peer calls with the launching strand's authenticated identity.
 /// No argument can select a different sending session or strand.
@@ -526,12 +530,74 @@ pub fn router(
   fallback: satellite.CapRouter,
 ) -> satellite.CapRouter {
   fn(request: satellite.CapRequest) {
+    use <- bool.guard(
+      when: list.contains(serviced_caps, request.cap) && request.ordinal >= 128,
+      return: Error(satellite.CapDenial(
+        "admission_ceiling",
+        "peer capability admission ceiling reached",
+      )),
+    )
     case request.cap {
-      "peer.send" | "peer.roster" if request.ordinal >= 128 ->
-        Error(satellite.CapDenial(
-          "admission_ceiling",
-          "peer capability admission ceiling reached",
-        ))
+      "peer.inbox" -> {
+        use after <- result.try(args.string(request.args, "after"))
+        use limit <- result.try(args.int(request.args, "limit"))
+        Ok(
+          satellite.ServedHere(fn() {
+            wire_answer(wiring.own.call(peer_mail.Inbox(strand, after, limit)))
+          }),
+        )
+      }
+      "peer.inbox_get" -> {
+        use id <- result.try(args.string(request.args, "id"))
+        Ok(
+          satellite.ServedHere(fn() {
+            wire_answer(wiring.own.call(peer_mail.InboxGet(strand, id)))
+          }),
+        )
+      }
+      "peer.history" -> {
+        use before <- result.try(args.int(request.args, "before"))
+        use limit <- result.try(args.int(request.args, "limit"))
+        Ok(
+          satellite.ServedHere(fn() {
+            wire_answer(
+              wiring.own.call(peer_mail.History(strand, before, limit)),
+            )
+          }),
+        )
+      }
+      "peer.received" -> {
+        use after <- result.try(args.string(request.args, "after"))
+        use limit <- result.try(args.int(request.args, "limit"))
+        Ok(
+          satellite.ServedHere(fn() {
+            wire_answer(
+              wiring.own.call(peer_mail.Received(strand, after, limit)),
+            )
+          }),
+        )
+      }
+      "peer.received_get" -> {
+        use session <- result.try(args.string(request.args, "source_session"))
+        use source <- result.try(args.string(request.args, "source_strand"))
+        use id <- result.try(args.string(request.args, "message_id"))
+        Ok(
+          satellite.ServedHere(fn() {
+            wire_answer(
+              wiring.own.call(peer_mail.ReceivedGet(strand, session, source, id)),
+            )
+          }),
+        )
+      }
+      "peer.sent_receipt" -> {
+        use session <- result.try(args.string(request.args, "session"))
+        use id <- result.try(args.string(request.args, "message_id"))
+        Ok(
+          satellite.ServedHere(fn() {
+            wire_answer(sent_receipt(wiring, strand, session, id))
+          }),
+        )
+      }
       "peer.roster" ->
         Ok(satellite.ServedHere(fn() { wire_answer(roster(wiring, strand)) }))
       "peer.send" -> {
@@ -555,4 +621,31 @@ fn wire_answer(answer: Result(JsonValue, String)) {
     Ok(value) -> framing.CapOk(msgpack.StringValue(json.to_string(value)))
     Error(reason) -> framing.CapErr("peer_refused", reason)
   }
+}
+
+// Source identity comes from this host and its launching strand, not from the
+// program. An outgoing link is still required to reach a resident recipient.
+fn sent_receipt(
+  wiring: Wiring,
+  strand: String,
+  session: String,
+  id: String,
+) -> Result(JsonValue, String) {
+  use links <- result.try(links(wiring, strand))
+  use Nil <- result.try(
+    case
+      list.any(links, fn(link) {
+        field(link, "session") == Ok(json.String(session))
+      })
+    {
+      True -> Ok(Nil)
+      False -> Error("no operator-authorized outgoing link")
+    },
+  )
+  use destination <- result.try(resolve(wiring, session))
+  use Nil <- result.try(case destination.session == session {
+    True -> Ok(Nil)
+    False -> Error("peer directory identity mismatch")
+  })
+  destination.call(peer_mail.SentReceipt(wiring.own.session, strand, id))
 }

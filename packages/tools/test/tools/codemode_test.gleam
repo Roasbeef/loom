@@ -1534,3 +1534,33 @@ fn description_of(
     as "the property is described"
   text
 }
+
+pub fn own_message_inspection_is_discoverable_in_offered_program_modes_test() {
+  list.each([workspace_offer(), orchestration_offer()], fn(offer) {
+    let offer =
+      codemode.SeamOffer(..offer, allowed_imports: [
+        "cap/peer",
+        ..offer.allowed_imports
+      ])
+    let mode = echoing_over(codemode.one_seam(offer))
+    let assert Ok(surface) =
+      codemode.cap_scheme(mode).read(ctx_for("messages"), "peer")
+      as "both host modes expose the peer capability block"
+    assert string.contains(surface, "pub fn inbox(after: String, limit: Int)")
+    assert string.contains(surface, "pub fn inbox_get(id: String)")
+    assert string.contains(surface, "pub fn history(before: Int, limit: Int)")
+    assert string.contains(
+      surface,
+      "pub fn received(after: String, limit: Int)",
+    )
+    assert string.contains(
+      surface,
+      "pub fn received_get(source_session: String, source_strand: String, message_id: String)",
+    )
+    assert string.contains(
+      surface,
+      "pub fn sent_receipt(session: String, message_id: String)",
+    )
+    assert string.contains(surface, "never an inbox")
+  })
+}
