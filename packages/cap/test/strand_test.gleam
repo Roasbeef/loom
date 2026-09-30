@@ -13,6 +13,8 @@ import cap/internal/dispatch
 import cap/internal/wire
 import cap/report
 import cap/strand
+import core/clock
+import core/ids
 import core/msgpack
 import gleam/list
 import gleam/option.{None, Some}
@@ -58,7 +60,10 @@ pub fn a_spawn_carries_its_whole_assignment_test() {
     Ok(
       map([
         #("strand", msgpack.StringValue("sub:main/review-core-turn-1-0")),
-        #("operation", msgpack.StringValue("op_1")),
+        #(
+          "operation",
+          msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+        ),
       ]),
     )
   })
@@ -73,7 +78,7 @@ pub fn a_spawn_carries_its_whole_assignment_test() {
   assert spawned
     == Ok(strand.Handle(
       strand: "sub:main/review-core-turn-1-0",
-      operation: "op_1",
+      operation: op("00000000-0000-7000-8000-000000000001"),
     ))
 }
 
@@ -91,7 +96,10 @@ pub fn an_unset_assignment_sends_nothing_rather_than_a_default_test() {
     Ok(
       map([
         #("strand", msgpack.StringValue("sub:main/a")),
-        #("operation", msgpack.StringValue("op_1")),
+        #(
+          "operation",
+          msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+        ),
       ]),
     )
   })
@@ -117,7 +125,10 @@ pub fn a_result_shape_crosses_as_field_descriptors_test() {
     Ok(
       map([
         #("strand", msgpack.StringValue("sub:main/a")),
-        #("operation", msgpack.StringValue("op_1")),
+        #(
+          "operation",
+          msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+        ),
       ]),
     )
   })
@@ -148,7 +159,10 @@ pub fn a_join_decodes_every_shape_of_answer_test() {
             map([
               #("kind", msgpack.StringValue("ready")),
               #("strand", msgpack.StringValue("sub:main/a")),
-              #("operation", msgpack.StringValue("op_1")),
+              #(
+                "operation",
+                msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+              ),
               #("outcome", map([#("kind", msgpack.StringValue("completed"))])),
               #("report", msgpack.StringValue("done")),
               #(
@@ -171,7 +185,10 @@ pub fn a_join_decodes_every_shape_of_answer_test() {
             map([
               #("kind", msgpack.StringValue("pending")),
               #("strand", msgpack.StringValue("sub:main/b")),
-              #("operation", msgpack.StringValue("op_2")),
+              #(
+                "operation",
+                msgpack.StringValue("00000000-0000-7000-8000-000000000002"),
+              ),
               #("waited_ms", msgpack.IntValue(4000)),
             ]),
           ]),
@@ -182,15 +199,25 @@ pub fn a_join_decodes_every_shape_of_answer_test() {
   let assert Ok([first, second]) =
     strand.wait(
       [
-        strand.Handle(strand: "sub:main/a", operation: "op_1"),
-        strand.Handle(strand: "sub:main/b", operation: "op_2"),
+        strand.Handle(
+          strand: "sub:main/a",
+          operation: op("00000000-0000-7000-8000-000000000001"),
+        ),
+        strand.Handle(
+          strand: "sub:main/b",
+          operation: op("00000000-0000-7000-8000-000000000002"),
+        ),
       ],
       within_ms: 4000,
     )
     as "the join must decode"
   let assert strand.Ready(handle:, outcome:, report:, result:, notes:) = first
     as "the first handle settled"
-  assert handle == strand.Handle(strand: "sub:main/a", operation: "op_1")
+  assert handle
+    == strand.Handle(
+      strand: "sub:main/a",
+      operation: op("00000000-0000-7000-8000-000000000001"),
+    )
   assert outcome == strand.Completed
   assert report == "done"
   assert result
@@ -202,7 +229,10 @@ pub fn a_join_decodes_every_shape_of_answer_test() {
   assert notes == [#("k", report.string("v"))]
   assert second
     == strand.Pending(
-      handle: strand.Handle(strand: "sub:main/b", operation: "op_2"),
+      handle: strand.Handle(
+        strand: "sub:main/b",
+        operation: op("00000000-0000-7000-8000-000000000002"),
+      ),
       waited_ms: 4000,
     )
   // A program that only wants to know whether to come back again.
@@ -246,7 +276,10 @@ fn decoded_result(result: msgpack.MsgPackValue) -> strand.TerminalResult {
             map([
               #("kind", msgpack.StringValue("ready")),
               #("strand", msgpack.StringValue("sub:main/a")),
-              #("operation", msgpack.StringValue("op_1")),
+              #(
+                "operation",
+                msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+              ),
               #("outcome", map([#("kind", msgpack.StringValue("completed"))])),
               #("report", msgpack.StringValue("")),
               #("result", result),
@@ -259,7 +292,12 @@ fn decoded_result(result: msgpack.MsgPackValue) -> strand.TerminalResult {
   })
   let assert Ok([strand.Ready(result: verdict, ..)]) =
     strand.wait(
-      [strand.Handle(strand: "sub:main/a", operation: "op_1")],
+      [
+        strand.Handle(
+          strand: "sub:main/a",
+          operation: op("00000000-0000-7000-8000-000000000001"),
+        ),
+      ],
       within_ms: 1,
     )
     as "one settled handle"
@@ -288,7 +326,10 @@ fn decoded_outcome(outcome: msgpack.MsgPackValue) -> strand.Outcome {
             map([
               #("kind", msgpack.StringValue("ready")),
               #("strand", msgpack.StringValue("sub:main/a")),
-              #("operation", msgpack.StringValue("op_1")),
+              #(
+                "operation",
+                msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+              ),
               #("outcome", outcome),
               #("report", msgpack.StringValue("")),
               #("result", map([#("kind", msgpack.StringValue("none"))])),
@@ -301,7 +342,12 @@ fn decoded_outcome(outcome: msgpack.MsgPackValue) -> strand.Outcome {
   })
   let assert Ok([strand.Ready(outcome: settled, ..)]) =
     strand.wait(
-      [strand.Handle(strand: "sub:main/a", operation: "op_1")],
+      [
+        strand.Handle(
+          strand: "sub:main/a",
+          operation: op("00000000-0000-7000-8000-000000000001"),
+        ),
+      ],
       within_ms: 1,
     )
     as "one settled handle"
@@ -318,12 +364,12 @@ pub fn a_send_reports_how_it_landed_test() {
     Ok(
       map([
         #("kind", msgpack.StringValue("steered")),
-        #("entry", msgpack.StringValue("ent_1")),
+        #("entry", msgpack.StringValue("00000000-0000-7000-8000-000000000001")),
       ]),
     )
   })
   assert strand.send(to: "main", text: "found it")
-    == Ok(strand.Steered(entry: "ent_1"))
+    == Ok(strand.Steered(entry: entry("00000000-0000-7000-8000-000000000001")))
 }
 
 pub fn a_note_and_a_notes_read_round_trip_test() {
@@ -383,7 +429,10 @@ pub fn a_roster_decodes_a_peer_with_and_without_a_handle_test() {
                 "handle",
                 map([
                   #("strand", msgpack.StringValue("sub:main/a")),
-                  #("operation", msgpack.StringValue("op_1")),
+                  #(
+                    "operation",
+                    msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+                  ),
                 ]),
               ),
               #("outcome", map([#("kind", msgpack.StringValue("completed"))])),
@@ -400,7 +449,10 @@ pub fn a_roster_decodes_a_peer_with_and_without_a_handle_test() {
   assert parent.outcome == None
   assert child.relation == strand.ChildOf
   assert child.handle
-    == Some(strand.Handle(strand: "sub:main/a", operation: "op_1"))
+    == Some(strand.Handle(
+      strand: "sub:main/a",
+      operation: op("00000000-0000-7000-8000-000000000001"),
+    ))
   assert child.outcome == Some(strand.Completed)
   assert child.tools == ["fs_read"]
 }
@@ -476,6 +528,7 @@ fn named_code(error: strand.StrandError) -> Result(String, Nil) {
     strand.AdmissionCeilingReached(..) -> Ok("admission_ceiling")
     strand.StrandRefused(..) -> Error(Nil)
     strand.StrandUnavailable(..) -> Error(Nil)
+    strand.StrandResultMalformed(..) -> Error(Nil)
   }
 }
 
@@ -502,7 +555,7 @@ pub fn a_malformed_answer_settles_in_band_test() {
   install_fake(with: fn(_cap, _args, _deadline) {
     Ok(map([#("strand", msgpack.IntValue(7))]))
   })
-  let assert Error(strand.StrandUnavailable(reason:)) =
+  let assert Error(strand.StrandResultMalformed(reason:)) =
     strand.spawn(strand.assignment(purpose: "a", brief: "b"))
     as "a wrong-shaped answer must settle in band"
   assert reason != ""
@@ -511,8 +564,11 @@ pub fn a_malformed_answer_settles_in_band_test() {
 // --- rendering ------------------------------------------------------------
 
 pub fn a_handle_renders_the_way_the_harness_writes_it_test() {
-  assert strand.handle_text(strand.Handle(strand: "sub:a", operation: "op_1"))
-    == "sub:a#op_1"
+  assert strand.handle_text(strand.Handle(
+      strand: "sub:a",
+      operation: op("00000000-0000-7000-8000-000000000001"),
+    ))
+    == "sub:a#00000000-0000-7000-8000-000000000001"
 }
 
 pub fn a_refusal_and_a_join_render_for_a_report_test() {
@@ -525,20 +581,26 @@ pub fn a_refusal_and_a_join_render_for_a_report_test() {
   assert strand.error_text(strand.AdmissionCeilingReached("256 reached"))
     == "admission_ceiling: 256 reached"
   assert strand.waited_text(strand.Pending(
-      handle: strand.Handle(strand: "sub:a", operation: "op_1"),
+      handle: strand.Handle(
+        strand: "sub:a",
+        operation: op("00000000-0000-7000-8000-000000000001"),
+      ),
       waited_ms: 20,
     ))
-    == "sub:a#op_1 pending after 20ms"
+    == "sub:a#00000000-0000-7000-8000-000000000001 pending after 20ms"
   assert strand.waited_text(
       strand.Ready(
-        handle: strand.Handle(strand: "sub:a", operation: "op_1"),
+        handle: strand.Handle(
+          strand: "sub:a",
+          operation: op("00000000-0000-7000-8000-000000000001"),
+        ),
         outcome: strand.Failed(reason: "gave up"),
         report: "",
         result: strand.NoResultAsked,
         notes: [],
       ),
     )
-    == "sub:a#op_1 failed: gave up"
+    == "sub:a#00000000-0000-7000-8000-000000000001 failed: gave up"
 }
 
 // --- structured values ----------------------------------------------------
@@ -595,4 +657,91 @@ pub fn a_structured_outcome_marshals_the_way_the_host_reads_it_test() {
         ]),
       ),
     ])
+}
+
+fn op(text: String) -> strand.OpId {
+  let assert Ok(id) = strand.parse_op_id(text) as "fixture operation is UUIDv7"
+  id
+}
+
+fn entry(text: String) -> strand.EntryId {
+  let assert Ok(id) = strand.parse_entry_id(text) as "fixture entry is UUIDv7"
+  id
+}
+
+pub fn invalid_uuid_answers_are_distinct_from_transport_failures_test() {
+  // Text shape alone is insufficient: version and RFC variant also belong
+  // to the durable identity invariant shared with the harness.
+  list.each(
+    [
+      "",
+      "not-a-uuid",
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-7000-0000-000000000001",
+    ],
+    fn(invalid) {
+      install_fake(with: fn(_cap, _args, _deadline) {
+        Ok(
+          map([
+            #("strand", report.string("sub:a")),
+            #("operation", report.string(invalid)),
+          ]),
+        )
+      })
+      let assert Error(strand.StrandResultMalformed(_)) =
+        strand.spawn(strand.assignment("a", "b"))
+        as "a host response must carry a validated operation"
+
+      list.each([#("steered", "entry"), #("started", "operation")], fn(shape) {
+        install_fake(with: fn(_cap, _args, _deadline) {
+          Ok(
+            map([
+              #("kind", report.string(shape.0)),
+              #(shape.1, report.string(invalid)),
+            ]),
+          )
+        })
+        let assert Error(strand.StrandResultMalformed(_)) =
+          strand.send("main", "body")
+          as "both delivery identities are validated"
+      })
+    },
+  )
+}
+
+pub fn saved_identifiers_round_trip_through_public_cap_helpers_test() {
+  let text = "00000000-0000-7000-8000-000000000001"
+  assert strand.op_id_to_string(op(text)) == text
+  assert strand.entry_id_to_string(entry(text)) == text
+  assert strand.required("x", strand.StringField).required == strand.Required
+  assert strand.optional("x", strand.StringField).required == strand.Optional
+}
+
+pub fn host_minted_uuids_keep_their_identity_at_the_cap_boundary_test() {
+  let generator = ids.generator(clock.fixed(1_756_000_000_000), 42)
+  let #(operation, generator) = ids.mint_op(generator)
+  let #(entry, _) = ids.mint_entry(generator)
+  let operation_text = ids.op_id_to_string(operation)
+  let entry_text = ids.entry_id_to_string(entry)
+  assert strand.parse_op_id(operation_text) == Ok(operation)
+  assert strand.parse_entry_id(entry_text) == Ok(entry)
+  install_fake(with: fn(_, _, _) {
+    Ok(
+      map([
+        #("strand", report.string("sub:a")),
+        #("operation", report.string(operation_text)),
+      ]),
+    )
+  })
+  assert strand.spawn(strand.assignment("a", "b"))
+    == Ok(strand.Handle("sub:a", operation))
+  install_fake(with: fn(_, _, _) {
+    Ok(
+      map([
+        #("kind", report.string("steered")),
+        #("entry", report.string(entry_text)),
+      ]),
+    )
+  })
+  assert strand.send("main", "body") == Ok(strand.Steered(entry))
 }

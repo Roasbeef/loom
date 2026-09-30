@@ -83,10 +83,63 @@ import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
 import cap/internal/wire
 import cap/report.{type Value}
+import core/ids
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+
+/// A validated durable operation identity, shared with the harness.
+pub type OpId =
+  ids.OpId
+
+/// A validated durable entry identity, shared with the harness.
+pub type EntryId =
+  ids.EntryId
+
+/// Parses a UUIDv7 operation identity without importing harness modules.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert strand.parse_op_id("invalid") == Error("invalid operation UUIDv7")
+/// ```
+pub fn parse_op_id(text: String) -> Result(OpId, String) {
+  ids.parse_op_id(text) |> result.replace_error("invalid operation UUIDv7")
+}
+
+/// Renders an operation identity in its canonical wire form.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strand.op_id_to_string(handle.operation)
+/// ```
+pub fn op_id_to_string(id: OpId) -> String {
+  ids.op_id_to_string(id)
+}
+
+/// Parses a UUIDv7 entry identity from a saved reference.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert strand.parse_entry_id("invalid") == Error("invalid entry UUIDv7")
+/// ```
+pub fn parse_entry_id(text: String) -> Result(EntryId, String) {
+  ids.parse_entry_id(text) |> result.replace_error("invalid entry UUIDv7")
+}
+
+/// Renders an entry identity in its canonical wire form.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strand.entry_id_to_string(entry)
+/// ```
+pub fn entry_id_to_string(id: EntryId) -> String {
+  ids.entry_id_to_string(id)
+}
 
 /// How much longer than the requested join window this module will wait
 /// on the channel before calling the harness unreachable.
@@ -101,7 +154,12 @@ pub const wait_margin_ms = 10_000
 /// A durable reference to one child operation, as `spawn` minted it. It
 /// names nothing process-local, so it survives a restart.
 pub type Handle {
-  Handle(strand: String, operation: String)
+  Handle(
+    /// The child strand named by the host.
+    strand: String,
+    /// The specific durable run, validated before the handle is returned.
+    operation: OpId,
+  )
 }
 
 /// Where a child's context starts.
@@ -141,9 +199,25 @@ pub type FieldType {
   AnyField
 }
 
+/// Whether the child's result must contain a declared field.
+pub type Requirement {
+  /// A result without the field fails its declared schema.
+  Required
+
+  /// The field may be absent, but a present value must match its type.
+  Optional
+}
+
 /// One field of the result shape a spawn demands of its child.
 pub type Field {
-  Field(name: String, expects: FieldType, required: Bool)
+  Field(
+    /// The result object key.
+    name: String,
+    /// The value type the host checks when the key is present.
+    expects: FieldType,
+    /// Whether absence violates the declared result schema.
+    required: Requirement,
+  )
 }
 
 /// A field the child must report.
@@ -151,11 +225,11 @@ pub type Field {
 /// ## Examples
 ///
 /// ```gleam
-/// assert strand.required("count", strand.IntegerField).required
+/// assert strand.required("count", strand.IntegerField).required == strand.Required
 /// ```
 ///
 pub fn required(name: String, expects: FieldType) -> Field {
-  Field(name:, expects:, required: True)
+  Field(name:, expects:, required: Required)
 }
 
 /// A field the child may report.
@@ -163,11 +237,11 @@ pub fn required(name: String, expects: FieldType) -> Field {
 /// ## Examples
 ///
 /// ```gleam
-/// assert !strand.optional("note", strand.StringField).required
+/// assert strand.optional("note", strand.StringField).required == strand.Optional
 /// ```
 ///
 pub fn optional(name: String, expects: FieldType) -> Field {
-  Field(name:, expects:, required: False)
+  Field(name:, expects:, required: Optional)
 }
 
 /// How a child's operation ended.
@@ -224,10 +298,16 @@ pub type Waited {
 /// How a `send` payload landed.
 pub type Delivery {
   /// The target had an open run: the message is a durable steer on it.
-  Steered(entry: String)
+  Steered(
+    /// The committed pending-message identity.
+    entry: EntryId,
+  )
 
   /// The target was idle: the message was accepted as a fresh run.
-  Started(operation: String)
+  Started(
+    /// The newly admitted durable run.
+    operation: OpId,
+  )
 }
 
 /// How a peer stands in relation to the calling strand.
@@ -254,7 +334,7 @@ pub type Peer {
 
 /// Why a call was refused.
 ///
-/// Every variant but the last two is one of the harness's own refusal
+/// Every variant but the last three is one of the harness's own refusal
 /// names, carrying the harness's own sentence verbatim: the authorization
 /// model this seam runs under is `client/agency`'s, reused rather than
 /// re-derived, and a refusal renamed on the way out would be a second
@@ -327,6 +407,9 @@ pub type StrandError {
 
   /// Any other in-band refusal, its code preserved.
   StrandRefused(code: String, message: String)
+
+  /// The host answered, but its payload did not satisfy this API.
+  StrandResultMalformed(reason: String)
 
   /// The capability channel could not carry the call.
   StrandUnavailable(reason: String)
@@ -592,7 +675,7 @@ fn encode_schema(fields: List(Field)) -> Value {
         #("name", wire.string(field.name)),
         #("type", wire.string(field_type_name(field.expects))),
         #("items", encode_items(field.expects)),
-        #("required", wire.bool(field.required)),
+        #("required", wire.bool(field.required == Required)),
       ])
     }),
   )
@@ -643,7 +726,7 @@ fn encode_handles(handles: List(Handle)) -> Value {
     list.map(handles, fn(handle) {
       wire.args([
         #("strand", wire.string(handle.strand)),
-        #("operation", wire.string(handle.operation)),
+        #("operation", wire.string(op_id_to_string(handle.operation))),
       ])
     }),
   )
@@ -653,17 +736,18 @@ fn encode_handles(handles: List(Handle)) -> Value {
 //
 // Every decoder here is total over the wire's value type: a field of the
 // wrong shape is a `String` fault this module turns into
-// `StrandUnavailable`, never a crash. The harness is trusted to be
+// `StrandResultMalformed`, never a crash. The harness is trusted to be
 // well-behaved; the decoders exist because a malformed answer must still
 // settle in band (design §9).
 
 fn malformed(cap: String) -> fn(String) -> StrandError {
-  fn(reason) { StrandUnavailable("bad " <> cap <> " result: " <> reason) }
+  fn(reason) { StrandResultMalformed("bad " <> cap <> " result: " <> reason) }
 }
 
 fn decode_handle(value: Value) -> Result(Handle, String) {
   use strand <- result.try(wire.string_field(value, "strand"))
-  use operation <- result.try(wire.string_field(value, "operation"))
+  use operation_text <- result.try(wire.string_field(value, "operation"))
+  use operation <- result.try(parse_op_id(operation_text))
   Ok(Handle(strand:, operation:))
 }
 
@@ -737,11 +821,13 @@ fn decode_delivery(value: Value) -> Result(Delivery, String) {
   use kind <- result.try(wire.string_field(value, "kind"))
   case kind {
     "steered" -> {
-      use entry <- result.try(wire.string_field(value, "entry"))
+      use entry_text <- result.try(wire.string_field(value, "entry"))
+      use entry <- result.try(parse_entry_id(entry_text))
       Ok(Steered(entry:))
     }
     "started" -> {
-      use operation <- result.try(wire.string_field(value, "operation"))
+      use operation_text <- result.try(wire.string_field(value, "operation"))
+      use operation <- result.try(parse_op_id(operation_text))
       Ok(Started(operation:))
     }
     other -> Error("unknown delivery kind " <> other)
@@ -834,6 +920,7 @@ pub fn error_text(error: StrandError) -> String {
     SpawnCeilingReached(message:) -> "spawn_ceiling: " <> message
     AdmissionCeilingReached(message:) -> "admission_ceiling: " <> message
     StrandRefused(code:, message:) -> code <> ": " <> message
+    StrandResultMalformed(reason:) -> "malformed_result: " <> reason
     StrandUnavailable(reason:) -> "unavailable: " <> reason
   }
 }
@@ -844,11 +931,13 @@ pub fn error_text(error: StrandError) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert strand.handle_text(strand.Handle("sub:a", "op_1")) == "sub:a#op_1"
+/// let text = "00000000-0000-7000-8000-000000000001"
+/// let assert Ok(operation) = strand.parse_op_id(text)
+/// assert strand.handle_text(strand.Handle("sub:a", operation)) == "sub:a#" <> text
 /// ```
 ///
 pub fn handle_text(handle: Handle) -> String {
-  handle.strand <> "#" <> handle.operation
+  handle.strand <> "#" <> op_id_to_string(handle.operation)
 }
 
 /// How long a join actually waited, summed over the handles still

@@ -17,13 +17,13 @@ fn assignments(count: Int) -> List(strand.Assignment) {
 }
 
 fn handle(name: String) -> strand.Handle {
-  strand.Handle(strand: name, operation: "op-" <> name)
+  strand.Handle(strand: name, operation: operation(name))
 }
 
 fn handle_value(name: String) -> report.Value {
   report.object([
     #("strand", report.string(name)),
-    #("operation", report.string("op-" <> name)),
+    #("operation", report.string(strand.op_id_to_string(operation(name)))),
   ])
 }
 
@@ -197,4 +197,11 @@ pub fn invalid_map_options_and_empty_work_do_not_call_the_host_test() {
       as "invalid bounds are refused before admission"
   })
   assert strand.map([], max_concurrency: 1, within_ms: 0) == Ok([])
+}
+
+fn operation(name: String) -> strand.OpId {
+  let assert Ok(id) =
+    strand.parse_op_id("00000000-0000-7000-8000-00000000000" <> name)
+    as "single-digit fixture identities are UUIDv7"
+  id
 }

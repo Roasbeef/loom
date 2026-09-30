@@ -551,7 +551,7 @@ fn starting_program(identity: PayloadIdentity) -> String {
   <> " > "
   <> start_marker
   <> "; sleep 600\") {\n"
-  <> "    Ok(started) -> report.text(\"started \" <> started.id)\n"
+  <> "    Ok(started) -> report.text(\"started \" <> job.job_id_to_string(started.id))\n"
   <> "    Error(_error) -> report.failure(\"job.start did not admit\")\n"
   <> "  }\n"
   <> "}\n"
@@ -593,7 +593,7 @@ fn watching_program() -> String {
   <> "    Ok([row]) -> {\n"
   <> "      let seen = state_name(row.state)\n"
   <> "      case job.kill(row.id) {\n"
-  <> "        Ok(Nil) -> report.text(\"listed \" <> row.id <> \" \" <> seen)\n"
+  <> "        Ok(Nil) -> report.text(\"listed \" <> job.job_id_to_string(row.id) <> \" \" <> seen)\n"
   <> "        Error(_error) -> report.failure(\"job.kill did not answer\")\n"
   <> "      }\n"
   <> "    }\n"
