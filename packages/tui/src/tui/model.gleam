@@ -84,6 +84,7 @@ import session_view/outbound
 import session_view/session_channel
 import session_view/transcript_line.{type Line}
 import session_view/worktree_view
+import tui/access_overlay
 import tui/agent_strip
 import tui/agents
 import tui/appearance
@@ -142,6 +143,7 @@ pub type Overlay {
   GoalInspector(state: focused_goal_panel.State)
   DaemonSelector(session_selector.State)
   PeerLinkManager(peer_links.State)
+  AccessManager(access_overlay.State)
   ApprovalInspector(approval_panel.State)
 }
 

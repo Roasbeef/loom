@@ -380,6 +380,8 @@ fn same_epoch(data: Data, reply: protocol.Reply) {
     | protocol.DeletedReply(_), _
     | protocol.PeersInspectionReply(_), _
     | protocol.PeersMutationReply(_), _
+    | protocol.AccessListingReply(_), _
+    | protocol.AccessChangeReply(_), _
     | protocol.ActivityReply(_), _
     | protocol.UiLinkReply(..), _
     | protocol.ShutdownReply, _

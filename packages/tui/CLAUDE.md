@@ -1177,6 +1177,10 @@ boundaries and the split's measurements under Invariants.
   `tui/session_control`, which sends each inspection, link, or revocation over
   the owner-authenticated daemon control socket. `tui/model` holds the modal
   and its pending control outcome; `tui/render` paints the resulting state.
+- `tui/access_overlay` owns the owner's `/access` overlay (see "Access
+  overlay"): the principal and membership lists, their paging, the y/N
+  review of each change, and the pure `update` that returns an `Action`.
+  `tui/session_control` runs its requests and `tui/render` paints it.
 - `tui/agent_strip.{State, Focus, Line, Outcome, StripKey}` is the pinned
   per-agent strip under the footer (see "Agent strip"). `State` holds
   keyboard focus beside an `agent_roster.Roster` (decoded glances,
@@ -2546,3 +2550,34 @@ selection while reserving rows for the result and controls. Target-session
 pages retain the first catalogue revision, so a later page cannot silently
 mix another catalogue snapshot. Control requests still carry the owner's epoch
 and are checked by the daemon; TUI selection itself confers no peer authority.
+
+## Access overlay
+
+`/access` opens `AccessManager(access_overlay.State)`, the owner's view of who
+can reach the daemon (protocol-change/053, phase 3). `tui/access_overlay` is
+pure: `update(key, state)` returns an `Action` carrying the next state
+(`Continue`, `Close`, `ReadPrincipals`, `ReadMemberships`, `Apply`), and
+`session_control.update_access_overlay` turns a read into `job.ReadAccess` and
+a change into `job.ChangeAccess` over the borrowed control connection. The
+replies come back as `AccessListed`, `MembershipsListed` and `AccessChanged`
+and are filed by `listed`, `memberships_listed` and `changed`; a refusal goes
+through `failed`, which turns `forbidden` into one line saying the overlay is
+for the owner. The daemon decides who the owner is; the terminal does not read
+the hello's principal for it.
+
+Rows are decoded only after `host/access.principal_lines` or
+`membership_lines`, the checks `loom access list` and `show` print through, so
+a credential is a 16-character fingerprint and nothing longer. The overlay sets
+a member's role in one session (`o`, `b`), revokes a membership (`d`) and
+revokes a member's credentials (`c`), each after a y/N review in which only a
+lowercase `y` sends. While a change is outstanding (`State.sending`) no other
+can be proposed, and its acknowledgement is checked against the reviewed
+change. It never grants: `i` and `t` show the `loom access invite` and `rotate`
+lines from `host/access` and send nothing, because `--record` writes every key
+and socket message and a claim must not pass through the terminal. The overlay
+takes no text, a paste is ignored, and the owner's own credential is never
+offered for revocation or rotation. `tui/daemon/protocol` carries the five
+commands (`ListPrincipals`, `PrincipalMemberships`, `SetMemberRole`,
+`RevokeMembership`, `RevokeCredentials`); the reads add no epoch and the three
+changes add the hello's. The page refuses `/access` with every surface
+command, since `Surface(Access)` never reaches `page_command`'s `Ok`.

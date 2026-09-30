@@ -25,8 +25,8 @@ import session_view/worktree_view
 import tui/agents
 import tui/focused_goal_panel
 import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, DaemonSelector, GoalInspector,
-  Model, ModelSelector, NoOverlay, PeerLinkManager, View,
+  type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
+  GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager, View,
 } as tui_model
 import tui/queue_editor
 import tui/render
@@ -56,6 +56,7 @@ pub fn notes_surface(model: Model) -> Bool {
     | False, GoalInspector(_)
     | False, DaemonSelector(_)
     | False, PeerLinkManager(_)
+    | False, AccessManager(_)
     | False, AgentInspector(_)
     | False, ApprovalInspector(_)
     -> False

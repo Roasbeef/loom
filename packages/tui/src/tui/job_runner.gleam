@@ -649,7 +649,9 @@ fn control_deadline(request: job.ControlJob) -> Int {
     | job.Rename(..)
     | job.InspectPeers(..)
     | job.LoadPeerSessions(..)
-    | job.MutatePeers(..) -> 12_000
+    | job.MutatePeers(..)
+    | job.ReadAccess(..)
+    | job.ChangeAccess(..) -> 12_000
   }
 }
 
@@ -674,6 +676,8 @@ fn control_work(
       job.LoadPeerSessions(after:, revision:) ->
         load_peer_sessions(host, after, revision)
       job.MutatePeers(command:) -> mutate_peers(host, command)
+      job.ReadAccess(command:) -> read_access(host, command)
+      job.ChangeAccess(command:) -> change_access(host, command)
     }
   }
 }
@@ -696,6 +700,8 @@ fn load_page(host, command, collection, session, workspace) {
     | control_protocol.DeletedReply(_)
     | control_protocol.PeersInspectionReply(_)
     | control_protocol.PeersMutationReply(_)
+    | control_protocol.AccessListingReply(_)
+    | control_protocol.AccessChangeReply(_)
     | control_protocol.ActivityReply(_)
     | control_protocol.UiLinkReply(..)
     | control_protocol.ShutdownReply ->
@@ -795,6 +801,33 @@ fn mutate_peers(host, command) {
   }
 }
 
+// The owner's access reads. The reply is handed on unread: `host/access`
+// checks it where the overlay draws it, so the terminal accepts exactly the
+// rows `loom access` would print.
+fn read_access(host, command) {
+  use reply <- result.try(request(host, command))
+  case reply, command {
+    control_protocol.AccessListingReply(document),
+      control_protocol.ListPrincipals(after)
+    -> Ok(job.AccessListed(document, after))
+    control_protocol.AccessListingReply(document),
+      control_protocol.PrincipalMemberships(principal, after)
+    -> Ok(job.MembershipsListed(document, principal, after))
+    _, _ -> Error("access listing returned an unexpected reply")
+  }
+}
+
+// One access change. A reply lost after the request was sent surfaces as an
+// unknown outcome and is never resent.
+fn change_access(host, command) {
+  use reply <- result.try(request(host, command))
+  case reply {
+    control_protocol.AccessChangeReply(document) ->
+      Ok(job.AccessChanged(document))
+    _ -> Error("access change returned an unexpected reply")
+  }
+}
+
 // The activity poll runs on a control connection of its own, which it
 // closes before returning: the terminal's borrowed control has one
 // outstanding slot, and an operator's page turn must never find a poll
@@ -818,6 +851,8 @@ fn activity(
     | control_protocol.DeletedReply(_)
     | control_protocol.PeersInspectionReply(_)
     | control_protocol.PeersMutationReply(_)
+    | control_protocol.AccessListingReply(_)
+    | control_protocol.AccessChangeReply(_)
     | control_protocol.UiLinkReply(..)
     | control_protocol.ShutdownReply ->
       Error("activity returned an unexpected control reply")
