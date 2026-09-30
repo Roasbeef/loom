@@ -101,6 +101,9 @@ pub fn apply_event(
         usage:,
         records: list.reverse(entries),
         streams: [],
+        // A new session or strand has its own generations; the previous
+        // view's start time is not theirs.
+        generation_started_ms: None,
         tool_tails: [],
         record_cache_epoch: shared.record_cache_epoch + 1,
         compact_call_cache: dict.new(),

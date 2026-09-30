@@ -15,6 +15,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import session_view/commands
 import session_view/connection_event
 import session_view/model as session_model
 import session_view/msg
@@ -224,6 +225,22 @@ pub fn an_unsettled_generation_does_not_leak_its_start_into_the_next_test() {
     |> deliver(gateway.usage("main", 10, 300, 0.0))
   assert settled.shared.output_rate_tps == Some(150)
     as "the rate covers 2 s from the new request, not 7 s from the old one"
+}
+
+pub fn focusing_another_strand_drops_the_generation_clock_test() {
+  let generating =
+    initial(-10_000)
+    |> deliver(
+      "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"assistant\"}}",
+    )
+  assert generating.shared.generation_started_ms == Some(-10_000)
+
+  // The operator focuses a worker while main is still generating. Main's
+  // start is not the worker's, and main's later `done` is no longer the
+  // active strand's, so nothing else would ever clear it.
+  let focused = commands.focus(generating.shared, "worker")
+  assert focused.generation_started_ms == None
+    as "the clock times the active strand, so focus must not carry it over"
 }
 
 pub fn stream_fallback_uses_the_injected_clock_test() {
