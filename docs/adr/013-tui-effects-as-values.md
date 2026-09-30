@@ -369,14 +369,14 @@ The survey of mailbox reads, at the commit this slice started from:
   the wheel and drag arms of `apply_input`
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
   key drain (`tui/interaction.gleam:1467` (`drain_connection`)) and the tick
-  (`tui/tick.gleam:131` (`drain_connection`)). The attachment's reads:
+  (`tui/tick.gleam:146` (`drain_connection`)). The attachment's reads:
   `tui/attachment.gleam:492` (`prepare`),
   `tui/attachment.gleam:537` (`drain`) and
   `tui/attachment.gleam:597` (`settle`). The replay drain:
-  `tui/tick.gleam:212` (`drain_replay`).
+  `tui/tick.gleam:223` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
-  (`tui/tick.gleam:129` (`drain_reconnect`)), the control reply
-  (`tui/tick.gleam:127` (`drain_control`)), the picker's activity reply
+  (`tui/tick.gleam:143` (`drain_reconnect`)), the control reply
+  (`tui/tick.gleam:142` (`drain_control`)), the picker's activity reply
   (`tui/session_control.gleam:1327` (`drain_activity`)), and the session
   switch, which read through `sessions.receive` and `weft.pull` in
   `tui/sessions`, a module S5 deleted with the unreachable local switch.
@@ -592,7 +592,7 @@ stopped waiting for it. The drains take from the slot at the points they
 took from the mailbox: the tick's `drain_reconnect` and `drain_control`
 became `session_control.drain_reconnect` and `drain_control`, beside
 `drain_activity`, and `update_tick` calls all three where it called them
-before (`tui/tick.gleam:127` (`drain_control`)). `accept_control_event`,
+before (`tui/tick.gleam:142` (`drain_control`)). `accept_control_event`,
 `accept_reconnect_event`, `ControlEvent` and `ReconnectEvent` are gone,
 and so are the two comparisons of subjects they made. In the shipped loop
 neither comparison could fail, because the tick only ever read the
@@ -909,7 +909,7 @@ around it, at the commit this slice started from:
 | a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:517` | in the step | a job, `Configure` at `tui/job_runner.gleam:302` |
 | the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:551` | the attachment worker, since S5 | unchanged |
 | the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
-| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:710`, `discover_from` at `tui.gleam:742`, `read` at `tui.gleam:1257`, `read_private_bounded` at `tui.gleam:1902`, `start` at `tui.gleam:854`, `decode_file` at `tui.gleam:1707`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
+| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:710`, `discover_from` at `tui.gleam:742`, `read` at `tui.gleam:1270`, `read_private_bounded` at `tui.gleam:1915`, `start` at `tui.gleam:867`, `decode_file` at `tui.gleam:1720`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
 | the record-based session discovery that fed the local switch | `tui/sessions` and `tui/bootstrap` | deleted in S5 | gone; no definition or caller remains |
 
 Recording appends are writes, and have been effects since S3. Two reads in
@@ -946,7 +946,7 @@ job.Configure(options))` and holds the key in `Model.configuring`. The
 worker is `bootstrap.session_configuration`, unchanged. The runtime admits
 its reply by key, and `session_control.drain_configuration`, which
 `tick.update_tick` calls after the activity poll's drain and before the
-connection drain (`tui/tick.gleam:133` (`drain_configuration`)), clears the
+connection drain (`tui/tick.gleam:145` (`drain_configuration`)), clears the
 slot at the first outcome and continues where the step used to: a resolved
 path goes to `create_session_configured`, which cancels the pending
 submission, refuses while a creation key is retained, control is
