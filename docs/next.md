@@ -1,46 +1,41 @@
 # Current handoff
 
-This handoff is baselined against `3088ee3ce` (`main` after #652, the last
-pull request of the web redesign) on 2026-09-29. Tracker state was read with
-`gh` the same day. Every claim below was checked against that tree or that
-tracker; a claim that could not be checked says so.
+This handoff is baselined against `998be7a64` (`main` after #666, the last
+pull request that closed [#569](https://github.com/Roasbeef/loom/issues/569))
+on 2026-09-30. Tracker state was read with `gh` the same day. Every claim
+below was checked against that tree or that tracker; a claim that could not be
+checked says so.
 
 ## What the previous edition got wrong
 
-The previous edition was pinned to `c5fe2441d`, before the redesign. Four of
-its statements are now false, and one tracker entry is too.
+The previous edition was pinned to `3088ee3ce`, before the last three lanes of
+#569 landed. It is stale in these ways.
 
-- It described the page as one column for one session, with no way to focus
-  another strand, no panel and no way to open another session. Concept A2 is
-  built (below).
-- It listed the pinned frame, the composer, row expansion, the todo panel and
-  live streams as work to do. All of them merged (#624, #628, #631, #634),
-  and so did the strand, changes and session surfaces (#640).
-- It said the page cannot draw a live answer, a todo board, an expanded row
-  or a second strand. It draws all four.
-- It did not say that `main` rejects direct pushes, so a queue pull request
-  is merged with `--admin` (see "How work lands here").
-- Issue #569's checklist marked "Changes and trace panes" as done, but the
-  panel has Strands, Changes and Session tabs and **no Trace tab**
-  (`web_client/shell_rule.Tab` has three variants, and nothing under
-  `web_view/view` draws a trace). Section 9 of the design note says the
-  same. The checklist was corrected on 2026-09-29: only the Changes pane is
-  done, and the whole Trace tab moved to #656.
+- It called #569 open and listed its remaining items as work. All of them
+  merged in #665 and #666, and #569 was closed on 2026-09-30 with a comment
+  that says so.
+- It said the page cannot show settled strands or images, and that 053 phases
+  2 and 3 and the invite control were not built. They are built (below).
+- It ordered the Trace tab and remote access after the terminal revamp with
+  the revamp waiting on #569. The revamp is now first, and #656 and #654 follow
+  it.
+- It said a streamed code block re-sends the whole block each batch and that
+  an unsettled generation leaks its start time. Both are fixed (#658).
 
-The earlier statements about the step extraction (ADR-014's blockers, the
-shared step, the etui pin `c10f6a64`) were checked again and still hold.
+The statements about the step extraction (ADR-014's blockers, the shared step)
+were checked again and still hold.
 
 ## Where the tree is
 
-**Part 1 of [issue #569](https://github.com/Roasbeef/loom/issues/569) is
-done.** The session's half of the client step lives in `packages/session_view`,
-which depends on `core`, `machine` and `gleam_stdlib` alone, held there by
-lint R6. It holds the lane (`session_channel`), the decoders, snapshot
-adoption, the projection and the line builders, and the shared step: the
-session record `model.Shared(socket, recorder, source, replay_source)`, the
-folds of pushed events and lane updates (`event_fold`, `lane_fold`), the
-operator's commands (`commands`), the side-surface reads (`surfaces`), the
-settle, and `step.update`.
+**Part 1 of #569 is done, and so is the issue.** The session's half of the
+client step lives in `packages/session_view`, which depends on `core`,
+`machine` and `gleam_stdlib` alone, held there by lint R6. It holds the lane
+(`session_channel`), the decoders, snapshot adoption, the projection and the
+line builders, and the shared step: the session record
+`model.Shared(socket, recorder, source, replay_source)`, the folds of pushed
+events and lane updates (`event_fold`, `lane_fold`), the operator's commands
+(`commands`), the side-surface reads (`surfaces`), the settle, and
+`step.update`.
 
 The two hosts run it in different shapes.
 
@@ -65,31 +60,41 @@ architecture](architecture/client.md#the-client-engine-and-its-hosts) is the
 map.
 
 **The page today (concept A2, [the web design
-note](design-notes/web-design.md)).** The redesign merged as spec #638, then
-#644 (shell, palette and content), #648 (tabs, timeline, keys), #651 (saved
-layout and theme) and #652 (session switching). `loomd --ui` serves an
-observer's page and an operator's page for one session. Both draw:
+note](design-notes/web-design.md)).** `loomd --ui` serves an observer's page
+and an operator's page for one session. Both draw:
 
 - **Three collapsible columns** inside `<loom-shell>`: a sessions sidebar
   (operator pages only), the transcript and dock in the centre, and a
   right-hand panel. Buttons at the ends of the top bar hide each side
   column, and a hidden column is inert and out of the tab order.
 - **A tabbed panel** with Strands, Changes and Session. Strands holds the
-  strand cards and the detail of the strand in focus. Changes lists the
-  files the session's own edits changed and is always present. Session shows
-  the goal, jobs, viewers (operator pages only) and estimated cost. There is
-  no Trace tab (see above).
+  strand cards and the detail of the strand in focus, and lists settled
+  strands after the live ones as a collapsed group (#659). Changes lists the
+  files the session's own edits changed, keyed by path, and is always
+  present. Session shows the goal, jobs, viewers (operator pages only) and
+  estimated cost. There is no Trace tab (#656).
 - **Strand focus.** A card, a chip of the agent strip or a timeline row
   focuses a strand, and the transcript, breadcrumb, composer target and
   approval cards follow it. The transcript is a timeline with a dot in the
-  hue of each piece's strand. Only strands the strip lists can be focused;
-  settled strands are not in the list yet.
+  hue of each piece's strand. A settled strand can be focused, and the roster
+  then lists it.
 - **Rows and streams.** The agent strip with cache rings and miss notices,
   turns with folded work, sub-agent, advisor and peer rows, rendered
   Markdown, expandable rows, the todo panel with the reviewer band, live
   reasoning and answer streams, and the newest 150 rows with paging back to
-  300 (`Load older`). The memory context the daemon attaches to a prompt is
-  shown collapsed under it. Advisor nudges are shown read-only.
+  300 (`Load older`). A streamed fenced code block is drawn as keyed line
+  spans, so a batch patches the lines that changed and not the whole block.
+  The generation clock restarts per request and on a change of strand, so an
+  unsettled generation no longer leaks its start into the next elapsed
+  reading (#658). The memory context the daemon attaches to a prompt is shown
+  collapsed under it. Advisor nudges are shown read-only.
+- **Images** (#661). A transcript row shows the images its message carries,
+  served from a same-origin image route that reads under the page's cookie
+  (`ui_sessions.images`), so the content security policy does not loosen. The
+  operator's composer attaches images with a prompt. An operator's page
+  socket takes a 12 MiB frame, and the `PageOperator` connection class is
+  charged 64 MiB, which covers the five copies of that frame the submit's
+  decode chain holds at once (`ui_socket`, `root.operator_peak`).
 - **Keyboard.** `<loom-shell>` listens on the document for three keys
   (`shell_rule.intent`): Command or Control with B toggles the sidebar, with
   Alt as well it toggles the panel, and Escape returns to `main`. A key is
@@ -113,16 +118,33 @@ observer's page and an operator's page for one session. Both draw:
   that names one, asks the daemon for a ticket. `ui_socket` mints it into
   the ticket table with the page's own principal and ceiling, and
   `<loom-switch>` navigates the browser to the exchange address after
-  `switch_rule` checks its shape. A ticket whose source page has already
-  ended is refused as unknown (`c7ceb6952`), so a switch never revives a page
-  past its deadline. A principal may hold up to four pages per session
-  (`ending.max_pages`), and a page ended by that cap or by a restart says so.
+  `switch_rule` checks its shape, with `location.replace` so the tab keeps one
+  history entry per page and Back does not land on a page whose nonce is gone
+  (#658). A ticket whose source page has already ended is refused as
+  unknown, so a switch never revives a page past its deadline. A principal
+  may hold up to four pages per session (`ending.max_pages`), and a page
+  ended by that cap or by a restart says so.
+- **Share and invite** (owner's operator page, #663). An "invite to this
+  session" control offers an observer button and an operator button. It makes
+  the invitation `loomd access invite` makes, with a claim that lives one hour
+  (`invites.claim_ttl_ms`), and shows the command and token once in copy
+  boxes. A credential may mint three invitations an hour
+  (`ui_sessions.reserve_invite`). The page checks the principal and the
+  capability again when the click arrives (`ui_socket.invite_for`). The
+  protocol-change/051 addendum on inviting from the session page says what a
+  stolen owner page is worth.
 
-The page still cannot show per-call timing, settled strands, images, a
-skills catalogue for slash commands, or the composer target menu of the
-design note's section 3.3 (not built, no owner ruling). Claim invitations
-carry no bearer: 053 step 1 is merged, and the owner admin steps still need
-an implementation decision. Do not infer approval from the claim-flow merge.
+**Access tooling.** 053 phases 1 to 3 are merged; phase 4 is not. `loom access`
+lists principals and memberships and shows one (`host/access`, the grammar
+`loomd access` shares), served by `principals.list` and
+`principals.memberships` on the client protocol. The terminal's `/access`
+overlay (`tui/access_overlay`) shows the same checks `loom access list` and
+`show` print (`membership_lines`), and on a rotation shows the `loom access`
+line to run in a shell.
+
+The page still cannot show per-call timing, a skills catalogue for slash
+commands, or the composer target menu of the design note's section 3.3 (not
+built, no owner ruling).
 
 The toolchain is Gleam 1.19.0-rc2 (`.github/workflows/ci.yml`). `make
 check-affected BASE=origin/main` runs only the gates a change can affect; a
@@ -130,57 +152,30 @@ change to the daemon's package also needs `make signoff`.
 
 ## Next actions, in order
 
-**Check open pull requests and branches first.** Work on the first lanes
-below may already be in flight on `web_view/stream-followups`,
-`web_view/images`, `access/loom-access-listing` and
-`web_view/settled-strands`. At this baseline none of them had an open pull
-request, but a branch may exist and a pull request may have opened since.
-Continue an existing lane rather than starting a second one.
+**Check open pull requests and branches first.** A branch may exist and a pull
+request may have opened since this baseline. Continue an existing lane rather
+than starting a second one.
 
-The owner's order (2026-09-29) is to close the open items on #569, and then
-the terminal revamp. Remote access and trace timing do not block closing
-#569.
+The owner's order (2026-09-30) is the terminal revamp, then the Trace tab and
+remote access.
 
-1. **The open items of #569.**
-   - **Follow-ups from #632.** A streamed fenced code block re-sends the
-     whole block each batch, which is quadratic; per-line keyed rows for the
-     live answer fix it. And `generation_started_ms` is cleared only by
-     settlement, so an unsettled generation leaks its start into the next
-     elapsed reading (the terminal too). Exit: a measured patch size for a
-     long streamed block, and an elapsed reading that starts at zero after an
-     unsettled generation.
-   - **History Back after a session switch** shows the waiting paragraph,
-     because a page has one nonce per tab. Exit: Back either restores the
-     page or says why it cannot, with a test.
-   - **Images in the transcript and the composer.** Needs a 051 addendum, and
-     the CSP does not loosen.
-   - **053 phase 2, then phase 3.** Phase 2 is `loom access` with
-     `principals.list` and `principals.memberships`; phase 3 is the terminal
-     `/access` overlay. Phase 4, the admin page, is built only if the owner
-     confirms that phase 3 leaves a need for it, as 053's phasing says.
-     Anything touching tickets or access gets a security-focused review.
-   - **Settled strands in the Strands list.** `agent_roster` keeps only a
-     count of settled strands today (design note, section 3.1), so the
-     roster's shape changes, and each settled strand needs a card handler.
-   - **Share and invite from the session page.** Built, with 051's addendum on
-     inviting from the session page: an owner's operator page has an "invite to
-     this session" control with an observer button and an operator button, a
-     claim that lives an hour, and the command and token shown once in copy
-     boxes. What a stolen owner page is worth under it is the addendum's
-     "What a stolen owner page is worth": each invitation is a durable
-     membership, three an hour for the credential, and the operator button is
-     where the worst case lives. No browser drove it, so the clipboard write
-     and the control's layout are unverified.
-2. **The terminal revamp, [#655](https://github.com/Roasbeef/loom/issues/655).**
-   Starts after #569 closes. It takes the web design (A2) as its reference
-   and begins with a design note and screenshots for the owner's sign-off, as
-   the web pass did. Decide first whether it takes option (d): moving the
-   terminal onto `step.update` with a pure `fn(view, facts) -> view`
-   callback, so both hosts run one sequence. Exit for that decision: a
-   written estimate of the three costs the step-extraction note names
-   (callbacks through the step, reordering risk that the replay identity
-   checks catch, and the Erlang inliner on long settle chains), measured with
-   `scripts/tui_perf.sh` and `erlc +time` before any code.
+1. **The terminal revamp, [#655](https://github.com/Roasbeef/loom/issues/655).**
+   It takes the web design (A2) as its reference and begins with a design note
+   and screenshots for the owner's sign-off, as the web pass did. Decide first
+   whether it takes option (d): moving the terminal onto `step.update` with a
+   pure `fn(view, facts) -> view` callback the sequencer calls after each
+   piece, so both hosts run one sequence. Exit for that decision: a written
+   estimate of the three costs the step-extraction note names (callbacks
+   through the step, reordering risk that the replay identity checks catch,
+   and the Erlang inliner on long settle chains), measured with
+   `scripts/tui_perf.sh` and `erlc +time` before any code. The small composer
+   notice bug, which reads "prompt_content admitted" after a send, is listed on
+   #655 and can go in with it.
+2. **The Trace tab, [#656](https://github.com/Roasbeef/loom/issues/656).**
+   Two steps. First the untimed list of the latest `code_mode` program's
+   calls, drawn from what the page already receives. Then per-call timing: a
+   `protocol-change/NNN.md` for per-call start and end fields on the wire,
+   bars in the tab, and optionally in the terminal.
 3. **Remote access, [#654](https://github.com/Roasbeef/loom/issues/654).**
    [protocol-change/052](../protocol-change/052-web-view-remote-origin.md) is
    still a proposal, and the owner accepts or amends it before work starts. It
@@ -189,19 +184,21 @@ the terminal revamp. Remote access and trace timing do not block closing
    mean TLS in the daemon. Before it, measure the server-side re-render and
    diff cost per batch per viewer, and add the mailbox and patch-rate
    metrics the step extraction deferred to 052.
-4. **The Trace tab, [#656](https://github.com/Roasbeef/loom/issues/656).**
-   Two steps. First the untimed list of the latest `code_mode` program's
-   calls, drawn from what the page already receives. Then per-call timing: a
-   `protocol-change/NNN.md` for per-call start and end fields on the wire,
-   bars in the tab, and optionally in the terminal.
-5. **Terminal state.** Land or close PR #583 (#399, #524).
-6. **Wake etui on SIGWINCH** before raising the terminal's one-second idle
+4. **Terminal state.** Land or close PR #583 (#399, #524).
+5. **Wake etui on SIGWINCH** before raising the terminal's one-second idle
    ceiling. Exit: resize repaints without waiting for a poll, and a quiet
    terminal wakes only for work its lane or runtime owes.
-7. **Measure actual provider token counts** and representative workloads
+6. **Measure actual provider token counts** and representative workloads
    before choosing tool search. Exit: measured prompt size, cache-prefix
    behavior and discovery cost, rather than the character estimate in
    [the design note](design-notes/tool-search-and-code-mode.md).
+
+Known small follow-ups, none of which has its own issue:
+
+- The composer notice above.
+- A settled strand's row shows no end time, because the roster carries none.
+  It needs a wire field, so a `protocol-change/NNN.md`.
+- `loom access` takes its global flags before the subcommand.
 
 ## How work lands here
 
@@ -287,6 +284,20 @@ idle target; `may_wake` is a separate owner choice.
 through the capability router, not mounted, and prompt guidance must match
 the installed router and generated prelude.
 
+**053 phase 4 waits for use** (owner, 2026-09-30). The admin page is built
+only after the owner has used the terminal's `/access` overlay and says it
+leaves a need.
+
+**The page invite keeps both buttons** (owner, 2026-09-30). The observer and
+the operator button both stay. The risk is accepted: a stolen owner page can
+mint an operator invitation, bounded by three an hour for the credential, and
+each invitation is a durable membership the owner can revoke.
+
+**The operator page frame is 12 MiB, and `PageOperator` reserves 64 MiB**
+(owner, 2026-09-30). The reservation covers the five copies of a frame the
+submit's decode chain holds at once. A change to the frame limit changes the
+reservation with it.
+
 **Operator surfaces do not open saved sessions.** The CLI and the terminal
 use the membership- and epoch-checked control protocol, and a
 listing is never permission to activate a saved target.
@@ -300,7 +311,8 @@ listing is never permission to activate a saved target.
   host has a surface for. Revisit it if a per-page cost is measured.
 - **The page loads no skills catalogue**, so a skill's slash command is
   refused as unknown there. Reading the catalogue is a follow-up.
-- **The 053 admin page** (phase 4) is built only on the owner's confirmation.
+- **The 053 admin page** (phase 4) is built only on the owner's confirmation,
+  after use of the `/access` overlay.
 - **The composer target menu** of the design note's section 3.3 is not built
   and has no owner ruling.
 - **`conformance` declares `prompt` as a dependency and imports nothing
@@ -328,7 +340,7 @@ This edition did not re-test the reachability of these items or close them.
 This edition changed documents only. `make doc-check` is the proof:
 coverage, the `AGENTS.md` mirrors and every file:line citation in the
 documents it checks. No code was built or run for it. The description of the
-page was checked by reading the source at `3088ee3ce` (the `web_client`
+page was checked by reading the source at `998be7a64` (the `web_client`
 element modules and their rules, `web_view/view/*`, `component.gleam`,
 `ending.gleam`) and the tracker, not by driving a browser. Where the tracker
-and the code disagreed, the code was taken; the Trace tab is the instance.
+and the code disagreed, the code was taken.
