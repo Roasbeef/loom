@@ -1840,6 +1840,10 @@ pub fn send_tool(
       <> "result; the original spawn handle still names the old run. "
       <> "The roster recovers the current or latest run's handle. "
       <> "When delivery is steered, the existing run remains open. "
+      <> "An in-flight tool batch finishes before the message enters the "
+      <> "next model request. Acceptance is not a read receipt. In code "
+      <> "mode, cap/peer.inbox and cap/peer.history inspect your own "
+      <> "pending and materialized inputs; peer.roster lists remote links. "
       <> "A resumed run defaults to ten minutes. Set within_ms to choose "
       <> "a different positive budget for an idle child; it is refused "
       <> "for an active child and never extends an existing deadline.",
@@ -1986,9 +1990,9 @@ pub fn notes_tool(
   tool.Tool(
     name: "agent_notes",
     description: "Read the shared blackboard. Omit the prefix to read every "
-      <> "agent's notes in this session; pass a namespace-qualified prefix "
+      <> "agent's notes in this session; pass a prefix relative to agent/ "
       <> "of at most 4096 characters to narrow (for example "
-      <> "another agent's strand name).",
+      <> "main/ or another agent's strand name; do not include agent/).",
     prompt_snippet: Some("`agent_notes` reads the shared blackboard."),
     schema: tool.object_schema(
       [

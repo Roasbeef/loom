@@ -48,6 +48,7 @@ cap|cap_test|installs and resets the capability channel in cap/internal/dispatch
 cap|cap@mcp_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|cap@search_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|execution_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+cap|peer_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|notes_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|runtime_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|strand_map_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot

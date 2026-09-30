@@ -1110,6 +1110,20 @@ pub fn a_host_serving_both_offers_both_and_defaults_to_the_workspace_test() {
   assert list.contains(orchestration_offer.allowed_imports, "cap/strand")
   assert list.contains(orchestration_offer.allowed_imports, "cap/proc")
   assert orchestration_offer.serviced_caps == seam.seams.default.serviced_caps
+  list.each([seam.seams.default, orchestration_offer], fn(offer) {
+    assert list.contains(offer.allowed_imports, "cap/peer")
+    let mode =
+      codemode_tool.CodeMode(..seam, seams: codemode_tool.one_seam(offer))
+    let assert Ok(surface) =
+      codemode_tool.cap_scheme(mode).read(ctx_for("/work"), "peer")
+      as "the default Agency-backed host exposes own message inspection"
+    assert string.contains(surface, "pub fn inbox(after: String, limit: Int)")
+    assert string.contains(surface, "pub fn history(before: Int, limit: Int)")
+    assert string.contains(
+      surface,
+      "pub fn received(after: String, limit: Int)",
+    )
+  })
   broker.stop(broker_actor)
 }
 
