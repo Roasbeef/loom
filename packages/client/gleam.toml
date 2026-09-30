@@ -19,7 +19,7 @@ provider = { path = "../provider" }
 tools = { path = "../tools" }
 codemode = { path = "../codemode" }
 mcp = { path = "../mcp" }
-gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "ed5758bb11939ceab4adaceda26e891172550ec1" }
+gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "a3de7047fd594150addee2ba284be5c02a131ed0" }
 telemetry = { path = "../telemetry" }
 session_view = { path = "../session_view" }
 web_view = { path = "../web_view" }

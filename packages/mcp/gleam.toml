@@ -5,7 +5,7 @@ gleam = ">= 1.18.0"
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
-gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "ed5758bb11939ceab4adaceda26e891172550ec1" }
+gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "a3de7047fd594150addee2ba284be5c02a131ed0" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
