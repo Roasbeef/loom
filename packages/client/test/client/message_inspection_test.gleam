@@ -239,7 +239,13 @@ pub fn remote_admission_history_survives_abort_and_filters_the_recipient_test() 
       peer_mail.ReceivedGet("main", source, "reviewer", "report-1"),
     )
     == receipt
+  let assert Ok(Some(state)) = session.strand_state(runtime.session, "main")
+    as "the admitted message belongs to an active run"
+  let assert Some(op) = state.value.current_operation
+    as "the provider still owns the operation"
   api.abort(runtime)
+  let assert Ok(_) = api.await_result(runtime, op, within_ms: 5000)
+    as "terminal cleanup settles before receipt recovery"
   assert peer(
       runtime,
       peer_mail.ReceivedGet("main", source, "reviewer", "report-1"),

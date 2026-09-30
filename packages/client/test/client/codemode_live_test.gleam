@@ -31,6 +31,8 @@ import client/codemode
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/peer_mail
+import client/peers
 import client/scratch
 import client/serve
 import core/clock
@@ -2534,4 +2536,111 @@ fn jailed_stdout(
   let assert Ok(text) = bit_array.to_string(collected.stdout)
     as "a listing is UTF-8"
   text
+}
+
+pub fn caller_owned_messages_cross_the_real_cap_channel_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP own_message_channel: " <> reason)
+    Ok(ready) -> run_message_inspection(ready)
+  }
+}
+
+fn run_message_inspection(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let owner = notes_session.open(rig.root <> "/messages.db", wall_clock())
+  let assert Ok(_) =
+    api.prompt(owner.runtime, [
+      message.UserMessage(
+        [message.UserText("own transcript proof", option.None)],
+        1,
+        option.None,
+      ),
+    ])
+    as "the recipient has a real active transcript"
+  let endpoint =
+    peer_mail.Endpoint("recipient", fn(command) {
+      peer_mail.handle(owner.runtime, wall_clock(), command)
+    })
+  let assert Ok(_) =
+    endpoint.call(
+      peer_mail.Allow(peer_mail.Grant(
+        "source",
+        "reviewer",
+        "main",
+        peer_mail.BusyOnly,
+      )),
+    )
+    as "the existing transport admits an authorized sender"
+  let assert Ok(_) =
+    endpoint.call(peer_mail.Deliver(
+      peer_mail.Source("source", "reviewer", json.Null),
+      "main",
+      "proof",
+      "remote receipt proof",
+    ))
+    as "the remote body has a durable admission receipt"
+  let assert Ok(id) =
+    api.steer(
+      owner.runtime,
+      message.UserMessage(
+        [message.UserText("local pending proof", option.None)],
+        1,
+        option.None,
+      ),
+    )
+    as "the caller has an inspectable queued input"
+  let id = ids.entry_id_to_string(id)
+  let wiring = peers.Wiring(endpoint, json.Null, option.None)
+  let base =
+    codemode.serving(
+      codemode.default_config(
+        broker: rig.broker,
+        clock: wall_clock(),
+        workspace: rig.workspace,
+        toolchain: rig.toolchain,
+      ),
+      codemode.BothSeams,
+      over: owner.agency,
+    )
+  let config =
+    codemode.Config(
+      ..base,
+      wrap_router: fn(request: codemode_tool.Request, router) {
+        peers.router(wiring, request.strand, router)
+      },
+    )
+  let mode = codemode.seam(config)
+  let offer = fn(offered: codemode_tool.SeamOffer) {
+    codemode_tool.SeamOffer(
+      ..offered,
+      serviced_caps: list.append(offered.serviced_caps, peers.serviced_caps),
+    )
+  }
+  let mode =
+    codemode_tool.CodeMode(
+      ..mode,
+      seams: codemode_tool.Seams(
+        default: offer(mode.seams.default),
+        alternates: list.map(mode.seams.alternates, offer),
+      ),
+    )
+  let source =
+    "import cap/peer\nimport cap/report\nimport gleam/string\npub fn main() -> report.Outcome {\n"
+    <> "  case peer.inbox(after: \"\", limit: 12), peer.inbox_get(id: \""
+    <> id
+    <> "\"), peer.history(before: 0, limit: 64), peer.received(after: \"\", limit: 64), peer.received_get(source_session: \"source\", source_strand: \"reviewer\", message_id: \"proof\"), peer.roster(), peer.sent_receipt(session: \"unlinked\", message_id: \"proof\") {\n"
+    <> "    Ok(pending), Ok(exact), Ok(history), Ok(received), Ok(receipt), Ok(roster), Error(_) -> {\n"
+    <> "      case string.contains(pending <> exact, \"local pending proof\") && string.contains(history, \"own transcript proof\") && string.contains(received <> receipt, \"remote receipt proof\") && roster == \"[]\" { True -> report.text(\"inspection channel proved\") False -> report.failure(\"missing owned body\") }\n"
+    <> "    }\n    _, _, _, _, _, _, _ -> report.failure(\"inspection capability refused\")\n  }\n}\n"
+  let outcome =
+    codemode_tool.tool_for(mode).run(
+      live_ctx(rig.workspace, rig.base_policy, wall_clock()),
+      json.Object([
+        #("program", json.String(source)),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  assert notes_program_value(outcome)
+    == json.String("inspection channel proved")
+  api.abort(owner.runtime)
 }
