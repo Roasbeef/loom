@@ -90,8 +90,8 @@ them, the current one marked `▌` with one bar per live strand (`▮`). `●` i
 resident session and `○` a saved one. Bars show only for the session on
 screen; other rows carry no attention count, following the web ruling that no
 new data is fetched for them. It is today's session picker
-(`session_selector`) docked: Left from an empty composer already opens it,
-and docked it takes focus instead of opening an overlay.
+(`session_selector`) docked: F1 opens it today as an overlay (Left does, until section 7.1), and
+docked it takes focus instead.
 
 **Right panel.** Four tabs; the Strands tab carries the count of strands that
 need input. Section 4 describes each tab.
@@ -110,8 +110,8 @@ and the gutter marks:
 
 Opening the panel (F2 to F5, or Shift+Tab) docks it at 44 cells and hides the
 strip, because the Strands tab says the same thing. `75 + 1 + 44 = 120`. The
-sessions column does not dock here: `75 - 31` would leave 44. Left from an
-empty composer opens the picker as today.
+sessions column does not dock here: `75 - 31` would leave 44. F1 opens the
+picker as an overlay.
 
 | Tab | Dark | Light |
 |---|---|---|
@@ -240,15 +240,27 @@ Ctrl+R act in the queue editor only.
 |---|---|---|
 | F2, Ctrl+O | Open the panel on Strands (today: the `/agents` overlay). Pressed again with the panel focused, close it | Same keys, same meaning; below 117 columns it is a sheet instead of an overlay |
 | F3, F4, F5 | Panel on Changes, Trace, Session; toggle when already there | Unbound today |
-| F1 | Show or hide the sessions column (146 columns and up) | Unbound; help is `/help` |
+| F1 | Focus the sessions column when docked (146 columns and up), else open the picker; again to hide | Unbound; help is `/help`. Takes over the picker from Left |
 | Shift+Tab | Show or hide the panel | Replaces "toggle the rail", which the panel subsumes |
-| Right, from an empty composer with no attachment | Focus the panel | Right only moves the cursor, which means nothing in an empty editor; the same argument the Left binding already makes |
-| Left, from an empty composer | Focus the sessions column when docked, else open the picker as today | Unchanged where the column is absent |
+| Left, from an empty composer with no attachment | Open the Strands tab with focus (a sheet below 117 columns). **Changes today's meaning**, which is the session picker | Left has no editing meaning in an empty editor, and today's binding already relies on that. The picker moves to F1 and `/sessions` (section 7.1) |
 | Ctrl+T, then a digit | Hint mode (section 5) | Ctrl+T is unbound |
 | In the panel: Up, Down, Enter, `x` | Select, focus or open, stop | The strip's existing set |
 | In the panel: `[`, `]`, `1` to `4`, Tab | Previous or next tab, jump, cycle the Strands filter | The inspector's existing digit and bracket convention; only while the panel has focus, so the composer keeps its characters |
 | Esc in the panel | Return focus to the composer (the panel stays open) | Panel focus only; Esc in the composer is unchanged |
 | Ctrl+D | Unchanged: composer or file navigator when Changes is showing | Unchanged |
+
+### 7.1 Which side, and which arrow
+
+The strand panel stays on the right, as in A2 and the web build: the
+transcript reads first, and context sits after it. The arrow does not have
+to match the side. The newer Codex recording opens its agents view with `←`
+from the composer, and the owner's branch for this work is named for it, so
+`←` becomes "strands" here too. It costs the session picker its `←` binding,
+which moves to F1 and `/sessions`; both stay one key from an empty
+composer. The footer hint reads `← strands`, as Codex's reads `← for
+agents`. Codex also uses F2 to view warnings, which is precedent for F-keys
+opening a side surface and not a collision, since Loom's F2 already opens the
+agents view.
 
 Ctrl+B is avoided on purpose: it is the tmux prefix and Herdr runs terminals
 in panes. Function keys need Fn on many laptops, so every key has a slash
@@ -312,6 +324,14 @@ Rejected, with reasons:
   are today. A graphics-protocol image inside a column that can be resized
   or hidden would need per-cell cleanup the renderer does not have.
 
+From the newer Codex recording (2026-09-30), taken: `←` for agents (section
+7.1); tool calls grouped under a summary header that carries a failure count,
+so the main frames show `◇ tools · 4 calls · 1 failed · Ctrl+g expands`
+where today's header gives the call count only; and dim one-line system notes
+that never look like user turns, which matches the harness notice in section
+10. Left for later: short diff previews under file writes, and a
+non-blocking numbered menu for offering a choice that is not an approval.
+
 ## 10. What we took from the owner's drives
 
 The recordings show today's Loom in daily use. Each pain point is fixed in a
@@ -366,8 +386,9 @@ is drawn carries a virtual-terminal test at 200, 120 and 80 columns.
 
 1. **Default at 200 columns and up: both columns open?** Recommended yes, as
    A2. Below that, nothing open.
-2. **Is Right-from-empty-composer acceptable as "focus the panel"?**
-   Recommended yes; it mirrors Left.
+2. **Left from an empty composer opens the strands, and the session
+   picker moves to F1 and `/sessions`?** Recommended yes (Codex precedent,
+   section 7.1). It changes a binding users have today.
 3. **F1 to F5 as panel keys, given Herdr and laptop Fn keys?** Recommended
    yes with the `/panel` commands as the guaranteed path, after a check that
    Herdr passes them through.
