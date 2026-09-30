@@ -608,6 +608,8 @@ fn reload(state: State, change: Change) -> Action {
     RevokeCredentials(..), ListingMemberships(_)
     | RevokeCredentials(..), ListingPrincipals
     -> ReadPrincipals(State(..state, focus: ListingPrincipals), None)
+
+    // Reachable only by Escape from the memberships list while sending.
     SetRole(..), ListingPrincipals | RevokeMembership(..), ListingPrincipals ->
       ReadPrincipals(state, None)
   }
@@ -917,7 +919,14 @@ pub fn failed(state: State, reason: String) -> State {
         False -> "access request refused: " <> reason
       }
   }
-  State(..state, prompt: Browsing, sending: None, notice:)
+
+  // A failure answers a change only when one is outstanding. Any other
+  // failure, such as a next page that was refused, leaves a review open.
+  let prompt = case state.sending {
+    Some(_) -> Browsing
+    None -> state.prompt
+  }
+  State(..state, prompt:, sending: None, notice:)
 }
 
 // The rows under the cursor, or `Error(Nil)` when a list is empty.

@@ -782,3 +782,12 @@ pub fn a_paste_is_ignored_by_the_overlay_test() {
   let pasted = tui.update(backend.Paste("clm_secret"), opened)
   assert pasted.view.overlay == opened.view.overlay
 }
+
+// A refused read, such as a next page, is not the answer to a change, so it
+// must not cancel a review the operator has open.
+pub fn a_failed_read_keeps_a_pending_review_open_test() {
+  let assert Continue(review) = access_overlay.update(keys.Char("d"), opened())
+  let failed = access_overlay.failed(review, "unavailable: busy")
+  assert failed.prompt == review.prompt
+  assert failed.notice == "access request refused: unavailable: busy"
+}
