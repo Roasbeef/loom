@@ -35,18 +35,23 @@ page keys and nonces, and the relay into the session's gateway.
   `title`.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
-  `now()`, and `sessions()`, the sidebar's read of the principal's sessions
-  (the daemon's authorized catalogue read, `[]` on failure). All run in the
-  component's process.
+  `now()`, `sessions()`, the sidebar's read of the principal's sessions
+  (the daemon's authorized catalogue read, `[]` on failure), and
+  `open(id)`, a request to open another session that answers a
+  `sessions.Answer` (a ticket's exchange path, or a `Declined` reason; an
+  observer's page is always declined). All run in the component's process.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
   read), `FocusRequested(strand)` (a strip chip, a change of what the page
-  shows) and `SessionsListed(entries)` (the sidebar read's own answer,
-  dispatched by an effect and carried by no handler). It holds no command.
+  shows), `SessionsListed(entries)` (the sidebar read's own answer) and
+  `Linked(answer)` (the daemon's answer to a request to open a session), both
+  dispatched by an effect and carried by no handler. It holds no command.
   `component.older_path` and `component.strip_path` are the Lustre event
   paths the socket admits an observer's click at: the button, and anything
-  beneath the strip's chip list.
+  beneath the strip's chip list. `component.sidebar_path` is where an
+  operator page's session buttons are, and the observer's socket admits no
+  click beneath it.
 - **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
   `step.focus`, the shared step's change of strand, plus what only this host
   holds: the history read owed for the strand being left is dropped
@@ -63,9 +68,11 @@ page keys and nonces, and the relay into the session's gateway.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved`), `Group` and `grouped(entries, current)` (the current
   session's workspace first, then by newest session, sessions newest first,
-  ties by identity and path). `view/sidebar.view(groups, current)` draws it,
-  read-only, as the frame's second child (`aside.sidebar`, the left column;
-  `element.none()` where a page draws none), memoized. A workspace is a
+  ties by identity and path). `view/sidebar.view(groups, current, open)` draws
+  it as the frame's second child (`aside.sidebar`, the left column;
+  `element.none()` where a page draws none), memoized. A row for a running
+  session other than the one on screen is a `button.session-open` whose
+  message is `open(id)`; the current row and a saved session are text. A workspace is a
   section whose label the stylesheet draws as a small uppercase eyebrow with
   the session count, and a hairline in the divider colour separates one
   section from the next (team feedback, 2026-09-29); the list's own heading
@@ -75,8 +82,21 @@ page keys and nonces, and the relay into the session's gateway.
   `sessions.listed_limit` entries, and `component.session_groups(model)` is
   what the operator's page draws. The observer's page draws no sidebar:
   `ui_socket.listed_for` gives it an empty list without making the read
-  (owner, 2026-09-29). The list cannot open a session (protocol-change/051, the
-  addendum on strand focus and the session sidebar, has the proposal).
+  (owner, 2026-09-29).
+- **Switching sessions.** A switch is a navigation to a new page
+  (protocol-change/051, the addendum on switching sessions). On the operator's
+  page `operator_page.Opening(id)` (a sidebar button, or a peer message's Open
+  button, `lane.Replies(reply:, open:)`, drawn only when
+  `component.openable` finds the peer's session in the principal's live list)
+  reaches `component.switch_to`, which asks `Transport.open` and folds the
+  answer in as `Linked`. A ticket becomes `component.departure(model)`, the
+  address the operator page writes into the `to` attribute of the hidden
+  `<loom-switch>` (`packages/web_client`), the centre's last child so no
+  admitted path moves; a refusal is worded in the composer's notice with
+  `sessions.reason_words`. The observer's page has none of it: no sidebar, no
+  Open button, no element, no handler beneath `component.sidebar_path`.
+  `session_switch_test` reads it, and `session_isolation_test` shows a page
+  built after another holds none of the other's text.
 - `component.Model(socket)` (opaque): two records, as the terminal's is.
   `shared` is `session_view/model.Shared(socket, Nil, Nil, Nil)`, the
   session state the shared step reads and writes: the lane, the inbox, the

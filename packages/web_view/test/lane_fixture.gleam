@@ -22,6 +22,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import page_fixture
 import session_view/composer
 import session_view/protocol
 import session_view/session_channel
@@ -1058,4 +1059,125 @@ pub fn attended(
       session_channel.Captured(cut, snapshot_view.View(..view, peers:), refresh)
     other -> other
   }
+}
+
+/// A capture of a session whose every region the page draws holds `marker`:
+/// its prompt, an edit's path and diff, a `todo` board's phase
+/// and task, a program and its output, the answer, a message from a peer
+/// session named for the marker, a pending escalation's tool and preview, and
+/// a viewer. `running` are the strands that run, and each is drawn with the
+/// glance the fixture writes for it. A test that opens two sessions with two
+/// markers can then look for one session's words on the other's page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.marked("alpha", [])
+/// ```
+pub fn marked(
+  marker: String,
+  running: List(#(String, String)),
+) -> session_channel.Update {
+  let board =
+    todo_list.Board([
+      todo_list.Phase(marker <> " phase", [
+        todo_list.Task(marker <> " task", todo_list.Active),
+      ]),
+    ])
+  let outcome =
+    message.ToolResultMessage(
+      "m3",
+      "code_mode",
+      [message.ToolResultText(marker <> " output", None)],
+      Some(json.Object([])),
+      None,
+      None,
+      False,
+      15_000,
+    )
+  let items = [
+    item(1, 10_000, said(marker <> " prompt", None)),
+    item(
+      2,
+      11_000,
+      assistant([
+        call("m1", "fs_edit", json.Object([])),
+        call("m2", "todo", json.Object([])),
+        call(
+          "m3",
+          "code_mode",
+          json.Object([#("program", json.String(marker <> " program"))]),
+        ),
+      ]),
+    ),
+    item(
+      3,
+      12_000,
+      result(
+        "m1",
+        "fs_edit",
+        json.Object([
+          #("path", json.String(marker <> "/edited.gleam")),
+          #("diff", json.String("@@ -1 +1 @@\n-old\n+" <> marker <> " diff")),
+        ]),
+        12_000,
+      ),
+    ),
+    item(
+      4,
+      13_000,
+      result(
+        "m2",
+        "todo",
+        json.Object([#("todo", todo_list.encode(board))]),
+        13_000,
+      ),
+    ),
+    item(5, 14_000, outcome),
+    item(
+      6,
+      16_000,
+      assistant([message.AssistantText(marker <> " answer", None)]),
+    ),
+    item(
+      7,
+      17_000,
+      said(
+        marker <> " peer says",
+        Some(message.PeerOrigin(marker <> "-peer", "main")),
+      ),
+    ),
+  ]
+  let escalation = case
+    page_fixture.escalation(
+      "esc-" <> marker,
+      90,
+      "tool-" <> marker,
+      marker <> " preview",
+    )
+  {
+    json.Object(fields) -> fields
+    _ -> []
+  }
+  let cells = case
+    list.key_find(escalation, "value"),
+    list.key_find(escalation, "seq")
+  {
+    Ok(value), Ok(json.Int(seq)) -> [
+      snapshot_view.Cell(
+        register.FactCustom,
+        "escalation/esc-" <> marker,
+        seq,
+        value,
+      ),
+    ]
+    _, _ -> []
+  }
+  attended(capture_of(items, None, running, cells), [
+    snapshot_view.Peer(
+      marker <> "-connection",
+      message.Origin(marker <> "-principal", marker <> " viewer"),
+      snapshot.Operator,
+    ),
+  ])
 }

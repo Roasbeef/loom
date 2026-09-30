@@ -47,6 +47,7 @@ import tui/projection
 import tui/workspace
 import web_view/component
 import web_view/operator_page
+import web_view/sessions
 
 fn id(seq: Int) -> ids.EntryId {
   ids.mint_entry(ids.generator(clock.fixed(1000), seq)).0
@@ -159,6 +160,7 @@ fn start() -> component.Start(process.Subject(String)) {
       shut: fn(_) { Nil },
       now: fn() { 0 },
       sessions: fn() { [] },
+      open: fn(_) { sessions.Declined(sessions.NotHeld) },
     ),
   )
 }

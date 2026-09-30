@@ -53,6 +53,7 @@ import session_view/operator
 import session_view/snapshot
 import web_view/completion
 import web_view/component
+import web_view/sessions
 import web_view/view/controls
 import web_view/view/lane
 import web_view/view/nudges
@@ -81,6 +82,13 @@ pub type Msg(socket) {
   /// A peer message's Reply button, by the key of the piece it was drawn
   /// under. The key is the engine's, never text the peer wrote.
   Replying(key: String)
+
+  /// A sidebar row's button, or a peer message's Open button: the operator
+  /// asks to open another session. The identity is the catalogue's, drawn
+  /// into the tree by the server, never text the browser sent or the peer
+  /// wrote. The daemon decides whether the page's principal may have it
+  /// (protocol-change/051, the addendum on switching sessions).
+  Opening(session: String)
 }
 
 /// The Lustre application for one session's operator page.
@@ -122,6 +130,7 @@ pub fn update(
     Decided(id:, seq:, answer:) -> component.decide(model, id, seq, answer)
     Controlled(control:) -> component.control(model, control)
     Replying(key:) -> component.reply(model, key)
+    Opening(session:) -> component.switch_to(model, session)
   }
   #(model, effect.map(effects, Observed))
 }
@@ -180,7 +189,9 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         component.live(model),
         component.top(model),
         Observed(component.OlderRequested),
-        lane.Replies(Replying),
+        lane.Replies(reply: Replying, open: fn(session) {
+          openable(model, session)
+        }),
         component.marks(model),
       ),
       html.footer([attribute.class("dock")], [
@@ -190,6 +201,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         approvals(component.pending(model)),
         composer(model),
       ]),
+      departure(model),
     ],
     component.panel(
       model,
@@ -207,8 +219,41 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
 fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
   case component.session_groups(model) {
     [] -> shell.Unlisted
-    groups -> shell.Listed(sidebar.view(groups, component.session_id(model)))
+    groups ->
+      shell.Listed(sidebar.view(groups, component.session_id(model), Opening))
   }
+}
+
+// The Open button of a peer message that names a session the page can open,
+// or none. The name and the identity in the button are the catalogue's entry,
+// found by the identity the peer's message carries.
+fn openable(
+  model: component.Model(socket),
+  session: String,
+) -> Option(lane.Destination(Msg(socket))) {
+  component.openable(model, session)
+  |> option.map(fn(entry) {
+    lane.Destination(label: sessions.label(entry), press: Opening(entry.id))
+  })
+}
+
+// The element that moves the browser to another session's page. It is always
+// the centre's last child, so no admitted path moves with it, and it carries
+// the address only after the daemon has minted a ticket
+// (`web_client/switch`, which checks the address again before it navigates).
+// It is hidden and holds nothing the reader sees.
+fn departure(model: component.Model(socket)) -> Element(Msg(socket)) {
+  element.element(
+    "loom-switch",
+    [
+      attribute.attribute("hidden", ""),
+      ..case component.departure(model) {
+        Some(address) -> [attribute.attribute("to", address)]
+        None -> []
+      }
+    ],
+    [],
+  )
 }
 
 // The controls, with what each sends. Stop is offered while the strand runs

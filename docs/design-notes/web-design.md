@@ -21,8 +21,9 @@ assumed to land first:
   operator pages only.
 
 Operator-only session switching is ruled by the owner (2026-09-29) and
-planned as a follow-up to #636, with its own 051 addendum. This note
-assumes that follow-up and says what the redesign needs from it (section 3).
+planned as a follow-up to #636, with its own 051 addendum. It is built
+(step 11 of section 8): the addendum "switching sessions" in 051 records the
+rule, and section 3.4 says what the redesign needs from it.
 
 The mockup is [`web-design/A2-refined.html`](web-design/A2-refined.html). It
 is a static page with a small script, and it is the source of truth for
@@ -335,8 +336,12 @@ Switching is navigation. Each page is bound to one session by its key, its
 cookie and its nonce, and its component runs one session's lane. To open
 another session the page asks the daemon for a ticket, and the browser
 navigates to `/ui/sessions/<id>?ticket=<ticket>`, which exchanges it and lands
-on that session's page. The follow-up PR owns the mechanism and its 051
-addendum (#636 sketches it). The redesign needs three things from it:
+on that session's page. Step 11 built the mechanism, and the 051 addendum on
+switching sessions records it: the page draws a hidden `<loom-switch>` whose
+`to` attribute carries the ticket's address once the daemon has minted one,
+and the element checks the address's shape before it navigates. A row is a
+button only for a running session other than the one on screen. The redesign
+needed three things from it:
 
 - **Several pages per principal** (#635). A switch adds a page and does not
   end the page left behind. The cap of four is per principal and per session,
@@ -845,8 +850,9 @@ The order assumes #635 and #636 have landed.
     jobs; the viewers ruling for observers if the owner rules to show them.
     Proof: `session_summary` tests; a drive with a background job.
 
-11. **Session switching.** The planned follow-up, operator pages only, with its
-    addendum. The redesign adds the invariant of section 3.4 as a test that a
+11. **Session switching.** (Built: 051's addendum on switching sessions, with
+    `session_isolation_test` for the invariant of section 3.4.) The planned
+    follow-up, operator pages only, with its addendum. The redesign adds the invariant of section 3.4 as a test that a
     page for one session holds no text of another. Proof: the follow-up's own,
     plus that test and a drive switching between two sessions with a pending
     approval in each.

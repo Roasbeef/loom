@@ -39,6 +39,7 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/pair
 import gleam/result
 import gleam/string
@@ -53,6 +54,13 @@ pub const ticket_ms = 60_000
 /// How long a UI session lives from its exchange, in milliseconds: eight
 /// hours, a working day. A page left open for a day's work keeps working,
 /// and a cookie copied out of a browser stops working the same day.
+///
+/// The deadline is a ceiling on a chain of pages as well as on one. A page
+/// opened by a ticket that another page minted (a session switch,
+/// `mint_before`) ends at the earlier of that page's deadline and this long
+/// from its own exchange, so switching from page to page never outlives the
+/// page the chain started from, and a copied cookie cannot be renewed by
+/// switching.
 pub const session_ms = 28_800_000
 
 /// The most live UI sessions one principal holds for one session.
@@ -173,15 +181,21 @@ pub opaque type Sessions {
 }
 
 type Message {
-  Mint(grant: Grant, reply: Subject(Issued))
+  Mint(grant: Grant, until: Option(Int), reply: Subject(Issued))
   Redeem(
     ticket: String,
     session_id: String,
     reply: Subject(Result(Redeemed, Refusal)),
   )
-  Lookup(cookie: String, reply: Subject(Result(Page, Nil)))
+  Lookup(cookie: String, reply: Subject(Result(#(Page, Int), Nil)))
   Sizes(reply: Subject(#(Int, Int)))
   Sweep
+}
+
+// A live ticket's grant, and the deadline the page it becomes may not pass
+// when another page minted it.
+type Ticket {
+  Ticket(grant: Grant, until: Option(Int))
 }
 
 // One live ticket or UI session and the instant it stops being honoured.
@@ -192,7 +206,7 @@ type Entry(value) {
 type State {
   State(
     settings: Settings,
-    tickets: Dict(String, Entry(Grant)),
+    tickets: Dict(String, Entry(Ticket)),
     sessions: Dict(String, Entry(Page)),
     /// How many pages this actor has opened, which numbers the next one.
     opened: Int,
@@ -223,7 +237,30 @@ pub fn start(settings: Settings) -> Result(Sessions, String) {
 /// // ui_sessions.mint(sessions, Grant(session, digest))
 /// ```
 pub fn mint(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
-  call.try_call(sessions.subject, waiting: 1000, sending: Mint(grant, _))
+  call.try_call(sessions.subject, waiting: 1000, sending: Mint(grant, None, _))
+  |> result.replace_error(Nil)
+}
+
+/// Mints a ticket for `grant` on behalf of another page whose deadline is
+/// `until`, a reading of the table's clock. The page the ticket becomes ends
+/// at the earlier of `until` and `session_ms` after its exchange, so a chain
+/// of switches never outlives the page it began from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.mint_before(sessions, grant, until)
+/// ```
+pub fn mint_before(
+  sessions: Sessions,
+  grant: Grant,
+  until: Int,
+) -> Result(Issued, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Mint(
+    grant,
+    Some(until),
+    _,
+  ))
   |> result.replace_error(Nil)
 }
 
@@ -260,6 +297,14 @@ pub fn redeem(
 /// // ui_sessions.lookup(sessions, cookie)
 /// ```
 pub fn lookup(sessions: Sessions, cookie: String) -> Result(Page, Nil) {
+  lookup_until(sessions, cookie) |> result.map(pair.first)
+}
+
+// The live UI session a cookie names, with the deadline it ends at.
+fn lookup_until(
+  sessions: Sessions,
+  cookie: String,
+) -> Result(#(Page, Int), Nil) {
   call.try_call(sessions.subject, waiting: 1000, sending: Lookup(cookie, _))
   |> result.unwrap(Error(Nil))
 }
@@ -326,10 +371,29 @@ pub fn still_open(
   cookie: String,
   grant: Grant,
 ) -> fn() -> Result(Nil, Nil) {
+  let until = open_until(sessions, cookie, grant)
+  fn() { until() |> result.replace(Nil) }
+}
+
+/// `still_open`, answering the page's deadline while it is open. The page
+/// socket uses the deadline when the page asks to open another session, so the
+/// ticket it mints carries it (`mint_before`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let until = ui_sessions.open_until(sessions, cookie, grant)
+/// // until() == Ok(deadline)
+/// ```
+pub fn open_until(
+  sessions: Sessions,
+  cookie: String,
+  grant: Grant,
+) -> fn() -> Result(Int, Nil) {
   fn() {
-    use current <- result.try(lookup(sessions, cookie))
+    use #(current, until) <- result.try(lookup_until(sessions, cookie))
     case current.grant == grant {
-      True -> Ok(Nil)
+      True -> Ok(until)
       False -> Error(Nil)
     }
   }
@@ -364,10 +428,13 @@ pub fn sweep(sessions: Sessions) -> Nil {
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let now = state.settings.now()
   case message {
-    Mint(grant:, reply:) -> {
+    Mint(grant:, until:, reply:) -> {
       let ticket = secret(state.settings)
       let entry =
-        Entry(value: grant, expires_at: now + state.settings.ticket_ms)
+        Entry(
+          value: Ticket(grant, until),
+          expires_at: now + state.settings.ticket_ms,
+        )
       process.send(reply, Issued(ticket, state.settings.ticket_ms))
       actor.continue(
         State(
@@ -391,11 +458,25 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           process.send(reply, Error(UnknownTicket))
           actor.continue(State(..state, tickets:))
         }
-        Ok(grant) if grant.session_id != session_id -> {
+        Ok(Ticket(grant:, ..)) if grant.session_id != session_id -> {
           process.send(reply, Error(OtherSession))
           actor.continue(State(..state, tickets:))
         }
-        Ok(grant) -> {
+
+        // A switch ticket minted in the last minute of its source page's life
+        // can outlive it. The page it would open is already past its
+        // deadline, so it is refused as an unknown ticket before it can make
+        // room by displacing one of the principal's live pages.
+        Ok(Ticket(until: Some(bound), ..)) if bound <= now -> {
+          process.send(reply, Error(UnknownTicket))
+          actor.continue(State(..state, tickets:))
+        }
+
+        Ok(Ticket(grant:, until:)) -> {
+          let ends = case until {
+            Some(bound) -> int.min(bound, now + state.settings.session_ms)
+            None -> now + state.settings.session_ms
+          }
           let cookie = secret(state.settings)
           let key = secret(state.settings)
           let nonce = secret(state.settings)
@@ -407,7 +488,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                 nonce: digest(nonce),
                 serial: state.opened,
               ),
-              expires_at: now + state.settings.session_ms,
+              expires_at: ends,
             )
           process.send(reply, Ok(Redeemed(cookie:, key:, nonce:, grant:)))
           actor.continue(
@@ -425,7 +506,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Lookup(cookie:, reply:) -> {
-      process.send(reply, live(state.sessions, digest(cookie), now))
+      process.send(reply, live_until(state.sessions, digest(cookie), now))
       actor.continue(state)
     }
 
@@ -483,6 +564,18 @@ fn with_room(
 fn live(table: Dict(String, Entry(value)), key: String, now: Int) {
   case dict.get(table, key) {
     Ok(entry) if entry.expires_at > now -> Ok(entry.value)
+    Ok(_) | Error(Nil) -> Error(Nil)
+  }
+}
+
+// A live UI session and the instant it ends.
+fn live_until(
+  table: Dict(String, Entry(Page)),
+  key: String,
+  now: Int,
+) -> Result(#(Page, Int), Nil) {
+  case dict.get(table, key) {
+    Ok(entry) if entry.expires_at > now -> Ok(#(entry.value, entry.expires_at))
     Ok(_) | Error(Nil) -> Error(Nil)
   }
 }

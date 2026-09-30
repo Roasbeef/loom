@@ -11,10 +11,11 @@
 //// none by a session's agent, so a name is drawn as a text node and needs no
 //// stricter handling than the heading's own.
 ////
-//// The list is read-only. A page is bound to one session by its key, so the
-//// sidebar names the principal's other sessions and cannot open one
-//// (protocol-change/051, the addendum on the session sidebar, says what
-//// opening one would take).
+//// The list itself is read-only. A page is bound to one session by its key,
+//// so opening another is a navigation to a new page, which only an operator's
+//// page may ask for (protocol-change/051, the addendum on switching
+//// sessions). This module holds the two types that request and its answer
+//// are made of, `Answer` and `Reason`, with the fixed words for each refusal.
 ////
 //// Grouping and ordering are a pure function of the entries, so a test can
 //// state them without a page: `grouped` puts the workspace of the session
@@ -60,6 +61,71 @@ pub type Entry {
     /// Whether a process runs the session.
     residency: Residency,
   )
+}
+
+/// What the page calls an entry: its name, or, for a session with no name,
+/// "Session " and the first eight characters of its identity. The sidebar and
+/// a peer message's "Open" button use the same words, so a session is
+/// called one thing on a page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved))
+///   == "Session 0198a2f4"
+/// ```
+pub fn label(entry: Entry) -> String {
+  case entry.name {
+    "" -> "Session " <> string.slice(entry.id, 0, 8)
+    named -> named
+  }
+}
+
+/// What the daemon answers when an operator's page asks to open another
+/// session (protocol-change/051, the addendum on switching sessions).
+pub type Answer {
+  /// The daemon minted a ticket. `path` is the ticket's exchange,
+  /// `/ui/sessions/<id>?ticket=<ticket>`, which the browser navigates to. The
+  /// ticket is single use and lives 60 seconds.
+  Ticketed(path: String)
+
+  /// The daemon minted nothing. Every page shows the fixed words for the
+  /// reason (`reason_words`) and never the daemon's own text.
+  Declined(reason: Reason)
+}
+
+/// Why the daemon declined to mint a ticket.
+pub type Reason {
+  /// The principal holds no membership in that session, the identity is not a
+  /// session's, or the page is an observer's, which may not switch. The
+  /// answer is the same for each, so a page learns nothing about sessions it
+  /// cannot open.
+  NotHeld
+
+  /// The principal holds the session but no process runs it, so a page
+  /// opened for it would have nothing to show.
+  NotRunning
+
+  /// The daemon could not answer: it was starting, stopping or slow.
+  Unavailable
+}
+
+/// The words a page shows for a declined switch. They are fixed here, one per
+/// reason, so nothing the daemon or a session wrote reaches a browser.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.reason_words(sessions.NotRunning)
+///   == "That session is not running. Resume it from a terminal, then open it here."
+/// ```
+pub fn reason_words(reason: Reason) -> String {
+  case reason {
+    NotHeld -> "That session is not available to you."
+    NotRunning ->
+      "That session is not running. Resume it from a terminal, then open it here."
+    Unavailable -> "The daemon could not open that session. Try again."
+  }
 }
 
 /// The sessions of one workspace, newest first.

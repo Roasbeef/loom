@@ -738,6 +738,7 @@ fn web_view(
               request,
               attachment,
               attachment.instance.gateway,
+              sessions,
               open,
               ceiling,
             )

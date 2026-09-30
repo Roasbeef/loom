@@ -31,6 +31,7 @@ import session_view/snapshot
 import storage/access
 import web_view/component
 import web_view/operator_page
+import web_view/sessions
 import weft/poll
 
 fn fixture_id(seed: Int) -> ids.SessionId {
@@ -93,6 +94,7 @@ fn start_page(
         shut: ui_relay.shut,
         now: bootstrap.monotonic_time_ms,
         sessions: fn() { [] },
+        open: fn(_) { sessions.Declined(sessions.NotHeld) },
       ),
     )
   let assert Ok(runtime) =

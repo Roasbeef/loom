@@ -143,17 +143,39 @@ pub fn no_marks() -> Marks {
 /// Whether the lane offers a reply to a peer's message, and what pressing it
 /// sends.
 ///
-/// The button carries the engine's key for the piece, a sequence, and never
-/// the peer's session or strand, so the handler holds nothing the session
-/// wrote. The operator's page passes `Replies`, and the observer's passes
-/// `NoReplies`, so an observer's lane has no handler but "Load older".
+/// The Reply button carries the engine's key for the piece, a sequence, and
+/// never the peer's session or strand, so the handler holds nothing the
+/// session wrote. The operator's page passes `Replies`, and the observer's
+/// passes `NoReplies`, so an observer's lane has no handler but "Load older".
 pub type Replies(message) {
   /// The lane offers no reply. An observer's page has none to send.
   NoReplies
 
   /// Each peer message carries a Reply button that sends this message,
   /// given the piece's key.
-  Replies(reply: fn(String) -> message)
+  ///
+  /// It also carries an Open button when `open`, given the session identity
+  /// the peer's message names, answers with a `Destination`. The page answers
+  /// only for a session that is in the principal's own list of live sessions
+  /// (`component.openable`), so a peer that names a session the principal
+  /// does not hold, or one that is saved, has no button, and the button's
+  /// label and message come from the catalogue and not from the peer.
+  Replies(
+    reply: fn(String) -> message,
+    open: fn(String) -> Option(Destination(message)),
+  )
+}
+
+/// Another session a peer message's card may open: the words the button
+/// carries, from the catalogue, and the message pressing it sends.
+pub type Destination(message) {
+  Destination(
+    /// The session's name in the catalogue, or its identity's first eight
+    /// characters, as the sidebar calls it (`sessions.label`).
+    label: String,
+    /// What pressing the button sends.
+    press: message,
+  )
 }
 
 /// What lies above the oldest row the page holds.
@@ -449,7 +471,7 @@ fn piece_element(
           html.span([attribute.class("receipt")], [html.text("stored")]),
         ]),
         card_body(text),
-        ..reply_button(replies, key)
+        ..peer_actions(replies, key, session)
       ])
 
     turns.Missed(text:, ..) ->
@@ -466,16 +488,21 @@ fn piece_element(
   }
 }
 
-// The Reply button of a peer card, or nothing on a lane that offers none. It
-// is a real button, labelled for what it does, and puts a draft in the
-// composer rather than sending anything: the operator reads it and sends it.
-fn reply_button(
+// The buttons of a peer card, or nothing on a lane that offers none. Reply is
+// a real button, labelled for what it does, and puts a draft in the composer
+// rather than sending anything: the operator reads it and sends it. Open is
+// drawn only when the page can open the session the peer's message names
+// (`Replies.open`), and asks the daemon for a page of it. The label is the
+// catalogue's name for the session, a text node, and the peer's own words
+// are the card's head and body, which are unchanged.
+fn peer_actions(
   replies: Replies(message),
   key: String,
+  session: String,
 ) -> List(Element(message)) {
   case replies {
     NoReplies -> []
-    Replies(reply:) -> [
+    Replies(reply:, open:) -> [
       html.p([attribute.class("card-actions")], [
         html.button(
           [
@@ -485,7 +512,26 @@ fn reply_button(
           ],
           [html.text("Reply to this peer")],
         ),
+        ..open_button(open(session))
       ]),
+    ]
+  }
+}
+
+fn open_button(
+  destination: Option(Destination(message)),
+) -> List(Element(message)) {
+  case destination {
+    None -> []
+    Some(Destination(label:, press:)) -> [
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("peer-open"),
+          event.on_click(press),
+        ],
+        [html.text("Open " <> label)],
+      ),
     ]
   }
 }

@@ -30,6 +30,13 @@ renders again just for it:
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
   form is submitted, which is why they are here.
+- `<loom-switch to="/ui/sessions/<id>?ticket=<t>">` moves the browser to
+  another session's page. The operator's page draws it hidden and writes `to`
+  once the daemon has minted a ticket; `switch_rule.target` accepts exactly
+  that address shape and nothing else, and the element then calls
+  `location.assign` (one export in `dom.mjs`). It renders nothing, takes no
+  focus and listens for no event (protocol-change/051, the addendum on
+  switching sessions).
 - `<loom-shell sidebar="listed" needing="0" workspace="<digest>">` is the
   page's frame. The server
   draws the top bar, the sessions sidebar, the centre and the strand panel as
@@ -164,6 +171,15 @@ time builds anything.
   `Reading` more than `slack` pixels from the bottom, one button, "Jump to
   latest" (`Jumped`), whose wrapper has no height and sticks to the
   scroller's bottom edge.
+- `switch_rule.target(value)`: `Ok(value)` only for exactly
+  `/ui/sessions/<canonical identity>?ticket=<64 hex digits>`, `Error(Nil)` for
+  anything else, an absolute URL or another path included. `<loom-switch>`
+  navigates only to what it returns.
+- `shell_rule.Motion` (`Still` | `Animated`) and `frame_classes`: the frame
+  starts `Still`, with the class `still` that the stylesheet reads to turn the
+  columns' width transition off, so the saved layout is drawn without a slide,
+  and `Settled` (sent after the restored layout is painted) makes it
+  `Animated`.
 - `shell_rule.Region` (`Sidebar` | `Panel`), `Tab` (`Strands` | `Changes` |
   `Session`), `State` (`Open` | `Closed`), `Layout(sidebar, panel, tab)`,
   `Presence` (`Listed` | `Unlisted`) and `Reach` (`Reachable` | `Unreachable`),

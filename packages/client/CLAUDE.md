@@ -151,6 +151,22 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   on close. The two failures in `admit` that are the daemon's alone (the
   permit's transfer, the component's start) also close with 4000, which
   Lustre's client runtime retries; a 1000 there left the tab empty for good.
+  `upgrade` takes the ticket table's handle (`ui_sessions.Sessions`, which
+  `daemon/main` holds), so an operator page can open another session
+  (protocol-change/051, the addendum on switching sessions): the transport's
+  `open` is `opened_for(role, ..)`, which declines an observer's page without
+  asking, and otherwise `ticket_for(attachment, tickets, ceiling, target)`,
+  which checks with the page's credential digest that the identity is a
+  canonical session's (after `open()` says the asking page is still open, which
+  also yields its deadline, carried onto the ticket by
+  `ui_sessions.mint_before`, so a chain of switches never outlives the page it
+  began from; `ui.link` tickets keep eight hours), that `manager.session_authority` finds the principal's
+  membership in it and that `manager.get` reports it resident, then mints a
+  ticket into the same table with the page's own principal and ceiling
+  (`sessions.Ticketed(path)`, else `Declined(NotHeld | NotRunning |
+  Unavailable)`). `observer_accepts` still drops a click beneath
+  `component.sidebar_path`; `operator_accepts` admits any click, as before.
+  `ui.link` and a switch build the exchange path with `page.exchange_path`.
 - `daemon/ui_relay`: the page's stand-in for a session socket. `start`
   returns before the attach, which runs as the relay's first message and
   answers on the component's `opened` subject, so a slow gateway cannot

@@ -42,8 +42,10 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_relay
+import client/daemon/ui_sessions
 import client/daemon/upgrade_log
 import client/gateway
+import core/ids
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -60,9 +62,11 @@ import lustre/server_component
 import mist
 import session_view/snapshot
 import storage/access
+import storage/catalogue
 import web_view/component
 import web_view/ending
 import web_view/operator_page
+import web_view/page
 import web_view/sessions
 
 /// The inbound frame limit on an operator's page socket: a text prompt fits,
@@ -115,7 +119,10 @@ type Phase {
 /// drew and not by the frame, so the frame chooses among the chips and cannot
 /// name a strand. Every other message is dropped here, a batch included, so
 /// it costs the component no render; the gateway refuses any mutation from an
-/// observer's binding on its own, whatever reaches it.
+/// observer's binding on its own, whatever reaches it. A click beneath
+/// `component.sidebar_path`, where an operator's page has its session
+/// buttons, is dropped: an observer's page has no sidebar, and switching
+/// sessions is an operator's (the addendum on switching sessions).
 ///
 /// ## Examples
 ///
@@ -146,7 +153,12 @@ fn observer_path(path: String) -> Bool {
 
 /// The browser messages an operator's page takes: Lustre's `EventFired` for
 /// the events its view attaches, a `click` and a `submit`, alone or batched.
-/// Every other message is dropped before it reaches the component.
+/// Every other message is dropped before it reaches the component. A click
+/// is admitted at any path, so the session buttons beneath
+/// `component.sidebar_path` and a peer message's Open button need no entry
+/// of their own; Lustre dispatches the event only to a handler the page drew
+/// at that path, and the daemon checks the session again before it mints a
+/// ticket (`ticket_for`).
 ///
 /// ## Examples
 ///
@@ -190,7 +202,8 @@ pub fn upgrade(
   request: Request(mist.Connection),
   attachment: server.Attachment(instance),
   hub: gateway.Gateway,
-  open: fn() -> Result(Nil, Nil),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
 ) -> Response(mist.ResponseData) {
   let role = role_of(attachment.authority)
@@ -210,7 +223,9 @@ pub fn upgrade(
         authority: attachment.authority,
         digest: attachment.digest,
       ),
-      check: ui_relay.while_open(fn() { authorize(attachment) }, open),
+      check: ui_relay.while_open(fn() { authorize(attachment) }, fn() {
+        result.replace(open(), Nil)
+      }),
       ceiling:,
       failed_reader: fn() {
         let _ =
@@ -250,7 +265,16 @@ pub fn upgrade(
       handler: fn(phase, event, socket) {
         case phase, event {
           Pending(signals), mist.Custom(Admit) ->
-            admit(daemon, attachment, attach, expected, signals, settled)
+            admit(
+              daemon,
+              attachment,
+              attach,
+              tickets,
+              open,
+              expected,
+              signals,
+              settled,
+            )
 
           // Nothing can reach a pending socket before its own `Admit`; the
           // arms are spelled out so a change to that order fails closed.
@@ -356,6 +380,8 @@ fn admit(
   daemon: root.Root(instance),
   attachment: server.Attachment(instance),
   attach: ui_relay.Attach,
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
   settled: process.Subject(Nil),
@@ -374,6 +400,11 @@ fn admit(
       now: bootstrap.monotonic_time_ms,
       sessions: fn() {
         listed_for(role_of(attachment.authority), fn() { listed(attachment) })
+      },
+      open: fn(target) {
+        opened_for(role_of(attachment.authority), fn() {
+          ticket_for(attachment, tickets, attach.ceiling, open, target)
+        })
       },
     )
   let start =
@@ -478,6 +509,128 @@ pub fn listed_for(
   case role {
     Observing -> []
     Operating -> read()
+  }
+}
+
+/// The daemon's answer to an operator's page asking to open another session:
+/// `ask`'s result for an operator's page, and a refusal for an observer's,
+/// with nothing asked.
+///
+/// The observer's view draws no sidebar and its message type has no way to
+/// ask, and its socket drops every click beneath the sidebar's path, so no
+/// request reaches here from one. This is the third independent layer, so that
+/// a change to either of the others cannot let a link handed to someone who
+/// may only watch mint a ticket (protocol-change/051, the addendum on
+/// switching sessions). The refusal is `NotHeld`, the same words as for a
+/// session the principal does not hold.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.opened_for(Observing, ask) == sessions.Declined(sessions.NotHeld)
+/// ```
+@internal
+pub fn opened_for(role: Role, ask: fn() -> sessions.Answer) -> sessions.Answer {
+  case role {
+    Observing -> sessions.Declined(sessions.NotHeld)
+    Operating -> ask()
+  }
+}
+
+/// A ticket for the operator's page's principal to open `target`, or the
+/// reason there is none.
+///
+/// Each step is the daemon's own and is made afresh, with the digest of the
+/// credential the page was admitted under, and none is taken from the page:
+///
+/// 0. The asking page must still be open: `open` answers its deadline while
+///    the page's UI session is live and unreplaced, and a page that has ended
+///    but whose socket is still up mints nothing (`NotHeld`). The deadline
+///    goes on the ticket (`ui_sessions.mint_before`), so the page it becomes
+///    ends no later than this one, and a chain of switches never outlives
+///    the page it began from.
+/// 1. `target` must be a canonical session identity.
+/// 2. `manager.session_authority` must find a membership of the page's
+///    principal in `target`, an owner's in every active session. This is the
+///    check `ui.link` makes for `loom ui`, so a page can open exactly the
+///    sessions its principal could already ask a link for, and a revoked
+///    credential or a removed membership opens none.
+/// 3. `target` must have a process running it, since the ticket's page would
+///    otherwise be refused at its socket with nothing to say why.
+/// 4. The ticket carries the page's own ceiling, which caps the role the new
+///    page is admitted with and never grants one, so a switch cannot raise
+///    what a link allowed. It is single use and lives 60 seconds like any
+///    other, and is minted into the same table, so the page cap and the
+///    redemption rules are unchanged.
+///
+/// The reasons are `NotHeld` for an identity that is not a session's or is
+/// not the principal's, `NotRunning` for a saved session and `Unavailable`
+/// for anything the daemon could not answer. `NotHeld` covers a session that
+/// does not exist and one the principal cannot see alike.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.ticket_for(attachment, tickets, access.Operator, target)
+/// ```
+@internal
+pub fn ticket_for(
+  attachment: server.Attachment(instance),
+  tickets: ui_sessions.Sessions,
+  ceiling: access.Role,
+  open: fn() -> Result(Int, Nil),
+  target: String,
+) -> sessions.Answer {
+  let outcome = {
+    use until <- result.try(open() |> result.replace_error(sessions.NotHeld))
+    use _ <- result.try(
+      ids.parse_session_id(target) |> result.replace_error(sessions.NotHeld),
+    )
+    use _ <- result.try(
+      manager.session_authority(attachment.registry, attachment.digest, target)
+      |> result.map_error(not_held),
+    )
+    use view <- result.try(
+      manager.get(attachment.registry, target)
+      |> result.replace_error(sessions.Unavailable),
+    )
+    use _ <- result.try(running(view.status))
+    ui_sessions.mint_before(
+      tickets,
+      ui_sessions.Grant(
+        session_id: target,
+        credential: attachment.digest,
+        principal: attachment.principal.id,
+        ceiling:,
+      ),
+      until,
+    )
+    |> result.replace_error(sessions.Unavailable)
+  }
+  case outcome {
+    Ok(issued) -> sessions.Ticketed(page.exchange_path(target, issued.ticket))
+    Error(reason) -> sessions.Declined(reason)
+  }
+}
+
+// A refused membership check: the catalogue holds no such membership, or the
+// registry could not answer.
+fn not_held(error: manager.Error) -> sessions.Reason {
+  case error {
+    manager.Catalogue(catalogue.Missing) -> sessions.NotHeld
+    _ -> sessions.Unavailable
+  }
+}
+
+// Only a resident session has a page to show.
+fn running(status: manager.Status) -> Result(Nil, sessions.Reason) {
+  case status {
+    manager.Resident(_) -> Ok(Nil)
+    manager.Reserved
+    | manager.Saved
+    | manager.Opening(_)
+    | manager.Stopping(_)
+    | manager.RecoveryBlocked(_) -> Error(sessions.NotRunning)
   }
 }
 
