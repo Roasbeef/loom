@@ -90,6 +90,17 @@ with these forks: they define the same modules.
   `UnknownClaim`, `ExpiredClaim`, `ConflictingClaim` or `ClaimStore(error)`.
   `claim_known` is the `/v2/claim` upgrade's filter (exists and not void), and
   `fingerprint` is a digest's first 16 hex characters.
+- `storage/access.{Listing, CredentialSummary, ListingPage, MembershipPage}`
+  are the owner's read side (protocol-change/053 phase 2). `principals_page`
+  lists principals in ID order with one credential state each: the active
+  credential's fingerprint and, when a claim bound it, `claimed_at_ms`; an open
+  claim as its remaining lifetime; an expired unredeemed claim; or nothing.
+  `memberships_page` lists one principal's sessions with their current display
+  names. Both read one coherent snapshot, fetch `listing_limit + 1` rows and
+  report only that another page exists, and return no digest, claim or token.
+  The credential-state lookups scan `access_credentials` and `access_claims` by
+  principal, since neither has a principal index; a page is at most 100
+  principals and the tables hold one row per enrollment.
 - `storage/catalogue.{Catalogue, Registration, State, Page}` holds daemon
   metadata in a separate SQLite file. `Reserved` and `Saved` describe file
   initialization, not runtime liveness. `reserve` is idempotent by creation
