@@ -20,12 +20,12 @@ its statements are now false, and one tracker entry is too.
   or a second strand. It draws all four.
 - It did not say that `main` rejects direct pushes, so a queue pull request
   is merged with `--admin` (see "How work lands here").
-- Issue #569's checklist marks "Changes and trace panes" as done. The panel
-  has Strands, Changes and Session tabs and **no Trace tab**
+- Issue #569's checklist marked "Changes and trace panes" as done, but the
+  panel has Strands, Changes and Session tabs and **no Trace tab**
   (`web_client/shell_rule.Tab` has three variants, and nothing under
   `web_view/view` draws a trace). Section 9 of the design note says the
-  same: Trace is not built. #656 assumes the tab exists, so building the
-  untimed list of a program's calls comes first.
+  same. The checklist was corrected on 2026-09-29: only the Changes pane is
+  done, and the whole Trace tab moved to #656.
 
 The earlier statements about the step extraction (ADR-014's blockers, the
 shared step, the etui pin `c10f6a64`) were checked again and still hold.
@@ -167,8 +167,6 @@ the terminal revamp. Remote access and trace timing do not block closing
      addendum: shown only to the session's owner, one fixed action, observer
      by default with a short expiry, and the claim command shown once and
      never logged. It builds on the 053 claim flow.
-   - **The untimed Trace tab**, if the owner wants it counted here and not
-     under #656 (see "What the previous edition got wrong").
 2. **The terminal revamp, [#655](https://github.com/Roasbeef/loom/issues/655).**
    Starts after #569 closes. It takes the web design (A2) as its reference
    and begins with a design note and screenshots for the owner's sign-off, as
@@ -187,10 +185,11 @@ the terminal revamp. Remote access and trace timing do not block closing
    mean TLS in the daemon. Before it, measure the server-side re-render and
    diff cost per batch per viewer, and add the mailbox and patch-rate
    metrics the step extraction deferred to 052.
-4. **Trace timing, [#656](https://github.com/Roasbeef/loom/issues/656).** A
+4. **The Trace tab, [#656](https://github.com/Roasbeef/loom/issues/656).**
+   Two steps. First the untimed list of the latest `code_mode` program's
+   calls, drawn from what the page already receives. Then per-call timing: a
    `protocol-change/NNN.md` for per-call start and end fields on the wire,
-   then bars in the Trace tab, and optionally in the terminal. It follows
-   the untimed Trace tab.
+   bars in the tab, and optionally in the terminal.
 5. **Terminal state.** Land or close PR #583 (#399, #524).
 6. **Wake etui on SIGWINCH** before raising the terminal's one-second idle
    ceiling. Exit: resize repaints without waiting for a poll, and a quiet
