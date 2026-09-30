@@ -76,26 +76,37 @@ pub fn start_herdr_reporter(model: Model) -> Model {
 /// Nothing is published before a session is attached. The terminal reaches
 /// this function at the session picker, where `model.session` is still
 /// empty, and a report carrying an empty `agent_session_id` names no
-/// session for `herdr session` to resume.
+/// session at all, so there is nothing to report and no resume command
+/// to attach.
 ///
 /// The report derives from the same fields the frame does, so the pane
 /// cannot tell the operator something the screen disagrees with. A session
-/// switch is reported even at an unchanged state, because the session id is
-/// what resume keys on, and the switch re-announces: the announcement
-/// follows the session identity, so it is sent when that identity first
-/// becomes known and again every time it moves. Publishing on every event
-/// is deliberately cheap: the comparison is two fields and the send is one
-/// message to a local process.
+/// switch is reported even at an unchanged state, because the resume
+/// command names the session the pane must reopen, and the switch
+/// re-announces: the announcement follows the session identity, so it is
+/// sent when that identity first becomes known and again every time it
+/// moves. A blocked report names the pending approval in its message,
+/// the field Herdr shows beside a pane that is waiting on the operator.
+/// Publishing on every event is deliberately cheap: the comparison is
+/// three fields and the send is one effect queued to a local process.
 @internal
 pub fn publish_herdr(model: Model) -> Model {
-  case model.view.herdr_reporter, model.shared.session {
-    None, _ -> model
-    Some(_), "" -> model
-    Some(reporter), session -> {
+  // A quitting step publishes nothing. The quit path has already queued
+  // the release at the point this runs, and a report emitted after it in
+  // the same outbox would re-mark a pane the release just cleared: the
+  // state settles on the drained connection of the very step that quits,
+  // so a transition observed alongside the Ctrl-C would otherwise land on
+  // Herdr after the goodbye.
+  case model.shared.quit, model.view.herdr_reporter, model.shared.session {
+    True, _, _ -> model
+    False, None, _ -> model
+    False, Some(_), "" -> model
+    False, Some(reporter), session -> {
       let next =
         herdr.Publication(
           state: herdr.state_for(model.shared.strands, model.shared.approvals),
           session:,
+          message: herdr.message_for(model.shared.approvals),
         )
       case herdr.changed(model.view.herdr_published, next) {
         False -> model
@@ -112,7 +123,7 @@ pub fn publish_herdr(model: Model) -> Model {
             reporter,
             next.state,
             next.session,
-            "",
+            next.message,
           ))
         }
       }

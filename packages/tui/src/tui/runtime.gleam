@@ -434,7 +434,8 @@ fn perform_one(
     | effect.Record(..)
     | effect.WriteClipboard(_)
     | effect.AnnounceHerdr(..)
-    | effect.ReportHerdr(..) -> {
+    | effect.ReportHerdr(..)
+    | effect.ReleaseHerdr(..) -> {
       perform_io(requested)
       running
     }
@@ -458,6 +459,7 @@ fn perform_io(requested: Effect) -> Nil {
       herdr.announce(Some(reporter), session)
     effect.ReportHerdr(reporter, state, session, message) ->
       herdr.report(Some(reporter), state, session, message)
+    effect.ReleaseHerdr(reporter) -> herdr.release(Some(reporter))
 
     // `perform_one` handles these three before it gets here, because each
     // changes the runtime's table.

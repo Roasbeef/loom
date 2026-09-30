@@ -152,7 +152,7 @@ model.
 
 The whole of `tui.update` is
 `runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
-(`update` at `packages/tui/src/tui.gleam:1947`). Everything inside the
+(`update` at `packages/tui/src/tui.gleam:1960`). Everything inside the
 box below is pure; everything outside it is the host.
 
 ```mermaid
@@ -949,14 +949,27 @@ attachment worker rather than the step.
 when the terminal runs inside one of its panes. It is enabled only when
 `HERDR_ENV=1`, `HERDR_SOCKET_PATH` and `HERDR_PANE_ID` are all set.
 `herdr.state_for` maps the model onto three states: `blocked` while an
-approval is pending, `working` while any strand has a live phase, and `idle`
-otherwise. `publish_herdr` runs in `settle_update` and queues a report only
-when the state or the session changes, announcing the session ID when it first becomes
-known and on each switch, since `herdr session` resume keys on it. Nothing is
-sent until a session is attached. The sends go to a dedicated reporter process
-that retries each one once and then drops it, so a stale Herdr socket cannot
-stall the terminal. The report sequence is seeded from the wall clock because
-Herdr's `seq` is unsigned and the BEAM monotonic clock can be negative.
+approval is pending — named in the report's `message`, the field Herdr
+shows beside a waiting pane — `working` while any strand has a live phase,
+and `idle` otherwise. `publish_herdr` runs in `settle_update` and queues a
+report only when the state, the session or the message changes, announcing
+the session ID when it first becomes known and on each switch. Nothing is
+sent until a session is attached. The sends are effects the runtime
+performs after the step, into a dedicated reporter process that retries
+each one once and then drops it, so a stale Herdr socket cannot stall the
+terminal; on quit a queued `pane.release_agent` effect clears the pane in
+a bounded synchronous exchange before the loop exits and the VM halts.
+The report sequence is seeded from the wall clock because Herdr's `seq` is
+unsigned and the BEAM monotonic clock can be negative.
+
+The integration reports under the third-party source `loom:terminal`.
+Herdr reserves the `herdr:` prefix for the integrations it ships itself,
+and only those earn built-in session restore from the reported session
+id alone. For every other source the id is discarded, and the
+resume mechanism is `resume_argv` — the report carries
+`["loom", "--session", <id>]`, the command Herdr replays in the pane's
+directory after a server restart (Herdr 0.9.2 and later; older servers
+ignore the field and everything else still works).
 
 ## Recording and replay
 

@@ -103,4 +103,11 @@ pub type Effect {
     session: String,
     message: String,
   )
+
+  /// Clears the Herdr pane's agent label, state and resume command. The
+  /// exchange is synchronous inside the effect, unlike the fire-and-forget
+  /// report: it runs on the quit path, where a report the socket never saw
+  /// is a report that never happened, and the reply proves the reporter
+  /// handled the release before the process that queued it is gone.
+  ReleaseHerdr(reporter: herdr.Reporter)
 }

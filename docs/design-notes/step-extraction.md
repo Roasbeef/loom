@@ -45,8 +45,8 @@ The terminal's whole update is `runtime.settle(step(runtime.message(event,
 model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1745`
 (`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:59` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
-(`packages/tui/src/tui.gleam:2018` (`apply_input`),
-`packages/tui/src/tui.gleam:2019` (`settle_update`)), or an `Arrived`
+(`packages/tui/src/tui.gleam:2031` (`apply_input`),
+`packages/tui/src/tui.gleam:2032` (`settle_update`)), or an `Arrived`
 that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
 (`tui/model.gleam:346` (`Model`)), whose `view` field already holds the
@@ -426,7 +426,7 @@ fields the adoption arm resets today (`tui/interaction.gleam:236`
 `Attached`. `next_due` is
 `option.then(model.channel, session_channel.next_due)`; a host that has
 other reasons to wake, as the terminal does, combines it with its own
-(`tui/tick.gleam:532` (`lane_wait`)).
+(`tui/tick.gleam:543` (`lane_wait`)).
 
 ### The shells
 
@@ -462,7 +462,7 @@ point of the call, so a step that decides a lane close, then a terminal
 `Discard`, then a lane write (`tui/interaction.gleam:339` (`Discard`))
 still performs them in that order. The terminal's effect type gains one
 variant, `Step(step.Effect(Connection, Recorder))`,
-and `perform_io` gains two arms (`tui/runtime.gleam:433`
+and `perform_io` gains two arms (`tui/runtime.gleam:439`
 (`perform_io`)).
 
 The web's `component.Model(socket)` becomes
@@ -524,16 +524,16 @@ they reach that it misses.
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
 - The command arms: `interrupt_active` (`session_view/commands.gleam:80`),
-  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:517`),
+  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:528`),
   `select_model`, `decide` (`session_view/commands.gleam:168`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from
   `service_todo_seed` (`session_view/surfaces.gleam:75`) onward, `sync_context`,
   `sync_advisor_nudges`, `sync_goal`, `receive_jobs`, `receive_goal` and
   `receive_advisor_nudges`, less `notes_target` and `notes_surface`.
-- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:250`)
+- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:261`)
   and `advance_generation_clock` read the stamp and shared fields;
-  `drain_replay` (`tui/tick.gleam:212`) and `apply_replay_change`.
+  `drain_replay` (`tui/tick.gleam:223`) and `apply_replay_change`.
 - `queue_owner`, `queue_namespace`, `active_strand_phase`,
   `append_system`, `append_error`, `append_notice`, `start_step`, `emit`,
   `record`, `hold_channel` and `presentation` from `tui/model`.
@@ -641,7 +641,7 @@ The worst cases in the code, and the cut for each:
    lookup's inspector (`LookupAnswered`) are facts the terminal applies
    after the update.
 
-7. **`settle_update`** (`packages/tui/src/tui.gleam:2019`
+7. **`settle_update`** (`packages/tui/src/tui.gleam:2032`
    (`settle_update`)) runs nine calls after every event. Three are
    shared and move into `step.update`'s own settle: `sync_context`,
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
@@ -656,19 +656,19 @@ The worst cases in the code, and the cut for each:
    `apply_input` describes keeps its shape: the shared `update` applies
    its settle to a parameter, and the terminal's `settle_update` applies
    its remaining steps to `updated` as it does now
-   (`packages/tui/src/tui.gleam:2018` (`apply_input`)).
+   (`packages/tui/src/tui.gleam:2031` (`apply_input`)).
 
-8. **The tick** (`tui/tick.gleam:126` (`update_tick`)) is a fixed
+8. **The tick** (`tui/tick.gleam:139` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
    reconnect, activity poll, configuration, connection, then the settle
    chain. The order is kept by having the terminal's tick call the shared
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
    (`tui/inbound.gleam:1156` (`tick_strip`)) reads the strip's focus and
-   stays; `advance_cache_outlook` (`tui/tick.gleam:279`
+   stays; `advance_cache_outlook` (`tui/tick.gleam:290`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
-   bookkeeping stays terminal (`tui/tick.gleam:156` (`settle_tick`)).
+   bookkeeping stays terminal (`tui/tick.gleam:167` (`settle_tick`)).
 
 9. **Key dispatch** (`tui/interaction.gleam:1085`
    (`update_conversation_key`)) reads `help_open`, `notes_open`, the
@@ -2078,7 +2078,7 @@ them.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
-   `packages/tui/src/tui.gleam:2018` (`apply_input`)). S3 creates a third
+   `packages/tui/src/tui.gleam:2031` (`apply_input`)). S3 creates a third
    chain, the shell's edges. *Recommendation:* every S3 landing measures
    `erlc +time` on the generated modules and keeps the parameter boundary
    in each of the three chains; the `beam-compile-review` skill has the

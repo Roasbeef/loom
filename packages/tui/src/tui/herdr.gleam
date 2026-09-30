@@ -1,29 +1,50 @@
 //// Best-effort agent-state reporting to a Herdr multiplexer, when the
 //// terminal was launched inside one of its panes.
 ////
-//// Herdr keeps a closed registry of agent integrations; a pane running an
-//// integrated agent inherits three environment variables
+//// A pane running an agent inherits three environment variables
 //// (`HERDR_ENV=1`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`), and the agent
 //// reports its lifecycle as newline-delimited JSON requests over that
-//// unix socket: `pane.report_agent_session` when the session identity
-//// first becomes known and again on every switch, then `pane.report_agent`
-//// as the agent moves between working, blocked and idle. `herdr session`
-//// resume keys off the reported session id, which Loom already has as a
-//// first-class value — the attached session id itself. Until a session is
+//// unix socket: `pane.report_agent` as the agent moves between working,
+//// blocked and idle — a blocked report naming what the operator is
+//// being asked to decide, in the `message` field Herdr shows beside a
+//// waiting pane — `pane.report_agent_session` when the session
+//// `pane.release_agent` when the terminal quits. Until a session is
 //// attached there is no identity to report, and nothing is sent at all.
+////
+//// Herdr's contract splits integrations in two, and this one is on the
+//// third-party side of the split. Herdr's own integrations report under
+//// a reserved `herdr:` source and earn built-in session restore from the
+//// `agent_session_id` alone. A third-party source earns none of that:
+//// its `agent_session_id` is discarded, and the only mechanism
+//// Herdr gives it for surviving a server restart is `resume_argv`, the
+//// command that reopens the current session, attached to a report that
+//// already holds the pane. So the report carries
+//// `["loom", "--session", <id>]` — safe to send before Herdr 0.9.2,
+//// which introduced `resume_argv` and simply ignores the field — and
+//// this integration's source is `loom:terminal`, not on the reserved
+//// prefix. The announcement stays on the wire because a future Herdr
+//// may whitelist the source, and because the session id still ties the
+//// state reports and the resume command to one conversation.
 ////
 //// This terminal is a self-contained binary with no hook directory for
 //// Herdr's installer to drop a script into, so the adapter is compiled in
 //// and gated at runtime by the same three variables. Every other
-//// integration's adapter is fire-and-forget, and this one keeps the rule:
-//// the reporter is a dedicated process, each exchange carries a deadline,
-//// a failed delivery is retried once and then dropped, and nothing here
-//// can stall or fail the terminal's own connection to the daemon.
+//// integration's adapter is fire-and-forget, and the state reports keep
+//// the rule: the reporter is a dedicated process, each exchange carries a
+//// deadline, a failed delivery is retried once and then dropped, and
+//// nothing here can stall or fail the terminal's own connection to the
+//// daemon. The one deliberate exception is release: a report the socket
+//// never sees is a report that never happened, and after release the
+//// terminal is about to halt the VM. Release is a bounded synchronous
+//// exchange into the reporter — its reply proves the reporter handled it,
+//// not that the socket took it, and Herdr's idle-shell safety net covers
+//// the difference — so the release is sent before the process that owned
+//// the pane is gone.
 ////
-//// The module is split so the loop-facing half is pure: `state_for` maps the
-//// model onto the pane state and `encode_*` build the wire bytes, which
-//// the tests pin, while the reporter process and the socket exchange are
-//// the only effects.
+//// The module is split so the loop-facing half is pure: `state_for` maps
+//// the model onto the pane state and `encode_*` build the wire bytes,
+//// which the tests pin, while the reporter process and the socket
+//// exchange are the only effects.
 
 import core/json
 import gleam/erlang/process.{type Subject}
@@ -36,8 +57,10 @@ import session_view/protocol.{type Strand}
 import tui/internal/ffi_herdr
 import weft/actor
 
-/// The wire tag Herdr's resume planner matches this integration on.
-const source = "herdr:loom"
+/// The wire tag that identifies this integration to Herdr. Third-party
+/// sources must not use the `herdr:` prefix, which Herdr reserves for the
+/// integrations it ships itself.
+const source = "loom:terminal"
 
 /// The agent label reported beside it.
 const agent = "loom"
@@ -47,6 +70,31 @@ const agent = "loom"
 const attempt_timeout_ms = 500
 
 const retry_timeout_ms = 1500
+
+/// Release is the one synchronous exchange, and it pays the same two
+/// deadlines a retried report would. Bounded so a dead socket cannot
+/// hold the terminal's own shutdown for more than the pair.
+const release_timeout_ms = 2000
+
+/// The command Herdr replays in the pane's directory after a server
+/// restart, per `resume_argv`'s contract: the first word must be a plain
+/// command name on the operator's PATH.
+///
+/// Herdr also refuses an argument carrying an apostrophe or a control
+/// character, and refuses the whole report rather than the field, so the
+/// session id this interpolates carries those constraints: a session
+/// whose id contained an apostrophe would make every pane report fail
+/// `invalid_resume_argv`. Loom's session ids are UUIDv7 text, whose
+/// alphabet is hex digits and hyphens, so an apostrophe cannot occur.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.resume_argv("sess-1") == ["loom", "--session", "sess-1"]
+/// ```
+pub fn resume_argv(session: String) -> List(String) {
+  ["loom", "--session", session]
+}
 
 /// The pane config and the process that carries reports to the pane's
 /// daemon.
@@ -70,7 +118,7 @@ pub type Config {
   Config(
     /// Herdr's own pane identifier, echoed back on every report.
     pane_id: String,
-    /// The unix socket the pane's client daemon listens on.
+    /// The unix socket the pane's daemon listens on.
     socket_path: String,
     /// Wall-clock process start time in milliseconds, the seed of the
     /// ascending report sequence Herdr uses to drop reordered reports.
@@ -104,9 +152,12 @@ pub type PaneState {
 
 /// The last report sent, so the loop publishes only on a change. The
 /// session id rides along because a session switch at the same state is
-/// still a new report: resume must follow the new session.
+/// still a new report: the resume command has to follow the new session.
+/// The message rides along for the same reason: a second approval
+/// arriving while the pane is already `blocked` changes nothing else, and
+/// the pane should not keep showing the first approval's words.
 pub type Publication {
-  Publication(state: PaneState, session: String)
+  Publication(state: PaneState, session: String, message: String)
 }
 
 /// What the reporter is asked to do.
@@ -119,11 +170,19 @@ pub type Message {
 
   /// Report the session identity without a state claim. Sent when the
   /// session identity first becomes known — so a pane opened onto an idle
-  /// session still resumes — and again on every switch, because `herdr
-  /// session` resume keys off the announced id and a switch moves it.
-  /// Nothing is announced while no session is attached: an empty
-  /// `agent_session_id` names no session to resume.
+  /// session still announces — and again on every switch. Nothing is
+  /// announced while no session is attached: an empty `agent_session_id`
+  /// names nothing.
   Announce(session: String)
+
+  /// Clear the pane's agent and resume command, and answer once the
+  /// exchange is done. Release is the one caller that waits: it runs on
+  /// the quit path, where the next step halts the VM. The reply proves
+  /// the reporter handled the release — not that the socket took it,
+  /// which no reply this side of the daemon can show — and the caller's
+  /// deadline is what keeps the wait bounded before the process that
+  /// cleared the pane is gone.
+  Release(reply: Subject(Nil))
 }
 
 /// The reporter's own state: the config it was born with and the sequence
@@ -231,39 +290,95 @@ pub fn state_for(
   }
 }
 
-/// Whether a derived state differs from the last one published.
+/// The message a blocked report carries, naming what the operator is
+/// being asked to decide, in the approval's own raw tool and preview
+/// rather than the humanized projection the approval panel renders —
+/// both name the same decision, and the raw form needs no re-derivation
+/// that could disagree with the capture. An empty answer means nothing
+/// is pending and the report's message is omitted on the wire.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.message_for([])
+/// // -> ""
+/// ```
+pub fn message_for(approvals: List(approval.Review)) -> String {
+  let pending =
+    list.filter(approvals, fn(review) { review.status == approval.Pending })
+  case pending {
+    [] -> ""
+
+    // An approval with no tool is one the panel renders from its preview
+    // alone, and `pending approval` is what names it — first in the
+    // queue or alone, so a toolless head never renders as a dangling
+    // `: preview`.
+    [first, ..rest] if first.tool == "" ->
+      case rest {
+        [] -> "pending approval"
+        _ ->
+          "pending approval (" <> int.to_string(list.length(rest)) <> " more)"
+      }
+
+    [first] -> first.tool <> ": " <> first.preview
+
+    // Several approvals are waiting: name the first and say how many
+    // others follow, since the pane shows one line and the operator
+    // should know the queue is longer than it reads.
+    [first, ..rest] ->
+      first.tool
+      <> ": "
+      <> first.preview
+      <> " ("
+      <> int.to_string(list.length(rest))
+      <> " more)"
+  }
+}
+
+/// Whether a derived report differs from the last one published. All
+/// three fields count: the state, the session the resume command names,
+/// and the message — a second approval queuing behind the first changes
+/// only the message, and a pane stuck on the first approval's words is
+/// the pane disagreeing with the operator's screen.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// herdr.changed(
-///   Some(herdr.Publication(herdr.Idle, "a")),
-///   herdr.Publication(herdr.Idle, "b"),
+///   Some(herdr.Publication(herdr.Idle, "a", "")),
+///   herdr.Publication(herdr.Idle, "b", ""),
+/// )
+/// // -> True
+///
+/// herdr.changed(
+///   Some(herdr.Publication(herdr.Blocked, "a", "bash: run it")),
+///   herdr.Publication(herdr.Blocked, "a", "bash: run it (1 more)"),
 /// )
 /// // -> True
 /// ```
 pub fn changed(last: Option(Publication), next: Publication) -> Bool {
   case last {
     Some(previous) ->
-      previous.state != next.state || previous.session != next.session
+      previous.state != next.state
+      || previous.session != next.session
+      || previous.message != next.message
     None -> True
   }
 }
 
 /// Whether this publication has to announce the session before its report.
 ///
-/// `pane.report_agent_session` is the call `herdr session` resume keys off,
-/// so the announcement follows the session id rather than the first
-/// publish: it is sent when the identity first becomes known and again
-/// whenever it moves. A publication with no session attached announces
-/// nothing, because an empty `agent_session_id` names no session to resume.
+/// The announcement follows the session id rather than the first publish:
+/// it is sent when the identity first becomes known and again whenever it
+/// moves. A publication with no session attached announces nothing,
+/// because an empty `agent_session_id` names nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// herdr.announces(
-///   Some(herdr.Publication(herdr.Idle, "a")),
-///   herdr.Publication(herdr.Idle, "b"),
+///   Some(herdr.Publication(herdr.Idle, "a", "")),
+///   herdr.Publication(herdr.Idle, "b", ""),
 /// )
 /// // -> True
 /// ```
@@ -320,6 +435,26 @@ pub fn announce(reporter: Option(Reporter), session: String) -> Nil {
   }
 }
 
+/// Clears the pane's agent label, state and resume command, and waits for
+/// the exchange to finish. Silent when there is no reporter. A dead or
+/// wedged reporter is a pane Herdr clears itself once the pane returns to
+/// its idle shell, which is its documented safety net and the reason
+/// this may give up rather than keep the terminal from quitting.
+pub fn release(reporter: Option(Reporter)) -> Nil {
+  case reporter {
+    None -> Nil
+    Some(reporter) -> {
+      let reply = process.new_subject()
+      process.send(reporter.inner.data, Release(reply))
+      let _ =
+        process.new_selector()
+        |> process.select(reply)
+        |> process.selector_receive(release_timeout_ms)
+      Nil
+    }
+  }
+}
+
 fn handle(
   state: ReporterState,
   message: Message,
@@ -342,6 +477,19 @@ fn handle(
       deliver(state.config, encode_announce(state.config, seq, session))
       actor.continue(ReporterState(..state, seq:))
     }
+
+    // Release is FIFO like every other message, so reports queued ahead of
+    // it run first and their dead-socket deadlines eat into the caller's
+    // budget. That is the honest cost of in-order delivery, and the
+    // caller's own deadline is the bound: a release that times out was
+    // not delivered, and Herdr's idle-shell safety net clears the pane
+    // a second later — the same fallback an uncaught crash gets.
+    Release(reply:) -> {
+      let seq = state.seq + 1
+      deliver(state.config, encode_release(state.config, seq))
+      process.send(reply, Nil)
+      actor.continue(ReporterState(..state, seq:))
+    }
   }
 }
 
@@ -360,6 +508,13 @@ fn deliver(config: Config, payload: String) -> Nil {
 }
 
 /// Encodes one `pane.report_agent` request as one line of JSON.
+///
+/// The resume command rides on every state report rather than only the
+/// first, because Herdr keeps it only while the same source holds the
+/// pane and re-derives nothing: the latest report that holds the pane is
+/// the one whose command a restart replays, and a report without it
+/// would leave a pane that switched sessions an hour ago resuming the
+/// session it left.
 ///
 /// ## Examples
 ///
@@ -380,6 +535,7 @@ pub fn encode_report(
       "" -> json.Null
       text -> json.String(text)
     }),
+    #("resume_argv", json.Array(list.map(resume_argv(session), json.String))),
   ])
 }
 
@@ -388,6 +544,11 @@ pub fn encode_announce(config: Config, seq: Int, session: String) -> String {
   encode(config, seq, "pane.report_agent_session", [
     #("agent_session_id", json.String(session)),
   ])
+}
+
+/// Encodes one `pane.release_agent` request as one line of JSON.
+pub fn encode_release(config: Config, seq: Int) -> String {
+  encode(config, seq, "pane.release_agent", [])
 }
 
 // The envelope both methods share: a monotonically sequenced request with

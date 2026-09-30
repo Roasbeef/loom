@@ -6,6 +6,40 @@ on 2026-09-30. Tracker state was read with `gh` the same day. Every claim
 below was checked against that tree or that tracker; a claim that could not be
 checked says so.
 
+## Herdr integration corrections (this branch)
+
+The `tui/herdr` adapter was audited against upstream herdrdev/herdr
+(v0.9.1 locally, v0.9.3 upstream) and four real bugs were fixed. The
+previous wire format was schema-valid but claimed an identity Herdr
+cannot honor: it reported under the reserved `herdr:loom` source, and
+its docs claimed session restore keyed off the announced session id —
+but Herdr's `agent_session_id` restore path is gated by a hard-coded
+allowlist of its own integrations (`is_official_agent_source` in
+upstream `src/agent_resume.rs`), in every version through 0.9.3, so
+resume never worked and the announce was dead weight. The adapter now:
+
+- reports under the third-party source `loom:terminal` (the `herdr:`
+  prefix is reserved for Herdr's own integrations, per their
+  add-herdr-support guide)
+- carries `resume_argv` `["loom", "--session", <id>]` on every state
+  report — the actual third-party resume mechanism, honoured by Herdr
+  0.9.2+ and safely ignored by older servers
+- queues `pane.release_agent` on quit as the last effect of the step,
+  a bounded synchronous exchange the runtime performs before the loop
+  exits, so the pane clears before the VM halts instead of waiting for
+  Herdr's idle-shell safety net
+- names the pending approval in a blocked report's `message` (tool +
+  preview, with a count when several queue up), and the message is part
+  of the change comparison, so a second approval while blocked
+  republishes
+
+What was already correct and is pinned by tests: the env gate, NDJSON
+framing, one-request-per-connection exchanges, the `PaneAgentState`
+enum, the wall-clock sequence seed, and change-detection. Herdr 0.9.1
+→ 0.9.3 upgrade is safe for existing panes (no breaking change beyond
+the removed pane-graphics API, which Loom never used) and is what
+activates `resume_argv`.
+
 ## What the previous edition got wrong
 
 The previous edition was pinned to `3088ee3ce`, before the last three lanes of

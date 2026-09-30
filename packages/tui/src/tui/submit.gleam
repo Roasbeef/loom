@@ -439,13 +439,16 @@ pub fn toggle_details(model: Model) -> Model {
   )
 }
 
-/// Queues the cancellation of every background worker and request and the
-/// close of the attachment, and marks the model as quitting.
+/// Queues the cancellation of every background worker and request, the
+/// close of the attachment, and the Herdr pane's release, and marks the
+/// model as quitting.
 ///
 /// Nothing is cancelled or closed during the step. The adopted lane's close
 /// is queued first and the cancels after it, in the order they were once
 /// performed. The runtime runs all of them after the step, before the loop
-/// sees `quit` and exits.
+/// sees `quit` and exits, and the release is what that ordering is for:
+/// the pane is clear of this terminal before the process that cleared it
+/// is gone.
 @internal
 pub fn quit(model: Model) -> Model {
   // The adopted lane closes ahead of the provisional attempt, in the
@@ -495,9 +498,19 @@ pub fn quit(model: Model) -> Model {
       Model(..model, view: View(..model.view, configuring: None))
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
-  case model.view.daemon_host {
+  let model = case model.view.daemon_host {
     None -> model
     Some(host) -> tui_model.emit(model, effect.CloseControl(host.control))
+  }
+
+  // The Herdr release is queued last, after every close, at the last point
+  // the model still owns everything it reported: a pane the terminal no
+  // longer holds should not spend its safety-net second showing an agent
+  // that has already gone. The exchange itself is bounded, so a dead socket
+  // delays the runtime's final drain by at most the release deadline pair.
+  case model.view.herdr_reporter {
+    None -> model
+    Some(reporter) -> tui_model.emit(model, effect.ReleaseHerdr(reporter))
   }
 }
 
