@@ -249,6 +249,88 @@ pub fn claim_memberships_decoder() -> decode.Decoder(ClaimMemberships) {
   decode.success(ClaimMemberships(session_id:, role:))
 }
 
+pub type PrincipalListing {
+  PrincipalListing(principal_id: String, display_name: String, kind: String)
+}
+
+pub fn principal_listing(principal_id principal_id: String) {
+  let sql =
+    "SELECT principal_id, display_name, kind FROM access_principals WHERE principal_id > ? ORDER BY principal_id LIMIT 101"
+  #(sql, [dev.ParamString(principal_id)], principal_listing_decoder())
+}
+
+pub fn principal_listing_decoder() -> decode.Decoder(PrincipalListing) {
+  use principal_id <- decode.field(0, decode.string)
+  use display_name <- decode.field(1, decode.string)
+  use kind <- decode.field(2, decode.string)
+  decode.success(PrincipalListing(principal_id:, display_name:, kind:))
+}
+
+pub type PrincipalActiveCredential {
+  PrincipalActiveCredential(digest: String, claimed_at_ms: Option(Int))
+}
+
+pub fn principal_active_credential(principal_id principal_id: String) {
+  let sql =
+    "SELECT c.digest, k.claimed_at_ms FROM access_credentials AS c
+LEFT JOIN access_claims AS k ON k.credential_digest = c.digest
+WHERE c.principal_id = ? AND c.state = 'active'
+ORDER BY c.digest LIMIT 1"
+  #(sql, [dev.ParamString(principal_id)], principal_active_credential_decoder())
+}
+
+pub fn principal_active_credential_decoder() -> decode.Decoder(
+  PrincipalActiveCredential,
+) {
+  use digest <- decode.field(0, decode.string)
+  use claimed_at_ms <- decode.field(1, decode.optional(decode.int))
+  decode.success(PrincipalActiveCredential(digest:, claimed_at_ms:))
+}
+
+pub type PrincipalOpenClaim {
+  PrincipalOpenClaim(expires_at_ms: Int)
+}
+
+pub fn principal_open_claim(principal_id principal_id: String) {
+  let sql =
+    "SELECT expires_at_ms FROM access_claims WHERE principal_id = ? AND state = 'open' LIMIT 1"
+  #(sql, [dev.ParamString(principal_id)], principal_open_claim_decoder())
+}
+
+pub fn principal_open_claim_decoder() -> decode.Decoder(PrincipalOpenClaim) {
+  use expires_at_ms <- decode.field(0, decode.int)
+  decode.success(PrincipalOpenClaim(expires_at_ms:))
+}
+
+pub type PrincipalMemberships {
+  PrincipalMemberships(session_id: String, name: String, role: String)
+}
+
+pub fn principal_memberships(
+  principal_id principal_id: String,
+  session_id session_id: String,
+) {
+  let sql =
+    "SELECT m.session_id, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, m.role
+FROM access_memberships AS m
+JOIN catalogue_sessions AS s ON s.session_id = m.session_id
+LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
+WHERE m.principal_id = ? AND m.session_id > ?
+ORDER BY m.session_id LIMIT 101"
+  #(
+    sql,
+    [dev.ParamString(principal_id), dev.ParamString(session_id)],
+    principal_memberships_decoder(),
+  )
+}
+
+pub fn principal_memberships_decoder() -> decode.Decoder(PrincipalMemberships) {
+  use session_id <- decode.field(0, decode.string)
+  use name <- decode.field(1, decode.string)
+  use role <- decode.field(2, decode.string)
+  decode.success(PrincipalMemberships(session_id:, name:, role:))
+}
+
 pub fn initialize_catalogue_revision() {
   let sql =
     "
