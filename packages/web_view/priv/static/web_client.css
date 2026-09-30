@@ -26,7 +26,7 @@
    input 8e108595e54b6a67d07a6c7220e2c20e3beeb78ce6a3059a23926e8cef799c0c  packages/web_view/src/web_view/operator_page.gleam
    input b830541b6e32c30f71a9a8d76a9dcd19582684d089e097b0c41ad2be61ad7e4e  packages/web_view/src/web_view/page.gleam
    input 7b2cc69b3015d4b8c2126c42e454aced0365ad60e22d5e651f299e372624f02e  packages/web_view/src/web_view/sessions.gleam
-   input bea3c988174641fb77053e93eb9076099ddf65e94ec94c2b5bbb6df60005c871  packages/web_view/src/web_view/view/changes.gleam
+   input 01a3c76737633aa79b57ebb2e03cc20cc97e23065fb6120c26a3344ace1179da  packages/web_view/src/web_view/view/changes.gleam
    input 0e161d27af03b3ce9ed9e82b4763630ef924d28681ea145746803e470ea0c46b  packages/web_view/src/web_view/view/controls.gleam
    input acc1ec316e6219705cb135e1038cf2ea8684229ea9e1a470c555943e1881b77a  packages/web_view/src/web_view/view/crumb.gleam
    input 6320423cadd73c37401b2e3b4607b75720eb9a5621fc7da274d576b465876387  packages/web_view/src/web_view/view/ended.gleam
@@ -40,7 +40,7 @@
    input 88d11f7175e81125988b6dc26d9bf71df6dab837ae0aba571ffff8ea054bae72  packages/web_view/src/web_view/view/shell.gleam
    input 7f34e03b6dffa40e0eb536deae5befba735588195ce97e336e326e5d0b228cf1  packages/web_view/src/web_view/view/sidebar.gleam
    input 8a54c42de8982aa8e37d1425da9b4484159b0e57d51201aa43bb23db6ff75004  packages/web_view/src/web_view/view/strand_detail.gleam
-   input 547af5c0661db71727c3c58a91bd3382a52ced65172f9504d380dfef4484e1ba  packages/web_view/src/web_view/view/strip.gleam
+   input 30d38bead61053909342d4b0bebaa5a51a5a829457927656e119e2f7e03af7a6  packages/web_view/src/web_view/view/strip.gleam
    input 81a52f8b880d252cf47e3f23cebc6735e33e9c3dd549fbd8e091f2701f1fce37  packages/web_view/src/web_view/view/todo_panel.gleam
    body ceb3eda06bb80ac0d17a7402d01ef44f917c6f1625def5ea745e1ceff1f3fe90
 */
