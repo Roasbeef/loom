@@ -72,13 +72,13 @@ pub fn the_strip_lists_main_then_working_agents_then_the_advisor_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "<nav aria-label=\"Agents\" class=\"agent-strip\">",
-    "<li class=\"chip following hue-main\">",
+    "<li data-lustre-key=\"card-0\" class=\"chip following hue-main\">",
     ">main<",
-    "<li class=\"chip hue-2\">",
+    "<li data-lustre-key=\"card-1\" class=\"chip hue-2\">",
     "&lt;b&gt;review",
-    "<li class=\"chip hue-3\">",
+    "<li data-lustre-key=\"card-2\" class=\"chip hue-3\">",
     ">tests<",
-    "<li class=\"chip hue-advisor\">",
+    "<li data-lustre-key=\"advisor\" class=\"chip hue-advisor\">",
     ">advisor<",
   ])
 
@@ -109,9 +109,9 @@ pub fn the_strip_lists_main_then_working_agents_then_the_advisor_test() {
   assert list.length(chips) == 4
 }
 
-pub fn a_settled_strand_folds_into_a_count_test() {
+pub fn a_settled_strand_leaves_the_live_cards_for_the_group_test() {
   // The tester is running in the first capture and idle in the next, so it
-  // leaves the strip and is counted.
+  // leaves the live cards and is listed in the settled group.
   let drawn =
     page([
       lane_fixture.captured(10, None),
@@ -120,9 +120,11 @@ pub fn a_settled_strand_folds_into_a_count_test() {
       ]),
     ])
     |> html
-  assert string.contains(drawn, "<li class=\"chip settled\">")
-  assert string.contains(drawn, "+1 settled")
-  assert !string.contains(drawn, ">tests<")
+  assert string.contains(drawn, "<li data-lustre-key=\"settled\"")
+  assert string.contains(drawn, "Settled · 1")
+  let assert Ok(#(live, group)) = string.split_once(drawn, "settled-group")
+  assert !string.contains(live, ">tests<")
+  assert string.contains(group, ">tests<")
 }
 
 // A strand's elapsed time, in its own view, is a duration the roster measured

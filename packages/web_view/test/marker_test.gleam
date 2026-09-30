@@ -181,13 +181,22 @@ pub fn the_strand_on_screen_has_no_marked_rows_test() {
   assert !string.contains(reviewing, "class=\"dot\" data-loom-focus=\"1\"")
 }
 
-// A strand the page does not list cannot be focused from it, so its tag is
-// words and its dot is decoration, and the row reads the same.
-pub fn a_strand_the_page_does_not_list_is_not_a_control_test() {
-  // The reviewer settled and left the strip: only the tester is running.
-  let html = observer(page([#(lane_fixture.tester, lane_fixture.tests_op())]))
-  assert string.contains(html, "↳ agent_spawn · sub:&lt;b&gt;review")
-  assert !string.contains(html, "&lt;b&gt;review</button>")
+// A settled strand is a card in the settled group, so its tag is a control
+// and holds the position of that card, which follows the live cards'. The
+// group is closed until the reader opens it, but the relay presses the card
+// with a script click, so the control works either way.
+pub fn a_settled_strand_is_a_control_pointing_at_its_card_test() {
+  // The reviewer settled and left the live cards: only the tester is running.
+  let model = page([#(lane_fixture.tester, lane_fixture.tests_op())])
+  let html = observer(model)
+  let positions = strip.positions(component.strip(model))
+  let assert Ok(reviewer) = dict.get(positions, lane_fixture.child)
+  assert reviewer == 3
+  assert string.contains(
+    html,
+    "<button class=\"tag\" data-loom-focus=\"3\" type=\"button\">sub:&lt;b&gt;review</button>",
+  )
+  assert string.contains(html, "data-loom-card=\"3\"")
 
   // The advisor is still listed, and its nudge is still a control.
   assert string.contains(html, ">advisor</button> · nudge · delivered")

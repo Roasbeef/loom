@@ -49,10 +49,11 @@ pub fn the_observers_page_carries_the_older_click_and_the_chips_test() {
   let keys = handlers(component.view(paged()))
   assert list.contains(keys, older_click())
 
-  // Everything else is one chip's click: `main`'s and the advisor's, since no
-  // other agent is running in this session.
+  // Everything else is one chip's click: `main`'s and the advisor's, and the
+  // two settled strands' in the closed group, since no other agent is running
+  // in this session.
   let others = list.filter(keys, fn(key) { key != older_click() })
-  assert list.length(others) == 2
+  assert list.length(others) == 4
   assert list.all(others, is_chip_click)
 }
 

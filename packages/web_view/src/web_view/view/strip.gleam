@@ -43,8 +43,28 @@
 //// strip's `ul`'s children, and the strip is the panel's second child, which
 //// is what `component.strip_path` counts on and the observer's socket admits
 //// clicks under
-//// (protocol-change/051, the addendum on strand focus). The strip that says
-//// "settled" is not a control.
+//// (protocol-change/051, the addendum on strand focus).
+////
+//// Settled strands are the list's last item, a collapsed group below the live
+//// cards. The group is a native `details` element, so opening and closing it
+//// is the browser's and the server never learns which it is. Each settled
+//// strand is a card of the same kind as a live one: a button that focuses the
+//// strand, numbered by `positions` after the live cards, so a dot or a tag in
+//// the transcript can reach it through the marker relay whether or not the
+//// group is open. The relay presses the button with a script `click`, which a
+//// closed `details` does not prevent. A card says how the strand ended in
+//// words (`Finished`, `Failed`) and carries no duration: the roster's clock
+//// for a finished operation keeps running, and the capture holds no instant
+//// at which the operation ended, so any figure here would be wrong.
+//// Focusing a settled strand makes it the active one, and the roster lists
+//// the active strand with the live cards, so the card moves out of the group
+//// while it is shown and back when the reader leaves it.
+////
+//// The list's children are keyed by fixed words, `card-<n>`, `advisor` and
+//// `settled`, never by a strand's name. The group must stay the same element
+//// when a live strand starts or settles, or the browser would close it under
+//// the reader; an unkeyed list would hand the group's place to whichever item
+//// now sits at its index.
 ////
 //// The types live here rather than in `web_view/component` because the
 //// component imports this module to lay the page out, and a module the
@@ -57,6 +77,7 @@ import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import session_view/agent_roster
 import session_view/agent_view
@@ -89,15 +110,18 @@ pub type Chip {
 }
 
 /// The agent strip: the listed agents in the terminal's order, the advisor
-/// in its own place, and how many strands settled out of it.
+/// in its own place, and the strands that settled out of it.
 pub type Strip {
   Strip(
     /// `main`, then every other strand whose state needs watching.
     chips: List(Chip),
     /// The advisor, when the capture holds its strand.
     advisor: Option(Chip),
-    /// How many strands settled and left the strip.
-    settled: Int,
+    /// The newest settled strands, newest first, at most `settled_limit`.
+    settled: List(Chip),
+    /// How many settled strands are older than the ones in `settled` and are
+    /// named only by this count.
+    earlier: Int,
     /// The strand the page shows and addresses, whose chip the strip marks
     /// as the current one (`aria-current`, the `following` class). It is
     /// part of the strip so that moving focus redraws the strip, whose
@@ -106,9 +130,13 @@ pub type Strip {
   )
 }
 
-/// How many strands the strip lists as cards: the listed chips and the
-/// advisor's. The chip counting settled strands is not a strand's card and
-/// is not counted.
+/// How many settled strands the group lists as cards. Older ones are a count.
+pub const settled_limit = 6
+
+/// How many strands the strip lists as live cards: the listed chips and the
+/// advisor's. Settled strands are in their own group and are not counted, so
+/// the panel's title and the tab's badge speak of the strands that are
+/// running or waiting.
 ///
 /// ## Examples
 ///
@@ -122,8 +150,8 @@ pub fn count(strip: Strip) -> Int {
   }
 }
 
-/// Every card the strip draws, in the order it draws them: the listed chips,
-/// then the advisor's. The chip counting settled strands is not a card.
+/// Every live card the strip draws, in the order it draws them: the listed
+/// chips, then the advisor's. The settled group's cards are `settled_cards`.
 ///
 /// ## Examples
 ///
@@ -137,10 +165,23 @@ pub fn cards(strip: Strip) -> List(Chip) {
   }
 }
 
+/// Every settled card the group draws, newest first: the cards which follow
+/// the live ones in `positions`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strip.settled_cards(strip) == strip.settled
+/// ```
+pub fn settled_cards(strip: Strip) -> List(Chip) {
+  strip.settled
+}
+
 /// The position of each card's strand, by the strand's identity: the number
 /// the card carries as `data-loom-card` and a dot or tag for the strand
 /// carries as `data-loom-focus`. `main` is always first, so position zero is
-/// `main` wherever `main` is listed; the advisor is last.
+/// `main` wherever `main` is listed; the advisor follows the listed chips and
+/// the settled group's cards come last.
 ///
 /// The map holds identities, which are the daemon's and never reach the page:
 /// a marker holds only the number.
@@ -151,7 +192,7 @@ pub fn cards(strip: Strip) -> List(Chip) {
 /// // dict.get(strip.positions(strip), "main") == Ok(0)
 /// ```
 pub fn positions(strip: Strip) -> Dict(String, Int) {
-  cards(strip)
+  list.append(cards(strip), settled_cards(strip))
   |> list.index_map(fn(chip, position) { #(chip.line.id, position) })
   |> dict.from_list
 }
@@ -193,8 +234,8 @@ pub fn focus_attribute(position: Int) -> attribute.Attribute(message) {
   attribute.data(focus_marker, int.to_string(position))
 }
 
-/// The agent strip: one card per listed strand, the advisor's last, and one
-/// line counting the strands that settled.
+/// The agent strip: one card per listed strand, the advisor's after them,
+/// and the collapsed group of settled strands last.
 ///
 /// Each chip is a button whose click is `focus` applied to the strand's
 /// name, so a page's message type decides what a press means. The list is
@@ -209,41 +250,83 @@ pub fn focus_attribute(position: Int) -> attribute.Attribute(message) {
 /// ```
 pub fn view(strip: Strip, focus: fn(String) -> message) -> Element(message) {
   use <- element.memo([element.ref(strip)])
-  case strip.chips, strip.advisor {
-    [], None -> element.none()
-    _, _ -> {
-      let settled = case strip.settled {
-        0 -> []
-        count -> [
-          html.li([attribute.class("chip settled")], [
-            html.span([attribute.class("chip-name")], [
-              html.text("+" <> int.to_string(count) <> " settled"),
-            ]),
-          ]),
-        ]
-      }
+  case strip.chips, strip.advisor, strip.settled {
+    [], None, [] -> element.none()
+    _, _, _ -> {
+      let live = list.length(strip.chips)
       let cards =
         list.index_map(strip.chips, fn(chip, position) {
-          chip_element(chip, position, strip.followed, focus)
+          #(
+            "card-" <> int.to_string(position),
+            chip_element(chip, position, strip.followed, focus),
+          )
         })
       let advisor = case strip.advisor {
         Some(chip) -> [
-          chip_element(chip, list.length(strip.chips), strip.followed, focus),
+          #("advisor", chip_element(chip, live, strip.followed, focus)),
         ]
         None -> []
       }
+      let first_settled = list.length(cards) + list.length(advisor)
 
-      // Chips are listed by position, never keyed by strand name: a child's
-      // name carries words its parent chose.
       html.nav(
         [attribute.class("agent-strip"), attribute.aria_label("Agents")],
         [
-          html.ul(
+          keyed.ul(
             [attribute.class("chips")],
-            list.flatten([cards, settled, advisor]),
+            list.flatten([
+              cards,
+              advisor,
+              settled_group(strip, first_settled, focus),
+            ]),
           ),
         ],
       )
+    }
+  }
+}
+
+// The settled group, or nothing while no strand has settled. Its cards
+// continue the positions the live cards began, so a marker's number names one
+// card. The text that says how many strands are older than the ones drawn is
+// a list item and not a control.
+fn settled_group(
+  strip: Strip,
+  first: Int,
+  focus: fn(String) -> message,
+) -> List(#(String, Element(message))) {
+  case strip.settled {
+    [] -> []
+    settled -> {
+      let cards =
+        list.index_map(settled, fn(chip, offset) {
+          chip_element(chip, first + offset, strip.followed, focus)
+        })
+      let earlier = case strip.earlier {
+        0 -> []
+        count -> [
+          html.li([attribute.class("settled-earlier")], [
+            html.text("+" <> int.to_string(count) <> " earlier"),
+          ]),
+        ]
+      }
+      let total = list.length(settled) + strip.earlier
+      [
+        #(
+          "settled",
+          html.li([attribute.class("settled-group")], [
+            html.details([], [
+              html.summary([attribute.class("settled-title")], [
+                html.text("Settled · " <> int.to_string(total)),
+              ]),
+              html.ul(
+                [attribute.class("chips"), attribute.class("settled-chips")],
+                list.append(cards, earlier),
+              ),
+            ]),
+          ]),
+        ),
+      ]
     }
   }
 }
