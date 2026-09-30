@@ -45,6 +45,11 @@ pub type Observer
 /// A running repeating timer, which `clear_interval` stops.
 pub type Timer
 
+/// A file the browser holds, from a file input or the clipboard. It is
+/// opaque: the functions below read its name, type and size, and
+/// `read_data_url` reads its bytes.
+pub type File
+
 /// The shadow root Lustre hands an `after_paint` effect, as an `Element`: a
 /// shadow root answers `query_selector` and `query_selector_all` as an
 /// element does, and it is the only way into a component's own shadow tree,
@@ -541,6 +546,71 @@ pub fn is_content_editable(node: Element) -> Result(Bool, Nil)
 /// ```
 @external(javascript, "./dom.mjs", "prevent_default")
 pub fn prevent_default(event: Dynamic) -> Nil
+
+/// The files of a `FileList` (`Array.from`), such as the one a file input's
+/// `change` event carries as `target.files`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.file_list(files)
+/// ```
+@external(javascript, "./dom.mjs", "file_list")
+pub fn file_list(files: Dynamic) -> List(File)
+
+/// The files a `paste` event's clipboard holds (`clipboardData.files`), or
+/// none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.clipboard_files(event)
+/// ```
+@external(javascript, "./dom.mjs", "clipboard_files")
+pub fn clipboard_files(event: Dynamic) -> List(File)
+
+/// A file's name (`File.name`). It is the person's own file name, a text the
+/// browser reports and the page only ever draws as a text node.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.file_name(file)
+/// ```
+@external(javascript, "./dom.mjs", "file_name")
+pub fn file_name(file: File) -> String
+
+/// A file's declared media type (`File.type`), which is the browser's guess
+/// from the name and not a check of the bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.file_type(file) == "image/png"
+/// ```
+@external(javascript, "./dom.mjs", "file_type")
+pub fn file_type(file: File) -> String
+
+/// A file's size in bytes (`File.size`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.file_size(file)
+/// ```
+@external(javascript, "./dom.mjs", "file_size")
+pub fn file_size(file: File) -> Int
+
+/// Reads a file's bytes as a `data:` URL (`FileReader.readAsDataURL`) and
+/// answers `done` once with the URL, or with `Error` when the read failed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.read_data_url(file, fn(read) { Nil })
+/// ```
+@external(javascript, "./dom.mjs", "read_data_url")
+pub fn read_data_url(file: File, done: fn(Result(String, Nil)) -> Nil) -> Nil
 
 /// The item the browser's `localStorage` holds under `key`, or `Error` when
 /// there is none or the storage cannot be read. The storage throws when it is

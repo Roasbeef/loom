@@ -236,6 +236,39 @@ export function remove_attribute(element, name) {
   element.removeAttribute(name);
 }
 
+// The files of a `FileList`, as the change event of a file input holds them.
+export function file_list(files) {
+  return toList(Array.from(files));
+}
+
+// The files an event's clipboard holds: none for an event with no clipboard,
+// as a `paste` in a browser that withholds it is.
+export function clipboard_files(event) {
+  return toList(Array.from(event.clipboardData?.files ?? []));
+}
+
+export function file_name(file) {
+  return file.name;
+}
+
+export function file_type(file) {
+  return file.type;
+}
+
+export function file_size(file) {
+  return file.size;
+}
+
+// One read of a file as a `data:` URL, which answers `done` once with the URL
+// or with an `Error`. The URL is text the browser made from the file's bytes;
+// nothing here is put in the page.
+export function read_data_url(file, done) {
+  const reader = new FileReader();
+  reader.onload = () => done(new Ok(reader.result));
+  reader.onerror = () => done(new Error(undefined));
+  reader.readAsDataURL(file);
+}
+
 // One navigation. The address was checked in Gleam before it got here.
 export function assign_location(address) {
   window.location.assign(address);

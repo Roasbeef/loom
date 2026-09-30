@@ -666,6 +666,22 @@
   li.completion.current{background:var(--color-bg-raised);box-shadow:inset 2px 0 0 var(--color-current);}
   .completion-command{font:13px/1.4 var(--font-mono);color:var(--color-current);}
   .completion-hint{color:var(--color-fg-quiet);font-size:12px;}
+  /* The composer's image attachments (web_client/attach): a button that opens
+     the file picker, a chip for each attached image with its own Remove
+     button, and the notice for a file refused. The element is drawn under the
+     editor, so attaching an image grows the dock upward like the list of
+     commands does, and the buttons stay where they were. */
+  .draft{display:flex;flex-direction:column;gap:6px;min-width:0;}
+  loom-attach{display:block;min-width:0;}
+  .attach-bar{display:flex;align-items:center;gap:8px;}
+  button.attach-add{border-color:var(--color-fg-quiet);color:var(--color-fg-quiet);font-size:12px;}
+  button.attach-add:disabled{opacity:.5;cursor:default;}
+  ul.attachments{list-style:none;margin:6px 0 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px;}
+  li.attachment{display:inline-flex;align-items:center;gap:8px;max-width:100%;padding:2px 4px 2px 10px;border:1px solid var(--color-divider);border-radius:999px;background:var(--color-bg);font:12px/1.4 var(--font-mono);}
+  li.attachment.reading{padding-right:10px;color:var(--color-fg-quiet);}
+  .attachment-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  button.attachment-remove{padding:0 8px;border-radius:999px;font-size:12px;border-color:transparent;color:var(--color-fg-quiet);}
+  button.attachment-remove:hover{color:var(--color-danger-text);}
   .composer-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;}
   .notice{margin:0 auto 0 0;color:var(--color-fg-quiet);font-size:13px;min-width:0;}
   .notice.warned{color:var(--color-danger-text);}

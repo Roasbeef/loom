@@ -20,6 +20,9 @@
 //// - `<loom-composer>` (`web_client/composer`) wraps the operator's editor:
 ////   it lists slash commands as the draft grows, sends the draft on Command
 ////   or Control with Enter, and puts a returned prompt back in the editor.
+//// - `<loom-attach name="images">` (`web_client/attach`) is the composer's
+////   image attachments: a file picker, a paste, a chip for each image with
+////   a Remove button, and the images as one form field.
 //// - `<loom-shell sidebar="listed">` (`web_client/shell`) is the page's
 ////   frame. It lays the server's regions out in its slots and draws the two
 ////   buttons that hide and show the sidebar and the strand panel.
@@ -37,6 +40,7 @@
 //// `web_view`'s `priv/static`, which the page loads under the unchanged
 //// policy (`script-src 'self'`).
 
+import web_client/attach
 import web_client/composer
 import web_client/elapsed
 import web_client/expand
@@ -54,6 +58,7 @@ import web_client/switch
 /// // web_client.main()
 /// ```
 pub fn main() -> Nil {
+  let _ = attach.register()
   let _ = composer.register()
   let _ = elapsed.register()
   let _ = expand.register()
