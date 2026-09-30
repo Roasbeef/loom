@@ -109,6 +109,9 @@ def build_alias_map(modules):
             if target.get("kind") == "named" and not target.get("parameters"):
                 key = (target.get("module"), target.get("name"))
                 reverse.setdefault(key, (module, alias_name))
+                # Prefer a module's own re-export when several capabilities
+                # expose the same identity on different host allowlists.
+                reverse[(*key, module)] = (module, alias_name)
     return reverse
 
 
@@ -117,7 +120,9 @@ def qualify(module, name, here, aliases):
     if module in (here, "gleam"):
         return name
     if (module, name) in aliases:
-        alias_module, alias_name = aliases[(module, name)]
+        alias_module, alias_name = aliases.get(
+            (module, name, here), aliases[(module, name)]
+        )
         if alias_module == here:
             return alias_name
         return alias_module.split("/")[-1] + "." + alias_name
