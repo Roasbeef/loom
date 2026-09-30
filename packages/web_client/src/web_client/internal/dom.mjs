@@ -274,3 +274,19 @@ export function read_data_url(file, done) {
 export function replace_location(address) {
   window.location.replace(address);
 }
+
+// One clipboard write, with the outcome handed to `done` as a Result. The
+// browser answers after the fact, and the call throws at once when the API is
+// missing or the page is not a secure context, so both outcomes are reported
+// the same way and no exception leaves. The text was checked in Gleam
+// (`web_client/copy_rule`) before it got here.
+export function write_clipboard(text, done) {
+  try {
+    navigator.clipboard.writeText(text).then(
+      () => done(new Ok(undefined)),
+      () => done(new Error(undefined)),
+    );
+  } catch (_) {
+    done(new Error(undefined));
+  }
+}

@@ -689,3 +689,18 @@ pub fn remove_attribute(element: Element, name: String) -> Nil
 /// ```
 @external(javascript, "./dom.mjs", "replace_location")
 pub fn replace_location(address: String) -> Nil
+
+/// Writes `text` to the system clipboard (`navigator.clipboard.writeText`) and
+/// hands the outcome to `done` when the browser answers. The write is refused
+/// when the page is not a secure context, when the clipboard is not permitted
+/// and when the press was not a user's own; each is `Error(Nil)`, and no
+/// exception reaches the caller. `<loom-copy>` calls it in the press's own
+/// turn, and only with text `web_client/copy_rule.text` accepted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.write_clipboard("loom claim --addr ws://127.0.0.1:4000/v2/control", done)
+/// ```
+@external(javascript, "./dom.mjs", "write_clipboard")
+pub fn write_clipboard(text: String, done: fn(Result(Nil, Nil)) -> Nil) -> Nil
