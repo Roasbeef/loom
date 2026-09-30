@@ -449,6 +449,18 @@ type Message(instance) {
     String,
     Subject(Result(#(Int, List(View)), AdminError)),
   )
+  PrincipalPage(
+    access.Digest,
+    String,
+    Int,
+    Subject(Result(access.ListingPage, AdminError)),
+  )
+  MembershipPage(
+    access.Digest,
+    String,
+    String,
+    Subject(Result(access.MembershipPage, AdminError)),
+  )
   Delete(
     access.Digest,
     String,
@@ -714,6 +726,58 @@ pub fn archived_page(
 ) -> Result(#(Int, List(View)), AdminError) {
   call.try_call(manager.commands, waiting: 5000, sending: ArchivedPage(
     caller,
+    after,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Lists principals with the credential state of each, owner-only.
+///
+/// The caller is reauthenticated in the registry's own dispatch, as every
+/// administration is, so a credential revoked a moment ago reads nothing.
+/// `now_ms` is the wall-clock instant an open claim's remaining lifetime is
+/// measured from. The page carries fingerprints and lifetimes, never a claim
+/// or a bearer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.principal_page(registry, owner, after: "", now_ms: now)
+/// ```
+@internal
+pub fn principal_page(
+  manager: Manager(instance),
+  caller: access.Digest,
+  after after: String,
+  now_ms now_ms: Int,
+) -> Result(access.ListingPage, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: PrincipalPage(
+    caller,
+    after,
+    now_ms,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Lists one principal's session memberships, owner-only.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.membership_page(registry, owner, "alice", after: "")
+/// ```
+@internal
+pub fn membership_page(
+  manager: Manager(instance),
+  caller: access.Digest,
+  principal_id: String,
+  after after: String,
+) -> Result(access.MembershipPage, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: MembershipPage(
+    caller,
+    principal_id,
     after,
     _,
   ))
@@ -1431,6 +1495,24 @@ fn handle(
       process.send(reply, outcome)
       sm.keep(book)
     }
+    PrincipalPage(caller, after, now_ms, reply) -> {
+      let outcome = {
+        use Nil <- result.try(authenticated_owner(book, caller))
+        access.principals_page(book.catalogue, after, now_ms)
+        |> result.map_error(AdminMetadata)
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    MembershipPage(caller, id, after, reply) -> {
+      let outcome = {
+        use Nil <- result.try(authenticated_owner(book, caller))
+        access.memberships_page(book.catalogue, id, after)
+        |> result.map_error(AdminMetadata)
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
     Delete(caller, epoch, id, sessions, reply) -> {
       process.send(reply, delete_now(phase, book, caller, epoch, id, sessions))
       sm.keep(book)
@@ -1689,6 +1771,20 @@ fn handle(
 fn administer_now(phase, book: Book(instance), digest, epoch, action) {
   use Nil <- result.try(authorize_admin(phase, book, digest, epoch))
   administer_member(book.catalogue, action)
+}
+
+// The owner check every read-only owner command shares: the credential must
+// still authenticate, and as the owner. Reads carry no epoch, since they
+// change nothing a previous daemon lifetime could have meant differently.
+fn authenticated_owner(book: Book(instance), digest) {
+  use principal <- result.try(
+    access.authenticate(book.catalogue, digest)
+    |> result.replace_error(AdminForbidden),
+  )
+  case principal.kind {
+    access.OwnerPrincipal -> Ok(Nil)
+    access.MemberPrincipal -> Error(AdminForbidden)
+  }
 }
 
 fn authorize_admin(phase, book: Book(instance), digest, epoch) {

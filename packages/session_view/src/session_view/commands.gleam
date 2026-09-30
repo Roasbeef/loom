@@ -271,6 +271,9 @@ pub fn focus(
   Shared(
     ..switched,
     active_strand: strand,
+    // The clock times the active strand's own generation. Another strand
+    // that is mid-generation would otherwise lend its start to this one.
+    generation_started_ms: None,
     queued: [],
     awaiting_outcome: None,
     current_model: "loading…",

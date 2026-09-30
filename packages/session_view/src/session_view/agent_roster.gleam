@@ -110,7 +110,7 @@ pub type Repaint {
 }
 
 /// A strip laid out as chips: the listed agents, the advisor in its own
-/// place, and how many settled strands folded away.
+/// place, and the settled strands that left the listed ones.
 pub type Chips {
   Chips(
     /// `main` first, then every other strand whose state needs watching,
@@ -118,9 +118,13 @@ pub type Chips {
     listed: List(Line),
     /// The advisor, when the capture holds its strand.
     advisor: Option(Line),
-    /// Strands that are neither listed nor the advisor: settled work the
-    /// strip folds into one count.
-    settled: Int,
+    /// Strands that are neither listed nor the advisor: settled work, in
+    /// reverse row order. Rows keep the order strands were first seen, so a
+    /// strand seen to join while the page was open comes before the strands
+    /// that were present at the first capture, and those follow the store's
+    /// key order, reversed. Rows carry no join time, so this is not a recency
+    /// order. A host draws as many as it has room for and counts the rest.
+    settled: List(Line),
   )
 }
 
@@ -359,7 +363,7 @@ pub fn lines(
 }
 
 /// The strip as chips: `lines` for everything but the advisor, the advisor
-/// on its own, and a count of the strands that settled out of the strip.
+/// on its own, and the strands that settled out of the strip, in reverse row order.
 ///
 /// The listed lines are exactly `lines`' when the advisor is not the active
 /// strand; when it is, it is not listed twice.
@@ -368,7 +372,7 @@ pub fn lines(
 ///
 /// ```gleam
 /// assert agent_roster.chips(agent_roster.new(), [], "main")
-///   == agent_roster.Chips([], None, 0)
+///   == agent_roster.Chips([], None, [])
 /// ```
 pub fn chips(
   roster: Roster,
@@ -384,9 +388,12 @@ pub fn chips(
     |> result.map(line(roster, _))
     |> option.from_result
   let settled =
-    list.count(rows, fn(row) {
+    rows
+    |> list.filter(fn(row) {
       row.id != advisor && !list.any(listed, fn(line) { line.id == row.id })
     })
+    |> list.reverse
+    |> list.map(line(roster, _))
   Chips(listed:, advisor: advisor_line, settled:)
 }
 

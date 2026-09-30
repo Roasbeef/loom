@@ -302,6 +302,65 @@ pub fn generated_revision_types_cannot_silently_disable_fencing_test() {
   })
 }
 
+pub fn principal_listings_decode_optional_cursors_and_refuse_malformed_ones_test() {
+  assert protocol.decode(envelope(1, "principals.list", []))
+    == Ok(protocol.Request(1, protocol.ListPrincipals("")))
+  assert protocol.decode(
+      envelope(2, "principals.list", [#("after", json.String("alice"))]),
+    )
+    == Ok(protocol.Request(2, protocol.ListPrincipals("alice")))
+  list.each(
+    [
+      json.Null,
+      json.Int(1),
+      json.String(""),
+      json.String(string.repeat("x", 129)),
+      json.Array([]),
+    ],
+    fn(after) {
+      assert result.is_error(
+        protocol.decode(envelope(3, "principals.list", [#("after", after)])),
+      )
+    },
+  )
+
+  let session = session_id()
+  assert protocol.decode(
+      envelope(4, "principals.memberships", [
+        #("principal_id", json.String("alice")),
+      ]),
+    )
+    == Ok(protocol.Request(4, protocol.PrincipalMemberships("alice", "")))
+  assert protocol.decode(
+      envelope(5, "principals.memberships", [
+        #("principal_id", json.String("alice")),
+        #("after", json.String(session)),
+      ]),
+    )
+    == Ok(protocol.Request(5, protocol.PrincipalMemberships("alice", session)))
+
+  // The principal is required and bounded, and the cursor is a canonical
+  // session ID, as it is for `sessions.list`.
+  list.each(
+    [
+      [],
+      [#("principal_id", json.String(""))],
+      [#("principal_id", json.String(string.repeat("x", 129)))],
+      [#("principal_id", json.Int(1))],
+      [
+        #("principal_id", json.String("alice")),
+        #("after", json.String("not-a-session")),
+      ],
+      [#("principal_id", json.String("alice")), #("after", json.Null)],
+    ],
+    fn(fields) {
+      assert result.is_error(
+        protocol.decode(envelope(6, "principals.memberships", fields)),
+      )
+    },
+  )
+}
+
 pub fn encoded_events_preserve_version_and_correlation_within_bound_test() {
   int.range(from: 1, to: 100, with: Nil, run: fn(_, id) {
     let body = json.Object([#("count", json.Int(id))])

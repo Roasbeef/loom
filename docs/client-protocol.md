@@ -535,7 +535,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:1427`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:1475`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -923,7 +923,7 @@ Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`.
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
-and `ui.link`. Every mutating control command is refused. Source:
+`principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
 `control_use` (`client/daemon/server.gleam:1061-1091`).
 
 That includes `sessions.delete`, which is a mutation like any other.
@@ -1072,7 +1072,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:644`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:671`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1100,6 +1100,69 @@ only for the person who asked. The command is a read, so it remains
 available during daemon drain. See
 [protocol-change/051](../protocol-change/051-web-view-route.md) for the
 decision and its operator addendum.
+
+### 3.23 `principals.list` and `principals.memberships`
+
+Owner-only reads of who has access ([protocol-change/053](../protocol-change/053-owner-admin-and-claims.md)
+phase 2). A member credential is refused with `forbidden` before any parameter
+is judged, so a member learns nothing about which principals exist. Neither
+command carries an `epoch`, since a read changes nothing a previous daemon
+lifetime could have meant differently.
+
+`principals.list` takes an optional `after`, a principal ID (at most 128
+bytes, from the `next` of the previous page):
+
+```json
+{"v":2,"id":13,"cmd":"principals.list","body":{"after":"alice"}}
+```
+
+Reply:
+
+```json
+{"v":2,"reply_to":13,"event":"principals.list","body":{"principals":[{"principal_id":"bob","name":"Bob","kind":"member","credential":{"state":"claim_open","expires_in_ms":86399000}}],"next":"bob"}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `principals[].principal_id` | string | required | The stable identity, never a credential. |
+| `principals[].name` | string | required | The current display name. |
+| `principals[].kind` | string | required | `owner` or `member`. |
+| `principals[].credential` | object | required | One state per principal, below. |
+| `next` | string | optional | Present only when another page follows; the last principal ID of this page. |
+
+`credential.state` is one of:
+
+| State | Other fields | Meaning |
+|---|---|---|
+| `active` | `fingerprint`, and `claimed_at_ms` when a claim bound the credential | One active credential. `fingerprint` is the first 16 hexadecimal characters of its digest. `claimed_at_ms` is the wall-clock instant of the claim, in Unix milliseconds; it is absent for the owner's credential and for one enrolled by digest. |
+| `claim_open` | `expires_in_ms` | An unexpired claim and no credential. The duration is measured when the reply is built. |
+| `claim_expired` | none | The only claim expired unredeemed and there is no active credential. `credentials.rotate` issues a new claim. |
+| `none` | none | No active credential and no open claim: revoked, or never enrolled. |
+
+No reply carries a claim, a bearer or a digest.
+
+`principals.memberships` takes a required `principal_id` and an optional
+`after`, a canonical session ID:
+
+```json
+{"v":2,"id":14,"cmd":"principals.memberships","body":{"principal_id":"alice"}}
+```
+
+```json
+{"v":2,"reply_to":14,"event":"principals.memberships","body":{"principal_id":"alice","memberships":[{"session_id":"0198c0de-0000-7000-8000-000000000001","name":"Review","role":"operator"}]}}
+```
+
+`name` is the session's current display name, `role` is `operator` or
+`observer`, and `next` is the last session ID when another page follows. The
+owner holds no memberships, so its list is empty; an unknown principal is
+`not_found`.
+
+Each page holds at most 100 rows and at most 60,000 bytes of them. A row cut
+off by either limit is the first row of the next page, and the client resumes
+with `after` set to `next`. Both commands are reads, so they remain available
+on an existing control socket during daemon drain.
+
+Errors: `forbidden`, `not_found`, `bad_request`, `unavailable`.
 
 ---
 
@@ -3271,12 +3334,13 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:383`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:394`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one
    command `credentials.claim`, and changes the invitation and rotation
-   replies; the spec's summary lacks those too.
+   replies; its phase 2 adds the owner-only `principals.list` and
+   `principals.memberships` (§3.23). The spec's summary lacks those too.
 
 10. **`protocol-change/003`, `011` and `013` were written against
     `v: 1`.** Each shows a `v:1` envelope in its proposal text.

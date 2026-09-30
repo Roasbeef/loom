@@ -603,15 +603,19 @@ pub fn set_attribute(element: Element, name: String, value: String) -> Nil
 @external(javascript, "./dom.mjs", "remove_attribute")
 pub fn remove_attribute(element: Element, name: String) -> Nil
 
-/// Moves the browser to a new address (`location.assign`), which adds a
-/// history entry and unloads the page. `<loom-switch>` calls it, and only
-/// with an address `web_client/switch_rule.target` accepted, so no script of
-/// the page navigates to a value the rule has not checked.
+/// Moves the browser to a new address (`location.replace`), which unloads
+/// the page and takes its place in the history rather than adding an entry.
+/// A page is bound to its own nonce, and the nonce is per tab and replaced
+/// by the next page's, so an entry left behind for the old page could only
+/// be reached by Back and would show its "waiting" notice. `<loom-switch>`
+/// calls it, and only with an address `web_client/switch_rule.target`
+/// accepted, so no script of the page navigates to a value the rule has not
+/// checked.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ffi_dom.assign_location("/ui/sessions/0198...?ticket=ab12...")
+/// // ffi_dom.replace_location("/ui/sessions/0198...?ticket=ab12...")
 /// ```
-@external(javascript, "./dom.mjs", "assign_location")
-pub fn assign_location(address: String) -> Nil
+@external(javascript, "./dom.mjs", "replace_location")
+pub fn replace_location(address: String) -> Nil

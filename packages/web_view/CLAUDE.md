@@ -322,7 +322,8 @@ page keys and nonces, and the relay into the session's gateway.
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, `running_ms`, how long its operation had run when the strip was
   built, and the agent row's `model` and `recent` tools), the advisor's chip
-  and the settled count. The component builds them and `strip.view` draws
+  and the settled strands (`settled`, at most `strip.settled_limit`, in
+  reverse row order, and `earlier`, the count of older ones). The component builds them and `strip.view` draws
   them. `strip.hue_class` and `strip.ring_class` map a hue and an outlook to
   literal classes. `Strip.followed` is the strand the strip marks as current
   (`component.strand(model)`). `strip.view(strip, focus)` draws each chip as
@@ -332,9 +333,19 @@ page keys and nonces, and the relay into the session's gateway.
   (`session_view/strand_card.status_line`, in the attention colour for a
   strand that needs approval). A card carries no clock and no figure: those
   are the strand's own view's. It carries `data-loom-card`, its position
-  (`strip.positions` numbers the cards, the listed chips in order and the
-  advisor last, for the cards and the lane); the "settled" chip is not a
-  control and not counted.
+  (`strip.positions` numbers the cards, the listed chips in order, the
+  advisor, then the settled cards, for the cards and the lane). Settled
+  strands are the list's last item, `li.settled-group` holding a native
+  `details` (closed until the reader opens it; the browser owns the state and
+  nothing persists it) whose cards are the same buttons, each saying how the
+  strand ended in words and carrying no duration, because the roster's clock
+  for a finished operation keeps running and no capture records when an
+  operation ended. `+n earlier` is text, not a control. The list's children
+  are keyed by fixed words (`card-<n>`, `advisor`, `settled`) so the group is
+  the same element when a live strand starts or settles. A settled card is
+  not counted by `strip.count` (the title and the tab's badge speak of live
+  strands). Focusing one makes it the active strand, which the roster lists
+  with the live cards, so it leaves the group until the reader goes back.
 - `markdown_view.blocks(tree)`: the elements for an answer's Markdown,
   drawn from `session_view/markdown`'s tree, the tree the terminal's
   `tui/markdown` also draws. `view/lane` uses it for the speakers the

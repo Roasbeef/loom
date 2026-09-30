@@ -5,6 +5,7 @@
 import core/clock
 import core/ids
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -481,6 +482,10 @@ pub fn generated_access_queries_match_sqlc_input_test() {
     sql.void_member_claims("").0,
     sql.active_member_credentials("").0,
     sql.claim_memberships("").0,
+    sql.principal_listing("").0,
+    sql.principal_active_credential("").0,
+    sql.principal_open_claim("").0,
+    sql.principal_memberships("", "").0,
   ]
   assert normalize(source) == normalize(string.join(generated, "\n"))
 }
@@ -500,6 +505,11 @@ pub fn authorization_lookups_use_bounded_indexes_test() {
     ]),
     #(sql.access_claim("").0, [sqlight.text(string.repeat("a", 64))]),
     #(sql.claim_memberships("").0, [sqlight.text("member")]),
+    #(sql.principal_listing("").0, [sqlight.text("")]),
+    #(sql.principal_memberships("", "").0, [
+      sqlight.text("member"),
+      sqlight.text(""),
+    ]),
   ]
   list.each(queries, fn(query) {
     let assert Ok(details) =
@@ -875,5 +885,176 @@ pub fn corrupt_claim_rows_are_refused_totally_test() {
     access.claim_known(store, claim_of("1"))
     as "an unknown claim state never passes the upgrade filter"
   assert access.authenticate(store, digest("b")) == Error(catalogue.Missing)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+fn credential_of(row: access.Listing) {
+  row.credential
+}
+
+fn numbered_digest(index: Int) {
+  let assert Ok(value) =
+    access.credential_digest(string.pad_start(
+      string.lowercase(int.to_base16(index)),
+      64,
+      "0",
+    ))
+    as "numbered digest is valid lowercase hex"
+  value
+}
+
+pub fn listing_reports_each_principals_credential_state_test() {
+  let #(_file, store, session, _member) = claim_fixture("listing-states", 950)
+  let assert Ok(_) =
+    access.bootstrap_owner(store, "owner", "Owner", digest("0"))
+    as "the owner is created"
+
+  // One member bound a claim, one was enrolled by digest, and one was revoked.
+  // The fixture's own member still holds an open claim.
+  let assert Ok(_) =
+    access.invite_member(
+      store,
+      "bound",
+      "Bound",
+      claimed_by("2"),
+      session.id,
+      access.Observer,
+    )
+    as "second invitation"
+  let assert Ok(_) = access.claim(store, claim_of("2"), digest("c"), 500, same)
+    as "the second claim binds"
+  let assert Ok(_) =
+    access.invite_member(
+      store,
+      "enrolled",
+      "Enrolled",
+      enrolled("d"),
+      session.id,
+      access.Observer,
+    )
+    as "digest invitation"
+  let assert Ok(_) =
+    access.invite_member(
+      store,
+      "revoked",
+      "Revoked",
+      enrolled("e"),
+      session.id,
+      access.Observer,
+    )
+    as "third invitation"
+  let assert Ok(_) = access.revoke_member(store, "revoked")
+    as "the third member is revoked"
+
+  // At instant 400 the open claim, which expires at 1000, has 600 ms left.
+  let assert Ok(early) = access.principals_page(store, "", 400)
+    as "listing reads"
+  assert early.remainder == access.Exhausted
+  assert list.map(early.entries, fn(row) { row.principal.id })
+    == ["bound", "enrolled", "invitee", "owner", "revoked"]
+  assert list.map(early.entries, credential_of)
+    == [
+      access.CredentialActive(string.repeat("c", 16), Some(500)),
+      access.CredentialActive(string.repeat("d", 16), None),
+      access.CredentialClaimOpen(600),
+      access.CredentialActive(string.repeat("0", 16), None),
+      access.CredentialNone,
+    ]
+
+  // At its expiry instant the same claim is expired, and stays a claim row.
+  let assert Ok(late) = access.principals_page(store, "", 1000)
+    as "listing reads after the expiry"
+  assert list.contains(
+    list.map(late.entries, credential_of),
+    access.CredentialClaimExpired,
+  )
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn listing_pages_resume_after_the_last_principal_test() {
+  let #(_file, store, session, _member) = claim_fixture("listing-pages", 951)
+  list.index_map(list.repeat(Nil, 104), fn(_, index) { index + 1 })
+  |> list.each(fn(index) {
+    let id = "m" <> string.pad_start(int.to_string(index), 3, "0")
+    let assert Ok(_) =
+      access.invite_member(
+        store,
+        id,
+        id,
+        access.DigestEnrollment(numbered_digest(index)),
+        session.id,
+        access.Observer,
+      )
+      as "member invited"
+    Nil
+  })
+
+  // 105 principals: the fixture's member and 104 more. A full page reports
+  // that another follows, and the next page starts after the last row.
+  let assert Ok(first) = access.principals_page(store, "", 0) as "first page"
+  assert list.length(first.entries) == access.listing_limit
+  assert first.remainder == access.Remaining
+  let assert Ok(last) = list.last(first.entries)
+  let assert Ok(second) = access.principals_page(store, last.principal.id, 0)
+    as "second page"
+  assert list.length(second.entries) == 5
+  assert second.remainder == access.Exhausted
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn memberships_page_names_sessions_and_pages_by_session_test() {
+  let #(_file, store, first, member) = claim_fixture("membership-page", 952)
+  let records =
+    list.index_map(list.repeat(Nil, 104), fn(_, index) {
+      registration(index + 2001)
+    })
+  list.each(records, fn(record) {
+    let assert Ok(_) = catalogue.reserve(store, record) as "session saved"
+    assert access.grant(store, member.id, record.id, access.Operator) == Ok(Nil)
+  })
+  let assert Ok(renamed) = list.first(records)
+  let assert Ok(_) = catalogue.rename(store, renamed.id, "Renamed")
+    as "display name override"
+  let assert Ok(page) = access.memberships_page(store, member.id, "")
+    as "first page"
+  assert list.length(page.entries) == access.listing_limit
+  assert page.remainder == access.Remaining
+  let ids = list.map(page.entries, fn(row) { row.session_id })
+  assert ids == list.sort(ids, string.compare)
+  let assert Ok(last) = list.last(page.entries)
+  let assert Ok(rest) =
+    access.memberships_page(store, member.id, last.session_id)
+    as "second page"
+  assert list.length(rest.entries) == 5
+  assert rest.remainder == access.Exhausted
+
+  // The override shows where the row appears, and the original name elsewhere.
+  let everything = list.append(page.entries, rest.entries)
+  let assert Ok(row) =
+    list.find(everything, fn(row) { row.session_id == renamed.id })
+  assert row.name == "Renamed"
+  assert row.role == access.Operator
+  let assert Ok(original) =
+    list.find(everything, fn(row) { row.session_id == first.id })
+  assert original.name == "session"
+  assert original.role == access.Observer
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn memberships_page_refuses_unknown_principals_and_lists_none_for_owner_test() {
+  let #(_file, store, _session, _member) =
+    claim_fixture("membership-owner", 953)
+  let assert Ok(_) =
+    access.bootstrap_owner(store, "owner", "Owner", digest("0"))
+    as "the owner is created"
+  let assert Ok(page) = access.memberships_page(store, "owner", "")
+    as "owner lists"
+  assert page == access.MembershipPage([], access.Exhausted)
+  assert access.memberships_page(store, "nobody", "")
+    == Error(catalogue.Missing)
+  assert access.principals_page(store, "bad id", 0)
+    == Error(catalogue.Invalid(
+      "principal ID must be 1-128 ASCII identifier bytes",
+    ))
   assert catalogue.close(store) == Ok(Nil)
 }

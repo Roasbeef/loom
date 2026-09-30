@@ -115,6 +115,13 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
     == Error(manager.AdminStaleEpoch)
   assert manager.rename(registry, member, "daemon-test", record.id, "changed")
     == Error(manager.AdminForbidden)
+
+  // The owner-only listings refuse a member in the registry's own dispatch,
+  // whatever the server checked before calling.
+  assert manager.principal_page(registry, member, after: "", now_ms: 0)
+    == Error(manager.AdminForbidden)
+  assert manager.membership_page(registry, member, "member", after: "")
+    == Error(manager.AdminForbidden)
   let assert Ok(view) =
     manager.rename(registry, owner, "daemon-test", record.id, "changed")
     as "owner renames without opening"

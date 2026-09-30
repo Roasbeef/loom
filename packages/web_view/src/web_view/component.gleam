@@ -684,7 +684,8 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       strip: strip.Strip(
         chips: [],
         advisor: None,
-        settled: 0,
+        settled: [],
+        earlier: 0,
         followed: primary,
       ),
       stripped: stripped_of(shared),
@@ -1522,11 +1523,33 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
       recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
     )
   }
+  let #(drawn, older) = list.split(chips.settled, strip.settled_limit)
   strip.Strip(
     chips: list.map(chips.listed, chip),
     advisor: option.map(chips.advisor, chip),
-    settled: chips.settled,
+    settled: list.map(drawn, settled_chip(shared, _)),
+    earlier: list.length(older),
     followed: shared.active_strand,
+  )
+}
+
+// A settled strand's card. It says how the strand ended and nothing that
+// changes: the roster's clock for a finished operation keeps counting, so its
+// elapsed figure would grow after the strand stopped, and no capture records
+// when an operation ended. The line's elapsed time is therefore dropped, and
+// the figures only a live strand has (cache outlook, running time) are left
+// out with it.
+fn settled_chip(
+  shared: Session(socket),
+  line: agent_roster.Line,
+) -> strip.Chip {
+  strip.Chip(
+    line: agent_roster.Line(..line, elapsed_s: None),
+    hue: turns.hue(shared.strands, line.id),
+    cache: None,
+    running_ms: None,
+    model: "",
+    recent: [],
   )
 }
 

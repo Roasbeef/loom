@@ -255,11 +255,20 @@ catalogue without opening runtimes. Explicit admission invokes
   [Protocol 019](../../protocol-change/019-session-display-names.md) keeps mutable
   display labels separate from immutable creation-key metadata.
 
-- `client/daemon/admin.Request` is the one-shot `loomd access` command.
-  It reads existing private endpoint/owner-token records, verifies the hello
-  epoch, and sends one control mutation through `host/websocket`. It never
-  starts a daemon or opens a conversation. The caller's bounded principal ID
-  is printed before sending. `invite` and `rotate` take `--ttl`,
+- `client/daemon/admin.Request` is the one-shot `loomd access` command,
+  now an alias of `host/access.Request`: the grammar, the exchange and the
+  printed lines live in `host/access`, which `loom access` runs too
+  (protocol-change/053 phase 2), and `admin` adds the daemon's own decoder as
+  a further refusal and the exit status. It reads existing private
+  endpoint/owner-token records, verifies the hello epoch, and sends one
+  control command through `host/websocket`. It never starts a daemon or opens
+  a conversation. The caller's bounded principal ID is printed before
+  sending. `list` and `show` send the owner-only `principals.list` and
+  `principals.memberships` (`protocol.ListPrincipals`,
+  `PrincipalMemberships`), which `manager.principal_page` and
+  `membership_page` answer after authenticating the owner in the registry's
+  own dispatch; `server.bounded_rows` keeps a page to 60,000 bytes on a whole
+  row. `invite` and `rotate` take `--ttl`,
   `--claim-addr` (checked by `host/claim.remote_address`) or the exclusive
   `--credential-digest`; their success prints the claim token only on
   standard output, with a `claim_command` naming the address and never the

@@ -22,6 +22,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -62,7 +63,7 @@ fn block_element(block: Block) -> Element(message) {
             html.span([attribute.class("md-code-lang")], [html.text(language)])
           None -> element.none()
         },
-        html.pre([], [html.code([], [html.text(text)])]),
+        html.pre([], [code_lines(text)]),
       ])
 
     markdown.Quote(blocks:) ->
@@ -123,6 +124,28 @@ fn block_element(block: Block) -> Element(message) {
 
     markdown.Rule -> html.hr([attribute.class("md-rule")])
   }
+}
+
+// A fence's body as one span per line. A streamed block grows at its tail,
+// and a single text node would be sent whole on every batch, which over a
+// long block is quadratic. Lustre diffs unkeyed children by position, so the
+// lines that did not change are skipped, the one still being written is
+// patched, and the new ones are inserted as one trailing addition. Every
+// span but the last carries its own newline, so the text a reader copies is
+// the fence's text unchanged.
+fn code_lines(text: String) -> Element(message) {
+  let lines = string.split(text, "\n")
+  let last = list.length(lines) - 1
+  html.code(
+    [],
+    list.index_map(lines, fn(line, index) {
+      let shown = case index == last {
+        True -> line
+        False -> line <> "\n"
+      }
+      html.span([], [html.text(shown)])
+    }),
+  )
 }
 
 fn alert_title(kind: markdown.AlertKind) -> String {

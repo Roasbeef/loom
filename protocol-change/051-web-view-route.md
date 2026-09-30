@@ -1717,6 +1717,20 @@ address, and the strand's first capture may need its history read (the
 "Load older" button offers it). A strand that settled and left the strip
 cannot be focused from the page; the "settled" chip is not a control.
 
+**Addendum (2026-09-29, issue #569): settled strands are focusable.** The
+"settled" chip is replaced by a group of cards, one per settled strand, the
+first six, in reverse row order, and a `+n earlier` line of text. Each card is a button inside the
+strip's list, so its handler is at a path beneath `component.strip_path` and
+the socket admits it as it admits the live cards' clicks; nothing else about
+the admitted paths changes. Focus is the same `FocusRequested`, which needs
+only that the capture lists the strand, and the capture already lists every
+strand. The group is a `details` element the browser opens and closes, so no
+new event or state reaches the server. The list's children are keyed by the
+fixed words `card-<n>`, `advisor` and `settled`, never by a strand's name.
+The marker relay reaches a settled card by its position, which follows the
+live cards', and presses it with a script click, which a closed `details`
+does not prevent.
+
 ### The session sidebar, read-only
 
 **Ruling (owner, 2026-09-29).** The list is shown to operator pages only.
@@ -2643,10 +2657,14 @@ accepted that for operator pages.
   `ui_sessions.mint`: a page that presses many rows mints a ticket for each,
   and the table's `actor.periodic` sweep reclaims them at 60 seconds.
 - The tab keeps one nonce in `sessionStorage`, and a switch in the same tab
-  replaces it with the new page's. Reloading the page left behind, by history
-  Back, shows the waiting paragraph and does not reconnect, because its nonce is
-  gone. The sidebar row of that session opens a new page, and the left page's
-  daemon-side page is unaffected and is reclaimed at its own deadline.
+  replaces it with the new page's. The left page's daemon-side page is
+  unaffected and is reclaimed at its own deadline. *Addendum:* `<loom-switch>`
+  first used `location.assign`, which kept the left page's entry in the history,
+  and Back to it showed the waiting paragraph and did not reconnect, because its
+  nonce was gone. It now calls `location.replace`, so no entry names a page
+  whose nonce is spent, and Back leaves the session pages. The sidebar row of
+  the earlier session opens it through a fresh ticket. No rule about tickets,
+  deadlines or the operator-only switch changed.
 - A saved session is text in the sidebar, marked "saved", so a person who wants
   to open it resumes it from a terminal first.
 - The list is read every 30 seconds, so a row can name a session stopped since.

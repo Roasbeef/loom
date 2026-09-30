@@ -24,7 +24,7 @@
 
 import gleam/bool
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import storage/catalogue.{type Catalogue, type Error, Conflict, Invalid, Missing}
@@ -98,6 +98,60 @@ pub type ClaimRefusal {
 /// The most memberships a claim reply lists; the member's own session listing
 /// returns the rest. The claim-memberships query carries the same bound.
 pub const claim_membership_limit = 16
+
+/// How many rows one listing page holds. A page query fetches one more row
+/// than this, and the extra row only says that another page exists.
+pub const listing_limit = 100
+
+/// What a principal can authenticate with, or come to, as the owner's listing
+/// reports it. A claim token or a bearer is never part of it: a claim appears
+/// only as its remaining lifetime, and a credential only as its fingerprint.
+pub type CredentialSummary {
+  /// One active credential. `claimed_at_ms` is the wall-clock instant a claim
+  /// bound it, and is absent for the owner's credential and for one enrolled
+  /// by digest.
+  CredentialActive(fingerprint: String, claimed_at_ms: Option(Int))
+
+  /// An open claim that has not expired, with the time it has left.
+  CredentialClaimOpen(expires_in_ms: Int)
+
+  /// A member whose only claim expired unredeemed and who holds no active
+  /// credential. Rotation issues a new claim.
+  CredentialClaimExpired
+
+  /// No active credential and no open claim: revoked, or never enrolled.
+  CredentialNone
+}
+
+/// One principal and the credential state the owner's listing shows for it.
+pub type Listing {
+  Listing(principal: Principal, credential: CredentialSummary)
+}
+
+/// Whether a listing page is the last one.
+pub type Remainder {
+  /// No row follows the page.
+  Exhausted
+
+  /// At least one more row follows, so the caller asks again after the last.
+  Remaining
+}
+
+/// One page of `Listing` rows in principal-ID order, at most `listing_limit`.
+pub type ListingPage {
+  ListingPage(entries: List(Listing), remainder: Remainder)
+}
+
+/// One session membership with the session's current display name.
+pub type MembershipEntry {
+  MembershipEntry(session_id: String, name: String, role: Role)
+}
+
+/// One page of `MembershipEntry` rows in session-ID order, at most
+/// `listing_limit`.
+pub type MembershipPage {
+  MembershipPage(entries: List(MembershipEntry), remainder: Remainder)
+}
 
 // The three persisted claim states, decoded totally from the row.
 type ClaimState {
@@ -622,6 +676,122 @@ fn member(store: Catalogue, id: String) {
   case found.kind {
     MemberPrincipal -> Ok(found)
     OwnerPrincipal -> Error(Conflict)
+  }
+}
+
+/// Lists principals after `after`, in principal-ID order, with the credential
+/// state of each, in one coherent read.
+///
+/// `after` is empty for the first page, else a principal ID. `now_ms` is the
+/// wall-clock instant an open claim's expiry is judged against, the clock the
+/// claim was stamped with. Rule 3 of protocol-change/053 (a member has one
+/// open claim and no active credential, or no open claim) is what lets each
+/// principal show one credential state; if a row ever held both, the active
+/// credential is the one shown.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.principals_page(store, "", now_ms)
+/// ```
+@internal
+pub fn principals_page(
+  store: Catalogue,
+  after: String,
+  now_ms: Int,
+) -> Result(ListingPage, Error) {
+  use Nil <- result.try(case after {
+    "" -> Ok(Nil)
+    id -> valid_id(id)
+  })
+  catalogue.coherent(store, fn() {
+    use rows <- result.try(catalogue.query(store, sql.principal_listing(after)))
+    use listed <- result.map(
+      list.try_map(rows, fn(row) {
+        use found <- result.try(principal(
+          row.principal_id,
+          row.display_name,
+          row.kind,
+        ))
+        use summary <- result.map(credential_summary(store, found.id, now_ms))
+        Listing(found, summary)
+      }),
+    )
+    let #(entries, remainder) = split_page(listed)
+    ListingPage(entries, remainder)
+  })
+}
+
+fn credential_summary(
+  store: Catalogue,
+  id: String,
+  now_ms: Int,
+) -> Result(CredentialSummary, Error) {
+  use active <- result.try(catalogue.query(
+    store,
+    sql.principal_active_credential(id),
+  ))
+  case active {
+    [row, ..] -> {
+      use digest <- result.map(credential_digest(row.digest))
+      CredentialActive(fingerprint(digest), row.claimed_at_ms)
+    }
+    [] -> {
+      use open <- result.map(catalogue.query(
+        store,
+        sql.principal_open_claim(id),
+      ))
+      case open {
+        [] -> CredentialNone
+        [row, ..] if row.expires_at_ms > now_ms ->
+          CredentialClaimOpen(row.expires_at_ms - now_ms)
+        [_, ..] -> CredentialClaimExpired
+      }
+    }
+  }
+}
+
+/// Lists one principal's memberships after the session `after`, in
+/// session-ID order, with each session's current display name.
+///
+/// An unknown principal is `Missing`. The owner holds no membership rows, so
+/// its page is empty.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.memberships_page(store, "alice", "")
+/// ```
+@internal
+pub fn memberships_page(
+  store: Catalogue,
+  id: String,
+  after: String,
+) -> Result(MembershipPage, Error) {
+  use Nil <- result.try(valid_id(id))
+  catalogue.coherent(store, fn() {
+    use _found <- result.try(get(store, id))
+    use rows <- result.try(catalogue.query(
+      store,
+      sql.principal_memberships(id, after),
+    ))
+    use listed <- result.map(
+      list.try_map(rows, fn(row) {
+        use role <- result.map(role_from(row.role))
+        MembershipEntry(row.session_id, row.name, role)
+      }),
+    )
+    let #(entries, remainder) = split_page(listed)
+    MembershipPage(entries, remainder)
+  })
+}
+
+// A page query fetches `listing_limit + 1` rows; the extra one is dropped and
+// reported only as "another page exists".
+fn split_page(rows: List(a)) -> #(List(a), Remainder) {
+  case list.drop(rows, listing_limit) {
+    [] -> #(rows, Exhausted)
+    [_, ..] -> #(list.take(rows, listing_limit), Remaining)
   }
 }
 

@@ -2,7 +2,7 @@
 //// read. The terminal's own tests drive `lines` through its strip
 //// (`agent_strip_test`); these pin `chips`, the web view's layout of the same
 //// rule: `main` first, working agents after it, the advisor on its own and
-//// settled strands folded into a count.
+//// settled strands listed in reverse row order.
 
 import gleam/option.{None, Some}
 import session_view/agent_roster
@@ -46,7 +46,29 @@ pub fn chips_lead_with_main_and_fold_settled_strands_test() {
     == ["main", "sub:main/tests-1a2b3c", "sub:main/review-0a0b0c"]
   let assert Some(advisor) = chips.advisor
   assert advisor.id == "advisor"
-  assert chips.settled == 1
+  assert ids(chips.settled) == ["sub:main/lint-4d5e6f"]
+}
+
+pub fn settled_strands_are_listed_in_reverse_row_order_test() {
+  let rows = [
+    row("main", agent_view.Idle),
+    row("sub:main/a-1a2b3c", agent_view.Finished),
+    row("sub:main/b-4d5e6f", agent_view.Failed),
+    row("sub:main/c-7a8b9c", agent_view.Idle),
+  ]
+  let chips = agent_roster.chips(agent_roster.new(), rows, "main")
+  assert ids(chips.settled)
+    == ["sub:main/c-7a8b9c", "sub:main/b-4d5e6f", "sub:main/a-1a2b3c"]
+}
+
+pub fn the_active_strand_is_listed_and_not_settled_test() {
+  let rows = [
+    row("main", agent_view.Idle),
+    row("sub:main/a-1a2b3c", agent_view.Finished),
+  ]
+  let chips = agent_roster.chips(agent_roster.new(), rows, "sub:main/a-1a2b3c")
+  assert ids(chips.listed) == ["main", "sub:main/a-1a2b3c"]
+  assert chips.settled == []
 }
 
 pub fn the_listed_chips_are_the_strip_lines_test() {
@@ -68,5 +90,5 @@ pub fn a_capture_without_an_advisor_has_no_advisor_chip_test() {
       "main",
     )
   assert chips.advisor == None
-  assert chips.settled == 0
+  assert chips.settled == []
 }

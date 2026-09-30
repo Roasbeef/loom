@@ -47,6 +47,20 @@ callers own launch timing, authentication policy, and application messages.
   owns `remote_address`, the rule that a bearer or a claim crosses cleartext
   `ws` only to a literal loopback address, and `endpoint`, which turns a
   `/v2/control` address into its `/v2/claim` twin.
+- `host/access` is the owner's access command (protocol-change/053), one
+  implementation behind `loomd access` and `loom access`. `parse(arguments,
+  program)` turns the positional grammar (`list`, `show`, `invite`,
+  `set-role`, `revoke`, `rotate`, `revoke-credentials`, `isolate`) into an
+  opaque `Request` whose target is `Local` (the state directory's endpoint
+  record and `owner.token`) or `Remote` (`--addr` with `--token-file`, which
+  only `Loom` accepts). `run(arguments, program, check)` prints through a
+  `Console` and answers `Succeeded` or `Failed`; the binary turns that into
+  its exit status, and `check` lets `loomd` add the daemon's own decoder as a
+  further refusal. Replies are re-encoded from checked fields: a listing row
+  keeps a 16-hex fingerprint and never a longer value, a claim is printed only
+  for an invitation or rotation that asked for one, and any other field the
+  daemon sent is dropped. `raw_request`, `discover` and `exchange` are the
+  seam the peer commands share.
 - `host/websocket.Connection` retains the original socket subject.
   `connect_mapped` maps every lifecycle event in the existing socket owner, so
   terminal adapters need no forwarding process. `Connected` is minted in the
@@ -66,9 +80,9 @@ callers own launch timing, authentication policy, and application messages.
   `envoy`, `simplifile` and `filepath` for the facts that used to be
   hand-written Erlang. These transport dependencies moved from the TUI; no
   second WebSocket implementation was added.
-- **Depended on by**: `client` for daemon state-root ownership and the claim
-  token shape; `tui` for local server bootstrap, its own bounded file reads,
-  the remote-address rule and `loom claim`. Terminal logger suppression,
+- **Depended on by**: `client` for daemon state-root ownership, the claim
+  token shape and `loomd access`; `tui` for local server bootstrap, its own
+  bounded file reads, the remote-address rule, `loom claim` and `loom access`. Terminal logger suppression,
   stdout forwarding, and VM exit remain in `tui`.
 - **FFI**: `host/internal/ffi_zlib` exposes the shared bounded gzip inflater
   in `host_zlib_ffi.erl`. Extension installation retains its original client

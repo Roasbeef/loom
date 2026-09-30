@@ -417,6 +417,16 @@ print a single-use claim token and a `claim_command` naming the address
 but not the token, or, with `--credential-digest`, nothing secret; no
 reply carries a bearer.
 
+The grammar and exchange are `host/access`, which `loom access` runs as well
+(protocol-change/053 phase 2); `admin.gleam` adds the daemon's own decoder as a
+further refusal and the exit status. The two owner-only reads `principals.list`
+and `principals.memberships` are `ListPrincipals` and `PrincipalMemberships` in
+`client/daemon/protocol`, answered by `manager.principal_page` and
+`manager.membership_page`, which authenticate the owner in the registry's own
+dispatch. `server.bounded_rows` cuts a page at 60,000 bytes on a whole row and
+`next` names the last row emitted. A member is refused `forbidden` before any
+parameter is judged.
+
 ## Resource limits
 
 The daemon enforces two independent kinds of limit. Session capacity bounds
@@ -588,7 +598,7 @@ the daemon stays blocked until a person restarts it.
 | `client/daemon/domain.gleam` | One domain's shared history and maintenance services. |
 | `client/daemon/limits.gleam` | The `[daemon]` table and its refusal messages. |
 | `client/daemon/transfer.gleam` | Stop-and-wait snapshot transfer state. |
-| `client/daemon/admin.gleam` | The one-shot `loomd access` command. |
+| `client/daemon/admin.gleam` | The one-shot `loomd access` command, over `host/access`. |
 | `client/internal/instance_host.gleam`, `client/internal/instance_owner.gleam` | The builder process and the custody owner behind every session and domain slot. |
 | `client/serve.gleam` | Session and domain assembly: `resolve_managed`, `build_domain`, `assemble_in_domain`, `Resident`, `drain_resident`. |
 | `client/wiring.gleam` | The runtime effect record `serve` injects into each session: provider dispatch, tool execution, hooks. |

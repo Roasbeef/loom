@@ -18,8 +18,12 @@
 //// has edited nothing draws the heading and one line saying so, so the pane's
 //// place in the panel does not move and the tab never opens on nothing.
 ////
-//// Everything a diff carries is session text: the path and every row. Each is
-//// drawn as a text node, never as an attribute, a class or a key. A row's
+//// The pane's children are keyed, each file by its path, so a `details` a
+//// reader opened stays the same element when a file is edited that sorts
+//// before it. Everything a diff carries is session text: the path and every
+//// row. Each is drawn as a text node, never as an attribute or a class; the
+//// path is also the file's key, as a single line with no separator
+//// character, and no handler sits beneath it. A row's
 //// class is chosen from `changes_view.Kind`, a closed type the fold computed
 //// from the row's first characters, and every class is a complete literal,
 //// so no diff can name one. The view carries no handler, so an observer's
@@ -33,6 +37,7 @@ import gleam/list
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import session_view/changes_view.{
   type Board, type File, type Kind, type Row, Added, Context, Hunk, Removed,
 }
@@ -49,7 +54,8 @@ import session_view/changes_view.{
 /// ```
 pub fn view(board: Board) -> Element(message) {
   use <- element.memo([element.ref(board)])
-  html.section(
+  keyed.element(
+    "section",
     [
       attribute.class("pane"),
       attribute.class("pane-changes"),
@@ -57,26 +63,53 @@ pub fn view(board: Board) -> Element(message) {
     ],
     case board.files {
       [] -> [
-        html.h2([attribute.class("panel-title")], [html.text("Changes")]),
-        html.p([attribute.class("pane-empty")], [
-          html.text("No edits in this session yet."),
-        ]),
+        #(
+          "title",
+          html.h2([attribute.class("panel-title")], [html.text("Changes")]),
+        ),
+        #(
+          "empty",
+          html.p([attribute.class("pane-empty")], [
+            html.text("No edits in this session yet."),
+          ]),
+        ),
       ]
       [first, ..rest] -> [
-        html.h2([attribute.class("panel-title")], [
-          html.span([attribute.class("changes-title")], [html.text("Changes")]),
-          html.span([attribute.class("changes-total")], [
-            html.text(" · " <> changes_view.totals(board)),
+        #(
+          "title",
+          html.h2([attribute.class("panel-title")], [
+            html.span([attribute.class("changes-title")], [
+              html.text("Changes"),
+            ]),
+            html.span([attribute.class("changes-total")], [
+              html.text(" · " <> changes_view.totals(board)),
+            ]),
           ]),
-        ]),
-        html.p([attribute.class("changes-label")], [
-          html.text(changes_view.label()),
-        ]),
-        file(first, [attribute.attribute("open", "")]),
-        ..list.append(list.map(rest, file(_, [])), [omitted_files(board)])
+        ),
+        #(
+          "label",
+          html.p([attribute.class("changes-label")], [
+            html.text(changes_view.label()),
+          ]),
+        ),
+        #(file_key(first), file(first, [attribute.attribute("open", "")])),
+        ..list.append(
+          list.map(rest, fn(next) { #(file_key(next), file(next, [])) }),
+          [#("omitted", omitted_files(board))],
+        )
       ]
     },
   )
+}
+
+// A file's key is its path. A `details` keeps the reader's choice of open or
+// closed in the browser, and an unkeyed list would hand that state to
+// whichever file now sits at its index when a file appears before it. The
+// path is one line (`changes_view` fits and single-lines it), so it holds
+// none of the tab, carriage return or newline that separate a path's
+// segments. Nothing beneath a file has a handler either.
+fn file_key(file: File) -> String {
+  "file:" <> file.path
 }
 
 // One file: its path and counts on the line, its rows under it. `opened`

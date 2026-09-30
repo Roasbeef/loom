@@ -655,7 +655,7 @@ sessions). Only an operator page does it.
   page writes into the `to` attribute of the hidden `<loom-switch>`, the
   centre's last child. The element accepts only
   `/ui/sessions/<identity>?ticket=<64 hex digits>` (`switch_rule.target`) and
-  calls `location.assign`. The exchange, the keyed page and the nonce are the
+  calls `location.replace`, so the old page leaves no history entry. The exchange, the keyed page and the nonce are the
   ones `loom ui` already uses, and the page left behind is not ended.
 - **What holds.** A page for one session holds no text of another
   (`session_isolation_test`); the sidebar is the one region that lists the
