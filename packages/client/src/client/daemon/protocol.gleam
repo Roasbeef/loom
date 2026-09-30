@@ -110,6 +110,15 @@ pub type Command {
   /// deleting its identity.
   RevokeCredentials(principal_id: String, epoch: String)
 
+  /// Lists principals after one principal ID, each with the state of its
+  /// credential (protocol-change/053). Owner-only. An empty cursor starts the
+  /// listing.
+  ListPrincipals(after: String)
+
+  /// Lists one principal's session memberships after one session ID.
+  /// Owner-only. An empty cursor starts the listing.
+  PrincipalMemberships(principal_id: String, after: String)
+
   /// Reads daemon readiness and aggregate capacity counts.
   Status
 
@@ -398,6 +407,22 @@ fn decode_fields(
       use principal <- result.try(text_field(fields, "principal_id", 128))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       RevokeCredentials(principal, epoch)
+    }
+    "principals.list" -> {
+      use after <- result.map(case list.key_find(fields, "after") {
+        Error(Nil) -> Ok("")
+        Ok(_) -> text_field(fields, "after", 128)
+      })
+      ListPrincipals(after)
+    }
+    "principals.memberships" -> {
+      use principal <- result.try(text_field(fields, "principal_id", 128))
+      use after <- result.map(case list.key_find(fields, "after") {
+        Error(Nil) -> Ok("")
+        Ok(json.String(text)) -> canonical_id(text)
+        Ok(_) -> Error("expected a session cursor")
+      })
+      PrincipalMemberships(principal, after)
     }
     "status" -> Ok(Status)
     "ui.link" -> {
