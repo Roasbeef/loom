@@ -60,6 +60,51 @@ main([Label, Scenario | Args]) ->
 
 %% --- scenarios --------------------------------------------------------------
 
+%% Full painting and a real wheel burst over a decoded six-agent capture.
+%% Timings exclude setup, tracing and the cell witness. The witness includes
+%% styles, links, continuation cells and cursor, not just the visible text.
+run("render", [WidthS, HeightS], Label) ->
+    Width = list_to_integer(WidthS),
+    Height = list_to_integer(HeightS),
+    M = tui:update({resize, Width, Height}, tui_agents_dev:render_model()),
+    Screen = 'etui@geometry':rect_new(0, 0, Width, Height),
+    Paint = fun() -> 'tui@render':render_frame(M, Screen) end,
+    Start = get(tui_perf_now),
+    Scroll = fun() -> put(tui_perf_now, Start), scroll_burst(M, 40) end,
+    Nothing = fun() -> ok end,
+    [begin
+         _ = samples(10, Nothing, F),
+         report(Label, Name, samples(100, Nothing, F))
+     end || {Name, F} <- [{"paint", Paint}, {"scroll40", Scroll}]],
+    {B, Cursor} = Paint(),
+    Final = Scroll(),
+    {Scrolled, ScrolledCursor} = 'tui@render':view(Final, Screen),
+    Cells = fun(Buf) ->
+        ['etui@buffer':get_cell(Buf, {position, X, Y})
+         || Y <- lists:seq(0, Height - 1), X <- lists:seq(0, Width - 1)]
+    end,
+    InitialCells = Cells(B),
+    ScrolledCells = Cells(Scrolled),
+    {Rows, 0} = tui_agents_dev:render_witness(M),
+    {Rows, Offset} = tui_agents_dev:render_witness(Final),
+    true = Rows > Height,
+    true = Offset > 0,
+    true = InitialCells =/= ScrolledCells,
+    put(tui_perf_now, Start),
+    Frames = scroll_witness(M, 40, Screen, Cells),
+    Witness = term_to_binary({InitialCells, Cursor, ScrolledCells, ScrolledCursor, Frames}),
+    Path = filename:join([os:getenv("TUI_PERF_TUI"), "build", "tui_perf",
+                          Label ++ "-" ++ WidthS ++ "x" ++ HeightS ++ ".cells"]),
+    ok = file:write_file(Path, Witness),
+    io:format("WITNESS ~s cells=~p rows=~p offset=~p scroll_frames=~p sha256=~s~n",
+              [Label, length(InitialCells), Rows, Offset, length(Frames),
+               binary:encode_hex(crypto:hash(sha256, Witness))]),
+    trace_words(),
+    report_words(Label, "paint", Nothing, Paint),
+    report_words(Label, "scroll40", Nothing, Scroll),
+    tprof:stop(),
+    ok;
+
 %% One keypress, one idle tick, and a tick and a keypress with 64 frames
 %% waiting, each applied to the same ready model, so every sample of one
 %% event does the same work.
@@ -277,6 +322,24 @@ run("profile", [Kind], Label) ->
     ok.
 
 %% --- the model --------------------------------------------------------------
+
+%% Both directions participate, so the burst does not just hit one clamp.
+scroll_burst(M, 0) -> M;
+scroll_burst(M, N) ->
+    scroll_burst(scroll_event(M, N), N - 1).
+
+scroll_event(M, N) ->
+    advance(),
+    Direction = N > 30 orelse N =< 20,
+    tui:update({mouse_scroll, 2, 3, Direction}, M).
+
+%% Every intermediate frame is compared, outside the timed or traced pass.
+scroll_witness(_, 0, _, _) -> [];
+scroll_witness(M, N, Screen, Cells) ->
+    Next = scroll_event(M, N),
+    {Buf, Cursor} = 'tui@render':view(Next, Screen),
+    Hash = crypto:hash(sha256, term_to_binary({Cells(Buf), Cursor})),
+    [Hash | scroll_witness(Next, N - 1, Screen, Cells)].
 
 %% A model that has taken the recording's snapshots and is in the assistant
 %% phase, with nothing left in its mailbox or its inbox buffer, and the clock
