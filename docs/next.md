@@ -1,5 +1,57 @@
 # Current handoff
 
+The MCP extraction is based on `01f14ef8f36f1fa87f7fb7977470d8ad34c28943`
+and records source/dependency baseline `45148c764`. The earlier extraction
+candidate used an old local main; its focused tests and four reproduced
+Git-launcher failures belong to that old baseline. Current main already
+contains the launcher fix. Those results are not signoff for this head.
+
+## Standalone MCP extraction
+
+Generic JSON/JSON-RPC, framing, client actors and native process custody
+live in [Gleam MCP](https://github.com/Roasbeef/gleam-mcp). Both direct
+consumers and the conformance closure pin
+`a3de7047fd594150addee2ba284be5c02a131ed0`. Its full Linux/macOS CI passed
+[run 36706135255](https://github.com/Roasbeef/gleam-mcp/actions/runs/36706135255):
+232 unit tests, including every required Draft 2020-12 vector; 139 linter
+tests; five tooling checks; and 36 native stdio/HTTP/TLS checks. Independent
+review findings were fixed and rechecked before publication.
+
+The SDK adds released MCP `2026-07-28`, typed tool definitions, HTTP, explicit
+multi-round-trip continuations and owned subscriptions. Loom continues to
+use its initialized stdio profile and supplies its own client identity,
+server isolation and result reduction. Optional resource and prompt APIs
+are tracked in [SDK issue #1](https://github.com/Roasbeef/gleam-mcp/issues/1).
+
+`packages/mcp` retains four pure adapters: code generation, schema planning,
+name sanitization and MessagePack interchange. Frozen core and capability
+interfaces are unchanged. `client/mcp` reduces lossless non-text content
+only when constructing the existing capability result. The generic suites
+moved with their implementation; local adapter and actual-server fixtures
+remain here. Current main's other dependencies, including weft 0.4.5 and
+its shared UI packages, were preserved during rebase.
+
+[Jevelin MCP](https://github.com/Roasbeef/jevelin-mcp) consumes the published
+SDK and existing Jevelin library directly. Its four shared typed definitions
+retain original label/rubric/batch decoders. The complete app gate passes
+compiled stdio and HTTP exchanges plus a separate native typed client without
+a live Jev credential. Mock proof is not authenticated provider proof.
+
+The new Loom adapter gate passed all 102 tests through the public dependency.
+Full local, hosted and real jailed consumer evidence must be read at its
+named commit or run; neither the SDK nor app gate establishes Loom signoff.
+[PR #669](https://github.com/Roasbeef/loom/pull/669) records that validation
+boundary and its current draft status. Continue to require the full gate,
+real native MCP process and configured-server code-mode exchanges when
+updating this dependency. Remote MCP admission policy remains separate
+from the reusable library's HTTP implementation.
+
+## Existing work on main
+
+The preceding main handoff is preserved below. Its references and validation
+are attached to the heads it names, rather than reassigned to this extraction.
+
+
 This handoff is baselined against `998be7a64` (`main` after #666, the last
 pull request that closed [#569](https://github.com/Roasbeef/loom/issues/569))
 on 2026-09-30. Tracker state was read with `gh` the same day. Every claim
