@@ -193,6 +193,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           openable(model, session)
         }),
         component.marks(model),
+        component.session_id(model),
       ),
       html.footer([attribute.class("dock")], [
         component.plan(model),

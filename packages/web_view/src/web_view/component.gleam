@@ -140,6 +140,7 @@ import session_view/step_effect
 import session_view/strand_card
 import session_view/text_hygiene
 import session_view/transcript
+import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Stream, Assistant, Line,
 }
@@ -633,6 +634,16 @@ pub type Msg(socket) {
   /// handler carries it, so a browser cannot send one.
   SessionsListed(entries: List(sessions.Entry))
 
+  /// The daemon asks for one of the images the page draws, to answer a
+  /// request for its address (protocol-change/051, the addendum on images).
+  /// `ref` and `position` are the name and place the page drew the image
+  /// at, and the reply is the image if the lane holds one there and
+  /// `Error(Nil)` if it does not. It reads the lane and changes nothing, so
+  /// an observer's page has it. It is sent from the daemon's side of the
+  /// socket with `lustre.dispatch`, and no handler carries it, so no browser
+  /// frame can produce one.
+  ImageRequested(ref: String, position: Int, reply: Subject(Result(Image, Nil)))
+
   /// The daemon answered a request to open another session. It is the
   /// effect's own message, dispatched from the component's process, and no
   /// handler carries it, so a browser cannot send one.
@@ -862,8 +873,25 @@ pub fn update(
       effect.none(),
     )
 
+    // The answer is read from the pieces the page draws, so an image is
+    // served only where the page shows one, and it is sent from an effect so
+    // that the update stays a function of the model.
+    ImageRequested(ref:, position:, reply:) -> #(
+      model,
+      answering(reply, turns.picture(model.view.pieces, ref, position)),
+    )
+
     Linked(answer:) -> #(linked(model, answer), effect.none())
   }
+}
+
+// Hands the daemon's request for an image the answer the lane gave.
+fn answering(
+  reply: Subject(Result(Image, Nil)),
+  found: Result(Image, Nil),
+) -> Effect(Msg(socket)) {
+  use _ <- effect.from
+  process.send(reply, found)
 }
 
 // The daemon's answer to a request to open another session. A ticket becomes
@@ -2622,6 +2650,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         OlderRequested,
         lane.NoReplies,
         marks(model),
+        session_id(model),
       ),
       plan(model),
       nudges.view(pending_nudges(model)),

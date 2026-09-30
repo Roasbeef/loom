@@ -448,6 +448,19 @@
      prose; only code keeps its whitespace. Every class is one the view
      spells from a closed type, never from the session's text. */
   .line.markdown{white-space:normal;}
+  /* The images a row carries (web_view/view/lane), a strip of thumbnails
+     after the row's text. Each is a <details> the browser opens and closes on
+     its own, so no script and no event is involved: closed, the picture is a
+     bounded thumbnail, and open it takes the lane's width, capped in height so
+     a tall image does not push the reader off the row. */
+  .pictures{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;min-width:0;}
+  .step .pictures{padding-left:1.6em;}
+  details.picture{min-width:0;max-width:100%;}
+  summary.picture-summary{display:block;list-style:none;cursor:zoom-in;}
+  summary.picture-summary::-webkit-details-marker{display:none;}
+  details.picture[open] > summary.picture-summary{cursor:zoom-out;}
+  img.picture-image{display:block;max-width:160px;max-height:120px;object-fit:cover;background:var(--color-bg-sunk);border:1px solid var(--color-divider);border-radius:6px;}
+  details.picture[open] img.picture-image{max-width:100%;max-height:70vh;object-fit:contain;}
   .markdown > :first-child{margin-top:0;}
   .markdown > :last-child{margin-bottom:0;}
   .markdown .md-p{margin:0 0 .6em 0;}

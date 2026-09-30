@@ -74,6 +74,7 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      "",
     )
   let cache = first(first_view)
   assert drawn(lines) == 41
@@ -89,6 +90,7 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      "",
     )
   let cache = rerender(cache, first_view, same_view)
   assert drawn(lines) == 0
@@ -103,6 +105,7 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      "",
     )
   let cache = rerender(cache, same_view, next_view)
   assert drawn(lines) == 2
@@ -119,6 +122,7 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
         draw,
         lane.NoReplies,
         lane.no_marks(),
+        "",
       ),
     )
   assert drawn(lines) == 0
@@ -143,6 +147,7 @@ pub fn a_sliding_window_draws_only_the_new_lines_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      "",
     )
   let cache = first(first_view)
   let _ = drawn(lines)
@@ -154,6 +159,7 @@ pub fn a_sliding_window_draws_only_the_new_lines_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      "",
     )
   let _ = rerender(cache, first_view, next_view)
   assert drawn(lines) == 2
@@ -186,6 +192,7 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      "",
     )
   let cache = first(first_view)
   assert drawn(lines) == 150
@@ -207,6 +214,7 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      "",
     )
   let cache = rerender(cache, first_view, next_view)
   assert drawn(lines) == 99
@@ -223,6 +231,7 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
         draw,
         lane.NoReplies,
         lane.no_marks(),
+        "",
       ),
     )
   assert drawn(lines) == 0

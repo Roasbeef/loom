@@ -17,6 +17,7 @@ import core/json
 import core/message
 import core/register
 import core/todo_list
+import gleam/bit_array
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -366,6 +367,79 @@ pub fn answered(texts: List(String)) -> session_channel.Update {
       )
     })
   capture_of([item(1, 10_000, said("go", None)), ..answers], None, [], [])
+}
+
+/// The bytes of the smallest thing `pasted_image.media_type` takes for a PNG,
+/// base64 encoded: an image the page will draw.
+pub const png = "iVBORw0KGgo="
+
+/// Text an SVG file starts with, base64 encoded: what a session that declared
+/// `image/svg+xml` would hold. The page must not draw it.
+pub const svg = "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPg=="
+
+/// A capture of `main` holding a prompt that carries three images (a PNG, an
+/// image declared SVG and one declared PNG whose bytes are not), a call to
+/// `read` whose result is a WebP, and an answer. The WebP's bytes are
+/// `RIFF....WEBP`, so a server would answer with them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.pictured()
+/// ```
+pub fn pictured() -> session_channel.Update {
+  let webp =
+    bit_array.base64_encode(
+      <<"RIFF":utf8, 0:32, "WEBP":utf8, "VP8 ":utf8>>,
+      True,
+    )
+  capture_of(
+    [
+      item(
+        1,
+        10_000,
+        message.UserMessage(
+          [
+            message.UserText("look <here>", None),
+            message.UserImage(png, "image/png"),
+            message.UserImage(svg, "image/svg+xml"),
+            message.UserImage(png, "image/x-<b>evil</b>"),
+          ],
+          0,
+          None,
+        ),
+      ),
+      item(
+        2,
+        11_000,
+        assistant([
+          call("c1", "read", json.Object([#("path", json.String("a.webp"))])),
+        ]),
+      ),
+      item(
+        3,
+        12_000,
+        message.ToolResultMessage(
+          "c1",
+          "read",
+          [message.ToolResultImage(webp, "image/webp")],
+          None,
+          None,
+          None,
+          False,
+          12_000,
+        ),
+      ),
+      item(
+        4,
+        13_000,
+        assistant([message.AssistantText("It is a picture.", None)]),
+      ),
+    ],
+    None,
+    [],
+    [],
+  )
 }
 
 /// A capture of `main` holding only the prompt "go", with `operation`

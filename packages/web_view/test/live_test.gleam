@@ -462,6 +462,7 @@ pub fn a_fragment_draws_no_committed_line_again_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      "",
     )
   }
   let one = render(grown("one"))
