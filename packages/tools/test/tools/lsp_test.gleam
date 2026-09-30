@@ -167,7 +167,8 @@ fn error_diagnostic(path: String, line: Int, text: String) -> query.Diagnostic {
 // The description a session with no profile hints carries, byte for
 // byte. The tool array is the cached prefix, so a hint-less session must
 // not pay for the hints feature with a single changed byte (ADR-016 §2).
-const plain_definition_description = "Find where a symbol is defined, using the language server's semantic view rather than a text search. Address the symbol by name as the code spells it, optionally qualified (`util.Greet`, `probe.greet`); positions are never needed. Add `path`, and `line` as fs_read prints it, only to narrow an ambiguous name. Every site in the answer is printed as `path:line:anchor|text`, so it can be edited with fs_edit without reading the file first."
+const plain_definition_description =
+  "Find where a symbol is defined, using the language server's semantic view rather than a text search. Address the symbol by name as the code spells it, optionally qualified (`util.Greet`, `probe.greet`); positions are never needed. Add `path`, and `line` as fs_read prints it, only to narrow an ambiguous name. Every site in the answer is printed as `path:line:anchor|text`, so it can be edited with fs_edit without reading the file first."
 
 pub fn definition_description_without_hints_is_unchanged_test() {
   assert named(door(), "lsp_definition").description
