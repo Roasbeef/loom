@@ -278,7 +278,7 @@ pub fn an_operators_prompt_goes_to_the_focused_strand_test() {
   let _ = page_fixture.sent(wire)
   let model =
     page_fixture.run(model, operator_page.update, [
-      operator_page.Submitted("second", operator.Prompt),
+      operator_page.Submitted("second", operator.Prompt, []),
     ])
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "one prompt is one frame"
@@ -302,7 +302,7 @@ pub fn a_prompt_after_focusing_back_goes_to_main_test() {
   let _ = page_fixture.sent(wire)
   let _ =
     page_fixture.run(model, operator_page.update, [
-      operator_page.Submitted("third", operator.Prompt),
+      operator_page.Submitted("third", operator.Prompt, []),
     ])
   let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
     as "one prompt is one frame"
@@ -328,7 +328,7 @@ pub fn an_operators_queue_and_steer_go_to_the_focused_strand_test() {
   let named = "\"strand\":\"" <> lane_fixture.child <> "\""
   let _ =
     page_fixture.run(model, operator_page.update, [
-      operator_page.Submitted("look again", operator.Steer),
+      operator_page.Submitted("look again", operator.Steer, []),
     ])
   let assert [steer] = page_fixture.commands(page_fixture.sent(wire))
     as "one steer is one frame"

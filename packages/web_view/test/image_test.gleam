@@ -5,7 +5,11 @@
 //// refusal here is one way the bytes could be something other than a picture.
 
 import gleam/bit_array
+import gleam/list
+import gleam/result
 import gleam/string
+import session_view/composer
+import session_view/pasted_image
 import session_view/transcript_image.{Image}
 import web_view/image
 
@@ -106,4 +110,80 @@ pub fn text_longer_than_any_admissible_image_is_refused_undecoded_test() {
       string.repeat("A", image.max_served_bytes * 2),
     ))
     == Error(image.TooLarge)
+}
+
+// --- what the composer may attach -------------------------------------------
+
+pub fn no_images_admit_to_no_images_test() {
+  assert image.admit([]) == Ok([])
+}
+
+pub fn an_image_is_admitted_by_its_bytes_and_sent_canonically_test() {
+  let bytes = <<png_header:bits, 1, 2, 3, 4>>
+  let assert Ok([admitted]) = image.admit([encoded(bytes)])
+    as "a PNG is admitted"
+  assert admitted
+    == pasted_image.Image(
+      local_path: "",
+      filename: "attached image",
+      mime_type: "image/png",
+      byte_size: 12,
+      data: encoded(bytes),
+    )
+}
+
+pub fn the_type_is_the_bytes_and_never_the_browsers_claim_test() {
+  let jpeg = <<0xFF, 0xD8, 0xFF, 0xE0, 0>>
+  let gif = <<"GIF89a":utf8, 0>>
+  let webp = <<"RIFF":utf8, 0:32, "WEBP":utf8>>
+  let assert Ok(images) =
+    image.admit([encoded(jpeg), encoded(gif), encoded(webp)])
+    as "each is admitted"
+  assert list.map(images, fn(admitted) { admitted.mime_type })
+    == ["image/jpeg", "image/gif", "image/webp"]
+}
+
+pub fn markup_is_not_an_image_however_it_arrives_test() {
+  let refusal =
+    Error(
+      "Only PNG, JPEG, GIF and WebP images can be attached. Nothing was sent.",
+    )
+  assert image.admit([encoded(<<"<svg xmlns=\"x\"><script/></svg>":utf8>>)])
+    == refusal
+  assert image.admit([encoded(<<"<html></html>":utf8>>)]) == refusal
+  assert image.admit([encoded(<<>>)]) == refusal
+  assert image.admit([encoded(<<png_header:bits, 1>>), encoded(<<"x":utf8>>)])
+    == refusal
+}
+
+pub fn an_attachment_that_is_not_base64_is_refused_test() {
+  assert image.admit(["not base64 !!"])
+    == Error("An attached image is not valid base64. Nothing was sent.")
+  assert image.admit(["data:image/png;base64,iVBORw0KGgo="])
+    == Error("An attached image is not valid base64. Nothing was sent.")
+}
+
+pub fn at_most_four_images_are_admitted_test() {
+  let one = encoded(<<png_header:bits, 1>>)
+  let assert Ok(four) = image.admit(list.repeat(one, image.max_attached))
+    as "four are admitted"
+  assert list.length(four) == 4
+  assert image.admit(list.repeat(one, image.max_attached + 1))
+    == Error("A prompt carries at most 4 images. Nothing was sent.")
+}
+
+pub fn the_images_of_one_prompt_total_at_most_eight_mebibytes_test() {
+  let half = encoded(png_of(image.max_attached_bytes / 2))
+  assert list.length(result.unwrap(image.admit([half, half]), [])) == 2
+  let over = encoded(png_of(image.max_attached_bytes / 2 + 1))
+  assert image.admit([half, over])
+    == Error("The images total more than 8 MiB. Nothing was sent.")
+}
+
+pub fn the_element_is_told_the_daemons_own_limits_test() {
+  assert image.limits_attribute()
+    == "{\"count\":4,\"bytes\":8388608,\"types\":[\"image/png\",\"image/jpeg\",\"image/gif\",\"image/webp\"]}"
+  assert list.all(image.raster_types, pasted_image.is_raster)
+  assert image.max_attached == composer.max_image_attachments
+  assert image.max_attached_bytes <= pasted_image.max_image_bytes
 }

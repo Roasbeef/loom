@@ -81,10 +81,16 @@ import web_view/operator_page
 import web_view/page
 import web_view/sessions
 
-/// The inbound frame limit on an operator's page socket: a text prompt fits,
-/// a pasted image does not, and a browser's events are far smaller than the
-/// terminal's 32 MiB (protocol-change/051, the operator addendum).
-pub const operator_frame_limit = 1_048_576
+/// The inbound frame limit on an operator's page socket: 12 MiB, which holds
+/// a text prompt and up to `web_view/image.max_attached_bytes` of images (8 MiB
+/// before base64, a third more after) in one submit event, and is well under
+/// the terminal's 32 MiB. It was 1 MiB while the page sent text alone
+/// (protocol-change/051, the operator addendum); the addendum on images raised
+/// it and says why. An observer's page keeps the 64 KiB an observer's
+/// connection class has. The permit an operator's page holds is charged for
+/// the class's own 32 MiB message limit (`root.message_limit`), so this limit
+/// is inside what admission already reserves.
+pub const operator_frame_limit = 12_582_912
 
 // How long a request for an image waits for the component's answer, in
 // milliseconds. The component answers from a lane it holds in memory, so a

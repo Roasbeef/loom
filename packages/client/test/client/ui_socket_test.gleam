@@ -7,6 +7,7 @@
 //// and a submit and nothing else.
 
 import client/daemon/manager
+import client/daemon/root
 import client/daemon/ui_relay
 import client/daemon/ui_socket
 import gleam/erlang/process
@@ -19,6 +20,7 @@ import session_view/snapshot
 import storage/access
 import storage/catalogue
 import web_view/component
+import web_view/image
 import web_view/sessions
 
 // A page whose transport never opens: what is under test is which
@@ -407,4 +409,17 @@ pub fn a_reader_answers_nothing_once_its_socket_has_ended_test() {
   let before = bootstrap.monotonic_time_ms()
   assert images("1.0", 0) == Error(Nil)
   assert bootstrap.monotonic_time_ms() - before < 500
+}
+
+// Protocol-change/051, the addendum on images: an operator's frame holds the
+// largest submit the page allows, a full draft with the images `admit` takes
+// at their base64 size, and is still under the terminal's limit and the class
+// the permit is charged for. An observer's frame limit is unchanged.
+pub fn an_operators_frame_holds_a_full_prompt_of_images_test() {
+  let encoded = image.max_attached_bytes / 3 * 4 + 4
+  let quoting = image.max_attached * 4
+  assert encoded + quoting + component.prompt_limit + 4096
+    < ui_socket.operator_frame_limit
+  assert ui_socket.operator_frame_limit < root.message_limit(root.Operator)
+  assert root.message_limit(root.Observer) == 65_536
 }

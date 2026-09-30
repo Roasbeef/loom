@@ -25,10 +25,11 @@
 //// writes `<id>/image/<name>/<position>` and the browser makes it
 //// `/ui/p/<key>/sessions/<id>/image/<name>/<position>`.
 
+import core/json
 import gleam/bit_array
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import session_view/pasted_image
@@ -144,5 +145,106 @@ fn checked(image: Image) -> Result(Served, Refusal) {
         True -> Ok(Served(image.mime_type, bytes))
         False -> Error(NotAnImage)
       }
+  }
+}
+
+/// The most images one prompt from the page carries: the terminal's own limit
+/// (`composer.max_image_attachments`), so the two hosts agree.
+pub const max_attached = 4
+
+/// The most bytes the images of one prompt from the page total, before base64
+/// encoding: 8 MiB. The terminal admits 20 MiB in all; the page's frame
+/// carries each image as text a third larger, inside one WebSocket message,
+/// and 8 MiB is what a 12 MiB frame holds with its draft
+/// (`client/daemon/ui_socket.operator_frame_limit`). Raising either raises the
+/// other.
+pub const max_attached_bytes = 8_388_608
+
+/// The raster types the composer may attach, which are the four the daemon
+/// serves.
+pub const raster_types = ["image/png", "image/jpeg", "image/gif", "image/webp"]
+
+/// The limits `<loom-attach>` is told, as the JSON its `limits` attribute
+/// holds: the count, the byte total and the types. They are the daemon's
+/// constants, so the element refuses early what `admit` would refuse.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(image.limits_attribute(), "\"count\":4")
+/// ```
+pub fn limits_attribute() -> String {
+  json.to_string(
+    json.Object([
+      #("count", json.Int(max_attached)),
+      #("bytes", json.Int(max_attached_bytes)),
+      #("types", json.Array(list.map(raster_types, json.String))),
+    ]),
+  )
+}
+
+/// Checks the images a prompt from the page carries, each the base64 text the
+/// composer's `<loom-attach>` submitted, and returns them as the images the
+/// shared command path sends (`pasted_image.Image`), or the notice the
+/// operator reads for the first thing wrong.
+///
+/// The browser is not trusted here. Every image is decoded, its type is read
+/// from its own magic number and is never taken from the browser (which knows
+/// only a file name's guess), the count and the byte total are bounded, and
+/// the base64 that is sent on is the canonical encoding of the bytes that
+/// were checked, so it is not the operator's text that reaches the provider.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert image.admit([]) == Ok([])
+/// ```
+pub fn admit(
+  encoded: List(String),
+) -> Result(List(pasted_image.Image), String) {
+  case list.length(encoded) > max_attached {
+    True ->
+      Error(
+        "A prompt carries at most "
+        <> int.to_string(max_attached)
+        <> " images. Nothing was sent.",
+      )
+    False -> {
+      use images <- result.try(list.try_map(encoded, decoded))
+      let total =
+        list.fold(images, 0, fn(total, image) { total + image.byte_size })
+      case total > max_attached_bytes {
+        True ->
+          Error(
+            "The images total more than "
+            <> int.to_string(max_attached_bytes / 1_048_576)
+            <> " MiB. Nothing was sent.",
+          )
+        False -> Ok(images)
+      }
+    }
+  }
+}
+
+fn decoded(text: String) -> Result(pasted_image.Image, String) {
+  use bytes <- result.try(
+    bit_array.base64_decode(text)
+    |> result.replace_error(
+      "An attached image is not valid base64. Nothing was sent.",
+    ),
+  )
+  case pasted_image.media_type(bytes) {
+    None ->
+      Error(
+        "Only PNG, JPEG, GIF and WebP images can be attached. Nothing was sent.",
+      )
+    Some(mime_type) ->
+      Ok(pasted_image.Image(
+        local_path: "",
+        filename: "attached image",
+        mime_type:,
+        byte_size: bit_array.byte_size(bytes),
+        data: bit_array.base64_encode(bytes, True),
+      ))
   }
 }
