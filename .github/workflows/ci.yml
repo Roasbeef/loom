@@ -567,6 +567,8 @@ jobs:
           find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
       - name: make e2e-client-bootstrap
+        env:
+          LOOM_TEST_TIMING: "1"
         run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap.log
 
       # actions/upload-artifact v7.0.1
@@ -579,6 +581,9 @@ jobs:
             e2e-client-bootstrap.log
             packages/client/build/owned-assembly-*/daemon-soak.jsonl
             packages/client/build/shipped-*/state/daemon.log
+            packages/client/build/shipped-*/state/fixture-effect-timing.log
+            packages/client/build/shipped-*/**/terminal.jsonl
+            packages/client/build/shipped-multiplayer-*.jsonl
 
   # ------------------------------------------------------- the deliverables
   deliverables-linux:
@@ -941,12 +946,11 @@ jobs:
           .github/scripts/enforcement_report.sh \
             selftest-macos.log .github/enforcement-expectations "macos (self-test)"
 
-      - name: make e2e-client-bootstrap
-        run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap-macos.log
-
       # These observations need a real jail. Keep them in the hard macOS
       # lane, with no skip declarations, rather than relying on the advisory
       # package check to establish that their assertions actually ran.
+      # Execute them before shipped bootstrap so its failure cannot hide
+      # an independent Git observation result.
       - name: Terminal observations with Seatbelt enforcement
         env:
           LOOM_TEST_TIMEOUT_SECONDS: 180
@@ -960,6 +964,11 @@ jobs:
             2>&1 | tee ux-worktree-macos.log
           LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
             "macos (terminal observations)" ux-joined-macos.log ux-worktree-macos.log
+
+      - name: make e2e-client-bootstrap
+        env:
+          LOOM_TEST_TIMING: "1"
+        run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap-macos.log
 
       - name: make e2e
         run: set -o pipefail; .github/scripts/hex_retry.sh make e2e 2>&1 | tee e2e-macos.log
@@ -985,6 +994,9 @@ jobs:
             ux-worktree-macos.log
             packages/client/build/owned-assembly-*/daemon-soak.jsonl
             packages/client/build/shipped-*/state/daemon.log
+            packages/client/build/shipped-*/state/fixture-effect-timing.log
+            packages/client/build/shipped-*/**/terminal.jsonl
+            packages/client/build/shipped-multiplayer-*.jsonl
           retention-days: 14
 
   # The macOS fan-in — the same shape as `gate (linux)`: fail if anything
