@@ -978,19 +978,24 @@ narrower, owner-only option:
   than the budget cannot occur under the catalogue's own bounds (128-byte IDs,
   256-byte names) and would be refused as `metadata_too_large`.
 - **The owner is listed.** Its row has `kind: "owner"` and an `active`
-  credential with a fingerprint and no `claimed_at_ms`. Its principal ID is 64
-  random hexadecimal characters chosen at first start. That is an identity and
-  not a credential, but it is the one 64-character value in a listing, so the
-  test for "no 64-character credential" sets it aside by name.
+  credential with a fingerprint and no `claimed_at_ms`. Its principal ID is
+  `"owner-"` followed by 64 random hexadecimal characters, 70 characters in
+  all, chosen at first start. That is an identity and not a credential, but it
+  contains the one 64-character hexadecimal run in a listing, so the test for
+  "no 64-character credential" sets it aside by name.
 - **`principals.memberships` lists every session the principal holds,
   archived ones included,** with the session's current display name, since it
   is the owner's view of grants and an archived session still holds them.
-- **Credential state is read without a principal index.** Neither
-  `access_credentials` nor `access_claims` is indexed by principal, so each
-  listed principal costs a scan of those two tables. A page is at most 100
-  principals and the tables hold one row per enrollment, so an index and a
-  catalogue version 5 were not worth building. Revisit if a daemon ever has
-  thousands of members.
+- **Credential state is partly read without an index.** An open claim is found
+  through `access_one_open_claim`, which is indexed by principal. Two lookups
+  are not: `access_credentials` by `principal_id`, and the left join on
+  `access_claims.credential_digest`. Each listed principal therefore costs a
+  scan of those tables, and a page of up to 100 principals runs up to about 200
+  such scans synchronously inside the registry actor. That actor also answers
+  `manager.authenticate` for every socket frame, so a very large principal
+  table stalls other registry calls for the length of a page. The tables hold
+  one row per enrollment, so an index and a catalogue version 5 are deferred;
+  revisit if a daemon ever has thousands of members.
 - **The client re-encodes every row.** `loom access` prints a listing row from
   checked fields: a fingerprint must be exactly 16 lowercase hexadecimal
   characters, a state must be one of the four, and a row that fails its check
