@@ -1719,7 +1719,7 @@ cannot be focused from the page; the "settled" chip is not a control.
 
 **Addendum (2026-09-29, issue #569): settled strands are focusable.** The
 "settled" chip is replaced by a group of cards, one per settled strand, the
-newest six and a `+n earlier` line of text. Each card is a button inside the
+first six, in reverse row order, and a `+n earlier` line of text. Each card is a button inside the
 strip's list, so its handler is at a path beneath `component.strip_path` and
 the socket admits it as it admits the live cards' clicks; nothing else about
 the admitted paths changes. Focus is the same `FocusRequested`, which needs

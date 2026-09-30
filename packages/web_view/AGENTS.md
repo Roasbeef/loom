@@ -322,8 +322,8 @@ page keys and nonces, and the relay into the session's gateway.
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, `running_ms`, how long its operation had run when the strip was
   built, and the agent row's `model` and `recent` tools), the advisor's chip
-  and the settled strands (`settled`, at most `strip.settled_limit`, newest
-  first, and `earlier`, the count of older ones). The component builds them and `strip.view` draws
+  and the settled strands (`settled`, at most `strip.settled_limit`, in
+  reverse row order, and `earlier`, the count of older ones). The component builds them and `strip.view` draws
   them. `strip.hue_class` and `strip.ring_class` map a hue and an outlook to
   literal classes. `Strip.followed` is the strand the strip marks as current
   (`component.strand(model)`). `strip.view(strip, focus)` draws each chip as

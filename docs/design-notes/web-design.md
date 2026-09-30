@@ -275,7 +275,8 @@ observer filter would have to admit a click under the lane. Instead only the
 strand cards carry a handler (they are #636's chips, moved). Every other
 strand control is a marker with no handler: a fixed `data-loom-focus`
 attribute whose value is the strand's position among the listed strands
-(`0` for `main`, `1` for the advisor, then the hue positions), never a name.
+(`0` for `main`, then the other listed strands, the advisor after them and
+the settled group's cards last), never a name.
 A client element hears a click on a marked element and clicks the card with
 the same position, which is an ordinary click on an ordinary handler. This
 keeps the admitted surface at what #636 decided. It is the same shape as
@@ -301,8 +302,8 @@ strip also feels, as well as a change to #636's admitted-path rule. The owner
 ruled (2026-09-29, issue #569) that it is a later pull request of its own,
 after this redesign, and not part of step 5.
 
-That pull request landed as a collapsed group below the live cards, newest
-six with `+n earlier` as text. `agent_roster.chips` already saw every
+That pull request landed as a collapsed group below the live cards, the first
+six in reverse row order (rows carry no join time) with `+n earlier` as text. `agent_roster.chips` already saw every
 strand, so it needed no retention change; it now returns the settled lines
 instead of their count. A settled card names how the strand ended and shows
 no duration or time, since a finished operation's clock keeps running and no
