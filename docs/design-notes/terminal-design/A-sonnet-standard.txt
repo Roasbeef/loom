@@ -1,6 +1,5 @@
  ◆ loom    ws · pi-gui (main)                                                                  kimi-k3 · Ctrl+g details
  transcript / main
- ∴ Reasoning 3s
  └ read · src/calc.gleam
 
  ◆ main
@@ -13,6 +12,7 @@
 
  ◇ Memory · 3 notes
  └ read 3 files · edited calc.gleam +6 −0
+ ◇ tools · 4 calls · 1 failed · Ctrl+g expands
 
  ● main spawned 2 strands
 ▎├ ● sub:tests  run gleam test · needs approval · 9k ctx · 34s
@@ -37,4 +37,4 @@
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 › ● main              streaming
   ● sub:tests         needs approval
- baseten-kimi-k3 · ctx ~41% · est $1.86 · F1 sessions · ⇧Tab panel · ^O strands      3 agents · 2 working · 1 needs you
+ baseten-kimi-k3 · ctx ~41% · est $1.86 · ← strands · F1 sessions · ⇧Tab panel       3 agents · 2 working · 1 needs you

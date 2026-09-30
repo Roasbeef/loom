@@ -235,7 +235,7 @@ def left_column(width, height, focus=False):
     rows.append(row(width, [("  ● review htlc interceptor", "p")]))
     rows.append(row(width, [("  ○ nightly: deps bump", "q")]))
     return finish(rows, width, height, [
-        (" ←→ focus · Enter open", "q"),
+        (" F1 focus · Enter open", "q"),
         (" F1 hide · /sessions", "q"),
     ])
 
@@ -269,6 +269,7 @@ def transcript_main(width, hints=False):
     R.append(blank(width))
     R.append(g([("◇ ", "q"), ("Memory · 3 notes", "q")]))
     R.append(g([("└ ", "q"), ("read 3 files · edited calc.gleam +6 −0", "q")]))
+    R.append(g([("◇ ", "q"), ("tools · 4 calls · ", "q"), ("1 failed", "dan b"), (" · Ctrl+g expands", "q")]))
     R.append(blank(width))
     R.append(g([("● ", "cur b"), ("main", "p b"), (" spawned 2 strands", "q")] + ([("  [0]", "sig b")] if hints else [])))
     R.append(g([("├ ", "q"), ("● ", "add"), ("sub:tests ", "add b"), (" run gleam test", "p"), (" · ", "q"), ("needs approval", "dan b"), (" · 9k ctx · 34s", "q")] + ([(" [2]", "sig b")] if hints else []), "add"))
@@ -421,7 +422,7 @@ def strip_multi(W, n):
     return r
 
 def footer_rows(W, n, left, right, sheet, hints=False, scene="main"):
-    hint = "F1 sessions · ⇧Tab panel · ^O strands" if W >= 100 else "F1 ⇧Tab ^O"
+    hint = "← strands · F1 sessions · ⇧Tab panel" if W >= 100 else "← F1 ⇧Tab"
     note = "3 agents · 2 working · 1 needs you" if scene != "multi" else "6 agents · 4 working · 1 needs you"
     if hints:
         msg = " Focus a strand: press its number (0 is main) · Esc cancels"
