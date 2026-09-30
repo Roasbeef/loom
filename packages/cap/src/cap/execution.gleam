@@ -11,6 +11,7 @@
 //// `default` endpoint. Delivery means the callback returned successfully; it
 //// does not prove that an actor has finished processing the message.
 
+import cap/internal/channel
 import cap/internal/dispatch
 import cap/internal/wire
 import cap/report.{type Value}
@@ -32,13 +33,21 @@ const receive_deadline_margin_ms = 1000
 /// A bounded receive distinguishes silence from a closed execution.
 pub type Received {
   /// One committed input and the cursor for the next receive.
-  Message(sequence: Int, value: Value)
+  Message(
+    /// The position in the execution input journal.
+    sequence: InputCursor,
+    /// The intentionally open input value.
+    value: Value,
+  )
 
   /// No input arrived within this call's wait budget.
   TimedOut
 
   /// The harness has closed the execution's input channel.
-  Closed
+  Closed(
+    /// The complete diagnostic or closure reason.
+    reason: String,
+  )
 }
 
 /// Why an endpoint could not be constructed.
@@ -61,19 +70,34 @@ pub type ServeError {
   TooManyEndpoints
 
   /// Every endpoint name must be unique within one execution.
-  DuplicateEndpoint(name: String)
+  DuplicateEndpoint(
+    /// The endpoint name rejected by validation.
+    name: String,
+  )
 
   /// The idle lifetime was outside 1..300000 milliseconds.
-  InvalidIdleWithin(milliseconds: Int)
+  InvalidIdleWithin(
+    /// The requested idle lifetime.
+    milliseconds: Int,
+  )
 
   /// The host refused or could not persist readiness.
-  ReadyFailed(reason: String)
+  ReadyFailed(
+    /// The preserved capability boundary failure.
+    error: ExecutionError,
+  )
 
   /// The ordered input journal could not be read.
-  ReceiveFailed(reason: String)
+  ReceiveFailed(
+    /// The preserved capability boundary failure.
+    error: ExecutionError,
+  )
 
   /// The host could not record the latest delivery status.
-  DeliveryFailed(reason: String)
+  DeliveryFailed(
+    /// The preserved capability boundary failure.
+    error: ExecutionError,
+  )
 }
 
 /// Why a typed serving loop ended normally.
@@ -82,19 +106,27 @@ pub type ServeExit {
   Idle
 
   /// The host closed this execution's input channel.
-  InputClosed
+  InputClosed(
+    /// The complete diagnostic or closure reason.
+    reason: String,
+  )
 }
 
 /// The host's acknowledgement of a published progress snapshot.
 pub type Progress {
-  Progress(observed_sequence: Int, observed_updated_ms: Int)
+  Progress(
+    /// The progress snapshot sequence observed by the host.
+    observed_sequence: Int,
+    /// The host observation timestamp in milliseconds.
+    observed_updated_ms: Int,
+  )
 }
 
 type Enveloped {
   Enveloped(sequence: Int, endpoint: String, value: Value)
   EnvelopedWaitTimedOut
   EnvelopedIdle
-  EnvelopedClosed
+  EnvelopedClosed(reason: String)
 }
 
 /// Couples one endpoint name to a decoder and typed delivery function.
@@ -157,7 +189,7 @@ pub fn serve(
         #("idle_within_ms", wire.int(idle)),
       ]),
     )
-    |> result.map_error(fn(error) { ReadyFailed(string.inspect(error)) }),
+    |> result.map_error(fn(error) { ReadyFailed(map_error(error)) }),
   )
   serve_loop(endpoints, 0, idle)
 }
@@ -173,13 +205,19 @@ pub fn serve(
 /// ```gleam
 /// // execution.progress(report.string("indexing"))
 /// ```
-pub fn progress(value: Value) -> Result(Progress, String) {
+pub fn progress(value: Value) -> Result(Progress, ExecutionError) {
   use answer <- result.try(
     dispatch.call("execution.progress", wire.args([#("value", value)]))
-    |> result.map_error(fn(error) { string.inspect(error) }),
+    |> result.map_error(map_error),
   )
-  use sequence <- result.try(wire.int_field(answer, "sequence"))
-  use updated_ms <- result.try(wire.int_field(answer, "updated_ms"))
+  use sequence <- result.try(
+    wire.int_field(answer, "sequence")
+    |> result.map_error(ExecutionResultMalformed),
+  )
+  use updated_ms <- result.try(
+    wire.int_field(answer, "updated_ms")
+    |> result.map_error(ExecutionResultMalformed),
+  )
   Ok(Progress(observed_sequence: sequence, observed_updated_ms: updated_ms))
 }
 
@@ -190,25 +228,35 @@ pub fn progress(value: Value) -> Result(Progress, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// // execution.receive(after: 0, within_ms: 1000)
+/// // execution.receive(after: execution.first_input(), within_ms: 1000)
 /// ```
 pub fn receive(
-  after cursor: Int,
+  after cursor: InputCursor,
   within_ms wait: Int,
-) -> Result(Received, String) {
+) -> Result(Received, ExecutionError) {
+  let InputCursor(cursor) = cursor
   use value <- result.try(call_receive("execution.receive", cursor, wait))
   case value {
     msgpack.NilValue -> Ok(TimedOut)
     _ ->
       case wire.field(value, "closed") {
-        Ok(msgpack.StringValue(_)) -> Ok(Closed)
-        Ok(_) -> Error("invalid execution closure")
+        Ok(msgpack.StringValue(reason)) -> Ok(Closed(reason:))
+        Ok(_) -> Error(ExecutionResultMalformed("invalid execution closure"))
         Error(_) -> {
-          use sequence <- result.try(wire.int_field(value, "sequence"))
-          use value <- result.try(wire.field(value, "value"))
+          use sequence <- result.try(
+            wire.int_field(value, "sequence")
+            |> result.map_error(ExecutionResultMalformed),
+          )
+          use value <- result.try(
+            wire.field(value, "value")
+            |> result.map_error(ExecutionResultMalformed),
+          )
           case sequence > cursor {
-            True -> Ok(Message(sequence:, value:))
-            False -> Error("execution receive did not advance the cursor")
+            True -> Ok(Message(sequence: InputCursor(sequence), value:))
+            False ->
+              Error(ExecutionResultMalformed(
+                "execution receive did not advance the cursor",
+              ))
           }
         }
       }
@@ -221,10 +269,10 @@ fn serve_loop(
   idle: Int,
 ) -> Result(ServeExit, ServeError) {
   case receive_enveloped(cursor, idle) {
-    Error(reason) -> Error(ReceiveFailed(reason:))
+    Error(error) -> Error(ReceiveFailed(error:))
     Ok(EnvelopedWaitTimedOut) -> serve_loop(endpoints, cursor, idle)
     Ok(EnvelopedIdle) -> Ok(Idle)
-    Ok(EnvelopedClosed) -> Ok(InputClosed)
+    Ok(EnvelopedClosed(reason:)) -> Ok(InputClosed(reason:))
     Ok(Enveloped(sequence:, endpoint: name, value:)) -> {
       let delivered = deliver_to(endpoints, name, value)
       use _ <- result.try(record_delivery(sequence, name, delivered))
@@ -233,7 +281,10 @@ fn serve_loop(
   }
 }
 
-fn receive_enveloped(cursor: Int, wait: Int) -> Result(Enveloped, String) {
+fn receive_enveloped(
+  cursor: Int,
+  wait: Int,
+) -> Result(Enveloped, ExecutionError) {
   use value <- result.try(call_receive(
     "execution.receive_enveloped",
     cursor,
@@ -244,16 +295,29 @@ fn receive_enveloped(cursor: Int, wait: Int) -> Result(Enveloped, String) {
     _ ->
       case wire.field(value, "idle"), wire.field(value, "closed") {
         Ok(msgpack.BoolValue(True)), _ -> Ok(EnvelopedIdle)
-        Ok(_), _ -> Error("invalid execution idle marker")
-        _, Ok(msgpack.StringValue(_)) -> Ok(EnvelopedClosed)
-        _, Ok(_) -> Error("invalid execution closure")
+        Ok(_), _ ->
+          Error(ExecutionResultMalformed("invalid execution idle marker"))
+        _, Ok(msgpack.StringValue(reason)) -> Ok(EnvelopedClosed(reason:))
+        _, Ok(_) -> Error(ExecutionResultMalformed("invalid execution closure"))
         Error(_), Error(_) -> {
-          use sequence <- result.try(wire.int_field(value, "sequence"))
-          use name <- result.try(wire.string_field(value, "endpoint"))
-          use value <- result.try(wire.field(value, "value"))
+          use sequence <- result.try(
+            wire.int_field(value, "sequence")
+            |> result.map_error(ExecutionResultMalformed),
+          )
+          use name <- result.try(
+            wire.string_field(value, "endpoint")
+            |> result.map_error(ExecutionResultMalformed),
+          )
+          use value <- result.try(
+            wire.field(value, "value")
+            |> result.map_error(ExecutionResultMalformed),
+          )
           case sequence > cursor {
             True -> Ok(Enveloped(sequence:, endpoint: name, value:))
-            False -> Error("execution receive did not advance the cursor")
+            False ->
+              Error(ExecutionResultMalformed(
+                "execution receive did not advance the cursor",
+              ))
           }
         }
       }
@@ -264,7 +328,7 @@ fn call_receive(
   capability: String,
   cursor: Int,
   wait: Int,
-) -> Result(Value, String) {
+) -> Result(Value, ExecutionError) {
   let bounded_wait = case wait > max_receive_wait_ms {
     True -> max_receive_wait_ms
     False -> wait
@@ -277,7 +341,7 @@ fn call_receive(
     ]),
     bounded_wait + receive_deadline_margin_ms,
   )
-  |> result.map_error(fn(error) { string.inspect(error) })
+  |> result.map_error(map_error)
 }
 
 fn record_delivery(
@@ -299,7 +363,7 @@ fn record_delivery(
     ]),
   )
   |> result.map(fn(_) { Nil })
-  |> result.map_error(fn(error) { DeliveryFailed(string.inspect(error)) })
+  |> result.map_error(fn(error) { DeliveryFailed(map_error(error)) })
 }
 
 fn deliver_to(
@@ -370,5 +434,86 @@ fn bounded_reason(reason: String) -> String {
   case string.byte_size(reason) <= 1024 {
     True -> reason
     False -> "endpoint rejected payload with an oversized reason"
+  }
+}
+
+/// Failure categories preserved across the execution capability boundary.
+pub type ExecutionError {
+  /// The host refused under a stable denial code.
+  ExecutionDenied(
+    /// The stable denial code supplied by the host.
+    code: String,
+    /// The host denial explanation.
+    message: String,
+  )
+
+  /// The capability transport was unavailable.
+  ExecutionUnavailable(
+    /// The complete diagnostic or closure reason.
+    reason: String,
+  )
+
+  /// A successful response violated the execution envelope contract.
+  ExecutionResultMalformed(
+    /// The complete diagnostic or closure reason.
+    reason: String,
+  )
+
+  /// A caller supplied a negative persisted input position.
+  InvalidInputCursor(
+    /// The position in the execution input journal.
+    sequence: Int,
+  )
+}
+
+/// A cursor belonging only to the ordered execution input journal.
+pub opaque type InputCursor {
+  InputCursor(
+    /// The position in the execution input journal.
+    sequence: Int,
+  )
+}
+
+/// Starts reading at the beginning of the input journal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// execution.first_input()
+/// ```
+pub fn first_input() -> InputCursor {
+  InputCursor(0)
+}
+
+/// Restores a nonnegative cursor from a previously observed input sequence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// execution.input_cursor(3)
+/// ```
+pub fn input_cursor(sequence: Int) -> Result(InputCursor, ExecutionError) {
+  case sequence >= 0 {
+    True -> Ok(InputCursor(sequence))
+    False -> Error(InvalidInputCursor(sequence:))
+  }
+}
+
+/// Renders the sequence for persistence without changing its journal identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// execution.input_sequence(execution.first_input()) == 0
+/// ```
+pub fn input_sequence(cursor: InputCursor) -> Int {
+  let InputCursor(sequence) = cursor
+  sequence
+}
+
+fn map_error(error: channel.CallError) -> ExecutionError {
+  case error {
+    channel.Denied(code:, message:) -> ExecutionDenied(code:, message:)
+    channel.Unreachable(reason:) -> ExecutionUnavailable(reason:)
   }
 }

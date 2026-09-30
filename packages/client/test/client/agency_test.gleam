@@ -3782,8 +3782,8 @@ pub fn main() -> report.Outcome {
 fn run() -> Result(Nil, String) {
   use _readme <- result.try(fs.read(\"README.md\") |> result.map_error(fn(_) { \"workspace read refused\" }))
   let assignment = strand.assignment(purpose: \"security\", brief: \"Review the protocol\")
-  use first <- result.try(workflow.step(\"review-e2e\", \"v1\", \"commit-a\", \"security\", assignment))
-  use second <- result.try(workflow.step(\"review-e2e\", \"v1\", \"commit-a\", \"security\", assignment))
+  use first <- result.try(workflow.step(\"review-e2e\", \"v1\", \"commit-a\", \"security\", assignment) |> result.map_error(fn(_) { \"workflow refused\" }))
+  use second <- result.try(workflow.step(\"review-e2e\", \"v1\", \"commit-a\", \"security\", assignment) |> result.map_error(fn(_) { \"workflow refused\" }))
   case first == second {
     False -> Error(\"duplicate child\")
     True -> {

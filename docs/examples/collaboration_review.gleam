@@ -112,6 +112,7 @@ fn child(input: Review, name: String) -> Result(strand.Handle, String) {
         <> "Record a concise result before completing.",
     )
   workflow.step(input.run, "v1", input.commit, name, assignment)
+  |> result.map_error(fn(_) { "Workflow admission refused." })
 }
 
 fn count_ready(joined: List(strand.Waited)) -> Int {

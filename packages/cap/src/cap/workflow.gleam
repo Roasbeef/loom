@@ -5,11 +5,11 @@
 //// including failed outcomes; use a new step name for an intentional retry.
 //// Ordinary code and workspace effects are never replayed by this API.
 
+import cap/internal/channel
 import cap/internal/dispatch
 import cap/internal/wire
 import cap/strand
 import gleam/result
-import gleam/string
 
 /// Starts or recovers a named child step in the current background execution.
 /// Join the returned handle with strand.wait, whose result is durable. Other
@@ -26,7 +26,7 @@ pub fn step(
   input: String,
   name: String,
   assignment: strand.Assignment,
-) -> Result(strand.Handle, String) {
+) -> Result(strand.Handle, WorkflowError) {
   use value <- result.try(
     dispatch.call(
       "workflow.step",
@@ -38,7 +38,37 @@ pub fn step(
         #("assignment", strand.assignment_value(assignment)),
       ]),
     )
-    |> result.map_error(string.inspect),
+    |> result.map_error(map_error),
   )
-  strand.read_handle(value)
+  strand.read_handle(value) |> result.map_error(WorkflowResultMalformed)
+}
+
+/// Why a durable workflow admission could not be recovered.
+pub type WorkflowError {
+  /// The host refused the operation under its stable denial code.
+  WorkflowDenied(
+    /// The stable denial code supplied by the host.
+    code: String,
+    /// The host denial explanation.
+    message: String,
+  )
+
+  /// The capability transport could not carry the request.
+  WorkflowUnavailable(
+    /// The complete diagnostic or closure reason.
+    reason: String,
+  )
+
+  /// A successful response did not contain a valid typed handle.
+  WorkflowResultMalformed(
+    /// The complete diagnostic or closure reason.
+    reason: String,
+  )
+}
+
+fn map_error(error: channel.CallError) -> WorkflowError {
+  case error {
+    channel.Denied(code:, message:) -> WorkflowDenied(code:, message:)
+    channel.Unreachable(reason:) -> WorkflowUnavailable(reason:)
+  }
 }

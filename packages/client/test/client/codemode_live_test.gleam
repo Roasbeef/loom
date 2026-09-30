@@ -33,6 +33,8 @@ import client/internal/ffi_os
 import client/mcp as mcp_wiring
 import client/peer_mail
 import client/peers
+import client/schedule
+import client/scheduleseam
 import client/scratch
 import client/serve
 import core/clock
@@ -47,10 +49,12 @@ import gleam/list
 import gleam/option
 import gleam/result
 import gleam/string
+import machine/operation
 import mcp/client as mcp_client
 import mcp/codegen
 import provider/secret
 import runtime/api
+import session/session
 import simplifile
 import support/addresses
 import support/fake_mcp
@@ -61,6 +65,7 @@ import tools/codemode as codemode_tool
 import tools/codemode_recipes
 import tools/directory_access
 import tools/tool
+import weft/poll
 
 // What the jailed `/bin/echo` prints, and therefore what has to survive
 // three trust boundaries to reach the tool result.
@@ -2548,7 +2553,7 @@ pub fn caller_owned_messages_cross_the_real_cap_channel_test() {
 fn run_message_inspection(ready: Ready) -> Nil {
   let rig = rig(ready, under: ready.root)
   let owner = notes_session.open(rig.root <> "/messages.db", wall_clock())
-  let assert Ok(_) =
+  let assert Ok(op) =
     api.prompt(owner.runtime, [
       message.UserMessage(
         [message.UserText("own transcript proof", option.None)],
@@ -2557,14 +2562,28 @@ fn run_message_inspection(ready: Ready) -> Nil {
       ),
     ])
     as "the recipient has a real active transcript"
+
+  // Admission follows the initial checkpoint so both messages remain pending.
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 5, attempt: fn() {
+      case session.op_state(owner.runtime.session, op) {
+        Ok(option.Some(session.Cell(
+          value: operation.RunState(phase: operation.Assistant(_), ..),
+          ..,
+        ))) -> poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(error) -> poll.Fail(error)
+      }
+    })
+    as "the provider is parked after draining the initial prompt"
   let endpoint =
-    peer_mail.Endpoint("recipient", fn(command) {
+    peer_mail.Endpoint("00000000-0000-7000-8000-000000000002", fn(command) {
       peer_mail.handle(owner.runtime, wall_clock(), command)
     })
   let assert Ok(_) =
     endpoint.call(
       peer_mail.Allow(peer_mail.Grant(
-        "source",
+        "00000000-0000-7000-8000-000000000001",
         "reviewer",
         "main",
         peer_mail.BusyOnly,
@@ -2573,7 +2592,11 @@ fn run_message_inspection(ready: Ready) -> Nil {
     as "the existing transport admits an authorized sender"
   let assert Ok(_) =
     endpoint.call(peer_mail.Deliver(
-      peer_mail.Source("source", "reviewer", json.Null),
+      peer_mail.Source(
+        "00000000-0000-7000-8000-000000000001",
+        "reviewer",
+        json.Null,
+      ),
       "main",
       "proof",
       "remote receipt proof",
@@ -2625,22 +2648,71 @@ fn run_message_inspection(ready: Ready) -> Nil {
       ),
     )
   let source =
-    "import cap/peer\nimport cap/report\nimport gleam/string\npub fn main() -> report.Outcome {\n"
-    <> "  case peer.inbox(after: \"\", limit: 12), peer.inbox_get(id: \""
+    "import cap/peer\nimport cap/report\nimport gleam/list\npub fn main() -> report.Outcome {\n"
+    <> "  case peer.parse_entry_id(\""
     <> id
-    <> "\"), peer.history(before: 0, limit: 64), peer.received(after: \"\", limit: 64), peer.received_get(source_session: \"source\", source_strand: \"reviewer\", message_id: \"proof\"), peer.roster(), peer.sent_receipt(session: \"unlinked\", message_id: \"proof\") {\n"
-    <> "    Ok(pending), Ok(exact), Ok(history), Ok(received), Ok(receipt), Ok(roster), Error(_) -> {\n"
-    <> "      case string.contains(pending <> exact, \"local pending proof\") && string.contains(history, \"own transcript proof\") && string.contains(received <> receipt, \"remote receipt proof\") && roster == \"[]\" { True -> report.text(\"inspection channel proved\") False -> report.failure(\"missing owned body\") }\n"
+    <> "\"), peer.parse_session_id(\"00000000-0000-7000-8000-000000000001\"), peer.parse_session_id(\"00000000-0000-7000-8000-000000000003\") {\n"
+    <> "    Ok(id), Ok(source), Ok(unlinked) -> inspect(id, source, unlinked)\n    _, _, _ -> report.failure(\"bad persisted identity\")\n  }\n}\n"
+    <> "fn inspect(id: peer.EntryId, source: peer.SessionId, unlinked: peer.SessionId) -> report.Outcome {\n"
+    <> "  case peer.inbox(after: peer.first_pending(), limit: 12), peer.inbox_get(id: id), peer.history(before: peer.first_history(), limit: 64), peer.received(after: peer.first_receipt(), limit: 64), peer.received_get(source_session: source, source_strand: \"reviewer\", message_id: \"proof\"), peer.roster(), peer.sent_receipt(session: unlinked, message_id: \"proof\") {\n"
+    <> "    Ok(pending), Ok(Some(peer.Pending(id: exact, queue: peer.Steer, ..))), Ok(history), Ok(received), Ok(Some(peer.Admitted(request:, ..))), Ok([]), Error(peer.PeerDenied(..)) -> {\n"
+    <> "      case exact == id && list.length(pending.items) == 2 && list.length(history.items) == 1 && list.length(received.items) == 1 && request.body == \"remote receipt proof\" && peer.entry_id_to_string(exact) == \""
+    <> id
+    <> "\" { True -> report.text(\"inspection channel proved\") False -> report.failure(\"missing owned body\") }\n"
     <> "    }\n    _, _, _, _, _, _, _ -> report.failure(\"inspection capability refused\")\n  }\n}\n"
-  let outcome =
-    codemode_tool.tool_for(mode).run(
-      live_ctx(rig.workspace, rig.base_policy, wall_clock()),
-      json.Object([
-        #("program", json.String(source)),
-        #("within_ms", json.Int(600_000)),
-      ]),
-    )
-  assert notes_program_value(outcome)
-    == json.String("inspection channel proved")
+  let source = "import gleam/option.{Some}\n" <> source
+  list.each(["workspace", "orchestration"], fn(selection) {
+    let outcome =
+      codemode_tool.tool_for(mode).run(
+        live_ctx(rig.workspace, rig.base_policy, wall_clock()),
+        json.Object([
+          #("program", json.String(source)),
+          #("seam", json.String(selection)),
+          #("within_ms", json.Int(600_000)),
+        ]),
+      )
+    assert notes_program_value(outcome)
+      == json.String("inspection channel proved")
+  })
   api.abort(owner.runtime)
+}
+
+pub fn structured_cadence_crosses_the_real_default_host_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP typed_schedule_channel: " <> reason)
+    Ok(ready) -> run_schedule_cadence(ready)
+  }
+}
+
+fn run_schedule_cadence(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let owner = notes_session.open(rig.root <> "/cadence.db", wall_clock())
+  let runtime = owner.runtime
+  let schedules =
+    scheduleseam.door(scheduleseam.Wiring(
+      runtime: fn() { Ok(runtime) },
+      policy: schedule.ModelSchedulesSteer,
+      operator_schedules: [],
+      scanner: addresses.new(),
+    ))
+  let config =
+    codemode.default_config(
+      broker: rig.broker,
+      clock: wall_clock(),
+      workspace: rig.workspace,
+      toolchain: rig.toolchain,
+    )
+    |> codemode.serving(codemode.BothSeams, over: owner.agency)
+    |> codemode.over_schedules(option.Some(schedules))
+  let source =
+    "import cap/schedule\nimport cap/report\npub fn main() -> report.Outcome {\n"
+    <> "  case schedule.every_within(\"typed-cadence\", 300, schedule.Bounds(max_fires: 4, expires_after_s: 3600), schedule.SteersOnly, \"Check.\") {\n"
+    <> "    Ok(created) -> verify(created.cadence)\n    Error(_) -> report.failure(\"create refused\")\n  }\n}\n"
+    <> "fn verify(cadence: schedule.Cadence) -> report.Outcome {\n"
+    <> "  case schedule.list() {\n    Ok([row]) -> {\n"
+    <> "      case cadence == schedule.Interval(seconds: 300, expiry: schedule.Expiry(max_fires: 4, expires_after_s: 3600)) && row.cadence == cadence {\n"
+    <> "        True -> case schedule.cancel(\"typed-cadence\") { Ok(_) -> report.text(\"cadence channel proved\") Error(_) -> report.failure(\"cancel refused\") }\n"
+    <> "        False -> report.failure(\"wrong granted cadence\")\n      }\n    }\n    _ -> report.failure(\"list refused\")\n  }\n}\n"
+  let outcome = run_notes_program(config, rig, source, "typed-cadence")
+  assert notes_program_value(outcome) == json.String("cadence channel proved")
 }

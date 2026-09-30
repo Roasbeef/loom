@@ -1546,21 +1546,27 @@ pub fn own_message_inspection_is_discoverable_in_offered_program_modes_test() {
     let assert Ok(surface) =
       codemode.cap_scheme(mode).read(ctx_for("messages"), "peer")
       as "both host modes expose the peer capability block"
-    assert string.contains(surface, "pub fn inbox(after: String, limit: Int)")
-    assert string.contains(surface, "pub fn inbox_get(id: String)")
-    assert string.contains(surface, "pub fn history(before: Int, limit: Int)")
     assert string.contains(
       surface,
-      "pub fn received(after: String, limit: Int)",
+      "pub fn inbox(after: PendingCursor, limit: Int)",
+    )
+    assert string.contains(surface, "pub fn inbox_get(id: EntryId)")
+    assert string.contains(
+      surface,
+      "pub fn history(before: HistoryCursor, limit: Int)",
     )
     assert string.contains(
       surface,
-      "pub fn received_get(source_session: String, source_strand: String, message_id: String)",
+      "pub fn received(after: ReceiptCursor, limit: Int)",
     )
     assert string.contains(
       surface,
-      "pub fn sent_receipt(session: String, message_id: String)",
+      "pub fn received_get(source_session: SessionId, source_strand: String, message_id: String)",
     )
-    assert string.contains(surface, "never an inbox")
+    assert string.contains(
+      surface,
+      "pub fn sent_receipt(session: SessionId, message_id: String)",
+    )
+    assert string.contains(surface, "never an inbound mailbox row")
   })
 }
