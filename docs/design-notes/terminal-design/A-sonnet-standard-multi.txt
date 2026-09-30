@@ -1,0 +1,40 @@
+ ◆ loom    ws · pi-gui (main)                                                                  kimi-k3 · Ctrl+g details
+ transcript / main                               queue · 1 pending · Alt+q │ Strands ●1  Changes  Trace  Session
+ ◆ main                                                                    │────────────────────────────────────────────
+   Both reviewers are still working. Next: fold in their findings, then    │ All 6 · Needs you 1 · Working 4 · Done 1
+   restructure the commits.                                                │
+                                                                           │ ● main                              1m 34s
+ ◇ harness · background job 01a0eff2 was lost when its sandbox helper exit…│   Waiting · 2 reviewers           259k ctx
+   (a notice from Loom, not a message from you)                            │ ● code-review                       2m 45s
+                                                                           │   Tracing publish_herdr path       65k ctx
+ ✓ agent_wait · 2 subagents ×15 · last 51s ago · still waiting             │▌● docs-review                       2m 38s
+ ! provider 429 rate limited ×7 · retry in 8s · Ctrl+g details             │▌  Needs approval · fs_write        74k ctx
+                                                                           │ ● grep-refs                         1m 03s
+ ● agent_spawn docs accuracy review · started                              │   Searching herdr references      144k ctx
+▎├ ● code-review  Tracing publish_herdr · 65k ctx · 2m 45s                 │ ● bootstrap                            51s
+▎└ ● docs-review  fs_write needs approval · 74k ctx · 2m 38s               │   Reading bootstrap.gleam         119k ctx
+                                                                           │ ✓ lint-pass
+ › once the reviews are in, implement them and restructure the commits     │   Finished 1m 12s
+ ◇ queued · runs after this turn                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+                                                                           │
+ ▸ Todo · 3 of 5 done · Ctrl+g                                             │
+─ To main · enter queues · tab steers ─────────────────────────────────────│
+ ›                                                                         │
+                                                                           │
+                                                                           │
+ ◒ streaming (3s) · esc to interrupt                                       │ ↑↓ select · Enter focus · x stop
+                                                                           │ Tab filter · n next needs-you
+ baseten-kimi-k3 · ctx ~41% · est $1.86 · F1 sessions · ⇧Tab panel · ^O strands      6 agents · 4 working · 1 needs you
