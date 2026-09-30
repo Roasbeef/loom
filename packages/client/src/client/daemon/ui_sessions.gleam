@@ -320,7 +320,9 @@ pub fn mint_before(
 /// for `invite_limit` in the last `invite_window_ms`. The count is made and
 /// taken in one message, so two pages asking at once cannot both take the last
 /// place. A caller whose invitation then failed gives the place back with
-/// `release_invite`, so a refusal that minted nothing costs nothing.
+/// `release_invite`, so a refusal that minted nothing costs nothing. A reply
+/// that times out is reported as a refusal although the actor may still have
+/// counted the place, which frees within the hour.
 ///
 /// ## Examples
 ///

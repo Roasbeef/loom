@@ -3198,6 +3198,10 @@ three an hour and at most 24 in the eight hours a page lives, and the control
 shows at most one invitation at a time: a press while one is out or on screen
 is ignored, so one press mints at most one.
 
+A daemon restart resets the allowance. That is acceptable because every page
+cookie and ticket lives in the same actor and dies with it, so no page
+survives to spend a fresh count.
+
 An owner who needs more invites from a terminal with `loomd access invite`,
 which has no such limit and is not a page.
 
@@ -3337,7 +3341,10 @@ Mutations, each applied alone and reverted, each fail a named test: the
 member's socket admits the invitation path
 (`only_an_owners_socket_admits_the_invitation_click_test`); a member
 operator's page is given the capability
-(`only_an_owners_operator_page_is_offered_the_capability_test`); the allowance
+(`only_an_owners_operator_page_is_offered_the_capability_test`, which pins
+`role_of`, since the route tests replace `upgrade` with a stub; the choice of
+capability from the role is `invite_capability`, pinned by
+`only_an_owning_page_is_handed_the_capability_test`); the allowance
 is skipped (`the_limit_is_the_credentials_across_pages_test`); the release of
 a reservation does nothing
 (`a_session_that_is_not_shared_is_refused_and_costs_nothing_test`);
@@ -3346,12 +3353,13 @@ the component takes an answer nobody asked for
 (`hiding_the_invitation_drops_the_token_test`); the copy rule accepts a newline
 (`anything_else_is_not_copyable_as_a_command_test`).
 
-Layers 4 and 5 of "Who sees it" are redundant on purpose: removing
-`invite_for`'s principal check alone fails no test, because
-`manager.administer` refuses the same request with the same reason.
-`the_daemon_refuses_a_member_that_reaches_it_anyway_test` pins the outcome of
-the two together, which is the property, and does not show either one is
-present.
+Layers 4 and 5 of "Who sees it" are redundant on purpose. The route test
+`the_daemon_refuses_a_member_that_reaches_it_anyway_test` pins their combined
+outcome and would pass with either removed, because `manager.administer`
+refuses the same request with the same reason.
+`the_principal_check_refuses_a_member_on_its_own_test` pins layer 4 alone: it
+calls `may_invite`, which reaches neither the allowance nor the manager, with
+a member, and would get `Unavailable` if the check were removed.
 
 No browser was in the loop. The clipboard write, the control's layout in the
 Session pane, and the copy box's look in both themes run only in one and were

@@ -339,11 +339,10 @@ pub fn upgrade(
   // request's own host, so the address the command names is the one the page
   // was reached at.
   let address = claim_address(request)
-  let invite = case role {
-    Owning ->
-      Some(fn(chosen) { invite_for(attachment, tickets, open, address, chosen) })
-    Observing | Operating -> None
-  }
+  let invite =
+    invite_capability(role, fn(chosen) {
+      invite_for(attachment, tickets, open, address, chosen)
+    })
   let response =
     mist.websocket_with_options(
       request:,
@@ -787,12 +786,7 @@ pub fn invite_for(
   address: Result(String, Nil),
   chosen: invites.Role,
 ) -> invites.Answer {
-  let asked = {
-    use _ <- result.try(open() |> result.replace_error(invites.NotOwner))
-    use _ <- result.try(owner_principal(attachment.principal))
-    address |> result.replace_error(invites.Unavailable)
-  }
-  case asked {
+  case may_invite(open, attachment.principal, address) {
     Error(reason) -> invites.Declined(reason)
     Ok(address) ->
       case ui_sessions.reserve_invite(tickets, attachment.digest) {
@@ -807,6 +801,46 @@ pub fn invite_for(
           }
       }
   }
+}
+
+/// The capability a page of `role` is handed: `ask` for an owner's page and
+/// none for any other, which is the whole of who may draw and call the
+/// invitation control.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
+/// ```
+@internal
+pub fn invite_capability(
+  role: Role,
+  ask: fn(invites.Role) -> invites.Answer,
+) -> Option(fn(invites.Role) -> invites.Answer) {
+  case role {
+    Owning -> Some(ask)
+    Observing | Operating -> None
+  }
+}
+
+/// The first three steps of `invite_for`, which reach neither the allowance
+/// nor the manager: the page must still be open, its principal must be the
+/// owner, and the claim address must be known. Returns the address.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.may_invite(fn() { Ok(0) }, member, Error(Nil)) == Error(invites.NotOwner)
+/// ```
+@internal
+pub fn may_invite(
+  open: fn() -> Result(Int, Nil),
+  principal: access.Principal,
+  address: Result(String, Nil),
+) -> Result(String, invites.Reason) {
+  use _ <- result.try(open() |> result.replace_error(invites.NotOwner))
+  use _ <- result.try(owner_principal(principal))
+  address |> result.replace_error(invites.Unavailable)
 }
 
 // Only the daemon's owner invites. A member operator's page is refused here

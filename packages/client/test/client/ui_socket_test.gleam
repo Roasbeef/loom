@@ -13,13 +13,15 @@ import client/daemon/ui_socket
 import gleam/erlang/process
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
 import session_view/snapshot
+import storage/access
 import storage/catalogue
 import web_view/component
 import web_view/image
+import web_view/invites
 import web_view/sessions
 
 // A page whose transport never opens: what is under test is which
@@ -514,4 +516,39 @@ pub fn an_operators_charge_covers_a_submits_peak_test() {
   assert root.charge(root.Observer) == 65_536 + 8_388_608
   assert root.charge(root.Operator) == 33_554_432 + 8_388_608
   assert root.charge(root.Control) == 65_536
+}
+
+// Layer 4 alone: with a member's principal, an open page and no known address,
+// `may_invite` says `NotOwner`. Without its principal check it would fall
+// through to the address and say `Unavailable`. Neither the allowance nor the
+// manager is reachable from it.
+pub fn the_principal_check_refuses_a_member_on_its_own_test() {
+  let member =
+    access.Principal(
+      id: "guest",
+      display_name: "Guest",
+      kind: access.MemberPrincipal,
+    )
+  let owner =
+    access.Principal(
+      id: "o",
+      display_name: "Owner",
+      kind: access.OwnerPrincipal,
+    )
+  assert ui_socket.may_invite(fn() { Ok(0) }, member, Error(Nil))
+    == Error(invites.NotOwner)
+  assert ui_socket.may_invite(fn() { Ok(0) }, owner, Error(Nil))
+    == Error(invites.Unavailable)
+  assert ui_socket.may_invite(fn() { Ok(0) }, owner, Ok("ws://a"))
+    == Ok("ws://a")
+  assert ui_socket.may_invite(fn() { Error(Nil) }, owner, Ok("ws://a"))
+    == Error(invites.NotOwner)
+}
+
+// The capability is handed to an owner's page and to no other.
+pub fn only_an_owning_page_is_handed_the_capability_test() {
+  let ask = fn(_) { invites.Declined(invites.Unavailable) }
+  assert ui_socket.invite_capability(ui_socket.Observing, ask) == None
+  assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
+  let assert Some(_) = ui_socket.invite_capability(ui_socket.Owning, ask)
 }
