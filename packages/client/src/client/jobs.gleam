@@ -1686,7 +1686,12 @@ fn fold(runner: Runner) -> Result(Settlement, RunnerFault) {
       fold(runner)
     }
 
-    Error(Nil) -> expired(runner, now)
+    Error(Nil) -> {
+      // The receive can spend the whole wall. Its starting instant cannot
+      // anchor the grace that begins only after that wait has expired.
+      let #(expired_at, _clock) = clock.read(runner.wiring.clock)
+      expired(runner, expired_at)
+    }
   }
 }
 

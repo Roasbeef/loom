@@ -1260,11 +1260,16 @@ fn relay(link: Relay) -> Nil {
       case link.mode {
         Streaming -> {
           exec.cancel(link.helper)
+          let #(cancelled_at, relay_clock) = clock.read(link.clock)
+
+          // Caller death may follow a long quiet receive. The drain gets
+          // its full grace from cancellation, rather than from that wait.
           relay(
             Relay(
               ..link,
+              clock: relay_clock,
               caller_watch: None,
-              deadline_ms: now + relay_grace_ms,
+              deadline_ms: cancelled_at + relay_grace_ms,
               mode: Draining,
             ),
           )
@@ -1278,8 +1283,18 @@ fn relay(link: Relay) -> Nil {
         // terminal event; Draining's window bounds our trust in that.
         Streaming -> {
           exec.cancel(link.helper)
+          let #(cancelled_at, relay_clock) = clock.read(link.clock)
+
+          // The wall wait has finished; the cancellation grace starts now.
+          // Reusing its earlier timestamp would immediately expire a quiet
+          // execution's drain before the helper could report its exit.
           relay(
-            Relay(..link, deadline_ms: now + relay_grace_ms, mode: Draining),
+            Relay(
+              ..link,
+              clock: relay_clock,
+              deadline_ms: cancelled_at + relay_grace_ms,
+              mode: Draining,
+            ),
           )
         }
         Draining -> settle(link, CallFailed(failure: exec.CancelEscalated))
