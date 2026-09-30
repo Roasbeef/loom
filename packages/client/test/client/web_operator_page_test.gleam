@@ -147,10 +147,9 @@ pub fn an_operators_page_prompts_and_denies_through_the_gateway_test() {
   // The composer's submit, as the browser's form event decodes to it.
   lustre.send(
     runtime,
-    lustre.dispatch(operator_page.Submitted(
-      "hello from the page",
-      operator.Prompt,
-    )),
+    lustre.dispatch(
+      operator_page.Submitted("hello from the page", operator.Prompt, []),
+    ),
   )
   let assert poll.Answered(_) =
     poll.until(within: patience_ms, every: 10, attempt: fn() {

@@ -398,12 +398,32 @@ page keys and nonces, and the relay into the session's gateway.
   `reply`. `component.pending_nudges(model)` and `component.goal(model)` read
   `Shared.nudges` and `Shared.goal`.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
-  delivery)`, `Decided(id, seq, answer)`, `Controlled(component.Control)` and
+  delivery, images)`, `Decided(id, seq, answer)`, `Controlled(component.Control)` and
   `Replying(key)`. The lane's "Load older"
   button sends `Observed(component.OlderRequested)`.
   `composition(fields)` is the total decoder of the composer form's
-  fields, and `control_text(fields)` of a control form's: exactly one
-  `text` field.
+  fields (one `draft`, at most one `delivery` and at most one `images`, a JSON
+  array of base64 strings, and nothing else), and `control_text(fields)` of a
+  control form's: exactly one `text` field.
+- `image` (protocol-change/051, the addendum on images): the transcript's
+  images as the page addresses them and the daemon serves them. `address(session,
+  ref, position)` is the one `src` the view builds, relative to the page's own
+  address; `drawn` is the four raster types; `plausible_ref` is the shape check
+  the route makes before it asks the page for anything; `serve(image)` checks
+  what the daemon will answer with (raster type, base64, at most 20 MiB, and a
+  magic number that says the declared type: `Served` or `NotAnImage` or
+  `TooLarge`). For the composer it holds `admit(encoded)`, which decodes each
+  image `<loom-attach>` submitted, reads its type from its bytes, bounds the
+  count (4) and the total (8 MiB) and returns the shared step's
+  `pasted_image.Image`s or the notice, and `limits_attribute()`, the
+  daemon's numbers and types as the element's `limits` attribute.
+  `component.ImageRequested(ref, position, reply)` is the daemon's question
+  (sent with `lustre.dispatch`, so no browser frame can produce one); the
+  component answers from `turns.picture` over its pieces. `lane.view` takes the
+  session's identity and draws a `<details><img>` per drawn image after a row's
+  text and a step's detail; `component.submit` takes the images, refuses a
+  steer that has any, and sets them as the shared step's attachments for that
+  one submit and clears them after.
 - `completion.rows()` and `completion.table()`: the slash commands the
   composer offers, built from `session_view/command.suggestions` (the
   one-word commands, and the argument rows of every word that has some once
@@ -631,7 +651,7 @@ page keys and nonces, and the relay into the session's gateway.
   (every storage write takes its own), rows by the engine's `transcript.Row` key. Text is only ever
   `html.text`; nothing uses `unsafe_raw_html`. Rendered Markdown keeps the
   same rule: a link is its label and its destination as text, never an
-  `href`; an image is text and is never loaded; an ordered list's numbers
+  `href`; a Markdown image is text and is never loaded; an ordered list's numbers
   and a fence's language are text; classes come from closed types.
 - **An approval card is drawn from the record alone** (`approval.presentation`),
   in its own region outside the transcript, directly above the composer in

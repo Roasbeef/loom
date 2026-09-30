@@ -27,6 +27,16 @@
 //// piece is keyed by the engine's identity for it, and a hue comes from a
 //// strand's position, never its name. Nothing here uses `unsafe_raw_html`.
 ////
+//// A row that carries images (a person's message, a tool's result) draws each
+//// beneath its text as a thumbnail inside a `<details>`, which the browser
+//// opens and closes by itself, so the thumbnail grows on a click and the page
+//// hears nothing. The `src` is `web_view/image.address`: the page's own
+//// session, the engine's name for the row and a position. It is the one
+//// `src` the view builds, it is relative to the page, and nothing the
+//// session wrote is in it (protocol-change/051, the addendum on images). An
+//// image whose declared type is not a raster type draws no picture and keeps
+//// its `[image <type>]` text row.
+////
 //// Every transcript line and card body is drawn inside its own memo whose
 //// one dependency is that line or body, with no memo around them. `view`
 //// says why the memos have to be the leaves; `lane_memo_test` counts the
@@ -44,9 +54,11 @@ import lustre/element/keyed
 import lustre/event
 import session_view/agent_roster
 import session_view/markdown
+import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{type Line}
 import session_view/transcript_lines
 import session_view/turns
+import web_view/image
 import web_view/markdown_view
 import web_view/view/live
 import web_view/view/strip
@@ -98,7 +110,7 @@ import web_view/view/strip
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested, lane.NoReplies, component.marks(model))
+/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested, lane.NoReplies, component.marks(model), component.session_id(model))
 /// ```
 pub fn view(
   pieces: List(turns.Piece),
@@ -107,8 +119,9 @@ pub fn view(
   load: message,
   replies: Replies(message),
   marks: Marks,
+  session: String,
 ) -> Element(message) {
-  rows(pieces, live, boundary(top, load), line_element, replies, marks)
+  rows(pieces, live, boundary(top, load), line_element, replies, marks, session)
 }
 
 /// What the lane needs to mark a piece as belonging to a strand: which strand
@@ -203,7 +216,8 @@ pub const older_marker = "loom-older"
 /// `view` with the boundary above the oldest row and the drawing of a
 /// transcript line supplied, so a test can count the lines a render draws.
 /// `draw` must depend on nothing but the line it is given, because the
-/// line's memo depends on the line alone.
+/// line's memo depends on the line alone. `session` is the identity the
+/// images' addresses are relative to; the empty string draws no picture.
 ///
 /// The boundary is the first child of `<loom-follow>` and the rows are the
 /// second, whatever the boundary says, so the lane's own path does not move
@@ -212,7 +226,7 @@ pub const older_marker = "loom-older"
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.rows(pieces, [], element.none(), fn(line) { html.text(line.text) }, lane.NoReplies, lane.no_marks())
+/// // lane.rows(pieces, [], element.none(), fn(line) { html.text(line.text) }, lane.NoReplies, lane.no_marks(), "")
 /// ```
 @internal
 pub fn rows(
@@ -222,6 +236,7 @@ pub fn rows(
   draw: fn(Line) -> Element(message),
   replies: Replies(message),
   marks: Marks,
+  session: String,
 ) -> Element(message) {
   element.element("loom-follow", [attribute.class("follow")], [
     top,
@@ -229,7 +244,10 @@ pub fn rows(
       [attribute.class("transcript lane"), attribute.role("log")],
       list.append(
         list.map(pieces, fn(piece) {
-          #(piece_key(piece), timeline_row(piece, draw, replies, marks))
+          #(
+            piece_key(piece),
+            timeline_row(piece, draw, replies, marks, session),
+          )
         }),
         live_entry(live, draw),
       ),
@@ -320,6 +338,7 @@ fn timeline_row(
   draw: fn(Line) -> Element(message),
   replies: Replies(message),
   marks: Marks,
+  session: String,
 ) -> Element(message) {
   let #(hue, target) = belongs_to(piece, marks)
   html.div([attribute.class("tl-row"), strip.hue_class(hue)], [
@@ -328,7 +347,7 @@ fn timeline_row(
       [],
     ),
     html.div([attribute.class("tl-body")], [
-      piece_element(piece, draw, replies, marks),
+      piece_element(piece, draw, replies, marks, session),
     ]),
   ])
 }
@@ -392,9 +411,11 @@ fn piece_element(
   draw: fn(Line) -> Element(message),
   replies: Replies(message),
   marks: Marks,
+  session: String,
 ) -> Element(message) {
   case piece {
-    turns.Plain(block:, thoughts:) -> block_element(block, thoughts, draw)
+    turns.Plain(block:, thoughts:) ->
+      block_element(block, thoughts, draw, session)
 
     // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
     // collapsed until the reader opens it. The fold opens and closes in the
@@ -412,12 +433,18 @@ fn piece_element(
           ],
           [html.text(turns.divider(worked))],
         ),
-        keyed.div([attribute.class("work-items")], work_items(items, draw)),
+        keyed.div(
+          [attribute.class("work-items")],
+          work_items(items, draw, session),
+        ),
       ])
 
     // The turn still running is drawn open, with no divider to fold it.
     turns.Work(items:, folding: turns.Open, ..) ->
-      keyed.div([attribute.class("work open")], work_items(items, draw))
+      keyed.div(
+        [attribute.class("work open")],
+        work_items(items, draw, session),
+      )
 
     turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
       html.div([attribute.class("spawn"), strip.hue_class(hue)], [
@@ -554,23 +581,26 @@ fn card_body(body: String) -> Element(message) {
 fn work_items(
   items: List(turns.Item),
   draw: fn(Line) -> Element(message),
+  session: String,
 ) -> List(#(String, Element(message))) {
   list.map(items, fn(item) {
     let key = case item {
       turns.Narrated(block:, ..) -> block.key
       turns.Step(key:, ..) -> key
     }
-    #(key, item_element(item, draw))
+    #(key, item_element(item, draw, session))
   })
 }
 
 fn item_element(
   item: turns.Item,
   draw: fn(Line) -> Element(message),
+  session: String,
 ) -> Element(message) {
   case item {
-    turns.Narrated(block:, thoughts:) -> block_element(block, thoughts, draw)
-    turns.Step(standing:, summary:, detail:, full:, ..) ->
+    turns.Narrated(block:, thoughts:) ->
+      block_element(block, thoughts, draw, session)
+    turns.Step(key:, standing:, summary:, detail:, full:, images:) ->
       html.div([attribute.class("step"), standing_class(standing)], [
         html.p([attribute.class("step-head")], [
           html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
@@ -581,7 +611,10 @@ fn item_element(
             html.text(standing_text(standing)),
           ]),
         ]),
-        ..expander(detail, full, draw)
+        ..list.append(
+          expander(detail, full, draw),
+          pictures(session, transcript_image.ref(key), images),
+        )
       ])
   }
 }
@@ -619,16 +652,71 @@ fn block_element(
   block: transcript_lines.Block,
   thoughts: Dict(String, List(Line)),
   draw: fn(Line) -> Element(message),
+  session: String,
 ) -> Element(message) {
-  html.div(
-    [attribute.class("block")],
+  let rows =
     list.flat_map(block.rows, fn(row) {
       case dict.get(thoughts, row.0) {
         Ok(full) -> expander([row.1], full, draw)
         Error(Nil) -> [line_row(row.1, draw)]
       }
-    }),
+    })
+  html.div(
+    [attribute.class("block")],
+    list.append(
+      rows,
+      pictures(
+        session,
+        transcript_image.ref(block.key),
+        transcript_image.of_block(block),
+      ),
+    ),
   )
+}
+
+// The pictures of a row's images, or nothing: a strip of thumbnails after the
+// row's text. An image the page does not draw (a type outside the raster
+// four) keeps its position, so the pictures that are drawn are named by the
+// place their image holds in the row and not by how many came before. With no
+// session there is no address to draw, and none is.
+fn pictures(
+  session: String,
+  ref: String,
+  images: List(Image),
+) -> List(Element(message)) {
+  let drawn =
+    images
+    |> list.index_map(fn(picture, position) { #(picture, position) })
+    |> list.filter(fn(entry) { image.drawn(entry.0) })
+  case session, drawn {
+    "", _ | _, [] -> []
+    _, _ -> [
+      html.div(
+        [attribute.class("pictures")],
+        list.map(drawn, fn(entry) { thumbnail(session, ref, entry.1) }),
+      ),
+    ]
+  }
+}
+
+// One picture: a thumbnail that is also the control that opens it. A
+// `<details>` is opened and closed by the browser, with no script and no
+// event the page hears, so the observer's page, which admits almost none,
+// can grow a picture on a click. The stylesheet draws the closed form small
+// and the open form at the width of the lane. The alternative text is fixed,
+// since the row's own text already says the type and nothing the session
+// wrote is a fit for an attribute.
+fn thumbnail(session: String, ref: String, position: Int) -> Element(message) {
+  html.details([attribute.class("picture")], [
+    html.summary([attribute.class("picture-summary")], [
+      html.img([
+        attribute.class("picture-image"),
+        attribute.src(image.address(session, ref, position)),
+        attribute.alt("Attached image"),
+        attribute.loading("lazy"),
+      ]),
+    ]),
+  ])
 }
 
 // Rows the reader may expand. With nothing more to show they are the rows,

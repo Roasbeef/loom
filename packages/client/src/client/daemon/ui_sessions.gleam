@@ -25,6 +25,15 @@
 //// the session, and then it ends only the oldest (protocol-change/051, the
 //// addendum on several pages).
 ////
+//// A page's socket also leaves here the one way its images are read
+//// (protocol-change/051, the addendum on images). A request for an image
+//// arrives on an HTTP handler, which holds the page's cookie and nothing of
+//// the component; the component holds the lane whose images are drawn. The
+//// socket registers a function that asks its own component, under the page's
+//// cookie, and the handler reads it back. The registration lives no longer
+//// than the page: it is found only through a live UI session, and the sweep
+//// drops what the sessions table has dropped.
+////
 //// Each table is a per-key deadline table inside this one actor, which
 //// `docs/weft.md` ("Per-key deadline tables stay") allows. Every read checks
 //// the deadline itself, so an expired ticket or session is refused the
@@ -44,6 +53,7 @@ import gleam/pair
 import gleam/result
 import gleam/string
 import host/bootstrap
+import session_view/transcript_image
 import storage/access
 import web_view/ending
 import weft/actor
@@ -175,6 +185,12 @@ pub fn production(now: fn() -> Int) -> Settings {
   Settings(now:, entropy: token.production_entropy(), ticket_ms:, session_ms:)
 }
 
+/// How a page's images are read: the image the page drew at a row's name and
+/// position, or `Error(Nil)` when it drew none there or its component is gone.
+/// The page socket makes one from its component and registers it.
+pub type Images =
+  fn(String, Int) -> Result(transcript_image.Image, Nil)
+
 /// A handle on the actor.
 pub opaque type Sessions {
   Sessions(subject: Subject(Message))
@@ -188,6 +204,8 @@ type Message {
     reply: Subject(Result(Redeemed, Refusal)),
   )
   Lookup(cookie: String, reply: Subject(Result(#(Page, Int), Nil)))
+  Register(cookie: String, images: Images)
+  Read(cookie: String, reply: Subject(Result(Images, Nil)))
   Sizes(reply: Subject(#(Int, Int)))
   Sweep
 }
@@ -210,6 +228,9 @@ type State {
     sessions: Dict(String, Entry(Page)),
     /// How many pages this actor has opened, which numbers the next one.
     opened: Int,
+    /// The readers of each live page's images, by the digest of its cookie:
+    /// the newest socket's, since a reload replaces the socket a page had.
+    readers: Dict(String, Images),
   )
 }
 
@@ -221,7 +242,7 @@ type State {
 /// // let assert Ok(sessions) = ui_sessions.start(settings)
 /// ```
 pub fn start(settings: Settings) -> Result(Sessions, String) {
-  actor.new(State(settings, dict.new(), dict.new(), 0))
+  actor.new(State(settings, dict.new(), dict.new(), 0, dict.new()))
   |> actor.on_message(handle)
   |> actor.periodic(every: sweep_ms, sending: Sweep)
   |> actor.start
@@ -306,6 +327,36 @@ fn lookup_until(
   cookie: String,
 ) -> Result(#(Page, Int), Nil) {
   call.try_call(sessions.subject, waiting: 1000, sending: Lookup(cookie, _))
+  |> result.unwrap(Error(Nil))
+}
+
+/// Records how the page behind `cookie` reads its images, replacing the
+/// reader its previous socket left. A cookie that names no live UI session
+/// records nothing, so a socket that outlived its page leaves no reader.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.register_images(sessions, cookie, reader)
+/// ```
+pub fn register_images(
+  sessions: Sessions,
+  cookie: String,
+  images: Images,
+) -> Nil {
+  process.send(sessions.subject, Register(cookie, images))
+}
+
+/// The reader of the images of the page behind `cookie`, when the page is
+/// live and a socket has registered one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.images(sessions, cookie)
+/// ```
+pub fn images(sessions: Sessions, cookie: String) -> Result(Images, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Read(cookie, _))
   |> result.unwrap(Error(Nil))
 }
 
@@ -510,23 +561,53 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(state)
     }
 
+    // A reader is recorded only for a page that is live now. The page's socket
+    // registers from its own process after the router admitted it, so a page
+    // that ended in between has no place to leave one.
+    Register(cookie:, images:) -> {
+      let key = digest(cookie)
+      case live(state.sessions, key, now) {
+        Ok(_) ->
+          actor.continue(
+            State(..state, readers: dict.insert(state.readers, key, images)),
+          )
+        Error(Nil) -> actor.continue(state)
+      }
+    }
+
+    // A reader is found only through a live page, so one whose page ended is
+    // never handed out before the sweep removes it.
+    Read(cookie:, reply:) -> {
+      let key = digest(cookie)
+      let found = case live(state.sessions, key, now) {
+        Ok(_) -> dict.get(state.readers, key)
+        Error(Nil) -> Error(Nil)
+      }
+      process.send(reply, found)
+      actor.continue(state)
+    }
+
     Sizes(reply:) -> {
       process.send(reply, #(dict.size(state.tickets), dict.size(state.sessions)))
       actor.continue(state)
     }
 
-    Sweep ->
+    Sweep -> {
+      let sessions =
+        dict.filter(state.sessions, fn(_, entry) { entry.expires_at > now })
       actor.continue(
         State(
           ..state,
           tickets: dict.filter(state.tickets, fn(_, entry) {
             entry.expires_at > now
           }),
-          sessions: dict.filter(state.sessions, fn(_, entry) {
-            entry.expires_at > now
+          sessions:,
+          readers: dict.filter(state.readers, fn(cookie, _) {
+            dict.has_key(sessions, cookie)
           }),
         ),
       )
+    }
   }
 }
 

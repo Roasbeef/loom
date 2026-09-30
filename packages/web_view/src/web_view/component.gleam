@@ -119,6 +119,7 @@ import session_view/cache_miss
 import session_view/cache_watch
 import session_view/changes_view
 import session_view/command
+import session_view/composer
 import session_view/connection_event
 import session_view/context_view
 import session_view/goal_view
@@ -129,6 +130,7 @@ import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
 import session_view/operator
 import session_view/outbound
+import session_view/pasted_image
 import session_view/protocol
 import session_view/reviewer_status
 import session_view/session_channel
@@ -140,6 +142,7 @@ import session_view/step_effect
 import session_view/strand_card
 import session_view/text_hygiene
 import session_view/transcript
+import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Stream, Assistant, Line,
 }
@@ -147,6 +150,7 @@ import session_view/transcript_lines
 import session_view/turns
 import session_view/worktree_view
 import web_view/ending.{type Ending}
+import web_view/image as web_image
 import web_view/sessions
 import web_view/view/changes
 import web_view/view/crumb
@@ -633,6 +637,16 @@ pub type Msg(socket) {
   /// handler carries it, so a browser cannot send one.
   SessionsListed(entries: List(sessions.Entry))
 
+  /// The daemon asks for one of the images the page draws, to answer a
+  /// request for its address (protocol-change/051, the addendum on images).
+  /// `ref` and `position` are the name and place the page drew the image
+  /// at, and the reply is the image if the lane holds one there and
+  /// `Error(Nil)` if it does not. It reads the lane and changes nothing, so
+  /// an observer's page has it. It is sent from the daemon's side of the
+  /// socket with `lustre.dispatch`, and no handler carries it, so no browser
+  /// frame can produce one.
+  ImageRequested(ref: String, position: Int, reply: Subject(Result(Image, Nil)))
+
   /// The daemon answered a request to open another session. It is the
   /// effect's own message, dispatched from the component's process, and no
   /// handler carries it, so a browser cannot send one.
@@ -863,8 +877,25 @@ pub fn update(
       effect.none(),
     )
 
+    // The answer is read from the pieces the page draws, so an image is
+    // served only where the page shows one, and it is sent from an effect so
+    // that the update stays a function of the model.
+    ImageRequested(ref:, position:, reply:) -> #(
+      model,
+      answering(reply, turns.picture(model.view.pieces, ref, position)),
+    )
+
     Linked(answer:) -> #(linked(model, answer), effect.none())
   }
+}
+
+// Hands the daemon's request for an image the answer the lane gave.
+fn answering(
+  reply: Subject(Result(Image, Nil)),
+  found: Result(Image, Nil),
+) -> Effect(Msg(socket)) {
+  use _ <- effect.from
+  process.send(reply, found)
 }
 
 // The daemon's answer to a request to open another session. A ticket becomes
@@ -1637,8 +1668,14 @@ fn statused(model: Model(socket)) -> Model(socket) {
 ///
 /// Empty text and text over `prompt_limit` are refused with a notice
 /// before they become a command, because they are the page socket's limits
-/// and not the session's. The draft is then parsed as the terminal parses
-/// it (`command.parse_with_skills`). A session command, which includes an
+/// and not the session's. Empty text is a prompt when it carries images. The
+/// images are the browser's claim, each the base64 text `<loom-attach>`
+/// submitted: `web_view/image.admit` decodes and bounds them and reads each
+/// one's type from its bytes, and one that fails refuses the whole prompt with
+/// a notice, so nothing is sent that the operator did not see accepted. A
+/// steer carries no images, as in the terminal, where an image is new prompt
+/// content and never live-turn steering. The draft is then parsed as the
+/// terminal parses it (`command.parse_with_skills`). A session command, which includes an
 /// ordinary prompt, goes to the step (`commands.act`) and what the step
 /// decides is folded back as its notice. A command that names a terminal
 /// surface (`/help`, `/models`, `/sessions` and the rest) is refused with a
@@ -1648,27 +1685,70 @@ fn statused(model: Model(socket)) -> Model(socket) {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.submit(model, "inspect the tree", operator.Prompt)
+/// // component.submit(model, "inspect the tree", operator.Prompt, [])
 /// ```
 pub fn submit(
   model: Model(socket),
   text: String,
   delivery: operator.Delivery,
+  images: List(String),
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  case string.trim(text), string.byte_size(text) > prompt_limit {
-    "", _ -> refused(model, "Nothing to send.")
-    _, True ->
+  case string.trim(text), images, string.byte_size(text) > prompt_limit {
+    "", [], _ -> refused(model, "Nothing to send.")
+    _, _, True ->
       refused(
         model,
         "The draft is longer than the page sends ("
           <> int.to_string(prompt_limit)
           <> " bytes).",
       )
-    _, False ->
-      case page_command(command.parse_with_skills(text, model.shared.skills)) {
-        Ok(session) ->
-          commanded(model, msg.Submit(draft: text, command: session, delivery:))
+    _, _, False ->
+      case web_image.admit(images) {
         Error(notice) -> refused(model, notice)
+        Ok(attached) -> submitting(model, text, delivery, attached)
+      }
+  }
+}
+
+// A draft that passed the page's own limits, with the images that passed
+// `web_image.admit`, parsed and handed to the shared step.
+//
+// The step sends an image prompt from the composer's attachments, which are
+// the terminal's state for images not yet sent. The page keeps none between
+// submits: each submit's images are set here as the whole of them and cleared
+// after, whatever the step decided, so a refused submit whose element still
+// holds its images sends them once, on the next submit, and never twice.
+fn submitting(
+  model: Model(socket),
+  text: String,
+  delivery: operator.Delivery,
+  attached: List(pasted_image.Image),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case attached, delivery {
+    [_, ..], operator.Steer ->
+      refused(
+        model,
+        "Images go with Send or Queue, not Steer. Nothing was sent.",
+      )
+    _, _ ->
+      case page_command(command.parse_with_skills(text, model.shared.skills)) {
+        Error(notice) -> refused(model, notice)
+        Ok(session) -> {
+          let attaching =
+            Shared(
+              ..model.shared,
+              attachments: list.map(attached, composer.ImageAttachment),
+            )
+          let #(next, effects) =
+            commanded(
+              Model(..model, shared: attaching),
+              msg.Submit(draft: text, command: session, delivery:),
+            )
+          #(
+            Model(..next, shared: Shared(..next.shared, attachments: [])),
+            effects,
+          )
+        }
       }
   }
 }
@@ -2645,6 +2725,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         OlderRequested,
         lane.NoReplies,
         marks(model),
+        session_id(model),
       ),
       plan(model),
       nudges.view(pending_nudges(model)),

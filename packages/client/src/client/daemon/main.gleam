@@ -732,7 +732,7 @@ fn web_view(
         server.Ui(
           sessions:,
           assets:,
-          upgrade: fn(request, attachment, open, ceiling) {
+          upgrade: fn(request, attachment, open, register, ceiling) {
             ui_socket.upgrade(
               daemon,
               request,
@@ -740,6 +740,7 @@ fn web_view(
               attachment.instance.gateway,
               sessions,
               open,
+              register,
               ceiling,
             )
           },

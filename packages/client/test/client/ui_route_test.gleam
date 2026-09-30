@@ -38,6 +38,7 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import mist
+import session_view/transcript_image
 import simplifile
 import storage/access
 import storage/catalogue
@@ -56,6 +57,12 @@ type Upgrade {
   Stubbed
   Real
 
+  /// As `Stubbed`, and the upgrade registers a reader for the page's images
+  /// that knows a fixed table (`held`), as the page socket registers its
+  /// component's. The upgrade registers before it answers, so a test that
+  /// opened the socket may then ask for an image.
+  Pictured
+
   /// The upgrade asks the daemon for a ticket to open the session a header
   /// names, as an operator's page does when its sidebar row is pressed, and
   /// answers with the outcome: 290 and the ticket's address, or 291 and the
@@ -71,6 +78,16 @@ fn fixture(run: fn(root.Ready(String), Int, String) -> Nil) -> Nil {
 
 fn fixture_with(
   serving: Upgrade,
+  run: fn(root.Ready(String), Int, String) -> Nil,
+) -> Nil {
+  fixture_lasting(serving, ui_sessions.session_ms, run)
+}
+
+// `fixture_with` for pages that live `session_ms` milliseconds, so a test can
+// see one expire.
+fn fixture_lasting(
+  serving: Upgrade,
+  session_ms: Int,
   run: fn(root.Ready(String), Int, String) -> Nil,
 ) -> Nil {
   let directory =
@@ -94,7 +111,12 @@ fn fixture_with(
   let assert Ok(credential) = root.listener_credential(daemon)
     as "only the fixture receives plaintext owner credential"
   let assert Ok(sessions) =
-    ui_sessions.start(ui_sessions.production(bootstrap.monotonic_time_ms))
+    ui_sessions.start(ui_sessions.Settings(
+      now: bootstrap.monotonic_time_ms,
+      entropy: token.production_entropy(),
+      ticket_ms: ui_sessions.ticket_ms,
+      session_ms:,
+    ))
     as "the web view's tables start"
   let assert Ok(assets) = ui_assets.load()
     as "the web view's assets are in web_view's and lustre's priv"
@@ -109,16 +131,16 @@ fn fixture_with(
         server.Ui(
           sessions:,
           assets:,
-          upgrade: fn(request, attachment, open, ceiling) {
+          upgrade: fn(request, attachment, open, register, ceiling) {
             case serving {
               // The router hands the page's upgrade the capped role. The
               // stub reports what it was given.
-              Stubbed ->
-                case attachment.authority {
-                  access.Participant(access.Observer) -> stub(299, "observer")
-                  access.Participant(access.Operator) -> stub(298, "operator")
-                  access.Owner -> stub(297, "not capped")
-                }
+              Stubbed -> capped(attachment)
+
+              Pictured -> {
+                register(held)
+                capped(attachment)
+              }
 
               Switching ->
                 switching(sessions, request, attachment, ceiling, open)
@@ -134,6 +156,7 @@ fn fixture_with(
                   gateway.Gateway(name: addresses.new()),
                   sessions,
                   open,
+                  register,
                   ceiling,
                 )
             }
@@ -160,6 +183,15 @@ fn fixture_with(
   let assert [weft.Completed(0, _)] = outcomes
     as "the fixture body ran to completion inside its own deadline"
   Nil
+}
+
+// What the stubbed upgrade answers: the role the router capped the page to.
+fn capped(attachment: server.Attachment(String)) {
+  case attachment.authority {
+    access.Participant(access.Observer) -> stub(299, "observer")
+    access.Participant(access.Operator) -> stub(298, "operator")
+    access.Owner -> stub(297, "not capped")
+  }
 }
 
 // The page's upgrade as a session switch asks for one: the same two calls the
@@ -208,9 +240,15 @@ fn stub(status: Int, text: String) {
   |> response.set_body(mist.Bytes(bytes_tree.from_string(text)))
 }
 
-/// One HTTP response: its status, its headers (lowercased names) and body.
+/// One HTTP response: its status, its headers (lowercased names), its body as
+/// text where it is text, and its body's bytes.
 type Answer {
-  Answer(status: Int, headers: List(#(String, String)), body: String)
+  Answer(
+    status: Int,
+    headers: List(#(String, String)),
+    body: String,
+    raw: BitArray,
+  )
 }
 
 // A raw GET, so a test can send any Host, Origin, Sec-Fetch-Site or cookie
@@ -246,17 +284,16 @@ fn get(port: Int, path: String, headers: List(#(String, String))) -> Answer {
     list.key_find(parsed, "content-length")
     |> result.try(int.parse)
     |> result.unwrap(0)
-  let body = case length > 0 && status != 101 {
+  let raw = case length > 0 && status != 101 {
     True -> {
       let assert Ok(bytes) = ffi_ws.tcp_receive(socket, length, 1000)
         as "the body arrives"
-      let assert Ok(text) = bit_array.to_string(bytes) as "the body is text"
-      text
+      bytes
     }
-    False -> ""
+    False -> <<>>
   }
   let _ = ffi_ws.tcp_close(socket)
-  Answer(status, parsed, body)
+  Answer(status, parsed, result.unwrap(bit_array.to_string(raw), ""), raw)
 }
 
 fn read_head(socket, accumulated: String) -> String {
@@ -1182,5 +1219,254 @@ pub fn a_refused_host_still_carries_the_policy_test() {
       as "the refusal carries a policy"
     assert string.contains(policy, "default-src 'none'")
     assert !string.contains(policy, "evil.example")
+  })
+}
+
+// --- images (protocol-change/051, the addendum on images) ------------------
+
+const png_bytes = <<0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3>>
+
+// The images the stubbed page's reader knows, as the page socket's component
+// would answer for a lane that drew them: a PNG, an SVG declared as such, an
+// HTML document declared as a PNG, and a PNG one byte over the limit's text.
+fn held(ref: String, position: Int) -> Result(transcript_image.Image, Nil) {
+  case ref, position {
+    "1.0", 0 ->
+      Ok(transcript_image.Image(
+        "image/png",
+        bit_array.base64_encode(png_bytes, True),
+      ))
+    "1.0", 1 ->
+      Ok(transcript_image.Image(
+        "image/svg+xml",
+        bit_array.base64_encode(<<"<svg><script/></svg>":utf8>>, True),
+      ))
+    "1.0", 2 ->
+      Ok(transcript_image.Image(
+        "image/png",
+        bit_array.base64_encode(<<"<html><script/></html>":utf8>>, True),
+      ))
+    "2.0", 0 ->
+      Ok(transcript_image.Image("image/png", string.repeat("A", 28_000_000)))
+    _, _ -> Error(Nil)
+  }
+}
+
+// An image of the page, asked for as the page's own `<img>` asks.
+fn picture(port: Int, page: Entered, ref: String, position: String) -> Answer {
+  get(port, page.page <> "/image/" <> ref <> "/" <> position, [
+    host(port),
+    #("sec-fetch-site", "same-origin"),
+    #("cookie", "loom_ui=" <> page.cookie),
+  ])
+}
+
+// A page whose socket has opened, so its reader is registered.
+fn opened(port: Int, path: String) -> Entered {
+  let page = enter(port, path)
+  let status = open_socket(port, page, page.nonce).status
+  assert status == 298 || status == 299
+  page
+}
+
+pub fn a_page_reads_its_image_with_the_headers_of_the_view_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "pictures", 940)
+    let page = opened(port, operate(port, credential, session))
+    let answer = picture(port, page, "1.0", "0")
+    assert answer.status == 200
+    assert answer.raw == png_bytes
+    assert list.key_find(answer.headers, "content-type") == Ok("image/png")
+    assert list.key_find(answer.headers, "x-content-type-options")
+      == Ok("nosniff")
+    assert list.key_find(answer.headers, "cache-control") == Ok("no-store")
+    assert list.key_find(answer.headers, "referrer-policy") == Ok("no-referrer")
+    assert list.key_find(answer.headers, "content-security-policy")
+      == Ok(policy(port))
+  })
+}
+
+// An image is read for either role: an observer's page draws pictures too,
+// and neither reader can name anything the page did not draw.
+pub fn an_observers_page_reads_its_image_too_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "watchers", 941)
+    let observer = opened(port, link(port, credential, session))
+    assert picture(port, observer, "1.0", "0").status == 200
+    let operator = opened(port, operate(port, credential, session))
+    assert picture(port, operator, "1.0", "0").status == 200
+  })
+}
+
+pub fn an_image_is_unknown_until_the_pages_socket_has_opened_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "early", 942)
+    let page = enter(port, operate(port, credential, session))
+    let answer = picture(port, page, "1.0", "0")
+    assert answer.status == 404
+    assert answer.raw == <<"unknown image":utf8>>
+  })
+}
+
+// Each page reads its own component's images. A second page of the same
+// principal and session whose socket never opened has no reader, however the
+// first page's readers answer.
+pub fn a_page_cannot_read_through_another_pages_reader_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "twins", 943)
+    let first = opened(port, operate(port, credential, session))
+    let second = enter(port, operate(port, credential, session))
+    assert picture(port, first, "1.0", "0").status == 200
+    assert picture(port, second, "1.0", "0").status == 404
+    assert get(port, first.page <> "/image/1.0/0", [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> second.cookie),
+      ]).status
+      == 401
+  })
+}
+
+pub fn the_daemon_serves_only_what_it_has_checked_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "checked", 944)
+    let page = opened(port, operate(port, credential, session))
+
+    // The page drew nothing at this name or place.
+    assert picture(port, page, "9.0", "0").status == 404
+    assert picture(port, page, "1.0", "7").status == 404
+
+    // A non-raster type, however declared, and bytes that are not the type
+    // they were declared as.
+    assert picture(port, page, "1.0", "1").status == 415
+    assert picture(port, page, "1.0", "2").status == 415
+
+    // More than the terminal's own limit.
+    assert picture(port, page, "2.0", "0").status == 413
+  })
+}
+
+pub fn a_malformed_image_address_is_not_routed_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "shapes", 945)
+    let page = opened(port, operate(port, credential, session))
+    assert picture(port, page, "1.0", "-1").status == 404
+    assert picture(port, page, "1.0", "x").status == 404
+    assert picture(port, page, "1.0", "9999").status == 404
+    assert picture(port, page, "..%2Fx", "0").status == 404
+    assert picture(port, page, "a.b", "0").status == 404
+    assert picture(port, page, string.repeat("1", 49), "0").status == 404
+  })
+}
+
+pub fn an_image_needs_the_pages_own_cookie_key_and_session_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "guarded", 946)
+    let elsewhere = create_session(ready, "elsewhere", 947)
+    let page = opened(port, operate(port, credential, session))
+    let other = opened(port, operate(port, credential, elsewhere))
+    let address = page.page <> "/image/1.0/0"
+    let same_origin = #("sec-fetch-site", "same-origin")
+
+    // No cookie, a planted one, and another page's.
+    assert get(port, address, [host(port), same_origin]).status == 401
+    assert get(port, address, [
+        host(port),
+        same_origin,
+        #("cookie", "loom_ui=planted"),
+      ]).status
+      == 401
+    assert get(port, address, [
+        host(port),
+        same_origin,
+        #("cookie", "loom_ui=" <> other.cookie),
+      ]).status
+      == 401
+
+    // The page's own key with another session's identity in the path.
+    let crossed =
+      string.replace(page.page, session, elsewhere) <> "/image/1.0/0"
+    assert get(port, crossed, [
+        host(port),
+        same_origin,
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+      == 403
+
+    // A host that is not loopback.
+    assert get(port, address, [
+        #("host", "evil.example"),
+        same_origin,
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+      == 403
+  })
+}
+
+// Another page cannot have the browser fetch the person's images: the fetch
+// must be this origin's own, or one the person opened from outside a page.
+pub fn an_image_is_only_a_fetch_of_this_origin_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "origins", 948)
+    let page = opened(port, operate(port, credential, session))
+    let address = page.page <> "/image/1.0/0"
+    let cookie = #("cookie", "loom_ui=" <> page.cookie)
+    let with = fn(site) {
+      get(port, address, [host(port), #("sec-fetch-site", site), cookie])
+    }
+    assert with("same-origin").status == 200
+    assert with("none").status == 200
+    assert with("same-site").status == 403
+    assert with("cross-site").status == 403
+    assert get(port, address, [host(port), cookie]).status == 403
+  })
+}
+
+pub fn an_expired_page_reads_no_image_test() {
+  fixture_lasting(Pictured, 1500, fn(ready, port, credential) {
+    let session = create_session(ready, "expiring", 949)
+    let page = opened(port, operate(port, credential, session))
+    assert picture(port, page, "1.0", "0").status == 200
+    assert poll.until(within: 5000, every: 100, attempt: fn() {
+        case picture(port, page, "1.0", "0").status {
+          401 -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      == poll.Answered(Nil)
+  })
+}
+
+pub fn a_revoked_credential_reads_no_image_test() {
+  fixture_with(Pictured, fn(ready, port, _) {
+    let session = create_session(ready, "revoked-pictures", 950)
+    let credential = member(ready, "ui-picture", session, access.Operator)
+    let page = opened(port, operate(port, credential, session))
+    assert picture(port, page, "1.0", "0").status == 200
+
+    let assert Ok(digest) =
+      credential
+      |> bit_array.from_string
+      |> bootstrap.sha256
+      |> bit_array.base16_encode
+      |> string.lowercase
+      |> access.credential_digest
+      as "member digest is valid"
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the durable catalogue"
+    assert access.revoke_credential(store, digest) == Ok(Nil)
+    assert catalogue.close(store) == Ok(Nil)
+    assert picture(port, page, "1.0", "0").status == 401
+  })
+}
+
+pub fn without_ui_the_image_route_does_not_exist_test() {
+  daemon_server_test.fixture(fn(_, _, port, _) {
+    let session = "0198c0de-0000-7000-8000-000000000001"
+    assert get(port, "/ui/p/k/sessions/" <> session <> "/image/1.0/0", [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+      ]).status
+      == 404
   })
 }

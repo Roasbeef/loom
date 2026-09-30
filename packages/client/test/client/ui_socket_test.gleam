@@ -7,6 +7,7 @@
 //// and a submit and nothing else.
 
 import client/daemon/manager
+import client/daemon/root
 import client/daemon/ui_relay
 import client/daemon/ui_socket
 import gleam/erlang/process
@@ -14,10 +15,12 @@ import gleam/json
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import host/bootstrap
 import session_view/snapshot
 import storage/access
 import storage/catalogue
 import web_view/component
+import web_view/image
 import web_view/sessions
 
 // A page whose transport never opens: what is under test is which
@@ -354,4 +357,81 @@ pub fn only_an_operators_page_may_ask_for_a_ticket_test() {
   assert ui_socket.opened_for(ui_socket.Operating, ask)
     == sessions.Ticketed("/ui/sessions/x?ticket=y")
   assert process.receive(asked, 0) == Ok(Nil)
+}
+
+// Protocol-change/051, the addendum on images: each page's socket holds the
+// one way its images are read, a question sent to its own component from the
+// daemon's side. Both roles' components answer it, and a lane that drew
+// nothing answers that it drew nothing, at once and not after the wait.
+pub fn both_roles_answer_for_an_image_the_page_never_drew_test() {
+  list.each(
+    [
+      access.Participant(access.Observer),
+      access.Participant(access.Operator),
+    ],
+    fn(authority) {
+      let assert Ok(page) = ui_socket.start_page(authority, start())
+        as "the page starts"
+      let _ = mounted(page)
+      let before = bootstrap.monotonic_time_ms()
+      assert page.images("1.0", 0) == Error(Nil)
+      assert page.images("", -1) == Error(Nil)
+      assert bootstrap.monotonic_time_ms() - before < 1000
+      page.shutdown()
+    },
+  )
+}
+
+// A socket that has ended answers no request, and does not make the asking
+// handler wait for a component that is gone.
+pub fn a_reader_answers_nothing_once_its_socket_has_ended_test() {
+  let started = process.new_subject()
+  let owner =
+    process.spawn(fn() {
+      let assert Ok(page) =
+        ui_socket.start_page(access.Participant(access.Observer), start())
+        as "the page starts"
+      let ended = process.new_subject()
+      process.send(started, #(page.images, ended))
+      let assert Ok(Nil) = process.receive(ended, 5000) as "told to end"
+      Nil
+    })
+  let monitor = process.monitor(owner)
+  let assert Ok(#(images, ended)) = process.receive(started, 2000)
+    as "the reader and the way to end its owner"
+  assert images("1.0", 0) == Error(Nil)
+  process.send(ended, Nil)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "the owner ends"
+  let before = bootstrap.monotonic_time_ms()
+  assert images("1.0", 0) == Error(Nil)
+  assert bootstrap.monotonic_time_ms() - before < 500
+}
+
+// Protocol-change/051, the addendum on images: an operator's frame holds the
+// largest submit the page allows, a full draft with the images `admit` takes
+// at their base64 size, and is still under the terminal's limit and the class
+// the permit is charged for. An observer's frame limit is unchanged.
+pub fn an_operators_frame_holds_a_full_prompt_of_images_test() {
+  let encoded = image.max_attached_bytes / 3 * 4 + 4
+  let quoting = image.max_attached * 4
+  assert encoded + quoting + component.prompt_limit + 4096
+    < ui_socket.operator_frame_limit
+  assert ui_socket.operator_frame_limit < root.message_limit(root.Operator)
+  assert ui_socket.operator_frame_limit == root.message_limit(root.PageOperator)
+  assert root.message_limit(root.Observer) == 65_536
+}
+
+// The operator class is charged for the peak of one submit of a full frame:
+// the frame, the event string, the parsed images, the decoded bytes and the
+// re-encoding, five copies. The other classes keep their own charge.
+pub fn an_operators_charge_covers_a_submits_peak_test() {
+  assert root.charge(root.PageOperator) >= 5 * ui_socket.operator_frame_limit
+  assert root.charge(root.PageOperator) == root.operator_peak
+  assert root.charge(root.Observer) == 65_536 + 8_388_608
+  assert root.charge(root.Operator) == 33_554_432 + 8_388_608
+  assert root.charge(root.Control) == 65_536
 }

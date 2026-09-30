@@ -30,6 +30,19 @@ renders again just for it:
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
   form is submitted, which is why they are here.
+- `<loom-attach name="images" limits="<json>">` is the operator composer's
+  image attachments (protocol-change/051, the addendum on images): an Attach
+  image button for the file picker, a paste into the composer's form, a chip
+  with a Remove button per image, and a notice for a refused file. It is
+  form-associated, so it submits its images under `name` as one field, a JSON
+  array of base64 strings, in the same `submit` event as the draft, and nothing
+  when it holds none. `limits` is the daemon's count, byte total and media types
+  (`web_view/image.limits_attribute`); one that does not decode allows nothing.
+  `attach_rule` decides what it accepts before a file is read: declared type,
+  size, count, with reads in flight counting; the daemon reads the real type
+  from the bytes. A paste holding image files attaches them and is cancelled,
+  and its listener on the form is removed when the element leaves. The chips
+  are the person's own file names as text nodes, and the element draws no image.
 - `<loom-switch to="/ui/sessions/<id>?ticket=<t>">` moves the browser to
   another session's page. The operator's page draws it hidden and writes `to`
   once the daemon has minted a ticket; `switch_rule.target` accepts exactly
@@ -272,8 +285,9 @@ time builds anything.
 
 ## Tests
 
-What the components decide is in five modules that import neither Lustre nor
-`ffi_dom`: `follow_rule` (the scroll rule, `Reader` and its transitions,
+What the components decide is in six modules that import neither Lustre nor
+`ffi_dom`: `attach_rule` (the limits, which files are accepted and refused,
+the held images and the form field they make), `follow_rule` (the scroll rule, `Reader` and its transitions,
 `keeping`), `expand_rule` (the two states and the button's words), `shell_rule`
 (which columns are open, the buttons' words, what a closed column lets the
 keyboard reach), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,

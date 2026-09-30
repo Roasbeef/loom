@@ -115,7 +115,9 @@ pub fn size_allowed(size: Int) -> Bool {
   }
 }
 
-/// Identifies the supported image formats from their magic bytes.
+/// Identifies the supported image formats from their magic bytes. The
+/// answer is `session_view/pasted_image.media_type`'s, which the web page
+/// shares.
 ///
 /// ## Examples
 ///
@@ -124,14 +126,7 @@ pub fn size_allowed(size: Int) -> Bool {
 /// ```
 ///
 pub fn media_type(bytes: BitArray) -> Option(String) {
-  case bytes {
-    <<0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, _:bits>> ->
-      Some("image/png")
-    <<0xFF, 0xD8, 0xFF, _:bits>> -> Some("image/jpeg")
-    <<"GIF87a", _:bits>> | <<"GIF89a", _:bits>> -> Some("image/gif")
-    <<"RIFF", _:size(32), "WEBP", _:bits>> -> Some("image/webp")
-    _ -> None
-  }
+  pasted_image.media_type(bytes)
 }
 
 /// Resolves only terminal quote and backslash-space escaping into one path.
