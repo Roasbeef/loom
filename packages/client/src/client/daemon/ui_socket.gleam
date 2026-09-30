@@ -469,6 +469,7 @@ fn admit(
     // close is one the client runtime retries, so a tab that hit one is not
     // left empty for good behind a final close (1000).
     Error(Nil) -> closing(ending.close(ending.DaemonNotReady))
+
     // The page's images are readable from the moment its component is, and a
     // reload's new socket replaces the reader the old one left.
     Ok(Page(forward:, shutdown:, frames:, images:)) -> {

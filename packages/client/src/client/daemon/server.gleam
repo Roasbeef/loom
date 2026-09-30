@@ -286,15 +286,7 @@ fn web_document(
     ui_http.Image(key, id, ref, position) ->
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden fetch")
-        True ->
-          case page_grant(config, ui, request, key, id) {
-            Error(response) -> response
-            Ok(#(_, _, cookie)) ->
-              case ui_sessions.images(ui.sessions, cookie) {
-                Ok(read) -> picture(read(ref, position))
-                Error(Nil) -> plain(404, "unknown image")
-              }
-          }
+        True -> image_of(config, ui, request, key, id, ref, position)
       }
 
     // A ticket presented against another session's path is spent without a
@@ -377,6 +369,29 @@ fn page_grant(
     |> result.map_error(fn(_) { refused_page(403, ending.AccessRevoked, id) }),
   )
   Ok(#(state, page, cookie))
+}
+
+// The page's image at a row's name and position, for a request that already
+// passed the fetch-site check: the page grant, then the reader the page's
+// socket registered under its cookie. A page whose socket has not opened has
+// no reader and so no image.
+fn image_of(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  key: String,
+  id: String,
+  ref: String,
+  position: Int,
+) {
+  case page_grant(config, ui, request, key, id) {
+    Error(response) -> response
+    Ok(#(_, _, cookie)) ->
+      case ui_sessions.images(ui.sessions, cookie) {
+        Ok(read) -> picture(read(ref, position))
+        Error(Nil) -> plain(404, "unknown image")
+      }
+  }
 }
 
 // The answer for one image the page drew, or the refusal for one it did not

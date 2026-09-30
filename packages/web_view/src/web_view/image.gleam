@@ -202,14 +202,14 @@ pub fn limits_attribute() -> String {
 pub fn admit(
   encoded: List(String),
 ) -> Result(List(pasted_image.Image), String) {
-  case list.length(encoded) > max_attached {
-    True ->
+  case list.drop(encoded, max_attached) {
+    [_, ..] ->
       Error(
         "A prompt carries at most "
         <> int.to_string(max_attached)
         <> " images. Nothing was sent.",
       )
-    False -> {
+    [] -> {
       use images <- result.try(list.try_map(encoded, decoded))
       let total =
         list.fold(images, 0, fn(total, image) { total + image.byte_size })

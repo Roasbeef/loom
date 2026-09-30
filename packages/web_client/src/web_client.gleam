@@ -58,8 +58,11 @@ import web_client/switch
 /// // web_client.main()
 /// ```
 pub fn main() -> Nil {
+  // The operator's composer: its editor and its image attachments.
   let _ = attach.register()
   let _ = composer.register()
+
+  // The transcript, the strand panel and the page's frame.
   let _ = elapsed.register()
   let _ = expand.register()
   let _ = fold.register()

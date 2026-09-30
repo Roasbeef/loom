@@ -340,9 +340,9 @@ pub fn value(state: State) -> Result(String, Nil) {
 /// assert attach_rule.label("a.png") == "a.png"
 /// ```
 pub fn label(name: String) -> String {
-  case string.length(name) > name_width {
-    True -> string.slice(name, 0, name_width - 1) <> "…"
-    False -> name
+  case string.drop_start(name, name_width) {
+    "" -> name
+    _ -> string.slice(name, 0, name_width - 1) <> "…"
   }
 }
 
