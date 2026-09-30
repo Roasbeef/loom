@@ -635,6 +635,16 @@ keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
   computes, through the two storage calls in `internal/dom.mjs`; nothing
   session-derived is kept and the server never learns it (protocol-change/051,
   the addendum on the storage decision).
+- **`<loom-copy>` is the one element that holds a secret.** An owner's page
+  draws an invitation's command and claim token in it (protocol-change/051,
+  the addendum on inviting from the session page). Its two attributes are a
+  fixed word, `command` or `token`, and the value, and it draws and copies the
+  value only when `copy_rule.text` finds exactly the shape the daemon writes
+  for that subject: `loom claim --addr ` and an address of address characters,
+  or `loomclaim_` and 64 hexadecimal digits. A value with a newline or any
+  other character is no value, because what it copies is pasted into a chat
+  window or a terminal. It copies in the press's own turn, listens for no key,
+  takes no focus and sends the server nothing.
 - **No raw HTML.** It renders through Lustre's virtual DOM, as the server
   component does. Its browser calls are one file, `internal/dom.mjs`, one
   DOM call per export and no logic, declared in `internal/ffi_dom.gleam`;
@@ -1243,6 +1253,12 @@ All apply to 5.7.1. Re-check each when the pin moves.
       attributes and the server's slotted children, and handles no key and
       takes no focus, except `<loom-composer>` in its own editor (see
       section 3, "Client components inside the server component").
+- [ ] A control that reaches an owner-only daemon action is drawn only where
+      the daemon gave the page the capability (`Transport.invite` is `Some`),
+      its path is admitted by the owner's socket alone
+      (`ui_socket.owner_accepts`; `component.invite_path`), and the daemon
+      checks the principal again. Nothing it shows is kept in the model after
+      it is dismissed.
 - [ ] Controls are real buttons with labels; the transcript is a `log` and
       the status a `status`; nothing uses `autofocus`; the approval card
       never takes focus and defaults to Deny.
