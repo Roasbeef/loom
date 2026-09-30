@@ -148,7 +148,8 @@ pub fn exchange(
   access.exchange(address, token, epoch, request) |> result.map(single)
 }
 
-// A mutation and a peer command answer one value. A listing answers one line
+// The `many` arm is unused by current callers, which send mutations and peer
+// commands. A mutation and a peer command answer one value. A listing answers one line
 // per row, which a caller of this seam reads as an array.
 fn single(lines: List(JsonValue)) -> JsonValue {
   case lines {
