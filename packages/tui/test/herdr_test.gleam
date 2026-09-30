@@ -1,7 +1,7 @@
 //// Pins the Herdr pane contract this terminal speaks: the launch gate and
 //// the sequence seed it admits, the derivation from the terminal's own
 //// lifecycle signals, the change and announcement rules that decide what
-//// reaches the socket, and the exact bytes of both wire calls.
+//// reaches the socket, and the exact bytes of the wire calls.
 
 import gleam/int
 import gleam/list
@@ -122,28 +122,28 @@ pub fn session_switch_at_same_state_changes_test() {
 pub fn encode_report_carries_the_pane_contract_test() {
   herdr.encode_report(config(), 42, herdr.Working, "sess-1", "")
   |> should.equal(
-    "{\"id\":\"herdr:loom:42\",\"method\":\"pane.report_agent\","
-    <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"herdr:loom\","
+    "{\"id\":\"loom:terminal:42\",\"method\":\"pane.report_agent\","
+    <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"loom:terminal\","
     <> "\"agent\":\"loom\",\"seq\":42,\"state\":\"working\","
-    <> "\"agent_session_id\":\"sess-1\",\"message\":null}}\n",
+    <> "\"agent_session_id\":\"sess-1\",\"message\":null,\"resume_argv\":[\"loom\",\"--session\",\"sess-1\"]}}\n",
   )
 }
 
 pub fn encode_report_carries_a_message_test() {
   herdr.encode_report(config(), 1, herdr.Blocked, "s", "approval required")
   |> should.equal(
-    "{\"id\":\"herdr:loom:1\",\"method\":\"pane.report_agent\","
-    <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"herdr:loom\","
+    "{\"id\":\"loom:terminal:1\",\"method\":\"pane.report_agent\","
+    <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"loom:terminal\","
     <> "\"agent\":\"loom\",\"seq\":1,\"state\":\"blocked\","
-    <> "\"agent_session_id\":\"s\",\"message\":\"approval required\"}}\n",
+    <> "\"agent_session_id\":\"s\",\"message\":\"approval required\",\"resume_argv\":[\"loom\",\"--session\",\"s\"]}}\n",
   )
 }
 
 pub fn encode_announce_has_no_state_claim_test() {
   herdr.encode_announce(config(), 3, "sess-9")
   |> should.equal(
-    "{\"id\":\"herdr:loom:3\",\"method\":\"pane.report_agent_session\","
-    <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"herdr:loom\","
+    "{\"id\":\"loom:terminal:3\",\"method\":\"pane.report_agent_session\","
+    <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"loom:terminal\","
     <> "\"agent\":\"loom\",\"seq\":3,\"agent_session_id\":\"sess-9\"}}\n",
   )
 }
@@ -153,10 +153,10 @@ pub fn encode_escapes_untrusted_text_test() {
   // must not be able to break the request framing.
   herdr.encode_report(config(), 2, herdr.Idle, "se\"ss", "line\none")
   |> should.equal(
-    "{\"id\":\"herdr:loom:2\",\"method\":\"pane.report_agent\","
-    <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"herdr:loom\","
+    "{\"id\":\"loom:terminal:2\",\"method\":\"pane.report_agent\","
+    <> "\"params\":{\"pane_id\":\"pane-7\",\"source\":\"loom:terminal\","
     <> "\"agent\":\"loom\",\"seq\":2,\"state\":\"idle\","
-    <> "\"agent_session_id\":\"se\\\"ss\",\"message\":\"line\\none\"}}\n",
+    <> "\"agent_session_id\":\"se\\\"ss\",\"message\":\"line\\none\",\"resume_argv\":[\"loom\",\"--session\",\"se\\\"ss\"]}}\n",
   )
 }
 

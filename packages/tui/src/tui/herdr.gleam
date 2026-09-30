@@ -1,16 +1,29 @@
 //// Best-effort agent-state reporting to a Herdr multiplexer, when the
 //// terminal was launched inside one of its panes.
 ////
-//// Herdr keeps a closed registry of agent integrations; a pane running an
-//// integrated agent inherits three environment variables
+//// A pane running an agent inherits three environment variables
 //// (`HERDR_ENV=1`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`), and the agent
 //// reports its lifecycle as newline-delimited JSON requests over that
 //// unix socket: `pane.report_agent_session` when the session identity
 //// first becomes known and again on every switch, then `pane.report_agent`
-//// as the agent moves between working, blocked and idle. `herdr session`
-//// resume keys off the reported session id, which Loom already has as a
-//// first-class value — the attached session id itself. Until a session is
+//// as the agent moves between working, blocked and idle. Until a session is
 //// attached there is no identity to report, and nothing is sent at all.
+////
+//// Herdr's contract splits integrations in two, and this one is on the
+//// third-party side of the split. Herdr's own integrations report under
+//// a reserved `herdr:` source and earn built-in session restore from the
+//// `agent_session_id` alone. A third-party source earns none of that:
+//// its `agent_session_id` is display metadata, and the only mechanism
+//// Herdr gives it for surviving a server restart is `resume_argv`, the
+//// command that reopens the current session, attached to a report that
+//// already holds the pane. So the report carries
+//// `["loom", "--session", <id>]` — safe to send before Herdr 0.9.2,
+//// which introduced `resume_argv` and simply ignores the field — and
+//// this integration's source is `loom:terminal`, not on the reserved
+//// prefix. The announcement stays on the wire because a future Herdr
+//// may whitelist the source, and because the session id still ties the
+//// state reports and the resume command to one conversation.
+////
 ////
 //// This terminal is a self-contained binary with no hook directory for
 //// Herdr's installer to drop a script into, so the adapter is compiled in
@@ -36,8 +49,10 @@ import session_view/protocol.{type Strand}
 import tui/internal/ffi_herdr
 import weft/actor
 
-/// The wire tag Herdr's resume planner matches this integration on.
-const source = "herdr:loom"
+/// The wire tag that identifies this integration to Herdr. Third-party
+/// sources must not use the `herdr:` prefix, which Herdr reserves for the
+/// integrations it ships itself.
+const source = "loom:terminal"
 
 /// The agent label reported beside it.
 const agent = "loom"
@@ -47,6 +62,19 @@ const agent = "loom"
 const attempt_timeout_ms = 500
 
 const retry_timeout_ms = 1500
+
+/// The command Herdr replays in the pane's directory after a server
+/// restart, per `resume_argv`'s contract: the first word must be a plain
+/// command name on the operator's PATH.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.resume_argv("sess-1") == ["loom", "--session", "sess-1"]
+/// ```
+pub fn resume_argv(session: String) -> List(String) {
+  ["loom", "--session", session]
+}
 
 /// The pane config and the process that carries reports to the pane's
 /// daemon.
@@ -361,6 +389,13 @@ fn deliver(config: Config, payload: String) -> Nil {
 
 /// Encodes one `pane.report_agent` request as one line of JSON.
 ///
+/// The resume command rides on every state report rather than only the
+/// first, because Herdr keeps it only while the same source holds the
+/// pane and re-derives nothing: the latest report that holds the pane is
+/// the one whose command a restart replays, and a report without it
+/// would leave a pane that switched sessions an hour ago resuming the
+/// session it left.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -380,6 +415,7 @@ pub fn encode_report(
       "" -> json.Null
       text -> json.String(text)
     }),
+    #("resume_argv", json.Array(list.map(resume_argv(session), json.String))),
   ])
 }
 
