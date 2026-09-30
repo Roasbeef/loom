@@ -329,8 +329,14 @@
   .chip-status.failed{color:var(--color-danger-text);}
   .chip-status.done{color:var(--color-added-text);}
   li.chip.following{box-shadow:inset 0 0 0 1px var(--hue,var(--color-divider));border-color:var(--hue,var(--color-divider));}
-  li.chip.settled{display:grid;grid-template-columns:minmax(0,1fr);align-content:center;padding:8px 12px;border-style:dashed;border-color:var(--color-fg-faint);}
-  li.chip.settled .chip-name{color:var(--color-fg-quiet);font-weight:400;}
+  /* The settled group is a native details element below the live cards,
+     closed until the reader opens it. Its cards are ordinary cards, and the
+     names of strands that ended are drawn in the quiet text colour. */
+  li.settled-group{min-width:0;}
+  .settled-title{cursor:pointer;padding:4px 2px;font:600 11px/1.4 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--color-fg-quiet);}
+  ul.settled-chips{margin-top:8px;}
+  li.settled-earlier{padding:2px 2px;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
+  ul.settled-chips .chip-name{color:var(--color-fg-quiet);font-weight:400;}
   .elapsed{font-variant-numeric:tabular-nums;}
   /* A strand's own view (web_view/view/strand_detail), in the Strands pane in
      place of the title and the list while a strand other than main is in
@@ -676,7 +682,8 @@
     nav.agent-strip{overflow-x:auto;scrollbar-width:thin;}
     ul.chips{flex-direction:row;padding-bottom:4px;}
     li.chip{flex:0 0 auto;width:232px;}
-    li.chip.settled{width:auto;}
+    li.settled-group{flex:0 0 auto;}
+    ul.settled-chips{flex-direction:column;}
   }
   @media (max-width:640px){main.centre{padding:12px 12px 0;}li.chip{width:200px;} .line.user{padding:6px 10px;}}
   @media (prefers-reduced-motion:reduce){*:not(.arming){transition:none!important;animation:none!important;}}

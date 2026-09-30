@@ -1717,6 +1717,20 @@ address, and the strand's first capture may need its history read (the
 "Load older" button offers it). A strand that settled and left the strip
 cannot be focused from the page; the "settled" chip is not a control.
 
+**Addendum (2026-09-29, issue #569): settled strands are focusable.** The
+"settled" chip is replaced by a group of cards, one per settled strand, the
+first six, in reverse row order, and a `+n earlier` line of text. Each card is a button inside the
+strip's list, so its handler is at a path beneath `component.strip_path` and
+the socket admits it as it admits the live cards' clicks; nothing else about
+the admitted paths changes. Focus is the same `FocusRequested`, which needs
+only that the capture lists the strand, and the capture already lists every
+strand. The group is a `details` element the browser opens and closes, so no
+new event or state reaches the server. The list's children are keyed by the
+fixed words `card-<n>`, `advisor` and `settled`, never by a strand's name.
+The marker relay reaches a settled card by its position, which follows the
+live cards', and presses it with a script click, which a closed `details`
+does not prevent.
+
 ### The session sidebar, read-only
 
 **Ruling (owner, 2026-09-29).** The list is shown to operator pages only.
