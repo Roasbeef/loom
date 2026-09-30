@@ -1,7 +1,8 @@
 # Protocol 057: type capability results and identities
 
-**Status**: Implemented following operator approval; integration validation
-and independent review are in progress.
+**Status**: Implemented following operator approval; the local full gate,
+real jailed integration proofs and independent review passed on 2026-09-30.
+Hosted CI and Linux signoff are separate merge gates.
 **Affects**: `cap/peer`, `cap/workflow`, `cap/execution`, `cap/strand`,
 `cap/job`, and `cap/schedule`; generated capability declarations and schedule
 response projections.
@@ -88,3 +89,20 @@ and receipt cursors still order hashed keys rather than arrival times.
 
 The [migration guide](../docs/capability-types.md) gives the public types and
 conversion helpers programs use when rebuilt against this library.
+
+## Verification
+
+`make check` passed at `01844b49a`, including 126 capability tests, 2,399
+client tests, 1,032 terminal tests and zero lint errors. The jailed proofs
+exercise peer-only identity aliases and exact pending, transcript and receipt
+bodies in both host modes, plus schedule admission, listing and cancellation.
+The existing resident actor, cross-session exchange and workflow recovery
+examples also pass after migrating their source APIs.
+
+The independent review found metadata key collisions and lost body assertions
+in the migrated fixture. Both were fixed and rechecked. Negative checks fail
+when those defects are reintroduced, when malformed child IDs are accepted,
+when negative stream cursors are clamped, and when the original alias renderer
+is used. The body mutation rebuilds the offline seed before exercising the
+actual jailed program; changing capability source alone does not replace that
+snapshot. The final seed was restored before the full gate.
