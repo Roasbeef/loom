@@ -26,7 +26,6 @@ import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
-import lustre/element/keyed
 import session_view/markdown.{type Block, type Inline}
 
 /// The elements for a parsed Markdown tree, one per top-level block.
@@ -127,24 +126,24 @@ fn block_element(block: Block) -> Element(message) {
   }
 }
 
-// A fence's body as one keyed span per line. A streamed block grows at its
-// tail, and a single text node would be sent whole on every batch, which
-// over a long block is quadratic. Each line is keyed by its position, so the
-// diff keeps the lines that did not change, sends the one still being
-// written, and adds the new ones. Every span but the last carries its own
-// newline, so the text a reader copies is the fence's text unchanged.
+// A fence's body as one span per line. A streamed block grows at its tail,
+// and a single text node would be sent whole on every batch, which over a
+// long block is quadratic. Lustre diffs unkeyed children by position, so the
+// lines that did not change are skipped, the one still being written is
+// patched, and the new ones are inserted as one trailing addition. Every
+// span but the last carries its own newline, so the text a reader copies is
+// the fence's text unchanged.
 fn code_lines(text: String) -> Element(message) {
   let lines = string.split(text, "\n")
   let last = list.length(lines) - 1
-  keyed.element(
-    "code",
+  html.code(
     [],
     list.index_map(lines, fn(line, index) {
       let shown = case index == last {
         True -> line
         False -> line <> "\n"
       }
-      #(int.to_string(index), html.span([], [html.text(shown)]))
+      html.span([], [html.text(shown)])
     }),
   )
 }
