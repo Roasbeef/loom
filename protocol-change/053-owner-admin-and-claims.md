@@ -758,7 +758,8 @@ already omits the six administration commands
 Each phase ships on its own and leaves the tree consistent. The owner
 accepted this proposal on 2026-09-27 and asked for phase 1 to be built
 first; phases 2 to 4 wait for their own go-ahead. The owner gave phase 2's on
-2026-09-29; phases 3 and 4 still wait.
+2026-09-29, and phase 3 was built the same day at the owner's direction; phase
+4 still waits.
 
 1. **Claims.** The `access_claims` table and the version 4 migration; the
    new `sessions.invite`, `credentials.rotate` and `credentials.revoke`;
@@ -1016,6 +1017,85 @@ address rule and the token-file reads. And `loomd access X` against `loom
 access X` was compared in-process, against a real listener with a published
 endpoint record and through `--addr` with a token file, and not between the
 two shipped executables, which the local signoff is the place to run.
+
+## Step 3 as built
+
+Step 3 follows "The terminal overlay (phase 3)" above and changes no frozen
+interface: every command it sends was added in step 1 or step 2, and the
+terminal's own control codec (`tui/daemon/protocol`, which is not a Part 1
+interface) gained encoders for them. Where the code had to choose, it chose
+the narrower option:
+
+- **`/access` is a surface command.** It is parsed by `session_view/command`
+  as `Surface(Access)`, like `/peers`, and `component.page_command` refuses
+  every surface command, so the web page refuses it with "That command opens a
+  terminal surface, which the page does not have. Nothing was sent." This is
+  the owner's 2026-09-27 ruling that daemon control stays in the terminal. The
+  web page's completion table omits it for the same reason.
+- **Owner-only is the daemon's judgment.** The overlay does not read the
+  hello's principal to decide whether to open. It sends `principals.list`, and
+  a member's `forbidden` is turned into one line: "the access overlay is for
+  the owner; this connection is not". Any other refusal shows as "access
+  request refused: CODE: MESSAGE".
+- **It needs the daemon control connection and no attached session.** Without
+  the connection it refuses in the transcript, as `/peers` does.
+- **It reads and changes over the terminal's borrowed control connection,** one
+  request at a time. A request that meets an occupied slot is not queued; the
+  overlay's own notice line says another request is running, and a reviewed
+  change that meets it returns to browsing unsent.
+- **The rows are the rows `loom access` prints.** `host/access` exposes
+  `principal_lines` and `membership_lines`, which `success` now calls, and the
+  overlay decodes only what they return. A fingerprint that is not exactly 16
+  lowercase hexadecimal characters, an unknown credential state, or a
+  membership reply for another principal fails the whole page, and the
+  refusal does not repeat the value.
+- **A review is a y/N question, and only a lowercase `y` sends.** Escape and
+  `n` decline. Enter, an uppercase `Y`, and every other key leave the question
+  open, so a held Enter cannot confirm. The question names the member and the
+  session by display name and by ID, and says what the change does and does
+  not reach: a role change or a membership revocation touches one session; a
+  credential revocation voids the credential and any open claim.
+- **One change is outstanding at a time.** From the moment `y` sends until the
+  daemon answers, no other change can be proposed, so an acknowledgement is
+  always checked against the change it answers. The overlay draws the
+  acknowledgement from what was reviewed, after checking that the reply's
+  `principal_id` matches, and reports a mismatch instead of trusting it.
+- **A lost reply is an unknown outcome and is not retried.** The notice names
+  the command and says to press `r` to see the current state, as the CLI says
+  not to retry an unknown mutation.
+- **After a change the overlay reads the first page again** in the list the
+  change touched. A role or membership change re-reads the opened principal's
+  memberships. A credential revocation re-reads the principals and returns to
+  that list, since the credential state is what changed. A cursor from before
+  the change is dropped.
+- **The overlay does not propose to revoke or rotate the owner's credential.**
+  The owner's credential is the owner token, which authenticates the control
+  connection the overlay sends over. The row is listed and can be opened, and
+  its memberships are empty.
+- **Invitation and rotation show the line and stop.** `i` shows
+  `loom access invite SESSION PRINCIPAL ROLE NAME`, with the highlighted
+  session's ID in place of `SESSION` when a membership is highlighted. `t`
+  shows `loom access rotate PRINCIPAL`. Both lines come from `host/access`, and
+  a test parses each with the shared grammar. The view says that the terminal
+  never shows a claim and that the claim goes to the invitee outside Loom.
+- **The overlay takes no text.** Its keys are arrows, Enter, Escape and single
+  letters, and a paste is ignored, so a recording made with `--record` holds
+  nothing a claim could be typed or pasted into. A test draws the principal
+  list, a membership list and the command view, and finds no 64-character
+  hexadecimal run other than the owner's principal ID, which is an identity
+  and not a credential.
+- **Memberships are listed as `principals.memberships` returns them,** archived
+  sessions included, with the session's current name.
+
+Two things in "Verification required" are still not met. The overlay was driven
+through the terminal's shipped update loop with a control connection whose
+replies the tests supply, and not against a running `loomd` in a real
+terminal: the wire path from `tui/daemon/protocol` to the daemon's decoder is
+checked by the encoder tests against the field names the daemon reads, and by
+step 2's daemon tests for the reads, but no test sends `sessions.set_role`,
+`sessions.revoke` or `credentials.revoke` from the terminal's codec to a real
+listener. And the frame was checked as text at one screen size; no one has
+looked at it in a terminal.
 
 ## Open
 

@@ -787,6 +787,7 @@ already have.
 | Goal | `/goal`, plus a row beside the composer | The `goal_get` board | `goal_view`, `focused_goal_panel` |
 | Model selector | `/model` | The model catalogue; selection sends `set_config` | `model_selector` |
 | Session picker | `/sessions`, and at a `Local` launch | One authorized catalogue page; Enter opens a session, while `l` links the attached strand to the selected resident session | `session_selector`, `daemon/selection`, `peer_links` |
+| Access overlay | `/access` (owner only) | `principals.list` and `principals.memberships` pages; set-role, revoke and revoke-credentials after a y/N review | `access_overlay`, `daemon/protocol`, `host/access` |
 
 The peer-link path starts in `tui/interaction`: `l` on a resident `/sessions`
 row passes that row to `tui/session_control` without attaching its session.
@@ -800,6 +801,24 @@ residency, and grant authority. A saved session cannot become a target through
 selection alone. `tui/render` paints the confirmation and acknowledged result;
 closing the modal returns to the session picker, agent inspector, or composer
 without changing the attached session or its draft.
+
+`/access` (protocol-change/053, phase 3) is the owner's view of who can reach the
+daemon. It needs the daemon control connection and no attached session.
+`tui/access_overlay` is a pure state machine: `update` maps a key to an `Action`
+that carries the next state, and `tui/session_control` turns a read or a change
+into a `job.ReadAccess` or `job.ChangeAccess` control job and feeds the reply
+back. The rows are checked by `host/access.principal_lines` and
+`membership_lines`, the same checks `loom access list` and `show` print through,
+so a credential appears only as the daemon's 16-character fingerprint. The
+overlay sets a member's role in one session, revokes one membership, or revokes
+a member's credentials, each after a y/N question that names the member and the
+session; only a lowercase `y` sends. It does not grant: for an invitation or a
+rotation it shows the `loom access` line to run in a shell, since the terminal
+records every key and socket message under `--record` and a claim must never
+pass through it. A member who opens the overlay receives `forbidden` from the
+daemon and sees one line saying the overlay is for the owner. `/access` is a
+surface command, so the web page refuses it with the rest, which keeps owner
+administration in the terminal.
 
 A few rules apply to every surface. An open overlay owns focus, so ordinary
 prompt editing is inert while it is up, and `Ctrl+C` stays global. Overlay
