@@ -39,10 +39,12 @@ import host/bootstrap
 import host/build_identity
 import host/claim
 import mist
+import session_view/transcript_image
 import storage/access
 import storage/catalogue
 import storage/domain
 import web_view/ending.{type Ending}
+import web_view/image
 import web_view/page
 import weft
 
@@ -77,12 +79,15 @@ pub type Ui(instance) {
     /// `session_upgrade`, it transfers the attachment's permit. The third
     /// argument answers the page's deadline while its UI session is still
     /// live, which the socket checks with every authorization and carries onto
-    /// a ticket it mints for a switch; the fourth is the page's
-    /// ceiling, which the relay caps every authorization with.
+    /// a ticket it mints for a switch; the fourth records how the page's images
+    /// are read, under the page's cookie (`ui_sessions.register_images`); the
+    /// fifth is the page's ceiling, which the relay caps every authorization
+    /// with.
     upgrade: fn(
       Request(mist.Connection),
       Attachment(instance),
       fn() -> Result(Int, Nil),
+      fn(ui_sessions.Images) -> Nil,
       access.Role,
     ) -> Response(mist.ResponseData),
   )
@@ -231,6 +236,7 @@ fn web_socket(
     Error(response) -> ui_http.secured(response, host)
     Ok(#(state, grant, cookie)) -> {
       let open = ui_sessions.open_until(ui.sessions, cookie, grant)
+      let register = ui_sessions.register_images(ui.sessions, cookie, _)
       resident_upgrade(
         config,
         request,
@@ -239,7 +245,7 @@ fn web_socket(
         id,
         PageRole(grant.ceiling),
         fn(request, attachment) {
-          ui.upgrade(request, attachment, open, grant.ceiling)
+          ui.upgrade(request, attachment, open, register, grant.ceiling)
         },
       )
     }
@@ -268,6 +274,26 @@ fn web_document(
           case page_grant(config, ui, request, key, id) {
             Error(response) -> response
             Ok(_) -> document(200, "text/html; charset=utf-8", page.shell(id))
+          }
+      }
+
+    // One image of the page's transcript. It is a fetch of this origin's own
+    // (`navigation_allowed`), and it is answered only for a page that passes
+    // every check the page itself does (`page_grant`): a live UI session under
+    // this key, for this session, whose credential still authenticates and is
+    // still a member. The page's component then says whether it drew an image
+    // at that row and place; the bytes are the daemon's to check (`picture`).
+    ui_http.Image(key, id, ref, position) ->
+      case ui_http.navigation_allowed(request) {
+        False -> plain(403, "forbidden fetch")
+        True ->
+          case page_grant(config, ui, request, key, id) {
+            Error(response) -> response
+            Ok(#(_, _, cookie)) ->
+              case ui_sessions.images(ui.sessions, cookie) {
+                Ok(read) -> picture(read(ref, position))
+                Error(Nil) -> plain(404, "unknown image")
+              }
           }
       }
 
@@ -351,6 +377,28 @@ fn page_grant(
     |> result.map_error(fn(_) { refused_page(403, ending.AccessRevoked, id) }),
   )
   Ok(#(state, page, cookie))
+}
+
+// The answer for one image the page drew, or the refusal for one it did not
+// or one the daemon will not send. `image.serve` is the check: a raster type,
+// bytes that decode, at most the terminal's limit and a magic number that
+// says the declared type. The type is the served one and the response is
+// already `nosniff`, so the browser draws what was checked and nothing it
+// might sniff from the bytes.
+fn picture(found: Result(transcript_image.Image, Nil)) {
+  case found {
+    Error(Nil) -> plain(404, "unknown image")
+    Ok(held) ->
+      case image.serve(held) {
+        Ok(image.Served(mime_type:, bytes:)) ->
+          response.new(200)
+          |> response.set_header("content-type", mime_type)
+          |> response.set_header("content-disposition", "inline")
+          |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(bytes)))
+        Error(image.NotAnImage) -> plain(415, "not a supported image")
+        Error(image.TooLarge) -> plain(413, "image too large")
+      }
+  }
 }
 
 // The answer to a page request that cannot be served: the status the check

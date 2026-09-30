@@ -20,6 +20,17 @@
 //// only the events it attaches, a click and a submit; anything else is
 //// dropped here too.
 ////
+//// The socket also makes the one way the page's images are read. A request
+//// for an image (`GET .../image/<row>/<position>`) arrives on an HTTP handler
+//// that knows the page's cookie and nothing of the component, whose lane holds
+//// the images the page drew. When the component starts, the socket registers,
+//// under the page's cookie, a function that asks it (`ui_sessions.Images`),
+//// and the handler reads that function back after its own checks
+//// (protocol-change/051, the addendum on images). The question is a Lustre
+//// message sent from the daemon's side with `lustre.dispatch`, which a browser
+//// frame cannot produce, so an observer's socket, which forwards almost
+//// nothing, still answers it.
+////
 //// One component per connection. It is started from this socket's process
 //// and linked to it, and the socket shuts it down when the browser goes
 //// away, which is what ends its relay (the relay monitors the component).
@@ -61,6 +72,7 @@ import lustre
 import lustre/server_component
 import mist
 import session_view/snapshot
+import session_view/transcript_image
 import storage/access
 import storage/catalogue
 import web_view/component
@@ -73,6 +85,12 @@ import web_view/sessions
 /// a pasted image does not, and a browser's events are far smaller than the
 /// terminal's 32 MiB (protocol-change/051, the operator addendum).
 pub const operator_frame_limit = 1_048_576
+
+// How long a request for an image waits for the component's answer, in
+// milliseconds. The component answers from a lane it holds in memory, so a
+// second is long; a component that does not answer in that time is gone or
+// stuck, and the request is refused rather than held.
+const image_wait_ms = 2000
 
 // How long a page's socket stays open after the relay reports the page
 // ended, in milliseconds. The component reduces the close as it arrives,
@@ -204,6 +222,7 @@ pub fn upgrade(
   hub: gateway.Gateway,
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
+  register: fn(ui_sessions.Images) -> Nil,
   ceiling: access.Role,
 ) -> Response(mist.ResponseData) {
   let role = role_of(attachment.authority)
@@ -271,6 +290,7 @@ pub fn upgrade(
               attach,
               tickets,
               open,
+              register,
               expected,
               signals,
               settled,
@@ -382,6 +402,7 @@ fn admit(
   attach: ui_relay.Attach,
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
+  register: fn(ui_sessions.Images) -> Nil,
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
   settled: process.Subject(Nil),
@@ -442,13 +463,17 @@ fn admit(
     // close is one the client runtime retries, so a tab that hit one is not
     // left empty for good behind a final close (1000).
     Error(Nil) -> closing(ending.close(ending.DaemonNotReady))
-    Ok(Page(forward:, shutdown:, frames:)) ->
+    // The page's images are readable from the moment its component is, and a
+    // reload's new socket replaces the reader the old one left.
+    Ok(Page(forward:, shutdown:, frames:, images:)) -> {
+      register(images)
       mist.continue(Serving(forward, shutdown, signals))
       |> mist.with_selector(
         process.new_selector()
         |> process.select(signals)
         |> process.merge_selector(process.map_selector(frames, Client)),
       )
+    }
   }
 }
 
@@ -672,6 +697,10 @@ pub type Page {
     shutdown: fn() -> Nil,
     /// The component's messages for the browser, as JSON.
     frames: process.Selector(json.Json),
+    /// Asks the component for the image its lane drew at a row's name and
+    /// position. It answers `Error(Nil)` for any other, and at once when the
+    /// socket that owns the component has ended.
+    images: ui_sessions.Images,
   )
 }
 
@@ -691,19 +720,26 @@ pub fn start_page(
   start: component.Start(ui_relay.Relay),
 ) -> Result(Page, Nil) {
   case role_of(authority) {
-    Observing -> serve(component.app(), start, observer_accepts)
-    Operating -> serve(operator_page.app(), start, operator_accepts)
+    Observing ->
+      serve(component.app(), start, observer_accepts, component.ImageRequested)
+    Operating ->
+      serve(operator_page.app(), start, operator_accepts, fn(ref, at, reply) {
+        operator_page.Observed(component.ImageRequested(ref, at, reply))
+      })
   }
 }
 
 // Starts one component and returns what the socket needs of it: how a
 // browser frame reaches it, how to shut it down, and a selector over the
 // subject its client messages arrive on, encoding each as it is received.
-// `admits` says which browser frames reach it.
+// `admits` says which browser frames reach it, and `ask` builds the message
+// that asks it for an image, in the application's own message type.
 fn serve(
   app: lustre.App(component.Start(ui_relay.Relay), model, message),
   start: component.Start(ui_relay.Relay),
   admits: fn(String) -> Bool,
+  ask: fn(String, Int, process.Subject(Result(transcript_image.Image, Nil))) ->
+    message,
 ) -> Result(Page, Nil) {
   case lustre.start_server_component(app, start) {
     Error(_) -> Error(Nil)
@@ -725,10 +761,28 @@ fn serve(
             }
         }
       }
+
+      // The reader belongs to this socket's process, which owns the
+      // component and ends with it. A request that arrives after the socket
+      // ended is refused without a message, and one that arrives while it is
+      // up waits for the component's own answer on a subject of the asking
+      // process.
+      let socket = process.self()
+      let images = fn(ref, position) {
+        case process.is_alive(socket) {
+          False -> Error(Nil)
+          True -> {
+            let reply = process.new_subject()
+            lustre.send(runtime, lustre.dispatch(ask(ref, position, reply)))
+            process.receive(reply, image_wait_ms) |> result.flatten
+          }
+        }
+      }
       Ok(Page(
         forward:,
         shutdown: fn() { lustre.send(runtime, lustre.shutdown()) },
         frames: encoded,
+        images:,
       ))
     }
   }

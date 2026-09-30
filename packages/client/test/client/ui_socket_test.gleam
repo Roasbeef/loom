@@ -14,6 +14,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import host/bootstrap
 import session_view/snapshot
 import storage/access
 import storage/catalogue
@@ -354,4 +355,56 @@ pub fn only_an_operators_page_may_ask_for_a_ticket_test() {
   assert ui_socket.opened_for(ui_socket.Operating, ask)
     == sessions.Ticketed("/ui/sessions/x?ticket=y")
   assert process.receive(asked, 0) == Ok(Nil)
+}
+
+// Protocol-change/051, the addendum on images: each page's socket holds the
+// one way its images are read, a question sent to its own component from the
+// daemon's side. Both roles' components answer it, and a lane that drew
+// nothing answers that it drew nothing, at once and not after the wait.
+pub fn both_roles_answer_for_an_image_the_page_never_drew_test() {
+  list.each(
+    [
+      access.Participant(access.Observer),
+      access.Participant(access.Operator),
+    ],
+    fn(authority) {
+      let assert Ok(page) = ui_socket.start_page(authority, start())
+        as "the page starts"
+      let _ = mounted(page)
+      let before = bootstrap.monotonic_time_ms()
+      assert page.images("1.0", 0) == Error(Nil)
+      assert page.images("", -1) == Error(Nil)
+      assert bootstrap.monotonic_time_ms() - before < 1000
+      page.shutdown()
+    },
+  )
+}
+
+// A socket that has ended answers no request, and does not make the asking
+// handler wait for a component that is gone.
+pub fn a_reader_answers_nothing_once_its_socket_has_ended_test() {
+  let started = process.new_subject()
+  let owner =
+    process.spawn(fn() {
+      let assert Ok(page) =
+        ui_socket.start_page(access.Participant(access.Observer), start())
+        as "the page starts"
+      let ended = process.new_subject()
+      process.send(started, #(page.images, ended))
+      let assert Ok(Nil) = process.receive(ended, 5000) as "told to end"
+      Nil
+    })
+  let monitor = process.monitor(owner)
+  let assert Ok(#(images, ended)) = process.receive(started, 2000)
+    as "the reader and the way to end its owner"
+  assert images("1.0", 0) == Error(Nil)
+  process.send(ended, Nil)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "the owner ends"
+  let before = bootstrap.monotonic_time_ms()
+  assert images("1.0", 0) == Error(Nil)
+  assert bootstrap.monotonic_time_ms() - before < 500
 }
