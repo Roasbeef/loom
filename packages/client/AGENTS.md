@@ -103,6 +103,11 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   own component, and the image route reads it back. It is found only through a
   live UI session, is replaced by a reload's new socket, and is dropped by the
   sweep with the page.
+  The same actor keeps the page-minted
+  invitations' allowance: `reserve_invite` and `release_invite`, keyed by the
+  credential's fingerprint and not by any page, at most `invite_limit` (three)
+  in any `invite_window_ms` (an hour, the claim's own lifetime), counted and
+  taken in one message.
 - `daemon/ui_http`: pure checks. `route` (the exchange at
   `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
   its socket at `.../ws` with the `csrf-token` query, and five assets),
@@ -187,6 +192,23 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   Unavailable)`). `observer_accepts` still drops a click beneath
   `component.sidebar_path`; `operator_accepts` admits any click, as before.
   `ui.link` and a switch build the exchange path with `page.exchange_path`.
+  An owner's operator page can also invite (protocol-change/051, the addendum
+  on inviting from the session page). `ui_socket.Role` has a third value,
+  `Owning`, an operator's page whose principal is the daemon's owner
+  (`role_of(attachment)`, from `Attachment.principal.kind`, never from the
+  page), and `upgrade` builds a `Transport.invite` for that page only (and `admit` puts it in the transport), which calls
+  `invite_for(attachment, tickets, open, address, role)`: the page must still
+  be open, the principal must be the owner, the claim address must be known
+  (`claim_address(request)`, `ws://` and the loopback `Host` and
+  `/v2/control`, `localhost` written `127.0.0.1`), the credential must have an
+  invitation left (`ui_sessions.reserve_invite`), and then
+  `manager.administer` runs `manager.Invite` for a `guest-` principal in the
+  page's own session with a claim from `server.claim_enrollment` that lives
+  `invites.claim_ttl_ms`. A refusal that made nothing gives the reservation
+  back and an unknown outcome keeps it. The socket's admission is split:
+  `operator_accepts` drops a click at or beneath `component.invite_path`,
+  `owner_accepts` admits it, and the observer's socket admits neither.
+  `start_page` takes the `Role`.
 - `daemon/ui_relay`: the page's stand-in for a session socket. `start`
   returns before the attach, which runs as the relay's first message and
   answers on the component's `opened` subject, so a slow gateway cannot

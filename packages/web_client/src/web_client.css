@@ -581,6 +581,22 @@
   .session-value p,.session-value ul{margin:0;}
   ul.session-jobs,ul.session-viewers{list-style:none;padding:0;}
   .session-quiet{color:var(--color-fg-quiet);}
+  /* The owner's invitation control at the foot of the Session pane
+     (web_view/view/share). The command and the claim token are drawn by
+     <loom-copy>, whose shadow root adopts this sheet, so its code box and
+     button are styled here. */
+  section.share{margin:12px 0 0 0;padding:8px 0 0 0;border-top:1px solid var(--color-divider);font-size:13px;}
+  .share-title{margin:0 0 4px 0;font-size:13px;}
+  .share-lead{margin:0 0 6px 0;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .share-actions{display:flex;flex-wrap:wrap;gap:6px 8px;}
+  button.share-operate{border-color:var(--color-signal);color:var(--color-signal-text);}
+  button.share-observe:disabled,button.share-operate:disabled{opacity:.45;cursor:default;}
+  .share-status{margin:6px 0 0 0;min-height:1.4em;color:var(--color-danger-text);}
+  .share-field{margin:6px 0;}
+  .share-label{display:block;color:var(--color-fg-quiet);font-size:12px;}
+  loom-copy{display:block;}
+  code.share-text{display:block;margin:2px 0 4px 0;padding:6px 8px;background:var(--color-bg);border:1px solid var(--color-divider);border-radius:4px;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;user-select:all;}
+  button.share-copy{font-size:12px;}
   .todo-total{margin-left:auto;color:var(--color-fg-quiet);}
   ul.todo-tasks{list-style:none;margin:0;padding:0;}
   li.todo-task{position:relative;padding-left:8px;}

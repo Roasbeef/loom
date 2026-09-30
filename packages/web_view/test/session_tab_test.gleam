@@ -26,7 +26,13 @@ import web_view/operator_page
 import web_view/view/session_tab
 
 fn drawn(jobs, viewers) -> String {
-  element.to_string(session_tab.view([], "est $0.00", jobs, viewers))
+  element.to_string(session_tab.view(
+    [],
+    "est $0.00",
+    jobs,
+    viewers,
+    element.none(),
+  ))
 }
 
 // The pane is drawn whether or not it shows, so its heading and its cost row
@@ -48,6 +54,7 @@ pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
       "est $0.12",
       Unread,
       None,
+      element.none(),
     ))
   assert string.contains(with_goal, "Goal")
   assert string.contains(
@@ -68,6 +75,7 @@ pub fn the_goal_is_only_ever_a_text_node_test() {
       "est $0.00",
       Unread,
       None,
+      element.none(),
     ))
   assert string.contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;")
   assert !string.contains(html, "<script")

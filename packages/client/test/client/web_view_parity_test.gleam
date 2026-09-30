@@ -161,6 +161,7 @@ fn start() -> component.Start(process.Subject(String)) {
       now: fn() { 0 },
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
+      invite: None,
     ),
   )
 }

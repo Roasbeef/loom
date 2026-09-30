@@ -21,10 +21,12 @@
 ////
 //// The pane is drawn whether or not the Session tab shows (`view/panel`), and
 //// always has its heading and the cost row, so its place in the panel never
-//// moves. Job lines, which carry a command excerpt, viewer names and the
-//// goal's objective are session and principal text: each is drawn as a text
-//// node, never as an attribute, a class or a key, and every class is a
-//// literal. The view carries no handler.
+//// moves. Below the list it has one more child, the owner's invitation
+//// control (`view/share`), or an empty node on a page that has none.
+////
+//// Job lines, which carry a command excerpt, viewer names and the goal's
+//// objective, are session and principal text: each is drawn as a text node,
+//// never as an attribute, a class or a key, and every class is a literal. The rows carry no handler; the invitation control's are its own.
 
 import gleam/int
 import gleam/list
@@ -37,19 +39,46 @@ import session_view/session_summary.{
 }
 
 /// The Session pane: the goal, the jobs, the viewers where the page shows them,
-/// and the estimated cost.
+/// the estimated cost, and, below them, the invitation control where the page
+/// has one.
 ///
 /// `goal` is the terminal's goal row as its words (`goal_view.row`), empty when
 /// no goal is pinned or none was read. `cost` is the session's running total
-/// worded as the top bar words it. The pane is memoized on all four, so a page
-/// whose rows did not change diffs nothing.
+/// worded as the top bar words it. The list of rows is memoized on all four, so
+/// a page whose rows did not change diffs nothing. `share` is the invitation
+/// control (`web_view/view/share`), which only an owner's page draws and which
+/// is `element.none()` everywhere else. It is the pane's third child, after the
+/// title and the list, and it stays there, so the path of its handlers
+/// (`component.invite_path`) does not depend on what the rows hold.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_tab.view([], "est $0.12", component.jobs(model), Some(component.viewers(model)))
+/// // session_tab.view([], "est $0.12", component.jobs(model), Some(component.viewers(model)), element.none())
 /// ```
 pub fn view(
+  goal: List(String),
+  cost: String,
+  jobs: Jobs,
+  viewers: Option(Viewers),
+  share: Element(message),
+) -> Element(message) {
+  html.section(
+    [
+      attribute.class("pane"),
+      attribute.class("pane-session"),
+      attribute.aria_label("Session"),
+    ],
+    [
+      html.h2([attribute.class("panel-title")], [html.text("Session")]),
+      rows(goal, cost, jobs, viewers),
+      share,
+    ],
+  )
+}
+
+// The key and value list, memoized on what it is drawn from.
+fn rows(
   goal: List(String),
   cost: String,
   jobs: Jobs,
@@ -61,24 +90,14 @@ pub fn view(
     element.ref(jobs),
     element.ref(viewers),
   ])
-  html.section(
-    [
-      attribute.class("pane"),
-      attribute.class("pane-session"),
-      attribute.aria_label("Session"),
-    ],
-    [
-      html.h2([attribute.class("panel-title")], [html.text("Session")]),
-      html.dl(
-        [attribute.class("session-list")],
-        list.flatten([
-          goal_row(goal),
-          jobs_row(jobs),
-          viewers_row(viewers),
-          [term("Est. cost"), value([html.p([], [html.text(cost)])])],
-        ]),
-      ),
-    ],
+  html.dl(
+    [attribute.class("session-list")],
+    list.flatten([
+      goal_row(goal),
+      jobs_row(jobs),
+      viewers_row(viewers),
+      [term("Est. cost"), value([html.p([], [html.text(cost)])])],
+    ]),
   )
 }
 

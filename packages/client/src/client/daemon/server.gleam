@@ -1684,18 +1684,36 @@ fn enrollment(
     protocol.EnrollDigest(credential:) ->
       Ok(#(access.DigestEnrollment(credential), None))
     protocol.IssueClaim(ttl_ms:) -> {
-      let issued = claim.mint_token(token.production_entropy())
-      use digest <- result.try(
-        access.claim_digest(claim.digest(issued))
-        |> result.replace_error("unavailable"),
+      use #(enrollment, issued) <- result.try(
+        claim_enrollment(ttl_ms) |> result.replace_error("unavailable"),
       )
-      let expires_at_ms = bootstrap.system_time_ms() + ttl_ms
-      Ok(#(
-        access.ClaimEnrollment(digest, expires_at_ms),
-        Some(Issued(issued, ttl_ms)),
-      ))
+      Ok(#(enrollment, Some(Issued(issued, ttl_ms))))
     }
   }
+}
+
+/// Draws one claim token and the enrollment the catalogue stores for it: the
+/// token's digest and an expiry `ttl_ms` from now, as a wall-clock instant.
+/// This is the one place a claim is drawn. The control command's invitation
+/// and a page's invitation (`ui_socket.invite_for`) both come here, so a claim
+/// has the same entropy, shape and digest whichever asked. The token is the
+/// caller's alone to hand on; only the digest goes to the registry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(#(enrollment, token)) = server.claim_enrollment(3_600_000)
+/// ```
+@internal
+pub fn claim_enrollment(
+  ttl_ms: Int,
+) -> Result(#(access.Enrollment, String), Nil) {
+  let issued = claim.mint_token(token.production_entropy())
+  use digest <- result.try(
+    access.claim_digest(claim.digest(issued)) |> result.replace_error(Nil),
+  )
+  let expires_at_ms = bootstrap.system_time_ms() + ttl_ms
+  Ok(#(access.ClaimEnrollment(digest, expires_at_ms), issued))
 }
 
 // Only an explicitly successful invitation or rotation returns a claim, and

@@ -1097,6 +1097,30 @@ step 2's daemon tests for the reads, but no test sends `sessions.set_role`,
 listener. And the frame was checked as text at one screen size; no one has
 looked at it in a terminal.
 
+## Addendum: an invitation from the session page (2026-09-29)
+
+**Status**: ACCEPTED under the owner's request of 2026-09-28 on issue #569, and
+IMPLEMENTED with [051's addendum on inviting from the session
+page](051-web-view-route.md). It changes nothing in phases 2 to 4 and one thing
+in the argument above.
+
+The proposal argued that no page should have a path to a grant, because a claim
+becomes a credential that outlives the page, and that a claim never travels
+through a Loom session or page. The owner asked for the session page to mint an
+invitation and show the claim, and 051's addendum records the narrow path that
+does it: one fixed action for the page's own session, on an owner's operator
+page only, observer by default, with a claim that lives an hour, a count of
+three an hour kept for the credential, and a claim shown once in the owner's own
+page and never in the transcript, another viewer's page, a log or a URL. The
+daemon makes the invitation through `manager.administer`, the dispatch
+`sessions.invite` uses, so 053's claim, its digest storage and `/v2/claim` are
+unchanged. What this addendum takes back is the page-level statement: the
+session page has one path to a grant. The admin page of phase 4, if it is
+built, still has none and still renders `loom access` lines for the owner to
+run, and the threat model above for a page an agent has taken still applies to
+it in full. 051's addendum prices what a stolen owner page is worth under this
+path.
+
 ## Open
 
 - **Removing `loom --token BEARER`**, which puts a bearer in the argument

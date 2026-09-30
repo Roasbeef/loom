@@ -3008,3 +3008,359 @@ No browser was in the loop. Thumbnails drawing and growing on a click, the file
 picker, a paste of an image, the chips, the form-associated field reaching the
 server in a submit, and a 10 MiB frame crossing a real socket run only in one and
 were not run.
+
+## Addendum: inviting from the session page (2026-09-29)
+
+**Status**: ACCEPTED under the owner's request of 2026-09-28 on issue #569
+("share/invite from the session page"), and IMPLEMENTED in the same change ·
+**Raised by**: issue #569 · **Builds on**:
+[053](053-owner-admin-and-claims.md), step 1 (the claim flow), and the addenda
+above on operators acting from the page and on several pages per principal
+
+An owner's page gains one control, "invite to this session". It makes the
+same invitation `loomd access invite` makes, and shows the claim token and the
+command the invitee runs, once. Inviting is an owner-only control action and a
+page never carries owner authority, so this addendum records the one fixed
+path by which a page now reaches it, who sees it, what it can be made to do,
+and what a stolen page is worth as a result.
+
+The change adds no HTTP route, no kind of socket event and no frozen
+interface. It adds one field on `component.Transport` (`invite`), one event
+path (`component.invite_path`), one admission rule in `ui_socket`, one
+allowance in the ticket table (`ui_sessions.reserve_invite`), and one client
+element (`<loom-copy>`). Part 1 is unchanged: the daemon runs the
+`sessions.invite` of 053 through its manager, and the page only asks for it.
+
+**This narrows two sentences of 053 for the session page, and no more.** 053
+says an admin page "has no path to a grant" and that a claim "never travels
+through a Loom session or page". Those describe the admin page of 053's
+phase 4, which is not built and is not changed here. The session page now has
+exactly one path to a grant, this one, and the claim it mints passes through
+that owner's own page and nowhere else it did not before: not the session's
+transcript, not another viewer's page, not a log and not a URL.
+
+### Who sees it
+
+A page draws the control and holds the capability behind it only when both
+hold:
+
+- **Its principal is the daemon's owner.** The router read the principal when
+  it authenticated the page's credential (`Attachment.principal.kind` is
+  `OwnerPrincipal`). The daemon decides this. The page carries no claim about
+  who it is.
+- **Its role is operator.** The role is the smallest of the membership, the
+  ceiling and Operator, as before, so an owner sees the control only on a page
+  opened with `loom --ui --operate`. An owner who opened an observer's page has
+  none. A page never carries `Owner`, and this addendum does not change that:
+  `ui_socket.Role` gains a third value, `Owning`, which is a fact about the
+  principal of an operator's page and no grant of authority.
+
+An observer's page, a member operator's page, and an owner's observer page
+never see or can send it. Five layers keep it so, and each alone is enough to
+refuse the request:
+
+1. `Transport.invite` is `None` unless the page is `Owning`
+   (`ui_socket.upgrade` builds the capability, and `admit` puts it in the
+   transport). The component draws nothing and ignores the message
+   when it holds no capability (`component.invite`).
+2. The observer's component has no message that asks and its view draws no
+   control, whatever its transport holds.
+3. `ui_socket.operator_accepts`, the socket of a member operator's page, drops
+   a click at `component.invite_path` and beneath it, alone or in a batch.
+   `ui_socket.owner_accepts`, the owner's socket, is the only one that admits
+   it. The observer's socket admits no click there either.
+4. `ui_socket.invite_for` reads the page's principal again and refuses a
+   member (`NotOwner`), and refuses a page that ended but whose socket is
+   still up.
+5. `manager.administer` authenticates the credential and the daemon epoch a
+   second time and requires the owner, in the same dispatch as the mutation.
+   It is the last word on who may.
+
+### What the event carries
+
+The control is the third child of the Session pane (`view/session_tab`), so its
+handlers are at `component.invite_path`, `0\t3\t2\t2`, and beneath it. There
+are three buttons and no field, so the browser has nothing to send but a click
+at a path the server drew:
+
+- **Invite an observer** and **Invite an operator** send
+  `operator_page.Inviting(role)`. The role is the message's, fixed when the
+  tree was drawn. `invites.Role` has two values, `Observer` and `Operator`.
+  There is no owner role to name.
+- **Hide the token** sends `operator_page.Dismissing`.
+
+The daemon's answer reaches the component as `component.Invited`, dispatched
+from the component's own process. No handler carries it, so a browser cannot
+send one and cannot place a token in the page. An answer that arrives when no
+request is out is dropped.
+
+### The one fixed action
+
+The action is "invite to this session", and it takes no other parameters:
+
+- **The session** is the page's own. A page cannot invite into another
+  session.
+- **The role** is the button's: observer first, and operator as a second,
+  labelled button.
+- **The principal** is chosen by the daemon: `guest-` and eight hexadecimal
+  digits from the daemon's entropy, named `Guest ` and the same digits. The
+  owner learns it from the invitation and uses it to revoke.
+- **The lifetime** is one hour (`invites.claim_ttl_ms`). 053's default is a
+  day and allows five minutes to a week. An hour is long enough to paste the
+  command and the token into a message and for the person to read it between
+  other things, and short enough that a token left in a chat window, a
+  clipboard history or a scrollback is dead before the day ends. An owner whose
+  invitee missed the hour presses the button again, which costs one of the
+  credential's invitations (below).
+- **The claim** is drawn by `server.claim_enrollment`, the one place a claim
+  is drawn. `sessions.invite` on the control endpoint calls the same function,
+  so a page's claim has the entropy, shape and digest of any other.
+
+The daemon refuses with a reason, and the page words each in a fixed sentence
+(`invites.reason_words`) that holds nothing from the daemon or the session:
+
+| Reason | Cause |
+|---|---|
+| `NotOwner` | The principal is not the owner, or the page has ended. |
+| `TooMany` | The credential has used its invitations for the hour (below). |
+| `NotIsolated` | The session still shares its history with its workspace. Isolating a session needs it stopped (`manager.isolate`), so a page, which is attached to a running session, can invite only into one that was isolated and resumed. |
+| `Unavailable` | The daemon could not answer or record the invitation. |
+
+### What the page shows, and where the claim lives
+
+The invitation replaces the buttons and shows, in fixed words and the daemon's
+values: the role, the principal, the lifetime, the command, the token, and
+what to do next. The words say to send both over a channel outside Loom, never
+through the session, because text sent there becomes transcript the agent can
+read and use first (053, "Claim tokens"). They say to ask the invitee for the
+credential fingerprint `loom claim` prints, and to compare it before relying on
+the new member, because the page cannot see a credential that has not been
+bound yet. They give `loomd access revoke-credentials PRINCIPAL` to void an
+unused claim. The command and the token are each in a `<loom-copy>` box with a
+Copy button.
+
+The command is `loom claim --addr ws://<Host>/v2/control`. The control
+command's reply carries the claim and its lifetime and not `claim_command`,
+which `loomd access` builds itself, so the daemon builds it here from the
+request's `Host`, which the router already required to be a loopback name
+(`ui_socket.claim_address`; `localhost` is written `127.0.0.1` because `loom
+claim` refuses `ws` to any other host, and `claim.remote_address` checks the
+result). It therefore works on the machine that runs the daemon, which the page
+says. A daemon reached through a TLS proxy would need the proxy's address in
+the command, which the daemon does not know and a `Host` header the router
+refused cannot supply. That is issue #654's, not this change's.
+
+The token exists in these places and no others:
+
+- the daemon's reply, in the component's process;
+- the component's state, `View.share = Showing`, from the answer until the owner
+  presses Hide, which replaces the state;
+- the browser's copy of the page, as the `text` attribute of one `<loom-copy>`
+  element, and the owner's clipboard once they press Copy.
+
+It is not logged: nothing on this path writes a log line, and `upgrade_log`
+carries only fixed words. It is not stored: the catalogue holds its digest
+(`the_claim_redeems_and_only_its_digest_is_kept_test` reads every file under
+the state root for the token and finds none). It is not in a URL: it travels
+in a socket frame to the one browser. It is not in the session: the invitation
+touches the component's view state and never the lane, the shared record, the
+outbox or the gateway (`another_page_never_holds_the_invitation_test`). And it
+is on no other viewer's page, because each page is its own component and
+nothing is published to the session.
+
+Two exposures remain and are not removable from here. The system clipboard
+keeps what the owner copied until something replaces it, and a page cannot
+clear it. And an OTP crash report of the component or the Lustre runtime while
+the invitation shows would write the state to `daemon.log`, which 053 accepts
+for the control handler in the same words: the claim is single use and lives an
+hour.
+
+`Transport.invite` runs in the component's process, and `manager.administer`
+waits up to five seconds. That blocks the page's runtime for as long as the
+daemon takes, as `Transport.open` and `Transport.sessions` do, and
+`docs/lustre.md`'s checklist prefers a relay process for blocking work. The
+call is one registry dispatch, a press is rare and is refused while one is
+out, so the addendum follows the switching precedent and does not add a
+process.
+
+### Limits
+
+`ui_sessions.invite_limit` is three invitations for each credential in any one
+hour (`invite_window_ms`, the claim's own lifetime). The count is kept in the
+ticket table, keyed by the credential's fingerprint and not by any page, so
+that a reload, a second page or a switch to another session does not reset
+it: a program holding a page's secrets could otherwise open a new page for each
+three and mint without bound. One reservation is one message, so two pages
+asking at once cannot both take the last place. A refusal that minted nothing
+gives its place back. An unknown outcome (the registry did not answer, so a
+principal may have been made) keeps it spent. One page can therefore mint
+three an hour and at most 24 in the eight hours a page lives, and the control
+shows at most one invitation at a time: a press while one is out or on screen
+is ignored, so one press mints at most one.
+
+A daemon restart resets the allowance. That is acceptable because every page
+cookie and ticket lives in the same actor and dies with it, so no page
+survives to spend a fresh count.
+
+An owner who needs more invites from a terminal with `loomd access invite`,
+which has no such limit and is not a page.
+
+### Why a page may now reach an owner-only action
+
+The control command needs the owner's credential, and a page already holds its
+principal's credential digest: the relay attaches with it and the gateway
+re-authenticates it on every frame. The daemon runs the invitation with that
+digest through `manager.administer`, so the authority a page uses here is the
+authority its credential already had, exercised through the path the owner's
+own `loomd access` uses. The page adds no role and no ceiling. Its role stays
+Operator, the gateway sees nothing of the invitation, and every other page is
+unchanged.
+
+What changes is where the action can be started from. 053 declined to build a
+page that grants, because a grant outlives the page. This addendum builds one,
+on the owner's request, and narrows it as far as the request allows: one
+fixed action, for the page's own session, observer first, with a short life, a
+count kept for the credential, and a claim that is shown once. It is opt-in in
+the way operator pages are: it exists only on a page opened with `--operate` by
+the owner.
+
+### What a stolen owner page is worth
+
+The page is worth what any operator page is worth (051, the operator
+addendum), for up to eight hours or until the credential is revoked or the
+principal's standing changes. To take it, a program needs the cookie, the page
+key and the nonce, and the page must be an owner's operator page. With it the
+program could already send prompts that run tools and answer approvals.
+
+The new worth is durable. Each invitation is a principal with a membership
+that outlives the page. A program that mints an observer invitation and
+redeems it on `/v2/claim`, which the agent's tools can reach on loopback unless
+the session runs with `--network off`, holds a read-only credential until the
+owner notices. One that mints an operator invitation holds an operator
+credential, and can send prompts and answer the session's escalations after
+the stolen page has closed. This is the case 053 named in its argument
+against an owner page that can invite: the session's agent takes the page,
+invites a principal it controls as an operator of its own session, claims it,
+and answers its own escalations from then on.
+
+The design does not remove that. It bounds it: three invitations an hour for
+the credential and 24 in a page's life, an hour for a claim to be redeemed,
+membership in the page's own session only, and no reach to the owner's other
+sessions or to owner authority. It also makes the invitations findable: each
+principal is named `guest-` and its digits, and the owner can revoke it with
+`loomd access revoke-credentials`. The owner sees nothing on the page itself
+when a program mints one, and the listing that would show every principal
+(`principals.list`, 053 step 2) is not built yet.
+
+The owner's choices that shrink the exposure are the ones that were already
+theirs: to open an owner's page without `--operate`, which has no control, and
+to run the session with `--network off`. The operator button is a second,
+labelled button and could be removed in a later change without touching the
+rest, which leaves a stolen page able to mint only read-only invitations. That
+is the owner's call, and this addendum records that the button is where the
+worst case lives.
+
+### What was considered
+
+- **The page renders the `loomd access invite` line and never mints.** It is
+  053's own fourth option for grants, and it keeps a stolen page to reductions.
+  The owner asked for the page to show the claim itself, so this was not taken.
+  It stays available as the smaller change if the owner withdraws the request.
+- **A separate owner-grade page with its own ticket table, cookie and 15
+  minute life (053 phase 4).** A heavier build for a page that grants, and it
+  would not change what one stolen page can mint. Not taken.
+- **A proposal on the page confirmed in the terminal.** 053 rejected it
+  because an agent holding the page could lodge a proposal and then ask the
+  owner to confirm it. Not taken.
+- **Widening a page's ceiling to Owner.** It would give a page every owner
+  action and end the cap this whole series rests on. Not taken.
+- **A count kept for the page.** A reload, a second page or a switch would
+  each start it again. Kept for the credential instead.
+- **053's default of a day.** A token that sits in a chat log for a day works
+  for a day. One hour.
+- **Letting the owner choose the name, the principal or the lifetime.** Each is
+  a field a stolen page could fill and a decoder to keep total. None is needed
+  for the action the owner asked for. Not taken.
+- **Reading the text for `<loom-copy>` from its children.** Then the copy would
+  run after the next paint, outside the press's own turn, where some browsers
+  refuse the clipboard. The text is an attribute, which the element checks
+  against the exact shape for its subject (a command that is `loom claim
+  --addr` and an address made of address characters, a token that is
+  `loomclaim_` and 64 hexadecimal digits) and refuses anything else, including
+  a newline, which a terminal would run on paste.
+- **A relay process for the blocking call.** See above. Not taken.
+
+### Cost
+
+- A page can, for an owner, start a grant. The durable worst case above is
+  the price, and it is the owner's to accept, which is what the request was.
+- The page holds a claim token in its state while an invitation shows. The
+  clipboard and a crash report are the two copies the daemon cannot clear.
+- `manager.administer` blocks the owner's page for up to five seconds.
+- A session must already be isolated and running. The page says how to
+  isolate one and does not do it.
+- The command names a loopback address, so an invitee on another machine needs
+  the address of the proxy until #654 lands.
+- Each invitation is a principal that stays in the catalogue, revoked or not.
+  Three an hour is the bound, and the listing that would show them is step 2 of
+  053.
+- One more socket admission rule, one more transport field and a fifth layer
+  to keep in step.
+
+### Verification
+
+`invite_test` (`packages/web_view`) draws an owner's page and shows the control
+inside the Session pane, that its two buttons are the only handlers beneath
+`component.invite_path`, that a page with no capability draws nothing and
+asks nothing whatever message reaches it, that the observer's view draws none
+even with a capability in its transport, that each button sends its own role
+once, that a second press while a request is out or an invitation is showing
+mints nothing, that the invitation shows the command and the token once each and
+the words for handing them over, that hiding it removes the token from the page
+and from the component's state, that a refusal is worded in its own fixed
+sentence and can be tried again, that an unrequested answer is dropped, and
+that another page of the same session holds nothing of it.
+`ui_socket_test` shows the owner's socket admitting a click at the path and
+beneath it and the member operator's socket dropping it, alone and in a batch,
+while admitting its neighbours, and a forged click at the path on a member
+operator's page redrawing nothing. `ui_sessions_test` shows the allowance: the
+limit, the rolling hour, the release, concurrent reservations, and the sweep.
+`ui_route_test`, on a real listener and registry, shows an owner's operator
+page inviting into its own session and no other with a claim that lives an
+hour and a command naming the loopback address, the operator role reaching the
+catalogue, which pages the capability is given to (an owner's observer page, a
+member operator and a member observer get none), the daemon refusing a member
+that reaches it anyway, an ended page inviting nobody, a session that is not
+shared refused without spending an invitation, the limit holding across pages of
+one credential, and the claim redeeming once and no file under the state root
+holding the token or the invitee's credential. `copy_test`
+(`packages/web_client`) holds the two shapes `<loom-copy>` copies and the
+refusal of anything else.
+
+Mutations, each applied alone and reverted, each fail a named test: the
+member's socket admits the invitation path
+(`only_an_owners_socket_admits_the_invitation_click_test`); a member
+operator's page is given the capability
+(`only_an_owners_operator_page_is_offered_the_capability_test`, which pins
+`role_of`, since the route tests replace `upgrade` with a stub; the choice of
+capability from the role is `invite_capability`, pinned by
+`only_an_owning_page_is_handed_the_capability_test`); the allowance
+is skipped (`the_limit_is_the_credentials_across_pages_test`); the release of
+a reservation does nothing
+(`a_session_that_is_not_shared_is_refused_and_costs_nothing_test`);
+the component takes an answer nobody asked for
+(`an_unrequested_answer_is_dropped_test`); hiding leaves the token in the state
+(`hiding_the_invitation_drops_the_token_test`); the copy rule accepts a newline
+(`anything_else_is_not_copyable_as_a_command_test`).
+
+Layers 4 and 5 of "Who sees it" are redundant on purpose. The route test
+`the_daemon_refuses_a_member_that_reaches_it_anyway_test` pins their combined
+outcome and would pass with either removed, because `manager.administer`
+refuses the same request with the same reason.
+`the_principal_check_refuses_a_member_on_its_own_test` pins layer 4 alone: it
+calls `may_invite`, which reaches neither the allowance nor the manager, with
+a member, and would get `Unavailable` if the check were removed.
+
+No browser was in the loop. The clipboard write, the control's layout in the
+Session pane, and the copy box's look in both themes run only in one and were
+not run.
