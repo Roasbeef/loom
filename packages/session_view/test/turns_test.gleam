@@ -17,6 +17,7 @@ import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript
+import session_view/transcript_image
 import session_view/transcript_line
 import session_view/transcript_lines
 import session_view/turns
@@ -615,4 +616,87 @@ pub fn reasoning_that_is_one_line_has_nothing_more_to_show_test() {
     pieces
     as "the reasoning is work"
   assert dict.is_empty(thoughts)
+}
+
+// --- images --------------------------------------------------------------
+
+fn user_with_images() -> message.AgentMessage {
+  message.UserMessage(
+    [
+      message.UserText("what is this", None),
+      message.UserImage("AAAA", "image/png"),
+      message.UserImage("BBBB", "image/jpeg"),
+    ],
+    0,
+    None,
+  )
+}
+
+fn image_result(data: String) -> message.AgentMessage {
+  message.ToolResultMessage(
+    "c",
+    "read",
+    [message.ToolResultImage(data, "image/webp")],
+    None,
+    None,
+    None,
+    False,
+    12_000,
+  )
+}
+
+pub fn a_message_with_images_is_a_pictured_row_test() {
+  let lane =
+    pieces_of(
+      [
+        item(1, 1000, user_with_images()),
+        item(2, 2000, assistant([message.AssistantText("A photo.", None)])),
+      ],
+      [],
+    )
+
+  // The image rows stay text rows, and the pictures are alongside them,
+  // named by the block's key and their place in the message.
+  assert turns.pictured(lane)
+    == [
+      #("1.0", [
+        transcript_image.Image("image/png", "AAAA"),
+        transcript_image.Image("image/jpeg", "BBBB"),
+      ]),
+    ]
+  assert turns.picture(lane, "1.0", 1)
+    == Ok(transcript_image.Image("image/jpeg", "BBBB"))
+}
+
+pub fn a_result_image_belongs_to_its_step_test() {
+  let lane =
+    expanding(
+      [call("c", "read", json.Object([#("path", json.String("a.png"))]))],
+      Some(image_result("CCCC")),
+      turns.Skip,
+    )
+  let assert [turns.Step(key:, images:, ..)] = work_items(lane)
+  assert images == [transcript_image.Image("image/webp", "CCCC")]
+
+  // The step's key is `block/index`, whose slash a path cannot carry.
+  assert string.contains(key, "/")
+  assert turns.pictured(lane) == [#(transcript_image.ref(key), images)]
+  assert turns.picture(lane, transcript_image.ref(key), 0)
+    == Ok(transcript_image.Image("image/webp", "CCCC"))
+}
+
+pub fn a_call_with_no_result_or_a_text_result_has_no_pictures_test() {
+  let asked = call("c", "read", json.Object([]))
+  assert turns.pictured(expanding([asked], None, turns.Skip)) == []
+  assert turns.pictured(expanding([asked], Some(text_result("hi")), turns.Skip))
+    == []
+}
+
+pub fn a_lookup_finds_only_a_row_the_lane_holds_test() {
+  let lane = pieces_of([item(1, 1000, user_with_images())], [])
+  assert turns.picture(lane, "9.0", 0) == Error(Nil)
+  assert turns.picture(lane, "1.0", 2) == Error(Nil)
+  assert turns.picture(lane, "1.0", -1) == Error(Nil)
+  assert turns.picture(lane, "", 0) == Error(Nil)
+  assert turns.picture([], "1.0", 0) == Error(Nil)
 }
