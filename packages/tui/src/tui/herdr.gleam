@@ -36,8 +36,10 @@
 //// daemon. The one deliberate exception is release: a report the socket
 //// never sees is a report that never happened, and after release the
 //// terminal is about to halt the VM. Release is a bounded synchronous
-//// exchange into the reporter, so the pane's agent label is gone before
-//// the process that owned it is.
+//// exchange into the reporter — its reply proves the reporter handled it,
+//// not that the socket took it, and Herdr's idle-shell safety net covers
+//// the difference — so the release is sent before the process that owned
+//// the pane is gone.
 ////
 //// The module is split so the loop-facing half is pure: `state_for` maps
 //// the model onto the pane state and `encode_*` build the wire bytes,
@@ -175,9 +177,11 @@ pub type Message {
 
   /// Clear the pane's agent and resume command, and answer once the
   /// exchange is done. Release is the one caller that waits: it runs on
-  /// the quit path, where the next step halts the VM, so the reply is
-  /// what proves the pane is clear of this terminal before the process
-  /// that cleared it is gone.
+  /// the quit path, where the next step halts the VM. The reply proves
+  /// the reporter handled the release — not that the socket took it,
+  /// which no reply this side of the daemon can show — and the caller's
+  /// deadline is what keeps the wait bounded before the process that
+  /// cleared the pane is gone.
   Release(reply: Subject(Nil))
 }
 
@@ -287,9 +291,11 @@ pub fn state_for(
 }
 
 /// The message a blocked report carries, naming what the operator is
-/// being asked to decide. The first pending approval is the one the
-/// approval surface is showing; an empty answer means nothing is pending
-/// and the report's message is omitted on the wire.
+/// being asked to decide, in the approval's own raw tool and preview
+/// rather than the humanized projection the approval panel renders —
+/// both name the same decision, and the raw form needs no re-derivation
+/// that could disagree with the capture. An empty answer means nothing
+/// is pending and the report's message is omitted on the wire.
 ///
 /// ## Examples
 ///

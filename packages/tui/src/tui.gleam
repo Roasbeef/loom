@@ -794,7 +794,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
       ),
       record,
     )
-    |> tick.start_herdr_reporter
+    |> start_herdr_reporter_for(launch)
 
   let _ =
     app.run_buffered_cursor_adaptive(
@@ -806,6 +806,19 @@ fn interactive(launch: Launch, record: String) -> Nil {
       tick.terminal_poll_timeout,
     )
   Nil
+}
+
+// The demo launch never reports to a Herdr pane. Its model carries the
+// placeholder session "demo" with live demo strands, so a reporter would
+// publish a state for a session that does not exist and, worse, a resume
+// command Herdr 0.9.2+ would actuate after a server restart, replaying
+// `loom --session demo` into a pane that opens nothing. Every other
+// launch names a real session or none at all.
+fn start_herdr_reporter_for(model: Model, launch: Launch) -> Model {
+  case launch {
+    Demo -> model
+    _ -> tick.start_herdr_reporter(model)
+  }
 }
 
 /// This client's side of etui's loop, for a run under the virtual backend.
