@@ -185,6 +185,47 @@ pub fn a_subagent_usage_row_does_not_settle_the_primary_clock_test() {
   assert settled.shared.generation_started_ms == None
 }
 
+pub fn an_unsettled_generation_does_not_leak_its_start_into_the_next_test() {
+  let assistant =
+    "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"assistant\"}}"
+  let done =
+    "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"done\"}}"
+
+  // The first generation is refused, so no usage row ever settles it.
+  let first =
+    initial(-10_000)
+    |> deliver(assistant)
+  assert first.shared.generation_started_ms == Some(-10_000)
+
+  // A repeated `assistant` transition is the same generation.
+  let repeated =
+    first
+    |> at(-9500)
+    |> deliver(assistant)
+  assert repeated.shared.generation_started_ms == Some(-10_000)
+
+  // The turn ending without settlement drops the clock.
+  let ended =
+    repeated
+    |> at(-9000)
+    |> deliver(done)
+  assert ended.shared.generation_started_ms == None
+    as "a turn that ends unsettled must not keep its start time"
+
+  // The next generation reads from its own start.
+  let second =
+    ended
+    |> at(-5000)
+    |> deliver(assistant)
+  assert second.shared.generation_started_ms == Some(-5000)
+  let settled =
+    second
+    |> at(-3000)
+    |> deliver(gateway.usage("main", 10, 300, 0.0))
+  assert settled.shared.output_rate_tps == Some(150)
+    as "the rate covers 2 s from the new request, not 7 s from the old one"
+}
+
 pub fn stream_fallback_uses_the_injected_clock_test() {
   let other =
     initial(-10_000)
