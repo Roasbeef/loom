@@ -108,6 +108,7 @@ fn isolate(server: String) -> String {
           "XDG_CONFIG_HOME=" <> quote(home <> "/.config"),
           "GIT_CONFIG_GLOBAL=" <> quote(git_config),
           "export HOME XDG_CONFIG_HOME GIT_CONFIG_GLOBAL",
+          timing_script(directory),
           "exec " <> quote(server) <> " \"$@\"",
           "",
         ],
@@ -119,6 +120,56 @@ fn isolate(server: String) -> String {
     as "the isolated launcher is executable by its owner"
   launcher
 }
+
+// Timing is opt-in for diagnostic CI runs. The second stock handler retains
+// OTP event timestamps while the daemon keeps its ordinary JSON formatter.
+// Its relative output lives in the private state directory the native
+// launcher already selects, and its configuration belongs to this fixture.
+fn timing_script(directory: String) -> String {
+  case native.getenv("LOOM_TEST_TIMING") {
+    Ok("1") -> {
+      let config = directory <> "/timing.config"
+      let assert Ok(Nil) = simplifile.write(config, timing_configuration)
+        as "the fixture owns its timestamped logger configuration"
+
+      // The VM reads its flags separately from the shell, so its quoted
+      // config argument must survive both parsers without changing PATH.
+      let config_argument =
+        config
+        |> string.replace("\\", "\\\\")
+        |> string.replace("\"", "\\\"")
+      string.join(
+        [
+          "if [ -n \"${LOOM_LOG-}\" ]; then",
+          "LOOM_LOG_LEVEL=debug",
+          "ERL_FLAGS=\"${ERL_FLAGS-} \""
+            <> quote("-config \"" <> config_argument <> "\""),
+          "export LOOM_LOG_LEVEL ERL_FLAGS",
+          "fi",
+        ],
+        "\n",
+      )
+    }
+    Ok(_) | Error(_) -> ""
+  }
+}
+
+// Kernel installs these before the entry point runs. The default handler
+// remains available for Loom to configure; only the second uses stock text.
+const timing_configuration =
+  "[{kernel, [{logger, [
+  {handler, default, logger_std_h, #{}},
+  {handler, fixture_timing, logger_std_h, #{
+    level => debug,
+    config => #{file => \"fixture-effect-timing.log\"},
+    formatter => {logger_formatter, #{
+      template => [time, \" \", level, \" \", pid, \" \", msg, \"\\n\"],
+      time_offset => \"Z\",
+      max_size => 8192
+    }}
+  }}
+]}]}].
+"
 
 // A POSIX single-quoted word. The only character a single-quoted word
 // cannot hold is the quote itself, which closes the word, adds an escaped
