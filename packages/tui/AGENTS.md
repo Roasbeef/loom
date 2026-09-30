@@ -1189,6 +1189,9 @@ boundaries and the split's measurements under Invariants.
   `Model.shared.roster` and the focus in `Model.view.strip_focus`;
   `tui_model.strip` rebuilds the `State` and `tui_model.store_strip` stores
   one back. Session replacement resets both.
+  `layout.strip_height` uses `agent_roster.listed_count` and
+  `agent_strip.height_for_count`, so geometry never formats task text or
+  elapsed figures. Painting still obtains the same membership through `lines`.
 - The prompt cache: `Model.shared.cache` is a `session_view/cache_watch.Ledger`
   (each strand's watch, the pushed-row cursor, held rows and model-switch
   fences), which the reducer feeds through `admit`, `settle`, `capture`,
@@ -1619,6 +1622,12 @@ untouched.
   record, would print over the frame and stay until those cells repaint.
 
 ## Invariants
+
+- **Speaker padding preserves cells.** Transcript rows paint their content
+  before writing the speaker-colored padding directly to the buffer. Padding
+  has a known cell width and does not pass through span width measurement.
+  `transcript_padding_test` compares the previous padded-paragraph output by
+  complete cells, including links, continuation cells and both repaint phases.
 
 - **A successful settle never changes the transcript's height in compact
   mode.** A live region and the durable projection that replaces it occupy

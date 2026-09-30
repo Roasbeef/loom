@@ -34,6 +34,7 @@ import tui/agents
 import tui/connection
 import tui/frame
 import tui/inbound
+import tui/layout
 import tui/model as tui_model
 import tui/render
 import tui/workspace
@@ -222,6 +223,21 @@ pub fn the_strip_grows_a_row_per_agent_up_to_its_cap_test() {
   assert agent_strip.height(lines, 20) == 5
   assert agent_strip.height(lines, 16) == 4
   assert agent_strip.height(lines, 15) == 0
+}
+
+pub fn geometry_and_drawn_strip_agree_across_screen_heights_test() {
+  let base = model()
+  let base =
+    tui_model.Model(
+      ..base,
+      shared: session_model.Shared(..base.shared, strands: roster()),
+    )
+  list.each([0, 12, 15, 16, 20, 40, 100], fn(height) {
+    let base =
+      tui_model.Model(..base, view: tui_model.View(..base.view, height:))
+    assert layout.strip_height(base)
+      == agent_strip.height(layout.strip_lines(base), height)
+  })
 }
 
 // --- glances ---------------------------------------------------------------

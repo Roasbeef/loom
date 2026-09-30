@@ -9,6 +9,8 @@
 # in scripts/tui_perf.erl:
 #
 #   events                 key, idle tick, and tick/key with 64 frames waiting
+#   render <width> <height> full frame and forty wheel events with six agents;
+#                          writes a complete styled-cell comparison witness
 #   burst <frames>         a burst drained tick by tick, per frame
 #   backlog <frames> <0|3> [live]
 #                          a mailbox backlog while 0 or 3 jobs run

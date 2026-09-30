@@ -18,6 +18,7 @@ import etui/backend/default
 import etui/widgets/textarea
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import machine/codec
 import machine/operation
 import machine/strand
@@ -44,6 +45,7 @@ import tui/queue_editor
 import tui/render
 import tui/tick
 import tui/workspace
+import tui_perf_dev
 
 type Work {
   Active(tool: String)
@@ -106,11 +108,65 @@ fn fixture_model(palette: String) -> tui_model.Model {
       connection.new_inbox(),
       workspace.Context("native UI fixture", None),
     )
+  fixture(base, palette, main_update)
+}
+
+/// The captured six-agent fixture on the benchmark's pinned clock.
+///
+/// It uses the normal transcript surface so a full frame and a wheel event
+/// exercise the same layout, strip and text painting as the shipped client.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_agents_dev.render_model()
+/// ```
+pub fn render_model() -> tui_model.Model {
+  let #(_, base) = tui_perf_dev.bench_model()
+  let model =
+    fixture(
+      base,
+      "dark",
+      string.repeat(
+        "Checking scroll anchors, allocation and CPU for six agents. 中文 👩‍💻 café é.\n\n",
+        100,
+      ),
+    )
+  tui_model.Model(
+    ..model,
+    view: tui_model.View(
+      ..model.view,
+      overlay: tui_model.NoOverlay,
+      diff_view: tui_model.DiffHidden,
+      queue_editor: queue_editor.new(),
+    ),
+  )
+}
+
+/// The row count and scroll position that witness a measured wheel burst.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(rows, offset) = tui_agents_dev.render_witness(model)
+/// ```
+pub fn render_witness(model: tui_model.Model) -> #(Int, Int) {
+  #(model.view.rendered_row_count, model.view.scroll_offset)
+}
+
+const main_update =
+  "Drafts now stay with their original session and strand. Checking the native layouts next."
+
+fn fixture(
+  base: tui_model.Model,
+  palette: String,
+  main_update: String,
+) -> tui_model.Model {
   let fixture = [
     Agent(
       "main",
       "Integrate the agent workspace and preserve message targeting.",
-      "Drafts now stay with their original session and strand. Checking the native layouts next.",
+      main_update,
       Active("agent_wait"),
     ),
     Agent(

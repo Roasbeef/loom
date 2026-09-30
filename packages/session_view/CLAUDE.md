@@ -203,6 +203,9 @@ for a host with no surfaces.
   `agent_roster.{Roster, Line, Chips}` is which strands a strip lists, in
   what order, with elapsed time and context size (`lines`, `chips`,
   `running_ms`, `context`).
+  Its internal `listed_count` uses the same membership predicate without
+  constructing display lines, for hosts measuring geometry. The roster test
+  compares that count with `lines` across every status and active-strand choice.
 - `cache_miss` (a miss reconstructed from two usage rows, and the TTL
   outlook the rows prove) and `cache_watch.Ledger` (which rows may be
   compared: `admit`, `settle`, `capture`, `observe`, `forget`, and `shown`,

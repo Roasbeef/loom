@@ -194,9 +194,25 @@ pub fn visible(lines: List(Line)) -> Bool {
 /// ```
 @internal
 pub fn height(lines: List(Line), screen_height: Int) -> Int {
-  case visible(lines) && screen_height >= min_screen_height {
+  height_for_count(list.length(lines), screen_height)
+}
+
+/// The strip's height from its membership count, including overflow.
+///
+/// A geometry query has no use for formatted lines. Painting and hit testing
+/// use this same bound whether they already hold lines or only the roster.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent_strip.height_for_count(1, 40) == 0
+/// assert agent_strip.height_for_count(12, 40) == 8
+/// ```
+@internal
+pub fn height_for_count(count: Int, screen_height: Int) -> Int {
+  case count >= 2 && screen_height >= min_screen_height {
     False -> 0
-    True -> int.min(list.length(lines), capacity(screen_height))
+    True -> int.min(count, capacity(screen_height))
   }
 }
 

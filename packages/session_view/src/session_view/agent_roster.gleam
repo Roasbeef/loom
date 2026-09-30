@@ -362,6 +362,22 @@ pub fn lines(
   |> list.map(line(roster, _))
 }
 
+/// Counts the rows a strip lists without formatting their text or figures.
+///
+/// Geometry depends only on membership. Reusing the listing predicate keeps
+/// layout and painting in agreement without sanitizing every task on each
+/// height query.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent_roster.listed_count([], "main") == 0
+/// ```
+@internal
+pub fn listed_count(rows: List(agent_view.Row), active: String) -> Int {
+  list.count(rows, fn(row) { row.id == primary || listed(row, active) })
+}
+
 /// The strip as chips: `lines` for everything but the advisor, the advisor
 /// on its own, and the strands that settled out of the strip, in reverse row order.
 ///
