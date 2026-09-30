@@ -33,6 +33,11 @@
 //// cookie, and the handler reads it back. The registration lives no longer
 //// than the page: it is found only through a live UI session, and the sweep
 //// drops what the sessions table has dropped.
+//// The same actor keeps the page-minted invitations' allowance
+//// (protocol-change/051, the addendum on inviting from the session page): how
+//// many invitations a credential's pages have asked for lately, keyed by the
+//// credential and not by any page, so that opening another page, or switching
+//// from page to page, does not reset the count a stolen page is held to.
 ////
 //// Each table is a per-key deadline table inside this one actor, which
 //// `docs/weft.md` ("Per-key deadline tables stay") allows. Every read checks
@@ -97,6 +102,26 @@ pub const max_pages = ending.max_pages
 
 /// How often the tables are swept, in milliseconds.
 pub const sweep_ms = 60_000
+
+/// The most invitations the pages of one credential may mint in
+/// `invite_window_ms`.
+///
+/// A page's invitation is a claim that becomes a credential outliving the
+/// page and every check the page is held to, so a page that a program other
+/// than its owner's browser took (protocol-change/051, the addendum on
+/// inviting from the session page) must not be able to mint many. Three covers an owner asking for two or three people in a sitting and the
+/// press that had to be repeated, and it stops a program with the page's
+/// three secrets from filling the catalogue with principals: at most 3 an
+/// hour, 24 across the eight hours a page lives. The owner who needs more
+/// invites from a terminal with `loomd access invite`, which has no such
+/// limit and is not a page.
+pub const invite_limit = 3
+
+/// The window `invite_limit` is counted over, in milliseconds. It is the
+/// lifetime of a page-minted claim (`web_view/invites.claim_ttl_ms`), so the
+/// limit is also the most claims a credential's pages can have open and
+/// unredeemed at once.
+pub const invite_window_ms = 3_600_000
 
 /// What a ticket and the UI session it becomes stand for.
 pub type Grant {
@@ -207,6 +232,8 @@ type Message {
   Register(cookie: String, images: Images)
   Read(cookie: String, reply: Subject(Result(Images, Nil)))
   Sizes(reply: Subject(#(Int, Int)))
+  Reserve(credential: String, reply: Subject(Result(Nil, Nil)))
+  Release(credential: String)
   Sweep
 }
 
@@ -231,6 +258,10 @@ type State {
     /// The readers of each live page's images, by the digest of its cookie:
     /// the newest socket's, since a reload replaces the socket a page had.
     readers: Dict(String, Images),
+    /// The instants of the invitations each credential's pages have asked
+    /// for inside `invite_window_ms`, newest first, keyed by the
+    /// credential's fingerprint. A credential with none has no entry.
+    invites: Dict(String, List(Int)),
   )
 }
 
@@ -242,7 +273,7 @@ type State {
 /// // let assert Ok(sessions) = ui_sessions.start(settings)
 /// ```
 pub fn start(settings: Settings) -> Result(Sessions, String) {
-  actor.new(State(settings, dict.new(), dict.new(), 0, dict.new()))
+  actor.new(State(settings, dict.new(), dict.new(), 0, dict.new(), dict.new()))
   |> actor.on_message(handle)
   |> actor.periodic(every: sweep_ms, sending: Sweep)
   |> actor.start
@@ -283,6 +314,40 @@ pub fn mint_before(
     _,
   ))
   |> result.replace_error(Nil)
+}
+
+/// Reserves one of the credential's invitations, or refuses when it has asked
+/// for `invite_limit` in the last `invite_window_ms`. The count is made and
+/// taken in one message, so two pages asking at once cannot both take the last
+/// place. A caller whose invitation then failed gives the place back with
+/// `release_invite`, so a refusal that minted nothing costs nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.reserve_invite(sessions, digest) == Ok(Nil)
+/// ```
+pub fn reserve_invite(
+  sessions: Sessions,
+  credential: access.Digest,
+) -> Result(Nil, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Reserve(
+    access.fingerprint(credential),
+    _,
+  ))
+  |> result.unwrap(Error(Nil))
+}
+
+/// Gives back the credential's newest reserved invitation, for an invitation
+/// that was reserved and did not mint.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.release_invite(sessions, digest)
+/// ```
+pub fn release_invite(sessions: Sessions, credential: access.Digest) -> Nil {
+  process.send(sessions.subject, Release(access.fingerprint(credential)))
 }
 
 /// Redeems `ticket` once, for the page of `session_id`. A successful
@@ -592,12 +657,49 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(state)
     }
 
+    // The window is a rolling one: an instant older than it no longer counts,
+    // so a place frees an hour after it was taken. The reservation is one
+    // turn, so the count and the taking cannot be split by another page.
+    Reserve(credential:, reply:) -> {
+      let recent = recent_invites(state.invites, credential, now)
+      case list.drop(recent, invite_limit - 1) {
+        [_, ..] -> {
+          process.send(reply, Error(Nil))
+          actor.continue(state)
+        }
+        [] -> {
+          process.send(reply, Ok(Nil))
+          actor.continue(
+            State(
+              ..state,
+              invites: dict.insert(state.invites, credential, [now, ..recent]),
+            ),
+          )
+        }
+      }
+    }
+
+    Release(credential:) -> {
+      let held = case recent_invites(state.invites, credential, now) {
+        [] -> state.invites
+        [_newest, ..older] ->
+          case older {
+            [] -> dict.delete(state.invites, credential)
+            [_, ..] -> dict.insert(state.invites, credential, older)
+          }
+      }
+      actor.continue(State(..state, invites: held))
+    }
+
     Sweep -> {
       let sessions =
         dict.filter(state.sessions, fn(_, entry) { entry.expires_at > now })
       actor.continue(
         State(
           ..state,
+          invites: dict.filter(state.invites, fn(_, instants) {
+            list.any(instants, fn(at) { at > now - invite_window_ms })
+          }),
           tickets: dict.filter(state.tickets, fn(_, entry) {
             entry.expires_at > now
           }),
@@ -609,6 +711,18 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       )
     }
   }
+}
+
+// The instants of a credential's invitations that are still inside the
+// window, newest first.
+fn recent_invites(
+  invites: Dict(String, List(Int)),
+  credential: String,
+  now: Int,
+) -> List(Int) {
+  dict.get(invites, credential)
+  |> result.unwrap([])
+  |> list.filter(fn(at) { at > now - invite_window_ms })
 }
 
 // The table with room for one more of `grant`'s pages: unchanged while the

@@ -17,7 +17,6 @@ import gleam/option.{None}
 import gleam/string
 import host/bootstrap
 import session_view/snapshot
-import storage/access
 import storage/catalogue
 import web_view/component
 import web_view/image
@@ -52,8 +51,7 @@ fn mounted(page: ui_socket.Page) -> String {
 }
 
 pub fn an_observer_gets_the_observers_page_test() {
-  let assert Ok(page) =
-    ui_socket.start_page(access.Participant(access.Observer), start())
+  let assert Ok(page) = ui_socket.start_page(ui_socket.Observing, start())
     as "the observer's page starts"
   let tree = mounted(page)
   assert string.contains(tree, "observer-bar")
@@ -70,8 +68,8 @@ pub fn an_observer_gets_the_observers_page_test() {
 }
 
 pub fn an_operator_gets_the_operators_page_test() {
-  list.each([access.Participant(access.Operator), access.Owner], fn(authority) {
-    let assert Ok(page) = ui_socket.start_page(authority, start())
+  list.each([ui_socket.Operating, ui_socket.Owning], fn(role) {
+    let assert Ok(page) = ui_socket.start_page(role, start())
       as "the operator's page starts"
     let tree = mounted(page)
     assert string.contains(tree, "composer")
@@ -222,6 +220,91 @@ pub fn an_operator_socket_accepts_only_its_two_events_test() {
   )
 }
 
+// A click at `path` on the page.
+fn click_on(path: String) -> String {
+  "{\"kind\":1,\"path\":"
+  <> json.to_string(json.string(path))
+  <> ",\"name\":\"click\",\"event\":{}}"
+}
+
+// Protocol-change/051, the addendum on inviting from the session page: only
+// an owner's socket admits a click at or beneath the invitation control's
+// path. A member operator's socket drops it, alone or inside a batch, and
+// still admits the same click anywhere else, so the sidebar's buttons and the
+// approval cards are unaffected.
+pub fn only_an_owners_socket_admits_the_invitation_click_test() {
+  let at = component.invite_path
+  let beneath = at <> "\t1"
+  list.each([at, beneath, at <> "\t2\t0"], fn(path) {
+    assert ui_socket.owner_accepts(click_on(path))
+    assert !ui_socket.operator_accepts(click_on(path))
+    assert !ui_socket.observer_accepts(click_on(path))
+    assert !ui_socket.operator_accepts(
+      "{\"kind\":3,\"messages\":["
+      <> click_on(component.sidebar_path <> "\t0")
+      <> ","
+      <> click_on(path)
+      <> "]}",
+    )
+    assert ui_socket.owner_accepts(
+      "{\"kind\":3,\"messages\":["
+      <> click_on(component.sidebar_path <> "\t0")
+      <> ","
+      <> click_on(path)
+      <> "]}",
+    )
+  })
+
+  // Neighbours of the path are not the control: the pane's title, its list, a
+  // sibling pane and a path that only begins with the same digits.
+  list.each(
+    [
+      "0\t3\t2\t0",
+      "0\t3\t2\t1",
+      "0\t3\t1\t2",
+      "0\t3\t2\t20",
+      component.sidebar_path <> "\t2",
+    ],
+    fn(path) {
+      assert ui_socket.operator_accepts(click_on(path))
+    },
+  )
+}
+
+// The owner's socket takes the same two events and no more: a key, an input
+// or a frame of another kind is dropped there too.
+pub fn an_owners_socket_takes_no_more_than_the_operators_events_test() {
+  assert ui_socket.owner_accepts("{\"kind\":1,\"name\":\"click\"}")
+  assert ui_socket.owner_accepts("{\"kind\":1,\"name\":\"submit\"}")
+  list.each(
+    [
+      "{\"kind\":1,\"name\":\"keydown\"}",
+      "{\"kind\":1,\"name\":\"input\"}",
+      "{\"kind\":3,\"messages\":[]}",
+      "{\"kind\":2,\"name\":\"value\"}",
+      "not json",
+    ],
+    fn(frame) {
+      assert !ui_socket.owner_accepts(frame)
+    },
+  )
+}
+
+// A forged click at the control's path on a member operator's page is dropped
+// before the component sees it, so nothing is redrawn.
+pub fn a_member_operators_page_drops_the_invitation_click_test() {
+  let assert Ok(page) = ui_socket.start_page(ui_socket.Operating, start())
+    as "the member operator's page starts"
+  let _ = mounted(page)
+  page.forward(
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(component.invite_path <> "\t0"))
+    <> ",\"name\":\"click\",\"event\":{}}",
+  )
+  assert process.selector_receive(page.frames, 200) == Error(Nil)
+  page.shutdown()
+}
+
 fn view(status: manager.Status) -> manager.View {
   manager.View(
     registration: catalogue.Registration(
@@ -366,12 +449,9 @@ pub fn only_an_operators_page_may_ask_for_a_ticket_test() {
 // nothing answers that it drew nothing, at once and not after the wait.
 pub fn both_roles_answer_for_an_image_the_page_never_drew_test() {
   list.each(
-    [
-      access.Participant(access.Observer),
-      access.Participant(access.Operator),
-    ],
-    fn(authority) {
-      let assert Ok(page) = ui_socket.start_page(authority, start())
+    [ui_socket.Observing, ui_socket.Operating, ui_socket.Owning],
+    fn(role) {
+      let assert Ok(page) = ui_socket.start_page(role, start())
         as "the page starts"
       let _ = mounted(page)
       let before = bootstrap.monotonic_time_ms()
@@ -389,8 +469,7 @@ pub fn a_reader_answers_nothing_once_its_socket_has_ended_test() {
   let started = process.new_subject()
   let owner =
     process.spawn(fn() {
-      let assert Ok(page) =
-        ui_socket.start_page(access.Participant(access.Observer), start())
+      let assert Ok(page) = ui_socket.start_page(ui_socket.Observing, start())
         as "the page starts"
       let ended = process.new_subject()
       process.send(started, #(page.images, ended))
