@@ -1,7 +1,7 @@
 # Current handoff
 
 The MCP extraction is based on `01f14ef8f36f1fa87f7fb7977470d8ad34c28943`
-and records source/dependency baseline `45148c764`. The earlier extraction
+and records source/dependency baseline `35869084b`. The earlier extraction
 candidate used an old local main; its focused tests and four reproduced
 Git-launcher failures belong to that old baseline. Current main already
 contains the launcher fix. Those results are not signoff for this head.
@@ -11,11 +11,14 @@ contains the launcher fix. Those results are not signoff for this head.
 Generic JSON/JSON-RPC, framing, client actors and native process custody
 live in [Gleam MCP](https://github.com/Roasbeef/gleam-mcp). Both direct
 consumers and the conformance closure pin
-`a3de7047fd594150addee2ba284be5c02a131ed0`. Its full Linux/macOS CI passed
-[run 36706135255](https://github.com/Roasbeef/gleam-mcp/actions/runs/36706135255):
+`d829a35f90be380ab1c659016aec752ebff67a95`. Its full Linux/macOS CI passed
+[run 36713584445](https://github.com/Roasbeef/gleam-mcp/actions/runs/36713584445):
 232 unit tests, including every required Draft 2020-12 vector; 139 linter
-tests; five tooling checks; and 36 native stdio/HTTP/TLS checks. Independent
-review findings were fixed and rechecked before publication.
+tests; five tooling checks; and 39 native stdio/HTTP/TLS checks. Independent
+review findings were fixed and rechecked before publication. The existing
+direct Mist dependency is aligned with the SDK's framing fix at `1a81d90`;
+that fix passed [its own CI](https://github.com/Roasbeef/mist/actions/runs/36712967634)
+and remains reviewable in [Mist PR #2](https://github.com/Roasbeef/mist/pull/2).
 
 The SDK adds released MCP `2026-07-28`, typed tool definitions, HTTP, explicit
 multi-round-trip continuations and owned subscriptions. Loom continues to
@@ -31,17 +34,30 @@ moved with their implementation; local adapter and actual-server fixtures
 remain here. Current main's other dependencies, including weft 0.4.5 and
 its shared UI packages, were preserved during rebase.
 
-[Jevelin MCP](https://github.com/Roasbeef/jevelin-mcp) consumes the published
-SDK and existing Jevelin library directly. Its four shared typed definitions
-retain original label/rubric/batch decoders. The complete app gate passes
-compiled stdio and HTTP exchanges plus a separate native typed client without
-a live Jev credential. Mock proof is not authenticated provider proof.
+The complete local `make check` passed through the final public SDK/Mist
+pins with the CI-matching patched Gleam 1.19.0-rc2 compiler and fresh offline
+seed. Its own exit code was zero, including all packages, native tests,
+static gates and lint. The preceding published extraction head `cd932374`
+passed the [required hosted Linux gate](https://github.com/Roasbeef/loom/actions/runs/36707120168).
+Its hosted macOS e2e failure at `worktree_diff_test.gleam:95` also fails on
+[exact base main `01f14ef8`](https://github.com/Roasbeef/loom/actions/runs/36694588061/job/109820029705)
+with the same assertion and GitFailed(128) diagnostic. The relevant code and
+workflow are unchanged; this classifies the blocker without declaring macOS
+green. Hosted results and fresh jailed MCP exchanges belong to the exact
+published head that produced them.
 
-The new Loom adapter gate passed all 102 tests through the public dependency.
-Full local, hosted and real jailed consumer evidence must be read at its
-named commit or run; neither the SDK nor app gate establishes Loom signoff.
-[PR #669](https://github.com/Roasbeef/loom/pull/669) records that validation
-boundary and its current draft status. Continue to require the full gate,
+[Jevelin MCP](https://github.com/Roasbeef/jevelin-mcp) consumes the SDK and
+existing Jevelin library directly. Its four shared typed definitions retain
+original label/rubric/batch decoders. A later application HTTP gate exposed
+an inherited Glisten startup race: connections can be admitted before their
+factory exists. A reviewed local ordering fix passed fifty complete fresh
+application HTTP starts with all original assertions intact. Publication of
+a new Glisten dependency fork is a separate scope decision; neither the
+SDK's CI nor those local staged results establish final application signoff.
+No authenticated live Jev request has been made.
+
+[PR #669](https://github.com/Roasbeef/loom/pull/669) records the current
+validation boundary and draft status. Continue to require the full gate,
 real native MCP process and configured-server code-mode exchanges when
 updating this dependency. Remote MCP admission policy remains separate
 from the reusable library's HTTP implementation.
