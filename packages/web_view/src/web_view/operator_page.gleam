@@ -56,10 +56,12 @@ import session_view/snapshot
 import web_view/completion
 import web_view/component
 import web_view/image
+import web_view/invites
 import web_view/sessions
 import web_view/view/controls
 import web_view/view/lane
 import web_view/view/nudges
+import web_view/view/share
 import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/strip
@@ -95,6 +97,17 @@ pub type Msg(socket) {
   /// wrote. The daemon decides whether the page's principal may have it
   /// (protocol-change/051, the addendum on switching sessions).
   Opening(session: String)
+
+  /// One of the invitation control's two buttons: the owner asks the daemon
+  /// to invite a person to this session, in the role the button names. The
+  /// role is the message's, fixed when the tree was drawn, and the control is
+  /// drawn only on an owner's page (protocol-change/051, the addendum on
+  /// inviting from the session page).
+  Inviting(role: invites.Role)
+
+  /// The invitation control's "Hide the token" button: the owner has copied
+  /// the invitation and the page drops it.
+  Dismissing
 }
 
 /// The Lustre application for one session's operator page.
@@ -138,6 +151,8 @@ pub fn update(
     Controlled(control:) -> component.control(model, control)
     Replying(key:) -> component.reply(model, key)
     Opening(session:) -> component.switch_to(model, session)
+    Inviting(role:) -> component.invite(model, role)
+    Dismissing -> #(component.dismiss_invitation(model), effect.none())
   }
   #(model, effect.map(effects, Observed))
 }
@@ -215,6 +230,14 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       model,
       fn(strand) { Observed(component.FocusRequested(strand)) },
       Some(component.viewers(model)),
+      share.view(
+        component.share(model),
+        share.Presses(
+          observer: Inviting(invites.Observer),
+          operator: Inviting(invites.Operator),
+          done: Dismissing,
+        ),
+      ),
     ),
     component.needing(model),
     component.workspace_digest(model),

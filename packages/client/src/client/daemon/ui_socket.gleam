@@ -64,7 +64,7 @@ import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/json
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -434,6 +434,7 @@ fn admit(
           ticket_for(attachment, tickets, attach.ceiling, open, target)
         })
       },
+      invite: None,
     )
   let start =
     component.Start(

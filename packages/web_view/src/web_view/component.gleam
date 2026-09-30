@@ -151,6 +151,7 @@ import session_view/turns
 import session_view/worktree_view
 import web_view/ending.{type Ending}
 import web_view/image as web_image
+import web_view/invites
 import web_view/sessions
 import web_view/view/changes
 import web_view/view/crumb
@@ -245,6 +246,20 @@ pub const strip_path = "0\t3\t0\t1\t0"
 /// cannot ask for a switch even by forging the path. `session_switch_test`
 /// and `sidebar_test` fail if the view moves the sidebar or a button leaves it.
 pub const sidebar_path = "0\t1"
+
+/// The Lustre event path of the invitation control, on an owner's page: it is
+/// the third child of the Session pane (`view/session_tab`), after the pane's
+/// title and its list, and the Session pane is the third child of the strand
+/// panel, which is the fourth child of the page's frame (`view/shell`). Every
+/// handler beneath it is one of the control's three buttons (protocol-change/051,
+/// the addendum on inviting from the session page). The page socket admits a
+/// `click` at or beneath this path only on a page whose principal is the
+/// daemon's owner (`client/daemon/ui_socket.operator_accepts`), so a member
+/// operator's browser and an observer's cannot press the control even by
+/// forging the path, and the daemon refuses the request a third time
+/// (`client/daemon/ui_socket.invite_for`). `invite_test` fails if the view
+/// moves the control or a handler leaves the region.
+pub const invite_path = "0\t3\t2\t2"
 
 /// How long the sidebar's list stands before the page reads it again, in
 /// milliseconds of the transport's clock. The list changes when a session is
@@ -344,6 +359,17 @@ pub type Transport(socket) {
     /// when the operator presses a row, and it must not run long: the page's
     /// runtime waits for it.
     open: fn(String) -> sessions.Answer,
+    /// Asks the daemon to invite a person to this page's session, in a role
+    /// the owner chose, for an owner's page that pressed one of the control's
+    /// buttons: the daemon mints the same claim `loomd access invite` mints
+    /// and answers with the command and the token, or the reason it did not.
+    /// It is `None` unless the page's principal is the daemon's owner, and
+    /// the daemon checks that again when it is called, so a page that has no
+    /// capability draws no control and a page that has one cannot use it once
+    /// its principal or its own standing has changed. It runs in the
+    /// component's process, and it must not run long: the page's runtime
+    /// waits for it.
+    invite: Option(fn(invites.Role) -> invites.Answer),
   )
 }
 
@@ -550,6 +576,10 @@ type View(socket) {
     /// switch replaces it: the ticket is single use and lives 60 seconds, so
     /// a value left behind is spent.
     departure: Option(String),
+    /// What the invitation control is doing. It is the one place the page
+    /// holds a claim token, only while the invitation is on screen, and the
+    /// state is replaced when the owner dismisses it.
+    share: invites.Share,
     /// When the page opened or last asked for the strand's live jobs, on the
     /// transport's clock, so the next ask waits `jobs_refresh_ms` whether or
     /// not the daemon answered. A refused read is therefore not repeated on
@@ -651,6 +681,12 @@ pub type Msg(socket) {
   /// effect's own message, dispatched from the component's process, and no
   /// handler carries it, so a browser cannot send one.
   Linked(answer: sessions.Answer)
+
+  /// The daemon answered a request to invite. It is the effect's own
+  /// message, dispatched from the component's process, and no handler
+  /// carries it, so a browser cannot send one and cannot put a token in the
+  /// page.
+  Invited(answer: invites.Answer)
 }
 
 /// The Lustre application for one session's observer page.
@@ -707,6 +743,10 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       groups: [],
       listed_at: None,
       departure: None,
+      share: case start.transport.invite {
+        Some(_) -> invites.Ready
+        None -> invites.Withheld
+      },
       jobs_asked_at: None,
       refusal: None,
       outcome: "",
@@ -886,6 +926,8 @@ pub fn update(
     )
 
     Linked(answer:) -> #(linked(model, answer), effect.none())
+
+    Invited(answer:) -> #(invited(model, answer), effect.none())
   }
 }
 
@@ -2144,6 +2186,101 @@ pub fn departure(model: Model(socket)) -> Option(String) {
   model.view.departure
 }
 
+/// Asks the daemon to invite a person to this page's session, when an owner
+/// pressed one of the invitation control's buttons.
+///
+/// The page sends the role and nothing else. The daemon makes the invitation
+/// as `loomd access invite` makes it, for this page's session, and its answer
+/// arrives as `Invited`. The control is `Asking` until then, so a second press
+/// while a request is with the daemon is ignored and one press mints at most
+/// one invitation, and a control that is showing an invitation ignores a
+/// press too: the owner hides the token first, so at most one is on screen.
+/// A page that has no capability to invite (`Transport.invite` is `None`)
+/// ignores the message, so a member's page is unchanged if one arrives, and
+/// the observer's page, which draws no control, has no message that reaches
+/// here at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.invite(model, invites.Observer)
+/// ```
+pub fn invite(
+  model: Model(socket),
+  role: invites.Role,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.transport.invite, model.view.share {
+    Some(ask), invites.Ready | Some(ask), invites.Refused(..) -> #(
+      Model(..model, view: View(..model.view, share: invites.Asking)),
+      inviting(ask, role),
+    )
+    Some(_), invites.Asking
+    | Some(_), invites.Showing(..)
+    | Some(_), invites.Withheld
+    | None, _
+    -> #(model, effect.none())
+  }
+}
+
+// The daemon's answer, in the component's process, as a message.
+fn inviting(
+  ask: fn(invites.Role) -> invites.Answer,
+  role: invites.Role,
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  dispatch(Invited(ask(role)))
+}
+
+// The daemon's answer to a request to invite. An invitation becomes what the
+// control shows, and a refusal is worded in the control's own status line. An
+// answer that arrives when no request is out was not asked for and is
+// dropped, so the token is never taken into a state that is not waiting for
+// it.
+fn invited(model: Model(socket), answer: invites.Answer) -> Model(socket) {
+  case model.view.share, answer {
+    invites.Asking, invites.Minted(invitation:) ->
+      Model(
+        ..model,
+        view: View(..model.view, share: invites.Showing(invitation)),
+      )
+    invites.Asking, invites.Declined(reason:) ->
+      Model(..model, view: View(..model.view, share: invites.Refused(reason)))
+    invites.Withheld, _
+    | invites.Ready, _
+    | invites.Showing(..), _
+    | invites.Refused(..), _
+    -> model
+  }
+}
+
+/// Hides an invitation once the owner has copied it, and clears a refusal's
+/// words. The state that held the token is replaced, so nothing on the page
+/// or in the component keeps it, and the buttons come back.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.dismiss_invitation(model)
+/// ```
+pub fn dismiss_invitation(model: Model(socket)) -> Model(socket) {
+  case model.view.share {
+    invites.Showing(..) | invites.Refused(..) ->
+      Model(..model, view: View(..model.view, share: invites.Ready))
+    invites.Withheld | invites.Ready | invites.Asking -> model
+  }
+}
+
+/// What the invitation control is doing, for the operator's view to draw.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.share(model) == invites.Withheld
+/// ```
+pub fn share(model: Model(socket)) -> invites.Share {
+  model.view.share
+}
+
 /// The listed session `id` names, when the page may offer to open it: another
 /// session than this one, that a process runs. A peer's message names its
 /// source session, which is the peer's text and never becomes an
@@ -2735,7 +2872,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         ),
       ]),
     ],
-    panel(model, FocusRequested, None),
+    panel(model, FocusRequested, None, element.none()),
     needing(model),
     workspace_digest(model),
   )
@@ -2749,17 +2886,20 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 /// `viewers` is the attached viewers the Session pane draws, or `None` on a
 /// page that does not show them: the observer's, on the ruling that a link
 /// handed to someone who may only watch does not tell them who else is
-/// watching.
+/// watching. `share` is the invitation control the Session pane ends with:
+/// the operator page passes an owner's control (`view/share`), and every other
+/// page passes `element.none()`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None)
+/// // component.panel(model, FocusRequested, None, element.none())
 /// ```
 pub fn panel(
   model: Model(socket),
   focus: fn(String) -> message,
   viewers: Option(session_summary.Viewers),
+  share: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -2771,6 +2911,7 @@ pub fn panel(
       cost_text(model),
       jobs(model),
       viewers,
+      share,
     ),
   )
 }

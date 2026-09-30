@@ -38,6 +38,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       now: fn() { 0 },
       sessions: fn() { [] },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
+      invite: None,
     ),
   )
 }
