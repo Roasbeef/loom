@@ -15,6 +15,7 @@
                                                                            │ ✓ sub:docs [3]
  ◇ Memory · 3 notes                                                        │   Finished 1m 12s
  └ read 3 files · edited calc.gleam +6 −0                                  │
+ ◇ tools · 4 calls · 1 failed · Ctrl+g expands                             │
                                                                            │
  ● main spawned 2 strands  [0]                                             │
 ▎├ ● sub:tests  run gleam test · needs approval · 9k ctx · 34s [2]         │
@@ -29,7 +30,6 @@
  ◆ main [0]                                                                │
    I added subtract next to add. Both tests should pass once               │
    sub:tests reports back, then I will update the README example.          │
-                                                                           │
  ▸ Todo · 3 of 5 done · Ctrl+g                                             │
 ─ To main · enter queues · tab steers ─────────────────────────────────────│
  ›                                                                         │
