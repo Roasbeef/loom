@@ -1,7 +1,8 @@
 # Current handoff
 
 The MCP extraction is based on `01f14ef8f36f1fa87f7fb7977470d8ad34c28943`
-and records source/dependency baseline `35869084b`. The earlier extraction
+and records source/dependency baseline
+`7b8cd39f9744181d95f856f33b8b880f982dd11e`. The earlier extraction
 candidate used an old local main; its focused tests and four reproduced
 Git-launcher failures belong to that old baseline. Current main already
 contains the launcher fix. Those results are not signoff for this head.
@@ -11,14 +12,27 @@ contains the launcher fix. Those results are not signoff for this head.
 Generic JSON/JSON-RPC, framing, client actors and native process custody
 live in [Gleam MCP](https://github.com/Roasbeef/gleam-mcp). Both direct
 consumers and the conformance closure pin
-`d829a35f90be380ab1c659016aec752ebff67a95`. Its full Linux/macOS CI passed
-[run 36713584445](https://github.com/Roasbeef/gleam-mcp/actions/runs/36713584445):
+`686955fc0461630bf64a4dc8eb51565dc7ca1ac9`. Its full Linux/macOS CI passed
+[run 36765278006](https://github.com/Roasbeef/gleam-mcp/actions/runs/36765278006):
 232 unit tests, including every required Draft 2020-12 vector; 139 linter
 tests; five tooling checks; and 39 native stdio/HTTP/TLS checks. Independent
-review findings were fixed and rechecked before publication. The existing
-direct Mist dependency is aligned with the SDK's framing fix at `1a81d90`;
-that fix passed [its own CI](https://github.com/Roasbeef/mist/actions/runs/36712967634)
-and remains reviewable in [Mist PR #2](https://github.com/Roasbeef/mist/pull/2).
+review findings were fixed and rechecked before publication.
+
+The direct Mist dependency matches the SDK at
+`28b43178ff57bfb619c64b8c3544831646d5fdb9`; all affected locks resolve Glisten
+to `3eb785919be0736da0a20732a56275dce0132327`. Glisten registers its connection
+factory before its listener and acceptors start. Mist registers its SSE
+factory before Glisten starts. Reverse shutdown stops admission before
+retiring those factories. Mist's framing and startup fixes passed
+[CI](https://github.com/Roasbeef/mist/actions/runs/36764236673) and remain
+open in [PR #2](https://github.com/Roasbeef/mist/pull/2) and
+[PR #3](https://github.com/Roasbeef/mist/pull/3).
+
+[Glisten PR #1](https://github.com/Roasbeef/glisten/pull/1) merged into
+`compat/v9.0.1` at `1e53a4d9befb3fe6fb6f9cee2d9b13ba621a2e67`. Consumers
+retain the tested `3eb7859` commit rather than moving to that merge commit.
+The upstream startup-order report is
+[rawhat/glisten#55](https://github.com/rawhat/glisten/issues/55).
 
 The SDK adds released MCP `2026-07-28`, typed tool definitions, HTTP, explicit
 multi-round-trip continuations and owned subscriptions. Loom continues to
@@ -34,12 +48,19 @@ moved with their implementation; local adapter and actual-server fixtures
 remain here. Current main's other dependencies, including weft 0.4.5 and
 its shared UI packages, were preserved during rebase.
 
-The complete local `make check` passed through the final public SDK/Mist
-pins with the CI-matching patched Gleam 1.19.0-rc2 compiler and fresh offline
-seed. Its own exit code was zero, including all packages, native tests,
-static gates and lint. The preceding published extraction head `cd932374`
-passed the [required hosted Linux gate](https://github.com/Roasbeef/loom/actions/runs/36707120168).
-Its hosted macOS e2e failure at `worktree_diff_test.gleam:95` also fails on
+The fresh offline seed and focused `make check-mcp` passed at `7b8cd39f9`,
+each with its own zero exit status. The full local `make check` also exited
+zero through the public SDK/Mist/Glisten pins with that fresh seed and the
+CI-matching patched Gleam 1.19.0-rc2 compiler. All packages, native tests,
+static gates and lint passed; lint reported zero errors and 943 warnings.
+Final publication, hosted CI and fresh Linux native MCP/configured-server
+code-mode exchanges remain pending for this baseline.
+
+The preceding published extraction head `589a2cdff` passed the required
+hosted Linux gate and advisory macOS check in
+[run 36717464125](https://github.com/Roasbeef/loom/actions/runs/36717464125).
+Its hosted macOS e2e and aggregate gate remain red. The e2e failure at
+`worktree_diff_test.gleam:95` also fails on
 [exact base main `01f14ef8`](https://github.com/Roasbeef/loom/actions/runs/36694588061/job/109820029705)
 with the same assertion and GitFailed(128) diagnostic. The relevant code and
 workflow are unchanged; this classifies the blocker without declaring macOS
@@ -47,14 +68,15 @@ green. Hosted results and fresh jailed MCP exchanges belong to the exact
 published head that produced them.
 
 [Jevelin MCP](https://github.com/Roasbeef/jevelin-mcp) consumes the SDK and
-existing Jevelin library directly. Its four shared typed definitions retain
-original label/rubric/batch decoders. A later application HTTP gate exposed
-an inherited Glisten startup race: connections can be admitted before their
-factory exists. A reviewed local ordering fix passed fifty complete fresh
-application HTTP starts with all original assertions intact. Publication of
-a new Glisten dependency fork is a separate scope decision; neither the
-SDK's CI nor those local staged results establish final application signoff.
-No authenticated live Jev request has been made.
+existing Jevelin library directly. Published application head
+`fb5b434bde8d48736c835d44a4a176efb17d007d` passed Linux/macOS CI in
+[run 36766066616](https://github.com/Roasbeef/jevelin-mcp/actions/runs/36766066616).
+Its four shared typed definitions retain original label/rubric/batch
+decoders. An independent Linux build passed the full application gate through
+the public dependencies, then fifty fresh runs of the original HTTP peer.
+Those runs retained all assertions, including 150 bearer refusals and fifty
+Origin refusals. The inherited startup blocker is closed by the published
+factory-order fixes above. No authenticated live Jev request has been made.
 
 [PR #669](https://github.com/Roasbeef/loom/pull/669) records the current
 validation boundary and draft status. Continue to require the full gate,
