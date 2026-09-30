@@ -183,7 +183,7 @@ Subagents are strands: same code, own cursor into the shared tree, own model con
 
 ### 4.3 Queues, steering, abort (adopted from pi)
 
-`steer` / `follow_up` / `next_run` with pending-entry registers, drain modes, `skip_inbox_once`, abort as drain-then-reconcile, terminal transactions as the only cleanup — adopted unchanged. Orchestration semantics orthogonal to runtime; pi got them right.
+`steer` / `follow_up` / `next_run` with pending-entry registers, drain modes, `skip_inbox_once`, abort as drain-then-reconcile, terminal transactions as the only cleanup — adopted with one fairness amendment: queued steering enters after the current tool batch materializes and before the next generation. Effects are never preempted.
 
 ### 4.4 Model routing (from omp)
 

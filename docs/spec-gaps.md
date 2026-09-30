@@ -333,10 +333,14 @@ the other side.
    as pi's defensive scan.
 5. **Entry labels** are written to `fact.label` keyed by entry id; Loom
    has no dedicated entry-label namespace.
-6. **Faithful-but-surprising transcriptions**, kept deliberately: a
-   completed tool batch sets skip-inbox-once (steer waits one turn, per
-   pi §3.12's sentence); the threshold check also runs at may-finish
-   checkpoints; backoff is base times two to the attempt, saturating at
+6. **Tool-batch steering fairness.** Unlike pi §3.12, a completed tool
+   batch leaves the inbox eligible. Queued steering materializes after the
+   entire batch and before the next generation; repeated tool turns cannot
+   postpone it indefinitely. This does not preempt effects or change
+   source-ordered result materialization. Inbox drains still set
+   skip-inbox-once so their input reaches a generation before another drain.
+   Other faithful-but-surprising transcriptions remain: the threshold check
+   also runs at may-finish checkpoints; backoff is base times two to the attempt, saturating at
    exponent twenty; overflow during a deferred poll drains as failure
    (pi's poll table has no compaction path); summary usage rows carry no
    entry id because they commit before the result entry exists.

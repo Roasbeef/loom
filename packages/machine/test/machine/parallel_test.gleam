@@ -6,6 +6,7 @@
 //// source-ordered. Under `Sequential` the batch still works one call at
 //// a time.
 
+import core/clock as core_clock
 import core/entry
 import core/ids
 import core/json
@@ -17,13 +18,14 @@ import gleam/option.{None, Some}
 import machine/acceptance.{AcceptRun}
 import machine/codec
 import machine/operation.{
-  Checkpoint, ReplaySafe, RunSettings, RunState, Sequential,
+  Checkpoint, PendingMessage, ReplaySafe, RunSettings, RunState, Sequential,
 }
 import machine/planner.{
   Admitted, AwaitEffect, Dispatch, NoObservation, ObservedAdmission,
   ObservedAssistantSettled, ObservedRunStart, ObservedToolCleared,
   ObservedToolSettled,
 }
+import machine/queue
 import support/fixture
 import support/scenario.{type World, World}
 import support/store
@@ -82,6 +84,8 @@ pub fn parallel_batch_dispatches_all_calls_before_waiting_test() {
   let assert Ok(#(world, action)) = scenario.step(world, cleared(2), opts())
   let assert Dispatch(intent: planner.ToolRequest(source_index: 2, ..), ..) =
     action
+  let #(world, steer_id) = enqueue_steer(world)
+
   // Every unfinished call is now in flight: park on the first pending.
   let assert Ok(#(world, action)) = scenario.step(world, NoObservation, opts())
   let assert AwaitEffect(key: planner.ToolKey(source_index: 1, ..)) = action
@@ -98,6 +102,8 @@ pub fn parallel_batch_dispatches_all_calls_before_waiting_test() {
       opts(),
     )
   assert writes == ["set:pending.entry", "set:op.state"]
+  assert store.get_entry(world.store, ids.entry_id_to_string(steer_id))
+    == Error(Nil)
   let assert Ok(#(world, action)) = scenario.step(world, NoObservation, opts())
   let assert AwaitEffect(key: planner.ToolKey(source_index: 1, ..)) = action
   // Call 1 settles; both staged outcomes materialize in source order.
@@ -134,6 +140,19 @@ pub fn parallel_batch_dispatches_all_calls_before_waiting_test() {
     ..,
   )) = store.get_entry(world.store, second_id)
   assert ids.entry_id_to_string(write_parent) == first_id
+
+  // Steering follows the complete batch, before another generation.
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(world, NoObservation, opts())
+  let assert Ok(entry.MessageEntry(parent: Some(steer_parent), ..)) =
+    store.get_entry(world.store, ids.entry_id_to_string(steer_id))
+  assert ids.entry_id_to_string(steer_parent) == second_id
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(world, NoObservation, opts())
+  let assert Ok(#(_world, action)) = scenario.step(world, admitted(), opts())
+  let assert Dispatch(intent: planner.ProviderRequest(context:, ..), ..) =
+    action
+  assert context.trigger == steer_id
 }
 
 pub fn sequential_batch_still_works_one_call_at_a_time_test() {
@@ -198,4 +217,93 @@ fn tool_result_entries(world: World) -> List(String) {
       _ -> False
     }
   })
+}
+
+// Admission uses the same durable queue transaction as an active strand.
+fn enqueue_steer(world: World) -> #(World, ids.EntryId) {
+  let assert Ok(state) = scenario.read_op_state(world.store, world.op.id)
+  let assert Ok(#(seq, _)) =
+    store.get_register(
+      world.store,
+      register.OpState,
+      ids.op_id_to_string(world.op.id),
+    )
+  let assert Ok(plan) =
+    queue.enqueue_steer(
+      world.op,
+      state,
+      seq,
+      ids.generator(
+        core_clock.fixed(at: scenario.now(world)),
+        seed: world.seed + 1000,
+      ),
+      PendingMessage(message: fixture.user("inspect the queued instruction")),
+    )
+  let assert Ok(next_store) = store.apply(world.store, plan.tx)
+  #(World(..world, store: next_store), plan.entry)
+}
+
+pub fn repeated_tool_turns_consume_steering_before_generation_test() {
+  let world = start_two_call_batch()
+  let world = complete_fair_turn(world)
+  let response = fixture.assistant_calls(["read", "write"])
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedAssistantSettled(
+        settled: fixture.settled(response),
+        overflow_preparation: None,
+      ),
+      opts(),
+    )
+  let _world = complete_fair_turn(world)
+}
+
+// Every tool turn must expose its queued instruction to its next generation.
+fn complete_fair_turn(world: World) -> World {
+  let assert Ok(#(world, _action)) = scenario.step(world, NoObservation, opts())
+  let assert Ok(#(world, _action)) = scenario.step(world, cleared(1), opts())
+  let assert Ok(#(world, _action)) = scenario.step(world, NoObservation, opts())
+  let assert Ok(#(world, _action)) = scenario.step(world, cleared(2), opts())
+  let #(world, steer_id) = enqueue_steer(world)
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedToolSettled(
+        source_index: 2,
+        result: fixture.tool_result("call_write_1", "write", "write complete"),
+        terminate: False,
+      ),
+      opts(),
+    )
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedToolSettled(
+        source_index: 1,
+        result: fixture.tool_result("call_read_0", "read", "read complete"),
+        terminate: False,
+      ),
+      opts(),
+    )
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(world, NoObservation, opts())
+  let assert Ok(#(world, writes)) =
+    scenario.step_writes(world, NoObservation, opts())
+  assert writes
+    == [
+      "insert:message",
+      "del:pending.entry",
+      "set:strand.leaf",
+      "set:op.state",
+    ]
+  let assert Ok(_) =
+    store.get_entry(world.store, ids.entry_id_to_string(steer_id))
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(world, NoObservation, opts())
+  let assert Ok(#(world, action)) = scenario.step(world, admitted(), opts())
+  let assert Dispatch(intent: planner.ProviderRequest(context:, ..), ..) =
+    action
+  assert context.trigger == steer_id
+  world
 }

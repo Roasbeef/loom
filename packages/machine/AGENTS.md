@@ -7,8 +7,8 @@ ADTs, with pi's "lane" renamed "strand". It owns the operation state space,
 the acceptance transaction, settled-response classification, queue
 admission and abort, the register payload codecs, and `next_action` — the
 total function `State × Inputs → Action` the runtime drives. WP-D.
-Fidelity, not invention: where this package and pi's spec differ, this
-package is wrong.
+Differences from pi are explicit policy amendments recorded in
+`docs/spec-gaps.md`; otherwise fidelity is the rule.
 
 ## Key Types
 
@@ -224,8 +224,12 @@ package is wrong.
   threshold one whose error is about the context rather than the
   summarizer (`fatal_to_the_context`). Corruption never reaches this
   decision; it is a `Fault` at its own site.
-- **Faithful-but-surprising transcriptions are kept deliberately** — a
-  completed tool batch sets skip-inbox-once; the threshold check also runs
+- **Queued steering cannot starve behind repeated tool turns.** Closing a
+  batch leaves the checkpoint inbox eligible, after every outcome has
+  materialized in source order and before the next generation. Inbox drains
+  still skip one drain to project their input into a generation.
+- **Faithful-but-surprising transcriptions are kept deliberately** — the
+  threshold check also runs
   at may-finish checkpoints; backoff saturates at exponent twenty and
   clamps to the policy cap;
   overflow during a deferred poll drains as failure; summary usage rows
