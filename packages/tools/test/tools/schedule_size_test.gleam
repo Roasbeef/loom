@@ -25,6 +25,10 @@ fn padded_schedules(padding_words: Int) -> schedule.Schedules {
         name: request.name,
         target: ctx.strand,
         when: "once",
+        cadence: schedule.IntervalCadence(
+          seconds: 60,
+          expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
+        ),
         wake: request.wake,
       ))
     },

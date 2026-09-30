@@ -200,6 +200,45 @@ pub type Wake {
   SteersOnly
 }
 
+/// The host-resolved timing, separate from its human-readable description.
+/// Relative one-shots arrive as their resolved UTC instant, so callers never
+/// need to parse display text or guess when the host read its clock.
+pub type Cadence {
+  /// A recurring epoch-aligned grid with both expiry bounds active.
+  IntervalCadence(
+    /// The grid period in positive whole seconds.
+    seconds: Int,
+    /// The bounds granted by the host.
+    expiry: Expiry,
+  )
+
+  /// A five-field expression read at a fixed UTC offset, without DST changes.
+  CronCadence(
+    /// The expression as the host accepted it.
+    expression: String,
+    /// Seconds east of UTC, between -50,400 and 50,400.
+    utc_offset_s: Int,
+    /// The bounds granted by the host.
+    expiry: Expiry,
+  )
+
+  /// One occurrence, carrying no recurring expiry.
+  OneShotCadence(
+    /// The resolved occurrence time in UTC Unix seconds.
+    at_unix_s: Int,
+  )
+}
+
+/// Both mandatory limits of a recurring schedule; the first reached ends it.
+pub type Expiry {
+  Expiry(
+    /// The positive maximum number of fires granted by the host.
+    max_fires: Int,
+    /// The positive lifetime in seconds from the scanner's first observation.
+    expires_after_s: Int,
+  )
+}
+
 /// One schedule as the model sees it: enough to decide whether to cancel
 /// it, and nothing about the durable machinery underneath.
 pub type Listed {
@@ -215,6 +254,8 @@ pub type Listed {
     /// 1000 times"`, a cron expression, or a UTC instant — built by the
     /// seam, which owns the timing vocabulary.
     when: String,
+    /// The host-resolved timing and bounds, for branching without display parsing.
+    cadence: Cadence,
     /// Whether this schedule may start a fresh run on an idle strand.
     wake: Wake,
     /// How many times it has fired so far.
@@ -336,6 +377,8 @@ pub type Created {
     /// say where a heartbeat lands is one a caller cannot check.
     target: String,
     when: String,
+    /// The host-resolved timing and bounds, for branching without display parsing.
+    cadence: Cadence,
     /// What `wake` ended up being. Under a `steer` policy this is
     /// `SteersOnly` however the model asked, and so is every schedule
     /// onto a subagent whatever the policy — the tool says which in the
