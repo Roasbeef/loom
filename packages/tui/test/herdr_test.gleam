@@ -3,6 +3,7 @@
 //// lifecycle signals, the change and announcement rules that decide what
 //// reaches the socket, and the exact bytes of all three wire calls.
 
+import etui/backend
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -10,7 +11,13 @@ import gleam/string
 import gleeunit/should
 import session_view/approval
 import session_view/protocol.{type Strand, Strand}
+import tui
+import tui/connection
+import tui/effect
 import tui/herdr
+import tui/model as tui_model
+import tui/workspace
+import tui_test/stepping
 
 fn config() -> herdr.Config {
   herdr.Config(
@@ -411,4 +418,44 @@ pub fn a_session_switch_announces_again_test() {
     herdr.Publication(herdr.Idle, "s2", ""),
   )
   |> should.be_true
+}
+
+// The release must be the last word on the pane. The quit step drains the
+// connection before it interprets Ctrl-C, so a state transition observed
+// alongside the quit would otherwise be published AFTER the release queued
+// by submit.quit in the same outbox, re-marking a pane the release just
+// cleared. The publish gate on `shared.quit` is what keeps the goodbye
+// last.
+pub fn a_quitting_step_publishes_nothing_after_the_release_test() {
+  let assert Ok(reporter) = herdr.start(config())
+    as "the pane reporter starts outside Herdr too; it just never sends"
+
+  // A model whose demo strands are live, so a publish would emit `working`
+  // (the base publication is None, making this the first publish).
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+  let model =
+    tui_model.Model(
+      ..base,
+      view: tui_model.View(..base.view, herdr_reporter: Some(reporter)),
+    )
+
+  let #(_quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), model)
+
+  // The release is on the outbox and nothing follows it.
+  assert list.any(effects, fn(requested) {
+    case requested {
+      effect.ReleaseHerdr(_) -> True
+      _ -> False
+    }
+  })
+    as "the quit queues the pane release"
+
+  assert !list.any(effects, fn(requested) {
+    case requested {
+      effect.ReportHerdr(..) | effect.AnnounceHerdr(..) -> True
+      _ -> False
+    }
+  })
+    as "no state report or announcement lands after the release"
 }

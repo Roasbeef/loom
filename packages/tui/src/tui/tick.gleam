@@ -91,10 +91,17 @@ pub fn start_herdr_reporter(model: Model) -> Model {
 /// three fields and the send is one effect queued to a local process.
 @internal
 pub fn publish_herdr(model: Model) -> Model {
-  case model.view.herdr_reporter, model.shared.session {
-    None, _ -> model
-    Some(_), "" -> model
-    Some(reporter), session -> {
+  // A quitting step publishes nothing. The quit path has already queued
+  // the release at the point this runs, and a report emitted after it in
+  // the same outbox would re-mark a pane the release just cleared: the
+  // state settles on the drained connection of the very step that quits,
+  // so a transition observed alongside the Ctrl-C would otherwise land on
+  // Herdr after the goodbye.
+  case model.shared.quit, model.view.herdr_reporter, model.shared.session {
+    True, _, _ -> model
+    False, None, _ -> model
+    False, Some(_), "" -> model
+    False, Some(reporter), session -> {
       let next =
         herdr.Publication(
           state: herdr.state_for(model.shared.strands, model.shared.approvals),

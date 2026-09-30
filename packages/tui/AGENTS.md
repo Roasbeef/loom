@@ -884,7 +884,7 @@ boundaries and the split's measurements under Invariants.
   under the third-party source `loom:terminal` — Herdr reserves the
   `herdr:` prefix for the integrations it ships itself, and a source it
   does not know earns none of its built-in session restore: the
-  `agent_session_id` Loom sends is display metadata there, and the
+  `agent_session_id` Loom sends is discarded there, and the
   `resume_argv` the report carries (`["loom", "--session", <id>]`) is
   what actually reopens the conversation after a Herdr server restart,
   from Herdr 0.9.2 on. A blocked report names the pending approval in

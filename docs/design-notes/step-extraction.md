@@ -426,7 +426,7 @@ fields the adoption arm resets today (`tui/interaction.gleam:236`
 `Attached`. `next_due` is
 `option.then(model.channel, session_channel.next_due)`; a host that has
 other reasons to wake, as the terminal does, combines it with its own
-(`tui/tick.gleam:532` (`lane_wait`)).
+(`tui/tick.gleam:543` (`lane_wait`)).
 
 ### The shells
 
@@ -531,9 +531,9 @@ they reach that it misses.
   `service_todo_seed` (`session_view/surfaces.gleam:75`) onward, `sync_context`,
   `sync_advisor_nudges`, `sync_goal`, `receive_jobs`, `receive_goal` and
   `receive_advisor_nudges`, less `notes_target` and `notes_surface`.
-- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:250`)
+- The tick's clocks: `advance_activity_indicator` (`tui/tick.gleam:261`)
   and `advance_generation_clock` read the stamp and shared fields;
-  `drain_replay` (`tui/tick.gleam:212`) and `apply_replay_change`.
+  `drain_replay` (`tui/tick.gleam:223`) and `apply_replay_change`.
 - `queue_owner`, `queue_namespace`, `active_strand_phase`,
   `append_system`, `append_error`, `append_notice`, `start_step`, `emit`,
   `record`, `hold_channel` and `presentation` from `tui/model`.
@@ -658,17 +658,17 @@ The worst cases in the code, and the cut for each:
    its remaining steps to `updated` as it does now
    (`packages/tui/src/tui.gleam:2018` (`apply_input`)).
 
-8. **The tick** (`tui/tick.gleam:132` (`update_tick`)) is a fixed
+8. **The tick** (`tui/tick.gleam:139` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
    reconnect, activity poll, configuration, connection, then the settle
    chain. The order is kept by having the terminal's tick call the shared
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
    (`tui/inbound.gleam:1156` (`tick_strip`)) reads the strip's focus and
-   stays; `advance_cache_outlook` (`tui/tick.gleam:279`
+   stays; `advance_cache_outlook` (`tui/tick.gleam:290`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
-   bookkeeping stays terminal (`tui/tick.gleam:156` (`settle_tick`)).
+   bookkeeping stays terminal (`tui/tick.gleam:167` (`settle_tick`)).
 
 9. **Key dispatch** (`tui/interaction.gleam:1085`
    (`update_conversation_key`)) reads `help_open`, `notes_open`, the

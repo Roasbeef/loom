@@ -15,7 +15,7 @@
 //// third-party side of the split. Herdr's own integrations report under
 //// a reserved `herdr:` source and earn built-in session restore from the
 //// `agent_session_id` alone. A third-party source earns none of that:
-//// its `agent_session_id` is display metadata, and the only mechanism
+//// its `agent_session_id` is discarded, and the only mechanism
 //// Herdr gives it for surviving a server restart is `resume_argv`, the
 //// command that reopens the current session, attached to a report that
 //// already holds the pane. So the report carries
@@ -77,6 +77,13 @@ const release_timeout_ms = 2000
 /// The command Herdr replays in the pane's directory after a server
 /// restart, per `resume_argv`'s contract: the first word must be a plain
 /// command name on the operator's PATH.
+///
+/// Herdr also refuses an argument carrying an apostrophe or a control
+/// character, and refuses the whole report rather than the field, so the
+/// session id this interpolates carries those constraints: a session
+/// whose id contained an apostrophe would make every pane report fail
+/// `invalid_resume_argv`. Loom's session ids are UUIDv7 text, whose
+/// alphabet is hex digits and hyphens, so an apostrophe cannot occur.
 ///
 /// ## Examples
 ///
@@ -364,8 +371,8 @@ pub fn changed(last: Option(Publication), next: Publication) -> Bool {
 ///
 /// ```gleam
 /// herdr.announces(
-///   Some(herdr.Publication(herdr.Idle, "a")),
-///   herdr.Publication(herdr.Idle, "b"),
+///   Some(herdr.Publication(herdr.Idle, "a", "")),
+///   herdr.Publication(herdr.Idle, "b", ""),
 /// )
 /// // -> True
 /// ```

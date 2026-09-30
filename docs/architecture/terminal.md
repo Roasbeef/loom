@@ -965,7 +965,7 @@ unsigned and the BEAM monotonic clock can be negative.
 The integration reports under the third-party source `loom:terminal`.
 Herdr reserves the `herdr:` prefix for the integrations it ships itself,
 and only those earn built-in session restore from the reported session
-id alone. For every other source the id is display metadata, and the
+id alone. For every other source the id is discarded, and the
 resume mechanism is `resume_argv` — the report carries
 `["loom", "--session", <id>]`, the command Herdr replays in the pane's
 directory after a server restart (Herdr 0.9.2 and later; older servers
