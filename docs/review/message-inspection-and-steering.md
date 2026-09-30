@@ -84,3 +84,27 @@ Responses beyond the documented byte ceiling fail rather than truncate.
 A baseline hosted macOS worktree-diff ancestor-read failure was independently
 confirmed on main and the unrelated CPU PR. It remains separate from focused
 local real-jail success and does not establish fully green hosted CI.
+
+## Independent parent verification
+
+The parent ran full `make check` at `c52038cd2` with the installed compiler's
+actual directory on PATH. Its own exit status was zero, including 2359 client
+tests, 990 TUI tests, all package checks, and zero lint errors. There were 946
+non-gating lint warnings. `make doc-check` also exited zero, with zero errors
+and 163 non-gating warnings. Shipped-daemon tests declared their existing
+missing-server prerequisites; platform signoff remains required to exercise
+those fixtures. The macOS MCP process-death test declared its existing lack
+of `/proc`.
+
+An earlier full run used a compiler symlink under `/private/tmp`, which the
+hermetic build could not resolve. Eight code-mode tests failed at executable
+lookup. The corrected full run used the real compiler path and passed all
+305 code-mode tests; no source change or test exclusion addressed that failure.
+
+The parent also ran the new next-request regression against the old checkpoint
+policy in the separate baseline checkout. It failed at the exact queued-body
+assertion in 0.48 seconds, with one failed test and no prerequisite skip. The
+fixed policy passes that same regression. Substituting the original page SQL
+into the new standard-library regression failed precisely its two late-page
+subcases at 100007 and 100034 VM steps. These negative executions establish
+that the regressions detect the failures they claim to prevent.

@@ -153,9 +153,12 @@ and focused gate evidence are in
 The six ownership/pagination/abort tests, seventy-two production code-mode
 wiring tests, cap marshalling, model-visible discovery, and real jailed
 cap-channel proof passed. The next-request runtime regression checks exact
-local and remote bodies after a blocked tool completes. Full `make check` and
-platform signoff must run on the final rebased head before landing; these
-focused results do not replace them. Hosted macOS currently has a separately
+local and remote bodies after a blocked tool completes. The parent's full
+`make check` at `c52038cd2` exited zero, including 2359 client tests, 990 TUI
+tests and zero lint errors. The next-request regression fails against the old
+policy; the page-seek regression fails against the old SQL. Platform signoff
+still must exercise shipped-daemon prerequisites before landing. Hosted macOS
+currently has a separately
 confirmed baseline `worktree_diff_test` ancestor-read failure; do not describe
 that CI as fully green or change messaging scope to work around it.
 
