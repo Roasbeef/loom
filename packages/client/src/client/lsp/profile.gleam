@@ -720,7 +720,8 @@ fn outside_private_cache(
 // refusal of a root inside it ends with.
 const private_cache_top = "loom"
 
-const private_cache_refusal = "Loom's private cache is not a root a table may name; a server's private caches are granted through cache_env"
+const private_cache_refusal =
+  "Loom's private cache is not a root a table may name; a server's private caches are granted through cache_env"
 
 // A path's components, without the empty ones a doubled or trailing slash
 // leaves or the `.` that names the directory it is in. `..` is refused

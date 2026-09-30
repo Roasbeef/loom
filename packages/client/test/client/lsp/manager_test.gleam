@@ -2088,7 +2088,8 @@ fn rust_prerequisites(home: String) -> Result(Nil, String) {
 
 const util_rs = "pub fn greet() -> &'static str {\n    \"hi\"\n}\n"
 
-const main_rs = "mod util;\n\nfn main() {\n    println!(\"{}\", util::greet());\n    let again = util::greet();\n    println!(\"{}\", again);\n}\n"
+const main_rs =
+  "mod util;\n\nfn main() {\n    println!(\"{}\", util::greet());\n    let again = util::greet();\n    println!(\"{}\", again);\n}\n"
 
 fn run_rust_analyzer(live: Live, home: String) -> Nil {
   let crate = live.workspace <> "/probe"

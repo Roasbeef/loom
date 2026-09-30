@@ -750,11 +750,14 @@ pub fn a_root_linked_into_tmp_is_refused_test() {
 
 // --- helpers -----------------------------------------------------------------
 
-const digest_refusal = "the installed source no longer matches the install record; reinstall it to approve what is there now"
+const digest_refusal =
+  "the installed source no longer matches the install record; reinstall it to approve what is there now"
 
-const profile_refusal = "the manifest's language profiles no longer match the install record; reinstall it to approve what is there now"
+const profile_refusal =
+  "the manifest's language profiles no longer match the install record; reinstall it to approve what is there now"
 
-const tier_refusal = "the manifest's tier no longer matches the install record; reinstall it to approve what is there now"
+const tier_refusal =
+  "the manifest's tier no longer matches the install record; reinstall it to approve what is there now"
 
 fn decode(files: List(#(String, String))) -> Result(manifest.Manifest, String) {
   let assert Ok(text) = list.key_find(files, "extension.toml")
