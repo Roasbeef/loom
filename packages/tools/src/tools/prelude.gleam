@@ -34,18 +34,18 @@
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
-////   e94a1c6bc2d6610a068893ff9fc9b3673fe165cab0a8f6a6ab7acf0b3eb8cd92  packages/cap/src/cap/peer.gleam
+////   73343f624e4793f98e366fabebfc625aefb730456ea43b08c53bf2d2176062fa  packages/cap/src/cap/peer.gleam
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
 ////   17c973c36d2ca3e184f54a7540a90eedf7b6090ffbdc762524a78cf184b98a8f  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
-////   d7348e4366f54b131696376045e162e9e2c0bc0094e7e91c0b721ee13a6932cb  packages/cap/src/cap/strand.gleam
+////   fae6983eaf3f00e8bf69b6072b74b29d144eae91a0515effe2992bce08e9cb54  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   4e2446b2d42545449a4c977aca0c71a129e22d694460cd37999fa9429841dd21  packages/cap/src/cap/workflow.gleam
 ////   b3b58fee4cd1fb3ac91be3c441df7483ebfbf342fe92fe456f8d14f49d4c681d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 3db14136b55d60dfde83d9aa83830868a956484005131d80deb664ec256b54ec
+//// Body digest (every line after the marker): ea178e2ffc3af90d128670c221b4100d590780bf05dfbe6f79198d1d11aee9a5
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -700,15 +700,65 @@ pub fn put(String, report.Value) -> Result(Nil, NotesError)
   #(
     "cap/peer",
     "### cap/peer
-Explicitly authorized communication with resident peer strands.
+Caller-owned message inspection and authorized resident peer delivery.
 
+/// Pages materialized user inputs on the caller's conversation branch.
+/// `before` is an exclusive sequence cursor; zero starts at the current
+/// leaf. Limit is 1..64 scanned message entries. Follow JSON next even
+/// when items is empty: assistant/tool entries also advance the scanned
+/// window.
+///
+/// All bodies are complete; oversized responses fail explicitly.
+pub fn history(before: Int, limit: Int) -> Result(String, String)
+/// Pages caller-owned pending strand inputs, including local and remote
+/// sends. `after` is an exclusive ID cursor, empty for the first page;
+/// limit is 1..12. JSON has revision, items, total, and next. Follow next
+/// even on an empty page. Reads do not consume inputs. Pending bodies
+/// disappear on operation abort.
+///
+/// All bodies are complete; oversized responses fail explicitly.
+pub fn inbox(after: String, limit: Int) -> Result(String, String)
+/// Reads one caller-owned pending or materialized input by its reserved
+/// entry ID. JSON null means absent from these caller-owned stores.
+/// Consumption racing inspection resolves against the ownership capture's
+/// transcript leaf.
+///
+/// All bodies are complete; oversized responses fail explicitly.
+pub fn inbox_get(id: String) -> Result(String, String)
+/// Pages retained cross-session admission receipts addressed to this
+/// caller. `after` is the opaque cursor from JSON next, empty initially;
+/// limit is 1..64. The cursor scans global receipt records before
+/// recipient filtering. Continue through next on empty pages; other
+/// recipients' bodies are never returned. Receipt keys are hashes, not
+/// arrival order. Start a fresh scan to observe new admissions and
+/// reconcile stable message identities across scans. Receipts retain
+/// bodies after abort and prove admission, never consumption. Same-
+/// session sends have no receipt history; use inbox and history for them.
+///
+/// All bodies are complete; oversized responses fail explicitly.
+pub fn received(after: String, limit: Int) -> Result(String, String)
+/// Reads an existing remote admission receipt only if its recipient is
+/// this caller. Source fields select the send identity and confer no read
+/// authority. JSON null means missing or addressed to another strand.
+///
+/// All bodies are complete; oversized responses fail explicitly.
+pub fn received_get(source_session: String, source_strand: String, message_id: String) -> Result(String, String)
 /// Returns linked session metadata and authorized exports as JSON text.
+/// This lists remote links, never an inbox; an empty roster says nothing
+/// about same-session strand sends or pending inputs.
 pub fn roster() -> Result(String, String)
 /// Sends one message with a stable retry identity and returns its JSON
 /// receipt. Reuse an identity only with the same recipient and body. The
 /// receipt means admitted durably, not read or completed by the
 /// recipient.
 pub fn send(session: String, strand: String, message_id: String, text: String) -> Result(String, String)
+/// Reads this caller's existing receipt from a linked resident remote
+/// session. The harness binds source session and strand. An outgoing link
+/// is required; the call never sends a message or opens a saved
+/// recipient.
+///
+/// All bodies are complete; oversized responses fail explicitly.
+pub fn sent_receipt(session: String, message_id: String) -> Result(String, String)
 ",
   ),
   #(
@@ -1579,7 +1629,11 @@ pub fn roster() -> Result(List(Peer), StrandError)
 /// so a message to a strand that is not running now is drained at its
 /// next checkpoint rather than lost.
 ///
-/// Capability: `strand.send`.
+/// An active run consumes steering after its complete current tool batch
+/// and before the next generation. Inspection does not require waiting
+/// for that checkpoint: `cap/peer.inbox` reads caller-owned pending
+/// inputs, and `cap/peer.history` reads materialized inputs. Acceptance
+/// is not a read receipt.
 pub fn send(to: String, text: String) -> Result(Delivery, StrandError)
 /// Starts a child strand and returns a durable handle to its brief run.
 ///
@@ -2100,7 +2154,7 @@ pub type NotesError {
   #(
     "cap/peer",
     "### cap/peer
-Explicitly authorized communication with resident peer strands.
+Caller-owned message inspection and authorized resident peer delivery.
 ",
   ),
   #(
