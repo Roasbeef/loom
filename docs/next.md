@@ -152,6 +152,14 @@ change to the daemon's package also needs `make signoff`.
 
 ## Next actions, in order
 
+Terminal CPU work on `tui/render-cpu` is locally verified against installed
+`3088ee3ce`: counting strip rows during layout and painting known-width
+padding directly reduced frame reductions by 37.6% and scroll reductions
+by 40.8% at 200×50, with identical styled-cell witnesses. Full `make check`
+passed; the changed client has not been installed or measured live. See
+[the measured report](review/tui-render-cpu-2026-09-29.md) for the fixture,
+limits and next live check. The changed client still needs the live CPU and scrolling check.
+
 **Check open pull requests and branches first.** A branch may exist and a pull
 request may have opened since this baseline. Continue an existing lane rather
 than starting a second one.
