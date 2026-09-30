@@ -267,6 +267,59 @@ pub fn a_live_answer_costs_one_small_patch_per_burst_test() {
   assert largest < 1024
 }
 
+// One line of a streamed fenced block, as a stream delta of the same
+// request. The fence opens with the first line.
+fn code_line(n: Int) -> connection_event.Message {
+  let opening = case n {
+    1 -> "```\\n"
+    _ -> ""
+  }
+  connection_event.Incoming(
+    "{\"v\":2,\"event\":\"stream_delta\",\"body\":{\"strand\":\"main\",\"op\":\"o\",\"generation\":\"g\",\"kind\":\"text\",\"text\":\""
+    <> opening
+    <> "let value_"
+    <> int.to_string(n)
+    <> " = compute(input, "
+    <> int.to_string(n)
+    <> ")\\n\"}}",
+  )
+}
+
+fn code_lines(from: Int, to: Int) -> List(connection_event.Message) {
+  int.range(from: from, to: to + 1, with: [], run: fn(acc, n) {
+    [code_line(n), ..acc]
+  })
+  |> list.reverse
+}
+
+// The integers from one to `last`, in order.
+fn indexes(last: Int) -> List(Int) {
+  int.range(from: 1, to: last + 1, with: [], run: fn(acc, n) { [n, ..acc] })
+  |> list.reverse
+}
+
+// A streamed code block costs its new lines and no more. Each line of the
+// fence is a keyed row, so a burst's patch adds the lines that arrived and
+// leaves the ones already sent. A block drawn as one text node was sent
+// whole on every burst, so the patch grew with the block: by the last burst
+// below the block is over two hundred lines, several kilobytes, and the
+// patch is still the size of eight lines and an envelope.
+pub fn a_live_code_block_costs_its_new_lines_test() {
+  let page = following_pushed()
+  let opening = burst_patches(page, code_lines(1, 8))
+  assert list.length(opening) == 1
+
+  let later =
+    list.map(indexes(26), fn(index) {
+      burst_patches(page, code_lines(index * 8 + 1, index * 8 + 8))
+    })
+  list.each(later, fn(sizes) {
+    assert list.length(sizes) == 1
+  })
+  let assert Ok(largest) = list.reduce(list.flatten(later), int.max)
+  assert largest < 2048
+}
+
 // An idle page does no work between refreshes: with the lane pushing, the
 // next refresh is `pushing_refresh_ms` away and no timer fires before it.
 // Half that interval is still twice the polling interval, so a page that
