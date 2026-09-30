@@ -910,9 +910,18 @@ fn reclaim(state: State, call_id: Int, active: Active) -> State {
 
   // Tokens are single-use: settlement (or the fail-closed reclaim of an
   // unsettled death) revokes.
-  let vault = token.revoke(state.vault, active.token_bytes)
+  let vault = retired_token(state, active.token_bytes)
   let state = release_budget(state, active)
   State(..state, vault:, active: dict.delete(state.active, call_id))
+}
+
+// A session token has no temporal expiry, so revocation is also its
+// reclamation point. Pruning here prevents settled session jobs retaining
+// vault entries forever while preserving the finite-token grace.
+fn retired_token(state: State, bytes: BitArray) -> token.Vault {
+  let #(now, _) = clock.read(state.clock)
+  token.revoke(state.vault, bytes)
+  |> token.drop_expired(now:, grace_ms: 5000)
 }
 
 // The active call whose relay is `pid`, if any.
@@ -1033,7 +1042,7 @@ fn checkout_helper(
       // never left the broker, but a live entry for an execution that
       // will not run has no business in the vault).
       let state = release_slot(state, spec.op_id, spec.step_id, generation)
-      let vault = token.revoke(state.vault, token.to_bytes(minted))
+      let vault = retired_token(state, token.to_bytes(minted))
       #(State(..state, vault:), Error(NoHelper(error:)))
     }
     Ok(helper) ->
@@ -1153,7 +1162,7 @@ fn dispatch(
       state.config.checkin(helper)
       let state = release_slot(state, spec.op_id, spec.step_id, generation)
       #(
-        State(..state, vault: token.revoke(state.vault, token.to_bytes(minted))),
+        State(..state, vault: retired_token(state, token.to_bytes(minted))),
         Error(BrokerUnavailable),
       )
     }
@@ -1234,7 +1243,11 @@ fn relay_wake(relay: Relay, within: Int) -> Result(RelayWake, Nil) {
       })
     None -> selector
   }
-  process.selector_receive(selector, within)
+  case relay.mode, relay.deadline_ms {
+    Streaming, 0 -> Ok(process.selector_receive_forever(selector))
+    Streaming, _finite | Draining, _deadline ->
+      process.selector_receive(selector, within)
+  }
 }
 
 fn relay(link: Relay) -> Nil {

@@ -1522,3 +1522,40 @@ pub fn a_host_with_no_jobs_plane_refuses_in_band_test() {
   assert code == "jobs_unavailable"
   assert drain(seen) == []
 }
+
+pub fn session_lifetime_is_explicit_at_the_job_capability_boundary_test() {
+  let seen = recorder()
+  let assert framing.CapOk(_) =
+    serviced(
+      answering(seen),
+      "job.start",
+      map([
+        #("command", text("watch")),
+        #("lifetime", text("session")),
+      ]),
+    )
+    as "explicit session lifetime reaches the host"
+  assert drain(seen) == [JobStartAsked("watch", Some(0))]
+  let zero =
+    refused(
+      answering(seen),
+      "job.start",
+      map([
+        #("command", text("watch")),
+        #("wall_ms", int(0)),
+      ]),
+    )
+  assert zero.code == "invalid_arguments"
+  let conflict =
+    refused(
+      answering(seen),
+      "job.start",
+      map([
+        #("command", text("watch")),
+        #("lifetime", text("session")),
+        #("wall_ms", int(1000)),
+      ]),
+    )
+  assert conflict.code == "invalid_arguments"
+  assert drain(seen) == []
+}

@@ -2617,6 +2617,48 @@ pub fn a_quiet_job_receives_fresh_settlement_grace_test() {
     settled_state(harness, "main", started)
     as "quiet timeout settlement must retain the helper's exit report"
   assert result.cancelled
+  assert string.contains(context_text(harness, "main"), "lifetime: \"session\"")
   process.trap_exits(True)
   process.send_abnormal_exit(owner.pid, "shutdown")
+}
+
+pub fn a_session_lifetime_job_stays_quiet_and_stops_with_its_session_test() {
+  let harness = start_harness()
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand: "main",
+      operation: harness.operation,
+      request: jobs.Request(
+        command: "watch mail",
+        wall_ms: Some(0),
+        captured_policy: None,
+        audience: jobs.NotifyOwner,
+        stdin: jobs.KeepStdinOpen,
+        idle_wake: job.QuietUntilDone,
+      ),
+      waiting: 10_000,
+    )
+    as "the scripted authorized session job starts"
+  assert started.deadline_ms == 0
+  assert started.wall_ms == 0
+  let assert [spec] = specs(harness) as "one execution is cleared"
+  assert spec.budget.deadline_ms == 0
+  assert spec.requirements.limits.wall_s == 0
+  process.sleep(100)
+  assert poll(harness, "main", started).state == jobstate.Running
+  assert !notified(harness, started)
+  process.trap_exits(True)
+  let gone = process.monitor(harness.pid)
+  process.send_abnormal_exit(harness.pid, "shutdown")
+  assert await_cancel(harness, started, 200) == 1
+  settle_with(harness, started, cancelled_result())
+  let assert Ok(_down) =
+    process.selector_receive(
+      process.new_selector()
+        |> process.select_specific_monitor(gone, fn(down) { down }),
+      5000,
+    )
+    as "session close joins the job"
+  assert !notified(harness, started)
 }

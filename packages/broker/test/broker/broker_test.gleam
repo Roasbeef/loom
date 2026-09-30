@@ -12,6 +12,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import weft/actor
 
 fn op() -> ids.OpId {
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 3)
@@ -1078,6 +1079,7 @@ pub fn every_exec_failure_has_a_pinned_denial_verdict_test() {
   // fifteenth, and this count says the test must be extended too.
   assert list.length(escalated) + list.length(settled) == 14
 }
+
 // A quiet wait spans a minute in logical time while taking only 120 ms of
 // real time. Reads before the relay parks stay at 1000; subsequent reads
 // stay at 61000. That isolates stale grace without a multi-second test.
@@ -1186,5 +1188,37 @@ pub fn a_quiet_caller_death_receives_fresh_cancellation_grace_test() {
   let assert Ok(broker.CallSettled(broker.CallExited(_))) =
     process.receive(events, 2000)
     as "the replacement execution also drains"
+  broker.stop(started)
+}
+
+pub fn session_lifetime_has_no_deadline_but_remains_cancellable_test() {
+  let #(started, helper, checkins) =
+    broker_with(fake_helper.SleepUntilCancel, at: 1000)
+  let unlimited =
+    policy.SandboxPolicy(
+      ..policy.workspace_default("/work"),
+      limits: policy.Limits(
+        ..policy.workspace_default("/work").limits,
+        wall_s: 0,
+      ),
+    )
+  let bounded =
+    broker.CallSpec(
+      ..spec(op()),
+      requirements: unlimited,
+      grants: [policy.GrantLimit(policy.WallSeconds, 0)],
+      budget: budget.Budget(max_outstanding: 1, deadline_ms: 0),
+    )
+  let events = process.new_subject()
+  let assert Ok(handle) =
+    broker.clear_call(started, bounded, events:, waiting: 2000)
+    as "explicit wall authority permits session lifetime"
+  assert process.receive(events, 150) == Error(Nil)
+  broker.cancel(started, handle)
+  let assert Ok(broker.CallSettled(broker.CallExited(result))) =
+    process.receive(events, 2000)
+    as "session lifetime still climbs the cancel ladder"
+  assert result.cancelled
+  assert process.receive(checkins, 1000) == Ok(helper)
   broker.stop(started)
 }

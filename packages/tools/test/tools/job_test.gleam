@@ -717,8 +717,12 @@ pub fn a_background_timeout_reaches_the_door_unclamped_test() {
   // and no reader of either number could tell which had applied.
   let asked = recorder()
   let _outcome =
-    bash_run(
-      answering(asked, job.Running),
+    bash.tool(answering(asked, job.Running)).run(
+      tool.Ctx(..ctx(), raise_refusal: fn(request: tool.RaisedRefusal) {
+        assert request.denial.wanted
+          == [policy.GrantLimit(policy.WallSeconds, 3600)]
+        tool.Resume(request.denial.wanted)
+      }),
       json.Object([
         #("command", json.String("./serve")),
         #("mode", json.String("background")),

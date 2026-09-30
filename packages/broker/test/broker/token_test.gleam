@@ -250,3 +250,40 @@ pub fn many_tokens_property_test() {
       == Error(token.Expired(deadline_ms: 1000))
   })
 }
+
+pub fn session_lifetime_token_remains_bound_and_revocable_test() {
+  let #(op, other) = two_ops()
+  let vault = token.new(entropy: token.production_entropy())
+  let assert Ok(#(vault, minted)) =
+    token.mint(vault, binding(op, "session-job", 0))
+    as "the explicit lifetime binding mints"
+  let bytes = token.to_bytes(minted)
+  let vault = token.drop_expired(vault, now: 9_000_000_000_000, grace_ms: 1000)
+  assert token.size(vault) == 1
+  let assert Ok(_) =
+    token.check_for(
+      vault,
+      bytes,
+      op_id: op,
+      step_id: "session-job",
+      now: 9_000_000_000_000,
+    )
+    as "a session token has no temporal expiry"
+  assert token.check_for(
+      vault,
+      bytes,
+      op_id: other,
+      step_id: "session-job",
+      now: 9_000_000_000_000,
+    )
+    == Error(token.WrongBinding)
+  let vault = token.revoke(vault, bytes)
+  assert token.check(vault, bytes, now: 9_000_000_000_000)
+    == Error(token.Revoked)
+  assert token.size(token.drop_expired(
+      vault,
+      now: 9_000_000_000_000,
+      grace_ms: 1000,
+    ))
+    == 0
+}

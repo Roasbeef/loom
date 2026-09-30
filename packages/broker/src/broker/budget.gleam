@@ -34,7 +34,8 @@ pub type Budget {
     /// Maximum effects in flight at once under this token. Invariant:
     /// positive.
     max_outstanding: Int,
-    /// Unix-ms instant after which no further effect may start.
+    /// Unix-ms instant after which no further effect may start. Zero means
+    /// session lifetime; the cleared policy must separately permit no wall.
     deadline_ms: Int,
   )
 }
@@ -80,7 +81,7 @@ pub fn open(budget: Budget) -> Ledger {
 /// ```
 ///
 pub fn reserve(ledger: Ledger, now now: Int) -> Result(Ledger, Refusal) {
-  case now > ledger.budget.deadline_ms {
+  case ledger.budget.deadline_ms != 0 && now > ledger.budget.deadline_ms {
     True -> Error(DeadlinePassed(deadline_ms: ledger.budget.deadline_ms))
     False ->
       case ledger.outstanding >= ledger.budget.max_outstanding {

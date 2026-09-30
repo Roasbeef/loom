@@ -1323,12 +1323,36 @@ pub fn schedule_denial(refusal: ScheduleRefusal) -> CapDenial {
 // satellite ends when the program returns; the job it started keeps
 // running under its own token until its own wall expires.
 
+// The capability admits only explicit session lifetime, never a zero finite
+// wall. The host still checks the launching invocation's captured authority.
+fn job_lifetime(
+  lifetime: Option(String),
+  wall_ms: Option(Int),
+) -> Result(Option(Int), CapDenial) {
+  case lifetime, wall_ms {
+    None, Some(ms) if ms <= 0 ->
+      Error(CapDenial(
+        code: "invalid_arguments",
+        message: "wall_ms must be positive",
+      ))
+    None, _finite -> Ok(wall_ms)
+    Some("session"), None -> Ok(Some(0))
+    Some(_invalid), _wall ->
+      Error(CapDenial(
+        code: "invalid_arguments",
+        message: "session lifetime requires no wall_ms",
+      ))
+  }
+}
+
 fn job_start_plan(
   seam: Workspace,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
   use command <- result.try(args.string(request.args, "command"))
   use wall_ms <- result.try(optional_int(request.args, "wall_ms"))
+  use lifetime <- result.try(optional_string(request.args, "lifetime"))
+  use wall_ms <- result.try(job_lifetime(lifetime, wall_ms))
   Ok(
     ServedHere(fn() {
       case seam.jobs.start(command, wall_ms) {
