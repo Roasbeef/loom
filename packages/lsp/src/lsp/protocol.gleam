@@ -7,7 +7,7 @@
 //// definition, references, hover, a file's outline, rename (with its
 //// prepare step), and one level of call hierarchy — keeps the server's
 //// view of open documents honest with full-text sync, and listens for
-//// diagnostics (ADR-013 §§3–6). Every structure here is one of those, the
+//// diagnostics (ADR-015 §§3–6). Every structure here is one of those, the
 //// handshake around them, or an answer to a request the server sends us.
 //// Completion, code actions, formatting, `workspace/symbol` and
 //// incremental sync are absent on purpose: each would be surface a server
@@ -21,7 +21,7 @@
 //// are strict and unknown extra fields are ignored. Every decoder is
 //// total, so a lying server settles as a `ProtocolFault` value and never a
 //// crash. Where the protocol allows several shapes for one answer — and
-//// servers use them all; ADR-013's measurements and this module's tests
+//// servers use them all; ADR-015's measurements and this module's tests
 //// carry both `gleam lsp`'s and `gopls`'s — each shape is decoded into one
 //// type, so nothing above this module ever branches on a server's
 //// dialect.
@@ -36,7 +36,7 @@
 //// them has nothing to decide:
 ////
 //// - a server's `workspace/applyEdit` is answered `applied: false`,
-////   because edits land only through the hashline path (ADR-013 §4);
+////   because edits land only through the hashline path (ADR-015 §4);
 //// - a `WorkspaceEdit` carrying a create, rename or delete of a file is
 ////   refused as a value rather than silently dropped, for the same reason;
 //// - a diagnostic with no severity is read as an error (see
@@ -72,7 +72,7 @@ pub type ProtocolFault {
 /// `Provided`, the last two `NotProvided`.
 ///
 /// Gating on this is not courtesy. A measured server left an unadvertised
-/// request unanswered for as long as it was watched (ADR-013), so a
+/// request unanswered for as long as it was watched (ADR-015), so a
 /// request whose provider is `NotProvided` is never sent.
 pub type Provided {
   /// The server will answer this request.
@@ -130,7 +130,7 @@ pub type ServerCapabilities {
     references: Provided,
     /// `hoverProvider`.
     hover: Provided,
-    /// `documentSymbolProvider`. Also the settlement barrier (ADR-013 §3),
+    /// `documentSymbolProvider`. Also the settlement barrier (ADR-015 §3),
     /// so a server without it can never report settled diagnostics.
     document_symbol: Provided,
     /// `renameProvider`, with its `prepareProvider`.
@@ -398,7 +398,7 @@ pub type WorkspaceFolder {
 /// - `general.positionEncodings: ["utf-16"]`: the protocol's default and
 ///   the only encoding `lsp/text` converts from;
 /// - `publishDiagnostics.versionSupport`: a versioned publication is half
-///   of ADR-013 §3's settlement rule;
+///   of ADR-015 §3's settlement rule;
 /// - `documentSymbol.hierarchicalDocumentSymbolSupport` and
 ///   `rename.prepareSupport`: the richer answer where a server has one;
 /// - `workspace.workspaceEdit.documentChanges` with `resourceOperations`
@@ -494,7 +494,7 @@ pub fn initialized() -> JsonValue {
   jsonrpc.notification("initialized", Some(json.Object([])))
 }
 
-/// The `shutdown` request: the first of ADR-013 §1's three stop steps.
+/// The `shutdown` request: the first of ADR-015 §1's three stop steps.
 ///
 /// ## Examples
 ///
@@ -551,7 +551,7 @@ pub fn did_open(
 /// `textDocument/didChange` carrying the document's whole new text as one
 /// range-less content change: full-text sync, which is legal whatever
 /// kind the server advertised and makes the text the harness last sent
-/// the server's exact view (ADR-013 §4's rename base). `version` must
+/// the server's exact view (ADR-015 §4's rename base). `version` must
 /// increase with every change to the same document.
 ///
 /// ## Examples
@@ -655,7 +655,7 @@ pub fn hover_request(id: Id, uri: String, at: Position) -> JsonValue {
 }
 
 /// `textDocument/documentSymbol` for a whole document: a file's outline,
-/// and the settlement barrier of ADR-013 §3.
+/// and the settlement barrier of ADR-015 §3.
 ///
 /// ## Examples
 ///
@@ -1141,7 +1141,7 @@ pub type WorkspaceEditFault {
   EditMalformed(fault: ProtocolFault)
 
   /// The edit asks to create, rename or delete a file. Edits land only
-  /// through the hashline path, which edits existing files (ADR-013 §4),
+  /// through the hashline path, which edits existing files (ADR-015 §4),
   /// so the whole rename is refused, naming the operation, rather than
   /// landing its text edits without the file operation they depend on.
   ResourceOperationRefused(kind: String, uri: String)
@@ -1512,7 +1512,7 @@ pub type PublishDiagnostics {
   PublishDiagnostics(
     uri: String,
     /// The document version the diagnostics are for. `gopls` sends it;
-    /// `gleam lsp` never does, which is why ADR-013 §3's settlement rule
+    /// `gleam lsp` never does, which is why ADR-015 §3's settlement rule
     /// waits on a version only for a server that has ever sent one.
     version: Option(Int),
     diagnostics: List(ServerDiagnostic),
@@ -1644,7 +1644,7 @@ pub const invalid_params_code = -32_602
 /// - `workspace/workspaceFolders`: the folders the server was started
 ///   with.
 /// - `workspace/applyEdit`: `{applied: false}` with a reason. The server
-///   never writes; edits land only through the hashline path (ADR-013 §4).
+///   never writes; edits land only through the hashline path (ADR-015 §4).
 /// - anything else: method-not-found.
 ///
 /// ## Examples

@@ -406,7 +406,7 @@ remain separate from this local verification.
 ## Language-server support (issue #25)
 
 Loom's own agent can ask a language server about the code it is editing. The
-ruling is [ADR-013](adr/013-language-servers-as-jailed-leases.md) and the
+ruling is [ADR-015](adr/015-language-servers-as-jailed-leases.md) and the
 account is [the LSP architecture doc](architecture/lsp.md). Read both before
 touching any of it; the ADR's "Measured" table and its corrections are what
 the code is built against.
@@ -480,7 +480,7 @@ Remaining language-server work:
 1. The daemon custody retirement path stops the manager with the service tree,
    racing the broker stop that follows. A graceful ordered stop needs a custody
    part in `internal/instance_owner`.
-2. The helper writes stdin while holding the mutex `Cancel` needs (ADR-013 §1,
+2. The helper writes stdin while holding the mutex `Cancel` needs (ADR-015 §1,
    known hazard), so a wedged server blocks cancel until the broker's
    three-second helper kill. Worth fixing in the helper.
 3. Count extension hosts against the per-session lease cap.

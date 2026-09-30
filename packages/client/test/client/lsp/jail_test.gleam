@@ -1,7 +1,7 @@
 //// The jailed language-server lease: its policy, its helper-lease cap, its
 //// relay, and one real `gleam lsp` run through the jail end to end.
 ////
-//// The policy tests are pure and state ADR-013 §1 as assertions: what the
+//// The policy tests are pure and state ADR-015 §1 as assertions: what the
 //// project root may and may not be written, which extra roots and names the
 //// operator's table adds, that the per-command limits are zero on both sides
 //// so composition narrows nothing, and that the network is off whatever the
@@ -1176,7 +1176,7 @@ fn converse(
     Declined(reason) -> panic as reason
   }
 
-  // The polite stop ADR-013 §1 names: shutdown, exit, then stdin EOF.
+  // The polite stop ADR-015 §1 names: shutdown, exit, then stdin EOF.
   send(connection, jsonrpc.request(jsonrpc.IdInt(3), "shutdown", None))
   let _ = case await_reply(inbound, buffer, 3) {
     Replied(result: _, buffer:) -> buffer

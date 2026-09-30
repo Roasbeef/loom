@@ -1,12 +1,12 @@
 //// `cap/lsp` — semantic questions about the workspace's code, answered by
-//// the language server the session runs for it (ADR-013).
+//// the language server the session runs for it (ADR-015).
 ////
 //// # Why a program asks by symbol, never by position
 ////
 //// The Language Server Protocol addresses code the way an editor does: a
 //// document, a zero-based line and a zero-based offset counted in UTF-16
 //// code units. A program has no cursor, and asking it for a UTF-16 offset
-//// is asking it to be wrong (ADR-013 §5). So every question here is a
+//// is asking it to be wrong (ADR-015 §5). So every question here is a
 //// `Query`: a symbol *name*, optionally narrowed by a workspace path and a
 //// 1-based line exactly as `fs.read` and `search.grep` number them. The
 //// harness resolves the name to a position; the program never sees one.
@@ -19,7 +19,7 @@
 //// The tools answer one question per call. A program composes them, and
 //// the composition is the point: "every function in this file that is
 //// referenced from outside it" is one outline and a loop of reference
-//// queries here, and no single tool offers it (ADR-013 §6). The harness
+//// queries here, and no single tool offers it (ADR-015 §6). The harness
 //// answers every name below itself (`codemode/lsp`, `ServedHere`) over
 //// the same door the tools use, so a program and a tool asking the same
 //// question get the same resolution and the same server.

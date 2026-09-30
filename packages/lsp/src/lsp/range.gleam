@@ -4,7 +4,7 @@
 //// These are the protocol's own coordinates: zero-based lines and
 //// zero-based character offsets counted in **UTF-16 code units**, which
 //// is what LSP means when neither side negotiates a `positionEncoding`
-//// (both measured servers negotiate none — ADR-013). They exist as their
+//// (both measured servers negotiate none — ADR-015). They exist as their
 //// own module so the wire decoders (`lsp/protocol`) and the pure text
 //// arithmetic that converts and applies them (`lsp/text`) share one
 //// definition without either importing the other.

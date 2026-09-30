@@ -294,7 +294,7 @@ was asked.
   render_definitions, render_diagnostics, render_preview, render_report,
   render_error, max_reference_hits, max_rendered_diagnostics}` — the seven
   `lsp_*` tools over `lsp/query.Door`, the record of closures `client`
-  fills from the session's language-server manager (ADR-013 §5–§6). Every
+  fills from the session's language-server manager (ADR-015 §5–§6). Every
   symbol-addressed tool takes `symbol` (qualified names allowed), optional
   `path` and optional 1-based `line` — a `line` without a `path` is refused
   in band — and never a position. Every site renders as

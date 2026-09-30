@@ -1304,7 +1304,7 @@ the jail, with access to the workspace roots and no network. What the
 plan does not yet contain is a grant for binaries: a `[proc]` table in
 the manifest beside `[net]`, with the same per-execution ceiling shape.
 LSP has since landed in the harness instead, as a jailed session lease
-whose door serves the `lsp_*` tools and `cap/lsp` alike (ADR-013,
+whose door serves the `lsp_*` tools and `cap/lsp` alike (ADR-015,
 `lsp.md`); the route remains named for DAP.
 
 ## Where the code lives

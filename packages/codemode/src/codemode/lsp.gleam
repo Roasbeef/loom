@@ -1,7 +1,7 @@
 //// The language-server router: `lsp.definition`, `lsp.references`,
 //// `lsp.hover`, `lsp.outline`, `lsp.calls`, `lsp.diagnostics` and
 //// `lsp.rename`, answered in the harness over the session's
-//// language-server door (ADR-013 §6).
+//// language-server door (ADR-015 §6).
 ////
 //// # Why code mode reaches the server through the tools' door
 ////
@@ -18,7 +18,7 @@
 ////
 //// As `client/mcp.routing` serves `mcp.<server>`, and for its reason: the
 //// server is already running, jailed, under a lease
-//// the session holds (ADR-013 §1), and a query is a message to it over a
+//// the session holds (ADR-015 §1), and a query is a message to it over a
 //// channel the harness owns. Nothing here spawns a process or crosses a
 //// namespace, so a composed `SandboxPolicy` would be a policy with no
 //// enforcer present. What bounds a call is the door's own per-request
@@ -32,7 +32,7 @@
 //// needs nothing the harness has not already handed back, so it lives
 //// here. `apply` calls `Seam.rename`, which the client composes out of
 //// `prepare_rename`, the hashline landing that `fs_edit` uses, and
-//// `after_write` (ADR-013 §4). This router never writes a file and cannot
+//// `after_write` (ADR-015 §4). This router never writes a file and cannot
 //// be made to: the only write path it can reach is a closure somebody
 //// else built around the concurrency check.
 ////
@@ -354,7 +354,7 @@ fn rename_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
 //
 // Two shapes are refused that the door would otherwise have to guess at:
 // a `line` with no `path` names a line of no file, and a line below 1 is
-// the zero-based habit ADR-013 §5 exists to keep out.
+// the zero-based habit ADR-015 §5 exists to keep out.
 fn query_arg(value: MsgPackValue) -> Result(SymbolQuery, CapDenial) {
   use symbol <- result.try(args.string(value, "symbol"))
   use path <- result.try(optional_string(value, "path"))

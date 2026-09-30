@@ -15,7 +15,7 @@ lease**: it is cleared once through the broker's ordinary jailed exec and
 held for the life of the session, like an extension host. **The model
 addresses symbols, never positions**: every question names a symbol as
 code spells it, and every answer comes back as a line the model can edit
-without reading the file first. `docs/adr/013-language-servers-as-jailed-leases.md`
+without reading the file first. `docs/adr/015-language-servers-as-jailed-leases.md`
 is the ruling, with the measurements it rests on. This document is how
 the code carries that ruling out.
 
@@ -264,7 +264,7 @@ back. With one server and a pool of at least four, the cap cannot bind
 today. It is the guard for a second server, or for extension hosts
 counted against it later (they hold session-lived helpers too, and are
 not counted yet), and it is tested at the minimum pool size. The cap is
-per session because the pool is. ADR-013's review assumed a daemon-wide
+per session because the pool is. ADR-015's review assumed a daemon-wide
 pool; measuring the boot path showed otherwise, and the ADR carries the
 correction.
 
@@ -679,5 +679,5 @@ Each path is relative to its package's source root: `lsp/client.gleam`
 is `packages/lsp/src/lsp/client.gleam`, and `client/lsp/jail.gleam` is
 `packages/client/src/client/lsp/jail.gleam`. `packages/lsp/CLAUDE.md` is
 the dense per-type reference for the protocol package, and
-`docs/adr/013-language-servers-as-jailed-leases.md` is the ruling and its
+`docs/adr/015-language-servers-as-jailed-leases.md` is the ruling and its
 measurements.

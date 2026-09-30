@@ -2311,7 +2311,7 @@ catalogue without opening runtimes. Explicit admission invokes
   at all. When code mode or jobs is available, the built-in `fs_read` also
   receives `codemode.cap_scheme` or `job.scheme`, respectively. The schemes
   reuse those planes and add no separate registry entry. A language-server
-  door (ADR-013 §6) adds the seven `lsp_*` tools and builds `fs_write` and
+  door (ADR-015 §6) adds the seven `lsp_*` tools and builds `fs_write` and
   `fs_edit` with `tools/lsp.diagnostics_observer`, so a landed write's
   result gains its settled diagnostics; with `None` the two write tools are
   the plain ones and the definitions are byte-identical to a host that
@@ -4704,7 +4704,7 @@ retains its collection margin so a verdict at the proof cutoff can be observed.
 
 ## Language servers
 
-ADR-013 is the ruling; these are the pieces that carry it in this package.
+ADR-015 is the ruling; these are the pieces that carry it in this package.
 
 - `client/lsp/manager.{Manager, Config, Backend, Timing, Jailed, Search, Hit,
   Msg, start, supervised, addressed, stop, door, jailed, connect_jailed,

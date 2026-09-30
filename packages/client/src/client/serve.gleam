@@ -556,7 +556,7 @@ pub type Instance {
     /// catalogue configures no `[lsp.<name>]` server, or whose every
     /// server was refused at load. Held so `close_instance` can stop the
     /// server gracefully and then abort the plane's operation, the
-    /// backstop ADR-013 §1 assigns to session end.
+    /// backstop ADR-015 §1 assigns to session end.
     lsp: Option(LspPlane),
   )
 }
@@ -566,7 +566,7 @@ pub type Instance {
 /// what its teardown needs.
 ///
 /// One per session, because the helper pool it leases from is one per
-/// session (ADR-013 §1, "Pool pressure").
+/// session (ADR-015 §1, "Pool pressure").
 pub type LspPlane {
   LspPlane(
     /// The handle on the supervised manager, reached through its address
@@ -2106,7 +2106,7 @@ fn code_mode_seam(
 
 // --- the language-server plane ----------------------------------------------
 //
-// ADR-013 §§1 and 6: a configured `[lsp.<name>]` server runs in the jail as
+// ADR-015 §§1 and 6: a configured `[lsp.<name>]` server runs in the jail as
 // a session lease, under the session's own enforcement demand, and every
 // surface reaches it through one manager's door. The boot does four things
 // and no more: it resolves each server's `~/` roots once, against the
@@ -2126,7 +2126,7 @@ type LspWiring {
 }
 
 // A boot with no `[lsp.<name>]` table builds nothing and logs nothing: an
-// unconfigured workspace pays nothing (ADR-013 §6). A configured server
+// unconfigured workspace pays nothing (ADR-015 §6). A configured server
 // whose roots will not resolve is refused alone, one `lsp.unavailable`
 // line each, and the others still serve; a counter that will not start
 // refuses them all the same way. Neither refuses the boot, for the reason
@@ -2277,7 +2277,7 @@ fn with_lsp_manager(
   }
 }
 
-// Session end for the plane, in ADR-013 §1's order: the graceful stop
+// Session end for the plane, in ADR-015 §1's order: the graceful stop
 // (`shutdown`, `exit`, stdin EOF, waited for in this process), then the
 // abort of the plane's operation as the backstop for a server that
 // outlived its grace, then the counter.

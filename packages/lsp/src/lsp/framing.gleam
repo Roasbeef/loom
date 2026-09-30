@@ -7,7 +7,7 @@
 //// header section — `Content-Length: <n>\r\n`, optionally a
 //// `Content-Type`, then a blank line — followed by exactly `n` bytes of
 //// UTF-8 JSON. The length counts **bytes**, and the pipe (here, the
-//// broker's `CallOutput` chunks, ADR-013 §1) cuts wherever it likes,
+//// broker's `CallOutput` chunks, ADR-015 §1) cuts wherever it likes,
 //// including between the bytes of one character. So unlike `mcp/stdio`,
 //// which frames on newlines and can take `String` chunks, this framer must
 //// take `BitArray` chunks: converting a chunk to text before the frame is
@@ -53,7 +53,7 @@ pub const max_frame_bytes = 16_777_216
 pub const max_header_bytes = 8192
 
 /// Why framing refused the stream. Plain data; the owning actor decides
-/// what a poisoned transport costs (ADR-013 §1: a broken stdout stream is
+/// what a poisoned transport costs (ADR-015 §1: a broken stdout stream is
 /// transport-fatal).
 pub type FramingFault {
   /// The header section grew past `max_header_bytes` without its

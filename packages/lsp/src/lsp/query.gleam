@@ -7,7 +7,7 @@
 //// document URI, a zero-based line, and a zero-based character offset
 //// counted in UTF-16 code units. An editor always knows its cursor. A
 //// model does not, and asking it for a UTF-16 offset is asking it to be
-//// wrong (ADR-013 §5). So nothing above this package ever sees an LSP
+//// wrong (ADR-015 §5). So nothing above this package ever sees an LSP
 //// position. A tool, a code-mode capability and the post-edit hook all
 //// ask in terms of a *symbol name* — optionally narrowed by a path and a
 //// 1-based line exactly as `fs_read` and `grep` print them — and get back
@@ -28,7 +28,7 @@
 //// returns the edited text per file without writing anything; the
 //// caller lands it through the hashline path it already owns
 //// (`tools/fs`), so a concurrent modification rejects exactly as a stale
-//// `fs_edit` does (ADR-013 §4), and then reports each landed file back
+//// `fs_edit` does (ADR-015 §4), and then reports each landed file back
 //// through `after_write` so the server's view follows the disk.
 ////
 //// This module is types only: no process, no I/O.
@@ -108,7 +108,7 @@ pub type QueryError {
 
   /// The owning server did not advertise the request this query needs,
   /// so it was never sent. A server may leave an unadvertised request
-  /// unanswered forever (ADR-013, measured).
+  /// unanswered forever (ADR-015, measured).
   Unsupported(server: String, request: String)
 
   /// The symbol was not found where the query said to look.
@@ -131,7 +131,7 @@ pub type QueryError {
 /// Whether the answer paid for a server (re)start. A restart is a
 /// handshake plus a full project compile, seconds rather than
 /// milliseconds, and a result that silently took that long reads as a
-/// hang (ADR-013 §1).
+/// hang (ADR-015 §1).
 pub type Warmth {
   /// The server was already running.
   Warm
@@ -201,7 +201,7 @@ pub type Diagnostic {
 
 /// Diagnostics after a change, and whether they are known to be current.
 ///
-/// "Settled" is ADR-013 §3's two rules: the barrier request answered and,
+/// "Settled" is ADR-015 §3's two rules: the barrier request answered and,
 /// for a server that versions its diagnostics, a publication at least as
 /// new as the change arrived. An unsettled block is reported as such and
 /// never as clean code.
@@ -276,7 +276,7 @@ pub type Door {
     prepare_rename: fn(SymbolQuery, String) ->
       Result(Served(List(FileEdit)), QueryError),
     /// Tell the manager a workspace path was just written, and wait (at
-    /// most ADR-013's bound) for settled diagnostics. `None` when no
+    /// most ADR-015's bound) for settled diagnostics. `None` when no
     /// configured server owns the path, which costs nothing.
     after_write: fn(String) -> Option(Diagnostics),
   )

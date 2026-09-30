@@ -39,7 +39,7 @@
 //// extension and resident surfaces never inherit it.
 ////
 //// `over_lsp` is the same arrangement for the session's language-server
-//// door (ADR-013 §6), and for a reason with a price on it. `cap/lsp` is
+//// door (ADR-015 §6), and for a reason with a price on it. `cap/lsp` is
 //// on no static allowlist (`codemode/vet/policy.default_cap_modules`), so
 //// its type surface enters the `code_mode` description, the `lsp.*` names
 //// enter the serviced list, the import is admitted and the router arm is
@@ -902,7 +902,7 @@ pub fn default_config(
     // differ here.
     jobs: None,
     mcp: mcp_wiring.none(),
-    // No language server by default: ADR-013 §6 has no built-in one, and
+    // No language server by default: ADR-015 §6 has no built-in one, and
     // `cap/lsp` stays off every allowlist until a host wires a door.
     lsp: None,
     max_outstanding: default_outstanding,

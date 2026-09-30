@@ -6,7 +6,7 @@
 //// The agent edits by hashline anchor and finds code by grep, which knows
 //// text and nothing else. A language server knows where a name is
 //// defined, who refers to it, what type it has, and whether the code
-//// still compiles after a change (ADR-013). This module is the model's
+//// still compiles after a change (ADR-015). This module is the model's
 //// half of that view: seven tool definitions, the argument decoding, and
 //// the rendering. Everything with teeth — the jailed server, document
 //// sync, symbol resolution, settlement — is on the far side of
@@ -19,7 +19,7 @@
 //// A model never supplies a position. Every tool that addresses a symbol
 //// takes the name as code spells it (`greet`, or qualified as
 //// `util.Greet`), optionally narrowed by a `path` and the 1-based `line`
-//// `fs_read` prints (ADR-013 §5). And every site an answer names is
+//// `fs_read` prints (ADR-015 §5). And every site an answer names is
 //// rendered as `path:line:anchor|text` — a `grep` hit with the hashline
 //// anchor `fs_read` would have printed for that line spliced in — so a
 //// result feeds `fs_edit` directly, with no read round trip in between.
@@ -34,7 +34,7 @@
 //// text the server saw, checks every file against the disk before the
 //// first byte is written, and writes through `fs.land_plan` — the same
 //// path `fs_edit` takes — so a file changed since the server looked is
-//// refused as stale rather than overwritten (ADR-013 §4). `land` needs no
+//// refused as stale rather than overwritten (ADR-015 §4). `land` needs no
 //// `Ctx`, because code mode lands a rename through it too; the write
 //// boundary arrives as a closure that makes `fs.WriteTarget`s.
 
@@ -83,7 +83,7 @@ pub const max_hover_bytes = 4096
 /// Preview is the default. A rename touches every file that names the
 /// symbol and is not atomic across them, so the first call shows every
 /// changed line and writes nothing, and the model applies what it has
-/// seen (ADR-013 §5, "Preview first").
+/// seen (ADR-015 §5, "Preview first").
 pub type RenameMode {
   /// Ask the server and render every changed line; write nothing.
   Preview
@@ -96,7 +96,7 @@ pub type RenameMode {
 ///
 /// The host registers them only when a language server is configured,
 /// because the tool array is the cached prefix and an unconfigured
-/// workspace should pay nothing for them (ADR-013 §6).
+/// workspace should pay nothing for them (ADR-015 §6).
 ///
 /// ## Examples
 ///
@@ -582,7 +582,7 @@ type Prepared {
 /// Lands a rename's edits through the hashline path and reports, file by
 /// file, exactly what was written.
 ///
-/// Four phases, in ADR-013 §4's order, and every one of the first three
+/// Four phases, in ADR-015 §4's order, and every one of the first three
 /// runs over every file before the next begins:
 ///
 /// 1. each file's plan is built with `hashline.plan_between`, bound to the
@@ -804,7 +804,7 @@ fn diagnostic_entries(diagnostics: Diagnostics) -> List(Diagnostic) {
 
 /// The `fs.WriteObserver` a host hands `fs.write_tool_with` and
 /// `fs.edit_tool_with`: after a write lands, the door is told of it and
-/// its diagnostics are rendered as the block the result gains (ADR-013
+/// its diagnostics are rendered as the block the result gains (ADR-015
 /// §6). A path no server owns answers `None` and leaves the result as it
 /// was.
 ///

@@ -1,5 +1,5 @@
 //// A language server run inside the jail, and the wire the harness speaks
-//// to it over (ADR-013 §1).
+//// to it over (ADR-015 §1).
 ////
 //// A language server runs project code in effect: build scripts, macros,
 //// a toolchain the model can edit. Rule Zero therefore puts it in the jail,
@@ -946,7 +946,7 @@ pub fn narrowing_text(narrowing: Narrowing) -> String {
 /// a jailed server's policy may be quietly dropped, and the caller's
 /// `demand`.
 ///
-/// The demand is a parameter rather than a constant because ADR-013 §1
+/// The demand is a parameter rather than a constant because ADR-015 §1
 /// clears a server under the session's own `EnforcementDemand` — the one
 /// `bash` clears under — and the manager's enforcement probe proves exactly
 /// that demand before the lease is cleared. A spec that wrote its own

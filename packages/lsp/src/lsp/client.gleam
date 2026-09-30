@@ -1,6 +1,6 @@
 //// The language-server client actor: one process owning one language
 //// server over a `mcp/transport.Transport`, from the `initialize`
-//// handshake to the witnessed close of its transport (ADR-013 §§1–3).
+//// handshake to the witnessed close of its transport (ADR-015 §§1–3).
 ////
 //// # Why this is an actor, and what it refuses to do
 ////
@@ -12,7 +12,7 @@
 //// versions and publications are correlated.
 ////
 //// **No handler blocks and no handler reads disk.** The production
-//// transport is the broker's jailed exec, and ADR-013 §1 records that the
+//// transport is the broker's jailed exec, and ADR-015 §1 records that the
 //// path has no backpressure: the relay forwards every stdout chunk as a
 //// message and stdin is a cast. So every wait — a request's deadline, a
 //// settlement, the handshake, the shutdown grace — lives in actor state as
@@ -52,11 +52,11 @@
 //// with `Unavailable(reason)`, closes the transport, and ends the actor
 //// with an abnormal exit carrying the reason. Restarting is not this
 //// module's job: the manager that monitors `pid` restarts the server and
-//// re-sends its documents (ADR-013 §1).
+//// re-sends its documents (ADR-015 §1).
 ////
 //// # Settled diagnostics are two rules
 ////
-//// ADR-013 §3, measured on two servers: `gleam lsp` never versions a
+//// ADR-015 §3, measured on two servers: `gleam lsp` never versions a
 //// publication but publishes before it answers a request sent after the
 //// change; `gopls` versions every publication but may publish after that
 //// answer. So `settle` sends a `documentSymbol` barrier and settles once
@@ -97,7 +97,7 @@ import weft/state_machine as sm
 
 /// The most documents the client holds open on the server. Opening one
 /// more sends `didClose` for the least recently synced and forgets it
-/// (ADR-013 §3). A server re-reads a closed document from disk, so the
+/// (ADR-015 §3). A server re-reads a closed document from disk, so the
 /// bound costs a read, never a wrong answer.
 pub const max_open_documents = 64
 
@@ -114,7 +114,7 @@ pub const max_published_uris = 512
 pub const max_diagnostics_per_uri = 200
 
 /// The default budget for the `initialize` round trip. `gopls` answered
-/// its first query in 1.8 s cold (ADR-013); a handshake that includes a
+/// its first query in 1.8 s cold (ADR-015); a handshake that includes a
 /// project load is given far longer than that.
 pub const default_initialize_ms = 30_000
 
@@ -233,7 +233,7 @@ pub type RequestError {
   Unsupported(feature: Feature)
 
   /// The server answered with a JSON-RPC error, in its own words. A
-  /// refused rename's message is the useful part (ADR-013 §4).
+  /// refused rename's message is the useful part (ADR-015 §4).
   ServerError(code: Int, message: String)
 
   /// No answer arrived within the request's deadline. The id was
@@ -254,12 +254,12 @@ pub type RequestError {
   InvalidPath(path: String)
 
   /// A rename answer asked to create, rename or delete a file, which the
-  /// hashline path cannot land; the whole edit is refused (ADR-013 §4).
+  /// hashline path cannot land; the whole edit is refused (ADR-015 §4).
   EditRefused(kind: String, uri: String)
 }
 
 /// One change to the server's view of the documents, computed by the
-/// caller (ADR-013 §3's push and pull). The actor never reads disk, so
+/// caller (ADR-015 §3's push and pull). The actor never reads disk, so
 /// every text here is the text the caller read.
 pub type DocOp {
   /// Hold `path` open with `text`. Opening a document already open
@@ -274,7 +274,7 @@ pub type DocOp {
   Close(path: String)
 }
 
-/// Whether a settlement met ADR-013 §3's two rules before its deadline.
+/// Whether a settlement met ADR-015 §3's two rules before its deadline.
 pub type SettleOutcome {
   /// Both rules held: the diagnostics are current as of the change.
   Settled
@@ -291,7 +291,7 @@ pub type Settlement {
     /// Every path published about since the earliest change being
     /// settled, plus the latest stored publication for each changed
     /// path, sorted by path. Breaking one file breaks its dependents, so
-    /// other files' publications are part of the answer (ADR-013 §3).
+    /// other files' publications are part of the answer (ADR-015 §3).
     published: List(#(String, List(ServerDiagnostic))),
   )
 }
@@ -313,7 +313,7 @@ pub type StopReport {
 
   /// The transport never reported the close within `retire_ms`, or the
   /// client did not answer at all. The server may still be running; the
-  /// broker's step abort is the backstop (ADR-013 §1).
+  /// broker's step abort is the backstop (ADR-015 §1).
   Unconfirmed
 }
 
@@ -406,7 +406,7 @@ type Pending {
 }
 
 // One document the server holds open. `text` is exactly the last text
-// sent, which is the rename base of ADR-013 §4. `version` is drawn from
+// sent, which is the rename base of ADR-015 §4. `version` is drawn from
 // one counter shared by every document, so it also orders documents by
 // last sync for the LRU bound, and a document closed and reopened never
 // reuses a version an old publication already carries. `mark` is the
@@ -922,7 +922,7 @@ pub fn sync(client: Client, ops: List(DocOp)) -> Result(Nil, RequestError) {
   exchange(client, local_wait_ms, Sync(ops, _)) |> result.flatten
 }
 
-/// Waits for settled diagnostics after a change to `paths` (ADR-013 §3),
+/// Waits for settled diagnostics after a change to `paths` (ADR-015 §3),
 /// at most `deadline_ms`. Call it after the `sync` that carried the
 /// change.
 ///
@@ -965,7 +965,7 @@ pub fn diagnostics(
 }
 
 /// The exact text last sent to the server for `path` — the rename base of
-/// ADR-013 §4 — or `None` when the document is not open.
+/// ADR-015 §4 — or `None` when the document is not open.
 ///
 /// ## Examples
 ///
@@ -982,7 +982,7 @@ pub fn synced_text(
 }
 
 /// Every path the server holds open, sorted. This is what the pull of
-/// ADR-013 §3 re-reads before a query.
+/// ADR-015 §3 re-reads before a query.
 ///
 /// ## Examples
 ///
@@ -1929,7 +1929,7 @@ fn release_settled(data: Data) -> Data {
   })
 }
 
-// ADR-013 §3. Rule (a): the barrier answered. Rule (b): once this server
+// ADR-015 §3. Rule (a): the barrier answered. Rule (b): once this server
 // has ever versioned a publication, every changed document has one at
 // least as new as its synced version. A server with no barrier and no
 // versions can never settle; it answers at the deadline instead.

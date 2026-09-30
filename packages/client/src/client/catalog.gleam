@@ -5,7 +5,7 @@
 //// model switches by catalogue *name* instead of raw provider facts.
 //// The same file optionally carries the MCP server tables code mode
 //// exposes as generated `cap/mcp/<name>` modules, and the language
-//// server tables the `lsp_*` tools are served from (ADR-013 §6).
+//// server tables the `lsp_*` tools are served from (ADR-015 §6).
 ////
 //// The catalogue is a thin, declarative front-end over the registry the
 //// provider gateway already has: each `[models.<name>]` entry becomes
@@ -266,7 +266,7 @@ pub type LspPath {
 
 /// One configured language server: an `[lsp.<name>]` table.
 ///
-/// Servers are configured, never discovered (ADR-013 §6). Each is the
+/// Servers are configured, never discovered (ADR-015 §6). Each is the
 /// only owner of the file extensions it lists, and is jailed with the
 /// project it serves plus exactly the extra roots written here.
 ///

@@ -10,7 +10,7 @@
 //// file's edited text and writes nothing; `tools/lsp.land`, the one
 //// hashline landing the `lsp_rename` tool also uses; and the write
 //// boundary a code-mode program is held to. Only the client holds all
-//// three, so this module is where they meet (ADR-013 §4 and §6).
+//// three, so this module is where they meet (ADR-015 §4 and §6).
 ////
 //// # Which write boundary
 ////

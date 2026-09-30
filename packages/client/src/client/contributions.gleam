@@ -158,7 +158,7 @@ pub type Collision {
 /// registry built with no session behind it, which only a test does.
 ///
 /// `lsp` is the session's language-server door, `None` when no
-/// `[lsp.<name>]` server is configured (ADR-013 §6). It reaches core
+/// `[lsp.<name>]` server is configured (ADR-015 §6). It reaches core
 /// tools too: with a door, `fs_write` and `fs_edit` are built with
 /// `tools/lsp.diagnostics_observer` so a landed write's result gains its
 /// settled diagnostics. Without one they are the plain tools, byte for

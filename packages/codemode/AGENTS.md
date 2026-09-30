@@ -256,7 +256,7 @@ session and sends it many invocations.
   longer contains your text — instead of a synthesised pin.
 - `codemode/lsp.{Seam, RenameMode, LineChange, PlannedFile, routing,
   serviced_caps, preview, refusal, site_value, max_items}` — the seven
-  `lsp.*` names (ADR-013 §6), every plan `ServedHere` over an
+  `lsp.*` names (ADR-015 §6), every plan `ServedHere` over an
   `lsp/query.Door` — the same door the `lsp_*` tools use — plus the
   client-composed applied `rename` (prepare, hashline landing,
   `after_write`). It decodes a `SymbolQuery` totally (a `line` without a
@@ -787,7 +787,7 @@ session and sends it many invocations.
   for any router to map, and the table promising one as pending
   over-counted the bridge by a whole module (issue #16's scoping).
   `lsp.*` is `codemode/lsp`'s, over the session's language-server door
-  (ADR-013 §6). What is genuinely owed is `net.request` on the workspace
+  (ADR-015 §6). What is genuinely owed is `net.request` on the workspace
   seam (the egress proxy); the write arms are no longer on that list —
   they landed with #105, over `tools/fs.resolve_writable`. Even within
   `proc.run`, a call carrying `cwd`, `stdin`, `env`, or `timeout_ms` is

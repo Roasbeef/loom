@@ -1,7 +1,7 @@
 //// The ceiling on how many jailed helpers a session may hold for the whole
 //// of its life, as opposed to borrowing one for a command.
 ////
-//// A language server is a lease, not a call (ADR-013 §1). It checks a
+//// A language server is a lease, not a call (ADR-015 §1). It checks a
 //// `loom-exec` helper out of the session's pool when it starts and keeps it
 //// until it exits, which can be hours. The pool is small on purpose — it
 //// clamps to `exec.min_pool_size`..`exec.max_pool_size` — and the rest of the
@@ -13,7 +13,7 @@
 //// server asked for at the cap is refused with a sentence naming the cap
 //// rather than queued behind helpers that may never come back.
 ////
-//// **The scope is the session, because the pool is.** ADR-013 says the pool
+//// **The scope is the session, because the pool is.** ADR-015 says the pool
 //// is per daemon; the code says otherwise. `client/serve.assemble_in` calls
 //// `start_effect_plane_in` once per assembled session, so every session owns
 //// its own pool of `helper_pool_size` helpers and its own broker, and no
@@ -33,7 +33,7 @@
 //// nothing to do.
 ////
 //// Extension hosts also hold session-lived helpers and are not counted here.
-//// ADR-013 files that as a follow-up rather than widening this change.
+//// ADR-015 files that as a follow-up rather than widening this change.
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
@@ -45,7 +45,7 @@ import weft/actor
 /// How many helpers of a pool are kept out of reach of session-lived
 /// leases: one for a `bash` call, one for a code-mode satellite, and one
 /// for the capability call that satellite makes while it waits
-/// (ADR-013 §1, "Pool pressure").
+/// (ADR-015 §1, "Pool pressure").
 pub const reserved_helpers = 3
 
 /// The number of leases a pool of `pool_size` helpers admits:

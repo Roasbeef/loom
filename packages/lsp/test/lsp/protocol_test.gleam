@@ -9,7 +9,7 @@ import mcp/jsonrpc
 
 // The payloads below are literal answers from `gleam lsp` 1.18.1 and
 // `gopls` v0.23.0, captured over stdio on 2026-09-25 against a two-module
-// Gleam project and a one-file Go module (the ADR-013 measurement
+// Gleam project and a one-file Go module (the ADR-015 measurement
 // set-up), with only the absolute project path shortened.
 
 fn parse(text: String) -> JsonValue {

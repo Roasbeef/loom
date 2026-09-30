@@ -1,4 +1,4 @@
-# ADR-013: language servers run as jailed session leases, addressed by symbol
+# ADR-015: language servers run as jailed session leases, addressed by symbol
 
 **Status**: accepted · **Date**: 2026-09-25 · **Supersedes**: nothing ·
 **Spec ref**: Part 2 WP-I ("Later in M5: `lsp_*` — client over stdio port,

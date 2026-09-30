@@ -449,7 +449,7 @@ also what #26 runs on. Build it here.
 **Labels.** `release-blocker`, `phase:3`, `kind:feature`, `area:tools`,
 `area:broker`
 
-> **Landed.** ADR-013 is the ruling and `docs/architecture/lsp.md` the
+> **Landed.** ADR-015 is the ruling and `docs/architecture/lsp.md` the
 > account of what was built. Two parts of the "Done" line changed on the
 > way. The server is not a stdio port: it is the broker's ordinary jailed
 > exec, cleared once and held for the session under the session's

@@ -1150,7 +1150,7 @@ fn read_error_outcome(error: ReadError) -> ToolOutcome {
 /// resolved path just written, answered with an optional block of text to
 /// append to the call's result.
 ///
-/// It exists for post-edit diagnostics (ADR-013 §6): the language server
+/// It exists for post-edit diagnostics (ADR-015 §6): the language server
 /// that owns the file is told of the change and its settled diagnostics
 /// join the result, so a model learns it broke the build in the same turn
 /// it broke it. It is a closure rather than a value this package computes

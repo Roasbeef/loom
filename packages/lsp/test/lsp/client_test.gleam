@@ -2,7 +2,7 @@
 //// handshake, the capability gate, request deadlines and their
 //// cancellation, the server's own words, answers to server requests,
 //// every way the server dies, document sync and its 64-document bound,
-//// ADR-013 §3's two settlement rules replayed against both measured
+//// ADR-015 §3's two settlement rules replayed against both measured
 //// server behaviours, and the stop sequence. No OS process anywhere; every
 //// deadline is tens of milliseconds, and nothing asserts an absence by
 //// sleeping — an absence is checked behind a later message the server
@@ -44,7 +44,7 @@ fn advertised(names: List(String)) -> JsonValue {
 }
 
 // Everything the harness asks except call hierarchy, which `gleam lsp`
-// does not serve (ADR-013's measured table).
+// does not serve (ADR-015's measured table).
 fn gleam_like_capabilities() -> JsonValue {
   advertised([
     "definitionProvider", "referencesProvider", "hoverProvider",

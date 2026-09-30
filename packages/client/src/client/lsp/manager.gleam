@@ -1,10 +1,10 @@
 //// The session's language-server manager: the one process that knows which
 //// server is running, and the `lsp/query.Door` every surface asks through
-//// (ADR-013 §§1, 3–6).
+//// (ADR-015 §§1, 3–6).
 ////
 //// # Why the work is split the way it is
 ////
-//// ADR-013 §1 records that the jailed exec path has no backpressure: the
+//// ADR-015 §1 records that the jailed exec path has no backpressure: the
 //// relay forwards every stdout chunk as a message and stdin is a cast. So
 //// nothing that owns a mailbox on that path may block, and the manager is
 //// built around that rule rather than around convenience.
@@ -41,7 +41,7 @@
 ////
 //// Before every query the caller re-reads every document the server holds
 //// open and sends a full-text `didChange` for each whose text moved and a
-//// `didClose` for each that vanished (ADR-013 §3, "Pull"); the client holds
+//// `didClose` for each that vanished (ADR-015 §3, "Pull"); the client holds
 //// at most 64 open. After a write, `after_write` pushes the new text and
 //// waits, bounded, for settled diagnostics.
 ////
@@ -73,7 +73,7 @@
 //// The production backend (`jailed`) clears a trivial probe under exactly
 //// the server's policy and the session's enforcement demand before it
 //// clears the server itself, and starts the server only if the probe
-//// settles undegraded (ADR-013 §1). A server lives for hours; the helper
+//// settles undegraded (ADR-015 §1). A server lives for hours; the helper
 //// reports what it enforced only in an exit report, and a lease must not
 //// learn that it ran unjailed at the end of its life.
 
@@ -124,7 +124,7 @@ pub type Timing {
     start_ms: Int,
     /// The deadline of one request to the server.
     request_ms: Int,
-    /// ADR-013 §3's bound on settled diagnostics.
+    /// ADR-015 §3's bound on settled diagnostics.
     settle_ms: Int,
     /// The shutdown grace an evicted or released server gets.
     stop_grace_ms: Int,
@@ -159,7 +159,7 @@ pub fn default_timing() -> Timing {
 }
 
 /// One bounded word search for an identifier, over one directory, limited
-/// to one server's file extensions (ADR-013 §5, a bare symbol).
+/// to one server's file extensions (ADR-015 §5, a bare symbol).
 pub type Search {
   Search(
     /// The server whose extensions and jail the search uses.
@@ -812,7 +812,7 @@ fn builder(config: Config) -> sm.Builder(Phase, Data, Msg, Subject(Msg)) {
 /// the helper lease once the broker settles the execution. The wait runs
 /// here in the caller, never in the manager. The language servers'
 /// operation abort at session end is the backstop for a server that
-/// outlives the bound (ADR-013 §1). A manager that is not running is
+/// outlives the bound (ADR-015 §1). A manager that is not running is
 /// already stopped.
 ///
 /// ## Examples
@@ -1227,7 +1227,7 @@ fn begin_server(keeping: Keeping) -> Result(lsp.Client, String) {
 // The `languageId` a document is opened with: the server's first
 // extension without its dot, which is what both measured servers accept
 // (`gleam`, `go`). The catalogue has no field for it, and every language
-// ADR-013 names spells its id exactly this way.
+// ADR-015 names spells its id exactly this way.
 fn server_language(server: LspServer) -> String {
   case server.extensions {
     [first, ..] -> string.drop_start(first, 1)
@@ -1831,7 +1831,7 @@ fn after_write(manager: Manager, path: String) -> Option(Diagnostics) {
   }
 }
 
-// ADR-013 §3's push: the new text, then a bounded wait for settlement. A
+// ADR-015 §3's push: the new text, then a bounded wait for settlement. A
 // failure is an unsettled block, never a clean one.
 fn pushed(
   manager: Manager,
@@ -1882,7 +1882,7 @@ fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
   })
 }
 
-// Turns a question into a position, by the three rules ADR-013 §5 names:
+// Turns a question into a position, by the three rules ADR-015 §5 names:
 // a line narrows to the first boundary occurrence on it, a path alone to
 // the file's outline, and a bare name to a search of the server's root.
 fn target(manager: Manager, asked: SymbolQuery) -> Result(Target, QueryError) {
@@ -2240,7 +2240,7 @@ fn peek(manager: Manager) -> Peeked {
   |> result.unwrap(Peeked(identity: None, client: None))
 }
 
-// ADR-013 §3's pull: every document the server holds open is re-read, and
+// ADR-015 §3's pull: every document the server holds open is re-read, and
 // changed or closed to match the disk, before the question is asked; the
 // files in `also` are opened with it. One `sync`, so the server sees the
 // whole correction before the request that follows it.

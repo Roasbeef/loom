@@ -14,7 +14,7 @@
 //// wrong somewhere, so every conversion lives here, once, against the
 //// exact text the position was computed on.
 ////
-//// A rename is the sharpest case (ADR-013 §4). The server computes edits
+//// A rename is the sharpest case (ADR-015 §4). The server computes edits
 //// against the text it holds; the harness applies them in pure code to
 //// that same base and lands the result through the hashline path. So
 //// this module also owns applying a list of `TextEdit`s, and the cheap
@@ -626,7 +626,7 @@ pub fn apply(base: String, edits: List(TextEdit)) -> Result(String, TextFault) {
 
 /// Check that every edit's range selects exactly `old` in `base`. A
 /// rename computed against a text that has since moved fails here and
-/// costs nothing (ADR-013 §4). The first mismatch is the error.
+/// costs nothing (ADR-015 §4). The first mismatch is the error.
 ///
 /// ## Examples
 ///

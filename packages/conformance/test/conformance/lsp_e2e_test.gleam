@@ -20,12 +20,12 @@
 ////   every file and reports clean settled diagnostics. Between the preview
 ////   and the apply the test adds a reference on disk, as an editor would,
 ////   and the apply renames it too: an apply asks the server again, over a
-////   freshly pulled view (ADR-013 §3), and never replays the preview.
+////   freshly pulled view (ADR-015 §3), and never replays the preview.
 //// - **Stale.** The same rename, applied while another process keeps
 ////   rewriting one of the files. The server's answer is computed over one
 ////   version and the disk holds a later one by the time it is checked, so
 ////   that file is rejected as stale, every other file is not attempted,
-////   and nothing the rename planned is written (ADR-013 §4).
+////   and nothing the rename planned is written (ADR-015 §4).
 //// - **Go.** `gopls`, when this host has it: a definition and the
 ////   references of a qualified name, through the same tool path.
 ////

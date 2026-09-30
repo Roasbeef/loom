@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Loom's client side of the Language Server Protocol (issue #25, ADR-013):
+Loom's client side of the Language Server Protocol (issue #25, ADR-015):
 the wire layer that lets the harness ask a jailed language server for a
 definition, references, hover, a file's outline, a rename and one level
 of call hierarchy, and hear its diagnostics after an edit. It is
@@ -15,7 +15,7 @@ Starting a server in the jail, its policy, reading `[lsp.<name>]` from
 `loom.toml`, and the `Door` closures are harness wiring and live in
 `packages/client`; the `lsp_*` tools are `packages/tools`; the `lsp.*`
 capabilities are `packages/codemode`. Nothing here performs I/O except
-the client actor, and nothing here imports `broker` (ADR-013 §2).
+the client actor, and nothing here imports `broker` (ADR-015 §2).
 
 The modules, in dependency order:
 
@@ -81,7 +81,7 @@ The modules, in dependency order:
   open_paths}` — full-text document sync computed by the caller, and the
   exact last text sent (the rename base).
 - `lsp/client.{settle, Settlement, SettleOutcome(Settled |
-  DeadlineExpired), diagnostics}` — ADR-013 §3's two-rule settlement and
+  DeadlineExpired), diagnostics}` — ADR-015 §3's two-rule settlement and
   the latest-publication store, both in the server's coordinates
   (`protocol.ServerDiagnostic`); converting to `query.Diagnostic` is the
   manager's, which holds the text.
@@ -101,7 +101,7 @@ The modules, in dependency order:
   builds the production `ChannelTransport` over the broker's exec),
   `tools` (the `lsp_*` tools, over `Door`), `codemode` (`lsp.*` served
   here, over `Door`) — as those slices land.
-- **FFI**: none, and ADR-013 needs none. The production transport is a
+- **FFI**: none, and ADR-015 needs none. The production transport is a
   `mcp/transport.ChannelTransport` over the broker's jailed exec.
 
 ## Traffic
@@ -124,7 +124,7 @@ The modules, in dependency order:
   when the transport closes under `Initializing` or `Serving`.
 - **Commits**: none. **Registers**: none.
 - **Wire**: LSP base protocol — `Content-Length: <bytes>\r\n\r\n<json>`
-  — riding inside the broker's `exec_stdin`/`exec_out` (ADR-013 §1).
+  — riding inside the broker's `exec_stdin`/`exec_out` (ADR-015 §1).
   `lsp/framing.frame` is the only place the outbound bytes are shaped.
   Sent: `initialize`, `initialized`, `shutdown`, `exit`, `didOpen`,
   full-text `didChange`, `didClose`, `$/cancelRequest`, `definition`,
@@ -138,14 +138,14 @@ The modules, in dependency order:
 ## Invariants
 
 - **Gate every request on advertised capabilities.** A measured server
-  never answered an unadvertised request (ADR-013). `supports` is the
+  never answered an unadvertised request (ADR-015). `supports` is the
   gate; a `NotProvided` request is refused as `query.Unsupported` and
   never sent.
 - **Framing is bounded before it buffers.** The header section is capped
   at 8 KiB; a declared length over 16 MiB is refused when the header is
   parsed, before a body byte is held. A push costs the chunk it carries:
   body chunks are kept unjoined and joined once. A faulted stream is not
-  resumable — the transport is dead (ADR-013 §1).
+  resumable — the transport is dead (ADR-015 §1).
 - **Bodies are bytes until they are whole.** The pipe splits characters;
   a body becomes a `String` only once all its bytes arrived, and is
   refused if it is not UTF-8.
@@ -158,7 +158,7 @@ The modules, in dependency order:
   `applied: false`, the initialize request declares `applyEdit: false`
   and no resource operations, and a `WorkspaceEdit` carrying a create,
   rename or delete is `ResourceOperationRefused` — never partly applied.
-  Edits land only through the hashline path (ADR-013 §4).
+  Edits land only through the hashline path (ADR-015 §4).
 - **Positions are never converted here.** Decoders carry the server's
   UTF-16 coordinates untouched; `lsp/text` is the only converter. A
   negative line or character is refused at decode.
@@ -170,7 +170,7 @@ The modules, in dependency order:
 - **URIs decode strictly.** `uri_to_path` refuses a bad `%` escape, a
   remote authority, a query or fragment, non-UTF-8 bytes and NUL; it
   never passes a malformed escape through.
-- **The client actor never blocks and never reads disk.** ADR-013 §1:
+- **The client actor never blocks and never reads disk.** ADR-015 §1:
   the jailed exec path has no backpressure. Every wait is a pending entry
   plus a timer in actor state; the only I/O in a handler is
   `Connection.send`. Document texts arrive in `sync`, read by the caller.
@@ -192,7 +192,7 @@ The modules, in dependency order:
   text sent.
 - **The diagnostics store is bounded**: 512 URIs (the oldest publication
   goes first) and 200 diagnostics per publication.
-- **Settlement is ADR-013 §3's two rules, and never a guess.** (a) the
+- **Settlement is ADR-015 §3's two rules, and never a guess.** (a) the
   `documentSymbol` barrier on the first changed URI answered; (b) once the
   server has ever versioned a publication, every changed open document
   has one at a version ≥ its synced version. A server with no
@@ -204,7 +204,7 @@ The modules, in dependency order:
 
 ## Deep Docs
 
-- [docs/adr/013-language-servers-as-jailed-leases.md](../../docs/adr/013-language-servers-as-jailed-leases.md)
+- [docs/adr/015-language-servers-as-jailed-leases.md](../../docs/adr/015-language-servers-as-jailed-leases.md)
   — the design ruling: the jail, the package split, settled diagnostics,
   rename through hashline, symbol addressing, and the measured behaviour
   of `gleam lsp` and `gopls` this package's tests replay.

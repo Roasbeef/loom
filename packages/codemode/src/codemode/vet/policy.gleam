@@ -506,7 +506,7 @@ pub fn extension_authority_modules() -> List(String) {
 ///
 /// Both lists name `lsp`, and it is left off here on purpose. Its router
 /// answers only over a language server the session actually runs, and
-/// ADR-013 §6 configures those per workspace with no built-in default, so
+/// ADR-015 §6 configures those per workspace with no built-in default, so
 /// most sessions have none. A static entry would render the module's
 /// whole type surface into the `code_mode` description of every session,
 /// the cached prefix every request pays for, to advertise imports that

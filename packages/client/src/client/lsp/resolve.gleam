@@ -1,6 +1,6 @@
 //// Which language server owns a path, whether the server may be asked
 //// about it, and how the model's words become the server's positions and
-//// back (ADR-013 §§3 and 5).
+//// back (ADR-015 §§3 and 5).
 ////
 //// # Why this is its own module
 ////
@@ -26,7 +26,7 @@
 //// resolved by `tools/fs.resolve_real` — must lie under the root's real
 //// location. bwrap binds the root at its own path, so a symlink leading out
 //// of it names a file the jailed server cannot read, and asking it would
-//// produce an answer about nothing (ADR-013 §3, "Containment"). The server
+//// produce an answer about nothing (ADR-015 §3, "Containment"). The server
 //// is then addressed only by real paths: the real root is its `rootUri`,
 //// and the real file is what every request names.
 ////
@@ -60,7 +60,7 @@ import tools/fs
 /// One language server as the manager runs it: the configured table and
 /// the project root it serves. Two identities are the same server exactly
 /// when their names and roots agree, which is what `same` compares; the
-/// session runs at most one at a time (ADR-013 §1).
+/// session runs at most one at a time (ADR-015 §1).
 pub type Identity {
   Identity(
     /// The `[lsp.<name>]` table.
@@ -319,7 +319,7 @@ pub fn read_text(path: String) -> Result(String, String) {
 /// or under no entry of `protected`, the session base policy's list.
 /// Answers the real path, which is the one to read, or why not.
 ///
-/// This is the gate of ADR-013 §3's containment turned around. `owner`
+/// This is the gate of ADR-015 §3's containment turned around. `owner`
 /// keeps the model from asking a server about a file the jail hides; this
 /// keeps a server from making the harness read one. Everything a server
 /// answers — a definition, a reference, a call edge, a diagnostic, a

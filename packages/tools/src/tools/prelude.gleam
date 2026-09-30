@@ -30,7 +30,7 @@
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   dc1de7c9d376c1224193be85eb0ccbbf980dde14ab12532d8c718c570dfe62db  packages/cap/src/cap/job.gleam
 ////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
-////   8940047d87db925d381fe940c19c58a3f97430d02c4aa31bc38311651767b349  packages/cap/src/cap/lsp.gleam
+////   7834f6423c6524768caa86bfb61f453f25986fa9b2b3cd3d2088ba2e219418b3  packages/cap/src/cap/lsp.gleam
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
@@ -45,7 +45,7 @@
 ////   ecf0eb240894825490bf17c4607e30d291d247279fef3b0a3feac44802d143bd  packages/cap/src/cap/workflow.gleam
 ////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): e1f5098e24fc331fdd82176f56f2e76fbf8cead581f866ca471c0449508275f0
+//// Body digest (every line after the marker): 449a73c3667481eed0e58c2cccbc26c9ac62661f3b6e89227766fc3a061fb24d
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -595,7 +595,7 @@ pub fn set(String, BitArray) -> Result(Nil, KvError)
     "cap/lsp",
     "### cap/lsp
 `cap/lsp` — semantic questions about the workspace's code, answered by the
-language server the session runs for it (ADR-013).
+language server the session runs for it (ADR-015).
 
 /// One edge of a call hierarchy.
 pub type Call {
@@ -2442,7 +2442,7 @@ pub type KvError {
     "cap/lsp",
     "### cap/lsp
 `cap/lsp` — semantic questions about the workspace's code, answered by the
-language server the session runs for it (ADR-013).
+language server the session runs for it (ADR-015).
 
 /// One edge of a call hierarchy.
 pub type Call {

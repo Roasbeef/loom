@@ -217,7 +217,7 @@ configured — asking it for a hover returns "No LSP server available for
 file type: .gleam". Do not plan a task around go-to-definition or
 find-references. That is about the tooling a developer drives this repo
 with, not about Loom: Loom's own agent has language-server tools, run
-jailed per session (ADR-013, `docs/architecture/lsp.md`). `ast-grep`
+jailed per session (ADR-015, `docs/architecture/lsp.md`). `ast-grep`
 does not know Gleam either (`gleam is not supported!`), so structural
 search over these sources is grep, or a throwaway `glance` walk in
 `packages/lint` when the question is really about the AST. For the
