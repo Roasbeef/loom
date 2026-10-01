@@ -2,6 +2,27 @@
 //// repository's sessions, the digest sidecar the server injects from,
 //// and the `remember` door's host side.
 ////
+//// ## Flow
+////
+//// `store_beside` → `open` → `append_distillates` → `replace_head` →
+//// `reconcile_digest` → `write_digest` → `digest_hooks`
+////
+//// 1. `store_beside` and `digest_beside` place the store and its sidecar next
+////    to the session files, and `probe` reads the header without a lease.
+//// 2. `open` takes the writer lease and returns an `Opened`; every later
+////    call goes through it, and `close` releases the lease.
+//// 3. The distillation pass appends rows with `append_distillates`, reads the
+////    current head with `head_rows`, and moves it with `advance_head` or
+////    `replace_head`, with `cursor_rewind` and `advance_cursors` keeping each
+////    source session's `Cursor` honest.
+//// 4. `reconcile_digest` renders the head with `render_digest` and writes it
+////    with `write_digest`, so the sidecar matches the store.
+//// 5. At each run start `digest_reader` reads the sidecar and `digest_hooks`
+////    injects it through `injected`, wrapped by `wrapped` at injection time.
+//// 6. `remember_seam` is the model's one door in: `with_open` opens the store,
+////    `write_note` checks `note_within_caps` and `under_ceiling`, and the note
+////    commits as one entry.
+////
 //// # The fold is the session directory
 ////
 //// `loom-memory.db` lives beside `loom-search.db`, in the directory

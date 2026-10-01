@@ -1,5 +1,31 @@
 //// One gateway actor per resident session, with original-handle v2 attachment.
 ////
+//// ## Flow
+////
+//// `start` → `attach_authenticated` → `connection_request` → `handle` →
+//// `request_frame` → `network_dispatch` → `run_command` → `pull_and_broadcast`
+//// → `deliver`
+////
+//// 1. `start` builds the actor from `Options`; the transport then joins it with
+////    `attach_authenticated`, which records the `Binding` the upgrade router
+////    resolved and never lets the socket name its own identity.
+//// 2. `connection_request` sends one `Request` message and waits for one
+////    bounded reply; `handle` is the actor's single entry for every message,
+////    and routes it to `request_frame`.
+//// 3. `request_frame` re-checks authority with `revalidate` (the admission
+////    point), then `network_dispatch` decodes the frame with
+////    `protocol.decode_command`.
+//// 4. `network_command` keeps the bounded transfers (`begin_transfer`,
+////    `advance_transfer`) to itself and sends every other command to
+////    `run_command`, which refuses observers and a draining session before
+////    any effect.
+//// 5. `run_command` maps the command onto `runtime/api`; the commit it causes
+////    comes back as a `CommitHint` or `BusHint`.
+//// 6. `pull_and_broadcast` pulls what storage holds above the high-water seq
+////    with `pull`, de-duplicates by seq and `broadcast`s the frames.
+//// 7. `send_response` and `deliver` check the binding again (`check_binding`,
+////    the delivery point) before a reply or a push reaches the socket.
+////
 //// ## Authenticated network delivery
 ////
 //// A socket supplies one request and waits for one bounded reply. Coherent
@@ -335,6 +361,106 @@ pub type Options {
   )
 }
 
+/// Messages understood by the hub. Opaque in spirit: callers use the
+/// wrapper functions below (the constructors are exported only through
+/// them).
+pub opaque type Message {
+  Request(connection: Int, text: String, reply: Subject(Result(String, String)))
+  MaintainTransfers
+  ObservationReported(connection: Int, pulled: weft.Pulled(JsonValue, String))
+  LeasePreview(process.Pid, Int, Subject(Result(Int, String)))
+  Preview(Int, String, String, String, String, Subject(Result(Nil, String)))
+  ReleasePreview(Int, Subject(Nil))
+  Attach(sink: fn(String) -> Nil, reply: Subject(Int))
+  AttachAuthenticated(
+    Binding,
+    fn() -> Result(#(access.Principal, access.Authority), String),
+    fn(String) -> Nil,
+    fn() -> Nil,
+    fn() -> Nil,
+    fn(Subject(Nil)) -> Nil,
+    process.Pid,
+    Subject(Result(ConnectionHandle, String)),
+  )
+  SocketDown(process.Down)
+  Attached(reply: Subject(Int))
+  Detach(connection: Int)
+  FromClient(connection: Int, text: String)
+  CommitHint
+  BusHint(published: bus.Published)
+  ProviderDelta(operation: OpId, generation: String, delta: stream.Delta)
+  ProviderEnded(operation: OpId, generation: String)
+
+  /// Return every held prompt to its submitter and empty the queues, with
+  /// the ack that says the walk is done.
+  ///
+  /// A drain is the one exit that can promise nothing about a held item:
+  /// the hub is about to be torn down, so custody of every message it
+  /// still holds goes back to whoever submitted it. The ack is what makes
+  /// the walk observable — a caller that has received it knows every
+  /// return has been emitted on the hub's own process, before the sinks it
+  /// wrote to are closed.
+  DrainHeld(flushed: Subject(Nil), reply: Subject(Int))
+}
+
+type State {
+  State(
+    subject: Subject(Message),
+    selector: process.Selector(Message),
+    observations: Dict(Int, PendingObservation),
+    worktree_diff: Option(fn() -> Result(JsonValue, String)),
+    live_jobs: Option(fn(String) -> Result(JsonValue, String)),
+    /// Bounded context observation, sharing the managed read workers.
+    context: Option(fn(String) -> Result(JsonValue, String)),
+    /// On-demand summarization of blocks a read found unsummarized.
+    summary_demand: Option(fn(List(#(String, Int))) -> Nil),
+    delivery: Delivery,
+    health: Health,
+    admission: Admission,
+    next_transfer: Int,
+    preview_sources: Dict(Int, process.Monitor),
+    next_preview_source: Int,
+    preview: Option(LivePreview),
+    preview_revision: Int,
+    session_id: String,
+    runtime: api.Runtime,
+    recent_entries: Int,
+    connections: Dict(Int, Connection),
+    next_connection: Int,
+    high_water: Int,
+    // strand → open operation id (as text), for terminal detection.
+    live: Dict(String, String),
+    // strand → prompts held for a busy strand, in arrival order at this
+    // one actor, which is what makes the order total.
+    held: Dict(String, HeldQueue),
+    // Monotonic item identity prevents reused client request IDs from aliasing.
+    next_held: Int,
+    // Entry id (text) → strand and the evidence for its ownership.
+    entry_strand: Dict(String, EntryAttribution),
+    // The effect plane's sweep of an aborted operation, when the host
+    // has an effect plane at all.
+    effect_abort: Option(fn(OpId) -> Nil),
+    // The operator's goal commands, when the host wired an advisor.
+    goal_control: Option(goalcommand.Seam),
+    // The advisor actor's abort notice, when the host wired an advisor.
+    goal_abort: Option(fn(OpId) -> Nil),
+    // The model catalogue, when the host configured one.
+    catalog: Option(catalog.Catalog),
+    // The tool registry, when the host configured one.
+    registry: Option(Registry),
+    /// Skills captured by this daemon, shared with the model load tool.
+    skills: skill.Catalogue,
+    // The original boot diagnostic, not a guessed missing executable.
+    code_mode_issue: Option(String),
+    /// Bounded startup refusals for installed extensions, shared by all peers.
+    extension_refusals: List(String),
+    // The operator's scheduling door, when this host has one.
+    schedules: Option(scheduleadmin.Admin),
+    /// Operator-owned additions to this session's filesystem authority.
+    directories: Option(directories.Admin),
+  )
+}
+
 /// Sensible defaults: a 50-entry snapshot window, no bus, no catalogue,
 /// no tool registry, no scheduling plane, and no effect plane to sweep
 /// on an abort.
@@ -589,48 +715,6 @@ pub fn with_goal_control(options: Options, seam: goalcommand.Seam) -> Options {
   Options(..options, goal_control: Some(seam))
 }
 
-/// Messages understood by the hub. Opaque in spirit: callers use the
-/// wrapper functions below (the constructors are exported only through
-/// them).
-pub opaque type Message {
-  Request(connection: Int, text: String, reply: Subject(Result(String, String)))
-  MaintainTransfers
-  ObservationReported(connection: Int, pulled: weft.Pulled(JsonValue, String))
-  LeasePreview(process.Pid, Int, Subject(Result(Int, String)))
-  Preview(Int, String, String, String, String, Subject(Result(Nil, String)))
-  ReleasePreview(Int, Subject(Nil))
-  Attach(sink: fn(String) -> Nil, reply: Subject(Int))
-  AttachAuthenticated(
-    Binding,
-    fn() -> Result(#(access.Principal, access.Authority), String),
-    fn(String) -> Nil,
-    fn() -> Nil,
-    fn() -> Nil,
-    fn(Subject(Nil)) -> Nil,
-    process.Pid,
-    Subject(Result(ConnectionHandle, String)),
-  )
-  SocketDown(process.Down)
-  Attached(reply: Subject(Int))
-  Detach(connection: Int)
-  FromClient(connection: Int, text: String)
-  CommitHint
-  BusHint(published: bus.Published)
-  ProviderDelta(operation: OpId, generation: String, delta: stream.Delta)
-  ProviderEnded(operation: OpId, generation: String)
-
-  /// Return every held prompt to its submitter and empty the queues, with
-  /// the ack that says the walk is done.
-  ///
-  /// A drain is the one exit that can promise nothing about a held item:
-  /// the hub is about to be torn down, so custody of every message it
-  /// still holds goes back to whoever submitted it. The ack is what makes
-  /// the walk observable — a caller that has received it knows every
-  /// return has been emitted on the hub's own process, before the sinks it
-  /// wrote to are closed.
-  DrainHeld(flushed: Subject(Nil), reply: Subject(Int))
-}
-
 // Whether a connection has completed the `subscribe` handshake. It gates three
 // separate things — broadcasts, the presence roster, and every command past
 // `subscribe` itself — which is why it is a domain type rather than a flag: a
@@ -722,64 +806,6 @@ type ObservationPhase {
 type Admission {
   Accepting
   Draining
-}
-
-type State {
-  State(
-    subject: Subject(Message),
-    selector: process.Selector(Message),
-    observations: Dict(Int, PendingObservation),
-    worktree_diff: Option(fn() -> Result(JsonValue, String)),
-    live_jobs: Option(fn(String) -> Result(JsonValue, String)),
-    /// Bounded context observation, sharing the managed read workers.
-    context: Option(fn(String) -> Result(JsonValue, String)),
-    /// On-demand summarization of blocks a read found unsummarized.
-    summary_demand: Option(fn(List(#(String, Int))) -> Nil),
-    delivery: Delivery,
-    health: Health,
-    admission: Admission,
-    next_transfer: Int,
-    preview_sources: Dict(Int, process.Monitor),
-    next_preview_source: Int,
-    preview: Option(LivePreview),
-    preview_revision: Int,
-    session_id: String,
-    runtime: api.Runtime,
-    recent_entries: Int,
-    connections: Dict(Int, Connection),
-    next_connection: Int,
-    high_water: Int,
-    // strand → open operation id (as text), for terminal detection.
-    live: Dict(String, String),
-    // strand → prompts held for a busy strand, in arrival order at this
-    // one actor, which is what makes the order total.
-    held: Dict(String, HeldQueue),
-    // Monotonic item identity prevents reused client request IDs from aliasing.
-    next_held: Int,
-    // Entry id (text) → strand and the evidence for its ownership.
-    entry_strand: Dict(String, EntryAttribution),
-    // The effect plane's sweep of an aborted operation, when the host
-    // has an effect plane at all.
-    effect_abort: Option(fn(OpId) -> Nil),
-    // The operator's goal commands, when the host wired an advisor.
-    goal_control: Option(goalcommand.Seam),
-    // The advisor actor's abort notice, when the host wired an advisor.
-    goal_abort: Option(fn(OpId) -> Nil),
-    // The model catalogue, when the host configured one.
-    catalog: Option(catalog.Catalog),
-    // The tool registry, when the host configured one.
-    registry: Option(Registry),
-    /// Skills captured by this daemon, shared with the model load tool.
-    skills: skill.Catalogue,
-    // The original boot diagnostic, not a guessed missing executable.
-    code_mode_issue: Option(String),
-    /// Bounded startup refusals for installed extensions, shared by all peers.
-    extension_refusals: List(String),
-    // The operator's scheduling door, when this host has one.
-    schedules: Option(scheduleadmin.Admin),
-    /// Operator-owned additions to this session's filesystem authority.
-    directories: Option(directories.Admin),
-  )
 }
 
 // A poisoned reader is terminal in this actor. It cannot service another peer

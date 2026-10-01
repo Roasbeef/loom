@@ -11,6 +11,24 @@
 //// the only one whose durable identity is a *process handle* rather than
 //// a strand or a node.
 ////
+//// ## Flow
+////
+//// `step` → `next_state` → `encode` → `decode` → `is_terminal`
+////
+//// 1. `parse_job_id` and `job_key` admit an id and name its `job/<id>` cell;
+////    `job_id_of_key` is the way back for the restart sweep.
+//// 2. `step` is the only way a record moves: it hands the current state and one
+////    `JobEvent` to `next_state` and keeps everything but the state field fixed.
+//// 3. `next_state` splits by state into `from_starting`, `from_running` and
+////    `from_draining`; `exit_state` classifies how a process ended. An event
+////    the state cannot take is an `IllegalTransition`, never a silent no-op.
+//// 4. `encode` writes the record into its cell, through `encode_state` and
+////    `encode_spill`.
+//// 5. `decode` reads a cell back with `decode_state` and the `require_*`
+////    readers, answering a `CorruptionReport` rather than a default.
+//// 6. After a restart the sweep folds the decoded records through
+////    `is_terminal` and commits `Lost(VmRestart)` for the rest.
+////
 //// ## Why this module holds no process
 ////
 //// The actor and the runner that own a live job are WP2's work and they
@@ -271,20 +289,6 @@ pub type JobRecord {
   )
 }
 
-/// A record with nothing spilled yet — what admission mints, before the
-/// job has produced a byte.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert jobstate.no_spill()
-///   == jobstate.JobSpill(stdout_ref: None, stderr_ref: None)
-/// ```
-///
-pub fn no_spill() -> JobSpill {
-  JobSpill(stdout_ref: None, stderr_ref: None)
-}
-
 /// Everything that may happen to a job, from the four parties that can
 /// make something happen to one.
 ///
@@ -332,6 +336,20 @@ pub type IllegalTransition {
   /// as final — so nothing may move it, including a second copy of the
   /// event that made it terminal.
   AlreadyTerminal(state: JobState, event: JobEvent)
+}
+
+/// A record with nothing spilled yet — what admission mints, before the
+/// job has produced a byte.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert jobstate.no_spill()
+///   == jobstate.JobSpill(stdout_ref: None, stderr_ref: None)
+/// ```
+///
+pub fn no_spill() -> JobSpill {
+  JobSpill(stdout_ref: None, stderr_ref: None)
 }
 
 /// The reserved `fact.custom` key prefix every job record lives under.
