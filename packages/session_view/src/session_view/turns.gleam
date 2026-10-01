@@ -579,7 +579,10 @@ fn entry_kind(
             at,
           ),
         ]
-        None, Some(message.Origin(..)) | None, None -> [
+        None, Some(message.Origin(..))
+        | None, Some(message.StrandOrigin(..))
+        | None, None
+        -> [
           Input(
             folded_memory(block, transcript_lines.user_body(content), expansion),
             at,
