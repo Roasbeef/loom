@@ -3,12 +3,13 @@
 ////
 //// This is the only module in the package that does I/O. It also applies
 //// the staging decision: **every rule warns except the ones
-//// `finding.error_by_default` names** — R0, R2, R4, R6 and R10, each with its
-//// census and its argument in that function. `scripts/lint.sh` reads the
-//// trailing `# <errors> <warnings>` line to decide its exit code, exactly
-//// as `scripts/doc_check.sh` does. Promoting one of the remaining three is
-//// `--error=R5` and nothing else; the census is what argues for or against
-//// doing so, and for R3 it argues permanently against.
+//// `finding.error_by_default` names** — R0, R2, R4, R6, R10, R13, R14, R15
+//// and R16, each with its census and its argument in that function.
+//// `scripts/lint.sh` reads the trailing `# <errors> <warnings>` line to
+//// decide its exit code, exactly as `scripts/doc_check.sh` does. Promoting
+//// one of the rest is `--error=R5` and nothing else; the census is what
+//// argues for or against doing so, and for R3, R8, R17 and R18 it argues
+//// permanently against.
 ////
 //// It also applies the one exemption the rules themselves know nothing
 //// about: a source a generator wrote is dropped before either pass, because
@@ -56,15 +57,15 @@ const usage: String =
 usage: gleam run -m lint/cli -- [options] <path>...
 
   --depth=N       R2 fires above this `case` nesting depth (default 3)
-  --error=R1,R5   promote these rules (R0, R2, R4, R6, R10 already are)
+  --error=R1,R5   promote these rules (R0, R2, R4, R6, R10, R13-R16 are)
   --tests         also lint test/ sources (R4 and R7 are off for them)
   --limit=N       list at most N findings per rule (default 25; 0 = all)
   --quiet         print the census only
   --help          this
 
-R0, R2, R4, R6 and R10 gate by default and their censuses must stay zero; every
-other rule warns unless named by --error. The last line of output is
-`# <errors> <warnings>`, which is what the wrapper script reads.
+R0, R2, R4, R6, R10 and R13-R16 gate by default and their censuses must stay
+zero; every other rule warns unless named by --error. The last line of output
+is `# <errors> <warnings>`, which is what the wrapper script reads.
 "
 
 pub fn main() -> Nil {

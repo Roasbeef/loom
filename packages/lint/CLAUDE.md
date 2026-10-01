@@ -13,11 +13,12 @@ quadratic JSON parser whose every unit test passed (`08cdbce`).
 A pure analysis over `glance`'s AST, plus four `glexer` token scans for
 the questions where a parser miss would be a policy hole rather than a
 missed suggestion, plus one line scan of a `gleam.toml` and one line
-classification of every source. Five of the thirteen rules gate — R0, R2, R4, R6 and R10 — and each of
-their censuses must stay zero; the other eight report. See **Staging** below before wiring anything else to the exit
+classification of every source. Nine of the nineteen rules gate — R0, R2,
+R4, R6, R10, R13, R14, R15 and R16 — and each of their censuses must stay
+zero; the other ten report. See **Staging** below before wiring anything else to the exit
 code.
 
-Three of the thirteen are not questions about the AST at all. R10 and R11
+Three of the nineteen are not questions about the AST at all. R10 and R11
 ask how the source was *laid out* — where the blank lines and comments
 are — which `glance` throws away entirely, so `lint/layout` reads the tree
 for where each sibling begins and the file's own line table for what was
@@ -65,9 +66,12 @@ wrote ourselves. Nothing here is a security control.
   EagerFallback | NestingDepth | CatchAll | PanicInSource |
   BoundedLength | PortablePurity | AssertWithoutMessage |
   LoneCallerArity | NakedBool | CommentStanza | DenseStanza |
-  BroadClosureCapture`, printed as `R0`..`R12`.
+  BroadClosureCapture | FlowSpine | TransitionTable | StateFirst |
+  QualifiedDomainCall | FlowOrder | UnnamedHelper`, printed as
+  `R0`..`R18`.
   `error_by_default` is the staging decision as data — `[Unparseable,
-  NestingDepth, PanicInSource, PortablePurity]` — and its doc comment
+  NestingDepth, PanicInSource, PortablePurity, CommentStanza, FlowSpine,
+  TransitionTable, StateFirst, QualifiedDomainCall]` — and its doc comment
   carries one census and one argument per rule, which is what a reader
   who has just been failed by one of them needs. `gate(findings, errors)`
   is the `#(errors, warnings)` split `lint/cli` prints as its last line
@@ -131,6 +135,20 @@ wrote ourselves. Nothing here is a security control.
   span for), and the line classification the layout rules index.
   `classify` reads comments from `glexer`'s tokens rather than from the
   text, so a line of a multi-line string beginning `//` is code.
+- `lint/module_doc.{DocLine, Section, lines, section, code_spans}` — the
+  module doc as R13, R14 and R18 read it: `////` lines from `glexer`'s
+  comment tokens with the byte offset of each, so a `////` inside a
+  multi-line string is not doc. One reader for three rules, so they cannot
+  disagree about what the module doc says.
+- `lint/calls.{callers_of, private_helpers, mentions}` — the in-module call
+  graph R8, R17 and R18 share: which functions of a module mention a name,
+  sorted by position. Recursion is not a caller, and a reference from a
+  constant is invisible.
+- `lint/spine`, `lint/transitions`, `lint/state_first`, `lint/qualified`,
+  `lint/flow_order`, `lint/unnamed_helper` — R13 to R18, one module per rule
+  with the same `findings(module, code, lines, policy, own_path)` shape,
+  wired side by side in `lint.check_with`. `state_first.step_names`,
+  `qualified.loom_roots` and `qualified.allowed` are their tables as data.
 - `lint/cli.main` — argument parsing, file discovery, the generated-source
   skip, the report and the census. The only module here that does I/O.
 
@@ -421,28 +439,6 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   module, for a non-type, or with no table after it reports that one
   finding and stops. The cells themselves stay prose; only the row set is
   checked, so adding a state without a row fails the gate.
-- **R17 `flow-order`** — a module where strictly more than
-  `flow_order_percent` (50) per cent of its private helpers are defined
-  above their first caller, once it has `flow_order_min_helpers` (10) of
-  them. A helper is a private function with at least one in-module caller;
-  public functions are entry points and never counted; "above" means it
-  starts before the earliest-defined of its callers. One finding per module,
-  at offset 0, naming up to three examples. A census, never a gate: a leaf
-  grouped under its siblings is a fair reason to disagree. The call graph is
-  `lint/calls` (shared with R8 and R18): recursion is not a caller and a
-  reference from a constant is invisible. Whole-tree census is zero at the
-  defaults; the worst module is `cap/actor` at 27 per cent, so the tree
-  already reads entry-point first and the rule is a regression guard on
-  that, not a backlog.
-- **R18 `unnamed-helper`** — a private function with exactly one in-module
-  caller, spanning at most `unnamed_helper_lines` (6) lines from `fn` to the
-  closing brace (doc comments excluded), whose name is not a whole word of
-  the module doc. Suggestion 4 of issue #593 as a census: an extraction buys
-  a name, and a helper that names no domain operation buys only a jump. The
-  module doc is read from `glexer` tokens, so a `////` inside a string does
-  not count. It over-reports by construction (a short helper is often
-  right), so it warns forever; the census is 884, more than half of it at
-  exactly six lines, which is where the formatter lands a short `case`.
 - **R15 `state-first`** (`lint/state_first`, issue #593) — a state-space
   type defined after the module's first function. A module is a state
   machine when it defines a step function named in `step_names`
@@ -467,13 +463,36 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   live under `gleam_mcp/`. `allowed` is the `#(module, name)` escape for a
   name that reads better bare, such as a `use` continuation combinator; it
   is empty because the census (two constants) found none worth keeping.
+- **R17 `flow-order`** — a module where strictly more than
+  `flow_order_percent` (50) per cent of its private helpers are defined
+  above their first caller, once it has `flow_order_min_helpers` (10) of
+  them. A helper is a private function with at least one in-module caller;
+  public functions are entry points and never counted; "above" means it
+  starts before the earliest-defined of its callers. One finding per module,
+  at offset 0, naming up to three examples. A census, never a gate: a leaf
+  grouped under its siblings is a fair reason to disagree. The call graph is
+  `lint/calls` (shared with R8 and R18): recursion is not a caller and a
+  reference from a constant is invisible. Whole-tree census is zero at the
+  defaults; the worst module is `cap/actor` at 27 per cent, so the tree
+  already reads entry-point first and the rule is a regression guard on
+  that, not a backlog.
+- **R18 `unnamed-helper`** — a private function with exactly one in-module
+  caller, spanning at most `unnamed_helper_lines` (6) lines from `fn` to the
+  closing brace (doc comments excluded), whose name is not a whole word of
+  the module doc. Suggestion 4 of issue #593 as a census: an extraction buys
+  a name, and a helper that names no domain operation buys only a jump. The
+  module doc is read from `glexer` tokens, so a `////` inside a string does
+  not count. It over-reports by construction (a short helper is often
+  right), so it warns forever; the census is 884, more than half of it at
+  exactly six lines, which is where the formatter lands a short `case`.
 - **R0 `unparseable`** — not a house rule. A file `glance` could not
   parse is reported, so a parse failure is never silence.
 
 ## Staging
 
-**R0, R2, R4, R6 and R10 gate; R1, R3, R5, R7, R8, R9, R11 and R12 warn.**
-`make lint` and `make check` fail on any of the five. The warning default is deliberate
+**R0, R2, R4, R6, R10, R13, R14, R15 and R16 gate; R1, R3, R5, R7, R8, R9,
+R11, R12, R17 and R18 warn.** `make lint` and `make check` fail on any of the
+nine. The warning default is deliberate
 and it is the `scripts/doc_check.sh` precedent (D2,
 `docs/design-notes/four-decisions.md`): a check earns the error tier by
 producing a census that is zero, decidable, and argued — not by being
@@ -542,7 +561,24 @@ for the censuses this superseded):
 | R9 naked-bool | 223 | decidable; promotable once the sweep lands and the four irreducible sites are the census rather than 2% of it |
 | R10 comment-stanza | 0, swept from 1137 | **error level**; zero in `src/` and `test/` alike, and the sweep is formatter-verified |
 | R11 dense-stanza | 17 at threshold 8 | precise, but the threshold is a judgement; treat the number as a reading |
-| R12 broad-closure-capture | 85 | **stays a warning**; record width and closure lifetime are absent from the AST |
+| R12 broad-closure-capture | 82 | **stays a warning**; record width and closure lifetime are absent from the AST |
+| R13 flow-spine | 0, swept from 96 | **error level**; every module of 1000+ lines has a checked spine |
+| R14 transition-table | 0, nine tables | **error level**; zero by construction, and the gate is the rule's whole purpose |
+| R15 state-first | 0, swept from 47 | **error level**; every fix a pure move the compiler verified |
+| R16 qualified-domain-call | 0, swept from 2 | **error level**; decidable from the import alone |
+| R17 flow-order | 0 at 50% | **stays a warning**; a shared helper has no single right place |
+| R18 unnamed-helper | 859 | **stays a warning**; whether a name is a domain operation is judgement |
+
+R13 to R18 arrived together for issue #593, and the argument for each tier
+is in `finding.error_by_default`. The four that gate were driven to zero in
+the change that wrote them, the way R10 was. What makes R13 worth a gate
+rather than a report is its second half: a spine is prose that names code,
+and the check that every backticked name is a function the module defines
+is what turns a rename into a build failure instead of a spine that lies.
+R14 was zero before any table existed and exists for the gate alone. R17
+and R18 are R8's kind of measurement and never gate; R18 in particular is a
+reading list for a reviewer, and padding a module doc with helper names to
+silence it would destroy what it measures.
 
 R1's twenty are what the triage left after the body check removed nine
 false positives: every one is a real eager argument, none of them

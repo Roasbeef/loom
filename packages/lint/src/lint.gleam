@@ -20,16 +20,17 @@
 //// disabled, so the false-positive rate on this corpus is a thing to
 //// measure before gating on it — the same staging `scripts/doc_check.sh`
 //// went through, and for the same reason
-//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4, R6 and R10 have made
-//// that argument and gate; R1, R5, R9 and R11 have a census to clear
-//// first; R3 and R8 over-report by construction and warn forever. The
+//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4, R6, R10, R13, R14,
+//// R15 and R16 have made that argument and gate; R1, R5, R9 and R11 have a
+//// census to clear first; R3, R8, R17 and R18 over-report by construction
+//// and warn forever. The
 //// decision is data, in `finding.error_by_default`, which is where each
 //// argument is written down; `lint/cli`'s `--error` promotes one for a
 //// single run.
 ////
 //// # Layout is not in the tree
 ////
-//// Three of the thirteen rules are not questions about the AST. R9 reads
+//// Three of the nineteen rules are not questions about the AST. R9 reads
 //// annotations, which `glance` does carry; R10 and R11 ask where the blank
 //// lines and comments *are*, which it throws away entirely. `lint/layout`
 //// is that half: it reads the tree for where each sibling begins and the

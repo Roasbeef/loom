@@ -1826,10 +1826,10 @@ pub fn r6_names_what_it_protects_test() {
 // asks for the count of *errors* rather than for the rule firing: the rule
 // fired before the promotion too, into a report nothing reads.
 
-/// The staging decision, pinned: R0, R2, R4, R6 and R10 gate; R1, R3, R5,
-/// R7, R8, R9 and R11 warn. R3 and R8 can never join them, and R1, R5 and
-/// R9 have a census to clear first, so a change here is a change of policy
-/// and not of implementation.
+/// The staging decision, pinned: R0, R2, R4, R6, R10, R13, R14, R15 and R16
+/// gate; R1, R3, R5, R7, R8, R9, R11, R12, R17 and R18 warn. R3, R8, R17 and
+/// R18 can never join them, and R1, R5 and R9 have a census to clear first,
+/// so a change here is a change of policy and not of implementation.
 pub fn the_gating_rules_are_pinned_test() {
   should.equal(finding.error_by_default(), [
     finding.Unparseable,
@@ -1837,7 +1837,96 @@ pub fn the_gating_rules_are_pinned_test() {
     finding.PanicInSource,
     finding.PortablePurity,
     finding.CommentStanza,
+    finding.FlowSpine,
+    finding.TransitionTable,
+    finding.StateFirst,
+    finding.QualifiedDomainCall,
   ])
+}
+
+/// R13 gates, and the gate is what keeps a spine honest: a spine naming a
+/// function the module no longer defines stops the build. The same module
+/// with the name corrected is silent, so the failure is about the stale name
+/// and nothing else.
+pub fn r13_gates_a_stale_spine_test() {
+  let module = fn(name) { "//// ## Flow
+////
+//// `start` → `step` → `" <> name <> "` → `finish`
+
+pub fn start() { step() }
+
+fn step() { settle() }
+
+fn settle() { finish() }
+
+fn finish() { Nil }
+" }
+  gate_of("packages/core/src/core/spined.gleam", module("renamed")).0
+  |> should.equal(1)
+  gate_of("packages/core/src/core/spined.gleam", module("settle")).0
+  |> should.equal(0)
+}
+
+/// R14 gates: a state added to the type without a row in its table is one
+/// error, which is the property the table exists to hold.
+pub fn r14_gates_a_missing_row_test() {
+  gate_of(
+    "packages/core/src/core/machine.gleam",
+    "//// <!-- transitions: machine.Phase -->
+////
+//// | state | go |
+//// | --- | --- |
+//// | `Idle` | `Busy` |
+//// | `Busy` | refused |
+
+pub type Phase {
+  Idle
+  Busy
+  Done
+}
+",
+  )
+  |> should.equal(#(1, 0))
+}
+
+/// R15 gates: a message type defined below the code that handles it is an
+/// error, and the same module with the type first is silent.
+pub fn r15_gates_a_late_state_type_test() {
+  gate_of(
+    "packages/core/src/core/late.gleam",
+    "pub fn update(state: Int, message: Msg) -> Int {
+  case message {
+    Tick -> state + 1
+  }
+}
+
+pub type Msg {
+  Tick
+}
+",
+  )
+  |> should.equal(#(1, 0))
+}
+
+/// R16 gates: an unqualified import of a Loom function is an error, and the
+/// same function imported qualified is silent.
+pub fn r16_gates_an_unqualified_domain_import_test() {
+  gate_of(
+    "packages/tui/src/tui/thing.gleam",
+    "import session_view/approval.{project}
+
+pub fn f(x) { project(x) }
+",
+  )
+  |> should.equal(#(1, 0))
+  gate_of(
+    "packages/tui/src/tui/thing.gleam",
+    "import session_view/approval
+
+pub fn f(x) { approval.project(x) }
+",
+  )
+  |> should.equal(#(0, 0))
 }
 
 /// R10 gates, and the promotion is only real if a welded comment stops a
