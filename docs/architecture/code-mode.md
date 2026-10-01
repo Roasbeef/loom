@@ -207,9 +207,11 @@ pass. A fail-closed parser boundary is recorded as deferred hardening.
 ## The prelude is the capability system
 
 The **cap prelude** is the set of modules a code-mode program may import:
-`cap/fs`, `cap/proc`, `cap/net`, `cap/git`, `cap/lsp`, `cap/task`,
-`cap/actor`, `cap/report`, `cap/kv`, `cap/schedule`, `cap/job`, and
-`cap/search`. (`cap/search` offers read-only navigation and search over
+`cap/fs`, `cap/proc`, `cap/net`, `cap/git`, `cap/task`, `cap/actor`,
+`cap/report`, `cap/kv`, `cap/schedule`, `cap/job`, and `cap/search`, plus
+the modules a host adds where it has the door behind them: `cap/lsp`
+where a language server is configured, `cap/notes`, and the generated MCP
+façades. (`cap/search` offers read-only navigation and search over
 the workspace, so a program that only needs to find its way around a
 tree can import it instead of `cap/fs` and declare in its imports that it
 will not write.) Each is an ordinary typed Gleam module whose functions
@@ -242,13 +244,16 @@ harness-side bridges over it:
   because the module a program imports is the unit of authorization, and
   `cap/search` grants strictly less than `cap/fs`.
 - `client/mcp.routing` serves the generated per-server modules.
+- `codemode/lsp.routing` serves `lsp.*` over the session's
+  language-server door, the same door the `lsp_*` tools call. It is
+  installed, and `cap/lsp` admitted, only on a host where an
+  `[lsp.<name>]` server is configured; `lsp.md` §"Code mode" says why.
 - For an installed extension, `client/extension/seam.routing` serves
   `net.request` and nothing else.
 
 A capability that no layer in a given stack answers comes back refused in
-band as `unsupported_cap`; `lsp.*` is the one still owed (#25). That
-refusal is not a security property. It marks a routing table that is
-still being filled in.
+band as `unsupported_cap`. That refusal is not a security property. It
+marks a routing table that does not serve that name on this host.
 
 The deny-by-default behavior of `cap/net` is easy to credit to the wrong
 place. Nothing in `cap/net` refuses anything: its functions marshal
@@ -814,6 +819,20 @@ must preserve them:
 The first is reasoned, not yet observed: the development container has
 no bubblewrap, so no run so far has actually connected through a
 `--ro-bind`.
+
+The toolchain reaches every code-mode jail as read-only explicit mounts
+(`client/codemode.toolchain_mounts`): the `erl` install prefix, the
+directory holding `gleam` (and its prefix when it is a symlink), and the
+build seed. `install_prefix` takes the parent of a binary's `bin` and
+resolves no link, so a merged-usr `/bin/erl` found through `PATH` names
+`/`, and a symlinked `~/bin/gleam` names the home directory. Mounted, either
+would land on top of the workspace's writable bind, since explicit mounts
+come after every grant, and both decoders now refuse that policy
+(`protocol-change/057`). So `client/serve.admissible_toolchain` checks the
+discovered toolchain against the session's writable roots, and against
+`/proc` and `/dev`, before the base is built. A toolchain that fails
+registers no `code_mode` tool and logs which region, why, and what to put
+first on `PATH`, rather than refusing the whole server's boot.
 
 ### Where the socket is bound
 
@@ -1427,6 +1446,7 @@ provides.
 | `codemode/satellite.gleam` | The in-harness host: the broker end of the cap channel, the router, the deadline, teardown. |
 | `codemode/enforcement.gleam` | What each jailed stage's helper reported, or why no report exists; both stages of an execution as one record. |
 | `cap/fs.gleam`, `cap/proc.gleam`, `cap/net.gleam`, `cap/git.gleam`, `cap/lsp.gleam`, `cap/kv.gleam`, `cap/report.gleam` | The prelude's capability modules: typed stubs over `cap_call`. |
+| `codemode/lsp.gleam`, `client/lsp/codemode_rename.gleam` | The harness end of `lsp.*` over the language-server door, and a program's applied rename (`lsp.md`). |
 | `cap/task.gleam`, `cap/actor.gleam` | Structured concurrency and program-scoped actors. |
 | `cap/strand.gleam` | Child operations from either default program mode: spawn, join, address, blackboard, roster. |
 | `codemode/orchestration.gleam` | The harness end of `strand.*` calls through the Agency closures. |

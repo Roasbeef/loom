@@ -504,6 +504,116 @@ pub fn validate_accepts_a_mount_beside_a_protected_entry_test() {
   assert policy.validate(ok) == Ok(Nil)
 }
 
+// protocol-change/057. Every explicit mount is emitted after every grant,
+// so a read-only mount of an ancestor of the workspace lands on top of the
+// workspace's writable bind: the jail starts, the mount layer reports
+// itself applied, and every write fails with EROFS. Darwin keeps the
+// root writable from the same document, which is why it is refused
+// rather than resolved.
+pub fn validate_rejects_a_read_only_mount_above_a_writable_root_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), writable_roots: ["/home/o/work"], mounts: [
+      policy.Mount(
+        path: "/home/o",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountShadowsWritableRoot(
+      mount: "/home/o",
+      writable_root: "/home/o/work",
+    ))
+}
+
+// The shape that was measured: a toolchain prefix derived as `/` from a
+// symlinked binary under `/bin`. `/` covers every writable root there is,
+// and binds the host's `/proc` and `/dev` back over the fresh ones too.
+pub fn validate_rejects_a_read_only_mount_of_the_root_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountShadowsWritableRoot(mount: "/", writable_root: "/work"))
+}
+
+// "At" as well as "above": a read-only mount naming the writable root
+// itself replaces its bind exactly as an ancestor's would.
+pub fn validate_rejects_a_read_only_mount_at_a_writable_root_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/work",
+        access: policy.MountReadOnly,
+        requirement: policy.MountOptional,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountShadowsWritableRoot(
+      mount: "/work",
+      writable_root: "/work",
+    ))
+}
+
+// The two directions the rule leaves alone. A read-only mount *under* the
+// workspace narrows a subtree the policy named on purpose — a build seed
+// inside a checkout — and both platforms honour it the same way. A
+// read-write mount above the workspace leaves it writable. And a sibling
+// sharing only a textual prefix is not an ancestor.
+pub fn validate_accepts_the_mounts_that_shadow_no_writable_root_test() {
+  let ok =
+    policy.SandboxPolicy(
+      ..base(),
+      writable_roots: ["/work", "/srv/out"],
+      mounts: [
+        policy.Mount(
+          path: "/work/build/codemode-seed",
+          access: policy.MountReadOnly,
+          requirement: policy.MountRequired,
+        ),
+        policy.Mount(
+          path: "/srv",
+          access: policy.MountReadWrite,
+          requirement: policy.MountRequired,
+        ),
+        policy.Mount(
+          path: "/wor",
+          access: policy.MountReadOnly,
+          requirement: policy.MountRequired,
+        ),
+      ],
+    )
+  assert policy.validate(ok) == Ok(Nil)
+}
+
+// The broker validates the *composed* policy, and composition is where a
+// clean base can still meet the shape: a grant adds a writable root under
+// a region the base mounts read-only. Refusing it at dispatch is what
+// keeps the escalation honest — the approval would otherwise grant a
+// write the jail silently cannot make.
+pub fn a_granted_writable_root_under_a_read_only_mount_fails_validation_test() {
+  let seed =
+    policy.Mount(
+      path: "/opt/seed",
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    )
+  let base = policy.SandboxPolicy(..base(), mounts: [seed])
+  assert policy.validate(base) == Ok(Nil)
+  let #(composed, _) =
+    policy.compose(base, base, [policy.GrantWritableRoot(path: "/opt/seed/out")])
+  assert policy.validate(composed)
+    == Error(policy.MountShadowsWritableRoot(
+      mount: "/opt/seed",
+      writable_root: "/opt/seed/out",
+    ))
+}
+
 // --- phase-1 unenforceable narrowing ------------------------------------
 
 pub fn narrow_unenforceable_downgrades_proxy_test() {
@@ -993,4 +1103,84 @@ pub fn validate_rejects_an_empty_mount_path_test() {
       ),
     ])
   assert policy.validate(bad) == Error(policy.RelativePath(""))
+}
+
+// --- session leases -----------------------------------------------------
+
+// A lease's own requirements: the same reach as the base, and no time or
+// output limit of its own. This is what an extension host or a language
+// server asks for, and the zeros in it are the ones that must not narrow.
+fn unlimited_requirements() -> policy.SandboxPolicy {
+  policy.SandboxPolicy(
+    ..base(),
+    limits: policy.Limits(..base().limits, cpu_s: 0, wall_s: 0, output_bytes: 0),
+  )
+}
+
+pub fn session_lease_composes_with_unlimited_requirements_test() {
+  let lease = policy.session_lease(base(), policy.OutputIsWire)
+  let #(composed, narrowings) =
+    policy.compose(
+      base: lease,
+      requirements: unlimited_requirements(),
+      grants: [],
+    )
+
+  // Zero met with zero stays zero, and nothing is reported short, so a
+  // clearance under `RefuseNarrowed` lets the lease through.
+  assert composed.limits.cpu_s == 0
+  assert composed.limits.wall_s == 0
+  assert composed.limits.output_bytes == 0
+  assert narrowings == []
+}
+
+pub fn ordinary_base_narrows_unlimited_requirements_test() {
+  let #(composed, narrowings) =
+    policy.compose(
+      base: base(),
+      requirements: unlimited_requirements(),
+      grants: [],
+    )
+
+  // The reason the lease shape exists: zeros asked for in the
+  // requirements alone take the base's numbers and are each a narrowing.
+  assert composed.limits.cpu_s == 300
+  assert composed.limits.wall_s == 600
+  assert narrowings
+    == [
+      policy.NarrowedLimit(field: policy.CpuSeconds, wanted: 0, granted: 300),
+      policy.NarrowedLimit(field: policy.WallSeconds, wanted: 0, granted: 600),
+      policy.NarrowedLimit(
+        field: policy.OutputBytes,
+        wanted: 0,
+        granted: 4_194_304,
+      ),
+    ]
+}
+
+pub fn session_lease_output_choice_test() {
+  let log = policy.session_lease(base(), policy.OutputIsLog)
+  let wire = policy.session_lease(base(), policy.OutputIsWire)
+
+  // A log keeps the base's per-stream cap; a wire has none.
+  assert log.limits.output_bytes == base().limits.output_bytes
+  assert wire.limits.output_bytes == 0
+
+  // Either way the time limits are cleared and nothing else moves.
+  assert log.limits.cpu_s == 0
+  assert log.limits.wall_s == 0
+  assert wire.limits.cpu_s == 0
+  assert wire.limits.wall_s == 0
+}
+
+pub fn session_lease_leaves_memory_and_processes_alone_test() {
+  let lease = policy.session_lease(proxy_policy(), policy.OutputIsWire)
+
+  // Memory, processes and file size still bound a lease exactly as they
+  // bound any execution, and the rest of the policy passes through.
+  assert lease.limits.mem_bytes == proxy_policy().limits.mem_bytes
+  assert lease.limits.pids == proxy_policy().limits.pids
+  assert lease.limits.fsize_bytes == proxy_policy().limits.fsize_bytes
+  assert policy.SandboxPolicy(..lease, limits: proxy_policy().limits)
+    == proxy_policy()
 }

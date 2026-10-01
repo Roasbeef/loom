@@ -20,6 +20,7 @@ tools = { path = "../tools" }
 codemode = { path = "../codemode" }
 mcp = { path = "../mcp" }
 gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "686955fc0461630bf64a4dc8eb51565dc7ca1ac9" }
+lsp = { path = "../lsp" }
 telemetry = { path = "../telemetry" }
 session_view = { path = "../session_view" }
 web_view = { path = "../web_view" }

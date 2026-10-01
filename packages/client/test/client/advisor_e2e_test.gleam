@@ -679,6 +679,7 @@ fn scripted_catalog() -> catalog.Catalog {
     // the route; `serve.resolve` is the path that derives.
     roles: [#(model.Main, ["acme"]), #(catalog.advisor_role, ["sage"])],
     mcp_servers: [],
+    lsp_servers: [],
   )
 }
 

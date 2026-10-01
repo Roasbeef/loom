@@ -72,6 +72,11 @@ import client/internal/instance_owner as custody
 import client/jobs
 import client/jobseam
 import client/jobtools
+import client/lsp/jail as lsp_jail
+import client/lsp/leases as lsp_leases
+import client/lsp/manager as lsp_manager
+import client/lsp/profile
+import client/lsp/profiles as lsp_profiles
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
@@ -549,6 +554,32 @@ pub type Instance {
     /// `rulescan`'s is one, and the door `client/distillpass.settled`
     /// waits on.
     memory_pass: Option(address.Address(distillpass.Message)),
+    /// The session's language-server plane, or `None` on a boot whose
+    /// catalogue configures no `[lsp.<name>]` server, or whose every
+    /// server was refused at load. Held so `close_instance` can stop the
+    /// server gracefully and then abort the plane's operation, the
+    /// backstop ADR-015 §1 assigns to session end.
+    lsp: Option(LspPlane),
+  )
+}
+
+/// The session's language-server plane: the manager every `lsp_*` tool,
+/// `cap/lsp` capability and post-write diagnostics block asks through, and
+/// what its teardown needs.
+///
+/// One per session, because the helper pool it leases from is one per
+/// session (ADR-015 §1, "Pool pressure").
+pub type LspPlane {
+  LspPlane(
+    /// The handle on the supervised manager, reached through its address
+    /// so a replacement is the same manager to every door built over it.
+    manager: lsp_manager.Manager,
+    /// The session's helper-lease counter, started from the pool size.
+    leases: lsp_leases.Leases,
+    /// The language servers' attribution operation. Session end aborts
+    /// it after the graceful stop, so a server that outlived its grace
+    /// cannot outlive the session.
+    op_id: OpId,
   )
 }
 
@@ -723,12 +754,16 @@ pub fn start_build_plane(
   // `protocol-change/020` a compile that reaches a region the base does
   // not name is refused by the meet. Asking first also means a host
   // without a toolchain never spawns a pool it would immediately tear
-  // down.
+  // down. The toolchain is admitted against the build root it would
+  // share a jail with, because a prefix covering that root would leave
+  // every compile unable to write its own output.
+  let unmounted = build_plane_policy(writable, state_root)
   use toolchain <- result.try(
-    codemode_wiring.discover(seed_root(seed, workspace)),
+    codemode_wiring.discover(seed_root(seed, workspace))
+    |> admissible_toolchain(unmounted),
   )
   let base =
-    build_plane_policy(writable, state_root)
+    unmounted
     |> admitting_codemode(Ok(toolchain))
     |> merging_mounts
 
@@ -744,6 +779,89 @@ pub fn start_build_plane(
     clock:,
   ))
   Ok(BuildPlane(broker: broker_actor, pool:, toolchain:, base_policy: base))
+}
+
+/// A helper pool and broker for proving one language profile, and the
+/// base policy both were started under.
+pub type CheckPlane {
+  CheckPlane(
+    /// The broker every clearance goes through: the probe, the server's
+    /// lease and every bare-name search.
+    broker: Broker,
+    /// The pool behind it, held so the plane can be stopped.
+    pool: Pool,
+    /// The base a server's lease is composed from, as a session's is.
+    base_policy: policy.SandboxPolicy,
+    /// How many helpers the pool holds, which the lease counter's cap is
+    /// derived from (`client/lsp/leases.cap_for`).
+    size: Int,
+  )
+}
+
+/// Starts the effect plane `loom ext check` runs a profile's server on:
+/// the helper ladder a boot runs, then a pool and broker over a base that
+/// covers the check's scratch workspace and masks the daemon's state
+/// root.
+///
+/// The base is the build plane's (`build_plane_policy`) for the reason
+/// that function gives: the scratch workspace sits under the extensions
+/// root, one directory below the state root whose credentials no jail
+/// may read, and it has no blob store to mask. What differs from a build
+/// plane is only what is *not* needed: no code-mode toolchain is
+/// discovered, because a profile's server is located on the daemon's
+/// `PATH` and a check must run on a host with no build seed, as a profile
+/// install does. The pool is the smallest a session may have, which
+/// leaves one lease for the one server a check starts at a time.
+///
+/// The caller owns the plane and must `stop_check_plane` it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.start_check_plane(helper: None, workspace: scratch <> "/work",
+/// //   state_root: home <> "/.loom", tmp_dir: scratch <> "/tmp", clock:)
+/// ```
+///
+pub fn start_check_plane(
+  helper helper: Option(String),
+  workspace workspace: String,
+  state_root state_root: String,
+  tmp_dir tmp_dir: String,
+  clock clock: Clock,
+) -> Result(CheckPlane, String) {
+  use helper_path <- result.try(find_helper(helper))
+  let base = build_plane_policy(workspace, state_root) |> merging_mounts
+
+  // Refused before anything is spawned, as a boot refuses: a base the
+  // sandbox cannot enforce is a failure of the check's setup, not a
+  // server that later fails to start for reasons nobody can read.
+  use Nil <- result.try(base_policy_fault(base))
+  use #(pool, broker_actor) <- result.try(start_effect_plane(
+    helper: helper_path,
+    base_policy: base,
+    tmp_dir:,
+    size: exec.min_pool_size,
+    clock:,
+  ))
+  Ok(CheckPlane(
+    broker: broker_actor,
+    pool:,
+    base_policy: base,
+    size: exec.min_pool_size,
+  ))
+}
+
+/// Tears a check plane down.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.stop_check_plane(plane)
+/// ```
+///
+pub fn stop_check_plane(plane: CheckPlane) -> Nil {
+  broker.stop(plane.broker)
+  exec.stop_pool(plane.pool)
 }
 
 /// The `PATH` a build plane's jailed compiler runs with: exactly the two
@@ -1727,6 +1845,7 @@ fn env_catalog() -> catalog.Catalog {
     ],
     roles: [#(model.Main, ["anthropic"])],
     mcp_servers: [],
+    lsp_servers: [],
   )
 }
 
@@ -2074,6 +2193,319 @@ fn code_mode_seam(
   }
 }
 
+// --- the language-server plane ----------------------------------------------
+//
+// ADR-015 §§1 and 6: a configured `[lsp.<name>]` server runs in the jail as
+// a session lease, under the session's own enforcement demand, and every
+// surface reaches it through one manager's door. The boot does four things
+// and no more: it resolves each server's `~/` roots once, against the
+// harness's own `HOME`; it starts the lease counter from the session's pool
+// size; it mints the servers' attribution operation; and it describes the
+// manager for the service supervisor. Nothing is spawned here — the first
+// query starts a server, after the manager's enforcement probe.
+
+// The plane and the manager's configuration, which the service supervisor
+// needs to start the manager under its address.
+type LspWiring {
+  LspWiring(
+    plane: LspPlane,
+    name: address.Address(lsp_manager.Msg),
+    config: lsp_manager.Config,
+  )
+}
+
+// A boot with no `[lsp.<name>]` table and no installed profile builds
+// nothing and logs nothing: an unconfigured workspace pays nothing
+// (ADR-015 §6). The servers are the `loom.toml` tables plus every
+// installed profile that survives ADR-016 §4's precedence
+// (`lsp_profiles.effective_lsp_servers`), and from there an installed
+// profile is treated exactly as a table is: the same root resolution, the
+// same plane and the same hints. A refused profile is one
+// `lsp.profile_refused` line naming its extension, its server and the
+// claimant it collided with, and the boot continues. A configured server
+// whose roots will not resolve is refused alone, one `lsp.unavailable`
+// line each, and the others still serve; a counter that will not start
+// refuses them all the same way. Neither refuses the boot, for the reason
+// `mcp.unavailable` does not: a session without semantic queries is still
+// a session, and the operator is told which table to fix.
+fn lsp_wiring(
+  settings: Settings,
+  installed: List(#(String, profile.LspServer)),
+  logger: Logger,
+  base_policy: policy.SandboxPolicy,
+  toolchain: Result(codemode_wiring.Toolchain, String),
+  broker_actor: Broker,
+  clock: Clock,
+  seed: Int,
+  name: address.Address(lsp_manager.Msg),
+) -> Option(LspWiring) {
+  let places = lsp_places()
+  let #(effective, refusals) =
+    lsp_profiles.effective_lsp_servers(
+      configured: settings.catalog.lsp_servers,
+      installed:,
+    )
+  list.each(refusals, fn(refusal) {
+    log.warn(logger, "lsp.profile_refused", [
+      field.text(key: "extension", value: refusal.extension),
+      field.text(key: "server", value: refusal.server),
+      field.text(
+        key: "other",
+        value: lsp_profiles.describe_claimant(refusal.other),
+      ),
+      field.text(
+        key: "reason",
+        value: lsp_profiles.describe_conflict(refusal.conflict),
+      ),
+    ])
+  })
+  let servers =
+    list.filter_map(effective, fn(server) {
+      lsp_server_roots(server, places)
+      |> result.map_error(fn(reason) {
+        log.warn(logger, "lsp.unavailable", [
+          field.text(key: "server", value: server.name),
+          field.text(key: "reason", value: reason),
+        ])
+      })
+    })
+  case servers {
+    [] -> None
+    [_, ..] ->
+      case lsp_leases.start(settings.helper_pool_size) {
+        Error(error) -> {
+          log.warn(logger, "lsp.unavailable", [
+            field.text(
+              key: "servers",
+              value: string.join(list.map(servers, fn(one) { one.name }), ","),
+            ),
+            field.text(
+              key: "reason",
+              value: "the helper-lease counter would not start: "
+                <> string.inspect(error),
+            ),
+          ])
+          None
+        }
+        Ok(leases) ->
+          Some(lsp_plane_wiring(
+            settings,
+            servers,
+            leases,
+            base_policy,
+            toolchain,
+            broker_actor,
+            clock,
+            seed,
+            name,
+            places,
+          ))
+      }
+  }
+}
+
+// The manager's configuration over the production backend: every server,
+// its probe and every symbol search clear through the session's broker,
+// under the session's demand and the plane's own operation.
+fn lsp_plane_wiring(
+  settings: Settings,
+  servers: List(profile.LspServer),
+  leases: lsp_leases.Leases,
+  base_policy: policy.SandboxPolicy,
+  toolchain: Result(codemode_wiring.Toolchain, String),
+  broker_actor: Broker,
+  clock: Clock,
+  seed: Int,
+  name: address.Address(lsp_manager.Msg),
+  places: profile.Places,
+) -> LspWiring {
+  let op_id = lsp_jail.operation(clock, seed:)
+  let timing = lsp_manager.default_timing()
+  let backend =
+    lsp_manager.jailed(lsp_manager.Jailed(
+      workspace: settings.workspace,
+      session_base: base_policy,
+      demand: settings.demand,
+      toolchain: option.from_result(toolchain),
+      places:,
+      // The session's store, the same reader the jailed tool environment
+      // is built from, so `PATH` and a server's `env` names mean what
+      // they mean to `bash`.
+      reading: fn(variable) { secret.lookup(settings.secrets, variable) },
+      run: tool.broker_runner(
+        broker: broker_actor,
+        waiting: lsp_jail.clearance_wait_ms,
+      ),
+      abort_step: fn(step_id) {
+        broker.abort_step(broker_actor, op_id, step_id:)
+      },
+      leases:,
+      op_id:,
+      clock:,
+      exec_ms: timing.exec_ms,
+    ))
+  let config =
+    lsp_manager.Config(
+      workspace: settings.workspace,
+      servers:,
+      backend:,
+      timing:,
+    )
+  LspWiring(
+    plane: LspPlane(
+      manager: lsp_manager.addressed(name, config),
+      leases:,
+      op_id:,
+    ),
+    name:,
+    config:,
+  )
+}
+
+/// One server with its `readable` and `writable` roots resolved to
+/// absolute paths, once, at load. The jail resolves them again at every
+/// start and would refuse the same way; refusing here instead is what
+/// makes the refusal an operator-visible boot line rather than a
+/// `no_server` answer the model meets on its first query.
+///
+/// A root that resolves into Loom's private cache, `<cache>/loom`, or a
+/// writable one that holds it, is refused here too
+/// (`profile.private_cache_fault`): the decoder can refuse one written
+/// `<cache>/loom` but not an absolute or `~/` root, which only these
+/// places can put there.
+///
+/// The private caches `cache_env` names are resolved here for the same
+/// refusal and then left as written: their host paths are the jail's to
+/// derive (`profile.cache_env_paths`), and the directories are made by the
+/// manager just before a jail binds them, not here, so a server nobody
+/// queries creates nothing.
+///
+/// Public because `loom ext check` starts a server exactly as a session
+/// would, and a second expansion there would be a second answer to where
+/// a profile's `~/` and `<cache>/` roots are.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.lsp_server_roots(go, serve.lsp_places())
+/// // -> Ok(LspServer(..go, readable: [AbsolutePath("/home/o/go/pkg/mod")], ..))
+/// ```
+///
+pub fn lsp_server_roots(
+  server: profile.LspServer,
+  places: profile.Places,
+) -> Result(profile.LspServer, String) {
+  let absolute = fn(paths) {
+    list.try_map(paths, fn(path) {
+      profile.expand_path(path, places) |> result.map(profile.AbsolutePath)
+    })
+  }
+  use readable <- result.try(absolute(server.readable))
+  use writable <- result.try(absolute(server.writable))
+
+  // Only here are the daemon's places known, so only here can an absolute
+  // or `~/` root be found to land in Loom's private cache; the decoder
+  // has already refused one written `<cache>/loom`.
+  use Nil <- result.try(profile.private_cache_fault(server, places))
+  use _caches <- result.try(
+    list.try_map(profile.cache_env_paths(server), fn(entry) {
+      profile.expand_path(entry.1, places)
+    }),
+  )
+  Ok(profile.LspServer(..server, readable:, writable:))
+}
+
+/// The two places a language profile's roots are written against, read
+/// from the daemon's own environment once per boot: `HOME` for `~/`, and
+/// the per-user cache directory for `<cache>/`. Which directory that is
+/// depends on the platform, and `profile.cache_place` decides it purely
+/// from what is read here.
+///
+/// Public for `loom ext check`, which expands a profile's roots the way a
+/// session does, from the same environment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.lsp_places()
+/// // -> profile.Places(home: Some("/home/o"), cache: Some("/home/o/.cache"))
+/// ```
+///
+pub fn lsp_places() -> profile.Places {
+  let home = home_directory()
+  let #(os, _architecture) = ffi_os.platform()
+  profile.Places(
+    home:,
+    cache: profile.cache_place(
+      os,
+      home,
+      option.from_result(env_text("XDG_CACHE_HOME")),
+    ),
+  )
+}
+
+// The language profiles the loaded profile extensions approved, each
+// paired with its extension's name for a refusal to cite. Read from the
+// install record rather than the manifest beside it: discovery has
+// already refused any extension whose manifest's profiles differ from the
+// record's, and the record is the operator's yes. A jailed extension's
+// record holds none.
+fn installed_profiles(
+  discovered: List(installed.Discovered),
+) -> List(#(String, profile.LspServer)) {
+  list.flat_map(discovered, fn(found) {
+    case found {
+      installed.Ready(record: written, manifest: _, artifact: _) ->
+        list.map(written.lsp, fn(server) { #(written.name, server) })
+      installed.Refused(..) -> []
+    }
+  })
+}
+
+// The profile hints of the servers the plane serves, as
+// `#(server name, hint)` in name order, for `lsp_definition`'s
+// description (ADR-016 §2). They are read from the wired servers rather
+// than the whole catalogue, so a server refused at boot for roots that
+// would not resolve does not describe a language the session cannot ask
+// about.
+fn lsp_hints(wiring: Option(LspWiring)) -> List(#(String, String)) {
+  case wiring {
+    None -> []
+    Some(wiring) ->
+      list.filter_map(wiring.config.servers, fn(server) {
+        option.to_result(server.hint, Nil)
+        |> result.map(fn(hint) { #(server.name, hint) })
+      })
+  }
+}
+
+// The manager as a supervised child, when there is a plane to run.
+fn with_lsp_manager(
+  builder: sup.Builder,
+  wiring: Option(LspWiring),
+) -> sup.Builder {
+  case wiring {
+    None -> builder
+    Some(wiring) ->
+      sup.add(builder, lsp_manager.supervised(wiring.name, wiring.config))
+  }
+}
+
+// Session end for the plane, in ADR-015 §1's order: the graceful stop
+// (`shutdown`, `exit`, stdin EOF, waited for in this process), then the
+// abort of the plane's operation as the backstop for a server that
+// outlived its grace, then the counter.
+fn stop_lsp(plane: Option(LspPlane), broker_actor: Broker) -> Nil {
+  case plane {
+    None -> Nil
+    Some(plane) -> {
+      lsp_manager.stop(plane.manager)
+      broker.abort(broker_actor, plane.op_id)
+      lsp_leases.stop(plane.leases)
+    }
+  }
+}
+
 // --- installed extensions ---------------------------------------------------
 //
 // Discovery is read-only and happens once, here, before the registry is
@@ -2084,15 +2516,18 @@ fn code_mode_seam(
 // this still the thing that was installed".
 //
 // What is left to decide is what to do with each answer, and there are
-// three. A `Refused` is *logged*, never silently dropped: an operator who
+// four. A `Refused` is *logged*, never silently dropped: an operator who
 // installed something and then sees nothing has no way to tell "it is
 // broken" from "I imagined installing it". A `Ready` on a host with no
 // toolchain is logged too and registers nothing, because an extension
 // tool with no `erl` to boot a satellite with is a definition in the
 // provider's cached byte prefix that can only ever fail — the same
-// argument that gates `code_mode` itself. Everything else becomes one
-// `Contribution` per extension, and a name two contributions both claim
-// refuses the boot in `contributions.registry`.
+// argument that gates `code_mode` itself. A `Ready` profile extension
+// registers nothing here either: it ships language profiles, which
+// `lsp_wiring` has already taken from the same discovery, and there is no
+// satellite for it to host. Every jailed extension becomes one
+// `Contribution`, and a name two contributions both claim refuses the
+// boot in `contributions.registry`.
 
 // One installed extension, registered: the tools it contributes to the
 // registry, its subscription on the hook bus, and the recipe the
@@ -2109,8 +2544,21 @@ type Registration {
   )
 }
 
+// Discovery, once per boot. The language-server plane and the tool
+// registry both read this one answer, so a profile and a tool cannot be
+// judged against two different readings of the extensions root. No home
+// is no extensions root, which is the same fact to a booting server as an
+// empty one.
+fn discovered_extensions(settings: Settings) -> List(installed.Discovered) {
+  case settings.home {
+    None -> []
+    Some(home) -> installed.discover(extension_record.root_for(home))
+  }
+}
+
 fn extension_registrations(
   settings: Settings,
+  discovered: List(installed.Discovered),
   logger: Logger,
   hosts: extension_hosts.Hosts,
   hooking: extension_hooks.Invoker,
@@ -2126,7 +2574,7 @@ fn extension_registrations(
     Some(home) -> {
       let root = extension_record.root_for(home)
       let checked =
-        list.map(installed.discover(root), fn(found) {
+        list.map(discovered, fn(found) {
           extension_contribution(
             root,
             found,
@@ -2139,7 +2587,13 @@ fn extension_registrations(
           )
         })
       let registered =
-        list.filter_map(checked, fn(item) { item |> result.replace_error(Nil) })
+        list.filter_map(checked, fn(item) {
+          case item {
+            Ok(Some(registration)) -> Ok(registration)
+            Ok(None) -> Error(Nil)
+            Error(_) -> Error(Nil)
+          }
+        })
       let refused =
         list.filter_map(checked, fn(item) {
           case item {
@@ -2168,7 +2622,7 @@ fn extension_contribution(
   hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
   memory: extension_memory.Door,
-) -> Result(Registration, String) {
+) -> Result(Option(Registration), String) {
   case found {
     installed.Refused(name:, reason:) -> {
       log.warn(logger, "extension.refused", [
@@ -2179,18 +2633,28 @@ fn extension_contribution(
     }
 
     installed.Ready(record: written, manifest: decoded, artifact:) ->
-      extension_registered(
-        root,
-        written,
-        decoded,
-        artifact,
-        store,
-        logger,
-        hosts,
-        hooking,
-        host,
-        memory,
-      )
+      case written.tier {
+        extension_manifest.Jailed ->
+          extension_registered(
+            root,
+            written,
+            decoded,
+            artifact,
+            store,
+            logger,
+            hosts,
+            hooking,
+            host,
+            memory,
+          )
+          |> result.map(Some)
+
+        // A profile extension runs nothing, so it has no tool to register,
+        // no hook to subscribe and no satellite to host. Its servers reach
+        // the session through `lsp_wiring`. It is not a refusal either, so
+        // it adds no notice for the operator.
+        extension_manifest.Profile -> Ok(None)
+      }
   }
 }
 
@@ -2768,8 +3232,13 @@ fn assemble_in(
   // filesystem probe over the settings alone, so hoisting it costs
   // nothing and buys the one ordering that matters: a base built before
   // the toolchain is known could not name it, and a launch requiring a
-  // mount the base does not carry is refused by the meet.
-  let toolchain = codemode_wiring.discover(settings.codemode_seed)
+  // mount the base does not carry is refused by the meet. Discovery says
+  // where the toolchain is; `session_toolchain` says whether this
+  // session may mount it, and the one answer reaches both the base and
+  // the tool registration below.
+  let toolchain =
+    codemode_wiring.discover(settings.codemode_seed)
+    |> session_toolchain(settings, index_path, memory_store, memory_digest)
   let base_policy =
     session_base(settings, index_path, memory_store, memory_digest, toolchain)
 
@@ -3017,6 +3486,34 @@ fn assemble_in(
       clearance_ms: jobs_clearance_ms,
     ))
 
+  // The language-server plane, on the two-name pattern: the manager's
+  // address is minted now so the door the tools, code mode and the write
+  // tools' diagnostics observer all share can close over it, and the
+  // manager starts under the service supervisor below. No `[lsp.<name>]`
+  // table or installed profile, or none that survived its load, means no
+  // plane at all: no
+  // counter, no manager, no `lsp_*` tool and no `cap/lsp`, and the write
+  // tools are the plain ones.
+  //
+  // The installed extensions are discovered here, once, because a profile
+  // extension's servers join this plane and a jailed extension's tools
+  // join the registry further down, and both must read the same answer.
+  let discovered = discovered_extensions(settings)
+  let lsp_wiring =
+    lsp_wiring(
+      settings,
+      installed_profiles(discovered),
+      logger,
+      base_policy,
+      toolchain,
+      broker_actor,
+      clock,
+      entropy(),
+      address.new_address(namespace),
+    )
+  let lsp_door =
+    option.map(lsp_wiring, fn(wiring) { lsp_manager.door(wiring.plane.manager) })
+
   // The host configuration, not the tool seam: an extension dispatch
   // stands up a satellite under exactly this configuration, so the boot
   // holds the value both readers derive from rather than one reader's
@@ -3033,6 +3530,13 @@ fn assemble_in(
     jobs_door,
     owner,
   ))
+
+  // `lsp.*` is answered by the same door the `lsp_*` tools call, so a
+  // program and a tool call ask the one server this session runs. A
+  // `None` door leaves `cap/lsp` unadmitted, which is what a host with no
+  // configured server has always had.
+  let code_mode_host =
+    option.map(code_mode_host, codemode_wiring.over_lsp(_, lsp_door))
   let code_mode_host =
     option.map(code_mode_host, fn(config) {
       codemode_wiring.Config(
@@ -3119,9 +3623,9 @@ fn assemble_in(
   // answers it starts under the service supervisor below, because the
   // registry has to exist before the tools that reach it are built.
   //
-  // Discovery then happens once and answers three questions: which tools
-  // each installed extension contributes, which hook events it
-  // subscribed to, and how its node is launched. The hook half is used
+  // Discovery, which happened once above, then answers three more
+  // questions of each jailed extension: which tools it contributes, which
+  // hook events it subscribed to, and how its node is launched. The hook half is used
   // further down, after the effects record exists to compose it into.
   let hosts_name = address.new_address(namespace)
   let hosts_seam =
@@ -3133,6 +3637,7 @@ fn assemble_in(
   let #(extensions, extension_refusals) =
     extension_registrations(
       settings,
+      discovered,
       logger,
       hosts_seam,
       extension_hosts.invoker(
@@ -3232,6 +3737,11 @@ fn assemble_in(
         schedule_seam,
         Some(context_seam),
         Some(jobtools.seam(jobs_door)),
+        // The language-server door, when a server is configured: it
+        // registers the `lsp_*` tools and gives `fs_write` and `fs_edit`
+        // their settled-diagnostics block.
+        lsp_door,
+        lsp_hints(lsp_wiring),
       ),
       // After the built-ins, always. `contributions.registry` refuses a
       // repeated name whichever order it meets one in, so the order is
@@ -3678,6 +4188,11 @@ fn assemble_in(
       summary_name,
       summary_commits,
     )
+    // The language-server manager is in this tier because a replacement
+    // loses nothing a query cannot rebuild: the dead manager's keepers
+    // stop their servers when it goes, and the next query starts one
+    // again, cold, and says so.
+    |> with_lsp_manager(lsp_wiring)
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     // Started here rather than inside the boot: the pass dispatches
@@ -3827,6 +4342,7 @@ fn assemble_in(
     prompt: assembled,
     helper_path: settings.helper_path,
     mcp: mcp_layer,
+    lsp: option.map(lsp_wiring, fn(wiring) { wiring.plane }),
     rulescan: case settings.rules {
       [] -> None
       _configured -> Some(rulescan_name)
@@ -4026,6 +4542,11 @@ fn tear_down(booted: Booted) -> Nil {
 pub fn close_instance(instance: Instance) -> Nil {
   hub.drain_held(instance.gateway)
   let _closed = api.close(instance.runtime)
+
+  // The language server stops after the runtime, so no query is still
+  // asking it, and before the services, so its manager is stopped
+  // deliberately (and not replaced) rather than killed with the tree.
+  stop_lsp(instance.lsp, instance.broker)
   stop_services(instance.services)
   let _stopped = address.stop(instance.namespace)
   broker.stop(instance.broker)
@@ -4516,6 +5037,40 @@ pub fn widening_linked_worktree(
   }
 }
 
+/// The discovered toolchain, or the reason this base cannot carry it: one
+/// of its read-only mounts would sit at or above one of the base's
+/// writable roots (`codemode.clear_of`).
+///
+/// A separate step from `admitting_codemode`, and ahead of it, because
+/// the answer has two readers. The base must not carry the mount — the
+/// helper and `broker/policy.validate` both refuse a read-only mount over
+/// a writable root (`protocol-change/057`), so admitting it would refuse
+/// the boot — and `code_mode_seam` must not register a tool whose every
+/// launch the meet would then refuse. Turning the discovery into an
+/// `Error` is what tells both, in the words `discover` uses for a host
+/// with no toolchain at all.
+///
+/// Only `base.writable_roots` is read. The session assembly asks a base
+/// built with the toolchain already in it, which is the same answer,
+/// because admitting the toolchain changes the mounts and no root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With `erl` found at /bin/erl, so its prefix is `/`:
+/// // serve.admissible_toolchain(Ok(toolchain), policy.workspace_default("/w"))
+/// //   == Error("code mode would mount / read-only …")
+/// ```
+///
+@internal
+pub fn admissible_toolchain(
+  discovered: Result(codemode_wiring.Toolchain, String),
+  base: policy.SandboxPolicy,
+) -> Result(codemode_wiring.Toolchain, String) {
+  use toolchain <- result.try(discovered)
+  codemode_wiring.clear_of(toolchain, writable_roots: base.writable_roots)
+}
+
 /// The base policy with the code-mode toolchain admitted as explicit
 /// mounts: the `erl` install prefix, the `gleam` prefix, and the prepared
 /// build seed, each read-only and required.
@@ -4532,6 +5087,12 @@ pub fn widening_linked_worktree(
 /// A host with no toolchain is left exactly as it was. It registers no
 /// `code_mode` tool, so no satellite will ever be launched on it, and a
 /// mount nothing needs is a region granted for nothing.
+///
+/// The toolchain handed here should already have passed
+/// `admissible_toolchain` against this base. This step does not refuse on
+/// its own, because it returns a policy and the refusal has to reach the
+/// tool registration too; a toolchain that skipped admission and shadows
+/// a writable root leaves a base `base_policy_fault` refuses.
 ///
 /// ## Examples
 ///
@@ -4962,6 +5523,38 @@ pub fn session_base(
   |> widening_linked_worktree(settings.workspace)
   |> admitting_codemode(toolchain)
   |> merging_mounts
+}
+
+/// The discovered toolchain as this session may use it: the same value,
+/// or an `Error` when one of its mounts would shadow a writable root of
+/// the assembled session base (`admissible_toolchain`).
+///
+/// The roots are read off `session_base` itself rather than restated,
+/// so a step that widens the writable roots — a linked worktree's git
+/// directories today — is judged against without anyone remembering to
+/// add it here. That base is assembled with the unadmitted toolchain in
+/// it, which gives the same roots, because `admitting_codemode` touches
+/// the mounts and nothing else; only the roots are read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With `erl` found at /bin/erl:
+/// // serve.session_toolchain(Ok(found), settings, index, store, digest)
+/// //   == Error("code mode would mount / read-only …")
+/// ```
+///
+@internal
+pub fn session_toolchain(
+  discovered: Result(codemode_wiring.Toolchain, String),
+  settings: Settings,
+  index_path: String,
+  memory_store: String,
+  memory_digest: String,
+) -> Result(codemode_wiring.Toolchain, String) {
+  let assembled =
+    session_base(settings, index_path, memory_store, memory_digest, discovered)
+  admissible_toolchain(discovered, assembled)
 }
 
 /// The policy meet keeps only the environment names the session base
@@ -6079,6 +6672,16 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
       <> "` contains a `..` segment. Mount paths are compared by "
       <> "component against protected entries and roots before anything "
       <> "resolves them, so this would claim one region and bind another"
+    policy.MountShadowsWritableRoot(mount:, writable_root:) ->
+      "the read-only mount `"
+      <> mount
+      <> "` covers the writable root `"
+      <> writable_root
+      <> "`. On Linux every explicit mount is applied after the roots, so "
+      <> "the jail would see that root read-only and every write under it "
+      <> "would fail; on Darwin it would stay writable. Mount a directory "
+      <> "beside the writable root rather than above it, or make the mount "
+      <> "read-write"
   }
 }
 

@@ -5,7 +5,7 @@ import support/generate
 import tools/hashline.{
   type Ref, AnchoredLine, Delete, InsertAfter, InsertAtStart, MalformedPlan,
   OverlappingHunks, Plan, Ref, Region, Replace, Split, StaleAnchors,
-  StaleContent,
+  StaleContent, UnreachableEnding,
 }
 
 // --- golden anchor vectors ----------------------------------------------
@@ -910,4 +910,205 @@ fn separated(regions: List(hashline.Region)) -> Bool {
     [first, second, ..rest] ->
       second.start > first.end + 1 && separated([second, ..rest])
   }
+}
+
+// --- plan_between --------------------------------------------------------
+
+// Whether `apply` can reach `edited` from `base` at all: it keeps a
+// newline-terminated file terminated, and terminates an empty one it grows.
+// This is the refusal's whole specification, restated independently of the
+// implementation so the property below checks one against the other.
+fn ending_reachable(base: String, edited: String) -> Bool {
+  let terminated_base = base == "" || string.ends_with(base, "\n")
+  !terminated_base
+  || string.ends_with(edited, "\n")
+  || { base == "" && edited == "" }
+}
+
+// The round trip every plannable pair must make, and the refusal every
+// unplannable one must earn.
+fn assert_lands(base: String, edited: String) -> Nil {
+  case hashline.plan_between(base:, edited:) {
+    Ok(plan) -> {
+      assert plan.digest == hashline.digest(base)
+      assert list.length(plan.hunks) <= 1
+      assert hashline.apply(base, plan) == Ok(edited)
+    }
+
+    Error(UnreachableEnding) -> {
+      assert !ending_reachable(base, edited)
+    }
+  }
+}
+
+pub fn plan_between_fixed_cases_test() {
+  let pairs = [
+    // An identifier renamed on a middle, first, and last line.
+    #("fn foo() {\n  foo()\n}\n", "fn foo() {\n  bar()\n}\n"),
+    #("foo\nb\nc\n", "bar\nb\nc\n"),
+    #("a\nb\nfoo\n", "a\nb\nbar\n"),
+    // No trailing newline, edited at the last line.
+    #("a\nb\nfoo", "a\nb\nbar"),
+    // CRLF terminators travel with their lines.
+    #("a\r\nfoo\r\nc\r\n", "a\r\nbar\r\nc\r\n"),
+    #("a\r\nb\r\n", "a\r\nb\r\nc\r\n"),
+    // Astral characters, which a language server counts as two units.
+    #("let 🦀 = foo\n", "let 🦀 = bar\n"),
+    // Pure insertion at the start, the middle, and the end.
+    #("b\nc\n", "a\nb\nc\n"),
+    #("a\nc\n", "a\nb\nc\n"),
+    #("a\nb\n", "a\nb\nc\n"),
+    // Pure deletion, of the first line, a middle one, and everything.
+    #("a\nb\nc\n", "b\nc\n"),
+    #("a\nb\nc\n", "a\nc\n"),
+    #("a\nb\n", "\n"),
+    #("a\nb", ""),
+    // Identical lines around the change, where a prefix and a suffix could
+    // claim the same line.
+    #("x\nx\nx\n", "x\nx\n"),
+    #("x\nx\n", "x\nx\nx\n"),
+    // An unterminated file gaining a final newline, and an empty one
+    // growing.
+    #("a", "a\n"),
+    #("", "a\n"),
+    #("", "\n"),
+    // Equal texts, including the empty one.
+    #("same\n", "same\n"),
+    #("", ""),
+  ]
+  list.each(pairs, fn(pair) {
+    let #(base, edited) = pair
+    let assert Ok(_) = hashline.plan_between(base:, edited:)
+      as "every fixed pair is plannable"
+    assert_lands(base, edited)
+  })
+}
+
+pub fn plan_between_equal_texts_plan_nothing_test() {
+  // An empty plan still checks the digest, which is how a caller asks
+  // whether the file is still what it thinks it is.
+  let assert Ok(plan) = hashline.plan_between(base: "a\n", edited: "a\n")
+  assert plan.hunks == []
+  let assert Error(StaleContent(..)) = hashline.apply("b\n", plan)
+}
+
+pub fn plan_between_refuses_unreachable_endings_test() {
+  let pairs = [#("a\n", "a"), #("a\n", ""), #("", "a"), #("a\r\n", "a\r")]
+  list.each(pairs, fn(pair) {
+    let #(base, edited) = pair
+    assert hashline.plan_between(base:, edited:) == Error(UnreachableEnding)
+  })
+}
+
+pub fn plan_between_binds_to_base_not_edited_test() {
+  // The plan lands on the base and nothing else: the same plan against a
+  // file changed far from the hunk rejects on the digest alone, which is
+  // what a rename computed against stale text must do.
+  let base = "one\ntwo\nthree\nfour\nfive\n"
+  let edited = "one\nTWO\nthree\nfour\nfive\n"
+  let other = "one\ntwo\nthree\nfour\nFIVE\n"
+  let assert Ok(plan) = hashline.plan_between(base:, edited:)
+  assert hashline.apply(base, plan) == Ok(edited)
+  let assert Error(StaleContent(digest:, fresh: _)) =
+    hashline.apply(other, plan)
+  assert digest == hashline.digest(other)
+}
+
+// A random edit of `base`: splice a random run of fresh lines over a random
+// range, sometimes flip the final newline, and sometimes throw the whole
+// text away for an unrelated one.
+fn edit_of(base: String, seed: generate.Seed) -> #(String, generate.Seed) {
+  let split = hashline.split_lines(base)
+  let total = list.length(split.lines)
+  let #(mode, seed) = generate.int_between(seed, 0, 5)
+  let #(from, seed) = generate.int_between(seed, 0, total)
+  let #(to, seed) = generate.int_between(seed, from, total)
+  let #(count, seed) = generate.int_between(seed, 0, 3)
+  let #(fresh, seed) = generate.list_of(seed, count, generate.line)
+  let spliced =
+    list.flatten([
+      list.take(split.lines, from),
+      fresh,
+      list.drop(split.lines, to),
+    ])
+
+  case mode {
+    0 -> generate.content(seed, count + 2)
+    1 -> #(
+      hashline.join_lines(Split(
+        lines: spliced,
+        trailing_newline: !split.trailing_newline,
+      )),
+      seed,
+    )
+    _ -> #(hashline.join_lines(Split(..split, lines: spliced)), seed)
+  }
+}
+
+// A concurrent modification of `base`: one line changed, gained, or lost.
+fn disturb(base: String, seed: generate.Seed) -> #(String, generate.Seed) {
+  let split = hashline.split_lines(base)
+  let total = list.length(split.lines)
+  let #(mode, seed) = generate.int_between(seed, 0, 2)
+  let #(at, seed) = generate.int_between(seed, 0, int.max(total - 1, 0))
+  let lines = case mode, split.lines {
+    0, [_, ..] ->
+      list.index_map(split.lines, fn(line, index) {
+        case index == at {
+          True -> line <> "!concurrent!"
+          False -> line
+        }
+      })
+    1, [_, ..] ->
+      list.append(list.take(split.lines, at), list.drop(split.lines, at + 1))
+    _, _ ->
+      list.flatten([
+        list.take(split.lines, at),
+        ["inserted"],
+        list.drop(split.lines, at),
+      ])
+  }
+  #(hashline.join_lines(Split(..split, lines:)), seed)
+}
+
+// A staleness rejection, as opposed to one about the plan's own shape.
+fn is_stale(rejection: hashline.ApplyError) -> Bool {
+  case rejection {
+    StaleAnchors(..) | StaleContent(..) -> True
+    MalformedPlan(..) | OverlappingHunks(..) -> False
+  }
+}
+
+// For many generated pairs — CRLF lines, astral characters, blank runs,
+// with and without a final newline, edits at every position — the plan
+// lands exactly on the base and on nothing else.
+pub fn plan_between_round_trip_property_test() {
+  let seeds = generate.list_of(generate.seed(71), 400, generate.next).0
+  let planned =
+    list.fold(seeds, 0, fn(planned, n) {
+      let #(size, seed) = generate.int_between(generate.seed(n), 0, 8)
+      let #(heavy, seed) = generate.bool(seed)
+      let #(base, seed) = case heavy {
+        True -> generate.duplicate_heavy_content(seed, size)
+        False -> generate.content(seed, size)
+      }
+      let #(edited, seed) = edit_of(base, seed)
+      assert_lands(base, edited)
+
+      case hashline.plan_between(base:, edited:) {
+        Error(UnreachableEnding) -> planned
+        Ok(plan) -> {
+          let #(other, _seed) = disturb(base, seed)
+          assert other != base
+          let assert Error(rejection) = hashline.apply(other, plan)
+            as "a plan must never land on text it was not planned against"
+          assert is_stale(rejection)
+          planned + 1
+        }
+      }
+    })
+
+  // The generator must mostly produce plannable pairs, or the property
+  // above is checking refusals and little else.
+  assert planned > 300
 }

@@ -130,6 +130,23 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
 
+      # The language-server tests drive a real, jailed gopls, as ci.yml's
+      # jail lane does; without it they skip, and an undeclared skip fails
+      # this job's census. Pinned for the reason ci.yml pins it, and fetched
+      # from the module proxy rather than any cache.
+      - name: Install gopls
+        run: |
+          set -euo pipefail
+          go install golang.org/x/tools/gopls@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gopls" version
+
+      # The live manager test drives a real rust-analyzer; the same script
+      # ci.yml's client bucket runs installs it, its standard library
+      # source, and the sysroot's dependencies.
+      - name: Install rust-analyzer
+        run: .github/scripts/install_rust_analyzer.sh
+
       - name: Prepare the code-mode build seed
         run: make codemode-seed
 

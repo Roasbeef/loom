@@ -118,9 +118,9 @@ RUN curl -fsSL -o /usr/local/bin/rebar3 \
 # `git apply`, so a patch that no longer matches fails the build, then
 # build gleam-bin —
 # the workspace member that produces the `gleam` executable — in release
-# mode. A Rust toolchain is needed only for this step; it is not part of
-# Loom's own build and nothing downstream of this layer depends on cargo
-# or rustc being on PATH.
+# mode. A Rust toolchain is needed for this step; it is not part of Loom's
+# own build. The rust-analyzer layer below reuses the rustup this step
+# installs, and is the only later layer that depends on it.
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 COPY scripts/toolchain/gleam/ /opt/loom-gleam-patches/
@@ -142,6 +142,22 @@ RUN set -eux; \
 	python3 /opt/loom-gleam-patches/check_cache.py --runs 4; \
 	python3 /opt/loom-gleam-patches/check_native_git.py
 
+# --- rust-analyzer -------------------------------------------------------
+# The language-server manager's live rust-analyzer fixture needs the
+# component, rust-src and the standard library's Cargo dependencies, and
+# without them it prints a SKIP the census refuses. This runs the same
+# script the Linux client bucket and the nightly cold gate run
+# (.github/scripts/install_rust_analyzer.sh), so the image cannot drift
+# from CI: it pins rustup-init by SHA-256 and the 1.94.1 toolchain the
+# fixture was measured with. The container runs as root, so the script's
+# defaults, ~/.rustup and ~/.cargo, are /root/.rustup and /root/.cargo,
+# which is where the fixture grants and runs them and where the rustup
+# above already lives and is on PATH. Neither is a volume path, so the
+# toolchain and the fetched registry stay in the layer. The script makes
+# 1.94.1 the default toolchain, which nothing after the Gleam build reads.
+COPY .github/scripts/install_rust_analyzer.sh /opt/loom-rust/install_rust_analyzer.sh
+RUN bash /opt/loom-rust/install_rust_analyzer.sh
+
 # --- Go ------------------------------------------------------------------
 RUN curl -fsSL -o /tmp/go.tar.gz \
 		"https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
@@ -149,6 +165,27 @@ RUN curl -fsSL -o /tmp/go.tar.gz \
 	&& rm /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
 RUN go version
+
+# --- gopls ---------------------------------------------------------------
+# The language-server tests' Go variants (ADR-015) run a real jailed gopls,
+# and a lane whose image lacks it prints a SKIP that the census refuses.
+# GOPLS_VERSION is the pin ci.yml's jail lane uses and the version ADR-015's
+# Go measurements were taken against; moving it is a deliberate edit here
+# and there. The binary goes to /usr/local/bin through GOBIN, which is on
+# PATH, and not to `$GOPATH/bin`: GOPATH is the persisted volume's parent
+# below, and a toolchain installed under a path a volume is mounted over is
+# hidden by the mount on every run. The module cache and GOPATH are
+# throwaways for this one step for the same reason, and they are removed
+# so the layer carries the binary and not gopls's sources.
+ARG GOPLS_VERSION=v0.23.0
+RUN set -eux; \
+	GOBIN=/usr/local/bin \
+	GOPATH=/tmp/gopls-gopath \
+	GOMODCACHE=/tmp/gopls-modcache \
+	GOFLAGS=-modcacherw \
+		go install "golang.org/x/tools/gopls@${GOPLS_VERSION}"; \
+	rm -rf /tmp/gopls-gopath /tmp/gopls-modcache /root/.cache/go-build; \
+	gopls version
 
 # The Hex and Go module caches are the two things scripts/signoff_remote.sh
 # says are allowed to persist across runs, named here at fixed, mountable

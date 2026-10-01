@@ -1447,6 +1447,11 @@ fn policy_error_text(error: policy.PolicyError) -> String {
 
     policy.MountPathParentSegment(path:) ->
       "mount path " <> path <> " contains a \"..\" segment"
+
+    // The helper's decoder says the same sentence, so a refusal read
+    // from either side of the wire names the same pair.
+    policy.MountShadowsWritableRoot(mount:, writable_root:) ->
+      "read-only mount " <> mount <> " covers writable root " <> writable_root
   }
 }
 

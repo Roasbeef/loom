@@ -4,7 +4,8 @@
 //// answer the protocol's `models` command, and to resolve `set_config`
 //// model switches by catalogue *name* instead of raw provider facts.
 //// The same file optionally carries the MCP server tables code mode
-//// exposes as generated `cap/mcp/<name>` modules.
+//// exposes as generated `cap/mcp/<name>` modules, and the language
+//// server tables the `lsp_*` tools are served from (ADR-015 §6).
 ////
 //// The catalogue is a thin, declarative front-end over the registry the
 //// provider gateway already has: each `[models.<name>]` entry becomes
@@ -46,6 +47,22 @@
 //// command = ["server-binary", "arg"] # the stdio server's argv
 //// api_key_env = "SOME_API_KEY"       # optional; env var *name*
 ////
+//// [lsp.<name>]                       # optional; one table per server
+//// command = ["gopls"]                # argv, never a shell string
+//// extensions = [".go"]               # this server owns these, alone
+//// root_markers = ["go.mod"]          # nearest ancestor holding one
+//// project = "read-only"              # read-only (default) | writable
+//// readable = ["~/go/pkg/mod"]        # optional extra roots: absolute,
+//// writable = ["/srv/cache"]          #   ~/-relative or <cache>/-relative
+//// env = ["GOFLAGS"]                  # optional; env var *names*
+//// cache_env = { XDG_CACHE_HOME = "xdg" } # optional; a private cache,
+////                                    #   <cache>/loom/lsp/<name>/xdg
+//// language_id = "go"                 # optional; default: the first
+////                                    #   extension without its dot
+//// qualifier_separators = ["."]       # optional; default ["."]
+//// module_case = "as-written"         # as-written (default) | snake
+//// hint = "Qualify as pkg.Name"       # optional; one line, <= 200 bytes
+////
 //// [[rule]]                           # optional; see `client/rules`
 //// name = "schema-gate"
 //// triggers = ["ALTER TABLE"]
@@ -86,6 +103,20 @@
 //// auto-discovery, and no live reload: an operator editing this file
 //// and restarting the server *is* the trust decision.
 ////
+//// An `[lsp.<name>]` table is a language profile, and it is not decoded
+//// here: `client/lsp/profile` owns the one decoder, which an extension
+//// manifest's profiles will go through too (ADR-016 §1). Its key follows
+//// the `[mcp.<name>]` grammar, so one server name reads the same
+//// wherever the harness prints it. The table is the language server's
+//// whole authority: its `readable` and `writable` roots are what the
+//// jail adds beyond the project, which is why they are operator-written
+//// and never model-supplied, why a relative path or a `..` component is
+//// refused, and why each extension has exactly one owning server. A
+//// `~/` or `<cache>/` root stays unexpanded in the parsed value, keeping
+//// `parse` a pure function of the text; `profile.expand_path` resolves
+//// it against the daemon's own `HOME` and cache directory when the
+//// servers are loaded.
+////
 //// Parsing is total and strict: any malformed document, unknown key,
 //// unknown dialect/role, or dangling chain name is a worded `Error`
 //// the server prints on its documented halt path — never a crash, and
@@ -96,6 +127,7 @@
 
 import broker/policy.{type MountAccess, MountReadOnly, MountReadWrite}
 import client/daemon/limits as daemon_limits
+import client/lsp/profile.{type LspServer}
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
@@ -256,14 +288,15 @@ pub type ToolsConfig {
 }
 
 /// The parsed catalogue: entries plus the role → fallback-chain table,
-/// plus any configured MCP servers.
+/// plus any configured MCP and language servers.
 ///
 /// Constructor invariants (guaranteed by `parse`, owed by any direct
 /// construction): entry names are unique; every chain is non-empty and
 /// names only existing entries; `model.Main` is routed; `models`,
-/// `roles` and `mcp_servers` are in the deterministic orders `parse`
-/// produces (entries and servers sorted by name, roles in the six-role
-/// canonical order).
+/// `roles`, `mcp_servers` and `lsp_servers` are in the deterministic
+/// orders `parse` produces (entries and servers sorted by name, roles in
+/// the six-role canonical order); no file extension is claimed by two
+/// language servers.
 pub type Catalog {
   Catalog(
     /// The entries, sorted by name.
@@ -272,6 +305,9 @@ pub type Catalog {
     roles: List(#(model.Role, List(String))),
     /// The MCP servers, sorted by name; `[]` when `[mcp]` is absent.
     mcp_servers: List(McpServer),
+    /// The language servers, sorted by name; `[]` when `[lsp]` is
+    /// absent, which is a workspace that gets no `lsp_*` tools at all.
+    lsp_servers: List(LspServer),
   )
 }
 
@@ -349,7 +385,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
-      "tools", "jobs", "secrets", "workspace", "advisor", "daemon",
+      "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
     ],
     "the top level",
   ))
@@ -367,7 +403,8 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   use models <- result.try(parse_models(model_tables))
   use roles <- result.try(parse_roles(role_table, models))
   use mcp_servers <- result.try(parse_mcp_servers(document))
-  Ok(Catalog(models:, roles:, mcp_servers:))
+  use lsp_servers <- result.try(parse_lsp_servers(document))
+  Ok(Catalog(models:, roles:, mcp_servers:, lsp_servers:))
 }
 
 // Startup and session loading validate the same daemon table. Only the
@@ -782,47 +819,34 @@ fn mcp_server_name(name: String) -> Result(Nil, String) {
   }
 }
 
-// The Gleam keywords a module segment may not be. The generator's name
-// mangler digests any name it has to change, so a key it would change
-// becomes cap/mcp/<name>_<8hex> — not the cap/mcp/<name> this module's
-// doc promises. Refusing every mangle-altered shape here keeps that
-// contract provable: on every config-legal name, mangling is the
-// identity.
-const gleam_keywords = [
-  "as", "assert", "auto", "case", "const", "delegate", "derive", "echo", "else",
-  "fn", "if", "implement", "import", "let", "macro", "opaque", "panic", "pub",
-  "test", "todo", "type", "use",
-]
-
-// The mangler's own bound (`mcp/name`'s `max_length`), past which a name
-// is truncated and digested. Restated rather than imported because this
-// package does not depend on `mcp`; the tests hold both ends to 32.
-const max_mangled_length = 32
-
+// The generator's name mangler digests any name it has to change, so a
+// key it would change becomes cap/mcp/<name>_<8hex> — not the
+// cap/mcp/<name> this module's doc promises. Refusing every
+// mangle-altered shape keeps that contract provable: on every
+// config-legal name, mangling is the identity. The shapes are
+// `client/lsp/profile.mangling_fault`'s, so an `[mcp.<name>]` key and an
+// `[lsp.<name>]` key meet one grammar.
 fn mcp_name_survives_mangling(name: String) -> Result(Nil, String) {
-  let refuse = fn(what: String) {
-    Error(
-      "mcp."
-      <> name
-      <> " "
-      <> what
-      <> ", which module-name mangling would rewrite — the key must name"
-      <> " the cap/mcp/<name> module unchanged",
-    )
-  }
-  case
-    list.contains(gleam_keywords, name),
-    string.contains(name, "__"),
-    string.ends_with(name, "_"),
-    // Asks whether the name is longer than the bound without walking a
-    // pathological key to its end (lint R5).
-    string.drop_start(name, max_mangled_length) != ""
-  {
-    True, _, _, _ -> refuse("is a Gleam keyword")
-    _, True, _, _ -> refuse("contains a doubled underscore")
-    _, _, True, _ -> refuse("ends with an underscore")
-    _, _, _, True -> refuse("is longer than 32 characters")
-    False, False, False, False -> Ok(Nil)
+  use what <- or_mangled(profile.mangling_fault(name))
+  Error(
+    "mcp."
+    <> name
+    <> " "
+    <> what
+    <> ", which module-name mangling would rewrite — the key must name"
+    <> " the cap/mcp/<name> module unchanged",
+  )
+}
+
+// A clean name passes as `Ok(Nil)`; a fault is handed to the caller,
+// which words the refusal for its own table.
+fn or_mangled(
+  fault: Result(Nil, String),
+  refuse: fn(String) -> Result(Nil, String),
+) -> Result(Nil, String) {
+  case fault {
+    Ok(Nil) -> Ok(Nil)
+    Error(what) -> refuse(what)
   }
 }
 
@@ -852,6 +876,25 @@ fn mcp_command(
   case argv {
     [] -> Error(place <> ".command must name at least the executable")
     _some -> Ok(argv)
+  }
+}
+
+// --- the [lsp.<name>] tables -----------------------------------------------
+
+// The optional [lsp] table: absent parses to no servers, which is the
+// workspace that registers no `lsp_*` tools and pays nothing. Present, it
+// must be a table of [lsp.<name>] tables, and they are decoded by
+// `client/lsp/profile`, the one decoder an extension manifest's profiles
+// will go through as well, so the two can never accept different things
+// (ADR-016 §1).
+fn parse_lsp_servers(
+  document: Dict(String, tom.Toml),
+) -> Result(List(LspServer), String) {
+  case dict.get(document, "lsp") {
+    Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
+      profile.decode_servers(entries)
+    Ok(_other) -> Error("lsp must be a table of [lsp.<name>] entries")
+    Error(Nil) -> Ok([])
   }
 }
 
@@ -1364,7 +1407,9 @@ fn tool_env_names(
     }),
   )
   use Nil <- result.try(
-    list.try_each(names, fn(name) { not_server_owned("tools.env", name) }),
+    list.try_each(names, fn(name) {
+      profile.not_server_owned("tools.env", name)
+    }),
   )
   case list.length(list.unique(names)) == list.length(names) {
     True -> Ok(names)
@@ -1432,40 +1477,11 @@ fn tool_set_pairs(
     }),
   )
   use Nil <- result.try(
-    list.try_each(pairs, fn(pair) { not_server_owned("tools.set", pair.0) }),
+    list.try_each(pairs, fn(pair) {
+      profile.not_server_owned("tools.set", pair.0)
+    }),
   )
   Ok(pairs)
-}
-
-// The names `client/serve.session_environment` builds from the
-// workspace and the toolchain code mode discovered. They are refused
-// here rather than silently ignored downstream: a shell whose `PATH`
-// came from this file would resolve a different `gleam` than the one the
-// compiler uses, and one whose `HOME` did would source the operator's
-// own dotfiles from inside the jail. LOOM_SCRATCH_DIR is filled by the
-// helper only after the execution's scratch has been prepared. The Git
-// global path selects the identity-only defaults prepared before model work.
-const server_owned_names = [
-  "PATH",
-  "HOME",
-  "TMPDIR",
-  "LOOM_SCRATCH_DIR",
-  "GIT_CONFIG_GLOBAL",
-]
-
-fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
-  case list.contains(server_owned_names, name) {
-    False -> Ok(Nil)
-    True ->
-      Error(
-        place
-        <> " may not name "
-        <> name
-        <> ": PATH, HOME, TMPDIR, LOOM_SCRATCH_DIR and GIT_CONFIG_GLOBAL are owned by the"
-        <> " server and jail helper so tools use the selected toolchain,"
-        <> " workspace and scratch directory",
-      )
-  }
 }
 
 // --- the [advisor] table ---------------------------------------------------

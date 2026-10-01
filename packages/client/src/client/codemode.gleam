@@ -38,6 +38,16 @@
 //// cap/notes imports, prompt guidance, routing, and lifetime quotas, and
 //// extension and resident surfaces never inherit it.
 ////
+//// `over_lsp` is the same arrangement for the session's language-server
+//// door (ADR-015 §6), and for a reason with a price on it. `cap/lsp` is
+//// on no static allowlist (`codemode/vet/policy.default_cap_modules`), so
+//// its type surface enters the `code_mode` description, the `lsp.*` names
+//// enter the serviced list, the import is admitted and the router arm is
+//// installed only on a host whose door is present. A host with no
+//// `[lsp.<name>]` server pays no cached bytes for a module that could only
+//// refuse, and a program there that imports it is refused at vetting with
+//// the reason rather than at its first call.
+////
 //// ## One execution, one identity, one budget
 ////
 //// Everything a code-mode call does — the hermetic `gleam build`, the
@@ -182,6 +192,7 @@ import client/install
 import client/internal/ffi_os
 import client/jobseam
 import client/jobtools
+import client/lsp/codemode_rename
 import client/mcp as mcp_wiring
 import client/scheduleseam
 import client/scratch
@@ -192,6 +203,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/launch
+import codemode/lsp as codemode_lsp
 import codemode/notes
 import codemode/orchestration
 import codemode/satellite
@@ -211,6 +223,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import lsp/query
 import simplifile
 import tools/agent.{type Agency}
 import tools/blob
@@ -340,6 +353,18 @@ pub type Config {
     /// set them apart. `mcp.none()` is the empty layer every host has
     /// until an operator configures a server.
     mcp: McpLayer,
+    /// The session's language-server door, or `None` when no
+    /// `[lsp.<name>]` server is configured.
+    ///
+    /// One field for the reason `mcp` is one: the door admits `cap/lsp`,
+    /// renders its surface into the description, advertises the seven
+    /// `lsp.*` capabilities and installs their router arm, and a host that
+    /// could set those apart would eventually advertise a module it cannot
+    /// serve. The field holds the door and not a `codemode/lsp.Seam`
+    /// because the seam's applied rename is bound to one execution's
+    /// workspace, grants and protected list, so it is built per request
+    /// (`client/lsp/codemode_rename`).
+    lsp: Option(query.Door),
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
     /// How long the hermetic build itself may take.
@@ -556,6 +581,26 @@ pub fn over_mcp(config: Config, layer: McpLayer) -> Config {
   Config(..config, mcp: layer)
 }
 
+/// The same host configuration, serving `lsp.*` over the session's
+/// language-server door, or withdrawing it with `None`.
+///
+/// `None` is what every host has until an operator configures an
+/// `[lsp.<name>]` server, and it changes nothing a program can see beyond
+/// `cap/lsp` being absent: no import admitted, no surface rendered, no
+/// capability advertised, no arm routed. So a host may call this
+/// unconditionally with whatever its manager returned.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.over_lsp(option.Some(door))
+/// ```
+///
+pub fn over_lsp(config: Config, door: Option(query.Door)) -> Config {
+  Config(..config, lsp: door)
+}
+
 /// The vetting allowlist one seam judges a submission against.
 ///
 /// Indexed by the seam and not by the surface: a program is vetted
@@ -574,7 +619,8 @@ pub fn seam_policy(seam: vet_policy.Seam) -> vet_policy.VetPolicy {
 
 /// The vetting allowlist *this host* judges a submission against: the
 /// seam's own, widened by the capability modules the MCP layer
-/// generated at boot.
+/// generated at boot, by `cap/notes` where a blackboard door is wired,
+/// and by `cap/lsp` where a language-server door is.
 ///
 /// The widening is per host and cannot be otherwise. A generated
 /// `cap/mcp/<server>` façade exists only where that server is
@@ -603,9 +649,13 @@ pub fn seam_allowlist(
   let allowed =
     mcp_wiring.allowed_imports(seam_mcp(config, seam))
     |> list.fold(base, vet_policy.allow)
-  case notes_on(config, seam) {
+  let noted = case notes_on(config, seam) {
     None -> allowed
     Some(_) -> vet_policy.allow(allowed, "cap/notes")
+  }
+  case lsp_on(config, seam) {
+    None -> noted
+    Some(_) -> vet_policy.allow(noted, "cap/lsp")
   }
 }
 
@@ -715,7 +765,8 @@ fn workspace_caps() -> List(String) {
 
 /// The capability names one seam's router services *on this host*: the
 /// seam's own, plus one `mcp.<server>` per MCP server the layer
-/// reached.
+/// reached, the `notes.*` names where a blackboard door is wired, and the
+/// `lsp.*` names where a language-server door is.
 ///
 /// Read off the running layer rather than copied, for the reason
 /// `seam_caps` is: the sentence the model is charged for on every
@@ -734,9 +785,13 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
     _, _ -> seam_caps(seam)
   }
   let caps = list.append(base, mcp_wiring.serviced_caps(seam_mcp(config, seam)))
-  case notes_on(config, seam) {
+  let noted = case notes_on(config, seam) {
     None -> caps
     Some(_) -> list.append(caps, notes.serviced_caps)
+  }
+  case lsp_on(config, seam) {
+    None -> noted
+    Some(_) -> list.append(noted, codemode_lsp.serviced_caps)
   }
 }
 
@@ -847,6 +902,9 @@ pub fn default_config(
     // differ here.
     jobs: None,
     mcp: mcp_wiring.none(),
+    // No language server by default: ADR-015 §6 has no built-in one, and
+    // `cap/lsp` stays off every allowlist until a host wires a door.
+    lsp: None,
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
     accept_timeout_ms: default_accept_timeout_ms,
@@ -1064,6 +1122,11 @@ pub fn gleam_binary_kind(gleam_path: String) -> GleamBinary {
 /// reads a link target, and `simplifile.resolve` is `filename:absname`,
 /// which resolves `..` and not symlinks.
 ///
+/// The price of not following links is that a `bin` reached through one
+/// can name far too much: `/bin/erl` on a merged-usr host gives `/`, and a
+/// symlinked `~/bin/gleam` gives the home directory. Such a prefix is not
+/// repaired here; `clear_of` refuses it before it can reach a policy.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1210,6 +1273,129 @@ fn covered_by_another(path: String, mounts: List(String)) -> Bool {
   list.any(mounts, fn(other) {
     other != path && policy.covers(root: other, path:)
   })
+}
+
+/// The toolchain back, or the sentence that refuses it, when one of its
+/// read-only mounts would sit at or above one of `writable_roots` or over
+/// the jail's fresh `/proc` and `/dev`.
+///
+/// The mounts are emitted after every grant (protocol-change/004's rule
+/// 1a), so a toolchain region above a writable root lands on top of it
+/// and the root comes out read-only in every jail carrying the mount.
+/// Two ordinary hosts produce that region, both through `install_prefix`
+/// taking the parent of a `bin` directory without resolving links. When
+/// no `erl` sits beside the running ERTS, `locate` falls back to `PATH`,
+/// and a merged-usr host whose `PATH` lists `/bin` before `/usr/bin` finds
+/// `/bin/erl`; `/bin` is itself a link to `usr/bin`, so the prefix is
+/// `/`, which `discover`'s ERTS check passes, because `//lib/erlang` is
+/// `/usr/lib/erlang` through the same link. A `~/bin/gleam` that is a
+/// symlink to a checkout's build keeps its prefix, and that prefix is the
+/// home directory the workspace is usually under.
+///
+/// The prefix is refused here rather than repaired, and the safer choice
+/// is the reason. Resolving the link would name a better region on both
+/// hosts, but it needs a `read_link` nothing in the standard library
+/// offers, and a resolved target can still be `/` or a home directory:
+/// resolution improves the guess, while this check is what holds whatever
+/// the guess was. Dropping the one offending mount would leave code mode
+/// registered on a host where every launch is then refused by the meet,
+/// which is the tool that can only refuse `discover` exists to avoid. And
+/// admitting it refuses the whole boot: `protocol-change/057` rejects the
+/// base, and before 057 a session base already failed on the blob-store
+/// mask the mount also covered, naming the mask rather than the toolchain.
+/// So the answer is the one
+/// `discover` gives for a missing toolchain: no `code_mode` tool, and a
+/// sentence saying which region, why, and what to change.
+///
+/// `/proc` and `/dev` are checked beside the writable roots because a
+/// region covering either binds the host's copy back over the fresh one
+/// the jail mounts, which is issue #37's confinement gap; only `/` covers
+/// them, and it is refused even for a jail with no writable root at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // A merged-usr host with `/bin` first on PATH:
+/// // codemode.toolchain(gleam_path: "/usr/bin/gleam", erl_path: "/bin/erl",
+/// //   seed_root: "/opt/seed")
+/// // |> codemode.clear_of(writable_roots: ["/work"])
+/// //   == Error("code mode would mount / read-only …")
+/// ```
+///
+pub fn clear_of(
+  toolchain: Toolchain,
+  writable_roots writable_roots: List(String),
+) -> Result(Toolchain, String) {
+  let guarded = list.append(fresh_regions, writable_roots)
+  let shadowed =
+    toolchain_mounts(toolchain)
+    |> list.find_map(fn(mount) {
+      list.find(guarded, fn(root) {
+        policy.covers(root: mount.path, path: root)
+      })
+      |> result.map(fn(root) { #(mount.path, root) })
+    })
+  case shadowed {
+    Error(Nil) -> Ok(toolchain)
+    Ok(#(region, root)) -> Error(shadowing_refusal(toolchain, region, root))
+  }
+}
+
+// The regions the helper mounts fresh inside every jail, which a
+// read-only bind of the host above them would replace with the host's
+// own. Only `/` covers either, and a toolchain region of `/` is refused
+// even where the jail names no writable root.
+const fresh_regions = ["/proc", "/dev"]
+
+// The refusal names the region, the path it would shadow, which of the
+// toolchain's paths the region was derived from, and the change that
+// avoids it. It is the only thing an operator will ever see about it,
+// because the tool it would have registered does not exist.
+fn shadowing_refusal(
+  toolchain: Toolchain,
+  region: String,
+  root: String,
+) -> String {
+  "code mode would mount "
+  <> region
+  <> " read-only for its toolchain ("
+  <> region_source(toolchain, region)
+  <> "), and that region contains "
+  <> root
+  <> ". Explicit mounts are applied after a jail's own roots, so every jail "
+  <> "carrying it would see "
+  <> root
+  <> " read-only. The region is the parent of the `bin` directory the "
+  <> "executable was found in, and a `bin` directly under `/` (a merged-usr "
+  <> "`/bin` listed before `/usr/bin` on PATH) or under a home directory "
+  <> "names all of it. Put the toolchain's own directory first on PATH — "
+  <> "`/usr/bin` before `/bin`, or the directory a symlinked `gleam` points "
+  <> "into — or, when the region is the build seed, pass a --codemode-seed "
+  <> "that does not contain it. No code_mode tool is registered."
+}
+
+// Which of the toolchain's paths a mount region came from. The regions
+// `toolchain_mounts` emits are exactly these four, canonicalized and with
+// nested entries dropped, so the fallback is never reached on a region
+// that list produced.
+fn region_source(toolchain: Toolchain, region: String) -> String {
+  [
+    #(
+      toolchain.erl_prefix,
+      "the install prefix of `erl` at " <> toolchain.erl_path,
+    ),
+    #(canonical(toolchain.seed_root), "the build seed"),
+    #(
+      toolchain.gleam_prefix,
+      "the install prefix of `gleam` at " <> toolchain.gleam_path,
+    ),
+    #(
+      filepath.directory_name(canonical(toolchain.gleam_path)),
+      "the directory holding `gleam` at " <> toolchain.gleam_path,
+    ),
+  ]
+  |> list.key_find(region)
+  |> result.unwrap("a toolchain region")
 }
 
 /// One executable of the code-mode toolchain: the copy shipped beside
@@ -2291,11 +2477,12 @@ fn surface_router(
   }
 }
 
-// The effect router: three arms over the shipped table.
+// The effect router: arms over the shipped table.
 //
 // Outermost is the harness-side bridge — `fs.read`, `fs.list`, `kv.*`,
-// `report.emit` — then the MCP arm answering `mcp.<server>`, then
-// `satellite.default_router`, which clears `proc.run` into a jail and
+// `report.emit` — then read-only search, then the language-server arm
+// answering `lsp.*` where the host has a door, then the MCP arm answering
+// `mcp.<server>`, then `satellite.default_router`, which clears `proc.run` into a jail and
 // refuses everything it does not know. Each arm hands what it does not
 // answer to the one beneath, so nothing about `proc.run` or about what
 // the default table refuses changes shape.
@@ -2313,14 +2500,33 @@ fn workspace_router(
   config: Config,
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
+  let access =
+    directory_access.approved(request.directory_access, request.grants)
+  let mcp_router =
+    mcp_wiring.routing(config.mcp, over: satellite.default_router)
+
+  // Without a door `lsp.*` falls through to the default table, which
+  // refuses it as unknown; the seam's allowlist has already refused the
+  // import, so this arm is the second of two locks, not the only one.
+  let lsp_router = case lsp_on(config, vetting_seam(request.seam)) {
+    None -> mcp_router
+    Some(door) ->
+      codemode_lsp.routing(
+        codemode_rename.seam(
+          door,
+          workspace: request.workspace,
+          roots: access.writable,
+          protected: request.base_policy.protected,
+        ),
+        over: mcp_router,
+      )
+  }
+
   workspace.routing(
     workspace_seam(config, request),
     over: search_router.routing(
-      search_seam_with_access(
-        request.workspace,
-        directory_access.approved(request.directory_access, request.grants).readable,
-      ),
-      over: mcp_wiring.routing(config.mcp, over: satellite.default_router),
+      search_seam_with_access(request.workspace, access.readable),
+      over: lsp_router,
     ),
   )
 }
@@ -3410,6 +3616,18 @@ fn directory_of(path: String) -> String {
           }
         [] -> "."
       }
+  }
+}
+
+// The language-server door a seam sees. Installed extensions and resident
+// hooks never see it, for `seam_mcp`'s reasons: an extension's allowlist
+// is fixed and recorded at install, and a resident body has no capability
+// channel at all. This one choice gates the import, the rendered surface,
+// the advertised calls and the router arm together.
+fn lsp_on(config: Config, seam: vet_policy.Seam) -> Option(query.Door) {
+  case seam {
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.lsp
+    vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
   }
 }
 

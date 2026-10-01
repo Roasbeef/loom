@@ -165,6 +165,108 @@ summarize = ["anthropic-opus"]
 command = ["mcp-server-github", "--stdio"]
 api_key_env = "GITHUB_TOKEN"
 
+# Language servers, one [lsp.<name>] table per server. They are
+# configured, never discovered: with no [lsp] table there are no lsp_*
+# tools and nothing is spawned. Loom has no built-in servers; the gleam
+# and go tables below are examples of the shape, nothing more. Each
+# server runs jailed, rooted at the nearest ancestor of a file that
+# holds one of its `root_markers`, and this table is the whole of what
+# that jail grants beyond the project. The table key follows the
+# [mcp.<name>] rule ([a-z][a-z0-9_]*). A table is a language profile
+# (docs/adr/016-language-profiles.md): an extension may ship the same
+# table, and both are decoded by one decoder.
+#
+#   command       the argv, executable first. An ARRAY, never a shell
+#                 string: `command = "gopls serve"` is refused.
+#   extensions    the file extensions this server answers for, each
+#                 with its leading dot. Compared case-insensitively, and
+#                 one extension has exactly one owner: two servers
+#                 listing ".go" is a configuration error naming both.
+#   root_markers  file names (not paths) marking a project root.
+#   project       "read-only" (the default) or "writable". gleam lsp
+#                 writes manifest.toml and build/ into the project, so
+#                 it needs "writable"; gopls writes nothing there.
+#   readable      optional extra roots the server may read, and
+#   writable      optional extra roots it may write. Each is absolute,
+#                 under the home directory as ~/<path>, or under the
+#                 per-user cache directory as <cache>/<path>. Both are
+#                 expanded against the Loom daemon's own environment:
+#                 ~/ is its HOME, and <cache>/ is ~/Library/Caches on
+#                 macOS and, elsewhere, $XDG_CACHE_HOME when that is an
+#                 absolute path, else ~/.cache. Relative paths, `..`
+#                 components and a bare ~/ or <cache>/ are refused.
+#   env           optional environment variable NAMES passed through
+#                 from the daemon's environment ([A-Z_][A-Z0-9_]*); the
+#                 values never live in this file. PATH, HOME and TMPDIR
+#                 are the harness's own and are refused.
+#   cache_env     optional private caches: a table of variable name to
+#                 directory, e.g. { XDG_CACHE_HOME = "xdg" }. Each
+#                 variable is set to <cache>/loom/lsp/<server>/<dir>, a
+#                 directory Loom owns and creates, granted writable and
+#                 shared with no host tool. It is the one value this
+#                 table may set. The directory is relative, with no . or
+#                 .. component, and not inside another entry's (name
+#                 siblings); a name may not also be in env.
+#
+# Four optional keys say how the language spells things. Each default is
+# what Loom did before the key existed.
+#
+#   language_id   the languageId documents are opened with, e.g.
+#                 "typescript" for [".ts"]. Default: the first extension
+#                 without its dot. [a-z0-9][a-z0-9+._-]*, at most 40
+#                 characters.
+#   qualifier_separators
+#                 what a qualified symbol is split on, e.g. ["::"] for
+#                 Rust or C++. Default ["."]; the longest is tried first
+#                 when several are listed. Never "/", which already means
+#                 a path inside a qualifier (pkg/mod.name).
+#   module_case   "as-written" (the default) compares a qualifier with
+#                 file and directory names verbatim; "snake" maps each
+#                 segment from CamelCase first (MyApp.Accounts finds
+#                 my_app/accounts.ex), as Elixir and Ruby lay files out.
+#   hint          one line, at most 200 bytes, telling the model how the
+#                 language spells a qualified name. It is appended to the
+#                 lsp_definition tool's description, so it is text the
+#                 model reads on every request: write it as you would a
+#                 tool description.
+#
+# The two tables below are templates for the first-party profiles, which
+# live in their own repositories and are the maintained versions:
+# https://github.com/Roasbeef/loom-lsp-gleam,
+# https://github.com/Roasbeef/loom-lsp-go and
+# https://github.com/Roasbeef/loom-lsp-rust. Installing one approves its
+# table, for example
+#
+#   loomd ext install https://github.com/Roasbeef/loom-lsp-go --rev v0.1.0
+#
+# and `loomd ext check lsp_go` proves it against its fixture on this host.
+# A table here with the same name replaces an installed profile whole.
+[lsp.gleam]
+command = ["gleam", "lsp"]
+extensions = [".gleam"]
+root_markers = ["gleam.toml"]
+project = "writable"
+hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
+
+# gopls reads the module cache, outside the project, so it is named
+# here. It must also write a build cache, or it loads no packages and
+# every definition comes back empty, and that cache must not be the
+# host's own: the host's `go build` trusts ~/.cache/go-build without
+# verifying it, and go in the jail runs cgo with flags the project can
+# write. So cache_env points GOCACHE, GOPLSCACHE and XDG_CACHE_HOME at
+# private directories: go builds into go-build, gopls keeps its file cache
+# in gopls, and other tools use xdg. The first two are named because on
+# macOS go and gopls ignore XDG_CACHE_HOME.
+# If `go env GOMODCACHE` has been moved, name the directory it prints.
+[lsp.go]
+command = ["gopls"]
+extensions = [".go"]
+root_markers = ["go.mod"]
+readable = ["~/go/pkg/mod"]
+cache_env = { XDG_CACHE_HOME = "xdg", GOCACHE = "go-build", GOPLSCACHE = "gopls" }
+env = ["GOFLAGS"]
+hint = "Qualify a name with its package name as imported: util.Greet"
+
 # Triggered project rules, one [[rule]] table per rule. A rule is a
 # paragraph of standing instruction that only matters some of the time.
 # It costs the model's context NOTHING until something the model itself

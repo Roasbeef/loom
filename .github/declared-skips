@@ -35,3 +35,11 @@
 # the MCP exchange or shutdown runs. This declaration stops matching when the
 # fixture gains a Darwin process observation and the census demands removal.
 declared|darwin|no /proc on this host, so a stopped server's death cannot be observed by pid|Darwin has no procfs, so the prerequisite skips the whole real-MCP fixture before setup
+
+# The language-server manager's live rust-analyzer fixture
+# (`client/lsp/manager_test`) on the advisory macOS check. macOS runners
+# carry no rust-analyzer component, and rustup's link without it does not
+# run, so the fixture's prerequisite check skips it. The Linux client
+# bucket installs the component, rust-src and std's dependencies
+# (.github/scripts/install_rust_analyzer.sh) and runs it for real.
+declared|darwin|SKIP lsp manager rust-analyzer: rust-analyzer does not run|macOS runners carry no rust-analyzer component; the Linux client bucket installs it and runs the fixture for real.

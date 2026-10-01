@@ -22,6 +22,13 @@ protocol (spec Part 1.4). WP-G.
   `env_allow`, `Scratch`, and `mounts`. `compose` implements session base ⊕
   tool requirements ⊕ escalation grants; `narrow_unenforceable` fails
   closed.
+- `broker/policy.{session_lease, LeaseOutput}` — the base a session-lived
+  jailed process clears under: `wall_s` and `cpu_s` zeroed on the *base*
+  (a zero requirement against a non-zero base is a narrowing
+  `RefuseNarrowed` refuses), and `output_bytes` zeroed only for
+  `OutputIsWire`. An extension host's stdout is a log and keeps its cap; a
+  language server's stdout is its JSON-RPC wire (ADR-015). The lease's
+  real bound is the pooled budget deadline the relay enforces.
 - `broker/policy.{Mount, MountAccess, MountRequirement}` — one explicit
   bind of a host path into the jail, at policy version 2
   (`protocol-change/004`). `MountRequired` asks the helper to refuse an
@@ -467,6 +474,19 @@ protocol (spec Part 1.4). WP-G.
   exactly because of them, and the Go emitters carry no tie-break. The
   helper's decoder makes the same refusals at the wire
   (`policy.checkMounts`).
+- **A read-only mount at or above a writable root is refused**
+  (`MountShadowsWritableRoot`, `protocol-change/057`). Every explicit
+  mount is emitted after every grant, so on Linux the read-only bind
+  lands on the writable one and the root comes out read-only — and a
+  mount of `/` binds the host's `/proc` and `/dev` back over the fresh
+  ones — while on Darwin the allow rules union and the root stays
+  writable. Only that direction: a read-only mount *under* a writable
+  root, and a read-write mount above one, stay valid. Because `validate`
+  runs on the composed policy, it also refuses a grant of a writable
+  root under a region the base mounts read-only, which used to be
+  granted and then silently unwritable. The helper's decoder refuses the
+  same pair in the same words, and `jail.AuditMounts` reports it as a
+  `skip:mounts:` if it ever gets past both.
 - **The policy wire is version 2 on both sides.** The `mounts` field could
   not be added compatibly, because both decoders refuse unknown keys and
   refuse any `v` but their own, so the two halves of `protocol-change/004`

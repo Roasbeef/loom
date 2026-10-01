@@ -396,6 +396,24 @@ See the [MCP guide](docs/architecture/mcp.md) and
 [extension guide](docs/architecture/extensions.md) for configuration and the
 extension lifecycle.
 
+### Language servers
+
+The agent can ask a language server where a symbol is defined, who uses it,
+and what a rename would touch, and sees compiler diagnostics after its edits.
+The server runs in the same sandbox as any other tool, and edits land through
+the normal hashline path. Language support ships as profile extensions in
+separate repositories, so Loom carries the mechanism and no language:
+
+- [loom-lsp-gleam](https://github.com/Roasbeef/loom-lsp-gleam)
+- [loom-lsp-go](https://github.com/Roasbeef/loom-lsp-go)
+- [loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust)
+
+Install one with `loomd ext install https://github.com/Roasbeef/loom-lsp-go --rev v0.1.0`.
+To support another language, write a profile extension: the server's command
+and the roots it needs, a small fixture project, and `[[check]]`s naming the
+sites the server must report, then run `loomd ext check` until they pass. See
+the [language server guide](docs/architecture/lsp.md).
+
 ## Working on Loom
 
 ```sh
