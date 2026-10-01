@@ -328,7 +328,7 @@ a status change repaints the frame without invalidating the row cache.
 |---|---|---|
 | Strands | section 2, in the drawer's width | `Ctrl+O`, `F2`, `/agents`, `↓` into the list when docked |
 | Changes | files and hunks from the session's own edits; `Enter` opens a file full width | `/diff` |
-| Trace | the latest `code_mode` program: state, calls in order, budget | `/trace` (new) |
+| Trace | the latest `code_mode` program: state, program, result, budget; calls once a call record exists | `/trace` (new) |
 | Session | goal, jobs, schedules, viewers, context, cost, last completion, usage | `/summary` |
 
 ![Changes tab](B-opus-changes-120x40-dark.png)
@@ -343,8 +343,8 @@ and `Esc` or `Tab` return to the composer. The Strands tab carries a badge
 with the Needs you count. The drawer carries no decision control; an approval
 is decided in the approval panel only, as today.
 
-The Trace tab and the code-mode block of section 10 read the same data, and
-the Trace tab is drawn only once #656's call log exists (section 10).
+The Trace tab and the code-mode block of section 10 read the same data. The
+call list in both needs a new wire record (section 10).
 
 ### Key bindings checked against today
 
@@ -409,43 +409,60 @@ record would need a new control command.
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:173` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
-| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:2371`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:2808`; the call list needs #656 |
+| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:2371`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:2808`; the call list has no data and needs a new wire record |
 | Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:1641` |
 | Strand messages | harness text frame | `frame_message` at `client/agency.gleam:1641`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
 
 Every row above is either drawn today or a change inside `session_view` or
-`tui`, except two: the code-mode call list (#656's protocol-change) and an
+`tui`, except two: the code-mode call list (a new wire record, by protocol-change) and an
 origin on local strand messages (question 5).
 
 ## 10. Code mode
 
-![Code mode at 120×40](B-opus-codemode-120x40-dark.png)
-![Code mode at 80×24](B-opus-codemode-80x24-dark.png)
+Two sets of frames, because only one can be drawn from what the client
+receives.
 
-[120×40](B-opus-codemode-120x40.txt) · [80×24](B-opus-codemode-80x24.txt)
+**Drawable today** ([120×40](B-opus-codemode-today-120x40.txt) ·
+[80×24](B-opus-codemode-today-80x24.txt)):
 
-- A settled program is one row: `✓ code_mode probe_calc.gleam · 4 calls ·
+![Code mode today at 120×40](B-opus-codemode-today-120x40-dark.png)
+![Code mode today at 80×24](B-opus-codemode-today-80x24-dark.png)
+
+- A settled program is one row: `✓ code_mode probe_calc.gleam · completed ·
   result {"ok": true} · Ctrl+G`.
 - A compile error is a titled block in the danger colour, `× code_mode ·
   compile error · probe_range.gleam`, with the error and the line it names,
   and a foot saying the program did not run.
 - A running program is a titled block, `◐ running · check_subtract.gleam ·
-  call 7`, with the first lines of the program, then `CALLS · 7 · 1 failed`
-  grouped by capability with a count (`cap/fs.read ×3`), a failed call in the
-  danger colour with its exit status, and the budget in the foot.
-- At 80 columns the program preview folds into one row and the capability
-  names drop their `cap/` prefix.
+  1.2s`, with the first lines of the program and a `RESULT` row that fills
+  in when the program ends, and the budget in the foot.
+- At 80 columns the program preview shrinks to two lines.
 
-What exists: the program source and a preview of it,
-`code_mode_program` at `session_view/transcript_lines.gleam:2371`, and the
-result's `status`, `value` and sandbox summary,
-`code_mode_result_lines` at `session_view/transcript_lines.gleam:2808`. What
-does not: a record of the calls the program made and which failed. The
-result carries none. The `CALLS` section is therefore drawn only once #656's
-protocol-change publishes a call log, and it is drawn without timing. Until
-then the block shows the program, the state, the result and the error, and
-the settled row omits its call count. The frames show the state after #656.
+**Needs protocol-change** ([120×40](B-opus-codemode-calls-120x40.txt) ·
+[80×24](B-opus-codemode-calls-80x24.txt)):
+
+![Code mode call tree at 120×40](B-opus-codemode-calls-120x40-dark.png)
+![Code mode call tree at 80×24](B-opus-codemode-calls-80x24-dark.png)
+
+- The running block adds `CALLS · 7 · 1 failed`, grouped by capability with
+  a count (`cap/fs.read ×3`), a failed call in the danger colour with its exit
+  status, and the settled row adds its call count. The frame's foot says
+  "needs protocol-change: call record".
+
+What the client receives: the program, from the call's `program` argument
+only (`code_mode_program` at `session_view/transcript_lines.gleam:2371`),
+and the result's details, which carry the value or the error message and
+details, `status`, `manifest_hash` and `sandbox`
+(`code_mode_result_lines` at `session_view/transcript_lines.gleam:2808`
+draws them). There is no call data at all: no call list, no capability
+names, no per-call status. Capability calls are serviced inside the
+satellite and the broker, and no transcript entry is written per call. A
+call tree therefore needs a new wire record, the call list itself, carried
+by its own protocol-change. That is more than the timing #656 planned, and it
+also means #656's first step, which assumed the call list was already
+received, has no data to draw. The Trace tab is drawn with state, program
+and result today, and shows its `CALLS` section as needing that record.
 
 ## 11. Messages between strands and between sessions
 
@@ -631,8 +648,10 @@ yet.
 | Seven strands, 80×24 | [txt](B-opus-multi-80x24.txt) | [png](B-opus-multi-80x24-light.png) | [png](B-opus-multi-80x24-dark.png) |
 | Pain points fixed | [txt](B-opus-fixes-120x40.txt) | [png](B-opus-fixes-120x40-light.png) | [png](B-opus-fixes-120x40-dark.png) |
 | Approval, 80×24 | [txt](B-opus-approval-80x24.txt) | [png](B-opus-approval-80x24-light.png) | [png](B-opus-approval-80x24-dark.png) |
-| Code mode, 120×40 | [txt](B-opus-codemode-120x40.txt) | [png](B-opus-codemode-120x40-light.png) | [png](B-opus-codemode-120x40-dark.png) |
-| Code mode, 80×24 | [txt](B-opus-codemode-80x24.txt) | [png](B-opus-codemode-80x24-light.png) | [png](B-opus-codemode-80x24-dark.png) |
+| Code mode today, 120×40 | [txt](B-opus-codemode-today-120x40.txt) | [png](B-opus-codemode-today-120x40-light.png) | [png](B-opus-codemode-today-120x40-dark.png) |
+| Code mode today, 80×24 | [txt](B-opus-codemode-today-80x24.txt) | [png](B-opus-codemode-today-80x24-light.png) | [png](B-opus-codemode-today-80x24-dark.png) |
+| Code mode call tree, needs protocol-change, 120×40 | [txt](B-opus-codemode-calls-120x40.txt) | [png](B-opus-codemode-calls-120x40-light.png) | [png](B-opus-codemode-calls-120x40-dark.png) |
+| Code mode call tree, needs protocol-change, 80×24 | [txt](B-opus-codemode-calls-80x24.txt) | [png](B-opus-codemode-calls-80x24-light.png) | [png](B-opus-codemode-calls-80x24-dark.png) |
 | Messages, 120×40 | [txt](B-opus-messages-120x40.txt) | [png](B-opus-messages-120x40-light.png) | [png](B-opus-messages-120x40-dark.png) |
 | Messages, 80×24 | [txt](B-opus-messages-80x24.txt) | [png](B-opus-messages-80x24-light.png) | [png](B-opus-messages-80x24-dark.png) |
 | Image drawn | [txt](B-opus-image-drawn-120x40.txt) | [png](B-opus-image-drawn-120x40-light.png) | [png](B-opus-image-drawn-120x40-dark.png) |
@@ -670,21 +689,26 @@ by a drive in a real terminal.
    Session tabs; the roster hides while Strands is docked.
 7. **Layout memory.** The state-root file, its total decoder, and the save
    effect.
-8. **Code-mode blocks.** Titled blocks for running and failed programs; the
-   `CALLS` section and the Trace tab after #656's call log.
-9. **Message presentation.** `→`, `←` and `⇄` rows with the origin rule, and
+8. **Code-mode blocks.** Titled blocks for running and failed programs with
+   their source and result, and the Trace tab with state, program and
+   result. Works today.
+9. **A code-mode call record.** A protocol-change adding the list of
+   capability calls a program made, with each call's status, to the wire;
+   then the `CALLS` section in the block and the Trace tab. Timing can ride
+   on the same record or follow.
+10. **Message presentation.** `→`, `←` and `⇄` rows with the origin rule, and
    a test that no body text can produce a `⇄` heading.
-10. **Image placeholders.** The placeholder line, dimensions from headers,
+11. **Image placeholders.** The placeholder line, dimensions from headers,
     and `o` to open externally. Loom only.
-11. **An image protocol in etui.** In the etui repository: the kitty graphics
+12. **An image protocol in etui.** In the etui repository: the kitty graphics
     protocol with Unicode placeholders, OSC 1337, capability detection by
     query and reply, and the cell-size read. Not a Loom change.
-12. **Drawn images in Loom**, on top of 11.
+13. **Drawn images in Loom**, on top of 12.
 
 The shared-step decision, option (d) of #569 (whether the terminal moves onto
 `step.update` with a pure callback before the revamp), is measured
 separately and lands in `docs/review/terminal-option-d-2026-09-30.md`. This
-concept does not decide it; slices 1, 2 and 9 do not depend on it.
+concept does not decide it; slices 1, 2 and 10 do not depend on it.
 
 ## 16. Open questions for the owner
 

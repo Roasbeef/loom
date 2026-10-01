@@ -5,17 +5,17 @@
                                                                                  │ ◐ check_subtract.gleam               
  ● Owner · operator · 2m ago                                                     │   running · 1.2s · main              
     Add a subtract function to calc.gleam, check it, and update the README.      │                                      
-                                                                                 │ CALLS, IN ORDER                      
- ● ▸ worked 48s · 5 steps · 2 files · 1 failed · Ctrl+G expands                  │   1 cap/fs.read  calc.gleam          
-     ◇ memory · 3 notes                                                          │   2 cap/fs.read  calc_test.gleam     
-     read  calc.gleam · calc_test.gleam · README.md                              │   3 cap/proc.run gleam test          
-     edit  calc.gleam  +6 -0                                                     │   4 ◐ waiting                        
-     bash  gleam format --check  exit 1 · 2 files need formatting                │                                      
                                                                                  │ ▸ Program · 24 lines · Enter         
- ● agent_spawn  sub:tests  Run gleam test and report failures                    │ ▸ Budget · 30s · vetted              
-     ├ ? sub:tests  Needs approval · network     34s ·  9k                       │                                      
-     └ ✓ sub:docs   Finished 1m 12s · 2 files    12k                             │ RESULT                               
-                                                                                 │   none yet                           
+ ● ▸ worked 48s · 5 steps · 2 files · 1 failed · Ctrl+G expands                  │ ▸ Budget · 30s · vetted              
+     ◇ memory · 3 notes                                                          │                                      
+     read  calc.gleam · calc_test.gleam · README.md                              │ RESULT                               
+     edit  calc.gleam  +6 -0                                                     │   none yet                           
+     bash  gleam format --check  exit 1 · 2 files need formatting                │                                      
+                                                                                 │ CALLS                                
+ ● agent_spawn  sub:tests  Run gleam test and report failures                    │   needs protocol-change:             
+     ├ ? sub:tests  Needs approval · network     34s ·  9k                       │   no call record reaches the         
+     └ ✓ sub:docs   Finished 1m 12s · 2 files    12k                             │   client today                       
+                                                                                 │                                      
  ● advisor · nudge for main · 12s ago · delivered on main's next run             │                                      
    Consider running the unit tests before committing.                            │                                      
                                                                                  │                                      

@@ -5,13 +5,17 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
  ● Owner · operator                                                                                                     
     Check the subtract change and run the tests.                                                                        
                                                                                                                         
  ● main                                                                                                                 
    I will check it with a small program.                                                                                
                                                                                                                         
- ● ✓ code_mode probe_calc.gleam · 4 calls · result {"ok": true} · Ctrl+G                                                
+ ● ✓ code_mode probe_calc.gleam · completed · result {"ok": true} · Ctrl+G                                              
                                                                                                                         
  ●                                                                                                                      
    ╭─ × code_mode · compile error · probe_range.gleam ─────────────────────────────────────────────────────────────────╮
@@ -21,18 +25,14 @@
    ╰─ the program did not run · Ctrl+G shows all 12 lines ─────────────────────────────────────────────────────────────╯
                                                                                                                         
  ●                                                                                                                      
-   ╭─ ◐ running · check_subtract.gleam · call 7 ───────────────────────────────────────────────────────────────────────╮
+   ╭─ ◐ running · check_subtract.gleam · 1.2s ─────────────────────────────────────────────────────────────────────────╮
    │ PROGRAM · 24 lines, 4 shown                                                                                       │
    │   1 │ import cap/fs                                                                                               │
    │   2 │ import cap/proc                                                                                             │
    │   5 │ let src = fs.read("calc.gleam")                                                                             │
    │   9 │ let out = proc.run("gleam", ["test"])                                                                       │
    │                                                                                                                   │
-   │ CALLS · 7 · 1 failed                                                                                              │
-   │ ✓ cap/fs.read ×3      calc.gleam · calc_test.gleam · README.md                                                    │
-   │ × cap/proc.run        gleam format --check · exit 1                                                               │
-   │ ✓ cap/proc.run        gleam build                                                                                 │
-   │ ◐ cap/proc.run        gleam test · running                                                                        │
+   │ RESULT · none yet · the result arrives when the program ends                                                      │
    ╰─ budget 30s · vetted · Ctrl+G program ────────────────────────────────────────────────────────────────────────────╯
  ◐ main · code_mode check_subtract.gleam · 1.2s                                                          Esc interrupts 
 ╭─ To main · Enter queues · Tab steers ──────────────────────────────────────────────────────────────────── ws · main ─╮
