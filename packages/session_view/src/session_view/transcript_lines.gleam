@@ -35,6 +35,7 @@ import gleam/string
 import session_view/advisor_history
 import session_view/agent_roster
 import session_view/block_summary
+import session_view/call_tree.{type CallLog}
 import session_view/composer
 import session_view/file_read_view
 import session_view/notes_view
@@ -2580,6 +2581,7 @@ fn tool_result_lines(
           False -> failure_preview(result)
         },
       ),
+      ..failed_call_lines(tool_name, details, details_expanded)
     ]
 
     // Expanded, a wait shows each child's report as the child's answer
@@ -2816,29 +2818,114 @@ fn code_mode_result_lines(
     Error(Nil) -> json.String(fallback)
   }
   let sandbox = sandbox_summary(fields)
+
+  // The host's record of the program's capability calls, when this result
+  // carries a readable one. Results written before the record existed, and
+  // ones whose record is malformed, read as no record and render exactly
+  // as they always did.
+  let calls = call_tree.read(json.Object(fields))
+  let summary = option.map(calls, call_tree.summary)
   case details_expanded {
     False -> [
       Line(
         ToolResult,
         "code_mode · "
           <> status
+          <> option_text(summary, " · ")
           <> " · result "
           <> compact(json.to_string(value), 90)
           <> option_text(sandbox, " · "),
       ),
     ]
     True -> [
-      Line(ToolResult, "code_mode · " <> status),
+      Line(ToolResult, "code_mode · " <> status <> option_text(summary, " · ")),
       Line(
         ToolDetail,
         "result\n\n```json\n" <> pretty_json(value, 0) <> "\n```",
       ),
-      ..case sandbox {
-        Some(summary) -> [Line(System, summary)]
-        None -> []
-      }
+      ..list.append(
+        case calls {
+          Some(log) -> call_rows_lines(log)
+          None -> []
+        },
+        case sandbox {
+          Some(summary) -> [Line(System, summary)]
+          None -> []
+        },
+      )
     ]
   }
+}
+
+// The call record under a `code_mode` failure, when there is one. A
+// program that fails or hits its deadline is where the record matters most,
+// and a failure result is not a `code_mode` success, so it reaches this
+// from the failure arm. A failure with no readable record, and any other
+// tool's failure, gets nothing added.
+fn failed_call_lines(
+  tool_name: String,
+  details: Option(json.JsonValue),
+  details_expanded: Bool,
+) -> List(Line) {
+  case tool_name, details {
+    "code_mode", Some(details) ->
+      case call_tree.read(details) {
+        Some(log) -> [
+          Line(ToolResult, "code_mode · " <> call_tree.summary(log)),
+          ..case details_expanded {
+            True -> call_rows_lines(log)
+            False -> []
+          }
+        ]
+        None -> []
+      }
+    _, _ -> []
+  }
+}
+
+// One row per itemised call, in admission order, and a closing row for the
+// calls the host counted and did not itemise. The rows are drawn as text in
+// a fence, so no field of a call, all of which derive from program-chosen
+// strings, can be read as markup.
+fn call_rows_lines(log: CallLog) -> List(Line) {
+  case log.items {
+    [] -> []
+    items -> {
+      let unlisted = log.total - list.length(items)
+      let rows = list.map(items, call_row)
+      let rows = case unlisted > 0 {
+        True ->
+          list.append(rows, [
+            "… " <> int.to_string(unlisted) <> " more calls not itemised",
+          ])
+        False -> rows
+      }
+      [
+        Line(
+          ToolDetail,
+          "calls\n\n```text\n" <> string.join(rows, "\n") <> "\n```",
+        ),
+      ]
+    }
+  }
+}
+
+fn call_row(call: call_tree.Call) -> String {
+  let status = case call.status {
+    call_tree.Settled -> "ok"
+    call_tree.Failed -> "failed" <> option_text(call.error, " ")
+    call_tree.Cancelled -> "cancelled"
+    call_tree.Unsettled -> "unsettled"
+  }
+  call.cap
+  <> option_text(call.args, " ")
+  <> " · "
+  <> status
+  <> " · +"
+  <> int.to_string(call.start_ms)
+  <> "ms, "
+  <> int.to_string(call.duration_ms)
+  <> "ms"
 }
 
 fn sandbox_summary(fields: List(#(String, json.JsonValue))) -> Option(String) {
