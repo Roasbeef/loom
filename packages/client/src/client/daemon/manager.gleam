@@ -27,6 +27,28 @@
 //// an explicit create request can initialize a reserved row; ordinary open
 //// refuses it. Assembly persists the reserved canonical identity before runtime
 //// startup, then the registry confirms successful initialization in the catalogue.
+////
+//// ## Flow
+////
+//// `start` → `handle` → `admit` → `prepare_slot` → `opened` → `retired`
+////
+//// 1. `start` builds the empty `Book` and runs the registry as a weft state
+////    machine whose `Phase` is `Ready` until `Shutdown` or the starter's death.
+//// 2. `handle` receives one `Message` and returns the next book through
+////    `step`; every public function sends one of them and awaits the reply.
+//// 3. `admit` answers an open from the existing slot, or `new_slot` reserves
+////    one against the limit and `prepare_slot` selects its domain.
+//// 4. `ensure_domain` finds or builds the shared domain services, and
+////    `prepare_domain_slot` parks the session builder as `WaitingForDomain`.
+//// 5. `domain_opened` publishes the services, and `activate_domain_slots`
+////    releases each parked builder with `host.begin`.
+//// 6. `opened` records the built instance as `Running` once the catalogue
+////    confirms it; `failed` and `faulted` route a refusal into cleanup.
+//// 7. `stop_slot` orders cleanup, and `retired` frees the slot only on the
+////    witness's normal exit, after which `close_unused_domains` may retire
+////    the domain itself.
+//// 8. `step` rebuilds the `selector` and stops once `ShuttingDown` has no slots
+////    or domains left.
 
 import broker/internal/call
 import broker/internal/ffi_crypto
@@ -490,6 +512,35 @@ type Message(instance) {
   LinkedExit(Pid)
 }
 
+/// The registry's whole state besides its phase: the catalogue it reads, the
+/// slots and domains it reserves, and the credential table. `handle` threads
+/// one `Book` through every message and `step` returns the next.
+type Book(instance) {
+  Book(
+    catalogue: catalogue.Catalogue,
+    assembly: Assembly(instance),
+    limit: Int,
+    epoch: String,
+    next: Int,
+    slots: Dict(String, Slot(instance)),
+    // The operation of the most recent build that returned an error, per
+    // session. A failed build's slot is deleted as soon as its cleanup drains,
+    // which is usually before the requesting terminal's first poll, so without
+    // this the poll finds no slot and is answered `StaleOperation` — telling
+    // an operator their request was overtaken when in truth it failed. One
+    // entry per session, capped at `limit`, cleared when that session opens
+    // again; see `remember_failure`.
+    failed_operations: Dict(String, #(String, String)),
+    domains: Dict(String, DomainSlot),
+    commands: Subject(Message(instance)),
+    parent: Pid,
+    authority: Dict(
+      #(access.Digest, String),
+      #(access.Principal, access.Authority),
+    ),
+  )
+}
+
 /// Why one already-attached socket's frame is no longer authorized.
 ///
 /// The transport re-asks this question when it admits a command and again
@@ -782,32 +833,6 @@ pub fn membership_page(
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
-}
-
-type Book(instance) {
-  Book(
-    catalogue: catalogue.Catalogue,
-    assembly: Assembly(instance),
-    limit: Int,
-    epoch: String,
-    next: Int,
-    slots: Dict(String, Slot(instance)),
-    // The operation of the most recent build that returned an error, per
-    // session. A failed build's slot is deleted as soon as its cleanup drains,
-    // which is usually before the requesting terminal's first poll, so without
-    // this the poll finds no slot and is answered `StaleOperation` — telling
-    // an operator their request was overtaken when in truth it failed. One
-    // entry per session, capped at `limit`, cleared when that session opens
-    // again; see `remember_failure`.
-    failed_operations: Dict(String, #(String, String)),
-    domains: Dict(String, DomainSlot),
-    commands: Subject(Message(instance)),
-    parent: Pid,
-    authority: Dict(
-      #(access.Digest, String),
-      #(access.Principal, access.Authority),
-    ),
-  )
 }
 
 /// Starts an empty live registry over existing catalogue metadata.

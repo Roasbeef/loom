@@ -1,6 +1,25 @@
 //// What the advisor is shown of the primary's work, and the frames that
 //// carry text in both directions between the two strands.
 ////
+//// ## Flow
+////
+//// `render` → `block` → `message_block` → `label_user` → `fit` → `feed_message`
+////
+//// 1. `render` takes the entries scanned past the cursor and records the
+////    newest seq with `newest_seq` before any rule gets a vote.
+//// 2. `block` renders one entry, or nothing for a custom row;
+////    `message_block` splits it by who spoke.
+//// 3. `user_block` passes user text through `label_user`, which recognizes the
+////    advice, continuation and nudge frames and says whose words they were.
+//// 4. `assistant_block` and `tool_result_block` render what the primary did,
+////    never its thinking, each clipped to its block budget.
+//// 5. `fit` keeps whole blocks newest first through `take_newest` and notes
+////    how many older ones were dropped.
+//// 6. `feed_message` frames the slice for the advisor; `goal_feed_message`
+////    does the same with the objective, budget and check result.
+//// 7. The way back is `advice_message`, `continuation_message` and
+////    `nudges_message`, which `is_advice` and its siblings recognize again.
+////
 //// # Why a renderer rather than a shared context, and one set of books
 ////
 //// The advisor never shares the primary's conversation. It is handed a

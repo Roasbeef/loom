@@ -3,6 +3,29 @@
 //// reasoning block and each long delivered advisor message, and hands the
 //// label to every attached terminal (protocol 050).
 ////
+//// ## Flow
+////
+//// `start` → `handle` → `committed` → `jobs` → `launch` → `relayed` → `finished` → `settle`
+////
+//// 1. `start` builds the machine over `builder`, which binds both the inbox
+////    and the writer's commit address; `handle` takes one `Message` at a time.
+//// 2. `committed` scans the message entries above the high-water, turns long
+////    reasoning blocks into jobs with `jobs`, and keeps the primary strand's
+////    through `on_primary`.
+//// 3. `streamed` and `asked` are the other two doors: a live thinking
+////    fragment from `observer`, and a terminal's request for a block it
+////    found unsummarized.
+//// 4. `blocksummarybook.admit` decides what may run; `launch` starts each
+////    answer as a one-task weft run whose relay reports into a numbered sink.
+//// 5. `summarize_settled` and `summarize_live` ask the summarizer through
+////    `ask`, which bounds the answer with `parse`; a committed label is
+////    written before it is published.
+//// 6. `relayed` holds the outcome until the run's last word, and `finished`
+////    frees the slot, reports a failure once via `report`, and asks the book
+////    for the next launches.
+//// 7. `settle` ends every turn by rebuilding the `selector` over the flights
+////    still out.
+////
 //// # Why a harness loop
 ////
 //// A terminal draws a reasoning block collapsed to one row, and until now
@@ -177,6 +200,114 @@ pub const scan_limit = 64
 pub type Route {
   Route(provider: String, summarizer: Distiller)
 }
+
+// --- the machine's state space ---------------------------------------------
+
+/// Everything the machine needs from its host.
+pub type Wiring {
+  Wiring(
+    /// The session store, read directly for committed entries and an
+    /// operation's strand. Reads never go through the writer's queue.
+    session: Session,
+    /// The summarize route's model seam. A test fills it with a script.
+    route: Route,
+    /// Whether a committed reasoning block from the named provider may be
+    /// sent to the summarizer: `settled_admission` in production, which
+    /// compares the two entries' endpoints.
+    settled: fn(String) -> Bool,
+    /// Writes one reserved cell. Production fills it with
+    /// `api.put_reserved_fact` over the live runtime.
+    write: fn(String, JsonValue) -> Result(Nil, String),
+    /// Publishes one event on the session's bus, where the gateway picks
+    /// up `BlockSummary` and pushes it to every subscribed terminal.
+    publish: fn(bus.Event) -> Nil,
+    /// The pacing knobs, `blocksummarybook.default_pace` in production.
+    pace: Pace,
+    /// Where failures are reported.
+    logger: Logger,
+    /// The address this machine registers under, and the one the provider
+    /// tap casts to.
+    name: address.Address(Message),
+    /// The address the runtime writer sends its commit hints to. The
+    /// machine binds it in its initialiser, so a restart re-binds it and
+    /// the writer's subscription survives the restart.
+    commits: address.Address(writer.Event),
+  )
+}
+
+/// The machine's mailbox. Opaque: only the tap built by `observer`, the
+/// writer's hints and the machine itself produce these.
+pub opaque type Message {
+  /// The writer committed a transaction carrying these seqs.
+  Committed(seqs: List(Seq))
+
+  /// One reasoning fragment of the generation request `generation`.
+  Streamed(operation: OpId, generation: String, chunk: String)
+
+  /// The generation request `generation` settled or failed.
+  StreamEnded(generation: String)
+
+  /// A terminal asked for the stored summaries of these blocks and found
+  /// none; each is an entry id in text form and a block index.
+  Asked(blocks: List(#(String, Int)))
+
+  /// One request's run said something, on the sink numbered `flight`.
+  Relayed(flight: Int, pulled: weft.Pulled(Nil, String))
+}
+
+// The one state. What moves between events is data: the book, the flights
+// and the high-water, as in `client/glance`.
+type Phase {
+  Watching
+}
+
+type Data {
+  Data(
+    wiring: Wiring,
+    inbox: Subject(Message),
+    commits: Subject(writer.Event),
+    book: blocksummarybook.Book,
+    flights: Dict(Int, Flight),
+    next_flight: Int,
+    high_water: Option(Seq),
+    ignored: set.Set(String),
+    reported: Reported,
+  )
+}
+
+// One request that is out, and what its end should tell the book.
+type Flight {
+  Flight(
+    kind: FlightKind,
+    sink: Subject(weft.Pulled(Nil, String)),
+    landed: Landing,
+  )
+}
+
+type FlightKind {
+  SettledFlight(entry: EntryId, block: Int)
+
+  LiveFlight(generation: String)
+}
+
+// A relay delivers the task's outcome and then the run's last word; the
+// outcome is held until the last word proves the worker has exited.
+type Landing {
+  Awaiting
+
+  Landed(outcome: weft.Outcome(Nil, String))
+}
+
+// Whether this incarnation has already reported a failure at warning
+// level. One warning says the summarizer is not working; a warning per
+// block would bury every other line in the log.
+type Reported {
+  Quiet
+
+  Warned
+}
+
+// --- finding the route ------------------------------------------------------
 
 /// The route over the catalogue's `summarize` role, or an error when the
 /// catalogue routes none.
@@ -819,111 +950,7 @@ fn observe(
   }
 }
 
-// --- the machine ---------------------------------------------------------------
-
-/// Everything the machine needs from its host.
-pub type Wiring {
-  Wiring(
-    /// The session store, read directly for committed entries and an
-    /// operation's strand. Reads never go through the writer's queue.
-    session: Session,
-    /// The summarize route's model seam. A test fills it with a script.
-    route: Route,
-    /// Whether a committed reasoning block from the named provider may be
-    /// sent to the summarizer: `settled_admission` in production, which
-    /// compares the two entries' endpoints.
-    settled: fn(String) -> Bool,
-    /// Writes one reserved cell. Production fills it with
-    /// `api.put_reserved_fact` over the live runtime.
-    write: fn(String, JsonValue) -> Result(Nil, String),
-    /// Publishes one event on the session's bus, where the gateway picks
-    /// up `BlockSummary` and pushes it to every subscribed terminal.
-    publish: fn(bus.Event) -> Nil,
-    /// The pacing knobs, `blocksummarybook.default_pace` in production.
-    pace: Pace,
-    /// Where failures are reported.
-    logger: Logger,
-    /// The address this machine registers under, and the one the provider
-    /// tap casts to.
-    name: address.Address(Message),
-    /// The address the runtime writer sends its commit hints to. The
-    /// machine binds it in its initialiser, so a restart re-binds it and
-    /// the writer's subscription survives the restart.
-    commits: address.Address(writer.Event),
-  )
-}
-
-/// The machine's mailbox. Opaque: only the tap built by `observer`, the
-/// writer's hints and the machine itself produce these.
-pub opaque type Message {
-  /// The writer committed a transaction carrying these seqs.
-  Committed(seqs: List(Seq))
-
-  /// One reasoning fragment of the generation request `generation`.
-  Streamed(operation: OpId, generation: String, chunk: String)
-
-  /// The generation request `generation` settled or failed.
-  StreamEnded(generation: String)
-
-  /// A terminal asked for the stored summaries of these blocks and found
-  /// none; each is an entry id in text form and a block index.
-  Asked(blocks: List(#(String, Int)))
-
-  /// One request's run said something, on the sink numbered `flight`.
-  Relayed(flight: Int, pulled: weft.Pulled(Nil, String))
-}
-
-// The one state. What moves between events is data: the book, the flights
-// and the high-water, as in `client/glance`.
-type Phase {
-  Watching
-}
-
-type Data {
-  Data(
-    wiring: Wiring,
-    inbox: Subject(Message),
-    commits: Subject(writer.Event),
-    book: blocksummarybook.Book,
-    flights: Dict(Int, Flight),
-    next_flight: Int,
-    high_water: Option(Seq),
-    ignored: set.Set(String),
-    reported: Reported,
-  )
-}
-
-// One request that is out, and what its end should tell the book.
-type Flight {
-  Flight(
-    kind: FlightKind,
-    sink: Subject(weft.Pulled(Nil, String)),
-    landed: Landing,
-  )
-}
-
-type FlightKind {
-  SettledFlight(entry: EntryId, block: Int)
-
-  LiveFlight(generation: String)
-}
-
-// A relay delivers the task's outcome and then the run's last word; the
-// outcome is held until the last word proves the worker has exited.
-type Landing {
-  Awaiting
-
-  Landed(outcome: weft.Outcome(Nil, String))
-}
-
-// Whether this incarnation has already reported a failure at warning
-// level. One warning says the summarizer is not working; a warning per
-// block would bury every other line in the log.
-type Reported {
-  Quiet
-
-  Warned
-}
+// --- the machine ------------------------------------------------------------
 
 /// Starts the machine under `wiring.name`, bound to `wiring.commits` as
 /// well.
