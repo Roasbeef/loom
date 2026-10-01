@@ -6,9 +6,13 @@ The MCP extraction is rebased onto `origin/main` at
 Upstream already contains the Git fixture isolation correction, including
 process-specific workspace names, so the duplicate branch fix was omitted.
 Both upstream session-lifetime documentation and the extracted MCP boundary
-were retained. Validation of this rebased head and the final independent
-review are pending; the historical results below stay attached to their
-original commits.
+were retained. The final independent GPT-6.1 Sol review at high reasoning
+found no high or medium findings at `14dc4545d`. Its one low finding was a
+stale ownership comment in `client/mcp`, corrected without changing executable
+code. The fresh seed and full local gate passed the rebased source/dependency
+baseline with 2,401 client tests, zero lint errors and 944 warnings. Hosted CI
+and Linux signoff for the final published head are recorded on PR #669; the
+historical results below stay attached to their original commits.
 
 ## Standalone MCP extraction
 

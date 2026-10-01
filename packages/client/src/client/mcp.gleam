@@ -2,13 +2,13 @@
 //// what they let a code-mode program import, and the router arm that
 //// carries a `mcp.<server>` capability call out to one of them.
 ////
-//// This is the harness wiring `packages/mcp` deliberately does not do
-//// (issue #106). That package holds the protocol, the client actor and
-//// the generator; `client/catalog` holds the `[mcp.<name>]` tables. Here
-//// the two meet: for every configured server, spawn it, hand-shake,
-//// list its tools, generate the `cap/mcp/<server>` façade module, and
-//// keep the client running for the life of the session, because the
-//// dispatch path is the same client.
+//// This is the harness wiring the reusable `gleam_mcp` library does not do
+//// (issue #106). That library owns the protocol and client actor; the local
+//// `mcp` package owns generation and interchange. `client/catalog` holds the
+//// `[mcp.<name>]` tables. This module starts each configured server,
+//// performs its handshake, lists its tools, and generates the
+//// `cap/mcp/<server>` façade module. The same client serves capability
+//// calls for the life of the session.
 ////
 //// ## MCP reaches a model through code mode, and nowhere else
 ////
