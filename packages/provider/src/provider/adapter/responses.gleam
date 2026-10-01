@@ -4,6 +4,29 @@
 //// final-response witnesses agree. Deltas remain ephemeral; only the final
 //// verified response settles. Authentication appears only in build_request's
 //// outbound header, never in the pure accumulator or diagnostic metadata.
+////
+//// ## Flow
+////
+//// `build_request` → `response_machine` → `on_chunk` → `handle_sse` → `dispatch` → `close_item` → `terminal` → `settle`
+////
+//// 1. `build_request` posts the stateless request; the body comes from
+////    `responses_request.body`.
+//// 2. `response_machine` starts an `Accumulator` in the `Streaming` life and
+////    wires the transport callbacks to it.
+//// 3. `on_chunk` bounds the attempt's bytes, feeds a 200 body to the SSE
+////    parser and each event to `handle_sse`; other statuses collect the error
+////    body for `http_error`.
+//// 4. `handle_sse` checks the event name against the JSON `type` and the
+////    sequence number with `sequence`, then calls `dispatch`.
+//// 5. `dispatch` gives every supported event its own transition: `add_item`,
+////    `add_part`, `change_part`, `close_part`, `add_annotation`, `arguments`
+////    and `close_item`; an unknown event goes to `malformed`.
+//// 6. `close_item` checks the finished item with `verify_item` against the
+////    provider's canonical copy.
+//// 7. `terminal` compares the final response with every item witnessed so
+////    far, maps the status to a stop reason, and `settle` builds the one
+////    assistant message. `fail` and `malformed` move the machine to
+////    `Terminal` so only one terminal event ever escapes.
 
 import core/corruption
 import core/json.{type JsonValue}
