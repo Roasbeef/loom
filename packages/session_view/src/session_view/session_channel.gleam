@@ -55,6 +55,42 @@
 //// on the model before the step, a replay passes its own time, which starts
 //// at zero, and a property test passes whatever schedule it generated. The
 //// same arguments therefore always produce the same transition.
+////
+//// ## Flow
+////
+//// `start` → `receive` → `apply_reply` → `credit` → `send_queued` → `tick`
+////
+//// 1. `start` (or `start_resumed`) queues the subscribe through `emit`, so
+////    the lane begins in `AwaitingBegin` with request 1 outstanding.
+//// 2. `receive` notes the message, then dispatches by phase. A pushed frame
+////    goes to `apply_pushed` and never touches the phase or the credit.
+//// 3. `apply_reply` reduces the one correlated reply the lane is owed: a
+////    begin goes to `credit`, which asks for the next chunk, and an end
+////    returns the lane to `Ready`.
+//// 4. `send_queued` runs on every return to `Ready`. It spends the waiting
+////    command through `flush_queued` first and a deferred notice second.
+//// 5. `submit` reaches the same command path from the operator: `admit`
+////    checks the role and the slot, and `send` puts the frame on the wire.
+//// 6. `tick` fails an expired request, or issues the idle catch-up through
+////    `capture_again`; `next_due` names when a tick can next act.
+//// 7. `fail` ends the lane on any violation or loss and calls `close`, which
+////    is the only way into `Closed`.
+////
+//// ## Transitions
+////
+//// What each entry point does to a lane in each phase. A bad frame, a
+//// transport loss and an expired deadline all go through `fail`, so each
+//// ends in `Closed`; `retire` is `fail` without the `Failed` update.
+////
+//// <!-- transitions: session_channel.Phase -->
+////
+//// | state | receive | tick | submit | close | retire |
+//// | --- | --- | --- | --- | --- | --- |
+//// | `AwaitingBegin` | `Receiving` on a valid begin; `Ready` on a resumed marker; a push is applied in place; anything else `Closed` | `Closed` once the deadline passes | queued (`Waiting`); a mutation also needs a held cut and a mutating role, else refused | `Closed` | `Closed` |
+//// | `Receiving` | `Receiving` on a chunk; `Ready` on a valid end; a push is applied in place; anything else `Closed` | `Closed` once the deadline passes | queued (`Waiting`); a mutation also needs a held cut and a mutating role, else refused | `Closed` | `Closed` |
+//// | `AwaitingReply` | `Ready` on the matching reply or a server refusal; `Receiving` on a lookup or history begin; a push is applied in place; anything else `Closed` | `Closed` once the deadline passes | queued (`Waiting`) if the slot is free; a mutation is refused while another is in flight or the role forbids | `Closed`, with no outcome reported | `Closed` |
+//// | `Ready` | stays on other pushes; `AwaitingBegin` on a notice at or past the cut or a metadata push; any reply is `Closed` | `AwaitingBegin` once the refresh instant passes | `AwaitingReply` (`Sent`), or refused if the role or slot forbids | `Closed` | `Closed` |
+//// | `Closed` | ignored | nothing | refused | unchanged | unchanged |
 
 import core/json
 import gleam/bool
