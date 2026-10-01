@@ -7,6 +7,7 @@
 //// name an exact file, including a writable file that does not exist yet.
 
 import broker/policy
+import client/escalate
 import client/grants
 import core/json
 import core/message
@@ -18,6 +19,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import runtime/api
+import runtime/escalation
 import session/session
 import storage/storage
 import tools/fs
@@ -25,6 +27,110 @@ import tools/tool
 
 /// Reserved against model-authored fact writes.
 pub const key = "client/permission_grants"
+
+/// Action grants are private authority, separate from general session policy.
+pub const action_prefix = "client/action_grants/"
+
+/// Captures standing authority and consent for precisely this invocation.
+///
+/// Complete effective arguments participate in the identity. Omitting an
+/// option or changing the requesting strand requires a new decision, even
+/// when the shell command is unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // permissions.read_for(opened, "main", "bash", arguments)
+/// ```
+pub fn read_for(
+  opened: session.Session,
+  strand: String,
+  tool_name: String,
+  arguments: json.JsonValue,
+) -> Result(List(policy.Grant), String) {
+  use standing <- result.try(read(opened))
+  let action = escalate.action_digest(arguments)
+  use cell <- result.try(
+    storage.get_register(
+      opened.store,
+      register.FactCustom,
+      action_key(strand, tool_name, action),
+    )
+    |> result.map_error(fn(_) { "action permissions could not be read" }),
+  )
+  case cell {
+    None -> Ok(standing)
+    Some(cell) -> {
+      use approved <- result.try(grants_from(cell.value.payload))
+      use <- bool.guard(
+        approved != [policy.GrantLimit(policy.WallSeconds, 0)],
+        Error("remembered action wall authority is malformed"),
+      )
+      Ok(list.append(standing, approved))
+    }
+  }
+}
+
+// The session is the workspace authority. Within it, neither another tool
+// nor another strand may inherit consent to run the same arguments forever.
+fn action_key(strand: String, tool_name: String, action: String) -> String {
+  action_prefix
+  <> escalate.action_digest(
+    json.Array([
+      json.String(strand),
+      json.String(tool_name),
+      json.String(action),
+    ]),
+  )
+}
+
+/// Prepares exact-action wall consent or the existing general permission union.
+///
+/// The gateway has already validated the echoed action and grant subset.
+/// The reserved change is committed atomically with that captured approval.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // permissions.remembering_action(runtime, record, approved, author)
+/// ```
+pub fn remembering_action(
+  runtime: api.Runtime,
+  record: escalation.Escalation,
+  approved: List(policy.Grant),
+  author: Option(message.Origin),
+) -> Result(api.ReservedFactChange, String) {
+  case approved {
+    [policy.GrantLimit(policy.WallSeconds, 0)] -> {
+      use action <- result.try(option.to_result(
+        record.action,
+        "session wall consent requires an exact action",
+      ))
+      use tool_name <- result.try(option.to_result(
+        record.tool,
+        "session wall consent requires a tool",
+      ))
+      use scope <- result.try(option.to_result(
+        record.scope,
+        "session wall consent requires a requesting strand",
+      ))
+      let key = action_key(scope.strand, tool_name, action)
+      use cell <- result.try(
+        api.fact_cell(runtime, key)
+        |> result.map_error(fn(_) { "action permissions could not be read" }),
+      )
+      Ok(api.ReservedFactChange(
+        key:,
+        value: json.Object([
+          #("grants", json.Array(list.map(approved, grants.encode))),
+          #("origin", origin.encode(author)),
+        ]),
+        expected: option.map(cell, fn(cell) { cell.seq }),
+      ))
+    }
+    _ -> remembering(runtime, approved, author)
+  }
+}
 
 /// Reads and validates the standing authority captured by the next invocation.
 ///
@@ -52,6 +158,12 @@ pub fn read(opened: session.Session) -> Result(List(policy.Grant), String) {
 /// assert permissions.decode(json.Object([])) |> result.is_error
 /// ```
 pub fn decode(value: json.JsonValue) -> Result(List(policy.Grant), String) {
+  use decoded <- result.try(grants_from(value))
+  use _ <- result.try(list.try_map(decoded, validate))
+  Ok(list.unique(decoded))
+}
+
+fn grants_from(value: json.JsonValue) -> Result(List(policy.Grant), String) {
   use value <- result.try(
     tool.optional_value(value, "grants")
     |> result.try(fn(value) {
@@ -66,8 +178,7 @@ pub fn decode(value: json.JsonValue) -> Result(List(policy.Grant), String) {
     grants.decode_all(encoded)
     |> result.map_error(fn(_) { "session permission grant is malformed" }),
   )
-  use _ <- result.try(list.try_map(decoded, validate))
-  Ok(list.unique(decoded))
+  Ok(decoded)
 }
 
 fn validate(grant: policy.Grant) -> Result(Nil, String) {

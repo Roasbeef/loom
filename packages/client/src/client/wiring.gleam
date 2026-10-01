@@ -1563,7 +1563,12 @@ pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
   let ctx = tool_context(config, run)
   let authority = {
     use access <- result.try(directories.read(config.session))
-    use standing <- result.try(permissions.read(config.session))
+    use standing <- result.try(permissions.read_for(
+      config.session,
+      run.strand,
+      run.call.name,
+      run.arguments,
+    ))
     Ok(#(access, standing))
   }
   let outcome = case authority {

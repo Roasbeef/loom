@@ -139,10 +139,11 @@
 //// `max_outstanding: 1` and its own deadline. `docs/adr/005` records why
 //// in its second addendum: a detached job is not part of a batch's
 //// parallel width, and `bash` opens the batch's ledger at a cap of one.
-//// The operation half is kept because it is what `broker.abort`
-//// addresses — aborting the operation that *started* a job kills it,
-//// which is what an operator asking for that means, and aborting a later
-//// one does not, because detachment is what the model asked for.
+//// Finite jobs keep the originating operation because `broker.abort`
+//// addresses it. Session-lifetime jobs mint a separate custody operation:
+//// aborting the model's turn must not tear down its approved watcher. The
+//// durable `started_by` still names that turn for audit. Explicit owner
+//// cancellation and session close own the detached execution's stop.
 
 import broker/broker.{type CallEvent, type CallSpec}
 import broker/budget
@@ -1371,6 +1372,14 @@ fn admitted(
     )
   use Nil <- result.try(claim(runtime, record))
 
+  // Session custody survives abort of the turn which requested it. A fresh
+  // broker identity separates that custody without changing attribution in
+  // the durable record. Finite work still belongs to its initiating turn.
+  let #(custody_operation, generator) = case wall_ms {
+    0 -> ids.mint_op(generator)
+    _finite -> #(operation, generator)
+  }
+
   // The clearance happens on the runner, so the caller's reply subject is
   // parked in the job's custody until the runner has said whether there
   // is a job at all. Everything below this line is bookkeeping the caller
@@ -1384,6 +1393,7 @@ fn admitted(
       reports,
       request.captured_policy,
       request.stdin,
+      custody_operation,
     )
   let held =
     Held(
@@ -1580,6 +1590,7 @@ fn spawn_runner(
   reports: Subject(weft.Pulled(Settlement, RunnerFault)),
   captured_policy: Option(SandboxPolicy),
   stdin: StdinEnd,
+  custody_operation: OpId,
 ) -> Pid {
   let wiring =
     Wiring(
@@ -1588,7 +1599,8 @@ fn spawn_runner(
     )
   let home = state.self
   let backstop = wiring.clearance_ms + wall_ms + settle_grace_ms
-  let run = weft.new([fn() { run(wiring, record, home, stdin) }])
+  let run =
+    weft.new([fn() { run(wiring, record, home, stdin, custody_operation) }])
 
   // A session-lifetime job keeps its scope until execution ends. Clearance
   // retains its own finite waiting budget; owner death and session shutdown
@@ -1607,11 +1619,12 @@ fn run(
   record: JobRecord,
   home: Subject(Message),
   stdin: StdinEnd,
+  custody_operation: OpId,
 ) -> Result(Settlement, RunnerFault) {
   let events = process.new_subject()
   let asks = process.new_subject()
   let #(now, _clock) = clock.read(wiring.clock)
-  let spec = call_spec(wiring, record, now)
+  let spec = call_spec(wiring, record, now, custody_operation)
   case wiring.clear_call(spec, events) {
     Error(refusal) -> {
       process.send(home, Clearance(id: record.id, outcome: Error(refusal)))
@@ -1863,7 +1876,12 @@ fn promote_stream(
 // And no escalation grants are carried: the approval that admitted the
 // starting call bound to that call's arguments, and a detached job has no
 // later call to spend a grant on.
-fn call_spec(wiring: Wiring, record: JobRecord, now: Int) -> CallSpec {
+fn call_spec(
+  wiring: Wiring,
+  record: JobRecord,
+  now: Int,
+  custody_operation: OpId,
+) -> CallSpec {
   let base_requirements =
     tool.asking_base_network(
       bash.requirements(wiring.workspace),
@@ -1902,7 +1920,7 @@ fn call_spec(wiring: Wiring, record: JobRecord, now: Int) -> CallSpec {
       limits: policy.Limits(..base_requirements.limits, wall_s:),
     )
   broker.CallSpec(
-    op_id: record.started_by,
+    op_id: custody_operation,
     step_id: jobstate.job_key(record.id),
     base_policy: wiring.base_policy,
     requirements:,
