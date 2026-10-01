@@ -11,6 +11,13 @@ The maintained profiles are
 [Rust](https://github.com/Roasbeef/loom-lsp-rust). Install any combination you
 need. Loom has no built-in server profiles, and starts a server on demand.
 
+Fresh sessions list the installed profiles' `lsp_*` tools in their system
+prompt and direct the agent to prefer them for semantic questions. Repeated
+queries can run through `cap/lsp` in code mode after reading `cap://lsp`.
+Existing sessions keep their pinned prompt. Unsupported methods need a
+supported query or text search; a server load failure needs its reported
+setup or access problem corrected before retrying.
+
 ## Prepare Loom and the daemon environment
 
 Use a Loom build that includes [the LSP stack](https://github.com/Roasbeef/loom/pull/680).
@@ -31,11 +38,17 @@ installs live under `~/.loom/extensions`. Run them as the daemon's user. For a
 different home, `install` and `check` accept `--home /path/to/home`; that path
 selects the home containing `.loom/extensions`, not the extensions directory
 itself. `--state-dir` selects daemon state separately and does not change this
-extension installation location.
+extension installation location. The daemon's `--home` also selects where it
+loads approved extensions. Install into that same home if it was overridden.
 
 `--home` does not change the checking process's environment. Profile `~/` roots,
 cache locations and server HOME still come from that environment. Run the check
 with the same home and tool settings as the daemon it is meant to validate.
+Run `loomd ext install`, `list`, and `check` from the host terminal. A jailed
+Bash call has a private `HOME` under `.codemode/home`; its extension commands
+inspect that private installation rather than the daemon's global one. A
+nested `ext check` may also be refused when it tries to create its own jail
+and scratch directory. That refusal does not mean the host check failed.
 
 ## Gleam
 
@@ -55,7 +68,8 @@ In a real session, the bare `gleam` command uses the compiler located for code
 mode when one is available. The standalone `ext check` does not locate a
 code-mode toolchain, so it resolves `gleam` from its invocation's PATH.
 
-Before opening a project that has dependencies, prepare them outside the jail:
+If the project's dependencies are not already present, prepare them outside
+the jail. An existing populated build does not require another download:
 
 ```sh
 cd /path/to/gleam-project
@@ -64,8 +78,13 @@ gleam deps download
 
 The profile selects `.gleam` files and finds the project through `gleam.toml`.
 It grants a writable project because `gleam lsp` writes `manifest.toml` and
-`build/`. External path dependencies need explicit readable roots in a custom
-profile. The installed profile's fixture has no external dependencies.
+`build/`. The lease can read the session-authorized part of the workspace,
+so sibling packages in a monorepo are visible without granting writes to
+them. Dependencies outside the workspace still need explicit readable roots
+in a custom profile. Network remains off: prepare downloaded dependencies
+before queries. A server-reported project load failure is returned as an
+unavailable query, including its reason, rather than as empty semantic
+results or clean diagnostics.
 
 ## Go
 

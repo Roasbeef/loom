@@ -64,7 +64,7 @@ the shared decoding helpers close the file.
   WorkspaceEditFault(EditMalformed | ResourceOperationRefused),
   PrepareRename(CanRename | CanRenameDefault | CannotRename),
   CallHierarchyItem, IncomingCall, OutgoingCall, PublishDiagnostics,
-  ServerDiagnostic, ServerNotification(Published | Progressed | Ignored |
+  ServerDiagnostic, ServerNotification(Published | Progressed | ServerFailure | Ignored |
   Unrecognised), ProgressToken(IntToken | StringToken),
   WorkDoneProgress(ProgressBegin | ProgressReport | ProgressEnd),
   WorkspaceFolder, ProtocolFault, UriFault}` — decoded answers, one type
@@ -157,7 +157,8 @@ the shared decoding helpers close the file.
   `callHierarchy/incomingCalls` and `outgoingCalls`, and answers to
   server requests. Consumed: those answers, `publishDiagnostics`,
   `$/progress` (work-done progress, tracked for readiness), and
-  `window/logMessage`, `window/showMessage` (recognised and ignored).
+  `window/logMessage`, `window/showMessage` (error-level messages retained;
+  other valid severities ignored).
 
 ## Invariants
 
@@ -254,3 +255,13 @@ the shared decoding helpers close the file.
   decoders) and §4 (no FFI).
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc
   graph.
+
+## Server-reported analysis failures
+
+The actor retains at most 2048 UTF-8 bytes from an error-level window message.
+A server can report a failed project load that way and then answer a semantic
+request with null or an empty array; those answers become `Unavailable` with
+the retained reason. Diagnostics reads and settlement cannot call that state
+clean. A substantive semantic reply clears the failure so later legitimate
+misses remain empty. Informational messages do not poison ordinary misses.
+Malformed notifications are dropped by the existing total decoder.

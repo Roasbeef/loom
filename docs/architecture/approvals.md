@@ -357,9 +357,9 @@ the record moves to `Consumed`.
 ### For the session
 
 A session approval also records the grants in the reserved fact
-`client/permission_grants` (`client/permissions`). Only canonical readable
-or writable roots and full network access are eligible. A request that
-mixes eligible grants with others (limits, environment names, scratch, a
+`client/permission_grants` (`client/permissions`). Canonical readable
+or writable roots and full network access are eligible for this general fact. A request that
+mixes these grants with others (limits, environment names, scratch, a
 non-full network) is refused for the session lifetime rather than
 remembering a subset; the terminal does not offer the choice in that case.
 A readable or writable root may name an exact file, including a writable
@@ -378,6 +378,15 @@ The remembered grants apply to later calls, not to the call being
 approved; that call resumes with its consumed grants like any once-only
 approval. Running executions and background jobs keep the authority they
 captured when they started.
+
+A separate session choice admits only a singleton wall-zero grant.
+`permissions.remembering_action` keys `client/action_grants/<digest>` by
+strand, tool and the digest of the complete arguments. `read_for` looks up
+that exact key at dispatch. This permits a repeated watcher launch without
+giving unrelated actions unlimited wall time. The approval and reserved fact
+use the same atomic sequence guards; different arguments, tools or strands
+need new consent. The dialog labels this narrower scope explicitly. Other
+resource limits and mixed requests remain once-only. See protocol 059.
 
 ### Directory additions
 

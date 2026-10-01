@@ -37,7 +37,8 @@ consumers is not established, and their decision policy is unchanged.
 `permissions` owns `fact.custom/client/permission_grants`, separate from the
 existing-directory additions. It accepts canonical readable/writable paths,
 including exact files that do not exist yet, and full network access. Every
-other grant type remains once-only. `gateway` validates the displayed action,
+other grant type remains once-only, except exact-action session wall consent
+described below. `gateway` validates the displayed action,
 sequence and echoed subset before preparing a union of those echoed grants.
 The runtime atomically commits that fact and approval under both expectations.
 
@@ -5147,7 +5148,10 @@ Code-mode callers declare `permissions.wall_s: 0`; the launching action must
 receive the missing wall grant before execution, and the job captures it.
 Zero job wall/deadline denotes this authorized lifetime. Clearance and drain
 remain bounded, other resource limits remain active, and session shutdown,
-owner kill or originating-operation abort cancels the execution. Quiet waiting
+owner kill cancels the execution. A session job clears under a separate
+custody operation; aborting the originating model turn leaves it running.
+Finite jobs keep originating-operation cancellation. The durable `started_by`
+field retains the launch's operation for audit. Quiet waiting
 has no completion or heartbeat wake unless the caller explicitly asks for the
 existing idle heartbeat. A VM restart loses the job and never replays it.
 
@@ -5172,3 +5176,26 @@ planning and direct `core/msgpack` conversion. `gleam_mcp/protocol.Other`
 retains a raw non-text block; `client/mcp.content_block` deliberately drops
 that payload when constructing the existing capability result. Core JSON
 and capability wire contracts are unchanged.
+
+## Watcher consent and LSP reliability (protocol 059)
+
+`permissions.remembering_action` prepares the reserved
+`client/action_grants/<digest>` fact for a singleton wall-zero grant. Its
+identity includes the requesting strand, tool, and complete argument digest.
+The gateway commits it atomically with the captured approval.
+`permissions.read_for` adds it only to that matching invocation; general
+`permission_grants` never acquire an unlimited wall grant. Mixed requests
+and other resource grants remain once-only. Running jobs retain the authority
+captured at launch, and session close still joins their cancellation.
+
+`lsp/jail.workspace_reads` intersects the workspace with session-authorized
+readable and writable roots. Sibling dependencies become readable while writes
+remain scoped to the selected package and private scratch/cache. Network-off,
+protected paths, executable-region checks, and answer admission are unchanged.
+The protocol client now preserves bounded error-level server window messages.
+After a failure, empty answers and clean-looking diagnostics become
+`Unavailable` until a substantive semantic answer demonstrates recovery.
+
+The setup guide distinguishes host extension commands from a jailed Bash
+command's private HOME. Neither the private installation nor a nested probe's
+scratch refusal proves the daemon's global profile is missing or broken.

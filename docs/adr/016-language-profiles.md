@@ -419,3 +419,14 @@ Writing a new profile is unchanged: an extension with `tier = "profile"`,
 one or more `[lsp.<name>]` tables, a fixture project, `[[check]]` entries
 naming symbols and the sites the server must report for them, and a run
 of `loomd ext check` against it.
+
+## Addendum: installation location and workspace reads (2026-10-01)
+
+The daemon loads extensions from its selected `--home`. A jailed Bash tool
+has a separate private HOME, so an extension command there inspects a different
+installation. Host installation/check commands should use the daemon's home.
+A nested check can be refused while the host check succeeds.
+
+Protocol 059 gives profiles a read view of session-authorized workspace
+dependencies without adding per-language manifest traversal or network access.
+Profile roots still govern dependencies outside that workspace.

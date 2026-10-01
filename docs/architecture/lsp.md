@@ -55,7 +55,10 @@ code in the harness VM) therefore applies to the server as it does to
 `bash`. The broker's ordinary jailed exec holds it, under the session's
 own enforcement demand, and a probe proves the jail is enforced before the
 server starts. `policy_for` (`client/lsp/jail.gleam:920`) builds the
-policy, and only the operator's table widens it.
+policy. Its read view includes the session-authorized portion of the
+workspace for sibling dependencies; writes remain at the selected package.
+Only the operator's table adds roots outside that workspace. Answer paths
+still pass the admission gate below.
 
 ### Keep a profile to data
 
@@ -1046,3 +1049,14 @@ one that publishes neither before a barrier nor with versions. Each
 fails visibly, as `NoServer` or as diagnostics that did not settle. The
 first two are fixed in the server's table and the third by a quiet
 window; none is a change to the mechanism.
+
+## Project-load failures
+
+Some servers publish an error-level `window/showMessage` or
+`window/logMessage` and then return null or an empty array for a semantic
+query. A diagnostics barrier only proves request ordering; it cannot turn
+that failed load into clean code. `lsp/client` retains a bounded failure
+reason and returns `Unavailable` for those empty answers, diagnostics reads,
+and settlement. A substantive semantic result demonstrates recovery and
+clears it. Informational messages leave legitimate misses unchanged.
+Protocol 059 records this boundary and the workspace read change.

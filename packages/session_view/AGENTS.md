@@ -562,3 +562,12 @@ a queued mutation and a correlated automatic read refusal in both hosts.
 - `docs/client-protocol.md`: the protocol the lane speaks.
 - `protocol/models/terminal-attachment/`: the P model of the lane, the
   attachment worker and the gateway.
+
+## Exact-action watcher approval
+
+`approval.rememberable` admits a singleton public wall-seconds-zero grant for
+session consent, in addition to the existing filesystem/full-network forms.
+Other limits and mixed requests remain unavailable. `remembered_authority`
+states that this consent permits only the captured action on its strand; the
+wire still echoes the exact action, grant subset, and displayed sequence.
+The client gateway owns persistence and matching; this pure UI grants nothing.

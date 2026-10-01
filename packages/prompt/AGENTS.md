@@ -294,3 +294,14 @@ Version 9 tells the agent to use `fs_read` at `cap://` and
 polling path. The `code_mode` and `fs_read` tool descriptions supply the full
 signature and cursor semantics. The installed tool descriptions determine
 which namespaces a host serves.
+
+## Semantic query guidance
+
+Version 10 directs agents to prefer installed `lsp_*` tools for definitions,
+references, types, and outlines, and `cap/lsp` for repeated queries and joins.
+The instruction is conditional on offered tools; the registered snippets
+identify actual availability. It requires source-grounded paths and lines,
+distinguishes unsupported requests from server failures, and discourages
+identical retries without new evidence. Existing session pins are not migrated.
+The older extraction advice is condensed without changing its routing rule,
+keeping the prompt inside its existing byte budget.
