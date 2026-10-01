@@ -39,6 +39,25 @@
 //// writer lease. No cancellation or terminal state is written; reopening
 //// the session recovers every open operation on every strand (the
 //// strand booter reads the strand set from the `strand.*` registers).
+////
+//// ## Flow
+////
+//// `open` → `prompt` → `accept_request` → `commit_admission` → `nudge` → `await_result` → `close`
+////
+//// 1. `open` (or `open_published`) boots the tree and returns a `Runtime`
+////    addressing one strand; `on_strand` rebinds it to a sibling.
+//// 2. `prompt` is `accept_quietly` plus a doorbell; `accept_quietly`,
+////    `compact` and `navigate` hand `accept_request` their own request.
+//// 3. `accept_request` reads the serialization line, builds the plan
+////    inside `retry_admission`, and commits it, folding in any `Mark`
+////    through `marked`.
+//// 4. `commit_admission` maps the commit onto `Done` or `Retry`; only a
+////    lost seq race reloads, and a stale mark is `FactConflict`.
+//// 5. `nudge` rings the strand driver, and its loss costs latency only.
+//// 6. `steer`, `follow_up` and `send_to_strand` admit onto an open run;
+////    `abort` goes through `abort_operation` to the owning driver.
+//// 7. `await_result` polls the durable terminal result, keyed by operation.
+//// 8. `close` shuts the tree down, then releases the writer lease.
 
 import core/clock
 import core/ids.{type EntryId, type OpId, type Seq, type SessionId}
