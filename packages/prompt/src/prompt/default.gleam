@@ -37,7 +37,7 @@
 ///
 pub const source =
   "%% loom-prompt-pack 1
-%% version loom-default-10
+%% version loom-default-11
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on

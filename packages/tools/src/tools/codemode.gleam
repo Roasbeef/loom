@@ -706,14 +706,6 @@ pub fn description(mode: CodeMode) -> String {
   <> "switch to a program: fetch once, filter internally, return the "
   <> "answer. Write `pub fn main() -> report.Outcome`, returning "
   <> "`report.text(...)` or `report.value(...)`. "
-  <> "Compilation treats warnings as errors. Import only modules and "
-  <> "constructors actually used: for example, import gleam/option.{Some} "
-  <> "when you call Some, without importing unused None. Use qualified "
-  <> "stdlib functions (string.contains, list.length); import their modules "
-  <> "rather than writing replacement helpers. Remove unused imports, "
-  <> "bindings and private functions. On failure, read all diagnostics and "
-  <> "repair the named lines before resubmitting; keep the working program "
-  <> "small instead of rewriting unrelated parts. "
   <> composition_guidance(mode.seams)
   <> notes_guidance(mode.seams)
   <> seams_text(mode.seams)
@@ -721,6 +713,14 @@ pub fn description(mode: CodeMode) -> String {
   <> recipes_text(mode.seams)
   <> " A program that is refused or does not compile comes back with the "
   <> "reason, so you can fix it and submit again."
+  <> " Compilation treats warnings as errors. Import only modules and "
+  <> "constructors actually used: for example, import gleam/option.{Some} "
+  <> "when you call Some, without importing unused None. Use qualified "
+  <> "stdlib functions (string.contains, list.length); import their modules "
+  <> "rather than writing replacement helpers. Remove unused imports, "
+  <> "bindings and private functions. On failure, read all diagnostics and "
+  <> "repair the named lines before resubmitting; keep the working program "
+  <> "small instead of rewriting unrelated parts. "
   <> signatures_text(mode.seams)
 }
 
