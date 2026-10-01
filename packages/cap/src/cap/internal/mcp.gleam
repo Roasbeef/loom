@@ -15,20 +15,20 @@
 //// names and all, and would collapse the per-server trust granularity
 //// to "any server the router knows".
 ////
-//// The generator emits façades that only *call* `invoke` — one typed
-//// function per tool, each a name, a signature, and this one call —
-//// and never emits marshaling logic of its own. All of it lives here,
-//// written once. That is what shrinks the adversarial surface of a
-//// hostile `tools/list`: server-influenced text can reach a generated
-//// module only as names and signatures, never as code that touches the
-//// wire.
+//// Generated façades call `invoke` or `invoke_typed` with fixed server and
+//// tool names. Their typed records compose only report builders and the total
+//// combinators in `mcp_codec`; schema text appears only as escaped literals.
+//// Wire marshaling and dispatch remain here, so schema-derived projections
+//// cannot select another capability or alter the envelope.
 
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
+import cap/internal/mcp_codec
 import cap/internal/wire
 import cap/mcp.{type ToolResult, Other, Text, ToolResult}
 import cap/report
 import core/msgpack.{type MsgPackValue}
+import gleam/option.{None, Some}
 import gleam/result
 
 /// Calls one tool on one MCP server.
@@ -68,6 +68,31 @@ pub fn invoke(
   }
 }
 
+/// Calls a tool and decodes its required structured output against its schema.
+/// Transport and tool failures keep their existing errors. Schema failures
+/// retain the original tool result, including text the caller may inspect.
+///
+/// ## Examples
+///
+/// ```gleam
+/// mcp.invoke_typed("inventory", "count", report.object([]), mcp_codec.int())
+/// // -> Ok(3), or a transport, tool, or structured-schema error.
+/// ```
+pub fn invoke_typed(
+  server: String,
+  tool: String,
+  arguments: report.Value,
+  decoder: mcp_codec.Decoder(a),
+) -> Result(a, mcp.McpError) {
+  use tool_result <- result.try(invoke(server, tool, arguments))
+  let decoded = case tool_result.structured {
+    None -> Error(mcp.DecodeError([], "missing structured content"))
+    Some(value) -> mcp_codec.decode(value, decoder)
+  }
+  decoded
+  |> result.map_error(fn(error) { mcp.ResultSchemaMismatch(error, tool_result) })
+}
+
 // The harness's own refusal name for a server that is not running, not
 // configured on this host, or whose client has gone reads back as the
 // variant that means the same thing; every other in-band refusal travels
@@ -98,7 +123,13 @@ fn map_error(error: CallError) -> mcp.McpError {
 fn decode_result(value: MsgPackValue) -> Result(#(ToolResult, Bool), String) {
   use content <- result.try(wire.array_of(value, "content", of: decode_block))
   use is_error <- result.try(error_flag(value))
-  let structured = wire.optional_field(value, "structured")
+
+  // Presence belongs to the MCP result envelope. A present null must reach
+  // the schema decoder rather than becoming indistinguishable from absence.
+  let structured = case wire.field(value, "structured") {
+    Ok(found) -> Some(found)
+    Error(_) -> None
+  }
   Ok(#(ToolResult(content:, structured:), is_error))
 }
 
