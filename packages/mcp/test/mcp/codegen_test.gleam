@@ -2,6 +2,7 @@ import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import gleam_mcp/json.{type JsonValue}
 import gleam_mcp/protocol
@@ -215,13 +216,16 @@ pub fn typed_body_marshals_by_wire_name_test() {
   assert string.contains(source, "#(\"ratio\", report.float(ratio))")
   assert string.contains(
     source,
-    "draft draft: CreateIssue63726561T0InputDraftN5",
+    "draft draft: McpT0InputN5CreateIssue63726561Draft",
   )
-  assert string.contains(source, "Enabled -> report.bool(True)")
+  assert string.contains(
+    source,
+    "V0EnabledCreateIssue63726561Draft -> report.bool(True)",
+  )
   assert string.contains(source, "#(\"payload\", report.object(payload))")
   assert string.contains(
     source,
-    "  options _options: CreateIssue63726561T0Options,",
+    "  options _options: McpT0OptionsCreateIssue63726561,",
   )
   assert string.contains(source, "import gleam/list")
 }
@@ -248,7 +252,7 @@ pub fn optional_only_tool_emits_typed_options_test() {
   assert string.contains(generated.source, "page: Option(Float)")
   assert string.contains(
     generated.source,
-    "pub const ping_defaults = PingT0Options(page: None)",
+    "pub const ping_defaults = McpT0OptionsPing(page: None)",
   )
   assert string.contains(
     generated.source,
@@ -301,10 +305,10 @@ pub fn enum_values_render_as_typed_variants_test() {
   let filter =
     tool("filter", None, object_schema([#("state", state)], ["state"]))
   let assert Ok(generated) = gen("srv", [filter])
-  assert string.contains(generated.source, "FilterT0InputStateN1OpenV0")
+  assert string.contains(generated.source, "McpT0InputN1V0FilterStateOpen")
   assert string.contains(
     generated.source,
-    "  state state: FilterT0InputStateN1,",
+    "  state state: McpT0InputN1FilterState,",
   )
 }
 
@@ -606,12 +610,12 @@ pub fn empty_options_defaults_are_zero_arity_values_test() {
   let assert Ok(generated) = gen("srv", [tool("ping", None, no_params())])
   assert string.contains(
     generated.source,
-    "pub const ping_defaults = PingT0Options\n",
+    "pub const ping_defaults = McpT0OptionsPing\n",
   )
-  assert !string.contains(generated.source, "PingT0Options()")
+  assert !string.contains(generated.source, "McpT0OptionsPing()")
   assert string.contains(
     generated.surface,
-    "pub const ping_defaults = PingT0Options\n",
+    "pub const ping_defaults = McpT0OptionsPing\n",
   )
 }
 
@@ -647,7 +651,165 @@ pub fn empty_record_and_null_encoders_ignore_unused_payloads_test() {
   )
   assert string.contains(
     generated.source,
-    "codec.success(EmptyT0OutputResultN0)",
+    "codec.success(McpT0OutputN0EmptyResult)",
   )
-  assert !string.contains(generated.source, "EmptyT0OutputResultN0()")
+  assert !string.contains(generated.source, "McpT0OutputN0EmptyResult()")
+}
+
+fn enumeration(values: List(String)) -> JsonValue {
+  json.Object([
+    #("type", json.String("string")),
+    #("enum", json.Array(list.map(values, json.String))),
+  ])
+}
+
+// Constructor declarations share a module namespace even when their types
+// differ. These names expose the authority prefix without scanning references.
+fn constructors(source: String) -> List(String) {
+  source
+  |> string.split("\n")
+  |> list.map(string.trim)
+  |> list.filter(string.starts_with(_, "Mcp"))
+  |> list.map(fn(line) {
+    string.split(line, "(") |> list.first |> result.unwrap(line)
+  })
+}
+
+pub fn semantic_tokens_cannot_collide_with_ordinal_namespaces_test() {
+  let descriptor =
+    tool(
+      "foo",
+      None,
+      object_schema(
+        [
+          #("a", enumeration(["b_n2_c"])),
+          #("a_n1_b", enumeration(["c"])),
+          #(
+            "bar_t1_input_b",
+            object_schema([#("flag", typed("boolean"))], ["flag"]),
+          ),
+        ],
+        ["a", "a_n1_b", "bar_t1_input_b"],
+      ),
+    )
+  let other =
+    tool(
+      "foo_t0_input_bar",
+      None,
+      object_schema(
+        [#("b", object_schema([#("flag", typed("boolean"))], ["flag"]))],
+        ["b"],
+      ),
+    )
+  let assert Ok(generated) = gen("srv", [descriptor, other])
+  let names = constructors(generated.source)
+  assert list.length(names) == list.length(list.unique(names))
+  assert string.contains(generated.source, "McpT0InputN1V0FooABN2C")
+  assert string.contains(generated.source, "McpT0InputN2V0FooAN1BC")
+  assert string.contains(generated.source, "McpT1Input")
+  assert string.contains(generated.source, "report.string(\"b_n2_c\")")
+}
+
+fn collision_digest(text: String) -> String {
+  case text {
+    "A" -> "559aead0"
+    _ -> stub_digest(text)
+  }
+}
+
+fn collision_box(tag: String) -> JsonValue {
+  object_schema(
+    [
+      #("tag", enumeration([tag])),
+      #("A", typed("string")),
+      #("a_559aead0", typed("string")),
+    ],
+    ["tag", "A", "a_559aead0"],
+  )
+}
+
+pub fn union_rechecks_nested_discriminators_after_rendering_test() {
+  let branches =
+    list.map(["left", "right"], fn(tag) {
+      object_schema([#("box", collision_box(tag))], ["box"])
+    })
+  let output = json.Object([#("oneOf", json.Array(branches))])
+  let assert schema.Alternatives(_) = schema.shape(output)
+  let descriptor =
+    protocol.ToolDescriptor(
+      ..tool("nested", None, no_params()),
+      output_schema: Some(output),
+    )
+  let assert Ok(generated) =
+    codegen.generate("srv", [descriptor], collision_digest)
+  assert !string.contains(generated.source, "codec.one_of(")
+  assert string.contains(generated.source, "Result(report.Value, mcp.McpError)")
+  assert string.contains(generated.source, "codec.value()")
+}
+
+pub fn union_keeps_a_discriminator_outside_an_unrelated_fallback_test() {
+  let branches =
+    list.map(["left", "right"], fn(tag) {
+      object_schema(
+        [#("box", collision_box("same")), #("tag", enumeration([tag]))],
+        ["box", "tag"],
+      )
+    })
+  let descriptor =
+    protocol.ToolDescriptor(
+      ..tool("nested", None, no_params()),
+      output_schema: Some(json.Object([#("oneOf", json.Array(branches))])),
+    )
+  let assert Ok(generated) =
+    codegen.generate("srv", [descriptor], collision_digest)
+  assert string.contains(generated.source, "codec.one_of(")
+  assert string.contains(generated.source, "box: report.Value")
+  assert string.contains(
+    generated.source,
+    "codec.literal(report.string(\"left\")",
+  )
+}
+
+pub fn aliases_and_inner_bindings_cannot_fake_payload_usage_test() {
+  let descriptor =
+    tool(
+      "alias",
+      None,
+      object_schema(
+        [
+          #("report", typed("null")),
+          #("item", typed("null")),
+          #("values", array_of(typed("string"))),
+        ],
+        ["report", "item", "values"],
+      ),
+    )
+  let assert Ok(generated) = gen("srv", [descriptor])
+  assert string.contains(generated.source, "report _report: Nil")
+  assert string.contains(generated.source, "item _item: Nil")
+  assert string.contains(generated.source, "fn(item) { report.string(item) }")
+}
+
+pub fn deep_semantic_names_stay_inside_the_beam_atom_limit_test() {
+  let field = "abcdefghijklmnopqrstuvwxyzabcdef"
+  let nested =
+    list.fold(
+      upto(7),
+      enumeration(["long_wire_literal_that_remains_visible"]),
+      fn(shape, _) { object_schema([#(field, shape)], [field]) },
+    )
+  let descriptor =
+    tool("deep", None, object_schema([#("payload", nested)], ["payload"]))
+  let assert Ok(generated) = gen("srv", [descriptor])
+  let names = constructors(generated.source)
+  assert list.all(names, fn(name) { string.byte_size(name) <= 96 })
+  assert list.length(names) == list.length(list.unique(names))
+  assert string.contains(
+    generated.surface,
+    "/// Wire literal long_wire_literal_that_remains_visible.",
+  )
+  assert string.contains(
+    generated.source,
+    "report.string(\"long_wire_literal_that_remains_visible\")",
+  )
 }

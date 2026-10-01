@@ -655,7 +655,7 @@ fn budget_loop(
 // interpreting annotations such as ranges or patterns. Otherwise a field
 // remains a value, rather than rejecting valid wire data as ambiguous.
 fn union_shape(branches: List(Shape)) -> Shape {
-  case mutually_disjoint(branches) {
+  case branches_disjoint(branches) {
     True -> {
       let nonnull = list.filter(branches, fn(branch) { branch != NullValue })
       case list.contains(branches, NullValue), nonnull {
@@ -669,11 +669,20 @@ fn union_shape(branches: List(Shape)) -> Shape {
   }
 }
 
-fn mutually_disjoint(branches: List(Shape)) -> Bool {
+/// Proves exclusivity from the actual structural branch plans. Rendering may
+/// widen a field after a name collision, so the generator repeats this check
+/// over rendered kinds before composing an exactly-one decoder.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schema.branches_disjoint([schema.Primitive(schema.ScalarString), schema.NullValue])
+/// ```
+pub fn branches_disjoint(branches: List(Shape)) -> Bool {
   case branches {
     [] -> True
     [branch, ..rest] ->
-      list.all(rest, disjoint(branch, _)) && mutually_disjoint(rest)
+      list.all(rest, disjoint(branch, _)) && branches_disjoint(rest)
   }
 }
 

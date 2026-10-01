@@ -9,7 +9,9 @@
 //// declarations to both outputs, so the visible surface cannot invent a type
 //// the compiler never sees. The raw control token in encoder templates cannot
 //// occur in escaped server literals; encoded replaces it only with trusted
-//// generator expressions.
+//// generator expressions. Trusted tool/direction/node/variant ordinals own
+//// identity; at most 64 ASCII display characters follow them. This keeps even
+//// deeply nested names below the BEAM 255-byte atom limit after snake casing.
 
 import gleam/bool
 import gleam/int
@@ -41,6 +43,29 @@ type Node {
     definitions: List(String),
     next: Int,
   )
+}
+
+// The ordinal prefix is trusted and appears before every semantic label.
+// Decimal ordinals end at fixed alphabetic markers; server text cannot move a
+// node into another tool, direction, node or variant constructor namespace.
+type Direction {
+  Input(tool: Int)
+  Output(tool: Int)
+}
+
+type Scope {
+  Scope(direction: Direction, semantic: String)
+}
+
+// An encoder template owns whether its payload is consumed. Imported module
+// aliases and nested callback locals cannot masquerade as uses of that payload.
+type Usage {
+  Used
+  Ignored
+}
+
+type Parameter {
+  Parameter(label: String, type_name: String, usage: Usage)
 }
 
 type Member {
@@ -99,7 +124,10 @@ pub fn render(
   let surface_definitions =
     list.map(definitions, fn(definition) {
       string.split(definition, "\n")
-      |> list.filter(fn(line) { !string.starts_with(string.trim(line), "///") })
+      |> list.filter(fn(line) {
+        !string.starts_with(string.trim(line), "///")
+        || string.starts_with(string.trim(line), "/// Wire literal ")
+      })
       |> string.join("\n")
     })
   let source = header <> imports(content, facades) <> "\n" <> content <> "\n"
@@ -177,7 +205,7 @@ fn facade(
   digest: fn(String) -> String,
 ) -> Facade {
   let function = name.mangle(tool.name, digest)
-  let stem = pascal(function) <> "T" <> int.to_string(index)
+  let stem = Scope(Input(index), pascal(function))
   let default_name = case list.contains(tool_names, function <> "_defaults") {
     True -> prefix <> function <> "_defaults"
     False -> function <> "_defaults"
@@ -193,7 +221,12 @@ fn facade(
   let output = case tool.output_schema {
     None -> None
     Some(value) ->
-      Some(node(schema.shape(value), stem <> "OutputResult", 0, digest))
+      Some(node(
+        schema.shape(value),
+        Scope(Output(index), stem.semantic <> "Result"),
+        0,
+        digest,
+      ))
   }
   let intro =
     intro
@@ -235,7 +268,7 @@ fn facade(
           <> reason
           <> "; pass the entire arguments object.",
         )
-      let params = [#("arguments", "report.Value")]
+      let params = [Parameter("arguments", "report.Value", Used)]
       let body =
         "  "
         <> invoke
@@ -277,7 +310,7 @@ fn typed_facade(
   server: String,
   tool: protocol.ToolDescriptor,
   function: String,
-  stem: String,
+  stem: Scope,
   default_name: String,
   intro: String,
   fields: List(schema.Field),
@@ -287,7 +320,7 @@ fn typed_facade(
   return_type: String,
   digest: fn(String) -> String,
 ) -> Facade {
-  let #(members, _) = members(fields, stem <> "Input", 1, digest)
+  let #(members, _) = members(fields, stem, 1, digest)
   let collisions =
     name.first_collision(
       list.map(members, fn(m) { #(m.field.original, m.label) }),
@@ -300,7 +333,7 @@ fn typed_facade(
         <> docs(
           "Parameters collide after renaming; pass the entire arguments object.",
         )
-      let params = [#("arguments", "report.Value")]
+      let params = [Parameter("arguments", "report.Value", Used)]
       let body =
         "  "
         <> invoke
@@ -325,7 +358,11 @@ fn typed_facade(
         list.filter(members, fn(m) { m.field.presence == schema.Required })
       let optional =
         list.filter(members, fn(m) { m.field.presence == schema.OptionalField })
-      let options_type = stem <> "Options"
+      let options_type =
+        "McpT"
+        <> int.to_string(stem.direction.tool)
+        <> "Options"
+        <> semantic_name(stem.semantic)
       let declaration = record_definition(options_type, optional)
       let defaults =
         "/// Omit each optional field; the server applies its declared defaults.\npub const "
@@ -343,9 +380,17 @@ fn typed_facade(
             <> ")"
         }
       let params =
-        list.append(list.map(required, fn(m) { #(m.label, m.node.type_name) }), [
-          #("options", options_type),
-        ])
+        list.append(
+          list.map(required, fn(m) {
+            Parameter(m.label, m.node.type_name, payload_usage(m.node))
+          }),
+          [
+            Parameter("options", options_type, case optional {
+              [] -> Ignored
+              _ -> Used
+            }),
+          ],
+        )
 
       // Required wire keys precede optional fragments. None contributes no
       // fragment, so callers cannot append a duplicate required key through
@@ -462,13 +507,19 @@ fn shape_note(shape: schema.Shape) -> String {
 // help a reader, while ordinals prevent equal Pascal spellings from aliasing.
 fn members(
   fields: List(schema.Field),
-  stem: String,
+  stem: Scope,
   start: Int,
   digest: fn(String) -> String,
 ) -> #(List(Member), Int) {
   list.map_fold(fields, start, fn(counter, field) {
     let label = name.mangle_label(field.original, digest)
-    let child = node(field.shape, stem <> pascal(label), counter, digest)
+    let child =
+      node(
+        field.shape,
+        Scope(..stem, semantic: stem.semantic <> pascal(label)),
+        counter,
+        digest,
+      )
     #(child.next, Member(field, label, child))
   })
   |> fn(pair) { #(pair.1, pair.0) }
@@ -478,11 +529,10 @@ fn members(
 // stems are separate so a hostile property cannot collide with a result type.
 fn node(
   shape: schema.Shape,
-  stem: String,
+  stem: Scope,
   counter: Int,
   digest: fn(String) -> String,
 ) -> Node {
-  let identifier = stem <> "N" <> int.to_string(counter)
   case shape {
     schema.Primitive(schema.ScalarString) ->
       leaf(shape, "String", "report.string(\u{1})", "codec.string()", counter)
@@ -490,10 +540,9 @@ fn node(
       leaf(shape, "Int", "report.int(\u{1})", "codec.int()", counter)
     schema.Primitive(schema.ScalarFloat) ->
       leaf(shape, "Float", "report.float(\u{1})", "codec.number()", counter)
-    schema.Primitive(schema.ScalarBool) ->
-      boolean_node(shape, identifier, counter)
+    schema.Primitive(schema.ScalarBool) -> boolean_node(shape, stem, counter)
     schema.Enumeration(values) ->
-      enum_node(shape, values, identifier, counter, digest)
+      enum_node(shape, values, stem, counter, digest)
     schema.NullValue ->
       leaf(shape, "Nil", "report.null()", "codec.null()", counter)
     schema.RawObject ->
@@ -521,9 +570,8 @@ fn node(
     schema.Nullable(inner) ->
       container_node(NullableContainer, inner, stem, counter, digest)
     schema.Record(fields, openness) ->
-      object_node(fields, openness, identifier, counter, digest)
-    schema.Alternatives(branches) ->
-      union_node(shape, branches, identifier, counter, digest)
+      object_node(fields, openness, stem, counter, digest)
+    schema.Alternatives(branches) -> union_node(branches, stem, counter, digest)
   }
 }
 
@@ -539,9 +587,16 @@ fn leaf(
 
 // A named two-variant boolean puts wire meaning at each call site instead of
 // making the caller remember the polarity of a naked Bool parameter.
-fn boolean_node(shape: schema.Shape, identifier: String, counter: Int) -> Node {
-  let enabled = identifier <> "Enabled"
-  let disabled = identifier <> "Disabled"
+fn boolean_node(shape: schema.Shape, stem: Scope, counter: Int) -> Node {
+  let identifier = node_identifier(stem, counter)
+  let enabled =
+    node_prefix(stem.direction, counter)
+    <> "V0Enabled"
+    <> semantic_name(stem.semantic)
+  let disabled =
+    node_prefix(stem.direction, counter)
+    <> "V1Disabled"
+    <> semantic_name(stem.semantic)
   let definition =
     "/// Named boolean meaning for this wire field.\npub type "
     <> identifier
@@ -569,16 +624,17 @@ fn boolean_node(shape: schema.Shape, identifier: String, counter: Int) -> Node {
 // plus a variant ordinal for different literals with the same sanitized name.
 fn enum_variants(
   values: List(String),
-  identifier: String,
+  stem: Scope,
+  counter: Int,
   digest: fn(String) -> String,
 ) -> List(#(String, String)) {
   list.index_map(values, fn(value, index) {
     #(
       value,
-      identifier
-        <> pascal(name.mangle(value, digest))
+      node_prefix(stem.direction, counter)
         <> "V"
-        <> int.to_string(index),
+        <> int.to_string(index)
+        <> semantic_name(stem.semantic <> pascal(name.mangle(value, digest))),
     )
   })
 }
@@ -586,11 +642,12 @@ fn enum_variants(
 fn enum_node(
   shape: schema.Shape,
   values: List(String),
-  identifier: String,
+  stem: Scope,
   counter: Int,
   digest: fn(String) -> String,
 ) -> Node {
-  let variants = enum_variants(values, identifier, digest)
+  let identifier = node_identifier(stem, counter)
+  let variants = enum_variants(values, stem, counter, digest)
   let definition =
     "/// Closed string values declared by the server.\npub type "
     <> identifier
@@ -638,11 +695,17 @@ type Container {
 fn container_node(
   container: Container,
   inner: schema.Shape,
-  stem: String,
+  stem: Scope,
   counter: Int,
   digest: fn(String) -> String,
 ) -> Node {
-  let child = node(inner, stem <> "Item", counter + 1, digest)
+  let child =
+    node(
+      inner,
+      Scope(..stem, semantic: stem.semantic <> "Item"),
+      counter + 1,
+      digest,
+    )
   let #(type_name, encode, decoder) = case container {
     ListContainer -> #(
       "List(" <> child.type_name <> ")",
@@ -675,11 +738,12 @@ fn container_node(
 fn object_node(
   fields: List(schema.Field),
   openness: schema.Openness,
-  identifier: String,
+  stem: Scope,
   counter: Int,
   digest: fn(String) -> String,
 ) -> Node {
-  let #(members, next) = members(fields, identifier, counter + 1, digest)
+  let identifier = node_identifier(stem, counter)
+  let #(members, next) = members(fields, stem, counter + 1, digest)
   case
     name.first_collision(
       list.map(members, fn(m) { #(m.field.original, m.label) }),
@@ -807,23 +871,31 @@ fn record_definition(identifier: String, members: List(Member)) -> String {
 // Planning proved the branches structurally disjoint. The trusted one_of
 // combinator still requires exactly one successful decoder at the wire edge.
 fn union_node(
-  shape: schema.Shape,
   branches: List(schema.Shape),
-  identifier: String,
+  stem: Scope,
   counter: Int,
   digest: fn(String) -> String,
 ) -> Node {
+  let identifier = node_identifier(stem, counter)
   let #(next, children) =
     list.map_fold(branches, counter + 1, fn(counter, branch) {
-      let child = node(branch, identifier <> "Branch", counter, digest)
+      let child =
+        node(
+          branch,
+          Scope(..stem, semantic: stem.semantic <> "Branch"),
+          counter,
+          digest,
+        )
       #(child.next, child)
     })
 
-  // A name collision can widen a branch to a raw value after schema planning.
-  // Keeping that broad decoder inside one_of would reject otherwise valid
-  // output as ambiguous, so the complete field retains its wire value.
+  // Rendering can widen a required discriminator inside a nested record.
+  // Reprove exclusivity against the rendered kinds, rather than recursively
+  // rejecting unrelated fallback fields whose discriminators remain intact.
   use <- bool.lazy_guard(
-    when: list.any(children, node_falls_back),
+    when: !schema.branches_disjoint(
+      list.map(children, fn(child) { child.kind }),
+    ),
     return: fn() {
       leaf(
         schema.ValueFallback("oneOf branch could not be rendered safely"),
@@ -836,7 +908,14 @@ fn union_node(
   )
   let variants =
     list.index_map(children, fn(child, index) {
-      #(identifier <> "Branch" <> int.to_string(index), child)
+      #(
+        node_prefix(stem.direction, counter)
+          <> "V"
+          <> int.to_string(index)
+          <> "Branch"
+          <> semantic_name(stem.semantic),
+        child,
+      )
     })
   let definition =
     "/// Exactly one of these server-declared wire shapes.\npub type "
@@ -860,7 +939,11 @@ fn union_node(
     <> string.join(
       list.map(variants, fn(v) {
         let body = encoded(v.1, "value")
-        v.0 <> "(" <> binding_name("value", body) <> ") -> " <> body
+        v.0
+        <> "("
+        <> binding_name("value", payload_usage(v.1))
+        <> ") -> "
+        <> body
       }),
       " ",
     )
@@ -875,29 +958,13 @@ fn union_node(
     )
     <> "])"
   Node(
-    shape,
+    schema.Alternatives(list.map(children, fn(child) { child.kind })),
     identifier,
     encode,
     decoder,
     list.append(list.flat_map(children, fn(c) { c.definitions }), [definition]),
     next,
   )
-}
-
-fn node_falls_back(node: Node) -> Bool {
-  case node.kind {
-    schema.ValueFallback(_) -> True
-    schema.Primitive(_)
-    | schema.Enumeration(_)
-    | schema.Sequence(_)
-    | schema.Record(_, _)
-    | schema.Mapping(_)
-    | schema.Nullable(_)
-    | schema.Alternatives(_)
-    | schema.RawObject
-    | schema.RawArray
-    | schema.NullValue -> False
-  }
 }
 
 // Server literals never contain this raw control token: lit escapes every
@@ -917,16 +984,46 @@ fn constructor(identifier: String, fields: List(String)) -> String {
   }
 }
 
-fn binding_name(variable: String, body: String) -> String {
-  case token_contains(source_tokens(body), variable) {
-    True -> variable
-    False -> "_" <> variable
+fn binding_name(variable: String, usage: Usage) -> String {
+  case usage {
+    Used -> variable
+    Ignored -> "_" <> variable
+  }
+}
+
+fn payload_usage(node: Node) -> Usage {
+  case string.contains(node.encode, "\u{1}") {
+    True -> Used
+    False -> Ignored
   }
 }
 
 fn encoder_function(node: Node, variable: String) -> String {
   let body = encoded(node, variable)
-  "fn(" <> binding_name(variable, body) <> ") { " <> body <> " }"
+  "fn(" <> binding_name(variable, payload_usage(node)) <> ") { " <> body <> " }"
+}
+
+fn node_prefix(direction: Direction, counter: Int) -> String {
+  let lane = case direction {
+    Input(_) -> "Input"
+    Output(_) -> "Output"
+  }
+  "McpT"
+  <> int.to_string(direction.tool)
+  <> lane
+  <> "N"
+  <> int.to_string(counter)
+}
+
+fn node_identifier(scope: Scope, counter: Int) -> String {
+  node_prefix(scope.direction, counter) <> semantic_name(scope.semantic)
+}
+
+// Semantic text is ASCII display only. The bounded trusted prefix owns
+// identity, so clipping cannot collide and leaves every BEAM atom under 255
+// bytes even when CamelCase is translated to Erlang snake_case.
+fn semantic_name(value: String) -> String {
+  string.slice(value, 0, 64)
 }
 
 fn pascal(value: String) -> String {
@@ -945,13 +1042,16 @@ fn docs(text: String) -> String {
 
 fn signature(
   name: String,
-  params: List(#(String, String)),
+  params: List(Parameter),
   return_type: String,
 ) -> String {
   "pub fn "
   <> name
   <> "("
-  <> string.join(list.map(params, fn(p) { p.0 <> ": " <> p.1 }), ", ")
+  <> string.join(
+    list.map(params, fn(p) { p.label <> ": " <> p.type_name }),
+    ", ",
+  )
   <> ") -> Result("
   <> return_type
   <> ", mcp.McpError)"
@@ -960,7 +1060,7 @@ fn signature(
 fn function_source(
   doc: String,
   name: String,
-  params: List(#(String, String)),
+  params: List(Parameter),
   return_type: String,
   body: String,
 ) -> String {
@@ -970,7 +1070,13 @@ fn function_source(
   <> "(\n"
   <> string.join(
     list.map(params, fn(p) {
-      "  " <> p.0 <> " " <> binding_name(p.0, body) <> ": " <> p.1 <> ","
+      "  "
+      <> p.label
+      <> " "
+      <> binding_name(p.label, p.usage)
+      <> ": "
+      <> p.type_name
+      <> ","
     }),
     "\n",
   )
