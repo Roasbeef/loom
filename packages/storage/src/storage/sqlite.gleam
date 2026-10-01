@@ -34,6 +34,25 @@
 //// ever used from the actor process after `open` returns.
 //// Bounded client metadata capture uses one short `BEGIN DEFERRED` read
 //// transaction; immutable continuation and byte fragments retain no transaction.
+////
+//// ## Flow
+////
+//// `open` → `initialize` → `start_actor` → `handle_message` → `handle_open` → `do_commit` / `do_scan_branch`
+////
+//// 1. `open` (or `open_with_migrations`) opens the file and hands it to
+////    `initialize`, which refuses before it writes.
+//// 2. `initialize` sets the busy timeout, then inside one `BEGIN IMMEDIATE`
+////    transaction `admit` checks the version and claims the lease through
+////    `claim_lease`; only then do `migrate` and `set_wal_journal` run.
+//// 3. `start_actor` spawns the actor that owns the connection, and every
+////    later call arrives as a `Message` in its mailbox.
+//// 4. `handle_message` routes by connection phase: a sealed handle answers
+////    through `handle_closed`, an open one through `handle_open`.
+//// 5. A commit runs `do_commit`: renew the lease, check every expectation
+////    against pre-transaction state, `apply_write` each write, then commit.
+//// 6. Reads go through `do_scan_entries`, `do_scan_usage` and
+////    `do_scan_branch`, which drives from the branch index.
+//// 7. `Close` releases the lease with `release_lease` and seals the phase.
 
 import core/clock.{type Clock}
 import core/codec
@@ -95,96 +114,6 @@ pub type Config {
     lease_ttl_ms: Int,
     /// `PRAGMA busy_timeout` for cross-process lock contention.
     busy_timeout_ms: Int,
-  )
-}
-
-/// A config with defaults: 30 s lease, 5 s busy timeout.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let config = sqlite.config(path: "/tmp/session.db", owner: "writer-1")
-/// ```
-///
-pub fn config(path path: String, owner owner: String) -> Config {
-  Config(
-    path:,
-    owner:,
-    lease_ttl_ms: 30_000,
-    busy_timeout_ms: sqlite_policy.defaults().busy_timeout_ms,
-  )
-}
-
-/// Sets the lease time-to-live in milliseconds.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let config = sqlite.config(path:, owner:) |> sqlite.lease_ttl(1000)
-/// ```
-///
-pub fn lease_ttl(config: Config, ms: Int) -> Config {
-  Config(..config, lease_ttl_ms: ms)
-}
-
-/// Sets the SQLite busy timeout in milliseconds.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let config = sqlite.config(path:, owner:) |> sqlite.busy_timeout(100)
-/// ```
-///
-pub fn busy_timeout(config: Config, ms: Int) -> Config {
-  Config(..config, busy_timeout_ms: ms)
-}
-
-/// Why `open` refused or failed.
-pub type OpenError {
-  /// Another writer holds an unexpired lease on this session file. Retry
-  /// after it expires, or shut the other writer down.
-  LeaseHeld(owner: String, expires_at_ms: Int)
-
-  /// The file's catalog failed a total decode, or the file is not a Loom
-  /// session at all.
-  CorruptSession(report: CorruptionReport)
-
-  /// The stored `storage_version` cannot be opened by this build:
-  /// `found > supported` means the file was written by a newer Loom
-  /// (refuse rather than misread it); `found < supported` means an older
-  /// file for which the caller's migration chain has no step (see
-  /// `open_with_migrations`).
-  UnsupportedVersion(found: Int, supported: Int)
-
-  /// The database could not be opened or initialized.
-  OpenFailed(reason: String)
-}
-
-/// One migrate-on-open step: `statements` upgrade a session file from
-/// `from_version` to `from_version + 1`.
-///
-/// Constructor invariants: `statements` is a semicolon-separated SQL batch
-/// executed inside one transaction together with the version bump; a step
-/// advances exactly one version. Steps run after the current schema's
-/// `CREATE ... IF NOT EXISTS` DDL has been applied, so they mostly alter
-/// or backfill. The chain owner (the session layer, WP-C) keeps steps
-/// ordered and contiguous.
-pub type Migration {
-  Migration(from_version: Int, statements: String)
-}
-
-/// A branch-index segment's metadata, for diagnostics and conformance
-/// assertions. Mirrors one `branch_meta` row.
-///
-/// Constructor invariants: `tip_seq` is the seq of `tip_entry_id`; `base`,
-/// when present, names the segment whose logical range through `base.1`
-/// this segment extends.
-pub type Segment {
-  Segment(
-    branch_id: String,
-    tip_entry_id: String,
-    tip_seq: Int,
-    base: Option(#(String, Int)),
   )
 }
 
@@ -289,6 +218,96 @@ type ActorState {
 type ConnectionPhase {
   OpenConnection
   ClosedConnection(outcome: Result(Nil, StorageError))
+}
+
+/// A config with defaults: 30 s lease, 5 s busy timeout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let config = sqlite.config(path: "/tmp/session.db", owner: "writer-1")
+/// ```
+///
+pub fn config(path path: String, owner owner: String) -> Config {
+  Config(
+    path:,
+    owner:,
+    lease_ttl_ms: 30_000,
+    busy_timeout_ms: sqlite_policy.defaults().busy_timeout_ms,
+  )
+}
+
+/// Sets the lease time-to-live in milliseconds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let config = sqlite.config(path:, owner:) |> sqlite.lease_ttl(1000)
+/// ```
+///
+pub fn lease_ttl(config: Config, ms: Int) -> Config {
+  Config(..config, lease_ttl_ms: ms)
+}
+
+/// Sets the SQLite busy timeout in milliseconds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let config = sqlite.config(path:, owner:) |> sqlite.busy_timeout(100)
+/// ```
+///
+pub fn busy_timeout(config: Config, ms: Int) -> Config {
+  Config(..config, busy_timeout_ms: ms)
+}
+
+/// Why `open` refused or failed.
+pub type OpenError {
+  /// Another writer holds an unexpired lease on this session file. Retry
+  /// after it expires, or shut the other writer down.
+  LeaseHeld(owner: String, expires_at_ms: Int)
+
+  /// The file's catalog failed a total decode, or the file is not a Loom
+  /// session at all.
+  CorruptSession(report: CorruptionReport)
+
+  /// The stored `storage_version` cannot be opened by this build:
+  /// `found > supported` means the file was written by a newer Loom
+  /// (refuse rather than misread it); `found < supported` means an older
+  /// file for which the caller's migration chain has no step (see
+  /// `open_with_migrations`).
+  UnsupportedVersion(found: Int, supported: Int)
+
+  /// The database could not be opened or initialized.
+  OpenFailed(reason: String)
+}
+
+/// One migrate-on-open step: `statements` upgrade a session file from
+/// `from_version` to `from_version + 1`.
+///
+/// Constructor invariants: `statements` is a semicolon-separated SQL batch
+/// executed inside one transaction together with the version bump; a step
+/// advances exactly one version. Steps run after the current schema's
+/// `CREATE ... IF NOT EXISTS` DDL has been applied, so they mostly alter
+/// or backfill. The chain owner (the session layer, WP-C) keeps steps
+/// ordered and contiguous.
+pub type Migration {
+  Migration(from_version: Int, statements: String)
+}
+
+/// A branch-index segment's metadata, for diagnostics and conformance
+/// assertions. Mirrors one `branch_meta` row.
+///
+/// Constructor invariants: `tip_seq` is the seq of `tip_entry_id`; `base`,
+/// when present, names the segment whose logical range through `base.1`
+/// this segment extends.
+pub type Segment {
+  Segment(
+    branch_id: String,
+    tip_entry_id: String,
+    tip_seq: Int,
+    base: Option(#(String, Int)),
+  )
 }
 
 // Failures inside a transaction, mapped to `CommitError` or

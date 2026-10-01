@@ -21,6 +21,26 @@
 //// again. A member has either one open claim and no active credential, or no
 //// open claim; rotation and revocation void the open claim before they touch
 //// credentials, which keeps that true.
+////
+//// ## Flow
+////
+//// `bootstrap_owner` → `invite_member` → `claim` → `redeem` → `bind` → `authenticate` → `authorization`
+////
+//// 1. `bootstrap_owner` creates the first owner or verifies its credential
+////    with `verify_owner_credential`; `create_member` adds a member with a
+////    credential directly.
+//// 2. `invite_member` (and `rotate_member`) enrolls a member with an open
+////    claim and no credential, through `enroll`.
+//// 3. `claim` runs `redeem` in one transaction: a refusal writes nothing.
+//// 4. `redeem` reads the claim row; an open claim goes to `bind`, a spent
+////    one answers an exact replay of the bound credential, a void one is
+////    unknown.
+//// 5. `bind` checks expiry and digest hygiene, inserts the credential, and
+////    marks the claim claimed.
+//// 6. `authenticate` maps an active credential digest to its principal, and
+////    `authorization` resolves that principal's `Authority` over a session.
+//// 7. `revoke_member` and `revoke_credential` close the loop, leaving
+////    tombstones so an old digest cannot be reactivated.
 
 import gleam/bool
 import gleam/list
