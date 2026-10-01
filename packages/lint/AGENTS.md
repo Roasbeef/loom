@@ -423,8 +423,13 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   `alias.name` must have an `alias` the module imports (the function behind
   it is the other file's concern); an UpperCamel type or anything with a
   space is prose and unchecked. The section must name three distinct local
-  functions and holds no fenced block, since a fence is where a stale name
-  would hide. The doc is read from `glexer`'s comment tokens by
+  functions. A spine may be drawn as a ```` ```text ```` diagram instead,
+  the form the language-server modules use for a branching path; a fence
+  has no backticks, so it is read by shape: a word with an interior
+  underscore or written as a call must be a function or constant of the
+  module, while plain words, qualified field calls and patterns
+  (`decode_<name>`) pass. Any other fence is a code listing and refused,
+  since it is where a stale name would hide. The doc is read from `glexer`'s comment tokens by
   `lint/module_doc`, so a `////` line inside a multi-line string is not
   doc. A missing spine is one finding at the top of the file; the rest are
   at the offending line or the heading.
