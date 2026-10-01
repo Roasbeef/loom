@@ -1,0 +1,40 @@
+ ◆ loom   ws · pi-gui (main)                                                                   kimi-k3 · Ctrl+g details
+ ╭ AGENT WORKSPACE · 6 agents · 2 working · 2 need you ───────────────────────────────────────────────────────────────╮
+ │  AGENTS · 6                                             !1 needs you  │  1 Activity   2 Msgs   3 Notes   4 Collab  │
+ │    ● main                     Waiting for 2 reviewers     1m34  259k  │                                            │
+ │  ▸ ? docs-accuracy-review     Needs approval · fs_write   2m38   74k  │ ? docs-accuracy-review                     │
+ │    × grep-refs                Failed · provider 429 ×3    1m03  144k  │ needs input · 2m38s · 74k ctx · Kimi-K3    │
+ │    ● adversarial-code-review  Tracing publish_herdr path  2m45   65k  │                                            │
+ │    ● bootstrap                Reading bootstrap.gleam     0m51  119k  │ TASK                                       │
+ │    ✓ lint-pass                Finished                    1m12   31k  │ Check doc comments against behaviour in    │
+ │                                                                       │ docs/architecture and report drifted       │
+ │                                                                       │ citations.                                 │
+ │                                                                       │                                            │
+ │                                                                       │ NOW                                        │
+ │                                                                       │ Needs approval: fs_write docs/next.md      │
+ │                                                                       │ a reviews the exact request                │
+ │                                                                       │                                            │
+ │                                                                       │ LATEST MESSAGES                            │
+ │                                                                       │ ← main  2m  Review the docs for drift…     │
+ │                                                                       │ → main  41s Two citations drifted in docs… │
+ │                                                                       │                                            │
+ │                                                                       │ INBOX  1 received, awaiting delivery       │
+ │                                                                       │ TOOLS  read ×3 · grep ×2 · fs_write        │
+ │                                                                       │                                            │
+ │                                                                       │ a2 · op 01a0f0 · moonshotai/Kimi-K3        │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │ To: main · Enter opens the selected transcript                                                                     │
+ │ ↑↓ select · n next attention · a review · 1-4 view · Tab write · Esc close                                         │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
