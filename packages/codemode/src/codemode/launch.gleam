@@ -87,6 +87,29 @@
 //// mount cannot rescue either: `broker/policy.validate` refuses a mount
 //// that overlaps a `protected` entry, because the two platforms would
 //// order the pair in opposite directions.
+////
+//// ## Flow
+////
+//// `launcher` → `launch` → `start_channel` → `start_reader` → `spawn_node` →
+//// `run_node` → `collect_node_result` → `destroy`
+////
+//// 1. `launcher` closes over the config and hands `satellite.run` a function
+////    from `LaunchSpec` to a `CapConnection`.
+//// 2. `launch` refuses before anything exists: `check_budget`,
+////    `composed_policy` and `path_reachable` all run before `ffi_unix.listen`
+////    creates the cap socket.
+//// 3. `start_channel` spawns the writer (`writer_main`) and waits for its
+////    outbox; `start_reader` then spawns the reader (`reader_main`), which
+////    accepts the one connection and feeds `read_loop`.
+//// 4. `start_reader` also starts the reporter and the janitor, and calls
+////    `spawn_node`, which builds the broker call with `node_call` from
+////    `node_requirements`, `node_argv` and `node_env`.
+//// 5. `run_node` clears the call through `broker.clear_call`;
+////    `report_refused` or `collect_node_result` tells the reporter how the node
+////    ended, and the exit text only enriches a close the reader already saw.
+//// 6. `destroy` is the connection's teardown: it aborts the step, and
+////    `await_report` waits for the settlement so the helper is back in the pool
+////    before the host moves on.
 
 import broker/broker.{type Broker, type CallSpec}
 import broker/budget.{type Budget}

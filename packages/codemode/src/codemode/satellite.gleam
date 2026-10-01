@@ -124,6 +124,44 @@
 //// program finished; the host destroys the node and then reports the
 //// outcome — in that order, so the node's enforcement report, which
 //// `destroy` returns, travels out with it (issue #5).
+////
+//// ## Flow
+////
+//// One execution: `run` → `run_launched` → `start_host` → `dispatch_launch` →
+//// `handle_bytes` → `route_cap_call` → `dispatch_cap_call` →
+//// `finish_from_payload` → `terminate`
+////
+//// Held open: `start` → `start_machine` → `invoke` → `host_step` → `begin` →
+//// `read_frame` → `perish`
+////
+//// 1. `run` mints the cap token and writes its file; `run_launched` starts the
+////    host actor with `start_host`, and `dispatch_launch` has the injected
+////    `Launcher` create the node and `hand_over` its connection.
+//// 2. `handle` is that actor's one handler. Inbound bytes reach
+////    `handle_bytes`, which splits payloads with `deframe` and passes each to
+////    `handle_frame`.
+//// 3. `handle_cap_call` checks the token, `route_cap_call` asks the router for a
+////    plan, and `dispatch_cap_call` runs it in a worker, `run_collector`
+////    settling it and `handle_cap_done` writing the answer with `emit`.
+//// 4. The terminal outcome frame arrives in `finish_from_payload`, and
+////    `terminate` destroys the node and only then reports, so the enforcement
+////    report travels with the outcome; `await_result` is the caller's wait.
+//// 5. `start` launches a satellite that outlives one program: `start_machine`
+////    runs the `Phase` machine `host_step`, and `invoke` asks it for one
+////    answer under a fresh token.
+//// 6. `begin` opens an invocation, `read_frame` and `serve_cap_call` serve its
+////    capability calls, and `perish` is every way a host is destroyed;
+////    `stop` asks for the node's report.
+////
+//// ## Transitions
+////
+//// <!-- transitions: satellite.Phase -->
+////
+//// | state | `NodeConnected` | `Ask` | hook_result frame | `WireClosed` | `Expired` | `Halt` | capability events |
+//// | --- | --- | --- | --- | --- | --- | --- | --- |
+//// | `Idle` | `Idle`, buffered frames flushed | `Answering` once `begin` has minted the token, sent the `hook_call` and armed the deadline | `Destroyed`, `HostFaulted`: it correlates to nothing | `Destroyed`, the node exited | ignored, the deadline is only armed in `Answering` | machine stops, node report returned | a late `ServeStarted` is cancelled, a late `Served` ignored |
+//// | `Answering` | `Answering`, buffered frames flushed | refused, `Busy` | the open id gives `Idle` and cancels the deadline; any other id gives `Destroyed` | `Destroyed`, the open caller told `HostGone` | `Destroyed`, `InvocationDeadline` | machine stops, the open caller told `HostGone` | tracked and settled into the open invocation |
+//// | `Destroyed` | `Destroyed`, the late node is destroyed and its report kept | refused, `HostGone` with the reason | ignored | ignored | ignored | machine stops, the kept report returned | a late `ServeStarted` is cancelled, a late `Served` ignored |
 
 import broker/broker.{type Broker, type CallSpec}
 import broker/budget.{type Budget}
@@ -481,6 +519,78 @@ pub type SatelliteConfig {
   )
 }
 
+// --- the host actor -------------------------------------------------------
+
+// The started single-shot host: `commands` for internal messages, `wire`
+// for the launcher's inbound bytes, and the actor's pid, which
+// `run_launched` monitors so a host that stopped before taking the
+// connection does not leave the node unreaped.
+//
+// `RunHost` rather than `Host` because `Host` is the *persistent* one
+// further down, which a session keeps for many invocations. The two are
+// different objects with different lifetimes and the names say so.
+type RunHost {
+  RunHost(pid: Pid, commands: Subject(Msg), wire: Subject(WireIn))
+}
+
+/// The host actor's message set. Opaque: only this module constructs it,
+/// so nothing outside can inject a forged capability settlement.
+pub opaque type Msg {
+  FromWire(event: WireIn)
+  Connected(
+    send: fn(BitArray) -> Nil,
+    destroy: fn() -> Report,
+    ack: Subject(Nil),
+  )
+  CapStarted(id: Int, handle: broker.CallHandle)
+  CapDone(id: Int, outcome: CapOutcome)
+  Deadline
+  Stop
+}
+
+// One in-flight routed capability call.
+type InFlight {
+  InFlight(handle: Option(broker.CallHandle), cancelled: Bool)
+}
+
+type State {
+  State(
+    broker: Broker,
+    // The run phase, threaded whole: every clearance the host makes takes
+    // its `{op_id, step_id}` and its budget from here, so the host cannot
+    // drift onto a second ledger part-way through an execution.
+    identity: PhaseIdentity,
+    base_policy: SandboxPolicy,
+    demand: EnforcementDemand,
+    env: List(#(String, String)),
+    cwd: String,
+    router: CapRouter,
+    // The lifetime admission ceilings this execution runs under, and the
+    // tally they are checked against. Both live here rather than in the
+    // router because the host is the one thing there is exactly one of
+    // per execution — see `CapCeiling`.
+    ceilings: List(CapCeiling),
+    admitted: Dict(String, Int),
+    clock: Clock,
+    call_timeout_ms: Int,
+    vault: token.Vault,
+    token_path: String,
+    unlink_token_file: fn(String) -> Nil,
+    commands: Subject(Msg),
+    // Raw carry for the host's own length-prefix deframer over the cap
+    // socket. The host owns frame boundaries so it can extract the
+    // `outcome` frame's body, which `broker/framing` discards.
+    buffer: BitArray,
+    // The outbound writer, once the launcher has connected. Frames emitted
+    // before then buffer in `pending_out` and flush on `Connected`.
+    send: Option(fn(BitArray) -> Nil),
+    destroy: Option(fn() -> Report),
+    pending_out: List(BitArray),
+    inflight: Dict(Int, InFlight),
+    result: Subject(Run),
+  )
+}
+
 // --- run ------------------------------------------------------------------
 
 /// Runs a compiled artifact in a jailed satellite, servicing its
@@ -682,78 +792,6 @@ fn hand_over(host: RunHost, connection: CapConnection) -> Option(Report) {
   }
   process.demonitor_process(monitor)
   handed
-}
-
-// --- the host actor -------------------------------------------------------
-
-// The started single-shot host: `commands` for internal messages, `wire`
-// for the launcher's inbound bytes, and the actor's pid, which
-// `run_launched` monitors so a host that stopped before taking the
-// connection does not leave the node unreaped.
-//
-// `RunHost` rather than `Host` because `Host` is the *persistent* one
-// further down, which a session keeps for many invocations. The two are
-// different objects with different lifetimes and the names say so.
-type RunHost {
-  RunHost(pid: Pid, commands: Subject(Msg), wire: Subject(WireIn))
-}
-
-/// The host actor's message set. Opaque: only this module constructs it,
-/// so nothing outside can inject a forged capability settlement.
-pub opaque type Msg {
-  FromWire(event: WireIn)
-  Connected(
-    send: fn(BitArray) -> Nil,
-    destroy: fn() -> Report,
-    ack: Subject(Nil),
-  )
-  CapStarted(id: Int, handle: broker.CallHandle)
-  CapDone(id: Int, outcome: CapOutcome)
-  Deadline
-  Stop
-}
-
-// One in-flight routed capability call.
-type InFlight {
-  InFlight(handle: Option(broker.CallHandle), cancelled: Bool)
-}
-
-type State {
-  State(
-    broker: Broker,
-    // The run phase, threaded whole: every clearance the host makes takes
-    // its `{op_id, step_id}` and its budget from here, so the host cannot
-    // drift onto a second ledger part-way through an execution.
-    identity: PhaseIdentity,
-    base_policy: SandboxPolicy,
-    demand: EnforcementDemand,
-    env: List(#(String, String)),
-    cwd: String,
-    router: CapRouter,
-    // The lifetime admission ceilings this execution runs under, and the
-    // tally they are checked against. Both live here rather than in the
-    // router because the host is the one thing there is exactly one of
-    // per execution — see `CapCeiling`.
-    ceilings: List(CapCeiling),
-    admitted: Dict(String, Int),
-    clock: Clock,
-    call_timeout_ms: Int,
-    vault: token.Vault,
-    token_path: String,
-    unlink_token_file: fn(String) -> Nil,
-    commands: Subject(Msg),
-    // Raw carry for the host's own length-prefix deframer over the cap
-    // socket. The host owns frame boundaries so it can extract the
-    // `outcome` frame's body, which `broker/framing` discards.
-    buffer: BitArray,
-    // The outbound writer, once the launcher has connected. Frames emitted
-    // before then buffer in `pending_out` and flush on `Connected`.
-    send: Option(fn(BitArray) -> Nil),
-    destroy: Option(fn() -> Report),
-    pending_out: List(BitArray),
-    inflight: Dict(Int, InFlight),
-    result: Subject(Run),
-  )
 }
 
 // The one pooled budget every phase of the execution draws on, reached
