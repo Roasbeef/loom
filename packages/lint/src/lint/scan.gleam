@@ -9,6 +9,29 @@
 //// does not model contributes no finding rather than an error, and every
 //// `case` over a `glance` type is exhaustive so a new syntax node is a
 //// compile error here rather than a silent gap.
+////
+//// ## Flow
+////
+//// `module` → `names_of` → `local_eager_rows` → `nesting` → `statements` →
+//// `expression` → `call` / `case_` → `lone_callers` → `naked_bools` →
+//// `closure_captures`
+////
+//// 1. `module` is the only entry. It resolves what the file imports and
+////    defines with `names_of`, and joins this file's own combinator rows
+////    (`local_eager_rows`) to the ones other files exported.
+//// 2. For each function, `nesting` reports R2 first, then `statements` walks
+////    the body in source order through `statement_` and `expression`, so
+////    findings arrive reversed and `module` flips them back.
+//// 3. `expression` is the dispatch over every syntax node. A call goes to
+////    `call`, which checks R1's eager arguments through `eager` and R5's
+////    bounded questions through `bounded`; `binary` and `piped` do the same for
+////    operators and pipelines.
+//// 4. A case expression goes to `case_`, which decides whether R3 may report and lets
+////    `clause_` look at each arm's pattern; `panic_finding` and `unnamed_assert`
+////    answer R4 and R7 from statements and expressions.
+//// 5. After the per-function walk, three whole-module passes append their
+////    findings: `lone_callers` for R8, `naked_bools` for R9, and
+////    `closure_captures` for R12.
 
 import glance
 import gleam/dict.{type Dict}
