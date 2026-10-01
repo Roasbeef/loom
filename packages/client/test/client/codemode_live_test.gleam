@@ -652,6 +652,65 @@ fn run_github_mcp_compile(ready: Ready) -> Nil {
   stop_rig(rig)
 }
 
+/// Decodes schemas captured from the official Go MCP SDK through the jail.
+///
+/// SDK slice nullability and nested records are retained rather than rewritten
+/// to fit a hand-authored schema. The fixture provenance pins its real server.
+///
+/// ## Examples
+///
+/// This regression reads a nested stage from the returned application record.
+pub fn go_sdk_mcp_output_crosses_the_real_jail_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP go_sdk_mcp_output: " <> reason)
+    Ok(ready) -> run_go_sdk_mcp(ready)
+  }
+}
+
+fn run_go_sdk_mcp(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = fixture_mcp_layer("go_sdk", "go_sdk.json", seen)
+  let source =
+    "import cap/mcp/go_sdk as sdk\n"
+    <> "import cap/report\n"
+    <> "import gleam/option.{Some}\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  case sdk.list_applications(job_id: \"go-sdk\", filter: sdk.McpT0InputN2ListApplicationsFilter(region: \"north\", tags: Some([])), options: sdk.list_applications_defaults) {\n"
+    <> "    Ok(found) -> case found.applications, found.has_more {\n"
+    <> "      Some([row, ..]), sdk.McpT0OutputN9V1DisabledListApplicationsResultHasMore -> report.text(row.id <> \"/\" <> row.stage.name)\n"
+    <> "      _, _ -> report.failure(\"The SDK fixture returned no application.\")\n"
+    <> "    }\n"
+    <> "    Error(_reason) -> report.failure(\"The SDK fixture did not decode.\")\n"
+    <> "  }\n"
+    <> "}\n"
+  let outcome =
+    run_notes_program(
+      typed_mcp_config(rig, layer),
+      rig,
+      source,
+      "go-sdk-mcp-output",
+    )
+  assert !outcome.is_error as rendered_text(outcome)
+  assert notes_program_value(outcome) == json.String("application-1/Screen")
+  let assert Ok(#(tool_name, arguments)) = process.receive(seen, 0)
+    as "the generated facade must invoke the SDK fixture"
+  assert tool_name == "list_applications"
+  assert arguments
+    == mcp_json.Object([
+      #("job_id", mcp_json.String("go-sdk")),
+      #(
+        "filter",
+        mcp_json.Object([
+          #("region", mcp_json.String("north")),
+          #("tags", mcp_json.Array([])),
+        ]),
+      ),
+    ])
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
 /// Executes the documented structured fixture example without rewriting it.
 ///
 /// The block is extracted from the architecture guide so a schema-name change
@@ -770,7 +829,46 @@ fn fixture_mcp_result(
           ]),
         ),
       ])
-    _ -> typed_mcp_result(arguments)
+    _ -> fixture_application_result(arguments)
+  }
+}
+
+fn fixture_application_result(
+  arguments: mcp_json.JsonValue,
+) -> mcp_json.JsonValue {
+  let sdk_result = case arguments {
+    mcp_json.Object(fields) ->
+      list.contains(fields, #("job_id", mcp_json.String("go-sdk")))
+    _ -> False
+  }
+  case sdk_result {
+    False -> typed_mcp_result(arguments)
+    True ->
+      mcp_json.Object([
+        #("content", mcp_json.Array([])),
+        #(
+          "structuredContent",
+          mcp_json.Object([
+            #(
+              "applications",
+              mcp_json.Array([
+                mcp_json.Object([
+                  #("id", mcp_json.String("application-1")),
+                  #("score", mcp_json.Float(0.75)),
+                  #(
+                    "stage",
+                    mcp_json.Object([
+                      #("id", mcp_json.String("stage-1")),
+                      #("name", mcp_json.String("Screen")),
+                    ]),
+                  ),
+                ]),
+              ]),
+            ),
+            #("has_more", mcp_json.Bool(False)),
+          ]),
+        ),
+      ])
   }
 }
 

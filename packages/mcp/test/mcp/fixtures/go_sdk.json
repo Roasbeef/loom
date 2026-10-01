@@ -1,0 +1,120 @@
+{
+  "ttlMs": 0,
+  "cacheScope": "public",
+  "tools": [
+    {
+      "description": "List synthetic applications with nested filters and a typed result.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "Job whose applications are listed"
+          },
+          "filter": {
+            "type": "object",
+            "properties": {
+              "region": {
+                "type": "string",
+                "description": "Region containing the application"
+              },
+              "tags": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "Tags matched by the filter"
+              }
+            },
+            "required": [
+              "region",
+              "tags"
+            ],
+            "additionalProperties": false
+          },
+          "limit": {
+            "type": [
+              "null",
+              "integer"
+            ],
+            "description": "Optional maximum number of applications"
+          },
+          "cursor": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Optional pagination cursor"
+          }
+        },
+        "required": [
+          "job_id",
+          "filter"
+        ],
+        "additionalProperties": false
+      },
+      "name": "list_applications",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "applications": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "score": {
+                  "type": "number"
+                },
+                "stage": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "id",
+                "score",
+                "stage"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "applications",
+          "has_more"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
