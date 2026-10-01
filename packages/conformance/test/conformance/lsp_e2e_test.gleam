@@ -71,6 +71,7 @@ import support/internal/ffi_shell
 import support/jail
 import support/script
 import telemetry/log
+import tools/fs
 import tools/hashline
 
 /// One session's budget: an instance assembly, a cold language server
@@ -527,9 +528,13 @@ fn rewrite_until_halted(
 pub fn lsp_gopls_end_to_end_test_() -> EunitTest {
   Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
     case go_prerequisites() {
-      Error(reason) ->
+      Error(NotInstalled(reason)) ->
         io.println_error(
           "SKIP lsp e2e gopls: gopls or go is not installed (" <> reason <> ")",
+        )
+      Error(UnknownRoot(reason)) ->
+        io.println_error(
+          "SKIP lsp e2e gopls: go's GOROOT cannot be derived (" <> reason <> ")",
         )
       Ok(#(helper_path, gopls, places)) -> run_gopls(helper_path, gopls, places)
     }
@@ -870,24 +875,34 @@ type GoPlaces {
   GoPlaces(root: String, path: String, cache: String, module_cache: String)
 }
 
+// Why the gopls session cannot run. The two are kept apart because the
+// declared-skips census accepts "gopls or go is not installed" on a lane
+// that ships no language servers, and a lane that has both but cannot
+// place the toolchain must not pass as one that lacks them.
+type GoSkip {
+  NotInstalled(reason: String)
+  UnknownRoot(reason: String)
+}
+
 // The helper, `go` (which `gopls` shells out to), the places its toolchain
 // and caches live, and `gopls` on `PATH` or where `go install` puts it.
-fn go_prerequisites() -> Result(#(String, String, GoPlaces), String) {
+fn go_prerequisites() -> Result(#(String, String, GoPlaces), GoSkip) {
   use go <- result.try(
     jail.find_executable("go")
-    |> result.replace_error("go is not on PATH"),
+    |> result.replace_error(NotInstalled("go is not on PATH")),
   )
-  use places <- result.try(go_places(go))
+  use places <- result.try(result.map_error(go_places(go), UnknownRoot))
   let installed = places.path <> "/bin/gopls"
   use gopls <- result.try(case jail.find_executable("gopls") {
     Ok(found) -> Ok(found)
     Error(Nil) ->
       case simplifile.is_file(installed) {
         Ok(True) -> Ok(installed)
-        Ok(False) | Error(_) -> Error("gopls was not found")
+        Ok(False) | Error(_) -> Error(NotInstalled("gopls was not found"))
       }
   })
   jail.prebuilt_helper()
+  |> result.map_error(NotInstalled)
   |> result.map(fn(helper) { #(helper, gopls, places) })
 }
 
@@ -895,9 +910,10 @@ fn go_prerequisites() -> Result(#(String, String, GoPlaces), String) {
 // reads and the defaults it falls back to, because a shell command to ask
 // it would be a custom external for a question the filesystem answers.
 // `GOROOT` falls back to the directory above the `bin` holding `go`, which
-// is where a toolchain unpacks, and is refused unless it holds the
-// standard library's sources. A toolchain reached through a link, such as
-// Homebrew's, names its root in `GOROOT` or skips the variant. The build
+// is where a toolchain unpacks, after following the link `go` was found
+// through, since Homebrew's `bin/go` is a link into the toolchain's
+// `libexec`. It is refused unless it holds the standard library's sources.
+// A root that cannot be derived skips the variant under its own text. The build
 // cache is the first of the per-platform defaults that exists, since the
 // cache directory is `~/.cache` on Linux and `~/Library/Caches` on macOS,
 // and a jail that grants the wrong one leaves `go list` unable to write.
@@ -912,10 +928,14 @@ fn go_places(go: String) -> Result(GoPlaces, String) {
   use root <- result.try(
     absolute_env("GOROOT")
     |> result.lazy_or(fn() {
-      case string.ends_with(go, "/bin/go") {
-        True -> Ok(string.drop_end(go, 7))
-        False -> Error(Nil)
-      }
+      fs.resolve_real(fs.real_filesystem(), "/", go)
+      |> result.replace_error(Nil)
+      |> result.try(fn(real) {
+        case string.ends_with(real, "/bin/go") {
+          True -> Ok(string.drop_end(real, 7))
+          False -> Error(Nil)
+        }
+      })
     })
     |> result.try(fn(candidate) {
       case simplifile.is_directory(candidate <> "/src/runtime") {
