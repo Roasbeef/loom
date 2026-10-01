@@ -506,6 +506,10 @@ from transcript capture debt and queued operator intent. It clears the debt
 when it issues `goal_get`, so a change received during an older read survives
 that reply and causes a subsequent read. Both hosts use this lane, and the
 result is a correlated `Auxiliary(GoalSnapshot)`; it requires no host timer.
+An automatic read also emits `Submission(Sent)` after the older reply's
+updates. The shared surface records its request ID so a correlated refusal
+clears the retained goal and marks an open inspector's board as stale, while
+the automatic read stays silent in the transcript.
 
 `snapshot_view.queue_halted(view, strand)` derives a known idle strand with
 pending rows from one authoritative cut. Ordinary input drains before the

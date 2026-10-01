@@ -1538,7 +1538,7 @@ fn send_queued(
   now: Int,
 ) {
   let #(channel, updates) = flush_queued(channel, updates, now)
-  let channel = read_changed_goal(channel, now)
+  let #(channel, updates) = read_changed_goal(channel, updates, now)
   case channel.phase, channel.refresh, channel.cut {
     Ready, Due, Some(cut) -> #(
       capture_again(
@@ -1561,19 +1561,31 @@ fn send_queued(
 
 // An invalidation is spent only when its read is issued. A notification
 // arriving during that read survives its reply and requests a newer board.
-fn read_changed_goal(channel: Channel(socket, recorder), now: Int) {
+// The host must know this read's ID to accept its refusal. Its sent update
+// follows the older reply's updates so that reply cannot clear the new owner.
+fn read_changed_goal(
+  channel: Channel(socket, recorder),
+  updates: List(Update),
+  now: Int,
+) {
   case channel.phase, channel.goal_refresh {
-    Ready, Due ->
-      send(
-        Channel(..channel, goal_refresh: Idle),
-        Outbound(
-          "goal_get",
-          "\"goal_get\"" <> session_wire.command_body <> "{}}",
-          Read,
-        ),
-        now,
+    Ready, Due -> {
+      let sent =
+        send(
+          Channel(..channel, goal_refresh: Idle),
+          Outbound(
+            "goal_get",
+            "\"goal_get\"" <> session_wire.command_body <> "{}}",
+            Read,
+          ),
+          now,
+        )
+      #(
+        sent,
+        list.append(updates, [Submission(Sent("goal_get", sent.request_id))]),
       )
-    _, _ -> channel
+    }
+    _, _ -> #(channel, updates)
   }
 }
 

@@ -74,3 +74,25 @@ Every mutation restores the original source before further validation.
 
 The full affected-package gate, independent final review, fresh hosted CI and
 exact-head Linux signoff remain separate from this focused evidence.
+
+## Automatic-read refusal ownership
+
+The fresh GPT6.1Sol pass over head `93f06b19e` found that an invalidation's
+automatic `goal_get` did not announce its issued request ID to the shared
+surface. A production `snapshot_failed` refusal then left an older Active
+board visible because `surfaces.refuse_goal` could not match its owner.
+The new terminal regression reproduced that retained board before the fix.
+
+The automatic read now appends its `Submission(Sent)` after the completed
+reply's updates. This order lets the older board settle its own slot before
+the new read claims it; queued mutations still issue first and retain their
+own confirmation identity. An automatic refusal clears the shared goal,
+marks an open inspector's retained board as stale, prints no transcript row,
+and leaves the attached lane ready for the next command.
+
+All 49 goal tests pass with the correction. Omitting the sent update and
+moving it before the older reply each fail the new regression. Dropping
+invalidation debt also fails the corrected web observer regression. Sources
+were restored after each mutation. The branch was rebased again onto main
+`275efc42e`, which includes the typed capability work merged in PR #670;
+the earlier exact-head CI and signoff do not validate this correction.

@@ -1510,6 +1510,76 @@ pub fn late_goal_writes_refresh_the_connected_panel_without_a_phase_edge_test() 
   )
 }
 
+// A failed automatic read must retire the retained row while the inspector
+// labels its last board as stale. The same ownership is needed when a notice
+// arrives during an older read, whose observation must be applied first.
+pub fn a_refused_goal_invalidation_marks_the_retained_board_stale_test() {
+  list.each([BeforeGoalReply, AfterGoalReply], fn(timing) {
+    let #(asked, id) = outstanding(protocol.goal_get(99), "goal_get")
+    let asked =
+      tui_model.Model(
+        shared: session_model.Shared(
+          ..asked.shared,
+          peer: session_model.Attached,
+        ),
+        view: tui_model.View(
+          ..asked.view,
+          overlay: tui_model.GoalInspector(focused_goal_panel.new(
+            None,
+            "Reading current goal",
+          )),
+        ),
+      )
+    let changed =
+      pushed.push([
+        #("event", json.String("goal_changed")),
+        #("body", json.Object([])),
+      ])
+    let reply = pushed.reply(id, "snapshot", snapshot())
+    let refreshing = case timing {
+      BeforeGoalReply -> deliver(deliver(asked, changed), reply)
+      AfterGoalReply -> deliver(deliver(asked, reply), changed)
+    }
+    let assert Some(goal_view.Pinned(status: goal_view.Active, ..)) =
+      refreshing.shared.goal
+      as "the older board remains visible until its replacement answers"
+    let refused =
+      deliver(
+        refreshing,
+        pushed.reply(
+          id + 1,
+          "error",
+          json.Object([
+            #("code", json.String("snapshot_failed")),
+            #("message", json.String("bounded snapshot read refused")),
+          ]),
+        ),
+      )
+    assert refused.shared.goal == None
+      as "the failed refresh cannot leave the old Active row authoritative"
+    assert refused.shared.goal_request == None
+    assert refused.shared.goal_report == session_model.HoldGoalReport
+    assert refused.shared.transcript == refreshing.shared.transcript
+      as "an automatic refusal stays silent in the transcript"
+    let assert tui_model.GoalInspector(panel) = refused.view.overlay
+      as "the inspector remains open"
+    assert focused_goal_panel.board(panel) == refreshing.shared.goal
+      as "the inspector retains the explicitly stale last observation"
+    assert string.contains(painted(refused), "Observation not refreshed")
+      as "the inspector labels the failed refresh"
+    assert refused.shared.peer == session_model.Attached
+    let assert Some(channel) = refused.shared.channel
+      as "an in-band refusal keeps the connection"
+    assert session_channel.ready_for_read(channel)
+      as "the next command can use the settled lane"
+  })
+}
+
+type GoalInvalidationTiming {
+  BeforeGoalReply
+  AfterGoalReply
+}
+
 // A change during an older read cannot be discharged by that read's reply.
 // Repeated notifications coalesce behind a queued operator command.
 pub fn a_goal_invalidation_during_an_older_read_survives_its_reply_test() {
