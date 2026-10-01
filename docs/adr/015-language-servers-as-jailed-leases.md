@@ -454,7 +454,7 @@ filled, that copy and the broker's collapse into the weft primitive.
 
 ## Addendum: workspace dependency reads and load errors (2026-10-01)
 
-Protocol 059 expands a lease's read view to the session-authorized portion
+Protocol 061 expands a lease's read view to the session-authorized portion
 of its workspace. Gleam monorepos need sibling path dependencies; denying
 one reproduces empty semantic answers while the same binary resolves them
 outside the jail. Writes, answer admission, protected paths, and network-off

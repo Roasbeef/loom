@@ -1,6 +1,6 @@
-# protocol-change/059 — retain watcher consent and report LSP load failures
+# protocol-change/061 — retain watcher consent and report LSP load failures
 
-**Status**: ACCEPTED 2026-10-01, implementation in progress.
+**Status**: ACCEPTED 2026-10-01; implemented on the reliability branch.
 **Affects**: Part 1.6 remembered approvals, protocol 058 job custody, and
 the LSP lease's readable workspace boundary.
 
@@ -55,8 +55,13 @@ authority. An arbitrary dependency does not enlarge the lease.
 
 The protocol client decodes error-level window messages and retains a bounded
 server error. An empty semantic answer or diagnostics barrier after that
-failure returns `Unavailable` with the server's words. A subsequent nonempty
-semantic answer proves recovery and clears the retained failure. Informational
+failure returns `Unavailable` with the server's words, including when
+settlement expires. A nonempty result validated by the feature's existing
+decoder establishes recovery. Empty hover content, empty rename edits and
+malformed replies cannot clear the failure. Call hierarchy shares a capability
+across three methods; its nonempty replies retain the failure while reaching
+the method-specific decoder. Another typed semantic query establishes
+recovery. Informational
 messages do not turn an ordinary empty answer into failure. No LSP or capability
 wire field changes are required.
 
@@ -82,3 +87,10 @@ approval, ordinary versus session-job abort, explicit cleanup, error versus
 legitimate empty LSP answers, recovery, sibling reads and protected/outside
 workspace refusal. Actual jailed LSP and compiled code-mode calls remain
 required before claiming end-to-end correction.
+
+The completed local affected gate passed in 495 seconds at the final
+executable tree `0372d301b`, including the fresh code-mode seed, native
+session proofs and a clean undeclared-skip census. The independent review's
+settlement-expiry and empty-object recovery findings were fixed and
+regression-tested. [The review record](../docs/review/watch-and-lsp-reliability.md)
+records the validation boundary; hosted CI and Linux signoff remain pending.

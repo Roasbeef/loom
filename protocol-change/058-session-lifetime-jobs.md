@@ -75,3 +75,11 @@ jobs keep their original finite walls; a fresh authorized invocation is needed.
 
 Timeout notices explain `lifetime: "session"` and higher `timeout_ms`; the
 initial tool schema advertises the option before a costly timeout occurs.
+
+## Addendum, 2026-10-01: session-owned cancellation
+
+[Protocol 061](061-watch-and-lsp-reliability.md) supersedes originating-operation
+abort for an accepted session-lifetime job. Its durable attribution still
+names the initiating operation, while broker custody uses a separate operation.
+Finite jobs retain originating-operation cancellation; explicit owner kill
+and session shutdown still stop session jobs.

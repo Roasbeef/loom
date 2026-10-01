@@ -5177,7 +5177,7 @@ retains a raw non-text block; `client/mcp.content_block` deliberately drops
 that payload when constructing the existing capability result. Core JSON
 and capability wire contracts are unchanged.
 
-## Watcher consent and LSP reliability (protocol 059)
+## Watcher consent and LSP reliability (protocol 061)
 
 `permissions.remembering_action` prepares the reserved
 `client/action_grants/<digest>` fact for a singleton wall-zero grant. Its

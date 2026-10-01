@@ -262,6 +262,11 @@ The actor retains at most 2048 UTF-8 bytes from an error-level window message.
 A server can report a failed project load that way and then answer a semantic
 request with null or an empty array; those answers become `Unavailable` with
 the retained reason. Diagnostics reads and settlement cannot call that state
-clean. A substantive semantic reply clears the failure so later legitimate
-misses remain empty. Informational messages do not poison ordinary misses.
+clean, including when settlement reaches its deadline. Recovery requires a
+nonempty result from the feature's existing typed decoder; empty hover content,
+empty rename edits and malformed replies cannot clear the failure. Nonempty
+hierarchy replies reach their method-specific decoder while retaining the
+failure, because three methods share one capability. Another typed semantic
+query must establish recovery. Informational messages do not poison ordinary
+misses.
 Malformed notifications are dropped by the existing total decoder.

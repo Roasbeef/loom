@@ -1057,6 +1057,11 @@ Some servers publish an error-level `window/showMessage` or
 query. A diagnostics barrier only proves request ordering; it cannot turn
 that failed load into clean code. `lsp/client` retains a bounded failure
 reason and returns `Unavailable` for those empty answers, diagnostics reads,
-and settlement. A substantive semantic result demonstrates recovery and
-clears it. Informational messages leave legitimate misses unchanged.
-Protocol 059 records this boundary and the workspace read change.
+and settlement, including a settlement deadline. Recovery requires a
+nonempty typed semantic result, rather than a non-null JSON object: empty
+hover contents and empty rename edits retain the error. Hierarchy methods
+share a capability but have distinct decoders, so their nonempty replies
+reach the caller without clearing a prior failure; another semantic query
+must establish recovery. Informational messages leave legitimate misses
+unchanged.
+Protocol 061 records this boundary and the workspace read change.

@@ -427,6 +427,6 @@ has a separate private HOME, so an extension command there inspects a different
 installation. Host installation/check commands should use the daemon's home.
 A nested check can be refused while the host check succeeds.
 
-Protocol 059 gives profiles a read view of session-authorized workspace
+Protocol 061 gives profiles a read view of session-authorized workspace
 dependencies without adding per-language manifest traversal or network access.
 Profile roots still govern dependencies outside that workspace.

@@ -386,7 +386,7 @@ that exact key at dispatch. This permits a repeated watcher launch without
 giving unrelated actions unlimited wall time. The approval and reserved fact
 use the same atomic sequence guards; different arguments, tools or strands
 need new consent. The dialog labels this narrower scope explicitly. Other
-resource limits and mixed requests remain once-only. See protocol 059.
+resource limits and mixed requests remain once-only. See protocol 061.
 
 ### Directory additions
 
