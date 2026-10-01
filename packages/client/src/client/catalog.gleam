@@ -14,6 +14,25 @@
 //// `[roles]` table becomes the gateway's ordered fallback chains. No
 //// dispatch mechanics live here.
 ////
+//// ## Flow
+////
+//// `parse` → `parse_models` → `parse_roles` → `parse_mcp_servers` → `gateway`
+////
+//// 1. `parse` reads the TOML, checks the top-level keys with `known_keys` so a
+////    typoed table is refused by exactly one parser, and requires `[models]`
+////    and `[roles]`.
+//// 2. `parse_models` turns each entry into a `CatalogModel` through
+////    `parse_model`, `parse_pricing` and `validate_auth`.
+//// 3. `parse_roles` resolves each role's chain of names against those models,
+////    with `parse_chain` refusing a dangling name.
+//// 4. `parse_mcp_servers` reads the optional server tables, and
+////    `mcp_server_name` holds each key to the import grammar.
+//// 5. `parse_tools`, `parse_workspace` and `parse_advisor` read their own
+////    tables from the same text; the host calls them beside `parse`.
+//// 6. `find`, `main_model` and `routed_roles` answer lookups over the result.
+//// 7. `gateway` registers each entry as a provider through `provider_config`
+////    and `priced`, then routes every role's chain with `resolved`.
+////
 //// ## The file format
 ////
 //// A TOML document with two required top-level tables and one optional
