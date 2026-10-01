@@ -32,6 +32,33 @@
 //// fault is a value, and a faulted stream is not resumable — the caller
 //// treats the transport as dead, because after a bad header there is no
 //// way to find the next frame boundary.
+////
+//// ## Flow
+////
+//// Inbound, one chunk at a time:
+////
+//// ```text
+//// push -> consume -> consume_header -> find_terminator -> parse_header
+////                                         |                   |
+////                                         |        split_header_line, parse_length
+////                                         v
+////                    consume_body -> (frame complete) -> consume_header again
+//// ```
+////
+//// `push` reverses the bodies `consume` collected newest-first. A chunk
+//// that ends mid-header or mid-body returns the new `Buffer` and no
+//// bodies. Outbound is the single function `frame`.
+////
+//// ## Transition table
+////
+//// The two `Buffer` states, and what one pushed chunk does to each:
+////
+//// | State           | Chunk does not finish the part | Chunk finishes the part                                | Bad input                     |
+//// |-----------------|--------------------------------|--------------------------------------------------------|-------------------------------|
+//// | `ReadingHeader` | stays `ReadingHeader`          | becomes `ReadingBody`, then runs the chunk's remainder | `Error` with a `FramingFault` |
+//// | `ReadingBody`   | stays `ReadingBody`            | emits a body, becomes `ReadingHeader` for the remainder | `Error(BodyNotUtf8)`          |
+////
+//// A zero-length body completes in the same step that finishes its header.
 
 import gleam/bit_array
 import gleam/bool
@@ -133,6 +160,24 @@ pub fn push(
 ) -> Result(#(Buffer, List(String)), FramingFault) {
   use #(buffer, bodies) <- result.try(consume(buffer, chunk, []))
   Ok(#(buffer, list.reverse(bodies)))
+}
+
+/// Renders one message as a wire frame: `Content-Length` counting the
+/// body's UTF-8 bytes, the blank line, then compact JSON.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert framing.frame(json.Object([#("é", json.Int(1))]))
+///   == "Content-Length: 8\r\n\r\n{\"é\":1}"
+/// ```
+///
+pub fn frame(message: JsonValue) -> String {
+  let body = json.to_string(message)
+  "Content-Length: "
+  <> int.to_string(string.byte_size(body))
+  <> "\r\n\r\n"
+  <> body
 }
 
 // Drives the two-state machine over one chunk. Each completed frame hands
@@ -274,6 +319,9 @@ fn parse_header(data: BitArray, at: Int) -> Result(Int, FramingFault) {
   }
 }
 
+// One header line as a trimmed `#(name, value)`. The name must have no
+// surrounding whitespace and must not be empty; a line without a colon is
+// not a header at all, and either case poisons the stream.
 fn split_header_line(line: String) -> Result(#(String, String), FramingFault) {
   case string.split_once(line, ":") {
     Ok(#(name, value)) ->
@@ -302,22 +350,4 @@ fn parse_length(value: String) -> Result(Int, FramingFault) {
         False -> Ok(length)
       }
   }
-}
-
-/// Renders one message as a wire frame: `Content-Length` counting the
-/// body's UTF-8 bytes, the blank line, then compact JSON.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert framing.frame(json.Object([#("é", json.Int(1))]))
-///   == "Content-Length: 8\r\n\r\n{\"é\":1}"
-/// ```
-///
-pub fn frame(message: JsonValue) -> String {
-  let body = json.to_string(message)
-  "Content-Length: "
-  <> int.to_string(string.byte_size(body))
-  <> "\r\n\r\n"
-  <> body
 }
