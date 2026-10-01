@@ -1,0 +1,24 @@
+ ◆ pi-gui · fix readme badge · strand main                        kimi-k3 · low 
+ ∴ Reasoning (summarized) · 13s                                                 
+   Splitting the review by area, then respawning when the first pair times out. 
+                                                                                
+ ◆ main                                                                         
+   Both reviewers expired their budget without results.                         
+   Respawning with leaner briefs.                                               
+                                                                                
+ ● agent_spawn ×2  adversarial…48f3 · adversarial…ec14                          
+                                                                                
+ ◇ loom · job 01a0eff2 lost · helper exited · Ctrl+g                            
+                                                                                
+ ✓ agent_wait · 2 subagents ×15 · 7m 30s · both still working                   
+                                                                                
+ ? sub:tests waits for approval · a reviews                                     
+ ▸ Todo · 3 of 5 done · ▸ check it · Ctrl+g expands                             
+╭─ To main · Tab steers ────────────────── ◐ agent_wait · 51s · queue 1 · Esc ─╮
+│ › ← sessions · ↓ agents · / commands                                         │
+╰─ kimi-k3 › ctx ~41% › $1.86 ─────────────────────────────────── 1 needs you ─╯
+   ● main                     Waiting for adversarial-code-r… 4m 10s · 259k ctx 
+   ? sub:tests                Needs approval · network            34s ·  9k ctx 
+   ● sub:adversarial-co…-48f3 Tracing quit-path publish_herdr… 2m 45s · 65k ctx 
+   ● sub:adversarial-co…-ec14 Grep-searching herdr:loom refe… 1m 03s · 144k ctx 
+   +3 more · Down enters the strip · F2 opens the list                          

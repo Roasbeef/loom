@@ -1,0 +1,24 @@
+ ◆ pi-gui · fix readme badge · strand main                        kimi-k3 · low 
+                                                                                
+ ✓ code_mode probe_calc.gleam · completed · result {"ok": true} · Ctrl+g        
+                                                                                
+   ╭─ × code_mode · compile error · probe_range.gleam ─────────────────────────╮
+   │ error: unknown module value list.rang · line 7                            │
+   │   7 │   list.rang(1, 10)                                                  │
+   │     │        ^^^^^^^^^ did you mean list.range?                           │
+   ╰─ the program did not run · Ctrl+g shows all 12 lines ─────────────────────╯
+                                                                                
+   ╭─ ◐ running · check_subtract.gleam · 1.2s ─────────────────────────────────╮
+   │ PROGRAM · 24 lines, 4 shown                                               │
+   │   1 │ import cap/fs                                                       │
+   │   2 │ import cap/proc                                                     │
+   │   5 │ let src = fs.read("calc.gleam")                                     │
+   │   9 │ let out = proc.run("gleam", ["test"])                               │
+   │                                                                           │
+   │ RESULT · none yet · the result arrives when the program ends              │
+   ╰─ budget 30s · vetted · Ctrl+g program ────────────────────────────────────╯
+ ▸ Todo · 3 of 5 done · ▸ check it · Ctrl+g expands                             
+╭─ To main · Tab steers ──────────────────────────── ◐ code_mode · 1.2s · Esc ─╮
+│ › ← sessions · ↓ agents · / commands                                         │
+╰─ kimi-k3 › ctx ~41% › $1.86 ──────────────────────────────────── 0 need you ─╯
+   ● main                     Working · code_mode check_subtr… 1m 12s · 41k ctx 
