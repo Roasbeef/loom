@@ -16,6 +16,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import lint/calls
 import lint/finding.{type Rule}
 import lint/policy.{type Counted, type Eager, type Policy}
 
@@ -717,9 +718,7 @@ fn over_arity(function: glance.Function, threshold: Int) -> Bool {
 
 /// How many other functions in this module mention this name.
 fn callers(module: glance.Module, name: String) -> Int {
-  module.functions
-  |> list.filter(fn(other) { other.definition.name != name })
-  |> list.count(fn(other) { mentions_in(other.definition.body, name) })
+  list.length(calls.callers_of(module, name))
 }
 
 fn lone_caller_finding(function: glance.Function, callers: Int) -> List(Raw) {
@@ -1088,7 +1087,9 @@ fn combinator_rows(function: glance.Function, own_path: String) -> List(Eager) {
               |> list.filter(fn(pair) { pair.1 > 0 })
               // A parameter the decision reads is not a fallback: the
               // combinator has already used it by the time it chooses.
-              |> list.filter(fn(pair) { !mentions(subject, binding(pair.0)) })
+              |> list.filter(fn(pair) {
+                !calls.mentions(subject, binding(pair.0))
+              })
               |> list.map(fn(pair) {
                 eager_row(function.name, own_path, pair.0, pair.1)
               })
@@ -1116,7 +1117,7 @@ fn decision(
 ) -> Option(glance.Expression) {
   use subject <- option.then(branch_of(body))
   use first <- option.then(option.from_result(list.first(parameters)))
-  case mentions(subject, binding(first)) {
+  case calls.mentions(subject, binding(first)) {
     True -> Some(subject)
     False -> None
   }
@@ -1154,85 +1155,6 @@ fn binding(parameter: glance.FunctionParameter) -> String {
     glance.Named(name) -> name
     glance.Discarded(name) -> "_" <> name
   }
-}
-
-/// Does `name` appear as a variable anywhere in this expression?
-///
-/// Over-approximates in the safe direction: a shadowing binding inside a
-/// closure counts as a mention, which drops a row rather than inventing
-/// one. Exhaustive over `glance.Expression` for the reason everything in
-/// this file is — a new syntax node must fail to compile here rather than
-/// quietly stop being searched.
-fn mentions(value: glance.Expression, name: String) -> Bool {
-  case value {
-    glance.Int(..) | glance.Float(..) | glance.String(..) -> False
-    glance.Variable(name: found, ..) -> found == name
-    glance.NegateInt(value: inner, ..) | glance.NegateBool(value: inner, ..) ->
-      mentions(inner, name)
-    glance.Block(statements: body, ..) -> mentions_in(body, name)
-    glance.Panic(message:, ..) | glance.Todo(message:, ..) ->
-      mentions_optional(message, name)
-    glance.Echo(expression: inner, message:, ..) ->
-      mentions_optional(inner, name) || mentions_optional(message, name)
-    glance.Tuple(elements:, ..) ->
-      list.any(elements, fn(element) { mentions(element, name) })
-    glance.List(elements:, rest:, ..) ->
-      list.any(elements, fn(element) { mentions(element, name) })
-      || mentions_optional(rest, name)
-    glance.Fn(body:, ..) -> mentions_in(body, name)
-    glance.RecordUpdate(record:, fields:, ..) ->
-      mentions(record, name)
-      || list.any(fields, fn(field) { mentions_optional(field.item, name) })
-    glance.FieldAccess(container:, ..) -> mentions(container, name)
-    glance.Call(function:, arguments:, ..) ->
-      mentions(function, name) || mentions_fields(arguments, name)
-    glance.TupleIndex(tuple:, ..) -> mentions(tuple, name)
-    glance.FnCapture(function:, arguments_before:, arguments_after:, ..) ->
-      mentions(function, name)
-      || mentions_fields(arguments_before, name)
-      || mentions_fields(arguments_after, name)
-    glance.BitString(segments:, ..) ->
-      list.any(segments, fn(segment) { mentions(segment.0, name) })
-    glance.Case(subjects:, clauses:, ..) ->
-      list.any(subjects, fn(subject) { mentions(subject, name) })
-      || list.any(clauses, fn(clause) { mentions(clause.body, name) })
-    glance.BinaryOperator(left:, right:, ..) ->
-      mentions(left, name) || mentions(right, name)
-  }
-}
-
-fn mentions_in(body: List(glance.Statement), name: String) -> Bool {
-  list.any(body, fn(statement) {
-    case statement {
-      glance.Use(function:, ..) -> mentions(function, name)
-      glance.Expression(value) -> mentions(value, name)
-      glance.Assert(expression: value, message:, ..) ->
-        mentions(value, name) || mentions_optional(message, name)
-      glance.Assignment(value:, ..) -> mentions(value, name)
-    }
-  })
-}
-
-fn mentions_optional(value: Option(glance.Expression), name: String) -> Bool {
-  case value {
-    Some(inner) -> mentions(inner, name)
-    None -> False
-  }
-}
-
-fn mentions_fields(
-  arguments: List(glance.Field(glance.Expression)),
-  name: String,
-) -> Bool {
-  list.any(arguments, fn(field) {
-    case field {
-      glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
-        mentions(item, name)
-
-      // `f(key:)` is a use of the variable `key`.
-      glance.ShorthandField(label:, ..) -> label == name
-    }
-  })
 }
 
 fn eager_row(
@@ -2049,7 +1971,7 @@ fn swallows(spelling: CatchAll, body: glance.Expression) -> String {
       <> name
       <> " ->` is a catch-all with a name on it: it"
       <> swallowed
-      <> case mentions(body, name) {
+      <> case calls.mentions(body, name) {
         True ->
           "the arm reads `"
           <> name
