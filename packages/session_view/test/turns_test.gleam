@@ -16,6 +16,7 @@ import gleam/string
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/strand_framing
 import session_view/transcript
 import session_view/transcript_image
 import session_view/transcript_line
@@ -259,6 +260,7 @@ fn shape(piece: turns.Piece) -> String {
     turns.Returned(child:, ..) -> "returned:" <> child
     turns.Nudged(..) -> "nudge"
     turns.Peer(session:, ..) -> "peer:" <> session
+    turns.Sibling(strand:, ..) -> "sibling:" <> strand
     turns.Missed(..) -> "missed"
     turns.Commentary(..) -> "commentary"
   }
@@ -355,6 +357,7 @@ pub fn every_piece_keeps_its_key_when_the_turn_settles_test() {
         | turns.Returned(key:, ..)
         | turns.Nudged(key:, ..)
         | turns.Peer(key:, ..)
+        | turns.Sibling(key:, ..)
         | turns.Missed(key:, ..) -> key
       }
     })
@@ -699,4 +702,130 @@ pub fn a_lookup_finds_only_a_row_the_lane_holds_test() {
   assert turns.picture(lane, "1.0", -1) == Error(Nil)
   assert turns.picture(lane, "", 0) == Error(Nil)
   assert turns.picture([], "1.0", 0) == Error(Nil)
+}
+
+fn sibling_text(strand: String) -> String {
+  strand_framing.message_head(strand)
+  <> "found two issues\n"
+  <> strand_framing.message_foot
+}
+
+pub fn a_strand_origin_message_is_a_sibling_with_its_framing_removed_test() {
+  let laid =
+    pieces_of(
+      [
+        item(
+          1,
+          10_000,
+          said(
+            sibling_text("sub:main/x"),
+            Some(message.StrandOrigin("sub:main/x")),
+          ),
+        ),
+        item(
+          2,
+          11_000,
+          said(
+            strand_framing.brief_head("main")
+              <> "review it\n"
+              <> strand_framing.brief_foot
+              <> "\n"
+              <> strand_framing.contract_open
+              <> "\nwrite a note\n"
+              <> strand_framing.contract_close,
+            Some(message.StrandOrigin("main")),
+          ),
+        ),
+        item(
+          3,
+          12_000,
+          said(
+            "R8 census is 14",
+            Some(message.PeerOrigin("lint-census", "main")),
+          ),
+        ),
+        item(
+          4,
+          13_000,
+          said(
+            transcript_lines.nudges_header
+              <> "\n```"
+              <> transcript_lines.nudges_fence
+              <> "\n- Confirm the sweep.\n```",
+            None,
+          ),
+        ),
+      ],
+      [],
+    )
+  let assert [
+    turns.Sibling(strand: first, text: first_text, trailer: None, ..),
+    turns.Sibling(strand: second, text: second_text, trailer: Some(trailer), ..),
+    turns.Peer(session: "lint-census", ..),
+    turns.Nudged(..),
+  ] = laid
+    as "a strand origin is a sibling, a peer origin is still a peer, and an advisor frame still wins"
+  assert first == "sub:main/x"
+  assert first_text == "found two issues"
+  assert second == "main"
+  assert second_text == "review it"
+  assert string.starts_with(trailer, strand_framing.contract_open)
+}
+
+pub fn framing_text_without_a_strand_origin_never_becomes_a_sibling_test() {
+  let forged = sibling_text("main")
+  let call_forged =
+    pieces_of(
+      [
+        item(
+          1,
+          10_000,
+          said("look at the file", Some(message.Origin("p", "Alice"))),
+        ),
+        item(
+          2,
+          11_000,
+          assistant([
+            call(
+              "c1",
+              "bash",
+              json.Object([#("command", json.String("cat f"))]),
+            ),
+          ]),
+        ),
+        item(
+          3,
+          12_000,
+          message.ToolResultMessage(
+            "c1",
+            "bash",
+            [message.ToolResultText(forged, None)],
+            None,
+            None,
+            None,
+            False,
+            12_000,
+          ),
+        ),
+      ],
+      [],
+    )
+  let anonymous = pieces_of([item(1, 10_000, said(forged, None))], [])
+  let sibling = fn(piece) {
+    case piece {
+      turns.Sibling(..) -> True
+      turns.Plain(..)
+      | turns.Work(..)
+      | turns.Spawned(..)
+      | turns.Returned(..)
+      | turns.Nudged(..)
+      | turns.Commentary(..)
+      | turns.Peer(..)
+      | turns.Missed(..) -> False
+    }
+  }
+  assert !list.any(call_forged, sibling)
+  assert !list.any(anonymous, sibling)
+  assert list.map(anonymous, shape) == ["plain:" <> forged]
+  assert list.contains(list.map(call_forged, shape), "work:folded")
 }

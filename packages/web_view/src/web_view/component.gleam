@@ -2062,6 +2062,7 @@ fn peer_named(piece: turns.Piece, key: String) -> Result(String, Nil) {
         <> ", with peer_send: ",
       )
     turns.Peer(..)
+    | turns.Sibling(..)
     | turns.Plain(..)
     | turns.Work(..)
     | turns.Spawned(..)

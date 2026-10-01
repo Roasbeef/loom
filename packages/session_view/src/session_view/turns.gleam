@@ -39,6 +39,7 @@ import session_view/agent_view
 import session_view/composer
 import session_view/protocol
 import session_view/snapshot_view
+import session_view/strand_framing
 import session_view/tool_activity
 import session_view/transcript_image.{type Image}
 import session_view/transcript_line.{type Line}
@@ -197,6 +198,12 @@ pub type Piece {
   /// knows it was stored, never that it was read.
   Peer(key: String, session: String, strand: String, text: String)
 
+  /// A message a strand of this same session sent through the Agency. Its
+  /// text has the Agency's framing removed; `trailer` is the harness's
+  /// result-contract instruction after a spawn brief, drawn apart from the
+  /// sender's words, and `None` for every other message.
+  Sibling(key: String, strand: String, text: String, trailer: Option(String))
+
   /// A cache miss this client noticed after the turn that paid for it.
   Missed(key: String, text: String)
 }
@@ -321,6 +328,7 @@ pub fn pictured(pieces: List(Piece)) -> List(#(String, List(Image))) {
       | Nudged(..)
       | Commentary(..)
       | Peer(..)
+      | Sibling(..)
       | Missed(..) -> []
     }
   })
@@ -579,10 +587,26 @@ fn entry_kind(
             at,
           ),
         ]
-        None, Some(message.Origin(..))
-        | None, Some(message.StrandOrigin(..))
-        | None, None
-        -> [
+
+        // A sibling is classified by the stored origin and by nothing in
+        // the text: the framing is only taken off a message already known
+        // to come from that strand.
+        None, Some(message.StrandOrigin(strand:)) -> {
+          let framed =
+            strand_framing.strip(transcript_lines.user_body(content), strand)
+          [
+            Input(
+              Sibling(
+                block.key,
+                strand,
+                composer.transcript_text(framed.body, False),
+                option.map(framed.trailer, composer.transcript_text(_, False)),
+              ),
+              at,
+            ),
+          ]
+        }
+        None, Some(message.Origin(..)) | None, None -> [
           Input(
             folded_memory(block, transcript_lines.user_body(content), expansion),
             at,
@@ -1086,6 +1110,7 @@ fn piece_key(piece: Piece) -> String {
     | Returned(key:, ..)
     | Nudged(key:, ..)
     | Peer(key:, ..)
+    | Sibling(key:, ..)
     | Missed(key:, ..) -> key
   }
 }

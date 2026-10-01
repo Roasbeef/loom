@@ -41,6 +41,7 @@ import session_view/notes_view
 import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/strand_framing
 import session_view/stream_identity
 import session_view/text_hygiene
 import session_view/todo_board
@@ -1566,6 +1567,9 @@ pub fn entry_lines(
       |> option.lazy_or(fn() {
         peer_message_lines(value, details_extent(details_expanded))
       })
+      |> option.lazy_or(fn() {
+        sibling_message_lines(value, details_extent(details_expanded))
+      })
       |> option.lazy_unwrap(fn() {
         message_lines(value, details_expanded, local_owner, found)
       })
@@ -1647,21 +1651,7 @@ fn peer_message_lines(
       content:,
       origin: Some(message.PeerOrigin(session:, strand:)),
       ..,
-    ) -> {
-      let body = user_body(content)
-      let whole = composer.transcript_text(body, True)
-
-      // A long message collapses to a preview and an expand hint. The
-      // preview can stop inside a fence, which would swallow the hint into
-      // a code block, so only the whole body is drawn as Markdown.
-      let shown = case extent {
-        notes_view.Complete -> Line(ToolDetail, whole)
-        notes_view.Excerpt ->
-          case composer.transcript_text(body, False) {
-            preview if preview == whole -> Line(ToolDetail, whole)
-            preview -> Line(System, preview)
-          }
-      }
+    ) ->
       Some([
         Line(
           System,
@@ -1670,10 +1660,56 @@ fn peer_message_lines(
             <> " · "
             <> text_hygiene.single_line(strand),
         ),
-        shown,
+        prose_line(user_body(content), extent),
+      ])
+    _ -> None
+  }
+}
+
+// A message another strand of this same session sent through the Agency.
+// The stored origin is the only thing that selects it: the Agency's framing
+// is removed from a message already known to carry `StrandOrigin`, and a
+// text that merely looks framed, under any other origin, is drawn as the
+// operator's input like any other. A spawn brief's result-contract trailer
+// is the harness's own instruction to the child, so it follows the body as
+// a line of its own.
+fn sibling_message_lines(
+  value: message.AgentMessage,
+  extent: notes_view.Extent,
+) -> Option(List(Line)) {
+  case value {
+    message.UserMessage(
+      content:,
+      origin: Some(message.StrandOrigin(strand:)),
+      ..,
+    ) -> {
+      let framed = strand_framing.strip(user_body(content), strand)
+      let trailer = case framed.trailer {
+        Some(instruction) -> [prose_line(instruction, extent)]
+        None -> []
+      }
+      Some([
+        Line(System, "strand · " <> text_hygiene.single_line(strand)),
+        prose_line(framed.body, extent),
+        ..trailer
       ])
     }
     _ -> None
+  }
+}
+
+// An agent's prose as one row. A long message collapses to a preview and
+// an expand hint. The preview can stop inside a fence, which would swallow
+// the hint into a code block, so only the whole body is drawn as Markdown.
+fn prose_line(body: String, extent: notes_view.Extent) -> Line {
+  let whole = composer.transcript_text(body, True)
+  case extent {
+    notes_view.Complete -> Line(ToolDetail, whole)
+    notes_view.Excerpt ->
+      case composer.transcript_text(body, False) {
+        preview if preview == whole -> Line(ToolDetail, whole)
+        preview -> Line(System, preview)
+      }
   }
 }
 
