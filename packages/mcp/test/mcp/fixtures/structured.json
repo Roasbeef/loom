@@ -119,7 +119,7 @@
             "enum": [
               "ok",
               "bad\"\n@external(erlang, \"os\", \"cmd\")",
-              "名前"
+              "\u540d\u524d"
             ]
           },
           "options": {
@@ -153,6 +153,107 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "zz_constructor_probe",
+      "description": "Exercises generated constructor identities and a null field named after an imported module.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string",
+            "enum": [
+              "b_n2_c"
+            ]
+          },
+          "a_n1_b": {
+            "type": "string",
+            "enum": [
+              "c"
+            ]
+          },
+          "report": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "a",
+          "a_n1_b",
+          "report"
+        ]
+      }
+    },
+    {
+      "name": "zz_union_probe",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "box": {
+                "type": "object",
+                "properties": {
+                  "tag": {
+                    "type": "string",
+                    "enum": [
+                      "left"
+                    ]
+                  },
+                  "A": {
+                    "type": "string"
+                  },
+                  "a_559aead0": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tag",
+                  "A",
+                  "a_559aead0"
+                ]
+              }
+            },
+            "required": [
+              "box"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "box": {
+                "type": "object",
+                "properties": {
+                  "tag": {
+                    "type": "string",
+                    "enum": [
+                      "right"
+                    ]
+                  },
+                  "A": {
+                    "type": "string"
+                  },
+                  "a_559aead0": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tag",
+                  "A",
+                  "a_559aead0"
+                ]
+              }
+            },
+            "required": [
+              "box"
+            ]
+          }
+        ]
+      },
+      "description": "Preserves a valid union result when nested wire field names cannot be represented together."
     }
   ]
 }

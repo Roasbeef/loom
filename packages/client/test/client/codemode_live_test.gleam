@@ -437,14 +437,14 @@ fn run_typed_mcp_round_trip(ready: Ready) -> Nil {
 fn typed_mcp_program(job_id: String) -> String {
   "import cap/mcp/typed\nimport cap/report\nimport gleam/option.{Some, None}\n"
   <> "pub fn main() -> report.Outcome {\n"
-  <> "  let filter = typed.ListApplicationsT1InputFilterN2(region: \"north\", tags: [])\n"
-  <> "  let options = typed.ListApplicationsT1Options(..typed.list_applications_defaults, status: Some(typed.ListApplicationsT1InputStatusN6ActiveV0), cursor: Some(None), limit: Some(0))\n"
+  <> "  let filter = typed.McpT1InputN2ListApplicationsFilter(region: \"north\", tags: [])\n"
+  <> "  let options = typed.McpT1OptionsListApplications(..typed.list_applications_defaults, status: Some(typed.McpT1InputN6V0ListApplicationsStatusActive), cursor: Some(None), limit: Some(0))\n"
   <> "  case typed.list_applications(job_id: \""
   <> job_id
   <> "\", filter: filter, options: options) {\n"
   <> "    Ok(found) -> case found.results, found.next_cursor {\n"
   <> "      [row], Some(None) -> case row.status, row.active {\n"
-  <> "        typed.ListApplicationsT1OutputResultN0ResultsItemN2StatusN4ActiveV0, typed.ListApplicationsT1OutputResultN0ResultsItemN2ActiveN5Enabled -> report.text(row.id)\n"
+  <> "        typed.McpT1OutputN4V0ListApplicationsResultResultsItemStatusActive, typed.McpT1OutputN5V0EnabledListApplicationsResultResultsItemActive -> report.text(row.id)\n"
   <> "        _, _ -> report.failure(\"wrong decoded enum or boolean\")\n"
   <> "      }\n"
   <> "      _, _ -> report.failure(\"wrong result or null presence\")\n"
@@ -476,7 +476,7 @@ fn run_typed_mcp_mismatch(ready: Ready) -> Nil {
   let source =
     "import cap/mcp\nimport cap/mcp/typed\nimport cap/report\nimport gleam/list\n"
     <> "pub fn main() -> report.Outcome {\n"
-    <> "  case typed.list_applications(job_id: \"malformed\", filter: typed.ListApplicationsT1InputFilterN2(region: \"north\", tags: []), options: typed.list_applications_defaults) {\n"
+    <> "  case typed.list_applications(job_id: \"malformed\", filter: typed.McpT1InputN2ListApplicationsFilter(region: \"north\", tags: []), options: typed.list_applications_defaults) {\n"
     <> "    Error(mcp.ResultSchemaMismatch(error, result)) -> report.value(report.object([#(\"path\", report.list(list.map(error.path, report.string))), #(\"text\", report.string(mcp.text(result)))]))\n"
     <> "    _ -> report.failure(\"the malformed answer did not fail typed decoding\")\n"
     <> "  }\n}\n"
@@ -534,7 +534,7 @@ fn run_typed_mcp_compile_refusals(ready: Ready) -> Nil {
       "enum",
       string.replace(
         valid,
-        "Some(typed.ListApplicationsT1InputStatusN6ActiveV0)",
+        "Some(typed.McpT1InputN6V0ListApplicationsStatusActive)",
         "Some(\"active\")",
       ),
       "Type mismatch",
@@ -560,6 +560,55 @@ fn run_typed_mcp_compile_refusals(ready: Ready) -> Nil {
     assert process.receive(seen, 0) == Error(Nil)
       as "compile refusals must never call the MCP server"
   })
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
+/// Preserves a valid answer after nested fallback removes a union discriminator.
+///
+/// ## Examples
+///
+/// This regression exercises the generated decoder inside the real satellite.
+pub fn rendered_mcp_union_fallback_preserves_valid_output_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP rendered_mcp_union: " <> reason)
+    Ok(ready) -> run_rendered_mcp_union(ready)
+  }
+}
+
+fn run_rendered_mcp_union(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = typed_mcp_layer(seen)
+  let source =
+    "import cap/mcp/typed\nimport cap/report\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  case typed.zz_union_probe(options: typed.zz_union_probe_defaults) {\n"
+    <> "    Ok(value) -> report.value(value)\n"
+    <> "    Error(_) -> report.failure(\"valid union result was rejected\")\n"
+    <> "  }\n}\n"
+  let outcome =
+    run_notes_program(
+      typed_mcp_config(rig, layer),
+      rig,
+      source,
+      "rendered-mcp-union",
+    )
+  assert !outcome.is_error as rendered_text(outcome)
+  assert notes_program_value(outcome)
+    == json.Object([
+      #(
+        "box",
+        json.Object([
+          #("tag", json.String("left")),
+          #("A", json.String("a")),
+          #("a_559aead0", json.String("b")),
+        ]),
+      ),
+    ])
+  let assert Ok(#("zz_union_probe", _)) = process.receive(seen, 1000)
+    as "the valid union answer must follow a real server call"
+  assert process.receive(seen, 0) == Error(Nil)
   mcp_wiring.stop(layer)
   stop_rig(rig)
 }
@@ -672,7 +721,7 @@ fn fixture_mcp_layer(
     mcp_client.start(
       fake_mcp.seam(tools:, call: fn(name, arguments) {
         process.send(seen, #(name, arguments))
-        fake_mcp.Answers(typed_mcp_result(arguments))
+        fake_mcp.Answers(fixture_mcp_result(name, arguments))
       }),
       mcp_client.options("typed-fixture"),
     )
@@ -694,6 +743,35 @@ fn fixture_mcp_layer(
     call_timeout_ms: 30_000,
     custody: [client],
   )
+}
+
+// A rendered union can lose its discriminator when a nested record falls back.
+// The valid original wire answer must still arrive as a raw value, not be
+// rejected by two overlapping decoders derived from the earlier schema plan.
+fn fixture_mcp_result(
+  name: String,
+  arguments: mcp_json.JsonValue,
+) -> mcp_json.JsonValue {
+  case name {
+    "zz_union_probe" ->
+      mcp_json.Object([
+        #("content", mcp_json.Array([])),
+        #(
+          "structuredContent",
+          mcp_json.Object([
+            #(
+              "box",
+              mcp_json.Object([
+                #("tag", mcp_json.String("left")),
+                #("A", mcp_json.String("a")),
+                #("a_559aead0", mcp_json.String("b")),
+              ]),
+            ),
+          ]),
+        ),
+      ])
+    _ -> typed_mcp_result(arguments)
+  }
 }
 
 fn typed_mcp_result(arguments: mcp_json.JsonValue) -> mcp_json.JsonValue {
@@ -800,7 +878,7 @@ pub fn mcp_process_program_source() -> String {
   <> "    message: \""
   <> wire_message
   <> "\",\n"
-  <> "    options: fixture.EchoArgsT1Options(..fixture.echo_args_defaults, tag: option.Some(\""
+  <> "    options: fixture.McpT1OptionsEchoArgs(..fixture.echo_args_defaults, tag: option.Some(\""
   <> wire_tag
   <> "\")),\n"
   <> "  ) {\n"
@@ -984,7 +1062,10 @@ fn assert_generated_names(source: String, surface: String) -> Nil {
   // Nested fields now become a record; the hostile outer wire name remains
   // a literal and the generated field names describe the admitted value.
   let label = digested("target_repo", "Target-Repo")
-  assert string.contains(source, "  " <> label <> " " <> label <> ": Nested")
+  assert string.contains(
+    source,
+    "  " <> label <> " " <> label <> ": McpT2InputN1Nested",
+  )
   assert string.contains(source, "\"Target-Repo\"")
   assert string.contains(source, "owner: String")
   assert string.contains(source, "repo: String")
