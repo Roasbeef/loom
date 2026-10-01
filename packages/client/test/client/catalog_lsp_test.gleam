@@ -13,7 +13,8 @@ import simplifile
 
 // The smallest catalogue `parse` accepts, so every test below exercises
 // exactly the `[lsp.<name>]` tables it appends.
-const minimal = "
+const minimal =
+  "
 [models.one]
 dialect = \"anthropic\"
 api_key_env = \"KEY\"
@@ -28,7 +29,8 @@ main = [\"one\"]
 // The two servers the documentation shows, verbatim: `gleam lsp`, which
 // writes its manifest and `build/` into the project, and `gopls`, which
 // writes nothing there but needs the module cache and the build cache.
-const documented = "
+const documented =
+  "
 [lsp.gleam]
 command = [\"gleam\", \"lsp\"]
 extensions = [\".gleam\"]

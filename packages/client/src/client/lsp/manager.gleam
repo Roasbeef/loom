@@ -542,7 +542,8 @@ pub fn search_jailed(
 
 // Why a bare name could not be searched for when ripgrep is missing, and
 // the form of the question that needs no search at all.
-const rg_missing = "finding a bare name searches the project with ripgrep (rg), "
+const rg_missing =
+  "finding a bare name searches the project with ripgrep (rg), "
   <> "which is not installed where the sandbox can run it; give the `path` "
   <> "(and the 1-based `line`) of a file that mentions the symbol, and the "
   <> "language server is asked directly"

@@ -120,7 +120,8 @@ pub fn tools(door: query.Door) -> List(Tool) {
 
 // The sentence every symbol-addressed description ends with, so the three
 // facts a model needs to call these well are stated once and identically.
-const addressing = " Address the symbol by name as the code spells it, "
+const addressing =
+  " Address the symbol by name as the code spells it, "
   <> "optionally qualified (`util.Greet`, `probe.greet`); positions are "
   <> "never needed. Add `path`, and `line` as fs_read prints it, only to "
   <> "narrow an ambiguous name. Every site in the answer is printed as "

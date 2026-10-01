@@ -3928,7 +3928,6 @@ fn assemble_in(
       summary_name,
       summary_commits,
     )
-
     // The language-server manager is in this tier because a replacement
     // loses nothing a query cannot rebuild: the dead manager's keepers
     // stop their servers when it goes, and the next query starts one

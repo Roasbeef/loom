@@ -1230,7 +1230,8 @@ fn sites(served: query.Served(List(query.Site))) -> List(#(String, Int)) {
 
 const probe_source = "pub fn greet() -> String {\n  \"hi\"\n}\n"
 
-const other_source = "import probe\n\npub fn twice() -> String {\n  probe.greet() <> probe.greet()\n}\n"
+const other_source =
+  "import probe\n\npub fn twice() -> String {\n  probe.greet() <> probe.greet()\n}\n"
 
 // The live tests resolve a bare symbol, which the manager does with
 // ripgrep inside the jail before asking the server, so ripgrep is as much
