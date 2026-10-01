@@ -25,9 +25,11 @@ import codemode/compile
 import codemode/enforcement
 import core/clock
 import gleam/int
+import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap
 import simplifile
@@ -746,6 +748,125 @@ pub fn a_root_linked_into_tmp_is_refused_test() {
   assert string.contains(reason, "under /tmp, which the jail replaces")
   let _ = simplifile.delete_all([tmp, home])
   Nil
+}
+
+// --- loom ext check: a real server, end to end -------------------------------
+
+/// `loom ext check` run through its verb against a real jailed server, the
+/// one in-tree witness for `check.run_group`, `serve.start_check_plane`
+/// and `serve.stop_check_plane` with a helper that exists. Every other
+/// `check` test here refuses before a plane starts. The server is `gleam
+/// lsp`, because the plane runs the server as a jailed process and the
+/// in-VM `support/fake_lsp` cannot be one. The profile's check asks for the
+/// definition of `util.greet`, which the fixture holds at line 1, so a
+/// pass means a server started over a copy of the fixture and answered.
+/// The same profile with a wrong line must fail, with the exit-1 answer
+/// the verb gives, so the pass is not a verb that cannot fail.
+///
+/// It skips, visibly, where the helper, `gleam` or `rg` is missing, or the
+/// platform enforces nothing the helper can apply.
+pub fn check_runs_a_real_server_over_a_fixture_test() {
+  case live_prerequisites() {
+    Error(reason) -> io.println_error("SKIP check live witness: " <> reason)
+    Ok(helper) -> {
+      let right = witness_home("check-live-right", "src/util.gleam:1")
+      let assert Ok(lines) = check_with(right, helper)
+        as "a fixture whose expectation is true must pass"
+      assert list.any(lines, string.contains(_, "ok    definition util.greet"))
+      assert list.any(lines, string.contains(_, "1 of 1 checks passed"))
+
+      let wrong = witness_home("check-live-wrong", "src/util.gleam:2")
+      let assert Error(reason) = check_with(wrong, helper)
+        as "a fixture whose expectation is false must fail"
+      assert string.starts_with(
+        reason,
+        "check failed: 1 of 1 checks of lsp_witness failed",
+      )
+      assert string.contains(reason, "FAIL  definition util.greet")
+      let _ = simplifile.delete_all([right, wrong])
+      Nil
+    }
+  }
+}
+
+// The helper, the one language server the witness runs, and `rg`, which a
+// bare-name question searches the project with. The helper is the one the
+// client's live tests use, built by `make binaries`.
+fn live_prerequisites() -> Result(String, String) {
+  use Nil <- result.try(case exec.unjailed_skip_reason(exec.host_platform()) {
+    Some(reason) -> Error(reason)
+    None -> Ok(Nil)
+  })
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner must have a working directory"
+  let helper = here <> "/../../bin/loom-exec"
+  use Nil <- result.try(case simplifile.is_file(helper) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) | Error(_) ->
+      Error("no loom-exec at " <> helper <> "; run `make binaries`")
+  })
+  use _gleam <- result.try(
+    ffi_os.find_executable("gleam")
+    |> result.replace_error("gleam is not on PATH"),
+  )
+  use _rg <- result.try(
+    ffi_os.find_executable("rg")
+    |> result.replace_error("ripgrep (rg) is not on PATH"),
+  )
+  Ok(helper)
+}
+
+// An extensions home holding the installed witness profile, whose one
+// check expects `util.greet` at `expected`. The profile is a manifest and
+// a two-module Gleam fixture, installed through the verb.
+fn witness_home(name: String, expected: String) -> String {
+  let home = extensions.scratch(name)
+  let tree =
+    extensions.materialise(
+      [
+        #("extension.toml", witness_manifest(expected)),
+        #("README.md", "# lsp_witness\n\ngleam lsp for Loom's own tests.\n"),
+        #("LICENSE", "Apache-2.0\n"),
+        #(
+          "fixture/gleam.toml",
+          "name = \"fixture\"\nversion = \"1.0.0\"\ntarget = \"erlang\"\n",
+        ),
+        #(
+          "fixture/src/util.gleam",
+          "pub fn greet(name: String) -> String {\n  \"Hello, \" <> name\n}\n",
+        ),
+        #(
+          "fixture/src/fixture.gleam",
+          "import util\n\npub fn main() -> String {\n  util.greet(\"world\")\n}\n",
+        ),
+      ],
+      extensions.scratch(name <> "-src"),
+    )
+  let assert Ok(_installed) = cli.dispatch(["install", tree, "--home", home])
+    as "the witness profile must install"
+  home
+}
+
+fn witness_manifest(expected: String) -> String {
+  "[extension]\nname = \"lsp_witness\"\nversion = \"0.1.0\"\n"
+  <> "description = \"gleam lsp, to witness loom ext check\"\n"
+  <> "license = \"Apache-2.0\"\ntier = \"profile\"\n\n"
+  <> "[lsp.gleam]\ncommand = [\"gleam\", \"lsp\"]\nextensions = [\".gleam\"]\n"
+  <> "root_markers = [\"gleam.toml\"]\nproject = \"writable\"\n\n"
+  <> "[[check]]\nserver = \"gleam\"\nquery = \"definition\"\n"
+  <> "symbol = \"util.greet\"\nexpect = [\""
+  <> expected
+  <> "\"]\n"
+}
+
+// The verb as an operator runs it, under `BestEffort` for the reason the
+// conformance suites give: the ordinary runner's helper cannot apply every
+// layer platform enforcement demands, and the probe would then refuse the
+// server before a question was asked.
+fn check_with(home: String, helper: String) -> Result(List(String), String) {
+  cli.dispatch([
+    "check", "lsp_witness", "--home", home, "--helper", helper, "--best-effort",
+  ])
 }
 
 // --- helpers -----------------------------------------------------------------
