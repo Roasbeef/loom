@@ -43,7 +43,7 @@
 //// that carry structure a message cannot (`NotFound`'s symbol,
 //// `Ambiguous`'s candidate sites, `Unsupported`'s server and request)
 //// travel as an answer tagged `unresolved`: the harness looked, and the
-//// looking is the answer. `cap/lsp.LspError`'s docs state the same
+//// looking is the answer. `cap/lsp`'s module doc states the same
 //// mapping from the other end; `lsp_test` pins this end by whole-map
 //// comparison, because `cap` and `codemode` share no dependency.
 ////
@@ -53,6 +53,28 @@
 //// tool result says so because a model reading a slow answer would
 //// otherwise take it for a hang; a program has no reader to reassure,
 //// and its deadline is the execution's either way.
+////
+//// ## Flow
+////
+//// ```text
+//// routing                         one arm per name in serviced_caps;
+////                                 any other name goes to the inner router
+////   → <name>_plan                 decode every argument (query_arg,
+////                                 direction_arg, mode_arg, ...), then
+////                                 return ServedHere(closure) or a denial
+////   → the closure, run later      call the door (or Seam.rename)
+////   → answer                      Ok: render fields into a CapOk map
+////                                 Error: refusal, which picks a channel
+////
+//// rename, preview:  door.prepare_rename → preview → changed_spans
+////                   → paired → preview_fields
+//// rename, apply:    Seam.rename → applied_fields
+//// ```
+////
+//// The split between the plan and its closure is the admission boundary.
+//// A bad argument is refused while the plan is built, before an ordinal
+//// is spent or the server is asked. A server error is only discovered by
+//// running the closure, and travels back as a `cap_result`.
 
 import broker/framing.{type CapOutcome}
 import codemode/internal/args
@@ -384,6 +406,10 @@ fn check_line(
   }
 }
 
+// The wire writes an absent optional as `nil`, never as a missing key
+// (`query_arg`), so the three cases are nil, text and anything else, and
+// the arm lists every other variant by name so a new `MsgPackValue` forces
+// a decision here.
 fn optional_string(
   value: MsgPackValue,
   key: String,
@@ -513,6 +539,9 @@ fn change(line: Int, before: String, after: String) -> LineChange {
   LineChange(line:, before: trim_cr(before), after: trim_cr(after))
 }
 
+// A CRLF file's lines keep their `\r` in `AnchoredLine.text`, because the
+// anchor is computed over it. It is a terminator, not content, so it is
+// dropped from the preview and never from the anchor.
 fn trim_cr(text: String) -> String {
   case string.ends_with(text, "\r") {
     True -> string.drop_end(text, 1)
@@ -584,6 +613,8 @@ pub fn refusal(error: QueryError) -> CapOutcome {
   }
 }
 
+// The structured half of the two failure channels: the harness looked, so
+// the answer is `CapOk` with a tag the program matches on, not an error.
 fn unresolved(tag: String, rest: List(#(String, MsgPackValue))) -> CapOutcome {
   framing.CapOk(
     value: fields([#("unresolved", msgpack.StringValue(tag)), ..rest]),
@@ -754,6 +785,8 @@ fn optional_text(value: Option(String)) -> MsgPackValue {
   }
 }
 
+// The one place a Gleam list of pairs becomes a msgpack map with string
+// keys, so every answer is built the same way.
 fn fields(entries: List(#(String, MsgPackValue))) -> MsgPackValue {
   msgpack.MapValue(
     list.map(entries, fn(entry) { #(msgpack.StringValue(entry.0), entry.1) }),
