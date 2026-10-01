@@ -396,7 +396,7 @@ fn probe_jailed(
 // out of `/bin` to `/`, and `jail.policy_for` refuses a region covering
 // the server's writes before any probe could be cleared.
 fn shell_server() -> catalog.LspServer {
-  catalog.LspServer(..fake_server(), name: "shell", command: ["/bin/false"])
+  catalog.LspServer(..fake_server(), name: "shell", command: ["/usr/bin/false"])
 }
 
 pub fn a_degraded_probe_refuses_the_server_naming_the_layer_test() {
