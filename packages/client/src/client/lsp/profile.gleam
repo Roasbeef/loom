@@ -58,6 +58,64 @@
 //// profiles with the manifest's freshly decoded ones and refuses any
 //// difference, and the manifest's have met every rule. `approval_lines`
 //// renders the same grant for the operator who is approving it.
+////
+//// ## Flow
+////
+//// The main path reads top to bottom in the order the file is laid out.
+////
+//// ```text
+//// decode_servers
+////   → decode_server, once per table, in name order
+////       → server_name → known_keys → command → extensions → root_markers
+////       → project → paths (readable, writable) → disjoint_roots
+////       → env → cache_env → language_id → qualifier_separators
+////       → module_case → hint
+////   → claim_extensions, folded over the decoded set
+////
+//// at boot, with the daemon's places:
+////   cache_place → expand_path → private_cache_fault
+////
+//// at install and at load:
+////   encode_server → (install record) → server_decoder
+////   approval_lines, for the operator reading the grant
+//// ```
+////
+//// `decode_server` stops at the first refusal, so a table with two faults
+//// reports the earlier key in that order. The order is fixed so the same
+//// file produces the same message on every boot.
+////
+//// ## Refusal rules
+////
+//// Each key below is refused for the reason beside it. The function that
+//// holds the rule carries the longer account.
+////
+//// ```text
+//// key            refused when                           because
+//// name           not [a-z][a-z0-9_]*, a Gleam keyword,  the code-mode name mangler
+////                `__`, trailing `_`, over 32 chars      would otherwise rewrite it
+//// command        a string, empty, or an empty element   the argv is exec'd and never
+////                                                       passed to a shell
+//// extensions     missing, no leading dot, a path,       a file reaches exactly one
+////                repeated, or claimed by two servers    server
+//// root_markers   missing, `.`, `..`, a path, repeated   a marker is looked up by name in
+////                                                       each ancestor
+//// project        anything but read-only or writable     writable must be asked for
+//// readable,      relative, a `..` component, a whole    the jail compares roots by
+//// writable       home or cache directory, under         component; the private cache
+////                <cache>/loom, repeated, or in both     must not be named or swapped
+//// env            not [A-Z_][A-Z0-9_]*, a name the       the jail sets those itself, and
+////                server owns, or repeated               env values never come from a file
+//// cache_env      a bad or owned or `env` name, an       a shared cache lets a jailed
+////                absolute directory, a `..`, an empty   server plant entries the host
+////                component, or one inside another       builds from
+//// language_id    over 40 characters or off the grammar  a typo should fail here, not be
+////                                                       ignored by the server
+//// qualifier_     empty, `/`, whitespace, or repeated    `/` already means a path inside
+//// separators                                            a qualifier
+//// module_case    anything but as-written or snake       an unknown word is a typo
+//// hint           empty, multi-line, a control           it is read inside the cached
+////                character, or over 200 bytes           tool description
+//// ```
 
 import codemode/vet/policy as vet_policy
 import gleam/dict.{type Dict}
@@ -322,6 +380,12 @@ pub fn decode_server(
   value: tom.Toml,
 ) -> Result(LspServer, String) {
   let place = "lsp." <> name
+
+  // Each `use x <- result.try(step)` line unwraps an `Ok` and binds `x`
+  // for the rest of the function, or returns the step's `Error` from the
+  // whole function at once. Read the chain below as a list of checks run
+  // in order, the first failure being the answer; `Nil` is bound where a
+  // check yields no value.
   use Nil <- result.try(server_name(name))
   use fields <- result.try(case value {
     tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
@@ -518,6 +582,10 @@ fn extensions(
   Ok(extensions)
 }
 
+// One written extension, lowercased. The three refusals are told apart
+// because each is a different mistake: a lone dot names no suffix, a
+// missing dot is `go` written for `.go`, and a slash means the operator
+// wrote a path where a suffix goes.
 fn one_extension(at: String, written: String) -> Result(String, String) {
   let lowered = string.lowercase(written)
   case lowered, string.contains(lowered, "/") {
@@ -737,6 +805,9 @@ fn at_or_beneath(root: String, path: String) -> Bool {
   is_prefix(components(root), components(path))
 }
 
+// List-prefix test over components. The guard arm compares heads and
+// recurses; any other mismatch ends the walk, so it is linear in the
+// shorter list.
 fn is_prefix(prefix: List(String), of: List(String)) -> Bool {
   case prefix, of {
     [], _ -> True
@@ -841,6 +912,9 @@ fn root_clear_of(
   }
 }
 
+// A root listed as both readable and writable is two answers to one
+// question. Only writable entries are checked, since every shared root
+// shows up there.
 fn disjoint_roots(
   place: String,
   readable: List(LspPath),
@@ -1383,6 +1457,9 @@ fn beneath(
   }
 }
 
+// Trims every trailing slash so a place written `/home/o/` joins with
+// `rest` to `/home/o/rest` rather than `/home/o//rest`. Recursive, and
+// each step drops one grapheme, so it ends at the first non-slash.
 fn strip_trailing_slash(path: String) -> String {
   case string.ends_with(path, "/") {
     True -> strip_trailing_slash(string.drop_end(path, 1))
@@ -1604,6 +1681,10 @@ fn executable_text(server: LspServer) -> String {
   <> " install prefix"
 }
 
+// One labelled row of the approval. The label column is padded to a fixed
+// width so the operator reads the values down a straight edge, and an empty
+// list prints `(none)` rather than a blank, since a blank would look like a
+// field the approval forgot to show.
 fn approval_line(label: String, values: List(String)) -> String {
   let shown = case values {
     [] -> "(none)"
@@ -1616,6 +1697,8 @@ fn quoted(text: String) -> String {
   "\"" <> text <> "\""
 }
 
+// A root is stored as written, never expanded, so the record keeps what
+// was approved and expansion stays a boot-time decision.
 fn encode_path(path: LspPath) -> Json {
   json.string(path_text(path))
 }
@@ -1650,6 +1733,9 @@ fn project_text(project: ProjectAccess) -> String {
   }
 }
 
+// The record's decoders are total. Each failure arm hands `decode.failure`
+// a placeholder value of the right type, which the decoder discards, plus
+// the sentence the error will quote as what was expected.
 fn project_decoder() -> Decoder(ProjectAccess) {
   use written <- decode.then(decode.string)
   case written {
