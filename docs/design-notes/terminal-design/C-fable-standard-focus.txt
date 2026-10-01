@@ -1,0 +1,40 @@
+ ◆ loom                                     ws · main · ~/code/pi-gui (main)                   kimi-k3 · Ctrl+g details 
+  transcript / main ▸ sub:tests · ^O strands · /strand main                   ╭ 1 Strands! 2 Changes 3 Trace 4 Session─╮
+ ● ● main forked this strand · 34s ago                                        │ STRANDS · 5 · 2 working · 1 needs you  │
+ │ › Owner · operator                                                         │  ● main               Working · code_… │
+ │   Run gleam test and report failures.                                      │  ◷ advisor            Waiting · 1 nud… │
+ │                                                                            │❯ ? sub:tests          Needs approval … │
+ │ ∴ Reasoning · 4s · checking the test target first                          │  ✓ sub:docs           Finished 1m 12s  │
+ │ ◇ tools · 1 call · bash gleam test · waiting for approval                  │  ○ lnd-review         peer · asked 1 … │
+ ? ? waiting for your approval · fetch proxy.golang.org · a reviews           │────────────────────────────────────────│
+                                                                              │ sub:tests · Needs approval · 34s · 9k …│
+                                                                              │ TASK   Run gleam test and report failu…│
+                                                                              │ NOW    kimi-k3 · low · forked by main …│
+                                                                              │                                        │
+                                                                              │ MESSAGES                               │
+                                                                              │ ← main   Also check the README example…│
+                                                                              │ INBOX  0 unread · 1 approval pending   │
+                                                                              │                                        │
+                                                                              │ RECENT                                 │
+                                                                              │ ? bash gleam test · waits for approval │
+                                                                              │ ✓ fs_read calc_test.gleam              │
+                                                                              │                                        │
+                                                                              │ a opens the approval · x stops the str…│
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │ ↑↓ select · enter opens · x stops · a …│
+                                                                              ╰────────────────────────────────────────╯
+ ▸ todo · Change 1/3 · ▸ check it · 3/5 done · enter expands                                                            
+─ To sub:tests · enter queues · tab steers ──────────────────────────────────────── run gleam test and report failures ─
+ ◐ bash gleam test · waits for approval · 34s · esc interrupts                                                          
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ cache ≤3m · kimi-k3 · ctx ~41% · est $1.86 · ← sessions                             5 agents · 2 working · 1 attention 
