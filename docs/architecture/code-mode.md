@@ -1140,7 +1140,7 @@ none, which is the default for MCP and extension capabilities:
 | `fs.read`, `fs.write`, `fs.edit`, `fs.list` | the `path` |
 | `kv.get`, `kv.set`, `kv.delete` | the `key` |
 | `job.poll`, `job.kill`, `job.send` | the `job_id` |
-| `job.start` | the first whitespace token of `command` |
+| `job.start` | the first whitespace token of `command` that holds no `=`, skipping inline assignments such as `API_KEY=x`; none if every token has one |
 | `proc.run` | the executable's basename and ` +N args` |
 
 File bodies, `stdin`, `env`, the rest of an `argv`, and every message are
