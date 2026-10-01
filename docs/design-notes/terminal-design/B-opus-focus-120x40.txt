@@ -1,0 +1,40 @@
+ ws · main ▸ sub:tests                                ↓ ⏎ main · Ctrl+T timeline │ Strands ¹  Changes  Trace  Session   
+                                                                                 │─━━━━━━━━━────────────────────────────
+                                                                                 │ ‹ Strands                        Esc 
+                                                                                 │                                      
+                                                                                 │ ? sub:tests                          
+                                                                                 │   Needs approval · network           
+                                                                                 │                                      
+                                                                                 │ Model                  kimi-k3 · low 
+                                                                                 │ Context                    9k tokens 
+                                                                                 │ Cache                  expires in 4m 
+                                                                                 │ Running                          34s 
+                                                                                 │                                      
+                                                                                 │ 1 Activity 2 Messages 3 Notes 4 ⋯    
+                                                                                 │                                      
+                                                                                 │ TASK                                 
+                                                                                 │ Run gleam test and report failures.  
+                                                                                 │                                      
+                                                                                 │ RECENT                               
+                                                                                 │   bash gleam test                    
+                                                                                 │   read calc_test.gleam               
+                                                                                 │                                      
+                                                                                 │ WAITS ON                             
+                                                                                 │   approval · fetch proxy.golang.org  
+                                                                                 │                                      
+                                                                                 │                                      
+                                                                                 │                                      
+                                                                                 │                                      
+                                                                                 │                                      
+ ● main forked this strand · 34s ago                                             │                                      
+    Run gleam test and report failures.                                          │                                      
+                                                                                 │                                      
+ ∴ Reasoning · 4s                                                                │                                      
+                                                                                 │                                      
+ ● bash  gleam test  · waiting for approval                                      │                                      
+                                                                                 │                                      
+ ● Waiting for your approval: fetch proxy.golang.org · a reviews                 │                                      
+ ? sub:tests · waiting for approval · 34s                              a reviews │                                      
+╭─ To sub:tests · Enter queues ────────────────────────────── main ▸ sub:tests ─╮│                                      
+│ › ← sessions · ↓ strands · / commands                                         ││                                      
+╰─ kimi-k3 · low › ctx 9k › est $1.86 ──────────────────────────── 1 needs you ─╯│ 1-4 detail · a approval · Esc list   
