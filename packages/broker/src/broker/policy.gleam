@@ -44,6 +44,28 @@
 //// network at all — never with silent unrestricted egress.
 ////
 //// Everything here is pure.
+////
+//// ## Flow
+////
+//// Composition: `compose` → `meet` → `apply_grant` → `shortfall` →
+//// `wanted_grants` → `narrow_unenforceable` → `validate`
+////
+//// Wire: `encode` → `to_msgpack`, and `decode` → `from_msgpack`
+////
+//// 1. `compose` is the broker's way in: it takes the `meet` of the session base
+////    and the tool's requirements, which only ever narrows, field by field
+////    through `meet_roots`, `meet_network`, `meet_limits` and `meet_mounts`.
+//// 2. `apply_grant` then folds each approved escalation grant over that meet,
+////    the one place a policy is widened, and only by what was granted.
+//// 3. `shortfall` compares the requirements with the final policy and reports
+////    what the tool asked for and did not get as `Narrowing` values.
+//// 4. `wanted_grants` turns those narrowings into the grants an escalation
+////    would ask a person to approve.
+//// 5. `narrow_unenforceable` fails closed on a mode that cannot be enforced yet,
+////    and `validate` refuses a policy that is not well formed before dispatch.
+//// 6. `encode` and `decode` carry a policy across the wire in the canonical
+////    form the helper accepts; `from_msgpack` is total and names the key that
+////    broke.
 
 import core/corruption.{type CorruptionReport}
 import core/msgpack.{type MsgPackValue}
