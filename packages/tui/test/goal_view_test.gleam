@@ -45,6 +45,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/render
+import tui/submit
 import tui/workspace
 import tui_test/pushed
 
@@ -1250,6 +1251,7 @@ pub fn a_mutation_is_confirmed_only_once_it_commits_test() {
         ..sent.shared,
         goal_report: session_model.ConfirmGoal(
           line: "the session goal is cleared",
+          request: Some(id),
         ),
       ),
     )
@@ -1271,7 +1273,10 @@ pub fn a_refused_mutation_is_not_confirmed_test() {
       ..sent,
       shared: session_model.Shared(
         ..sent.shared,
-        goal_report: session_model.ConfirmGoal(line: "the session goal is held"),
+        goal_report: session_model.ConfirmGoal(
+          line: "the session goal is held",
+          request: Some(id),
+        ),
       ),
     )
 
@@ -1442,4 +1447,372 @@ fn user_message(text: String) -> message.AgentMessage {
     timestamp: 1,
     origin: None,
   )
+}
+
+// The primary's idle-edge read has already returned Active. The advisor then
+// writes a final outcome without another operation edge. Real pushed bytes
+// must issue a goal read through the same lane the connected terminal uses.
+pub fn late_goal_writes_refresh_the_connected_panel_without_a_phase_edge_test() {
+  list.each(
+    [
+      #(
+        "paused",
+        json.String("zero_progress"),
+        goal_view.Paused(goal_view.ByZeroProgress),
+      ),
+      #(
+        "paused",
+        json.String("reviewer_unresponsive"),
+        goal_view.Paused(goal_view.ByUnresponsiveReviewer),
+      ),
+      #(
+        "budget_limited",
+        json.String("token_budget"),
+        goal_view.Limited(goal_view.ByTokenBudget),
+      ),
+      #("complete", json.Null, goal_view.Complete),
+    ],
+    fn(outcome) {
+      let #(asked, id) = outstanding(protocol.goal_get(99), "goal_get")
+      let observed = deliver(asked, pushed.reply(id, "snapshot", snapshot()))
+      let invalidated =
+        deliver(
+          observed,
+          pushed.push([
+            #("event", json.String("goal_changed")),
+            #("body", json.Object([])),
+          ]),
+        )
+      let assert Some(channel) = invalidated.shared.channel
+        as "the connected lane survives the push"
+      assert !session_channel.ready_for_read(channel)
+        as "the write notification immediately issued the authoritative read"
+      let refreshed =
+        deliver(
+          invalidated,
+          pushed.reply(
+            id + 1,
+            "snapshot",
+            json.Object([
+              #("mode", json.String("goal")),
+              #("board", wire(outcome.0, outcome.1)),
+            ]),
+          ),
+        )
+      let assert Some(goal_view.Pinned(status:, ..)) = refreshed.shared.goal
+        as "the returned goal replaces the retained board"
+      assert status == outcome.2
+      assert refreshed.shared.strands == observed.shared.strands
+        as "no phase edge was needed"
+      assert string.contains(painted(refreshed), goal_view.status_word(status))
+        as "the refreshed outcome is painted beside the composer"
+    },
+  )
+}
+
+// A failed automatic read must retire the retained row while the inspector
+// labels its last board as stale. The same ownership is needed when a notice
+// arrives during an older read, whose observation must be applied first.
+pub fn a_refused_goal_invalidation_marks_the_retained_board_stale_test() {
+  list.each([BeforeGoalReply, AfterGoalReply], fn(timing) {
+    let #(asked, id) = outstanding(protocol.goal_get(99), "goal_get")
+    let asked =
+      tui_model.Model(
+        shared: session_model.Shared(
+          ..asked.shared,
+          peer: session_model.Attached,
+        ),
+        view: tui_model.View(
+          ..asked.view,
+          overlay: tui_model.GoalInspector(focused_goal_panel.new(
+            None,
+            "Reading current goal",
+          )),
+        ),
+      )
+    let changed =
+      pushed.push([
+        #("event", json.String("goal_changed")),
+        #("body", json.Object([])),
+      ])
+    let reply = pushed.reply(id, "snapshot", snapshot())
+    let refreshing = case timing {
+      BeforeGoalReply -> deliver(deliver(asked, changed), reply)
+      AfterGoalReply -> deliver(deliver(asked, reply), changed)
+    }
+    let assert Some(goal_view.Pinned(status: goal_view.Active, ..)) =
+      refreshing.shared.goal
+      as "the older board remains visible until its replacement answers"
+    let refused =
+      deliver(
+        refreshing,
+        pushed.reply(
+          id + 1,
+          "error",
+          json.Object([
+            #("code", json.String("snapshot_failed")),
+            #("message", json.String("bounded snapshot read refused")),
+          ]),
+        ),
+      )
+    assert refused.shared.goal == None
+      as "the failed refresh cannot leave the old Active row authoritative"
+    assert refused.shared.goal_request == None
+    assert refused.shared.goal_report == session_model.HoldGoalReport
+    assert refused.shared.transcript == refreshing.shared.transcript
+      as "an automatic refusal stays silent in the transcript"
+    let assert tui_model.GoalInspector(panel) = refused.view.overlay
+      as "the inspector remains open"
+    assert focused_goal_panel.board(panel) == refreshing.shared.goal
+      as "the inspector retains the explicitly stale last observation"
+    assert string.contains(painted(refused), "Observation not refreshed")
+      as "the inspector labels the failed refresh"
+    assert refused.shared.peer == session_model.Attached
+    let assert Some(channel) = refused.shared.channel
+      as "an in-band refusal keeps the connection"
+    assert session_channel.ready_for_read(channel)
+      as "the next command can use the settled lane"
+  })
+}
+
+type GoalInvalidationTiming {
+  BeforeGoalReply
+  AfterGoalReply
+}
+
+// A change during an older read cannot be discharged by that read's reply.
+// Repeated notifications coalesce behind a queued operator command.
+pub fn a_goal_invalidation_during_an_older_read_survives_its_reply_test() {
+  let #(asked, id) = outstanding(protocol.goal_get(99), "goal_get")
+  let assert Some(channel) = asked.shared.channel
+    as "the connected lane is reading"
+  let #(channel, disposition) =
+    session_channel.submit(channel, protocol.models(99), now: 0)
+  let assert session_channel.Waiting("models") = disposition
+    as "the operator command waits for the old read"
+  let asked = tui_model.hold_channel(asked, channel)
+  let changed =
+    pushed.push([
+      #("event", json.String("goal_changed")),
+      #("body", json.Object([])),
+    ])
+  let pending = deliver(deliver(asked, changed), changed)
+  let answered = deliver(pending, pushed.reply(id, "snapshot", snapshot()))
+  let answered =
+    deliver(
+      answered,
+      pushed.reply(
+        id + 1,
+        "snapshot",
+        json.Object([
+          #("mode", json.String("models")),
+          #("models", json.Array([])),
+        ]),
+      ),
+    )
+  let refreshed =
+    deliver(
+      answered,
+      pushed.reply(
+        id + 2,
+        "snapshot",
+        json.Object([
+          #("mode", json.String("goal")),
+          #("board", wire("paused", json.String("zero_progress"))),
+        ]),
+      ),
+    )
+  let assert Some(goal_view.Pinned(status:, ..)) = refreshed.shared.goal
+    as "the post-write read returned a pinned goal"
+  assert status == goal_view.Paused(goal_view.ByZeroProgress)
+}
+
+// Both background invalidation reads and explicit inspection reads can hold
+// the lane when a goal mutation is admitted. Neither older reply owns the
+// mutation's confirmation, even when the older read has an operator slot.
+pub fn older_goal_reads_cannot_confirm_a_queued_pause_test() {
+  list.each([BackgroundGoalRead, ExplicitGoalRead], fn(source) {
+    let #(older, id) = older_goal_read(source)
+    let queued =
+      tui_model.run_shared(older, fn(shared) {
+        surfaces.submit_goal_action(shared, command.GoalPause)
+      })
+    let assert session_model.ConfirmGoal(..) = queued.shared.goal_report
+      as "the pause awaits its own result"
+    let sent = deliver(queued, pushed.reply(id, "snapshot", snapshot()))
+    assert sent.shared.transcript == queued.shared.transcript
+      as "the older Active board must not print the queued pause's confirmation"
+    let assert Some(goal_view.Pinned(status: goal_view.Active, ..)) =
+      sent.shared.goal
+      as "the older board still updates the observation"
+    assert sent.shared.goal_request == Some(id + 1)
+      as "only after the old read settles does the pause get its request ID"
+    let assert session_model.ConfirmGoal(..) = sent.shared.goal_report
+      as "the queued confirmation survives the old board"
+
+    let committed =
+      deliver(
+        sent,
+        pushed.reply(
+          id + 1,
+          "snapshot",
+          json.Object([
+            #("mode", json.String("goal")),
+            #("board", wire("paused", json.String("operator"))),
+          ]),
+        ),
+      )
+    assert string.contains(painted(committed), "the session goal is held")
+    assert committed.shared.goal_report == session_model.HoldGoalReport
+    let refused =
+      deliver(
+        sent,
+        pushed.reply(
+          id + 1,
+          "error",
+          json.Object([
+            #("code", json.String("code_unsupported")),
+            #("message", json.String("this server has no advisor routed")),
+          ]),
+        ),
+      )
+    assert string.contains(painted(refused), "/goal is unavailable")
+    assert !string.contains(painted(refused), "the session goal is held")
+      as "a refused pause must never claim that the goal is held"
+    assert refused.shared.goal_report == session_model.HoldGoalReport
+  })
+}
+
+type OlderGoalRead {
+  BackgroundGoalRead
+  ExplicitGoalRead
+}
+
+fn older_goal_read(source: OlderGoalRead) -> #(tui_model.Model, Int) {
+  let #(older, id) = case source {
+    ExplicitGoalRead -> outstanding(protocol.goal_get(99), "goal_get")
+    BackgroundGoalRead -> #(
+      deliver(
+        pushed.attached(),
+        pushed.push([
+          #("event", json.String("goal_changed")),
+          #("body", json.Object([])),
+        ]),
+      ),
+      4,
+    )
+  }
+  #(
+    tui_model.Model(
+      ..older,
+      shared: session_model.Shared(
+        ..older.shared,
+        peer: session_model.Attached,
+        strands: roster(None, None),
+      ),
+    ),
+    id,
+  )
+}
+
+// Every goal mutation enters the same confirmation boundary, including the
+// slash-only set, check and clear commands. An issued read must not claim
+// any of these changes while its successor still waits in the lane.
+pub fn every_goal_mutation_owns_only_its_issued_reply_test() {
+  list.each([BackgroundGoalRead, ExplicitGoalRead], fn(source) {
+    list.each(
+      [
+        #("/goal build the branch", "goal pinned · budget"),
+        #("/goal check make check", "the goal check is make check"),
+        #("/goal check", "the goal check is cleared"),
+        #("/goal clear", "the session goal is cleared"),
+        #("/goal pause", "the session goal is held"),
+        #("/goal resume", "the session goal continues"),
+      ],
+      fn(mutation) {
+        let #(older, id) = older_goal_read(source)
+        let queued =
+          submit.submit(
+            tui_model.Model(
+              ..older,
+              view: tui_model.View(
+                ..older.view,
+                input: text_area.state_from_string(mutation.0),
+              ),
+            ),
+          )
+        let assert session_model.ConfirmGoal(..) = queued.shared.goal_report
+          as "the admitted mutation awaits confirmation"
+        let sent = deliver(queued, pushed.reply(id, "snapshot", snapshot()))
+        assert sent.shared.transcript == queued.shared.transcript
+          as "the older read must not report a later mutation"
+        assert sent.shared.goal_request == Some(id + 1)
+
+        let accepted =
+          deliver(
+            sent,
+            pushed.reply(id + 1, "snapshot", mutation_board(mutation.0)),
+          )
+        assert list.length(accepted.shared.transcript)
+          == list.length(queued.shared.transcript) + 1
+          as "only the mutation's reply adds the confirmation"
+        assert string.contains(painted(accepted), mutation.1)
+        assert accepted.shared.goal_report == session_model.HoldGoalReport
+        let refused = deliver(sent, goal_refusal(id + 1))
+        assert list.length(refused.shared.transcript)
+          == list.length(queued.shared.transcript) + 1
+          as "the refused command adds only its refusal"
+        assert !string.contains(painted(refused), mutation.1)
+        assert string.contains(painted(refused), "/goal is unavailable")
+        assert refused.shared.goal_report == session_model.HoldGoalReport
+      },
+    )
+  })
+}
+
+// A refusal also belongs to the older read, even if that read was explicit.
+// It must leave the queued mutation's report available for its own reply.
+pub fn an_older_goal_read_refusal_cannot_settle_a_queued_mutation_test() {
+  list.each([BackgroundGoalRead, ExplicitGoalRead], fn(source) {
+    let #(older, id) = older_goal_read(source)
+    let queued =
+      tui_model.run_shared(older, fn(shared) {
+        surfaces.submit_goal_action(shared, command.GoalPause)
+      })
+    let sent = deliver(queued, goal_refusal(id))
+    assert sent.shared.transcript == queued.shared.transcript
+      as "an older refusal does not settle the newer command's report"
+    assert sent.shared.goal_request == Some(id + 1)
+    let accepted =
+      deliver(
+        sent,
+        pushed.reply(id + 1, "snapshot", mutation_board("/goal pause")),
+      )
+    assert string.contains(painted(accepted), "the session goal is held")
+    assert accepted.shared.goal_report == session_model.HoldGoalReport
+  })
+}
+
+fn goal_refusal(id: Int) -> connection_event.Message {
+  pushed.reply(
+    id,
+    "error",
+    json.Object([
+      #("code", json.String("code_unsupported")),
+      #("message", json.String("this server has no advisor routed")),
+    ]),
+  )
+}
+
+fn mutation_board(command: String) -> json.JsonValue {
+  let board = case command {
+    "/goal clear" ->
+      json.Object([
+        #("status", json.String("none")),
+        #("observed_at_ms", json.Int(1_120_000)),
+      ])
+    "/goal pause" -> wire("paused", json.String("operator"))
+    _ -> wire("active", json.Null)
+  }
+  json.Object([#("mode", json.String("goal")), #("board", board)])
 }

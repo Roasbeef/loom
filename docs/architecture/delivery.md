@@ -362,3 +362,17 @@ For the web view, `packages/web_view/test/delivery_test.gleam` counts the
 patches a burst costs on Lustre's real runtime, and
 `packages/client/test/client/terminal_wake_test.gleam` watches a real
 socket wake its loop after the frames it files.
+
+## Goal writes after a run settles
+
+The primary's idle edge can precede its advisor's goal evaluation. The advisor
+publishes `GoalChanged` only after its reserved goal write or deletion succeeds.
+The gateway pushes `goal_changed` to authorized subscribers on the existing
+Outputs path. It invalidates an auxiliary board, so no capture frontier or
+transcript entry represents it (protocol-change/056).
+
+The shared session lane retains one goal read owed until it can issue
+`goal_get`. Operator intent already queued goes first. A notification during
+an older read survives that reply and causes another read. The terminal quietly
+retains the correlated goal board; the web host drives the same lane and
+currently renders no goal panel. Neither host adds a periodic goal read.

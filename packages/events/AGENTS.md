@@ -210,6 +210,12 @@ these forks because they define the same modules.
   `-journal` siblings, once let a stale file from an interrupted run
   make a fresh open see the database as locked.
 
+`GoalChanged` is a targeted invalidation on `Outputs` (protocol-change/056).
+Its publisher is the advisor after a successful durable goal write or deletion;
+the gateway relays it to subscribed peers, whose session lane re-reads the
+reserved cell with `goal_get`. It carries neither durable state nor a transcript
+frontier and does not wake projection subscribers on the six hint topics.
+
 ## Deep Docs
 
 - [docs/architecture/durability.md](../../docs/architecture/durability.md)

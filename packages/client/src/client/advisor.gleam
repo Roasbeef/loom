@@ -140,6 +140,7 @@ import core/ids.{type EntryId, type OpId, type Seq}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import core/register
+import events/bus
 import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -1262,7 +1263,7 @@ fn write_cell(
   payload: JsonValue,
 ) -> Nil {
   case api.put_reserved_fact(runtime, key, payload) {
-    Ok(Nil) -> Nil
+    Ok(Nil) -> goal_written(runtime, key)
 
     Error(error) ->
       log.warn(state.wiring.logger, "advisor.cell_unwritable", [
@@ -1278,13 +1279,27 @@ fn write_cell(
 // payload it would have to read as absence.
 fn delete_cell(state: State, runtime: Runtime, key: String) -> Nil {
   case api.delete_reserved_fact(runtime, key) {
-    Ok(Nil) -> Nil
+    Ok(Nil) -> goal_written(runtime, key)
 
     Error(error) ->
       log.warn(state.wiring.logger, "advisor.cell_undeletable", [
         field.ident(key: "key", value: key),
         field.text(key: "detail", value: string.inspect(error)),
       ])
+  }
+}
+
+// Publication follows the writer's successful reply, so a subscriber's read
+// cannot precede this write. Guard and cursor writes do not invalidate goals.
+fn goal_written(runtime: Runtime, key: String) -> Nil {
+  case key == goal_key {
+    False -> Nil
+    True ->
+      bus.publish(
+        bus.start(),
+        session: bus.key(of: api.session_id(runtime)),
+        event: bus.GoalChanged,
+      )
   }
 }
 

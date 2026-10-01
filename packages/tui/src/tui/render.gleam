@@ -1817,6 +1817,10 @@ fn input_behavior(model: Model) -> String {
         " Disconnected · /sessions to reconnect · draft retained "
     },
   )
+  use <- bool.guard(
+    tui_model.active_queue_halted(model),
+    " stopped · enter sends held input with your message ",
+  )
   case
     session_model.active_interrupt(model.shared),
     layout.active_status_label(model),
@@ -1974,6 +1978,19 @@ fn render_inline_queue(
   model: Model,
 ) -> buffer.Buffer {
   let state = model.view.queue_editor
+  let held = tui_model.active_queue_halted(model)
+  let held_hint = case held {
+    True -> " · held until your next message "
+    False -> " "
+  }
+  let tiny_controls = case held {
+    True -> "held ↵ Esc"
+    False -> layout.tiny_queue_controls()
+  }
+  let short_title = case held {
+    True -> " queue · held ↵ Esc "
+    False -> " queue · ↑↓ Pg ↵ e Esc "
+  }
   case state.surface, area.size.height {
     _, 0 -> buf
     queue_editor.Closed, _ -> {
@@ -1982,11 +1999,22 @@ fn render_inline_queue(
       |> render_panel_border(
         area,
         case area.size.height <= 2 {
-          True -> tiny_queue_title(rows, 0, 0, "Alt+q", area.size.width)
+          True ->
+            tiny_queue_title(
+              rows,
+              0,
+              0,
+              case held {
+                True -> "held"
+                False -> "Alt+q"
+              },
+              area.size.width,
+            )
           False ->
             " queue · "
             <> int.to_string(list.length(rows))
-            <> " pending · Alt+q inspect "
+            <> " pending · Alt+q inspect"
+            <> held_hint
         },
         theme.signal,
       )
@@ -2005,11 +2033,11 @@ fn render_inline_queue(
             rows,
             state.selected,
             state.preview_scroll,
-            layout.tiny_queue_controls(),
+            tiny_controls,
             area.size.width,
           )
-        height if height <= 4 -> " queue · ↑↓ Pg ↵ e Esc "
-        _ -> " queued inputs · " <> model.shared.active_strand <> " "
+        height if height <= 4 -> short_title
+        _ -> " queued inputs · " <> model.shared.active_strand <> held_hint
       }
       buf
       |> buffer.clear(area)

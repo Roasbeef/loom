@@ -2439,6 +2439,25 @@ A mismatch prints a unified-diff-shaped report aligned by row index rather
 than by a longest-common-subsequence walk: two renderings of one screen have
 the same rows, and row *n* means the same thing in both.
 
+The composer and queue panel derive held input from
+`model.active_queue_halted`, using `snapshot_view.queue_halted` on the current
+cut and excluding a submission already in flight. This outlives local interrupt
+retirement and works on a second attachment that never sent Escape. The agent
+rail's terminal outcome remains separate from composer acceptance. The small
+queue hint preserves the existing preview width and paging; it labels held
+rows while the composer explains that Enter sends them with the next message.
+
+Goal write invalidations are read by the shared lane, not by a terminal poll.
+`surfaces.receive_goal` retains these correlated boards without opening an
+inspector or printing a command confirmation. Explicit operator reads retain
+their attachment-owner check. An invalidation arriving during an older goal
+read survives that reply in the lane and requests a newer board.
+
+The goal report and its issued request identity live in
+`session_view/model` and `session_view/outbound`. The terminal applies their
+observations through its existing shared-state wrapper.
+
+
 ## Deep Docs
 
 - [`docs/architecture/terminal.md`](../../docs/architecture/terminal.md)

@@ -826,3 +826,69 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
     assert string.contains(painted(browsing), "e resumes it")
   })
 }
+
+// Both peers adopt the same authoritative idle cut. Only the terminal that
+// stopped the run ever held an interrupt marker; retirement must not erase
+// the queue's halt or turn Enter into a steering submission.
+pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test() {
+  let #(first, events) = ready([pending("A")])
+  let interrupted =
+    tui_model.Model(
+      ..first,
+      shared: session_model.Shared(
+        ..first.shared,
+        interrupt: Some(session_model.Interrupt("main", None, None)),
+      ),
+    )
+  let interrupted = receive(interrupted, pushed.notice("main", 10))
+  let request = issued(events, "catch_up")
+  let retired =
+    list.fold(
+      pushed.transfer_with_metadata(
+        request,
+        "retired",
+        "catch_up",
+        20,
+        metadata([pending("A")]),
+      ),
+      interrupted,
+      receive,
+    )
+  let #(second, _) = ready([pending("A")])
+  assert retired.shared.interrupt == None
+    as "the settled operation retired its marker"
+
+  list.each([retired, second], fn(model) {
+    assert string.contains(painted(model), "stopped · enter sends held input")
+      as "the composer derives the halt from the connected cut"
+    let shown = painted(submit.open_queue(model))
+    assert string.contains(shown, "held until your next message")
+      as "the inspector explains how held rows are released"
+    assert !session_model.active_strand_live(model.shared)
+      as "halted input does not make the composer a running strand"
+  })
+
+  let #(halted, events) = ready([pending("A")])
+  let sent =
+    key(
+      tui_model.Model(
+        ..halted,
+        shared: session_model.Shared(
+          ..halted.shared,
+          peer: session_model.Attached,
+        ),
+      ),
+      "enter",
+    )
+  let _ = issued(events, "prompt")
+  assert sent.view.submission_mode == tui_model.PromptNext
+    as "Enter releases held input with an ordinary prompt, not a steer"
+
+  let #(empty, _) = ready([])
+  assert !string.contains(painted(empty), "stopped · enter sends held input")
+    as "an idle strand without held rows is an ordinary prompt"
+  let pending_stop = submit.toggle_submission_mode(interrupted)
+  assert pending_stop.shared.notice
+    == "stopped · enter sends held input with your message"
+    as "the notice no longer claims an interrupt steer is armed"
+}

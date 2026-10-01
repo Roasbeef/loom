@@ -1251,6 +1251,19 @@ pub fn reading_history(model: Model) -> Bool {
   || model.view.scroll_offset > 0
 }
 
+/// Whether the active strand's queue waits for an explicit submission.
+/// A prompt already being submitted outranks the retained idle cut.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui_model.active_queue_halted(model)
+/// ```
+@internal
+pub fn active_queue_halted(model: Model) -> Bool {
+  session_model.active_queue_halted(model.shared)
+}
+
 /// Appends a system line to the transcript and shows it as the notice.
 ///
 /// The terminal's form of `session_model.append_system`, for a reducer

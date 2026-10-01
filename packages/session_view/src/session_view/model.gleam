@@ -13,7 +13,7 @@
 //// no `Subject`: the four host handles it carries, the adopted lane's socket
 //// and recorder and the sources of its two inboxes, are type parameters.
 //// The terminal binds them in `tui/model` (`TerminalShared`) and holds the
-//// record beside its own `View`; the web view will bind them to its relay
+//// record beside its own `View`; the web view binds them to its relay
 //// and `Nil`.
 ////
 //// Four fields are presentation revisions rather than session facts:
@@ -217,7 +217,7 @@ pub type Shared(socket, recorder, source, replay_source) {
     goal_awaiting: Option(String),
     /// Actual lane request ID, so an unrelated refusal cannot settle it.
     goal_request: Option(Int),
-    /// Whether the next board is the operator's own `/goal` question.
+    /// The operator report, with a mutation bound to its issued request ID.
     goal_report: GoalReport,
     /// What happened to the goal board that a host's goal surface has not
     /// shown yet, oldest first: a correlated board, or the reason a read or
@@ -524,7 +524,7 @@ pub type ConnectionBacklog {
   MailboxMayHoldMore
 }
 
-/// Whether the board that arrives next is the operator's own question.
+/// Which operator report is owed by a goal command's own reply.
 ///
 /// A named set rather than a boolean field, because the cases are
 /// different events: the operator asked `/goal` and is owed a block in the
@@ -536,11 +536,16 @@ pub type GoalReport {
   ReportGoal
 
   /// The operator asked for a mutation and this line confirms it. The line
-  /// is held until the board arrives rather than printed at send time,
+  /// is bound to its issued request and held until that board arrives,
   /// because a server that refuses the command answers with a refusal: a
   /// confirmation printed on the way out would sit above the sentence
   /// saying it did not happen.
-  ConfirmGoal(line: String)
+  ConfirmGoal(
+    /// The line owed only after this mutation succeeds.
+    line: String,
+    /// The mutation's issued lane ID, absent while it waits behind a read.
+    request: Option(Int),
+  )
 
   /// An automatic refresh. The row is updated and nothing is printed.
   HoldGoalReport
@@ -972,6 +977,25 @@ pub fn queue_namespace(
         ]),
       )
     None -> ""
+  }
+}
+
+/// Whether the active strand's queue waits for an explicit submission.
+/// A prompt already being submitted outranks the retained idle cut.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let held = session_model.active_queue_halted(model.shared)
+/// ```
+@internal
+pub fn active_queue_halted(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Bool {
+  !active_strand_live(shared)
+  && case shared.captured {
+    None -> False
+    Some(#(_, view)) -> snapshot_view.queue_halted(view, shared.active_strand)
   }
 }
 

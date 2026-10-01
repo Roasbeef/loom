@@ -425,7 +425,8 @@ pub fn apply_event(
     // A commit notice and a metadata change say only that the next capture
     // will differ. `session_view/session_channel` acts on them by capturing; there is
     // nothing for a renderer to draw from the frame itself.
-    protocol.Committed(..) | protocol.MetadataChanged -> shared
+    protocol.Committed(..) | protocol.MetadataChanged | protocol.GoalChanged ->
+      shared
 
     // A resumed marker names a stream that continues from a cut this
     // terminal already holds. The lane reports it as its own update, so a
@@ -445,7 +446,8 @@ pub fn apply_event(
       restore_returned_draft(shared, strand, kind, text, attachment_count)
   }
   case event {
-    protocol.Committed(..) | protocol.MetadataChanged -> updated
+    protocol.Committed(..) | protocol.MetadataChanged | protocol.GoalChanged ->
+      updated
     protocol.Resumed(_) -> updated
     protocol.HeldInputReturned(..) -> updated
     protocol.Ignored(_) -> updated

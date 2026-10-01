@@ -206,17 +206,17 @@ type Outbound {
   Outbound(name: String, suffix: String, intent: Intent)
 }
 
-/// Whether a pushed notice is still owed a capture.
+/// Whether an invalidated observation is still owed a read.
 ///
 /// A notice that arrives while a request is in flight cannot be acted on
 /// then: the lane has one outstanding request and will not open a second.
-/// Remembering that one is due is enough, because a notice carries no state
-/// of its own — any number of them collapse into "capture when free".
+/// One owed read is enough because an invalidation carries no state of its
+/// own. Repeated invalidations coalesce until the read is issued.
 type Refresh {
-  /// A notice arrived mid-request; capture at the next ready transition.
+  /// Read at the next ready transition.
   Due
 
-  /// Nothing is owed; the idle refresh is the only capture cadence.
+  /// No invalidation is owed.
   Idle
 }
 
@@ -331,6 +331,8 @@ pub opaque type Channel(socket, recorder) {
     queued: Option(Outbound),
     refresh_at: Int,
     refresh: Refresh,
+    /// One auxiliary read owed after a goal write notification.
+    goal_refresh: Refresh,
     trigger: Capture,
     /// Whether a pushed frame has reached this lane, which picks the idle
     /// refresh interval.
@@ -413,6 +415,7 @@ pub fn start_resumed(
     queued: None,
     refresh_at: now,
     refresh: Idle,
+    goal_refresh: Idle,
     trigger: Requested,
     delivery: Polling,
   )
@@ -469,6 +472,7 @@ fn initial(socket, expected, trace, now: Int) {
     queued: None,
     refresh_at: now,
     refresh: Idle,
+    goal_refresh: Idle,
     trigger: Requested,
     delivery: Polling,
   )
@@ -555,6 +559,7 @@ pub fn state(channel: Channel(socket, recorder)) -> Channel(Nil, Nil) {
     queued: channel.queued,
     refresh_at: channel.refresh_at,
     refresh: channel.refresh,
+    goal_refresh: channel.goal_refresh,
     trigger: channel.trigger,
     delivery: channel.delivery,
   )
@@ -797,6 +802,19 @@ fn apply_pushed(
   let channel = Channel(..channel, delivery: Pushing)
   case event {
     protocol.Committed(strand: _, seq:) -> notified(channel, seq, now)
+
+    // The write notification cannot be spent by an older in-flight read.
+    // Only the read issued after this notification consumes the debt.
+    protocol.GoalChanged -> {
+      let invalidated = Channel(..channel, goal_refresh: Due)
+      case channel.phase {
+        Ready -> send_queued(invalidated, [], now)
+        AwaitingBegin | Receiving(..) | AwaitingReply(..) | Closed -> #(
+          invalidated,
+          [],
+        )
+      }
+    }
 
     // Presence and attachment carry nothing renderable; what they say is
     // that the next capture differs, which is what a notice says too. A
@@ -1520,6 +1538,7 @@ fn send_queued(
   now: Int,
 ) {
   let #(channel, updates) = flush_queued(channel, updates, now)
+  let #(channel, updates) = read_changed_goal(channel, updates, now)
   case channel.phase, channel.refresh, channel.cut {
     Ready, Due, Some(cut) -> #(
       capture_again(
@@ -1537,6 +1556,36 @@ fn send_queued(
     | AwaitingReply(..), _, _
     | Closed, _, _
     -> #(channel, updates)
+  }
+}
+
+// An invalidation is spent only when its read is issued. A notification
+// arriving during that read survives its reply and requests a newer board.
+// The host must know this read's ID to accept its refusal. Its sent update
+// follows the older reply's updates so that reply cannot clear the new owner.
+fn read_changed_goal(
+  channel: Channel(socket, recorder),
+  updates: List(Update),
+  now: Int,
+) {
+  case channel.phase, channel.goal_refresh {
+    Ready, Due -> {
+      let sent =
+        send(
+          Channel(..channel, goal_refresh: Idle),
+          Outbound(
+            "goal_get",
+            "\"goal_get\"" <> session_wire.command_body <> "{}}",
+            Read,
+          ),
+          now,
+        )
+      #(
+        sent,
+        list.append(updates, [Submission(Sent("goal_get", sent.request_id))]),
+      )
+    }
+    _, _ -> #(channel, updates)
   }
 }
 

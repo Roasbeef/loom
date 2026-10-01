@@ -627,12 +627,9 @@ pub fn sync_goal(
   }
 }
 
-/// The operator's own `/goal` opens the retained observation immediately and
-/// requests a current board. Its label distinguishes that retained board from
-/// the correlated refresh which replaces it.
 /// Arms the one line a committed goal mutation prints. The board that
-/// commits it is the mutation's own reply, so nothing else has to be
-/// scheduled: `report_goal` finds the line where `receive_goal` leaves it.
+/// commits it is the mutation's own reply. Admission may queue it behind a
+/// read, so the report has no request owner until the lane issues the mutation.
 ///
 /// Over the shared record alone.
 ///
@@ -646,7 +643,7 @@ pub fn confirming(
   shared: Shared(socket, recorder, source, replay_source),
   line: String,
 ) -> Shared(socket, recorder, source, replay_source) {
-  Shared(..shared, goal_report: ConfirmGoal(line:))
+  Shared(..shared, goal_report: ConfirmGoal(line:, request: None))
 }
 
 /// Slash commands and inspector keys enter one gate. The pending-submission
@@ -748,8 +745,9 @@ fn unreachable_goal(
   }
 }
 
-/// Only the attachment that asked may be answered. Request ids restart with
-/// an attachment, so the owner is what tells a fresh board from a stale one.
+/// The lane correlates every board to its adopted attachment's read. A
+/// lane-owned invalidation read has no operator slot and quietly replaces
+/// the observation. An older read cannot settle a queued mutation's report.
 ///
 /// Over the shared record alone. An answered board appends a `GoalObserved`
 /// observation, which `tui_model.hold_shared` applies to the terminal's goal
@@ -765,11 +763,14 @@ pub fn receive_goal(
   shared: Shared(socket, recorder, source, replay_source),
   board: goal_view.Board,
 ) -> Shared(socket, recorder, source, replay_source) {
-  case shared.goal_awaiting == Some(session_model.queue_owner(shared)) {
+  case
+    shared.goal_awaiting == None
+    || shared.goal_awaiting == Some(session_model.queue_owner(shared))
+  {
     False -> shared
 
-    True ->
-      report_goal(
+    True -> {
+      let observed =
         Shared(
           ..shared,
           goal: Some(board),
@@ -778,9 +779,25 @@ pub fn receive_goal(
           goal_observations: list.append(shared.goal_observations, [
             GoalObserved(board),
           ]),
-        ),
-        board,
-      )
+        )
+      case owns_goal_report(shared) {
+        True -> report_goal(observed, board)
+        False -> session_model.invalidate_frame(observed)
+      }
+    }
+  }
+}
+
+// A queued mutation can replace an explicit read's report before that read
+// answers. Only the mutation's issued ID owns its confirmation; an older
+// valid board still replaces the observation without consuming that report.
+fn owns_goal_report(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Bool {
+  case shared.goal_report {
+    ConfirmGoal(request: Some(id), ..) -> shared.goal_request == Some(id)
+    ConfirmGoal(request: None, ..) | HoldGoalReport -> False
+    ReportGoal -> shared.goal_request != None
   }
 }
 
@@ -798,7 +815,7 @@ fn report_goal(
     // A committed mutation prints its one line here and nothing else. The
     // fresh board is already in the model, so the row beside the composer
     // carries the new state and a second block would repeat it.
-    ConfirmGoal(line:) ->
+    ConfirmGoal(line:, ..) ->
       Shared(..shared, goal_report: HoldGoalReport)
       |> session_model.append_system(line)
       |> session_model.invalidate_frame
@@ -840,7 +857,10 @@ pub fn refuse_goal(
       goal: None,
       goal_request: None,
       goal_awaiting: None,
-      goal_report: HoldGoalReport,
+      goal_report: case owns_goal_report(shared) {
+        True -> HoldGoalReport
+        False -> shared.goal_report
+      },
       goal_observations: list.append(shared.goal_observations, [
         GoalUnavailable(goal_view.refusal(code, message)),
       ]),
@@ -850,10 +870,7 @@ pub fn refuse_goal(
   // older daemon refuses every one of them, and a row per idle boundary
   // would be a scrolling complaint about a feature this session lacks. A
   // mutation and an explicit `/goal` are always the operator's own.
-  use <- bool.guard(
-    shared.goal_report == HoldGoalReport && command == "goal_get",
-    cleared,
-  )
+  use <- bool.guard(!owns_goal_report(shared) && command == "goal_get", cleared)
 
   session_model.append_error(cleared, goal_view.refusal(code, message))
 }

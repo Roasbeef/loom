@@ -182,6 +182,10 @@ pub type Event {
   /// settled summary nothing, because the reserved cell still holds it,
   /// and costs a live one nothing the next one does not restate.
   BlockSummary(subject: SummarySubject, text: String)
+
+  /// A successful goal write or deletion invalidated its auxiliary board.
+  /// The reserved cell remains authoritative (protocol 056).
+  GoalChanged
 }
 
 /// One delivered event: the session it belongs to plus the event, so a
@@ -270,7 +274,7 @@ pub fn topic_of(event: Event) -> Topic {
     Escalation(..) -> Escalations
     Committed(..) -> Commits
     ToolOutput(..) -> Outputs
-    BlockSummary(..) -> Outputs
+    BlockSummary(..) | GoalChanged -> Outputs
   }
 }
 

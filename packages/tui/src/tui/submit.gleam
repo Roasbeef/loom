@@ -331,7 +331,7 @@ pub fn toggle_submission_mode(model: Model) -> Model {
         ..model,
         shared: Shared(
           ..model.shared,
-          notice: "interrupt steer is already armed",
+          notice: "stopped · enter sends held input with your message",
         ),
       )
     None, False, _ ->

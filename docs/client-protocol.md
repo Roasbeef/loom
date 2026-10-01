@@ -94,7 +94,7 @@ numeric gap does not by itself mean an event was lost.
 Source: (`client/gateway.gleam:103-108`).
 
 `snapshot`, `snapshot_begin`, `snapshot_chunk`, `snapshot_end`,
-`stream_delta`, `tool_output`, `block_summary`, `mutation_outcome`,
+`stream_delta`, `tool_output`, `block_summary`, `goal_changed`, `mutation_outcome`,
 `presence` and `error` carry no `seq`.
 
 ### 1.5 Forward compatibility
@@ -1423,7 +1423,7 @@ single strand's chain. Source: (`client/gateway.gleam:1353-1356`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:1956`).
+`wrong_session`. Source: (`client/gateway.gleam:1962`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1691,7 +1691,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:5796`).
+   is `stale_approval`. Source: (`client/gateway.gleam:5803`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -2187,7 +2187,7 @@ Over the authenticated session transport a client sees:
 - auxiliary replies: `snapshot` with mode `models`, `skills`, `schedules`, `notes`,
   `queued_input`, `live_jobs`, `block_summaries`, or pending `worktree_diff` /
   `context`;
-- pushed frames: `committed`, `stream_delta`, `tool_output`, `block_summary`,
+- pushed frames: `committed`, `stream_delta`, `tool_output`, `block_summary`, `goal_changed`,
   `presence`, `snapshot` with mode `config` or final `worktree_diff` /
   `context`, and `error`;
 - refusals: `error` with `reply_to`.
@@ -2868,12 +2868,31 @@ does not know.
 
 ---
 
+### 5.20 `goal_changed`
+
+```json
+{"v":2,"event":"goal_changed","body":{}}
+```
+
+The advisor publishes this invalidation only after the reserved goal cell's
+write or deletion succeeds (protocol-change/056). The gateway pushes it to
+subscribed, authorized peers. It carries no goal state, `reply_to` or `seq`;
+`goal_get` remains the authoritative observation.
+
+A client MUST retain a goal read owed until it issues `goal_get`. A notification
+received during an older read MUST survive that reply. Repeated notifications
+may coalesce, and already queued operator intent may run before the read. The
+shared session lane enforces this ordering for both hosts. No operation phase
+edge is required to display a paused, limited or satisfied outcome.
+
+---
+
 ## 6. Pushed frames and client obligations
 
 ### 6.1 What may arrive uncorrelated
 
 On the session endpoint: `committed`, `stream_delta`, `tool_output`,
-`block_summary`, `presence`, `snapshot` with mode `config`, and `error`.
+`block_summary`, `goal_changed`, `presence`, `snapshot` with mode `config`, and `error`.
 Source: (`client/protocol.gleam:475-482`).
 
 On the control endpoint: `hello`, once, before anything else.
@@ -3327,7 +3346,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3387`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:3394`) and `navigating`
    (`client/gateway.gleam:3027`).
 
 9. **The spec's control command list is incomplete.**

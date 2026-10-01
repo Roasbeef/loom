@@ -4527,6 +4527,16 @@ suspends what it finds.
 [The daemon memory investigation](../../docs/design-notes/daemon-memory.md)
 carries the tables and the rerun command.
 
+The advisor publishes `events/bus.GoalChanged` on `Outputs` only after
+`put_reserved_fact` or `delete_reserved_fact` successfully returns for
+`advisor.goal_key`. Guard and cursor writes publish no goal invalidation.
+The gateway relays it as an uncorrelated `goal_changed` with an empty body,
+through the same subscribed-peer delivery and authorization as other pushes
+(protocol-change/056). A phase edge is not evidence that the asynchronous
+goal evaluation has written its cell. `goal_e2e_test` holds the review's
+provider response until the primary settles and an attached client reads
+Active, then proves that satisfaction is notified without a primary wake.
+
 ## Deep Docs
 
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)

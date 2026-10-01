@@ -196,7 +196,7 @@ terminal, 4 handles, 3 split.
 | `usage` | a | The captured usage. |
 | `generation_started_ms`, `output_rate_tps` | a | The generation clock and the rate it yields. |
 | `agent_rail_visible` | b | A pane toggle. |
-| `details_expanded` | a | The extent the shared line builders read through `presentation` (`session_view/model.gleam:1089`), and `advance_generation_clock` checks it (`session_view/step.gleam:135`); a page will toggle it too. |
+| `details_expanded` | a | The extent the shared line builders read through `presentation` (`session_view/model.gleam:1115`), and `advance_generation_clock` checks it (`session_view/step.gleam:135`); a page will toggle it too. |
 | `repaint_phase`, `activity_frame` | b | Frame-local paint state. |
 | `activity_started_ms`, `activity_elapsed_s`, `generation_elapsed_s` | a | Elapsed readings the tick advances from the stamp; a chip shows the same figures. |
 | `streams`, `tool_tails` | a | The live answer and tool tails. |
@@ -548,7 +548,7 @@ reducer keeps its decision and drops the terminal write. The terminal
 shell, after the shared call, compares `before.shared` with
 `after.shared` and makes the terminal write itself. This is the shape
 `surfaces.sync_context(before, after)` already has
-(`session_view/surfaces.gleam:914` (`sync_context`)) and the shape
+(`session_view/surfaces.gleam:931` (`sync_context`)) and the shape
 `refresh_render_cache(before, after)` has (`tui/projection.gleam:48`
 (`refresh_render_cache`)); the shell gains one more before-and-after
 pass beside them. It is right when the terminal write is a consequence of
