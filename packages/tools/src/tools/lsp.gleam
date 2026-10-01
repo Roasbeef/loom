@@ -37,6 +37,68 @@
 //// refused as stale rather than overwritten (ADR-015 §4). `land` needs no
 //// `Ctx`, because code mode lands a rename through it too; the write
 //// boundary arrives as a closure that makes `fs.WriteTarget`s.
+////
+//// # What each design choice prevents
+////
+//// Each rule above answers a specific way a model goes wrong with a
+//// language server, and the code below is shaped by the failure.
+////
+//// ```text
+//// choice                         the model failure it prevents
+//// symbol by name, never a        a model cannot count columns. A guessed
+//// position                       position lands on the wrong token or on
+////                                whitespace, and the server answers about
+////                                something else without saying so.
+//// `line` refused without `path`  a bare line number names no file, so the
+////                                narrowing would be silently ignored and
+////                                the wrong symbol answered.
+//// every site as                  a read round trip between finding a site
+//// `path:line:anchor|text`        and editing it. The model would edit from
+////                                memory of a line that may have changed.
+//// counts before the list, and    a long list read as the whole answer, or
+//// a bound with a "left out"      thousands of hits spent in context. The
+//// line                           count says when to narrow or use code mode.
+//// preview is the default for     a rename that touches many files and is
+//// `lsp_rename`                   not atomic across them, written on the
+////                                first call before the model has seen it.
+//// every file checked against     a rename written over a file edited since
+//// the disk before the first      the server looked, or half written because
+//// write (`land`)                 the third file was stale.
+//// an unsettled diagnostics       an empty list from a server that had not
+//// block says so                  finished, read as clean code.
+//// unknown `mode` or `direction`  a guess. "apply" written by a typo writes
+//// refused, never defaulted       files, and callers read as callees reverse
+////                                the answer.
+//// ```
+////
+//// ## Flow
+////
+//// ```text
+//// tools
+////   → one definition per tool (definition_tool ... rename_tool),
+////     built by read_tool or, for rename, directly
+////   → the host registers them; a call arrives as args and a Ctx
+////
+//// a read tool call:
+////   run_definition / run_references / run_hover / run_symbols /
+////   run_calls / run_diagnostics
+////     → decode_query (or decode_direction) → the door
+////     → render_* → with_warmth → ToolOutcome
+////
+//// a rename call:
+////   run_rename → decode_query, decode_new_name, decode_mode
+////     → door.prepare_rename → or_no_edits
+////     → Preview: render_preview
+////     → Apply:   apply_rename → land → render_report
+////
+//// land:
+////   plan_file → target_file → check_disk, each over every file via phase;
+////   then write_all → land_file → after_write → combine
+//// ```
+////
+//// Every decode happens before the door is asked, so a malformed call costs
+//// no server request, and an error from the door goes through
+//// `render_error`, which says what to try next rather than only what failed.
 
 import broker/policy.{type SandboxPolicy}
 import core/json.{type JsonValue}
@@ -394,6 +456,8 @@ fn decode_query(args: JsonValue) -> Result(SymbolQuery, String) {
   Ok(query.SymbolQuery(symbol:, path:, line:))
 }
 
+// `line` is 1-based because `fs_read` and grep print it that way, and a
+// zero or negative line is a model counting from the wrong origin.
 fn check_line(path: Option(String), line: Option(Int)) -> Result(Nil, String) {
   case path, line {
     _, None -> Ok(Nil)
@@ -434,6 +498,8 @@ fn decode_mode(args: JsonValue) -> Result(RenameMode, String) {
   }
 }
 
+// Trimmed, because a stray space from the model would be sent to the
+// server as part of an identifier.
 fn decode_new_name(args: JsonValue) -> Result(String, String) {
   use new_name <- result.try(tool.required_string(args, "new_name"))
   case string.trim(new_name) {
@@ -444,6 +510,12 @@ fn decode_new_name(args: JsonValue) -> Result(String, String) {
 
 // --- running the read tools -----------------------------------------------
 
+// The six read tools share one shape. Decode the arguments (`tool.with_arg`
+// returns the refusal as the outcome), ask the door (`tool.or_outcome`
+// turns a `QueryError` into `render_error`'s text), and render the answer
+// behind its warmth line. A tool with a different shape, like
+// `run_references`, says so where it differs. The `use` lines each bind a
+// value and run the rest of the function as a callback.
 fn run_definition(door: query.Door, args: JsonValue) -> ToolOutcome {
   use asked <- tool.with_arg(decode_query(args))
   use served <- tool.or_outcome(door.definition(asked), error_outcome)
@@ -574,6 +646,8 @@ fn apply_rename(
   tool.with_details(outcome, report_details(report))
 }
 
+// The per-file fate as structured data beside the prose, so a client can
+// show landed and rejected files without parsing `render_report`.
 fn report_details(report: RenameReport) -> JsonValue {
   json.Object([
     #(
@@ -686,6 +760,8 @@ pub fn land(
   }
 }
 
+// The two path accessors name a file for `phase`, which reports by path
+// at whichever stage a value has reached.
 fn edit_path(edit: FileEdit) -> String {
   edit.path
 }
@@ -717,6 +793,9 @@ fn phase(
   }
 }
 
+// Phase one. `plan_between` fails only when the two texts differ in their
+// final newline, which no line edit expresses, so the error arm is a
+// refusal of a server answer and never a model mistake.
 fn plan_file(edit: FileEdit) -> Result(#(FileEdit, hashline.Plan), String) {
   hashline.plan_between(base: edit.base, edited: edit.edited)
   |> result.map(fn(plan) { #(edit, plan) })
@@ -727,6 +806,9 @@ fn plan_file(edit: FileEdit) -> Result(#(FileEdit, hashline.Plan), String) {
   })
 }
 
+// Phase two. Resolving the target is where `fs_edit`'s protected-path
+// refusal and approval happen, which is why it follows planning: nothing
+// is asked of the operator for a rename that cannot be planned.
 fn target_file(
   target: fn(String) -> Result(fs.WriteTarget, String),
   pair: #(FileEdit, hashline.Plan),
@@ -784,6 +866,9 @@ fn write_all(
   query.RenameReport(files:, diagnostics: combine(answers))
 }
 
+// One write. `land_plan` re-checks the digest as it writes, so a change
+// between `check_disk` and here still rejects the file instead of
+// overwriting it.
 fn land_file(filesystem: FileSystem, prepared: Prepared) -> Landing {
   let path = prepared.edit.path
   case fs.land_plan(filesystem:, target: prepared.target, plan: prepared.plan) {
@@ -897,6 +982,8 @@ fn with_warmth(warmth: Warmth, body: String) -> String {
   }
 }
 
+// "1 file", "2 files". Every count in an answer goes through it so no
+// answer says "1 files".
 fn plural(count: Int, noun: String) -> String {
   case count {
     1 -> "1 " <> noun
@@ -1048,6 +1135,8 @@ pub fn render_references(
   }
 }
 
+// The count line. When some hits are hidden it also says how many are
+// shown, so the heading alone tells a model the list is partial.
 fn references_heading(
   symbol: String,
   total: Int,
@@ -1077,6 +1166,9 @@ fn references_trailer(hidden: Int) -> String {
   }
 }
 
+// One file's block: its heading counts every reference in the file, shown
+// or not, and its hits sit under the containing function or type, so the
+// list answers who depends on the symbol.
 fn render_reference_file(
   file: #(String, List(Reference)),
   counts: Dict(String, Int),
