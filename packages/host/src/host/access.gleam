@@ -28,6 +28,27 @@
 //// it. The grammar checks what it can name before a connection is made
 //// (identifiers, roles, session IDs, lifetimes, addresses) and leaves the rest
 //// to the daemon, which answers `bad_request`.
+////
+//// ## Flow
+////
+//// `run` → `run_on` → `parse` → `execute` → `transact_over` → `transact` → `success` → `member_success`
+////
+//// 1. `run` is `run_on` over the process terminal; a caller with its own
+////    output passes a `Console` to `run_on` directly.
+//// 2. `run_on` parses first, with `parse_target` for the connection options
+////    and `parse_command` for the positional words, then lets the daemon's
+////    own checker validate the encoded `envelope` before anything connects.
+//// 3. `announce` prints the identity a mutation names, and `execute` picks the
+////    target: `Local` goes through `discover`, `Remote` through
+////    `read_owner_token`.
+//// 4. `transact_over` opens the control connection and `transact` runs the
+////    whole conversation: `verify_hello` pins the daemon epoch, `envelope`
+////    encodes the one request, and `receive_reply` reads exactly one answer.
+//// 5. A refusal becomes `refusal_code`; a matching reply goes to `success`,
+////    which re-encodes checked fields only, through `member_success`,
+////    `principal_lines` or `membership_lines`.
+//// 6. `run_on` prints those lines and returns an `Outcome`; a failure after
+////    the send carries `unknown_outcome` so a mutation is never retried.
 
 import core/ids
 import core/json.{type JsonValue}

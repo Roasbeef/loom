@@ -21,6 +21,28 @@
 ////
 //// The repository-level admin operations over sessions — forks (pi §2.7)
 //// and the precise rewrite (pi §2.9) — live in `session/repo`.
+////
+//// ## Flow
+////
+//// `open_sqlite` → `ensure_id` → `ensure_strand` → `strand_state` → `project` → `project_entries` → `heal_orphan_calls`
+////
+//// 1. `open_memory` and `open_sqlite` (with `open_sqlite_owned` and
+////    `open_sqlite_custody` for the daemon's custody paths) build a `Session`
+////    around a store whose handle type `erase` hides; SQLite opens run
+////    `migration_chain` first.
+//// 2. `ensure_id` reads the reserved `session/id` cell and, when it is absent,
+////    `mint_identity` commits a fresh id under a CAS; `project_identity` then
+////    repairs the catalog row either way.
+//// 3. `ensure_strand` seeds a strand's three registers in one transaction,
+////    and `seed_commit_result` counts a concurrent seeder's loss as success.
+//// 4. Typed reads such as `strand_state`, `op_state` and `pending_payloads`
+////    go through `read_cell`, which decodes the payload totally and reports
+////    corruption as a `SessionError`.
+//// 5. `project` scans a branch back to the last compaction and gives the
+////    entries to `project_entries`.
+//// 6. `project_entries` reverses to oldest first, turns each entry into
+////    messages with `project_entry`, heals orphaned tool calls with
+////    `heal_orphan_calls`, and ends in the projection's transform hook.
 
 import core/clock.{type Clock}
 import core/corruption.{type CorruptionReport}
