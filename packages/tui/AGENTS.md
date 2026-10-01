@@ -2453,12 +2453,9 @@ inspector or printing a command confirmation. Explicit operator reads retain
 their attachment-owner check. An invalidation arriving during an older goal
 read survives that reply in the lane and requests a newer board.
 
-`GoalReport.ConfirmGoal` carries the mutation's issued request ID, absent
-while the command waits behind a read. `outbound.apply_submission` binds it
-only on the mutation's `Sent` disposition. A board or refusal from an older
-background or explicit goal read can update the observation and retire that
-read's slot, but cannot consume the queued mutation's report. Success and
-refusal settle that report only on its own correlated command reply.
+The goal report and its issued request identity live in
+`session_view/model` and `session_view/outbound`. The terminal applies their
+observations through its existing shared-state wrapper.
 
 
 ## Deep Docs

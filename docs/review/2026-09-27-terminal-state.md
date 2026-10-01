@@ -12,7 +12,8 @@ reserved goal write or deletion. The gateway uses subscribed delivery and
 binding revalidation. The shared lane retains one owed read, honors the
 outstanding and queued command order, and preserves another read when a
 notification arrives during an older read. The terminal adopts the returned
-board. The web component drives the same lane but has no goal panel.
+board. The web component drives the same lane; the operator page renders its goal
+observation through the shared step.
 
 ## Independent review disposition
 
@@ -54,3 +55,22 @@ passed. That difference remains unresolved. This is not a green full gate.
 Hosted CI and exact-head Linux/shipped-server signoff are separate PR gates.
 Lost notifications retain the documented best-effort boundary; no periodic
 goal read is added. The global wave handoff belongs to the docs-cleanup PR.
+
+## September 30 integration
+
+The branch is rebased onto `7b1c662cfd4e9f6fe8d4b63dc8a40e5a54e3a55d`.
+Main moved session decisions into `session_view` and split the terminal model
+into `Shared` and `View`. Held-queue derivation and confirmation ownership use
+that shared owner. All 48 goal regressions, 23 queue regressions and six
+production goal tests pass after adapting their fixtures.
+
+The web invalidation fixture settles the four initial capture-triggered reads
+before notifying, then answers the newly issued request. Its idle-lane
+assertion prevents an existing read from falsely proving notification handling.
+The focused web witness passes. Removing held-state derivation fails only the
+held-queue test among 23; admitting confirmation before request issuance fails
+the older-read witness; removing invalidation debt fails the late-write witness.
+Every mutation restores the original source before further validation.
+
+The full affected-package gate, independent final review, fresh hosted CI and
+exact-head Linux signoff remain separate from this focused evidence.

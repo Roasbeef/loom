@@ -512,6 +512,17 @@ pending rows from one authoritative cut. Ordinary input drains before the
 idle cut is exposed (protocol 033), so retained rows wait for an explicit
 submission. The helper says nothing about whether a composer may submit.
 
+`GoalReport.ConfirmGoal` carries the mutation's issued request ID, absent
+while the command waits behind a read. `outbound.record_sent` binds it
+only on the mutation's `Sent` disposition. A board or refusal from an older
+background or explicit goal read can update the observation and retire that
+read's slot, but cannot consume the queued mutation's report. Success and
+refusal settle that report only on its own correlated command reply.
+
+`model.active_queue_halted` derives held input for the active composer while
+excluding a prompt already submitting or a running strand. The terminal
+wrapper calls this shared decision.
+
 ## Deep Docs
 
 - `docs/adr/013-tui-effects-as-values.md`: why the lane's effects are
