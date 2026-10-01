@@ -231,15 +231,34 @@ message and compares, never searches:
 
 The head and foot are built from the exact strings in `agency.gleam`, with
 `<strand>` taken from the origin and never from the text. A kind matches
-only if its head is a prefix of the text and its foot is the end of the
-text or is followed by the exact trailer (the opening line, a body, and
-`[end result contract]` at the end). The brief's trailer is kept and drawn
-after the body, since it is the harness's instruction to the child. If
-neither kind matches exactly, nothing is stripped and the whole text is
-shown, so a body that was never wrapped loses nothing. The framing strings
-have one definition shared with `agency.gleam`, and a test pins each
-against the constructor so an edit to the framing cannot desynchronise
-them.
+only if its head is a prefix of the text and the text satisfies one of two
+tails, anchored from the end:
+
+- no trailer: the text ends with the foot;
+- trailer: the text ends with `[end result contract]`, and the split point
+  is the LAST occurrence of `\n` + foot + `\n` + the trailer opening line.
+  Everything after the head and before that point is the body, and the
+  rest is the trailer, drawn after the body because it is the harness's
+  instruction to the child.
+
+A first-occurrence search would be forgeable: a body that itself contains
+the foot and the trailer opening would make the model's following text
+appear as harness trailer. The last-occurrence anchor cannot be forged by
+a body, because the real trailer is fixed prose plus one `json.to_string`
+line (`agency.gleam:1214-1224`). JSON escapes control characters, so that
+line cannot contain a newline, and schema names are alphabet-checked at
+spawn, so the trailer cannot contain the foot or a second opening line.
+Any foot and opening a body contains therefore lies before the real
+ones, and the last occurrence is the real one. If neither tail matches
+exactly, nothing is stripped and the whole text is shown, so a body that
+was never wrapped loses nothing.
+
+The framing strings have one definition, in `session_view` (or `core`),
+and `agency.gleam` imports them. They cannot live in `client`, because
+`client` depends on `session_view` (`packages/client/gleam.toml:24`) and
+`session_view` does not depend on `client`. A test pins each string
+against the `frame_message`, `frame_brief` and `result_contract` outputs
+so an edit to the framing cannot desynchronise them.
 
 Both hosts follow:
 
@@ -302,7 +321,8 @@ An implementation must add:
    sibling heading and omit the framing lines, for a message and for a
    brief with and without a result contract; the web card has no Reply
    button. A text that merely resembles the framing (a wrong strand, an
-   altered foot, a missing contract close) is shown whole.
+   altered foot, a missing contract close) is shown whole, and a brief body
+   containing the foot and the trailer opening is drawn whole as body.
 
 Gates: `make check`, plus `make doc-check` after the CLAUDE.md updates. Lint
 rules R3 and R4 apply to the new arms: no catch-all patterns.
