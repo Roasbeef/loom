@@ -208,7 +208,7 @@ projected label, it is a one-arm change.
 
 `turns.entry_kind` (`turns.gleam:555-587`) gains an arm beside the `PeerOrigin`
 arm that classifies a `None`-advisor message with `Some(message.StrandOrigin(strand:))`
-as an `Input` of a new `turns.Sibling(key, strand, text)` piece, declared
+as an `Input` of a new `turns.Sibling(key, strand, text, trailer)` piece, declared
 beside `Peer` (`turns.gleam:198`). The web view consumes `turns`. The
 terminal does not (`turns.gleam:260-261`), so it gets its own renderer
 below.
@@ -253,7 +253,7 @@ ones, and the last occurrence is the real one. If neither tail matches
 exactly, nothing is stripped and the whole text is shown, so a body that
 was never wrapped loses nothing.
 
-The framing strings have one definition, in `session_view` (or `core`),
+The framing strings have one definition, in `session_view/strand_framing`,
 and `agency.gleam` imports them. They cannot live in `client`, because
 `client` depends on `session_view` (`packages/client/gleam.toml:24`) and
 `session_view` does not depend on `client`. A test pins each string
@@ -352,6 +352,12 @@ Release N+1:
 5. `docs`: the `core`, `session_view` and `client` CLAUDE.md and AGENTS.md
    mirrors, `docs/architecture/messaging.md`, and the spec Part 1.1 line
    (`docs/loom-implementation-spec.md:856`) that now names three origin kinds.
+
+Once the Agency writes `StrandOrigin`, `vision.gleam:137` and
+`image_budget.gleam:53` end the vision "current turn" at a sibling message, as
+they do for a peer message today. The N+1 admission tests must therefore cover
+an image-bearing prompt followed by a sibling message, with `wiring.gleam:1121`
+`admitted_image_bearing` as the second source.
 
 Slices 1 to 3 must land and ship before 4. No package edge
 changes: `session_view` and `client` already depend on `core`.

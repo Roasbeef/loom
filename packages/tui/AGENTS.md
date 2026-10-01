@@ -2554,7 +2554,10 @@ not claim which configured ceiling was exhausted.
 Existing conversation rendering uses `core/origin.display_label` for both
 human and peer sources. A `PeerOrigin` appears as `peer session/strand` and
 survives the entry codec; it is not rendered as the local operator. This is
-attribution within the existing conversation view.
+attribution within the existing conversation view. A `StrandOrigin` message
+(a strand of the same session) is drawn by `transcript_lines` as a
+`strand · <id>` heading and its body as Markdown, with the Agency's framing
+removed and a brief's result contract on a line of its own.
 
 The Collaboration tab projects a selected strand's background executions,
 readiness, outgoing peer links, named workflow intents, and peer-authored

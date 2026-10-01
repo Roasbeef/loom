@@ -4697,6 +4697,13 @@ The entry codec and provider projection preserve peer attribution after replay.
 See [async architecture](../../docs/architecture/async-collaboration.md) for
 custody, readiness, delivery and exclusive invocation boundaries.
 
+The Agency's `frame_message`, `frame_brief` and `result_contract` build their
+head, foot and contract lines from `session_view/strand_framing`, the one
+definition the hosts also strip. Protocol-change 059 release N reads and draws
+`StrandOrigin`; the Agency still admits `agent_send` messages and spawn briefs
+with `origin: None` until release N+1 sets it from the authenticated
+`caller.strand`.
+
 MCP layer retirement fixes one monotonic proof deadline before issuing stops.
 Each parallel collector passes only the remaining budget to client shutdown;
 late scheduling cannot grant a fresh per-client wait. The outer Weft scope
