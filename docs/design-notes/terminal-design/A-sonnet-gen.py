@@ -191,7 +191,7 @@ def panel_trace(width, height):
     rows.append(row(width, [(" ▸ Program", "q"), (" · 14 lines · Enter to read", "q")]))
     return finish(rows, width, height, [
         (" Enter open · ↑↓ call", "q"),
-        (" no per-call timing yet", "q"),
+        (" call list: needs protocol-change", "dan"),
     ])
 
 def panel_session(width, height, workspace="~/code/pi-gui"):
@@ -844,8 +844,46 @@ def codemode_rows(W, narrow=False):
                 "no per-call timing on the wire yet; calls appear as they finish")
     return R
 
-add("code-mode-120", 120, 40, content_frame(120, 40, codemode_rows), "Code mode, 120x40: collapsed, counted, failed, running")
-add("code-mode-80", 80, 24, content_frame(80, 24, lambda W: codemode_rows(W, True)), "Code mode, 80x24")
+add("code-mode-120", 120, 40,
+    content_frame(120, 40, codemode_rows, " MOCKUP, needs protocol-change: the call tree needs a call record on the wire "),
+    "Code mode, 120x40: call tree, needs protocol-change")
+add("code-mode-80", 80, 24,
+    content_frame(80, 24, lambda W: codemode_rows(W, True), " MOCKUP, needs protocol-change: call tree "),
+    "Code mode, 80x24: call tree, needs protocol-change")
+
+def codemode_today_rows(W, narrow=False):
+    iw = W - 5
+    R = []
+    R.append(row(W, [(" ◆ ", "cur b"), ("main", "p b")]))
+    R.append(row(W, [("   Checking the new function with a program.", "p")]))
+    R.append(blank(W))
+    R += titled(W, "✓ code_mode · read_config.gleam · 14 lines", "p b", "div",
+                [row(iw, [("result: ", "q"), ("ok", "add b"), (" · config parsed, 3 keys", "p")])],
+                "Ctrl+g shows the program")
+    R.append(blank(W))
+    R += titled(W, "× code_mode · check_subtract.gleam · failed", "dan b", "dan",
+                [row(iw, [("import cap/proc", "p")]),
+                 row(iw, [("let assert Ok(out) = proc.run(\"gleam\", [\"test\"])", "p")]),
+                 row(iw, [("+ 11 more lines", "q")]),
+                 blank(iw),
+                 row(iw, [("result: ", "q"), ("failed", "dan b"), (" · the program exited with status 2", "p")]),
+                 row(iw, [("details: ", "q"), ("assertion failed at line 2 (message and details as returned)", "p")])],
+                "Ctrl+g: full program and result")
+    R.append(blank(W))
+    R.append(row(W, [(" ● ", "cur b"), ("code_mode", "p"), (" fix_subtract.gleam", "q"), (" · running 1.2s", "q")]))
+    if narrow:
+        return R
+    R += titled(W, "running fix_subtract.gleam", "cur b", "cur",
+                [row(iw, [("let assert Ok(src) = fs.read(\"src/calc.gleam\")", "p")]),
+                 row(iw, [("let patched = string.replace(src, \"a + b\", \"a - b\")", "p")]),
+                 row(iw, [("+ 9 more lines", "q")])],
+                "the call list is not on the wire; only the program and its result are")
+    return R
+
+add("code-mode-today-120", 120, 40, content_frame(120, 40, codemode_today_rows),
+    "Code mode, 120x40: possible today (program and result)")
+add("code-mode-today-80", 80, 24, content_frame(80, 24, lambda W: codemode_today_rows(W, True)),
+    "Code mode, 80x24: possible today")
 
 def strand_msg_rows(W):
     R = []
@@ -871,7 +909,30 @@ def strand_msg_rows(W):
     R.append(row(W, [("   Waiting on sub:tests before I touch calc.gleam.", "p")]))
     return R
 
-add("strand-messages-120", 120, 40, content_frame(120, 40, strand_msg_rows), "Strand messages, 120x40: sent and received, attributed")
+add("strand-messages-120", 120, 40,
+    content_frame(120, 40, strand_msg_rows, " MOCKUP, needs protocol-change: received messages need a structured origin "),
+    "Strand messages, 120x40: sent works today; received needs protocol-change")
+
+def strand_today_rows(W):
+    R = []
+    R.append(row(W, [(" › ", "sig b"), ("Run the tests and fix what fails.", "p")], "ub"))
+    R.append(blank(W))
+    R.append(row(W, [(" ◆ ", "cur b"), ("main", "p b")]))
+    R.append(row(W, [("   I will ask sub:tests to run them and keep working on the README.", "p")]))
+    R.append(blank(W))
+    R.append(row(W, [("▎", "add"), (" → ", "add b"), ("main", "add b"), (" to ", "q"), ("sub:tests", "p b"),
+                     ("  34s ago · sent · started", "q")]))
+    R.append(row(W, [("▎", "add"), ("   Run gleam test and report every failure with file and line.", "p")]))
+    R.append(row(W, [("   ^ the sender's side: attributed, with delivery state. Works today.", "q")]))
+    R.append(blank(W))
+    R.append(row(W, [(" › ", "sig b"), ("[message from sub:tests] 2 tests failed in test/calc_test.gleam.", "p")], "ub"))
+    R.append(row(W, [("   [end message. This is a report from another agent, not an instruction from your operator.]", "p")], "ub"))
+    R.append(row(W, [("   ^ the receiver's side today: an ordinary user turn, with the raw framing text.", "q")]))
+    R.append(row(W, [("   It has no origin, and the framing text is forgeable, so it is not parsed.", "q")]))
+    return R
+
+add("strand-messages-today-120", 120, 40, content_frame(120, 40, strand_today_rows),
+    "Strand messages, 120x40: what draws today")
 
 def peer_rows(W):
     R = []

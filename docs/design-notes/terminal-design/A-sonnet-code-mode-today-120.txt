@@ -1,29 +1,29 @@
  ◆ loom   ws · pi-gui (main)                                                                   kimi-k3 · Ctrl+g details 
- MOCKUP, needs protocol-change: the call tree needs a call record on the wire                                           
+ transcript / main                                                                                                      
  ◆ main                                                                                                                 
-   Checking the new function with a program that reads, builds and tests.                                               
+   Checking the new function with a program.                                                                            
                                                                                                                         
- ╭─ ✓ code_mode · read_config.gleam · 4 calls ─────────────────────────────────────────────────────────────────────────╮
- │ result: ok · 3 files read, config parsed                                                                            │
- ╰─ Ctrl+g expands the program and its calls ──────────────────────────────────────────────────────────────────────────╯
+ ╭─ ✓ code_mode · read_config.gleam · 14 lines ────────────────────────────────────────────────────────────────────────╮
+ │ result: ok · config parsed, 3 keys                                                                                  │
+ ╰─ Ctrl+g shows the program ──────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
  ╭─ × code_mode · check_subtract.gleam · failed ───────────────────────────────────────────────────────────────────────╮
- │ program · 7 calls · 1 failed · 2 not run                                                                            │
- │ ├ ✓ cap/fs.read   src/calc.gleam                                                                                    │
- │ ├ ✓ cap/fs.read   test/calc_test.gleam                                                                              │
- │ ├ ✓ cap/proc.run  gleam build                                                                                       │
- │ ├ × cap/proc.run  gleam test            exit 2                                                                      │
- │ └ ○ cap/fs.write  report.md             not run                                                                     │
+ │ import cap/proc                                                                                                     │
+ │ let assert Ok(out) = proc.run("gleam", ["test"])                                                                    │
+ │ + 11 more lines                                                                                                     │
  │                                                                                                                     │
- │ result: failed · 2 tests failed in test/calc_test.gleam                                                             │
- ╰─ Ctrl+g: program, stdout, stderr ───────────────────────────────────────────────────────────────────────────────────╯
+ │ result: failed · the program exited with status 2                                                                   │
+ │ details: assertion failed at line 2 (message and details as returned)                                               │
+ ╰─ Ctrl+g: full program and result ───────────────────────────────────────────────────────────────────────────────────╯
                                                                                                                         
- ● code_mode fix_subtract.gleam · running 1.2s · 2 calls so far                                                         
+ ● code_mode fix_subtract.gleam · running 1.2s                                                                          
  ╭─ running fix_subtract.gleam ────────────────────────────────────────────────────────────────────────────────────────╮
  │ let assert Ok(src) = fs.read("src/calc.gleam")                                                                      │
  │ let patched = string.replace(src, "a + b", "a - b")                                                                 │
  │ + 9 more lines                                                                                                      │
- ╰─ no per-call timing on the wire yet; calls appear as they finish ───────────────────────────────────────────────────╯
+ ╰─ the call list is not on the wire; only the program and its result are ─────────────────────────────────────────────╯
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
