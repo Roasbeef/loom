@@ -10,14 +10,187 @@ and puts its answers in front of the model in three places: seven
 `fs_edit` result, and the `cap/lsp` module a code-mode program can
 import.
 
-Two decisions shape the rest of this document. **The server is a jailed
-lease**: it is cleared once through the broker's ordinary jailed exec and
-held for the life of the session, like an extension host. **The model
-addresses symbols, never positions**: every question names a symbol as
-code spells it, and every answer comes back as a line the model can edit
-without reading the file first. `docs/adr/015-language-servers-as-jailed-leases.md`
-is the ruling, with the measurements it rests on. This document is how
-the code carries that ruling out.
+This document is how the code carries out two rulings:
+`docs/adr/015-language-servers-as-jailed-leases.md` (the server is a
+jailed lease, with the measurements it rests on) and
+`docs/adr/016-language-profiles.md` (a language is a profile, shipped
+as data). It starts with the principles the design follows and a map of
+the code in reading order, then covers each mechanism, and ends with how
+to add a language.
+
+## Principles
+
+Seven rules shape every module below. Each is a heading followed by its
+reason and the place in the code that holds it, so a change that breaks
+one shows up as a change to that place.
+
+### Teach the harness the protocol and no language
+
+Loom ships no server table. A server exists because an operator wrote an
+`[lsp.<name>]` table or installed a profile, and what a language spells
+differently (its `languageId`, how a qualified name is split, how a module
+name meets a file name) is a key of that table. The reason is reach: the
+agent works on Go, Rust and whatever else a workspace holds, and a
+language server is the one semantic channel every language already ships.
+A language the harness had to learn would tie that language's fixes to
+Loom's release train.
+
+There is one place where the harness names a tool. The bare command
+`gleam` resolves to the toolchain code mode located, not to `PATH`
+(`executable_path`, `client/lsp/jail.gleam:398`), so the compiler
+analysing a project is the one that builds its programs. That is a rule
+about which release runs, not about Gleam's semantics, and it is stated
+here because a principle with an unstated exception is worse than a
+narrower one.
+
+### Run the server in the jail
+
+A language server runs project code. `gleam lsp` compiles the project,
+`gopls` loads packages, and other servers run build scripts and macros,
+all from a toolchain the model can edit. Rule Zero (no model-influenced
+code in the harness VM) therefore applies to the server as it does to
+`bash`. The broker's ordinary jailed exec holds it, under the session's
+own enforcement demand, and a probe proves the jail is enforced before the
+server starts. `policy_for` (`client/lsp/jail.gleam:920`) builds the
+policy, and only the operator's table widens it.
+
+### Keep a profile to data
+
+A profile extension declares `[lsp.<name>]` tables and `[[check]]`s. The
+manifest decoder refuses a `[[tool]]`, `[[hook]]` or `[net]` in one by
+name (`profile_tier`, `client/extension/manifest.gleam:75`), and an
+install is fetch, extract and record, with nothing to vet or compile. The
+profile runs nothing itself. It does carry the authority to name a binary
+for the harness to run in the jail, and a one-line `hint` that lands in
+the model's context, so both are part of what the operator approves at
+install and the install record keeps the approved grant in full.
+
+The reason for data over code is that data can be decoded totally,
+approved as a diff and proven by a fixture. Code would need the extension
+platform to grow five new capabilities first (ADR-016, option 2), and
+would move the safety properties of ADR-015 out of the one place they are
+audited.
+
+### Address symbols by name, never by position
+
+A tool takes a symbol as code spells it (`greet`, `util.Greet`),
+optionally narrowed by a `path` and the 1-based `line` that `fs_read`
+prints. The door turns that into the server's position (`SymbolQuery` in
+`lsp/query.gleam`, resolution in `client/lsp/resolve.gleam`). A model
+cannot count columns, and the protocol's columns are UTF-16 code units, so
+a guessed offset lands on the wrong token and the server answers about
+something else without saying so. Sites come back with codepoint columns,
+which a model can use.
+
+### Shape answers as the model's next step
+
+Every site prints as `path:line:anchor|text`, which is exactly an
+`fs_read` line, so an answer feeds `fs_edit` with no read between. Lists
+state their count before they list and stop at a bound, so the model knows
+when to narrow a query or move it into code mode. `lsp_rename` previews by
+default and writes only on `mode: "apply"` (`decode_mode`,
+`tools/lsp.gleam:491`), and an unknown `mode` is refused rather than
+defaulted. The table in `tools/lsp.gleam` pairs each of these choices with
+the model failure it prevents (`# What each design choice prevents`,
+`tools/lsp.gleam:41`).
+
+### Gate every path the server names
+
+The jail bounds what a server can read, but not which paths it can put in
+an answer, and the harness reads outside every jail. So every path out of
+an answer (a definition, a reference, a call edge, a published diagnostic,
+a rename's edit) becomes `Admitted` or `Withheld` through one function,
+`admit` (`client/lsp/resolve.gleam:399`), called from one place in the
+manager (`gate`, `client/lsp/manager.gleam:2186`). Without it, a hostile
+project's server could name `~/.loom/owner.token` and have the harness
+print its first line.
+
+`owner` (`client/lsp/resolve.gleam:173`) is the same containment rule
+turned the other way: it keeps the model from asking about a file the jail
+hides. A refused path costs no request.
+
+### Measure readiness and settlement
+
+The two servers ADR-015 measured disagree on everything a client could
+wait on, and `rust-analyzer` answers `[]` while it is still loading. So a
+freshly started server is asked whether its work-done progress has gone
+quiet (`ready`, `lsp/client.gleam:1150`), and a write's diagnostics are
+collected under two rules that both must hold (`settle`,
+`lsp/client.gleam:1122`). The answer is a type that says `Settled` or
+`Unsettled`, so a server that had not finished is never reported as clean
+code.
+
+The timings in this document are numbers somebody measured, and a
+profile's `[[check]]`s are how a new server gets measured. A claim that
+the code or a profile works rests on a run that asked the server, not on a
+reading of its documentation.
+
+## A map of the code
+
+The modules are listed in the order a query travels through them, so
+reading down the tables follows a question from the model to the server.
+To read the code, start with `tools/lsp.gleam` to see what the model
+sends, then `client/lsp/manager.gleam` for the door, then
+`lsp/client.gleam` for one server's conversation, and read the jail and
+profile modules last, after the contract they protect is clear.
+Every large module opens with a `## Flow` section, a text sketch of its
+control flow, and several carry transition tables for their state
+machines. Those are the maintained account of how each module works, and
+this document points at them instead of repeating them. Each path is
+relative to its package's source root: `lsp/client.gleam` is
+`packages/lsp/src/lsp/client.gleam`, and `client/lsp/jail.gleam` is
+`packages/client/src/client/lsp/jail.gleam`.
+
+**The surfaces: what the model and a program see.**
+
+| Module | Owns | Read first |
+|---|---|---|
+| `tools/lsp.gleam` | The seven `lsp_*` tools, argument decoding, rendering, rename's `land`, the profile hints on `lsp_definition`, and the write tools' `diagnostics_observer`. | `## Flow` (`tools/lsp.gleam:74`) and the failure table at `tools/lsp.gleam:41` |
+| `tools/fs.gleam`, `tools/hashline.gleam` | `land_plan`, `WriteTarget`, the write observer, and `plan_between`: the one landing path rename shares with `fs_edit`. | their own headers |
+| `codemode/lsp.gleam` | The `lsp.*` router arm, rename preview diffing, and the wire shapes. | `## Flow` (`codemode/lsp.gleam:57`) |
+| `cap/lsp.gleam` | The typed module a program imports: `Query`, `Site`, `Found`, `LspError`, and the seven functions. | `## Flow` (`cap/lsp.gleam:43`) and `## Where each error comes from` (`cap/lsp.gleam:62`) |
+
+**The door and the harness wiring: one server per session.**
+
+| Module | Owns | Read first |
+|---|---|---|
+| `lsp/query.gleam` | The harness vocabulary and the `Door` contract every surface calls: `SymbolQuery`, `Site`, `Diagnostics`, `QueryError`. Types only. | its header |
+| `client/lsp/manager.gleam` | One server per session, the keepers that start servers, eviction, restart, the probe, the bare-symbol search, the gate on named paths, and `door`. | `## Flow` (`client/lsp/manager.gleam:100`), then `## Transitions of the manager` (`client/lsp/manager.gleam:124`) and `## Transitions of a keeper` (`client/lsp/manager.gleam:137`) |
+| `client/lsp/resolve.gleam` | The judgement half of the door: ownership, containment, the `admit` gate, qualified symbols, outline lookup and containers. | `## Flow` (`client/lsp/resolve.gleam:71`) |
+| `client/lsp/leases.gleam` | The per-session cap on session-lived helper leases. | its header |
+| `client/lsp/codemode_rename.gleam` | A program's applied rename, composed from the tools' landing and the program's write boundary. | its header |
+
+**The jail: what a server may touch.**
+
+| Module | Owns | Read first |
+|---|---|---|
+| `client/lsp/jail.gleam` | `policy_for`, executable location and mounts, the containment checks, and the jailed `ChannelTransport` with its relay state machine. | `## Flow` (`client/lsp/jail.gleam:61`), `## Transitions of the relay` (`client/lsp/jail.gleam:82`) and `## What each containment rule stops` (`client/lsp/jail.gleam:98`) |
+| `broker/policy.gleam` | `session_lease` and `LeaseOutput`, shared with extension hosts. | `session_lease` |
+
+**The protocol client: one server, one actor.**
+
+| Module | Owns | Read first |
+|---|---|---|
+| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, document sync, the diagnostics store, settlement, readiness and stop. It is a `weft/state_machine` over `gleam_mcp/transport` and never imports `broker` or `mcp`. | `## Transition table` (`lsp/client.gleam:48`), `## Flow` (`lsp/client.gleam:74`) and `## Reading the handlers` (`lsp/client.gleam:100`) |
+| `lsp/protocol.gleam` | Total decoders for every structure consumed, the advertised-capability gate, answers to the server's own requests, and `file://` conversion. | `## Flow` (`lsp/protocol.gleam:45`) and `## Reading a decoder` (`lsp/protocol.gleam:78`) |
+| `lsp/framing.gleam` | The pure `Content-Length` framer. It works on bytes, because the header counts bytes. | `## Flow` (`lsp/framing.gleam:36`) and `## Transition table` (`lsp/framing.gleam:52`) |
+| `lsp/text.gleam` | The one place a server position becomes a line and codepoint, and the one place a server's text edits are applied. | `## Flow` (`lsp/text.gleam:60`) |
+| `lsp/range.gleam` | The server's coordinates: zero-based lines, columns in UTF-16 code units. | its header |
+
+The package takes the JSON value type, the JSON-RPC envelope and the
+transport seam from `gleam_mcp`, and keeps its own monitored try-call in
+`lsp/call.gleam`, because `gleam_mcp` carries one only privately.
+`packages/lsp/CLAUDE.md` is the dense per-type reference for the package.
+
+**Profiles and checks: what a language is.**
+
+| Module | Owns | Read first |
+|---|---|---|
+| `client/lsp/profile.gleam` | The one `[lsp.<name>]` decoder (`LspServer`, `LspPath`, `ModuleCase`, `Places`), the extension-ownership check, `expand_path` and `cache_place`. Pure. | `## Flow` (`client/lsp/profile.gleam:62`) and `## Refusal rules` (`client/lsp/profile.gleam:87`) |
+| `client/lsp/profiles.gleam` | Combining `loom.toml` tables with installed profiles: the operator's file wins whole, and a conflict refuses the installed side. | its header |
+| `client/lsp/profile_check.gleam` | A profile's `[[check]]`s asked through the door and judged as sets of `path:line` (ADR-016 §5). | its header |
+| `client/extension/check.gleam` | `loomd ext check`: the scratch workspace, the check plane, the probe's jail line, and a manager over one server. | `## Flow` (`client/extension/check.gleam:58`) |
+| `client/catalog.gleam`, `client/contributions.gleam`, `client/codemode.gleam` | Handing the `[lsp]` table to the decoder, `built_in`'s `lsp` plane (the tools and the observed write tools), and `over_lsp`, the per-host admission of `cap/lsp`. | their headers |
 
 ## Why a language server
 
@@ -27,41 +200,21 @@ anchor no longer matches) and found code by `grep`. Both know text and
 nothing else. Neither can say which of forty `init` functions a call
 reaches, or whether an edit broke a file the agent never opened.
 
-Loom's agent does not work only on Gleam. It works on Go, Rust and
-anything else a workspace holds, so the semantic channel has to be
-language-neutral. The tools that already understand Loom's own code —
-the compiler's package-interface export, the `glance` walker behind
-`make lint`, the search index — understand Gleam and nothing else. The
-language server is the one channel every language already ships, and for
-most languages it is the only oracle for types. Loom therefore speaks the
-Language Server Protocol (LSP) and brings no language knowledge of its
-own. `gleam lsp` and `gopls` appear throughout this document because
-they are the two servers the design was measured against, not because
-Loom knows them: Loom ships no server table, and a server exists only
-because an operator configured one.
+The tools that already understand Loom's own code (the compiler's
+package-interface export, the `glance` walker behind `make lint`, the
+search index) understand Gleam and nothing else. The language server is
+the one channel every language ships, and for most languages it is the
+only oracle for types. Loom therefore speaks the Language Server
+Protocol (LSP) and brings no language knowledge of its own. `gleam lsp`
+and `gopls` appear throughout this document because they are the two
+servers the design was measured against, not because Loom knows them.
 
-What a language spells differently is data, not code. Two facts that
-used to be hard-wired defaults are now keys of a server's table, its
-**language profile** (`docs/adr/016-language-profiles.md`), and each
-key's default is exactly the behaviour it replaced, so a table written
-before the keys existed means what it meant:
-
-- **The `languageId` a document is opened with** is `language_id`,
-  defaulting to the server's first extension without the dot (`gleam`,
-  `go`). That is right for most languages and wrong for some (`.ts` is
-  `typescript`), and a profile now says so.
-- **A qualified symbol** is split on `qualifier_separators` (default
-  `.`), and its qualifier must end the definition's file path without
-  its extension, or its directory, once `module_case` has mapped it
-  (default: as written). That fits Gleam modules, Go packages, Python,
-  Java and TypeScript by default; Rust's and C++'s `::` is
-  `qualifier_separators = ["::"]`, and Elixir's `MyApp.Accounts` in
-  `my_app/accounts.ex` is `module_case = "snake"`.
-
-One assumption is still the harness's own, and it is about the release
-rather than any language: **the bare command `gleam`** resolves to the
-toolchain code mode located rather than to `PATH`, so the compiler
-analysing a project is the one that builds its programs.
+What a language spells differently is data. Two facts that used to be
+hard-wired defaults, the `languageId` a document is opened with and how a
+qualified symbol is split, are now keys of a server's table, its
+**language profile** (ADR-016). Each key's default is exactly the
+behaviour it replaced, so a table written before the keys existed means
+what it meant. The keys are described under "Configuration" below.
 
 ## One door, every surface
 
@@ -73,9 +226,8 @@ rule and one server per session, whichever surface asked. A code-mode
 program is not a second client of the server; it is a second caller of
 the same door.
 
-The work is split across five places, layered so that nothing above the
-protocol package holds an LSP position and nothing below `client` touches
-the broker:
+The work is layered so that nothing above the protocol package holds an
+LSP position and nothing below `client` touches the broker:
 
 ```mermaid
 flowchart TB
@@ -113,34 +265,6 @@ flowchart TB
     J -->|clear_call, exec_stdin, exec_out| B
     B --> S
 ```
-
-**`packages/lsp` is the protocol and the vocabulary.** `lsp/range` holds
-the server's own coordinates (zero-based lines, columns counted in UTF-16
-code units). `lsp/query` holds the harness's vocabulary and the `Door`
-contract, and is types only. `lsp/framing` is the pure `Content-Length`
-framer, working on bytes because the header counts bytes. `lsp/protocol`
-holds total decoders for every structure consumed, the advertised-
-capability gate, and the answers to the server's own requests. `lsp/text`
-is the one place a server position becomes a line and codepoint, and the
-one place a server's text edits are applied. `lsp/client` is the actor
-that owns one server: a `weft/state_machine` over `gleam_mcp/transport`, which
-runs the handshake, gates every request, syncs documents, stores
-diagnostics and decides when they have settled. The package takes the
-JSON value type, the JSON-RPC envelope and the transport seam from
-`gleam_mcp`, keeps its own small monitored try-call (`lsp/call`, because
-`gleam_mcp` carries one only privately), and never imports `broker` or
-`mcp`. `packages/lsp/CLAUDE.md`
-is the dense reference.
-
-**`client/lsp` is the harness wiring.** `client/lsp/manager` is the
-session's one manager and the door's implementation. `client/lsp/resolve`
-is the part of the door that is judgement rather than process: which
-server owns a path, whether the path is contained, how a qualified symbol
-splits, which outline entry contains a reference. `client/lsp/jail`
-builds the server's sandbox policy and the transport that carries its
-bytes through the broker. `client/lsp/leases` caps how many helpers
-session-lived servers may hold. `client/lsp/codemode_rename` composes a
-program's applied rename out of pieces that live in three packages.
 
 **The surfaces are thin.** `tools/lsp` decodes tool arguments into an
 `lsp/query.SymbolQuery`, calls the door and renders the answer.
@@ -196,8 +320,8 @@ The requirements ask for:
   `node_modules/.bin` executable does, since its own directory widens
   nothing; and judging at resolution is enough, since a link rewritten
   later points outside what was mounted and fails to execute. A link can
-  also be a *directory* on the spelled path — `node_modules/.bin`
-  replaced by a link beside a credential — and the region is mounted by
+  also be a *directory* on the spelled path (`node_modules/.bin`
+  replaced by a link beside a credential), and the region is mounted by
   that spelling, which the helper's bind follows, so before a start the
   manager refuses one too (`jail.directory_unlinked`): where a path the
   server writes holds the executable's directory, the part below it must
@@ -205,7 +329,7 @@ The requirements ask for:
   same components after it. A link above the write, such as a workspace
   under `/var -> /private/var`, is the operator's and is admitted. Each region is an explicit read-only mount, and the helper
   lays explicit mounts over every root, so a region at or above a path
-  the server writes — the link's own directory or a target's — is refused
+  the server writes (the link's own directory or a target's) is refused
   by name rather than left to turn that path read-only. `/bin/sh` is the
   case that found that check, under the prefix rule this replaced: its
   prefix was `/`;
@@ -294,8 +418,8 @@ without anyone having to remember to.
 The manager actor holds only small state: which server is running or
 starting, the callers waiting on a start, and the paths the running
 server holds open. It never reads disk, never talks to a server and never
-waits. A start takes seconds — a handshake plus a project load (`gopls`
-answered its first query 1.8 s cold) — so each start happens in a
+waits. A start takes seconds (a handshake plus a project load; `gopls`
+answered its first query 1.8 s cold), so each start happens in a
 **keeper**, one process per server start. The keeper waits for the
 previous server's keeper to finish stopping, runs the probe, starts the
 `lsp/client` actor, re-opens the documents a dead predecessor held, and
@@ -421,7 +545,7 @@ with `bash`, and tool concurrency closes it for tools: `lsp_rename` is
 server never opened to the server itself, which can read the disk.
 Measured against `gleam lsp`, that is wrong: it answers `definition`
 with nothing and outlines nothing for a file it was never sent. So the
-manager opens the files a query is about to touch — the hit files of a
+manager opens the files a query is about to touch: the hit files of a
 bare-symbol search, and the referencing files whose outlines give
 references their containers (at most 32, half the open bound, so one
 wide answer cannot evict everything else the server holds). At most 64
@@ -594,9 +718,9 @@ pub fn used_elsewhere(path: String) -> Result(List(String), lsp.LspError) {
 }
 ```
 
-`codemode/lsp.routing` serves the seven names — `lsp.definition`,
+`codemode/lsp.routing` serves the seven names (`lsp.definition`,
 `lsp.references`, `lsp.hover`, `lsp.outline`, `lsp.calls`,
-`lsp.diagnostics` and `lsp.rename` — as `ServedHere`, the way
+`lsp.diagnostics` and `lsp.rename`) as `ServedHere`, the way
 `client/mcp.routing` serves `mcp.<server>`. The server is already
 running, jailed, under a lease the session holds, and a query is a
 message to it over a channel the harness owns, so there is no process to
@@ -605,9 +729,9 @@ host's call timeout bound a call.
 
 Failures travel on two channels. A refusal that is only a sentence
 (`NoServer`, a server's refusal, `Unavailable`) is an in-band denial with
-a code and a message. The three that carry structure a message cannot —
+a code and a message. The three that carry structure a message cannot,
 `NotFound`'s symbol, `Ambiguous`'s candidate sites, `Unsupported`'s
-server and request — travel as an answer tagged `unresolved`, because the
+server and request, travel as an answer tagged `unresolved`, because the
 harness looked and the looking is the answer.
 
 A program's rename previews in the router, which diffs the door's base
@@ -765,35 +889,126 @@ asks a semantic question never pays for a server.
 
 ## Adding a language
 
-A language is a profile, not a change to Loom. Adding one is three
-steps, and the third is the one that makes it trustworthy.
+A language is a profile, not a change to Loom. It lives in its own
+repository, so its fixes follow its server's releases and not Loom's
+(ADR-016, addendum). Loom maintains three, which are also the worked
+examples: [loom-lsp-gleam](https://github.com/Roasbeef/loom-lsp-gleam),
+[loom-lsp-go](https://github.com/Roasbeef/loom-lsp-go) and
+[loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust). Each has a
+`docs/how-this-profile-works.md` that walks through its `extension.toml`
+key by key.
 
-1. **Write the profile.** A `tier = "profile"` extension whose
-   `extension.toml` holds one `[lsp.<name>]` table (the keys above). Grant
-   only what the server is measured to need, and give every root and
-   environment name a comment saying why. A root a build script could
-   write that later runs on the host, such as anything under `~/.cargo`,
-   is never writable, and a writable root must already exist on the host,
-   because the jail refuses one that does not.
-2. **Write a fixture and checks.** A `fixture/` directory holding a small
-   project the server can load offline and read-only (a Rust crate needs
-   its `Cargo.lock`), and `[[check]]`s: a `definition` or `references`
-   query, a symbol spelled as the model would spell it, and the
-   `path:line` sites the answer must equal as a set (ADR-016 §5).
-   Qualify a symbol the way the language does, since that is what
-   `qualifier_separators` and `module_case` exist for.
-3. **Run `loom ext check`.** `loom ext install ./my-profile`, then
-   `loom ext check my_profile`, which writes the fixture into a scratch
-   workspace, starts the server in the ordinary jail under your demand,
-   prints what the jail enforced, and asks every check through the door
-   the tools use. A `FAIL` line names both sets. An empty answer usually
-   means the server could not load the project: a root it needs is not
-   granted, or a cache it writes is not writable.
+### What a profile repository contains
 
-[loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust) is the worked
-example: its `README.md` records what `cargo` and `rust-analyzer` needed
-in the jail and why each grant is there. Each profile repository runs
-this same `loomd ext check` in its own CI, against a Loom it builds.
+```text
+loom-lsp-<language>/
+  extension.toml                 the manifest: [extension], one [lsp.<name>], and the [[check]]s
+  fixture/                       a small project the server can load offline
+  README.md                      what the host must hold before the profile works
+  LICENSE
+  .github/workflows/check.yml    CI: build Loom, install the profile, run the checks
+```
+
+The `[extension]` table names it (`name = "lsp_go"`, which is what
+`loomd ext check` takes) and sets `tier = "profile"`. A profile
+manifest holds at least one `[lsp.<name>]` table and may hold
+`[[check]]`s. It holds no `[[tool]]`, `[[hook]]` or `[net]`, and the
+decoder refuses each by name.
+
+### Choosing the keys
+
+The full rules are ADR-016 §2, and the decoder
+(`client/lsp/profile.gleam`, its `## Refusal rules` section) refuses
+anything outside them with a message naming `lsp.<name>.<key>`. Three
+keys are required: `command` (an argv, never a shell string),
+`extensions` and `root_markers`. The others answer one question each:
+
+- **Does the server write into the project?** Say `project = "writable"`.
+  `gleam lsp` writes `manifest.toml` and `build/`; `gopls` and
+  `rust-analyzer` write nothing, so they leave the default `read-only`.
+- **Does it read anything outside the project?** Name it in `readable`:
+  `~/go/pkg/mod` for Go, `~/.rustup` and `~/.cargo/registry` for Rust.
+  Never name a directory a host tool later trusts as `writable`. A root
+  that a build script could write and that later runs on the host, such
+  as anything under `~/.cargo`, is the way out of the jail.
+- **Does it need a cache it can write?** Use `cache_env`, which points
+  an environment variable at a directory Loom owns under
+  `<cache>/loom/lsp/<server>/`. It is the only key that sets a value.
+- **Does it need names from the daemon's environment?** List them in
+  `env`. The values are never in the file.
+- **Does the language spell things differently?** `language_id` when the
+  `languageId` is not the extension without its dot (`rust`, not `rs`),
+  `qualifier_separators` when qualified names do not use `.` (`::`), and
+  `module_case = "snake"` when modules are laid out as snake_case files.
+- **Is there a convention the resolver cannot express?** Put it in
+  `hint`, one line the model reads in `lsp_definition`'s description.
+  Rust's leading `crate::` is the case: the hint tells the model to leave
+  it out.
+
+A writable root must already exist on the host, because the jail refuses
+one that does not. Give every root and every environment name a comment
+saying why it is there and, where you measured, what happened without it.
+
+### Writing a fixture and checks
+
+The `fixture/` directory holds a small project the server can load
+offline and read-only. A Rust crate needs its `Cargo.lock`, since
+`cargo metadata` would otherwise try to write one. Keep it to two files
+in two modules or packages, so a qualified name has something to
+qualify.
+
+Each `[[check]]` is one question asked through the door the tools use:
+a `definition` or `references` query, the symbol spelled as a model
+would spell it, and the `path:line` sites the answer must equal as a set
+(ADR-016 §5).
+
+```toml
+[[check]]
+server = "go"
+query = "definition"
+symbol = "util.Greet"
+expect = ["util/util.go:<line>"]
+```
+
+Here `<line>` is the 1-based line of `Greet`'s declaration in the fixture.
+
+Write at least a qualified `definition` (it proves the qualifier rule
+and the project root) and a `references` check that crosses a module
+boundary (it proves the server loaded the whole project). A check is
+pinned to the line numbers of the fixture, so changing a fixture file
+means updating `expect`.
+
+### Running the checks
+
+```sh
+loomd ext install ./loom-lsp-<language>
+loomd ext check lsp_<language>
+```
+
+The host needs the server, its toolchain and `rg` (a bare-name question
+searches the project with it) on the daemon's `PATH`. `loomd ext check`
+writes the fixture into a scratch workspace, starts the
+server in the ordinary jail under your enforcement demand, prints what
+the jail enforced, and asks every check. A `FAIL` line names both sets of
+sites, and the verb exits 1. An empty answer usually means the server
+could not load the project: a root it needs is not granted, or a cache
+it writes is not writable. Measure what the server needs by removing a
+grant and watching which check fails, as the Rust profile's comments
+record for `~/.rustup` and `~/.cargo/registry`.
+
+### Adding CI
+
+Copy `.github/workflows/check.yml` from the closest of the three
+repositories (`loom-lsp-go` for a toolchain installed with one command,
+`loom-lsp-rust` for one that needs a setup script) and change four
+things: the job name, the `loomd ext check lsp_<language>` line, the
+step that installs the language's toolchain and server, and the version
+pins at the top. The workflow checks out the profile and Loom side by
+side, builds Loom's sandbox helper and `loomd`, installs the profile
+from its checkout, and runs the checks. The job's result is the exit
+code of `loomd ext check`. The `LOOM_REV` variable pins the Loom
+revision the profile is proven against, and changing it re-proves the
+profile against a newer Loom.
 
 ## What is not built, and the known hazards
 
@@ -828,37 +1043,3 @@ one that publishes neither before a barrier nor with versions. Each
 fails visibly, as `NoServer` or as diagnostics that did not settle. The
 first two are fixed in the server's table and the third by a quiet
 window; none is a change to the mechanism.
-
-## Where the code lives
-
-| Path | What it holds |
-|---|---|
-| `lsp/range.gleam` | The server's coordinates: `Position`, `Range`, `TextEdit`, zero-based and UTF-16. |
-| `lsp/query.gleam` | The harness vocabulary and the `Door` every surface calls: `SymbolQuery`, `Site`, `Diagnostics`, `QueryError`. Types only. |
-| `lsp/framing.gleam` | The `Content-Length` framer over bytes, bounded before it buffers. |
-| `lsp/protocol.gleam` | Total codecs, the advertised-capability gate, answers to server requests, `file://` conversion. |
-| `lsp/text.gleam` | UTF-16 ↔ codepoint conversion, identifier-boundary lookup, and pure edit application. |
-| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, sync, diagnostics store, settlement, readiness, stop. |
-| `client/lsp/manager.gleam` | One server per session, keepers, eviction, restart, the probe, the bare-symbol search, and `door`. |
-| `client/lsp/resolve.gleam` | Ownership, containment, qualified symbols (per-server separators and module case), outline lookup, containers, display paths. |
-| `client/lsp/profile.gleam` | The one `[lsp.<name>]` decoder: `LspServer`, `LspPath`, `ModuleCase`, `Places`, the extension-ownership check, `expand_path` and `cache_place`. Pure. |
-| `client/lsp/jail.gleam` | `policy_for`, executable location and mounts, and the jailed `ChannelTransport`. |
-| `client/lsp/profile_check.gleam` | A profile's `[[check]]`s asked through the door and judged as sets of `path:line` (ADR-016 §5). |
-| `client/extension/check.gleam` | `loom ext check`: the scratch workspace, the check plane, the probe's jail line, and a manager over one server. |
-| `client/lsp/leases.gleam` | The per-session cap on session-lived helper leases. |
-| `client/lsp/codemode_rename.gleam` | A program's applied rename, over the tools' landing and the program's write boundary. |
-| `client/catalog.gleam` | Hands the `[lsp]` table's entries to `client/lsp/profile`. |
-| `client/contributions.gleam` | `built_in`'s `lsp` plane: the `lsp_*` tools and the observed write tools. |
-| `client/codemode.gleam` | `over_lsp` and the per-host admission of `cap/lsp`. |
-| `broker/policy.gleam` | `session_lease` and `LeaseOutput`, shared with extension hosts. |
-| `tools/lsp.gleam` | The seven tools, the profile hints on `lsp_definition`, rendering, `land`, and `diagnostics_observer`. |
-| `tools/fs.gleam`, `tools/hashline.gleam` | `land_plan`, `WriteTarget`, the write observer, and `plan_between`. |
-| `codemode/lsp.gleam` | The `lsp.*` router arm, preview diffing, and the wire shapes. |
-| `cap/lsp.gleam` | The module a program imports: `Query`, `Site`, `Found`, `LspError`, and the seven functions. |
-
-Each path is relative to its package's source root: `lsp/client.gleam`
-is `packages/lsp/src/lsp/client.gleam`, and `client/lsp/jail.gleam` is
-`packages/client/src/client/lsp/jail.gleam`. `packages/lsp/CLAUDE.md` is
-the dense per-type reference for the protocol package, and
-`docs/adr/015-language-servers-as-jailed-leases.md` is the ruling and its
-measurements.
