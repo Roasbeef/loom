@@ -76,26 +76,6 @@ const retry_timeout_ms = 1500
 /// hold the terminal's own shutdown for more than the pair.
 const release_timeout_ms = 2000
 
-/// The command Herdr replays in the pane's directory after a server
-/// restart, per `resume_argv`'s contract: the first word must be a plain
-/// command name on the operator's PATH.
-///
-/// Herdr also refuses an argument carrying an apostrophe or a control
-/// character, and refuses the whole report rather than the field, so the
-/// session id this interpolates carries those constraints: a session
-/// whose id contained an apostrophe would make every pane report fail
-/// `invalid_resume_argv`. Loom's session ids are UUIDv7 text, whose
-/// alphabet is hex digits and hyphens, so an apostrophe cannot occur.
-///
-/// ## Examples
-///
-/// ```gleam
-/// herdr.resume_argv("sess-1") == ["loom", "--session", "sess-1"]
-/// ```
-pub fn resume_argv(session: String) -> List(String) {
-  ["loom", "--session", session]
-}
-
 /// The pane config and the process that carries reports to the pane's
 /// daemon.
 ///
@@ -189,6 +169,26 @@ pub type Message {
 /// number of the last report it attempted.
 type ReporterState {
   ReporterState(config: Config, seq: Int)
+}
+
+/// The command Herdr replays in the pane's directory after a server
+/// restart, per `resume_argv`'s contract: the first word must be a plain
+/// command name on the operator's PATH.
+///
+/// Herdr also refuses an argument carrying an apostrophe or a control
+/// character, and refuses the whole report rather than the field, so the
+/// session id this interpolates carries those constraints: a session
+/// whose id contained an apostrophe would make every pane report fail
+/// `invalid_resume_argv`. Loom's session ids are UUIDv7 text, whose
+/// alphabet is hex digits and hyphens, so an apostrophe cannot occur.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.resume_argv("sess-1") == ["loom", "--session", "sess-1"]
+/// ```
+pub fn resume_argv(session: String) -> List(String) {
+  ["loom", "--session", session]
 }
 
 /// Reads the launch environment and answers the pane config when this

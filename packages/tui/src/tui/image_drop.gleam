@@ -21,7 +21,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import session_view/pasted_image.{type Image, Image, max_image_bytes}
+import session_view/pasted_image.{type Image, Image}
 import simplifile
 import tui/internal/ffi_file
 
@@ -79,7 +79,7 @@ fn inspect_image(
 fn read_image(path: String, stated_size: Int) -> Result(Option(Image), String) {
   use _ <- result.try(admit_size(stated_size))
   use bytes <- result.try(
-    ffi_file.read_bounded(path, max_image_bytes)
+    ffi_file.read_bounded(path, pasted_image.max_image_bytes)
     |> result.map_error(fn(reason) { "cannot read dropped file: " <> reason }),
   )
   let byte_size = bit_array.byte_size(bytes)
@@ -109,7 +109,7 @@ fn admit_size(size: Int) -> Result(Nil, String) {
 /// Reports whether an image size fits the pre-frame admission limit.
 @internal
 pub fn size_allowed(size: Int) -> Bool {
-  case size <= max_image_bytes {
+  case size <= pasted_image.max_image_bytes {
     True -> True
     False -> False
   }
