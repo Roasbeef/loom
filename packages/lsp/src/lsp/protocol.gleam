@@ -41,6 +41,50 @@
 ////   refused as a value rather than silently dropped, for the same reason;
 //// - a diagnostic with no severity is read as an error (see
 ////   `decode_publish_diagnostics`).
+////
+//// ## Flow
+////
+//// The module has no control flow of its own: every public function is a
+//// pure builder or decoder, and the client actor (`lsp/client`) decides
+//// when each runs. A conversation with a server touches the codec
+//// families in this order, and the file is laid out in the same order,
+//// each family as a section marked with a `// ---` comment:
+////
+//// ```text
+//// handshake   initialize_request -> (server) -> decode_initialize_result
+////             -> initialized          capabilities, then `supports` gates
+////                                     every later request
+//// sync        did_open / did_change / did_close            (harness -> server)
+//// query       <name>_request -> (server) -> decode_<name>  one pair per question:
+////             locations, hover, document symbols, workspace edits,
+////             prepare rename, call hierarchy
+//// push        (server) -> classify_notification -> decode_publish_diagnostics
+////                                               or decode_work_done_progress
+//// callback    (server) -> answer_server_request -> reply built by jsonrpc
+//// stop        shutdown_request -> exit, with cancel_request for a request
+////             abandoned along the way
+//// ```
+////
+//// `path_to_uri` and `uri_to_path` sit under all of it: every document is
+//// named by a `file://` URI on the wire and by an absolute path in the
+//// harness. The decoding helpers every family shares (`object_fields`,
+//// `required_string`, `decode_range` and the like) close the file, as the
+//// last section, because each family's decoder calls them and none calls
+//// back.
+////
+//// Each family is organised the same way: its types, then its public
+//// decoder, then the private functions that decoder calls, depth first.
+////
+//// ## Reading a decoder
+////
+//// Most decoders are a column of `use x <- result.try(step)` lines. `use`
+//// hands the rest of the function to `result.try` as a callback, and
+//// `result.try` calls it only when `step` was `Ok`: the first `Error` is
+//// returned unchanged and the lines below it never run. So a decoder reads
+//// top to bottom as the happy path, and each line is also a place it can
+//// stop. Fields are looked up with `list.key_find` over the object's
+//// association list, and every error string names the field (and list
+//// index) that failed.
 
 import gleam/bit_array
 import gleam/bool
@@ -251,6 +295,8 @@ pub fn decode_initialize_result(
   Ok(InitializeResult(capabilities:, server_name:, server_version:))
 }
 
+// `serverInfo` is optional as a whole, but its `name` is required when it is
+// present; the version is optional. The pair is `Some(name)` or neither.
 fn decode_server_info(
   value: JsonValue,
 ) -> Result(#(Option(String), Option(String)), ProtocolFault) {
@@ -260,6 +306,11 @@ fn decode_server_info(
   Ok(#(Some(name), version))
 }
 
+// Reads only the providers `ServerCapabilities` carries; every other key a
+// server advertises is never looked at. The `use x <- result.try(...)`
+// lines are one fallible step each: the first `Error` leaves the function
+// at once and the rest of the body is skipped, so a lying capability is a
+// `ProtocolFault` and the later lines run only on valid input.
 fn decode_capabilities(
   value: JsonValue,
 ) -> Result(ServerCapabilities, ProtocolFault) {
@@ -365,6 +416,8 @@ fn text_document_sync(
   }
 }
 
+// The three kinds the specification defines, and nothing else: an unknown
+// number is a lie about the protocol, not a dialect.
 fn sync_kind(kind: Int) -> Result(SyncKind, ProtocolFault) {
   case kind {
     0 -> Ok(SyncNone)
@@ -475,6 +528,8 @@ pub fn initialize_request(
   jsonrpc.request(id, "initialize", Some(params))
 }
 
+// Shared by `initialize_request` and the `workspace/workspaceFolders`
+// answer, so the server hears the same folders both ways.
 fn encode_folders(folders: List(WorkspaceFolder)) -> JsonValue {
   json.Array(
     list.map(folders, fn(folder) {
@@ -767,6 +822,8 @@ pub fn outgoing_calls_request(id: Id, item: CallHierarchyItem) -> JsonValue {
   )
 }
 
+// The common shape of every request addressed to one position: the
+// document, the position, and whatever extra parameters the method adds.
 fn position_request(
   id: Id,
   method: String,
@@ -782,10 +839,13 @@ fn position_request(
   jsonrpc.request(id, method, Some(json.Object(params)))
 }
 
+// A `TextDocumentIdentifier`: the document named by its URI alone.
 fn document_id(uri: String) -> JsonValue {
   json.Object([#("uri", json.String(uri))])
 }
 
+// Encodes the position's two integers untouched, in the server's own
+// UTF-16 coordinates.
 fn encode_position(at: Position) -> JsonValue {
   json.Object([
     #("line", json.Int(at.line)),
@@ -850,6 +910,7 @@ fn decode_location_like(
   }
 }
 
+// The plain `Location` shape, once the caller has decided it is not a link.
 fn decode_location(
   fields: List(#(String, JsonValue)),
   at: String,
@@ -900,6 +961,9 @@ pub fn decode_hover(
   Ok(Some(HoverResult(contents:, range:)))
 }
 
+// Flattens the four shapes `contents` may take to one string. A list is
+// joined by blank lines after dropping empty parts, because the model
+// reads the text, not the structure.
 fn hover_contents(value: JsonValue) -> Result(String, ProtocolFault) {
   case value {
     json.String(text) -> Ok(text)
@@ -1027,6 +1091,8 @@ pub fn decode_document_symbols(
   }
 }
 
+// A named wrapper so the recursion through `children` and the top-level
+// call share one decoder, and both report their position as `<at>[<index>]`.
 fn decode_document_symbol_list(
   items: List(JsonValue),
   at: String,
@@ -1055,6 +1121,8 @@ fn decode_document_symbol(
   Ok(DocumentSymbol(name:, kind:, detail:, range:, selection_range:, children:))
 }
 
+// The flat outline entry. Its `location` is required, which is how
+// `decode_document_symbols` distinguishes it from the hierarchical shape.
 fn decode_symbol_information(
   value: JsonValue,
   at: String,
@@ -1196,10 +1264,14 @@ pub fn decode_workspace_edit(
   }
 }
 
+// Wraps a message as a malformed-edit fault, for the arms of
+// `decode_workspace_edit` that would otherwise spell the wrapping out.
 fn malformed_edit(reason: String) -> Result(a, WorkspaceEditFault) {
   Error(EditMalformed(BadResult(reason:)))
 }
 
+// The older `changes` shape: a map from URI to that document's edits. It
+// carries no document version and cannot carry a resource operation.
 fn changes_map(
   by_uri: List(#(String, JsonValue)),
 ) -> Result(List(DocumentEdits), ProtocolFault) {
@@ -1265,6 +1337,8 @@ fn refuse_resource_operation(
   }
 }
 
+// One `documentChanges` entry once it is known not to be a resource
+// operation: a document identifier with an optional version, and its edits.
 fn text_document_edit(
   fields: List(#(String, JsonValue)),
   at: String,
@@ -1458,6 +1532,8 @@ pub fn decode_outgoing_calls(
   })
 }
 
+// An incoming and an outgoing call share their shape and differ only in
+// whether the item sits under `from` or `to`; `end` names which.
 fn call_edge(
   value: JsonValue,
   at: String,
@@ -1564,6 +1640,9 @@ pub fn decode_publish_diagnostics(
   Ok(PublishDiagnostics(uri:, version:, diagnostics:))
 }
 
+// The severity arms below are the one place the omitted-severity policy
+// is applied: absent or `null` reads as an error, 1 to 4 map directly, and
+// anything else is refused.
 fn decode_diagnostic(
   value: JsonValue,
   at: String,
@@ -1657,6 +1736,8 @@ pub fn classify_notification(
   method: String,
   params: Option(JsonValue),
 ) -> Result(ServerNotification, ProtocolFault) {
+  // Each arm is one kind of server notification. Only the first two are
+  // decoded, because only they change what the client does.
   case method {
     "textDocument/publishDiagnostics" -> {
       use diagnostics <- result.try(
@@ -1792,6 +1873,8 @@ pub fn answer_server_request(
   }
 }
 
+// `workspace/configuration` asks for one settings value per item and gets
+// `null` for each: the harness configures servers at launch only.
 fn configuration_answer(
   params: Option(JsonValue),
 ) -> Result(JsonValue, RpcError) {
@@ -1806,6 +1889,7 @@ fn configuration_answer(
   }
 }
 
+// The error a server request with unusable params is answered with.
 fn invalid_params(reason: String) -> Result(JsonValue, RpcError) {
   Error(RpcError(code: invalid_params_code, message: reason, data: None))
 }
@@ -1850,6 +1934,8 @@ pub fn path_to_uri(path: String) -> Result(String, UriFault) {
   Ok("file://" <> encode_bytes(<<path:utf8>>, []))
 }
 
+// Percent-encodes a path byte by byte, working on the UTF-8 bytes so a
+// multi-byte character becomes one escape per byte, as RFC 3986 requires.
 fn encode_bytes(bytes: BitArray, done: List(String)) -> String {
   case bytes {
     <<byte, rest:bytes>> -> encode_bytes(rest, [encode_byte(byte), ..done])
@@ -1857,6 +1943,7 @@ fn encode_bytes(bytes: BitArray, done: List(String)) -> String {
   }
 }
 
+// One byte of a path: kept verbatim if it is path-safe, else `%XX`.
 fn encode_byte(byte: Int) -> String {
   case is_path_safe(byte) {
     True -> ascii(byte)
@@ -1901,6 +1988,7 @@ fn ascii(byte: Int) -> String {
   bit_array.to_string(<<byte>>) |> result.unwrap("")
 }
 
+// Two uppercase hex digits, zero-padded, the form of a `%XX` escape.
 fn hex2(byte: Int) -> String {
   string.pad_start(int.to_base16(byte), to: 2, with: "0")
 }
@@ -1952,6 +2040,9 @@ pub fn uri_to_path(uri: String) -> Result(String, UriFault) {
   }
 }
 
+// Walks the encoded bytes, turning each `%XX` into its byte. A `%` with
+// fewer than two bytes after it, or with a non-hex digit, is `BadEscape`;
+// the accumulator is built in the order the bytes appear.
 fn decode_escapes(
   bytes: BitArray,
   done: BitArray,
@@ -1970,6 +2061,7 @@ fn decode_escapes(
   }
 }
 
+// One hex digit of either case as its value, else `BadEscape` for the URI.
 fn hex_digit(byte: Int, uri: String) -> Result(Int, UriFault) {
   case byte {
     _ if byte >= 0x30 && byte <= 0x39 -> Ok(byte - 0x30)
