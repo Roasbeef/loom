@@ -11,6 +11,24 @@
 //// `client/schedulescan` is the actor that watches the clock; this module
 //// is the store half.
 ////
+//// ## Flow
+////
+//// `parse` / `build` → `encode` → `decode` → `interval_occurrence` / `cron_occurrence` → `fired_key` → `injection`
+////
+//// 1. `parse` reads the operator's `[[schedule]]` tables at boot, through
+////    `parse_document` and `parse_schedule`, one table at a time.
+//// 2. `build` makes the model's schedule from tool arguments, enforcing the
+////    same bounds with its `checked_*` helpers.
+//// 3. `encode` turns a `Schedule` into the config cell stored at `config_key`,
+////    and `decode` reads it back, dropping a cell it cannot trust.
+//// 4. On each tick the scanner asks `interval_occurrence` or
+////    `cron_occurrence` which occurrence is current, and `interval_late`,
+////    `cron_late` or `recurring_expired` whether it is late or spent.
+//// 5. `fired_key` names the write-once mark that makes an occurrence fire at
+////    most once; `fired_value` is what lands under it.
+//// 6. `origin_of` says whose text the fire is, and `injection` renders the
+////    fenced message the model reads.
+////
 //// ## Two kinds of schedule, one `Schedule`
 ////
 //// A schedule reaches the scanner from one of two places, and the value

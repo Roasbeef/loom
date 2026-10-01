@@ -9,6 +9,24 @@
 //// the schema, the wording, the shape of a refusal — and the host owns
 //// everything durable and everything enforced.
 ////
+//// ## Flow
+////
+//// `seam` / `door` → `with_runtime` → `create` → `claim_refused` → `cancel` → `retire` → `reaping_hooks` → `reap_run`
+////
+//// 1. `seam` adapts the tool's `Ctx` to `door`, which binds the three
+////    operations to one `Wiring` and the strand that is calling.
+//// 2. `with_runtime` borrows the session runtime for every call and refuses in
+////    band when it is not up.
+//// 3. `create` resolves the target, asks `schedulable` whether the caller may
+////    schedule onto it, then caps `wake` with `schedule.wake_under` and `wake_onto`.
+//// 4. It builds the value through `schedule.build`, checks `room_for_one_more`
+////    and `name_is_free`, and claims the cell's absence; `claim_refused`
+////    words a lost race.
+//// 5. `listing` shows the caller's own schedules, and `cancel` removes one
+////    through `retire`, config cell last.
+//// 6. `reaping_hooks` wraps the run-end hook, so `reap_run` retires every
+////    schedule of a strand whose brief just ended.
+////
 //// ## What this module is the only enforcer of
 ////
 //// Five things, and none of them can honestly live on the other side.

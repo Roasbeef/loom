@@ -11,6 +11,27 @@
 //// pair; what differs is what drives it and what it remembers between
 //// ticks.
 ////
+//// ## Flow
+////
+//// `start` → `builder` → `entered` → `handle` → `scan` → `process_schedule` → `fire` → `rearm`
+////
+//// 1. `start` (or `supervised`) builds the machine with `builder`, wired to
+////    the session's own timer source.
+//// 2. `entered` makes the one arming that no scan precedes: a `Tick` with no
+////    delay.
+//// 3. `handle` treats `Tick` and `Rescan` alike and hands both to `scan`;
+////    `poke` is how `client/scheduleseam` sends the latter.
+//// 4. `scan` gathers `due_schedules` (the operator's list plus the model's
+////    cells from `model_schedules`) and judges each with `process_schedule`.
+//// 5. `process_schedule` first asks `finished` whether the target is gone,
+////    then dispatches on timing to `process_interval`, `process_cron` or
+////    `process_one_shot`, each of which works out the occurrence from the
+////    durable fire-marks.
+//// 6. A due occurrence goes through `fire`, one transaction that injects the
+////    message and lands the mark; `report` logs the verdict.
+//// 7. `rearm` ends every scan by arming the named scan timer for the soonest delay
+////    any active schedule wants, or cancelling it.
+////
 //// ## Driven by a re-armed named timeout on the session's own clock
 ////
 //// `client/rulescan` is fed by the StorageWriter's post-commit
@@ -298,6 +319,42 @@ pub type Message {
   Rescan
 }
 
+/// The one state this machine is ever in.
+///
+/// A single variant, deliberately. What moves between events here is a
+/// *delay* — recomputed from the durable store on every scan — and
+/// neither of weft's structural timeouts can carry that: a state timeout
+/// is cancelled by a change of state this machine never makes, and a
+/// periodic timeout has one fixed cadence. So the state exists for the
+/// one thing rule 8 of `docs/weft.md` asks for: the timer belongs to the
+/// machine rather than to a phase, and `scan_timer` is armed,
+/// superseded and cancelled from one place.
+///
+/// Because the machine never leaves `Watching`, `sm.on_enter` runs
+/// exactly once ever — the initial call — which is what makes it the
+/// honest home for the first arming rather than a per-entry re-arm in
+/// disguise.
+type Phase {
+  Watching
+}
+
+// Everything the machine carries between events. Both fields are fixed
+// for the life of the process: the port deleted the generation tag that
+// used to sit here, and nothing has taken its place, because a scan
+// recomputes every answer it needs from the store.
+type State {
+  State(options: Options, runtime: Runtime)
+}
+
+// Whether a schedule is still worth waking up for, and if so, in how
+// many milliseconds. `Expired` schedules are dropped from the next
+// re-arm computation entirely — an expired `Interval` needs no further
+// ticks, and neither does a `OneShot` once its one mark has landed.
+type ScheduleStatus {
+  Expired
+  Active(next_delay_ms: Int)
+}
+
 /// The shipped options for a schedule list: a silent logger.
 ///
 /// ## Examples
@@ -334,42 +391,6 @@ pub fn with_model_door_open(options: Options) -> Options {
 ///
 pub fn with_logger(options: Options, logger: Logger) -> Options {
   Options(..options, logger:)
-}
-
-/// The one state this machine is ever in.
-///
-/// A single variant, deliberately. What moves between events here is a
-/// *delay* — recomputed from the durable store on every scan — and
-/// neither of weft's structural timeouts can carry that: a state timeout
-/// is cancelled by a change of state this machine never makes, and a
-/// periodic timeout has one fixed cadence. So the state exists for the
-/// one thing rule 8 of `docs/weft.md` asks for: the timer belongs to the
-/// machine rather than to a phase, and `scan_timer` is armed,
-/// superseded and cancelled from one place.
-///
-/// Because the machine never leaves `Watching`, `sm.on_enter` runs
-/// exactly once ever — the initial call — which is what makes it the
-/// honest home for the first arming rather than a per-entry re-arm in
-/// disguise.
-type Phase {
-  Watching
-}
-
-// Everything the machine carries between events. Both fields are fixed
-// for the life of the process: the port deleted the generation tag that
-// used to sit here, and nothing has taken its place, because a scan
-// recomputes every answer it needs from the store.
-type State {
-  State(options: Options, runtime: Runtime)
-}
-
-// Whether a schedule is still worth waking up for, and if so, in how
-// many milliseconds. `Expired` schedules are dropped from the next
-// re-arm computation entirely — an expired `Interval` needs no further
-// ticks, and neither does a `OneShot` once its one mark has landed.
-type ScheduleStatus {
-  Expired
-  Active(next_delay_ms: Int)
 }
 
 /// Starts the scanner under `name`, watching `runtime`'s session, and
