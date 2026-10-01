@@ -1185,7 +1185,8 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
   }
 }
 
-const usage = "usage: loomd --session <path.db>
+const usage =
+  "usage: loomd --session <path.db>
   [--bind <host:port>]     listen interface (default 127.0.0.1:0)
   [--token-file <path>]    bearer token file (default <session>.token)
   [--workspace <dir>]      workspace root (default the current directory)
@@ -5801,7 +5802,8 @@ fn prepare_directories(
 /// drops out of `git status` without touching the repository's own
 /// ignore files or resolving where a linked worktree keeps its metadata.
 @internal
-pub const ignore_everything = "# Written by loom: this directory is harness state.\n*\n"
+pub const ignore_everything =
+  "# Written by loom: this directory is harness state.\n*\n"
 
 // Writes the ignore file only where none exists, so an operator who
 // replaced it with rules of their own keeps them. A write that fails is

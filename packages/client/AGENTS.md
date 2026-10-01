@@ -11,6 +11,16 @@ unrelated registration's run payload grows; `wiring_test` pins that property,
 and `vision_test` covers held image batches and their continuations through
 the classifier.
 
+`wiring.build_effects` separately projects `ProviderRouting` and
+`ProviderConfiguration` before retaining provider callbacks. The latter carries
+the session, pinned system prompt and a name-keyed table of `model.ToolSpec`;
+tool executors, requirements and environment remain in `Effects.tools.run`.
+The table comes from the same immutable registry used for execution. Each
+request's durable active names still control selection, sorting, deduplication
+and omission of unknown names, so prompt cache prefixes and authorization
+remain unchanged. Public request and target helpers retain their signatures and
+use the same projected implementations as the production surface.
+
 ## Operator startup diagnostics
 
 Protocol 055 records the bounded operator diagnostics contract. The manager's
