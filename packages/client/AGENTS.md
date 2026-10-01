@@ -21,6 +21,18 @@ and omission of unknown names, so prompt cache prefixes and authorization
 remain unchanged. Public request and target helpers retain their signatures and
 use the same projected implementations as the production surface.
 
+## Code-mode alternatives on direct tools
+
+`contributions.built_in` appends a concrete capability call and result shape to
+`fs_read`, `fs_write`, `fs_edit`, `grep` and `bash` descriptions when code mode
+is wired. Each hint requires both the module in the default seam's import
+allowlist and the call in its serviced capabilities. An alternate seam alone
+cannot justify a call that omits the seam argument. The tool-index snippets
+retain their direct contracts; the descriptions carry the alternatives once.
+Text reads omit image blocks, windows and anchors; capability edits use unique
+string replacements; `proc.run` is foreground argv execution without shell
+expansion. The native tools' schemas and execution remain unchanged.
+
 ## Operator startup diagnostics
 
 Protocol 055 records the bounded operator diagnostics contract. The manager's
