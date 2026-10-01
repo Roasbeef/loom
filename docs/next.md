@@ -1,5 +1,45 @@
 # Current handoff
 
+## Local orientation in large modules (issue #593)
+
+Branch `claude/loom-issue-593-refactor-jofctu` carries all six of issue
+#593's suggestions: the style guide section, the content, and the gates.
+`docs/gleam-style.md` Part II, "Orientation in large modules", is the rule
+of record; `packages/lint/CLAUDE.md` says how each check decides.
+
+- **Gates (error tier).** R13 `flow-spine`: every hand-written module of a
+  thousand lines or more opens with a `//// ## Flow` spine, and every
+  backticked name in any spine must be a function the module defines (or
+  `alias.fn` on an import). R14 `transition-table`: a
+  `<!-- transitions: module.Type -->` table's rows must be exactly the
+  type's constructors. R15 `state-first`: a module with a step function
+  (`update`, `step`, `transition`, `handle_message`, `handle`) defines the
+  types its signature names above its first function. R16
+  `qualified-domain-call`: no unqualified import of a Loom function.
+- **Censuses (warn forever).** R17 `flow-order` (zero at the default 50%)
+  and R18 `unnamed-helper` (859: short one-caller helpers the module doc
+  never names). Never pad a module doc with helper names to quiet R18.
+- **Content.** 96 modules gained spines, 47 late state types moved up, two
+  imports were qualified, and nine machines carry checked tables:
+  `session_channel.Phase`, `broker/exec.Phase`, `broker/escalation.Phase`,
+  `codemode/satellite.Phase`, `client/jobs.Phase`, `client/provider_relay.Phase`,
+  and `client/daemon/root`, `ui_socket` and `session_socket`'s `Phase`.
+  `client/daemon/manager.Phase` and `runtime/strand_runtime` were judged
+  too thin for one (two states; no single phase type).
+- **What a change now costs.** Renaming a function a spine names, adding a
+  constructor to a tabled type, or defining a state type below the code
+  that handles it fails `make lint`. Writing a wire field in a spine needs a
+  quoted literal (`"message_stop"`), because a bare backticked lowercase
+  name is read as a function.
+- **Left open.** The `session_channel` table agrees with the P model under
+  `protocol/models/terminal-attachment` wherever the model has a cell; the
+  model has no resume path, lookup or history intents, or server refusals,
+  so those cells are unchecked against it. A mechanical check of the table
+  against the model's states is the follow-up the issue names. Prose
+  citations (`file.gleam:N`) were re-pinned through the diff after the
+  sweep; a large module-doc edit will shift them again, and doc-check gates
+  only the symbol-checked ones.
+
 The MCP extraction is rebased onto `origin/main` at
 `275efc42e7909c3c3ec481b7466c3484f381eb80`, including the typed capability
 surface from PR #670. Recovery refs retain the previously tested `a569e1f68`
