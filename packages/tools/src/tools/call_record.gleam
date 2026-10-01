@@ -270,7 +270,7 @@ pub fn finish(ledger: Ledger, open: List(Int), now: Int) -> CallLog {
     |> list.map(fn(entry) { entry.1 })
   CallLog(
     started_unix_ms: closed.started_unix_ms,
-    elapsed_ms: int.max(offset(closed, now), 0),
+    elapsed_ms: offset(closed, now),
     total: closed.total,
     failed: closed.failed,
     cancelled: closed.cancelled,

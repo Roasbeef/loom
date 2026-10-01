@@ -1033,7 +1033,7 @@ fn handle_cap_call(
         // allocates each id once, so refusing costs nothing; an id whose
         // call has settled is free to be reused.
         True -> FrameDone(state, Error(ChannelFaulted("duplicate cap_call id")))
-        False -> FrameContinue(route_cap_call(state, id, cap, args))
+        False -> FrameContinue(route_cap_call(state, now, id, cap, args))
       }
   }
 }
@@ -1060,6 +1060,7 @@ fn finish_from_payload(state: State, payload: BitArray) -> FrameStep {
 // so leaves the ordinal for the next call to claim.
 fn route_cap_call(
   state: State,
+  now: Int,
   id: Int,
   cap: String,
   args: MsgPackValue,
@@ -1079,12 +1080,14 @@ fn route_cap_call(
     Error(denial) ->
       refuse_cap_call(
         state,
+        now,
         id,
         cap,
         args,
+        denial.code,
         framing.CapErr(code: denial.code, message: denial.message),
       )
-    Ok(plan) -> admit_cap_call(state, id, cap, args, plan)
+    Ok(plan) -> admit_cap_call(state, now, id, cap, args, plan)
   }
 }
 
@@ -1104,6 +1107,7 @@ fn route_cap_call(
 // moment later, rather than a transient "too many in flight".
 fn admit_cap_call(
   state: State,
+  now: Int,
   id: Int,
   cap: String,
   args: MsgPackValue,
@@ -1112,13 +1116,29 @@ fn admit_cap_call(
   let already = admitted_count(state, cap)
   case ceiling_reached(state, cap, already) {
     Some(ceiling) ->
-      refuse_cap_call(state, id, cap, args, ceiling_denial(ceiling))
+      refuse_cap_call(
+        state,
+        now,
+        id,
+        cap,
+        args,
+        ceiling.code,
+        ceiling_denial(ceiling),
+      )
     None -> {
       let outstanding = pooled(state).max_outstanding
       case dict.size(state.inflight) >= outstanding {
         True ->
-          refuse_cap_call(state, id, cap, args, budget_denial(outstanding))
-        False -> dispatch_cap_call(state, id, cap, args, already, plan)
+          refuse_cap_call(
+            state,
+            now,
+            id,
+            cap,
+            args,
+            "budget",
+            budget_denial(outstanding),
+          )
+        False -> dispatch_cap_call(state, now, id, cap, args, already, plan)
       }
     }
   }
@@ -1128,13 +1148,13 @@ fn admit_cap_call(
 // process of its own carries it.
 fn dispatch_cap_call(
   state: State,
+  now: Int,
   id: Int,
   cap: String,
   args: MsgPackValue,
   already: Int,
   plan: CapPlan,
 ) -> State {
-  let #(now, clock) = clock.read(state.clock)
   let #(ledger, seq) = call_record.admit(state.ledger, cap, args, now)
   let inflight =
     dict.insert(state.inflight, id, InFlight(handle: None, cancelled: False))
@@ -1152,7 +1172,6 @@ fn dispatch_cap_call(
   )
   State(
     ..state,
-    clock:,
     inflight:,
     admitted:,
     ledger:,
@@ -1166,15 +1185,15 @@ fn dispatch_cap_call(
 // call.
 fn refuse_cap_call(
   state: State,
+  now: Int,
   id: Int,
   cap: String,
   args: MsgPackValue,
+  code: String,
   refusal: CapOutcome,
 ) -> State {
-  let #(now, clock) = clock.read(state.clock)
-  let ledger =
-    call_record.refuse(state.ledger, cap, args, error_code(refusal), now)
-  emit(State(..state, clock:, ledger:), id, refusal)
+  let ledger = call_record.refuse(state.ledger, cap, args, code, now)
+  emit(State(..state, ledger:), id, refusal)
 }
 
 // Puts a settled call on the record. The host's own decision is what is
@@ -1206,13 +1225,6 @@ fn close_call(
         ledger: call_record.settle(state.ledger, seq, status, error, now),
         seqs: dict.delete(state.seqs, id),
       )
-  }
-}
-
-fn error_code(outcome: CapOutcome) -> String {
-  case outcome {
-    framing.CapErr(code:, ..) -> code
-    framing.CapOk(..) -> "ok"
   }
 }
 
