@@ -820,6 +820,20 @@ The first is reasoned, not yet observed: the development container has
 no bubblewrap, so no run so far has actually connected through a
 `--ro-bind`.
 
+The toolchain reaches every code-mode jail as read-only explicit mounts
+(`client/codemode.toolchain_mounts`): the `erl` install prefix, the
+directory holding `gleam` (and its prefix when it is a symlink), and the
+build seed. `install_prefix` takes the parent of a binary's `bin` and
+resolves no link, so a merged-usr `/bin/erl` found through `PATH` names
+`/`, and a symlinked `~/bin/gleam` names the home directory. Mounted, either
+would land on top of the workspace's writable bind, since explicit mounts
+come after every grant, and both decoders now refuse that policy
+(`protocol-change/057`). So `client/serve.admissible_toolchain` checks the
+discovered toolchain against the session's writable roots, and against
+`/proc` and `/dev`, before the base is built. A toolchain that fails
+registers no `code_mode` tool and logs which region, why, and what to put
+first on `PATH`, rather than refusing the whole server's boot.
+
 ### Where the socket is bound
 
 An AF_UNIX path is limited to 104 bytes on macOS and 108 on Linux, and
