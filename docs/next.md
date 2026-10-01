@@ -369,7 +369,9 @@ decoders. An independent Linux build passed the full application gate through
 the public dependencies, then fifty fresh runs of the original HTTP peer.
 Those runs retained all assertions, including 150 bearer refusals and fifty
 Origin refusals. The inherited startup blocker is closed by the published
-factory-order fixes above. No authenticated live Jev request has been made.
+factory-order fixes above. That application-head validation used fixtures.
+The installed-release live inference proof at the start of this handoff
+supersedes the earlier statement that authenticated Jev requests were untested.
 
 [PR #669](https://github.com/Roasbeef/loom/pull/669) records the current
 validation boundary and review status. Continue to require the full gate,
