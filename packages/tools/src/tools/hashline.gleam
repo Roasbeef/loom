@@ -68,6 +68,7 @@
 import gleam/bit_array
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 
 /// The anchor algorithm version. Bump when the hash or rendering
@@ -465,6 +466,154 @@ fn apply_hunks(split: Split, plan: Plan) -> Result(String, ApplyError) {
     Ok(line) -> Error(OverlappingHunks(line:))
     Error(Nil) -> Ok(apply_placed(split, placed))
   }
+}
+
+// --- planning the edit between two whole texts --------------------------
+
+/// Why no plan can carry one text to another.
+pub type Unplannable {
+  /// `edited` ends differently from what any plan applied to `base` can
+  /// produce. `apply` carries line lists, not bytes, and keeps the
+  /// file's own final-newline state: a file ending in a newline still
+  /// ends in one after any edit (deleting every line leaves `"\n"`), and
+  /// an edit that grows an empty file ends it with one. So a
+  /// newline-terminated or empty `base` cannot become a non-empty
+  /// `edited` without a final newline, and a newline-terminated `base`
+  /// cannot become `""`. Every other pair is plannable.
+  UnreachableEnding
+}
+
+/// The plan that carries `base` to `edited`: bound to `digest(base)`, and
+/// applying to `base` to yield exactly `edited`, byte for byte, line
+/// terminators included.
+///
+/// This is how a whole-text answer computed elsewhere — a language
+/// server's rename, which hands back the text it saw and the text after
+/// its edits — lands through the same anchor- and digest-checked path an
+/// `fs_edit` takes. The digest is the base's, never the edited text's,
+/// and that is the whole point: if the file on disk is no longer exactly
+/// `base`, `apply` rejects (`StaleAnchors` when a line the hunk names
+/// moved, `StaleContent` otherwise), so a concurrent modification can
+/// never be silently overwritten by an answer computed against the text
+/// it replaced.
+///
+/// The plan has at most one hunk, spanning the first to the last line
+/// that differs. That is not a minimal diff, and it need not be: the
+/// digest already verifies every byte of the file, so a finer hunk
+/// buys no safety, and a single hunk can never overlap itself. Equal
+/// texts yield a plan with no hunks, which still checks the digest —
+/// landing it is how a caller asks "is the file still what I think it
+/// is" without changing it.
+///
+/// A `\r` belongs to its line's content here, as everywhere in this
+/// module, so a CRLF file's terminators travel with the lines that carry
+/// them and are reproduced exactly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(plan) = hashline.plan_between(base: "a\nb\n", edited: "a\nB\n")
+/// assert hashline.apply("a\nb\n", plan) == Ok("a\nB\n")
+/// ```
+///
+/// ```gleam
+/// assert hashline.plan_between(base: "a\n", edited: "a")
+///   == Error(hashline.UnreachableEnding)
+/// ```
+///
+pub fn plan_between(
+  base base: String,
+  edited edited: String,
+) -> Result(Plan, Unplannable) {
+  use target <- result.try(target_lines(base, edited))
+  Ok(Plan(digest: digest(base), hunks: hunks_between(base, target)))
+}
+
+// The line list that, spliced into `base` and joined under `base`'s own
+// final-newline state (which `apply` keeps), reproduces `edited`.
+//
+// A newline-terminated `base` — or an empty one, which `apply` terminates
+// on growth — joins its lines with a newline after the last, so `edited`
+// must end in one and its lines are its ordinary split. An unterminated
+// `base` joins with no final newline, so the raw split of `edited` is the
+// answer, and an `edited` that *does* end in a newline carries it as a
+// final empty line: `"a\n"` is `["a", ""]` joined bare.
+fn target_lines(
+  base: String,
+  edited: String,
+) -> Result(List(String), Unplannable) {
+  let terminated_base = base == "" || split_lines(base).trailing_newline
+  case terminated_base, string.ends_with(edited, "\n") {
+    // Nothing to nothing is the one pair where an empty base needs no
+    // growth, and so no final newline.
+    True, _ if base == "" && edited == "" -> Ok([])
+
+    True, True -> Ok(split_lines(edited).lines)
+    True, False -> Error(UnreachableEnding)
+    False, _ -> Ok(string.split(edited, on: "\n"))
+  }
+}
+
+// The one hunk that turns `base`'s lines into `target`: everything between
+// the longest common prefix and the longest common suffix. The suffix is
+// measured on what the prefix left, so the two can never claim the same
+// line twice.
+fn hunks_between(base: String, target: List(String)) -> List(Hunk) {
+  let lines = split_lines(base).lines
+  let prefix = common_prefix_length(lines, target, 0)
+  let lines_rest = list.drop(lines, prefix)
+  let target_rest = list.drop(target, prefix)
+  let suffix =
+    common_prefix_length(list.reverse(lines_rest), list.reverse(target_rest), 0)
+  let removed = list.take(lines_rest, list.length(lines_rest) - suffix)
+  let inserted = list.take(target_rest, list.length(target_rest) - suffix)
+
+  // An insertion needs the line it follows; there is none when the
+  // change begins before the first line.
+  let preceding = list.take(lines, prefix) |> list.last
+  case removed, inserted, preceding {
+    [], [], _ -> []
+    [], _, Error(Nil) -> [InsertAtStart(lines: inserted)]
+    [], _, Ok(line) -> [
+      InsertAfter(at: Ref(line: prefix, anchor: anchor(line)), lines: inserted),
+    ]
+    [first, ..], [], _ -> {
+      let #(from, to) = removed_span(prefix, first, removed)
+      [Delete(from:, to:)]
+    }
+    [first, ..], _, _ -> {
+      let #(from, to) = removed_span(prefix, first, removed)
+      [Replace(from:, to:, lines: inserted)]
+    }
+  }
+}
+
+// How many leading elements two lists share.
+fn common_prefix_length(
+  left: List(String),
+  right: List(String),
+  count: Int,
+) -> Int {
+  case left, right {
+    [a, ..left], [b, ..right] if a == b ->
+      common_prefix_length(left, right, count + 1)
+    _, _ -> count
+  }
+}
+
+// The anchored endpoints of the removed run, which starts on the line after
+// the common prefix. `first` is the run's head, already matched by the
+// caller, so the fallback for `list.last` is never taken.
+fn removed_span(
+  prefix: Int,
+  first: String,
+  removed: List(String),
+) -> #(Ref, Ref) {
+  let last = list.last(removed) |> result.unwrap(first)
+  #(
+    Ref(line: prefix + 1, anchor: anchor(first)),
+    Ref(line: prefix + list.length(removed), anchor: anchor(last)),
+  )
 }
 
 // --- where an applied plan landed ----------------------------------------

@@ -4,7 +4,7 @@
 # what CI runs and what you run locally are the same commands.
 
 PACKAGES := host core storage session machine prompt session_view web_view telemetry runtime provider \
-	broker mcp tools cap ext codemode events client conformance tui lint
+	broker mcp lsp tools cap ext codemode events client conformance tui lint
 # Packages that target JavaScript. They are formatted, built and documented
 # with the rest but have no test run (scripts/check.sh says why).
 JS_PACKAGES := web_client

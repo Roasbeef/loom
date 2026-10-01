@@ -231,7 +231,7 @@ graph), and is used here at once. One hex release is cut when the surface
 has settled, and the path dependencies switch back to a hex range in one
 commit before the branch merges; `docs/plan.md` in the weft repository is
 its handoff and records every ruling the engine has made. That range is
-currently an exact pin, `weft = "== 0.4.5"` in all nine direct consumers,
+currently an exact pin, `weft = "== 0.4.5"` in all ten direct consumers,
 because `e9b46e1f` ("build: lock daemon runtime dependencies") locked the
 whole shared host graph to the revisions the daemon work reviewed. Why an
 exact pin rather than `">= 0.4.5 and < 0.5.0"`, which would admit a patch

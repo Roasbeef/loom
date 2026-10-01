@@ -14,6 +14,10 @@ already point at them.
 **012 is used twice.** Two unrelated decisions were filed under that
 number. Neither is renumbered, for the same reason.
 
+**015 was drafted as 013.** The language-server ADR was written on a branch
+that opened before `main` filed its own 013 and 014. It took the next free
+number before it merged, so no merged document ever cited it as 013.
+
 ## Index
 
 - [001](001-agent-message-fidelity.md): AgentMessage mirrors pi's
@@ -42,3 +46,5 @@ number. Neither is renumbered, for the same reason.
   as values, and a runtime performs them (issue #530, phase 1).
 - [014](014-second-runtime.md): one client engine drives two views, the
   terminal and a web view served by the daemon (issue #530, phase 4).
+- [015](015-language-servers-as-jailed-leases.md): language servers run as
+  jailed session leases, addressed by symbol (issue #25).

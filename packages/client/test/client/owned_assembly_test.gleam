@@ -62,6 +62,7 @@ pub fn settings() -> serve.Settings {
       ],
       roles: [#(model.Main, ["test"])],
       mcp_servers: [],
+      lsp_servers: [],
     )
   serve.Settings(
     peer_directory: None,

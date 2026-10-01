@@ -381,7 +381,8 @@ pub fn empty_source_passes_test() {
 // --- Category 6: legitimate programs (must pass) ----------------------------
 
 /// The migration-style sample from the design: cap/fs, cap/lsp, cap/proc,
-/// cap/task, cap/report, no @external. Must pass.
+/// cap/task, cap/report, no @external. Must pass on a host that serves
+/// `cap/lsp`.
 pub fn migration_sample_passes_test() {
   let source =
     "import cap/fs
@@ -396,11 +397,16 @@ pub fn main() -> report.Outcome {
   let files = fs.list(\"src\")
   let renamed = list.map(files, fn(f) { string.replace(f, \".old\", \".new\") })
   let _ = task.parallel_map(renamed, fn(f) { proc.run(\"mv\", [f]) })
+  let _ =
+    lsp.rename(lsp.symbol(\"old_name\") |> lsp.in(\"src/app.gleam\"), \"new_name\", lsp.Apply)
   report.ok(\"migrated\")
 }
 "
-  let result = vet.vet(source, policy())
+  // `cap/lsp` is admitted per host, so the sample is vetted against the
+  // allowlist a host with a language server serves.
+  let result = vet.vet(source, policy.allow(policy(), "cap/lsp"))
   let assert Passed(vetted) = result
+
   // The token carries the exact source, so the compile service compiles what
   // was vetted.
   assert vet.vetted_source(vetted) == source
@@ -497,7 +503,8 @@ pub fn the_shared_stdlib_list_admits_no_capability_test() {
 /// A capability on no seam is a decision, written down.
 ///
 /// `cap/runtime` is the boot runtime and belongs to the harness, not to a
-/// submitted program; `cap/mcp` is the generated `cap/mcp/<server>`
+/// submitted program; `cap/notes` and `cap/lsp` are admitted per host,
+/// only where their doors are present; `cap/mcp` is the generated `cap/mcp/<server>`
 /// modules' types-only vocabulary, off every seam until the generated
 /// path lands end to end (issue #106). The list exists so that
 /// "unreachable" is a claim somebody made rather than an omission nobody
@@ -506,7 +513,7 @@ pub fn the_shared_stdlib_list_admits_no_capability_test() {
 /// list itself and that it contradicts neither seam.
 pub fn a_harness_only_capability_is_on_no_seam_test() {
   let harness_only = policy.harness_only_cap_modules()
-  assert harness_only == ["cap/notes", "cap/mcp", "cap/runtime"]
+  assert harness_only == ["cap/notes", "cap/lsp", "cap/mcp", "cap/runtime"]
   assert list.all(harness_only, fn(name) {
     !policy.contains(policy.default(), name)
     && !policy.contains(policy.orchestration(), name)
@@ -688,16 +695,35 @@ pub fn all_violations_reported_at_once_test() {
 
 // --- Policy unit tests ------------------------------------------------------
 
-/// The default cap allowlist is exactly the canonical nine.
+/// The default cap allowlist holds the canonical effect modules.
 pub fn default_cap_modules_test() {
   let p = policy.default()
   let caps = [
-    "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
-    "cap/task", "cap/actor", "cap/kv",
+    "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/report", "cap/task",
+    "cap/actor", "cap/kv",
   ]
   assert list.all(caps, fn(m) { policy.contains(p, m) })
-  // A cap module outside the nine is not recognised.
+
+  // A cap module outside the list is not recognised.
   assert !policy.contains(p, "cap/db")
+}
+
+/// `cap/lsp` is on no static seam. Its router answers only over a
+/// language server the session runs, so a static entry would render its
+/// surface into every session's `code_mode` description for imports that
+/// could only be refused; the client admits it per host, beside the door.
+pub fn cap_lsp_is_admitted_only_per_host_test() {
+  let source = "import cap/lsp\npub fn main() { lsp.symbol(\"f\") }\n"
+  assert !list.contains(policy.default_cap_modules(), "cap/lsp")
+  assert !policy.contains(policy.default(), "cap/lsp")
+  assert !policy.contains(policy.orchestration(), "cap/lsp")
+  assert !policy.contains(policy.extension(), "cap/lsp")
+
+  // Refused with a reason on the static seam, admitted once a host
+  // widens the allowlist with it, as `client/codemode` does.
+  let assert Rejected([rejection]) = vet.vet(source, policy.default())
+  assert string.contains(string.inspect(rejection), "cap/lsp")
+  assert is_passed(vet.vet(source, policy.allow(policy.default(), "cap/lsp")))
 }
 
 /// The default stdlib subset is present and the effectful modules are absent.
