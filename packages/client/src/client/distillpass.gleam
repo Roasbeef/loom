@@ -1,5 +1,25 @@
 //// Distillation cadence for standalone sessions and shared workspace domains.
 ////
+//// ## Flow
+////
+//// `start` → `handle` → `begin` → `pipeline` → `reported` → `settle`;
+//// `prepare_domain` → `domain_handle` → `domain_begin` → `domain_reported` →
+//// `domain_finish`
+////
+//// 1. `start` launches the standalone worker in `Running` with a `Begin`
+////    already queued; `handle` receives it and calls `begin`.
+//// 2. `begin` runs the pass on its own weft scope under the wall deadline,
+////    configured by `pipeline`, and relays the scope's reports back.
+//// 3. `reported` turns the scope's last word into a `Pass`, and `settle`
+////    moves the machine to `Idle`, where `settled` answers every waiter.
+//// 4. The domain worker starts parked with `prepare_domain` and is released by
+////    `begin_domain`; `domain_handle` then takes triggers, quiesce, resume and
+////    stop requests.
+//// 5. `domain_begin` starts one pass with a cancellation witness;
+////    `domain_reported` records its account and `domain_finish` settles it
+////    once the witness retires, or `domain_block` fences the worker if proof
+////    was lost.
+////
 //// # Why a resident at all
 ////
 //// `client/distill` is a command, and for most of memory stage M2 that
@@ -156,6 +176,82 @@ pub type Options {
 /// thrown away.
 pub const default_wall_ms = memory.run_lease_ttl_ms
 
+/// How one pass ended — the answer `settled` gives and the thing the
+/// worker's closing line reports.
+pub type Pass {
+  /// The pipeline ran to completion. The report is the operator's
+  /// account: how many sources contributed, how many were skipped, how
+  /// many rows the head now carries, and whether the sidecar moved.
+  Completed(report: distill.Report)
+
+  /// The pipeline refused, or its worker died. Earlier commits may stand;
+  /// this outcome does not assert rollback.
+  Refused(reason: String)
+
+  /// The wall deadline cancelled the pass. A later pass resumes from durable
+  /// head/cursor state, which may already include this pass's commit.
+  Expired(after_ms: Int)
+}
+
+// --- the worker ------------------------------------------------------------
+
+/// Everything the worker needs: where to distil, what to ask, and how
+/// long it may take.
+///
+/// Constructor invariants: `directory` is the session directory the host
+/// keeps its memory store in — the same fold `client/serve` protects, so
+/// that the digest this pass writes is the file the host's run-start
+/// hook reads; `distiller` has already chosen its dispatch target
+/// (`client/distill.target`); `wall_ms` is positive.
+pub type Config {
+  Config(
+    name: address.Address(Message),
+    directory: String,
+    distiller: distill.Distiller,
+    clock: Clock,
+    entropy: fn() -> Int,
+    wall_ms: Int,
+    logger: Logger,
+  )
+}
+
+/// What the worker is asked. Opaque: `settled` is the only question, and
+/// the other two variants are the machine talking to itself.
+pub opaque type Message {
+  /// Injected by the initialiser, handled before anything external: the
+  /// pass begins here rather than inside the initialiser so that the
+  /// supervisor's start is never blocked by it.
+  Begin
+
+  /// The weft scope's account of the run, relayed onto this machine's
+  /// own subject.
+  Reported(pulled: weft.Pulled(distill.Report, String))
+
+  /// Somebody wants the outcome. Postponed while the pass is running,
+  /// which is what makes this a wait rather than a poll.
+  Awaited(reply_with: Subject(Pass))
+}
+
+/// The two phases of the worker's life.
+type Phase {
+  /// The pass is running under its own weft scope.
+  Running
+
+  /// The pass has settled, once and for the life of this boot. The
+  /// payload never changes while the machine is here, which is the rule
+  /// a weft state carries (`docs/weft.md`, rule 1).
+  Idle(pass: Pass)
+}
+
+/// What the machine carries across the transition.
+///
+/// Constructor invariants: `outcomes` is created in the initialiser and
+/// selected on, so it is owned by the machine's own process and nothing
+/// else may receive on it.
+type Book {
+  Book(config: Config, outcomes: Subject(weft.Pulled(distill.Report, String)))
+}
+
 /// The posture of a host whose configuration says nothing: one pass per
 /// boot, ten minutes.
 ///
@@ -293,82 +389,6 @@ fn wall_of(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
 }
 
 // --- what a pass came to ---------------------------------------------------
-
-/// How one pass ended — the answer `settled` gives and the thing the
-/// worker's closing line reports.
-pub type Pass {
-  /// The pipeline ran to completion. The report is the operator's
-  /// account: how many sources contributed, how many were skipped, how
-  /// many rows the head now carries, and whether the sidecar moved.
-  Completed(report: distill.Report)
-
-  /// The pipeline refused, or its worker died. Earlier commits may stand;
-  /// this outcome does not assert rollback.
-  Refused(reason: String)
-
-  /// The wall deadline cancelled the pass. A later pass resumes from durable
-  /// head/cursor state, which may already include this pass's commit.
-  Expired(after_ms: Int)
-}
-
-// --- the worker ------------------------------------------------------------
-
-/// Everything the worker needs: where to distil, what to ask, and how
-/// long it may take.
-///
-/// Constructor invariants: `directory` is the session directory the host
-/// keeps its memory store in — the same fold `client/serve` protects, so
-/// that the digest this pass writes is the file the host's run-start
-/// hook reads; `distiller` has already chosen its dispatch target
-/// (`client/distill.target`); `wall_ms` is positive.
-pub type Config {
-  Config(
-    name: address.Address(Message),
-    directory: String,
-    distiller: distill.Distiller,
-    clock: Clock,
-    entropy: fn() -> Int,
-    wall_ms: Int,
-    logger: Logger,
-  )
-}
-
-/// What the worker is asked. Opaque: `settled` is the only question, and
-/// the other two variants are the machine talking to itself.
-pub opaque type Message {
-  /// Injected by the initialiser, handled before anything external: the
-  /// pass begins here rather than inside the initialiser so that the
-  /// supervisor's start is never blocked by it.
-  Begin
-
-  /// The weft scope's account of the run, relayed onto this machine's
-  /// own subject.
-  Reported(pulled: weft.Pulled(distill.Report, String))
-
-  /// Somebody wants the outcome. Postponed while the pass is running,
-  /// which is what makes this a wait rather than a poll.
-  Awaited(reply_with: Subject(Pass))
-}
-
-/// The two phases of the worker's life.
-type Phase {
-  /// The pass is running under its own weft scope.
-  Running
-
-  /// The pass has settled, once and for the life of this boot. The
-  /// payload never changes while the machine is here, which is the rule
-  /// a weft state carries (`docs/weft.md`, rule 1).
-  Idle(pass: Pass)
-}
-
-/// What the machine carries across the transition.
-///
-/// Constructor invariants: `outcomes` is created in the initialiser and
-/// selected on, so it is owned by the machine's own process and nothing
-/// else may receive on it.
-type Book {
-  Book(config: Config, outcomes: Subject(weft.Pulled(distill.Report, String)))
-}
 
 /// The event name the pass opens with. An operator watching a release
 /// sees this one and then exactly one closing line, per boot: the five

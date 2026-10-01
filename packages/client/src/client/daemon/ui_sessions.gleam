@@ -198,18 +198,6 @@ pub type Settings {
   )
 }
 
-/// The production settings: OTP's `crypto:strong_rand_bytes`, the source
-/// invitations use, and the lifetimes above.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // ui_sessions.start(ui_sessions.production(clock))
-/// ```
-pub fn production(now: fn() -> Int) -> Settings {
-  Settings(now:, entropy: token.production_entropy(), ticket_ms:, session_ms:)
-}
-
 /// How a page's images are read: the image the page drew at a row's name and
 /// position, or `Error(Nil)` when it drew none there or its component is gone.
 /// The page socket makes one from its component and registers it.
@@ -263,6 +251,18 @@ type State {
     /// credential's fingerprint. A credential with none has no entry.
     invites: Dict(String, List(Int)),
   )
+}
+
+/// The production settings: OTP's `crypto:strong_rand_bytes`, the source
+/// invitations use, and the lifetimes above.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.start(ui_sessions.production(clock))
+/// ```
+pub fn production(now: fn() -> Int) -> Settings {
+  Settings(now:, entropy: token.production_entropy(), ticket_ms:, session_ms:)
 }
 
 /// Starts the actor, linked to the caller, sweeping every `sweep_ms`.

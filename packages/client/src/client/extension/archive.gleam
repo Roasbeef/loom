@@ -2,6 +2,26 @@
 //// gzipped tar, a walker for a local directory held to the same rules,
 //// and a content digest over whichever of the two produced the tree.
 ////
+//// ## Flow
+////
+//// `extract` → `inflate` → `read_entries` → `read_from` → `read_header` →
+//// `finish` → `digest`
+////
+//// 1. `extract` inflates the gzip stream under the byte cap with `inflate`;
+////    `from_directory` is the other way in, walking a local directory through
+////    `walk_directory` under the same rules.
+//// 2. `read_entries` starts a `Reading`, and `read_from` takes one 512-byte
+////    block at a time, stopping at `read_end_marker` or refusing a cut-off
+////    stream.
+//// 3. `read_header` decodes the block with `parse_header`, charges the entry
+////    count, and sends it to `read_regular`, `read_directory` or a pax reader;
+////    anything else is refused by name.
+//// 4. Each admitted path passes `relative_path` and the cap checks in
+////    `admit_file` or `admit_directory`, so nothing outside the subset is kept.
+//// 5. `finish` requires a root, sorts the files and returns the `Tree`.
+//// 6. `digest` hashes the tree's canonical encoding, independent of where it
+////    came from; `describe` words any `ArchiveError` for the operator.
+////
 //// ## Why this boundary exists
 ////
 //// `docs/design-notes/extension-architecture.md`, "Hardening the

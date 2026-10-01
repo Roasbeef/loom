@@ -12,6 +12,29 @@
 //// page's socket and a fixed list of assets. Without it every `/ui` path is
 //// a 404 and the control `hello` does not name the view, so the two v2
 //// endpoints are the whole surface, as spec Part 1.6 says.
+////
+//// ## Flow
+////
+//// `handle` → `authenticated` → `resident_upgrade` or `control_upgrade` →
+//// `control` → `dispatch` → `dispatch_class`
+////
+//// 1. `handle` reads the path and chooses a family: the control socket, a
+////    session socket, the claim socket (`claim_route`), or `/ui` through
+////    `web_view` when the daemon was started with it.
+//// 2. `authenticated` asks `ready` whether the root admits attachments, reads
+////    the bearer with `credential`, and has the registry authenticate its
+////    digest before any socket exists.
+//// 3. A session path goes to `resident_upgrade`, which resolves the resident
+////    session, acquires the parser permit and hands a checked `Attachment` to
+////    the supplied adapter.
+//// 4. A control path goes to `control_upgrade`; each frame then runs
+////    `control`, which decodes it, re-checks the root with `control_use` and
+////    the credential, and calls `dispatch`.
+//// 5. `dispatch` answers operation reads itself and sends every other command
+////    to `dispatch_class`, one arm per command; replies leave through `send`.
+//// 6. A `/ui` request takes `web_socket` for the page's socket or
+////    `web_document` for the page, the ticket exchange and images, each
+////    re-checking cookie, grant and credential through `page_grant`.
 
 import broker/token
 import client/daemon/manager

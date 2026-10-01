@@ -24,6 +24,46 @@
 //// The default launcher must also honor the endpoint's OS PID/birth identity
 //// and refuse replacement while that VM remains alive. This module publishes
 //// no endpoint and therefore does not claim to implement that final fence.
+////
+//// ## Flow
+////
+//// `start` → `readiness` → `advance` → `start_registry` → `acquire_slot` →
+//// `transfer_slot` → `stop` → `witness_gone` → `finish_draining` → `closed`
+////
+//// 1. `start` spawns the unlinked state machine in `Dormant` and hands back
+////    the handle; every other public call goes through `exchange` to `handle`.
+//// 2. `readiness` is the first caller to wait: it moves `Dormant` to
+////    `Starting` and posts `Advance`, one startup stage per turn.
+//// 3. `advance` climbs the stage ladder (directory, lock, catalogue, owner
+////    identity); `start_registry` opens the aggregate lifetime and enters
+////    `Serving`.
+//// 4. `acquire_slot` asks `admission` for a connection reservation before
+////    upgrade; `transfer_slot` moves it to the socket PID, and
+////    `release_reserved` or `connection_gone` returns it.
+//// 5. `stop` (also reached by caller death) starts the input-return task with
+////    `start_returning` and enters `Stopping`; `returned` ends that task.
+//// 6. `witness_gone` is the original custody proof; `finish_draining` and
+////    `finish_lifetime` wait for sockets and listener, then `close_store`
+////    releases the lock and `closed` enters `Closed`.
+//// 7. Any lost proof goes through `block` into `RecoveryBlocked`, which
+////    keeps custody.
+////
+//// ## Transitions
+////
+//// <!-- transitions: root.Phase -->
+////
+//// | state | Readiness | Advance | Stop or CallerGone | WitnessGone | ListenerGone | Returns | LockGone | Finish |
+//// | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+//// | `Dormant` | `Starting`; posts `Advance` and postpones the request | ignored | `Closed` through `close_unstarted`; request postponed so the reply follows | `RecoveryBlocked`; no live stage to match | clean exit ignored; abnormal exit `RecoveryBlocked` | `RecoveryBlocked` if the task was lost, else ignored | `RecoveryBlocked` | ignored |
+//// | `Starting` | request postponed until startup settles | one stage per turn; `Refused` on failure, `Serving` once the registry is live, `RecoveryBlocked` if custody is lost | `Closed` through `close_unstarted` (`RecoveryBlocked` if the catalogue will not close) | `RecoveryBlocked`; no live stage to match | clean exit ignored; abnormal exit `RecoveryBlocked` | `RecoveryBlocked` if the task was lost, else ignored | `RecoveryBlocked` | ignored |
+//// | `Serving` | answered with the `Ready` capabilities | ignored | `Stopping`; starts the input-return task and postpones the request | clean exit of the live witness `Stopping`, or `Closed` once sockets and listener are gone; otherwise `RecoveryBlocked` | clean exit starts `stop`, so `Stopping`; abnormal exit `RecoveryBlocked` | `RecoveryBlocked` if the task was lost, else ignored | `RecoveryBlocked` | ignored |
+//// | `Stopping` | refused: "daemon is stopping" | ignored | stays; request postponed until `Closed` | `Stopping` while sockets or listener remain, `Closed` once drained; abnormal exit `RecoveryBlocked` | clean exit drains toward `Closed`; abnormal exit `RecoveryBlocked` | all delivered runs `cancel_lifetime` then drains toward `Closed`; lost task `RecoveryBlocked` | `RecoveryBlocked` | ignored |
+//// | `Refused` | refused with the stored reason | ignored | `Closed` through `close_unstarted` | `RecoveryBlocked`; no live stage to match | clean exit ignored; abnormal exit `RecoveryBlocked` | `RecoveryBlocked` if the task was lost, else ignored | `RecoveryBlocked` | ignored |
+//// | `RecoveryBlocked` | refused with the stored reason | ignored | refused with the stored reason; stays | ignored | clean exit ignored; abnormal exit stays with the new reason | lost task stays with the new reason, else ignored | stays with the new reason | ignored |
+//// | `Closed` | refused: "daemon is stopping" | ignored | answers `Ok` and stops the process | `RecoveryBlocked`; the stage was cleared | clean exit ignored; abnormal exit `RecoveryBlocked` | `RecoveryBlocked` if the task was lost, else ignored | `RecoveryBlocked` | process stops |
+////
+//// Admission (`Acquire`, `AcquireClaim`, `Transfer`) is served only in
+//// `Serving` and changes no phase; every other phase refuses new connections.
 
 import broker/internal/call
 import broker/token
