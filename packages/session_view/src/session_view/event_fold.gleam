@@ -26,6 +26,26 @@
 ////
 //// ## Flow
 ////
+//// `apply_event` → `receive_stream` → `receive_usage_observation` → `settle_usage` → `select_workspace`
+////
+//// 1. `apply_event` matches the pushed `protocol.Event` and builds the next
+////    record. Snapshots replace what they describe; `EntryAdded` extends the
+////    durable records and clears the stream its entry settles.
+//// 2. `streams_before_end` and `receive_stream` keep the live fragments of one
+////    provider request, replacing them together when a new request starts.
+//// 3. `receive_tail` and `retire_recorded_tail` keep the tool output tails and
+////    drop each one when its call's result is committed.
+//// 4. `receive_usage_observation` admits a usage push by its sequence, and
+////    `settle_usage` takes the output rate and generation clock from it.
+//// 5. `watch_cache` starts the cache clock; `settle_pending_cache` finishes
+////    the comparison once a cut covers the sequence, and `note_cache_miss`
+////    records a miss.
+//// 6. Every arm but the silent ones then goes through the second match in
+////    `apply_event`, which marks activity and invalidates the frame.
+//// 7. The public functions after the fold serve the hosts directly:
+////    `send_prompt_to`, `expect_own_turn` and `settle_own_turn` for a prompt's
+////    echo, `leave_session` and `select_workspace` for a change of target.
+////
 //// `apply_event` dispatches the decoded event and returns a new shared record.
 //// For operation completion, follow `set_strand_phase` and `settle_interrupt`.
 //// Goal boards are handed to the shared surface reducer from `apply_event`.

@@ -7,6 +7,27 @@
 ////
 //// ## Flow
 ////
+//// Out: `prompt` → `command`. In: `decode_v2_pushed` → `decode_body` → `decode_snapshot`
+////
+//// 1. The module is two independent halves. The first is the encoders, one per
+////    client command (`subscribe`, `prompt`, `steer`, `set_model`, `abort`,
+////    `goal_set` and the rest); each builds its body and hands it to `command`,
+////    which adds the version, id and command name and writes the JSON text.
+//// 2. The second half decodes what the daemon sends. `decode_v2_presentation`
+////    takes a correlated reply and accepts only the presentation events a read
+////    can answer; `decode_v2_pushed` takes a frame the daemon volunteered.
+//// 3. Both go through `decode_version` or `envelope`, which parse the text and
+////    refuse the wrong protocol version, then `body_of` takes the body.
+//// 4. `decode_v2_pushed` handles the shapes that exist only as pushes (a
+////    `decode_committed` notice, a usage observation, the metadata events) and
+////    passes the rest on to `decode_body`.
+//// 5. `decode_body` dispatches by event name to a decoder per event, and an
+////    unknown name becomes `Ignored` so a newer daemon cannot close the socket.
+//// 6. `decode_snapshot` dispatches by snapshot mode in the same way, reaching
+////    `decode_strands`, `decode_entries` and `decode_models` for the full state.
+//// 7. `required_string`, `required_int` and `object_fields` make every field
+////    total: a missing or mistyped one is an `Error`, never a panic.
+////
 //// `decode_event` checks the envelope, then calls `decode_body`.
 //// `decode_v2_pushed` accepts uncorrelated live events; the lane owns their
 //// reduction. `decode_v2_presentation` accepts correlated command boards.
