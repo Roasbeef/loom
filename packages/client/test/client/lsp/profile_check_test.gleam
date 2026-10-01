@@ -2,8 +2,9 @@
 //// both directions of a mismatch, and an answer that never came.
 ////
 //// The runner holds no I/O beyond the door, so every property here is
-//// decided without a server, and the live half — the same runner through
-//// the jailed manager — is `conformance/lsp_profiles_test`.
+//// decided without a server. The live half, the same runner through the
+//// jailed manager, runs in each profile's own repository, whose CI builds
+//// Loom and runs `loomd ext check`.
 
 import client/extension/manifest
 import client/lsp/profile_check

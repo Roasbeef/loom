@@ -230,12 +230,17 @@ api_key_env = "GITHUB_TOKEN"
 #                 model reads on every request: write it as you would a
 #                 tool description.
 #
-# The two tables below are copies of the first-party profiles
-# extensions/lsp_gleam and extensions/lsp_go, which are the maintained
-# versions: `loom ext install ./extensions/lsp_go` approves the same
-# table, and `loom ext check lsp_go` proves it against a fixture on this
-# host. extensions/lsp_rust is the Rust one. A table here with the same
-# name replaces an installed profile whole.
+# The two tables below are templates for the first-party profiles, which
+# live in their own repositories and are the maintained versions:
+# https://github.com/Roasbeef/loom-lsp-gleam,
+# https://github.com/Roasbeef/loom-lsp-go and
+# https://github.com/Roasbeef/loom-lsp-rust. Installing one approves its
+# table, for example
+#
+#   loomd ext install https://github.com/Roasbeef/loom-lsp-go --rev v0.1.0
+#
+# and `loomd ext check lsp_go` proves it against its fixture on this host.
+# A table here with the same name replaces an installed profile whole.
 [lsp.gleam]
 command = ["gleam", "lsp"]
 extensions = [".gleam"]

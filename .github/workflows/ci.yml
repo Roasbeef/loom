@@ -1328,15 +1328,6 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           "$(go env GOPATH)/bin/gopls" version
 
-      # rust-analyzer, rust-src and the standard library's dependencies for
-      # the first-party lsp_rust profile (ADR-016 §6), which `make e2e`
-      # checks in the jail beside lsp_gleam and lsp_go; without them it
-      # skips, and this lane's census refuses the skip. The script is
-      # shared with the Linux client bucket and says why each piece is
-      # there.
-      - name: Install rust-analyzer and the standard library's sources
-        run: .github/scripts/install_rust_analyzer.sh
-
       # Both end-to-end suites again — but this time over a helper that
       # has bwrap, Landlock and namespaces, so the enforcement they report
       # in their tool details is the real thing rather than the degraded

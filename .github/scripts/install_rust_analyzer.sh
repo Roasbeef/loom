@@ -3,26 +3,24 @@
 # Rust variants need to run rather than skip: rust-analyzer, rust-src, and
 # the standard library's own dependencies in the Cargo registry.
 #
-# Two jobs run such tests, and both call this so the two cannot drift: the
-# jailed Linux lane (`make e2e` checks the first-party lsp_rust profile,
-# ADR-016 §6) and the Linux client bucket (the language-server manager's
-# live rust-analyzer fixture).
+# The language-server manager's live rust-analyzer fixture is what needs
+# this. The Linux client bucket and the nightly cold gate both run it, and
+# both call this script so the two cannot drift.
 #
 # Why each piece:
 #
-#   - rustup's default layout. The lsp_rust profile grants ~/.rustup and
-#     ~/.cargo/registry, read-only, and the manager fixture runs
-#     ~/.cargo/bin/rust-analyzer, so the toolchain has to be exactly there.
-#     The runner's own rustup is used when it already lives there; a
-#     fresh one is installed otherwise, from a pinned rustup-init checked
-#     against a SHA-256 recorded here rather than a script piped to sh.
-#   - A pinned toolchain, 1.94.1. It is the version the lsp_rust profile
-#     and the manager fixture were measured with (ADR-016 §7: the
-#     readiness wait, the registry grant, the println! reference), as
-#     gopls@v0.23.0 is pinned for the Go variants. `stable` would move
-#     under both on the next release, and a rust-analyzer that answered
-#     differently would read as a profile that broke. Moving it is a
-#     deliberate change: bump the version and re-measure.
+#   - rustup's default layout. The fixture grants ~/.rustup and
+#     ~/.cargo/registry, read-only, and runs ~/.cargo/bin/rust-analyzer, so
+#     the toolchain has to be exactly there. The runner's own rustup is
+#     used when it already lives there; a fresh one is installed otherwise,
+#     from a pinned rustup-init checked against a SHA-256 recorded here
+#     rather than a script piped to sh.
+#   - A pinned toolchain, 1.94.1. It is the version the fixture was measured
+#     with (ADR-016 §7: the readiness wait, the registry grant, the
+#     println! reference), as gopls@v0.23.0 is pinned for the Go variants.
+#     `stable` would move under it on the next release, and a rust-analyzer
+#     that answered differently would read as a mechanism that broke.
+#     Moving it is a deliberate change: bump the version and re-measure.
 #   - rust-analyzer and rust-src. rustup puts a `rust-analyzer` link in
 #     ~/.cargo/bin whether or not the component is installed, so the
 #     component is what makes it run; rust-src is the standard library it
