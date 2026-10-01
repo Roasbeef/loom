@@ -17,6 +17,7 @@ Programs run concurrently within kernel-enforced execution boundaries.
 [Get started](#get-started) · [Code mode](#code-mode) ·
 [Multiplayer](#multiplayer-and-subagents) ·
 [Async collaboration](#async-collaboration) · [Advisor mode](#advisor-mode) ·
+[Language servers](#language-servers) ·
 [Architecture](docs/loom-design.md) ·
 [Contributing](#working-on-loom)
 
@@ -32,6 +33,7 @@ Programs run concurrently within kernel-enforced execution boundaries.
 | **Controlled execution** | Sandboxed commands and agent-written programs, capability-checked effects, and approvals bound to the action being approved. |
 | **Model routing and advisors** | Choose models by role, configure fallbacks, pair a fast primary with a separate model that reviews its work, and pin a goal the pair works toward across runs. |
 | **Memory and automation** | Search prior sessions, retain workspace knowledge, schedule follow-ups, and manage background jobs. |
+| **Language servers** | Semantic definitions, references, hover, diagnostics and rename through jailed language servers, available as tools and typed code-mode calls. Install profiles for Gleam, Go and Rust. |
 | **Extensibility** | Anthropic, OpenAI-compatible Chat Completions, public OpenAI Responses, and Gemini adapters; MCP servers, Markdown skills, and typed Gleam extensions. |
 
 The terminal includes streaming responses, syntax-highlighted code and diffs,
@@ -42,11 +44,15 @@ compaction, searchable history, and workspace memory support longer projects.
 ## Get started
 
 Build from source on Linux or macOS. You'll need the
-[maintained Gleam 1.19.0-rc2 compiler](scripts/toolchain/gleam/README.md),
+Gleam 1.19.0-rc2,
 **Erlang/OTP 29+**, **Go 1.26+**, `rebar3`, and native build tools (a C compiler, `make`, and
 `strip`). Linux sandboxing also requires bubblewrap, user namespaces, and
 delegated cgroup v2 resources; see the [sandbox guide](packages/sandbox/README.md)
 and [Docker guide](docs/docker.md) for host setup.
+
+Reproducible release builds use the
+[maintained compiler patches](scripts/toolchain/gleam/README.md); ordinary
+source builds can use the stock compiler.
 
 ```sh
 git clone https://github.com/Roasbeef/loom.git
@@ -243,6 +249,41 @@ processes, outside the trusted harness VM.
 
 The [code-mode guide](docs/architecture/code-mode.md) explains the capability
 sets, build cache, execution budgets, and cancellation model.
+
+## Language servers
+
+Loom can ask a language server for definitions, references, types, file
+outlines, call hierarchy and diagnostics, and preview or apply a semantic
+rename across files. The same operations are available through `cap/lsp` in
+code mode. Results include file and line anchors for editing; writes through
+`fs_write` and `fs_edit` also report diagnostics for files the running server
+owns. Rename previews write nothing, and unsupported server features are
+reported explicitly.
+
+Language support ships as three optional profile extensions:
+
+| Language | Profile | Server prerequisite |
+|---|---|---|
+| [Gleam](https://github.com/Roasbeef/loom-lsp-gleam) | `lsp_gleam` | `gleam lsp`. |
+| [Go](https://github.com/Roasbeef/loom-lsp-go) | `lsp_go` | Go and `gopls`. |
+| [Rust](https://github.com/Roasbeef/loom-lsp-rust) | `lsp_rust` | Rust, `rust-analyzer`, `rust-src` and cached dependencies. |
+
+Install the profiles you need after preparing their server prerequisites:
+
+```sh
+loomd ext install https://github.com/Roasbeef/loom-lsp-gleam --rev v0.1.0
+loomd ext install https://github.com/Roasbeef/loom-lsp-go --rev v0.1.0
+loomd ext install https://github.com/Roasbeef/loom-lsp-rust --rev v0.1.0
+loomd ext list
+```
+
+The profiles configure already installed binaries; each server runs inside
+Loom's jail with network access disabled. Start a new session after installation
+and verify each selected profile with `loomd ext check <profile>`.
+The [language-server setup guide](docs/language-servers.md) covers installation
+for all three languages, offline dependency preparation, daemon PATH, checks,
+custom paths and troubleshooting. The [architecture guide](docs/architecture/lsp.md)
+explains server ownership, isolation and rename behavior.
 
 ## Why Gleam
 

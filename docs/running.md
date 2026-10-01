@@ -174,6 +174,14 @@ keeps the token where it is. In remote mode `invite` and `rotate` print a
 `claim_command` for the address you connected to unless `--claim-addr` says
 otherwise.
 
+## Language-server setup
+
+Install optional profiles for Gleam, Go and Rust to give the agent semantic
+code queries and rename tools. The [setup guide](language-servers.md) covers
+server prerequisites, profile installation, `loomd ext check`, offline
+dependencies and activation in new sessions. Language servers inherit the
+daemon's tool environment and run in its jail.
+
 ## The server
 
 `loomd` opens the catalogue and owner credential, then publishes one
