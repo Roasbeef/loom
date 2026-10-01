@@ -1161,9 +1161,12 @@ has settled, or was refused, can be reused.
 that failed (deadline, dead satellite, channel fault) still carries the
 calls made so far. `execution_value`, which the background path stores and
 the model reads back, does not carry it: that would spend model context,
-and a background execution has no record in this version. Foreground
-`details` are never projected to a provider, so the record costs no tokens.
-It is stored with the entry, so a reconnecting client sees it.
+and a background execution has no record in this version. Provider
+adapters never project `details`, so the record costs no tokens by default.
+`history read` and the `context` and `tool_result` extension hooks receive
+the stored entry whole, and the record is built to be safe there: codes,
+redacted summaries and counts only. It is stored with the entry, so a
+reconnecting client sees it.
 
 **Reading it.** `session_view/call_tree` decodes the key with a total
 decoder: an absent key, and a malformed one, both read as no record, and the
