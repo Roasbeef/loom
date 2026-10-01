@@ -127,7 +127,8 @@ Statuses:
   `satellite.gleam:1032`, `:1124`, `:1155`). Refused calls have
   `duration_ms == 0`.
 - `CallCancelled`: the satellite sent `Cancel` for the call before it
-  settled (`satellite.gleam:1317` `handle_cancel`).
+  settled, and the call settled before the execution ended. A cancelled call
+  still open at the end of the execution is recorded as `CallUnsettled` (`satellite.gleam:1317` `handle_cancel`).
 - `CallUnsettled`: the call was still in flight when the execution ended,
   by program return, wall deadline or satellite death. Its end is the
   settlement instant of the execution.
@@ -500,3 +501,6 @@ Docs updated with slice 3: `docs/architecture/code-mode.md`,
    stay default-deny?
 5. Should background executions get a call record later, in a field the model
    does not read, or stay without one?
+6. Bidirectional override characters (U+202A to U+202E, U+2066 to U+2069)
+   survive the control-character strip and could reorder a drawn summary.
+   Stripping them is a follow-up.
