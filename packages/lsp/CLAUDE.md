@@ -30,7 +30,14 @@ The modules, in dependency order:
 - `lsp/client` — the client actor, a `weft/state_machine` over
   `gleam_mcp/transport.Transport`: one process owning one language server,
   its handshake, gated requests, document sync, the diagnostics store and
-  settlement, and the stop sequence.
+  settlement, and the stop sequence. Its module doc carries the phase
+  transition table and a `## Flow` sketch; read those before the handlers.
+
+Each module over about 300 lines (`client`, `protocol`, `text`, `framing`)
+opens with a `## Flow` section naming the functions of its main path in
+order. `protocol` is laid out in sections, one per codec family, each
+section a family's types, its public decoder, then its private helpers;
+the shared decoding helpers close the file.
 
 ## Key Types
 
