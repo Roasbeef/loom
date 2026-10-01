@@ -47,6 +47,14 @@
 //// it turns any subscription-shaped event source into bus publishes
 //// without this package importing the runtime (the mapping closure is
 //// written by the composition layer, which knows both types).
+////
+//// ## Flow
+////
+//// `start` obtains the shared process-group scope.
+//// `publish` pairs the session with `topic_of` and sends a `Published` value.
+//// `subscribe` joins that exact group; `select_published` unwraps its messages.
+//// `GoalChanged` belongs to `Outputs`, independently of `hint_topics`.
+//// The publisher owns commit ordering; this bus owns only best-effort delivery.
 
 import core/ids.{type EntryId, type OpId, type Seq, type SessionId, type UsageId}
 import events/internal/ffi_pg.{type Scope}
@@ -89,7 +97,8 @@ pub type Topic {
   Commits
 
   /// Display feeds: rolling output tails of running tool calls
-  /// (`ToolOutput`) and summarizer labels (`BlockSummary`).
+  /// (`ToolOutput`), summarizer labels (`BlockSummary`) and data-free goal
+  /// invalidation (`GoalChanged`). This is not the commit-hint topic.
   Outputs
 }
 

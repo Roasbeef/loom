@@ -4,6 +4,14 @@
 //// decoded through `core/codec`, so this client and the server share the
 //// same total boundary for conversation data without importing the server
 //// package or reaching behind the websocket.
+////
+//// ## Flow
+////
+//// `decode_event` checks the envelope, then calls `decode_body`.
+//// `decode_v2_pushed` accepts uncorrelated live events; the lane owns their
+//// reduction. `decode_v2_presentation` accepts correlated command boards.
+//// `GoalChanged` is a push, so it cannot masquerade as a goal read response.
+//// `goal_get` and the goal mutation builders encode requests through `command`.
 
 import core/codec
 import core/entry.{type Entry}

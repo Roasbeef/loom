@@ -4642,6 +4642,18 @@ goal evaluation has written its cell. `goal_e2e_test` holds the review's
 provider response until the primary settles and an attached client reads
 Active, then proves that satisfaction is notified without a primary wake.
 
+## Held input and goal delivery reading path
+
+For the #583 paths merged at `8b3455493`, the module `## Flow` comments name
+local entrypoints and their owned helpers. `advisor.store_goal` and
+`clear_goal` reach `write_cell` and `delete_cell`; only their successful
+writer replies reach `goal_written`. `gateway.handle` relays the notice through
+`push_to_subscribed` and `deliver`, preserving subscribed-peer authorization.
+A bounded goal read refusal can keep the connection attached, so clients
+must invalidate the observation on the correlated refusal itself.
+The [delivery reading guide](../../docs/architecture/delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
+connects these paths to held queue projection and shared request ownership.
+
 ## Deep Docs
 
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)

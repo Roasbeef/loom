@@ -39,6 +39,14 @@
 //// - floats print in Go's positional style (`0.00027`), where the
 ////   BEAM's shortest form is scientific (`2.7e-4`) — see
 ////   `to_wire_text`.
+////
+//// ## Flow
+////
+//// `encode_event` calls `event_value`, then `event_body` for the wire body.
+//// `decode_event` checks the envelope and calls `decode_event_body`.
+//// `GoalChanged` has no board payload in either direction.
+//// `encode_command` and `decode_command` own the opposite command direction.
+//// The goal read is a command; its board is the correlated response.
 
 import broker/policy.{type Grant}
 import core/codec

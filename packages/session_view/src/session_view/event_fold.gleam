@@ -23,6 +23,14 @@
 ////
 //// The functions here call `outbound`'s and `surfaces`' functions over the
 //// shared record and no other function of either module.
+////
+//// ## Flow
+////
+//// `apply_event` dispatches the decoded event and returns a new shared record.
+//// For operation completion, follow `set_strand_phase` and `settle_interrupt`.
+//// Goal boards are handed to the shared surface reducer from `apply_event`.
+//// `GoalChanged` is already consumed by the lane before this fold.
+//// An interrupt marker can retire here while the captured queue stays held.
 
 import core/entry
 import core/json

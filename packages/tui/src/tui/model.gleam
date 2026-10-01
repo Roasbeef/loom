@@ -62,6 +62,15 @@
 //// shared call, for the reducers that still take the whole model. The
 //// terminal's own operations, queuing a terminal effect, starting a job and
 //// opening a step, are defined here alone.
+////
+//// ## Flow
+////
+//// `hold_shared` stores a shared reducer result and consumes its host facts.
+//// `show_goal_observations` folds observations through `observe_goal` only
+//// when the goal inspector is open. A failed refresh keeps that panel stale.
+//// `active_queue_halted` delegates the held-input decision to shared state.
+//// `send_frame`, `send_via` and `apply_submission` wrap the shared send path.
+//// The renderer consumes this model; these helpers perform no socket write.
 
 import etui/buffer
 import etui/geometry.{type Rect}
@@ -811,7 +820,9 @@ fn show_goal_observations(model: Model) -> Model {
 }
 
 // A board replaces the panel's board and its label; a failed refresh keeps
-// the board and says why it was not refreshed.
+// the board and says why it was not refreshed. Shared.goal is already None
+// on a correlated refusal, so the composer reports unavailability while this
+// retained inspector board remains explicitly an older observation.
 fn observe_goal(
   panel: focused_goal_panel.State,
   observation: session_model.GoalObservation,

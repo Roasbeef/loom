@@ -373,6 +373,187 @@ transcript entry represents it (protocol-change/056).
 
 The shared session lane retains one goal read owed until it can issue
 `goal_get`. Operator intent already queued goes first. A notification during
-an older read survives that reply and causes another read. The terminal quietly
-retains the correlated goal board; the web host drives the same lane and
-currently renders no goal panel. Neither host adds a periodic goal read.
+an older read survives that reply and causes another read. Both hosts quietly
+replace the correlated goal observation. The terminal draws the composer row
+and its open inspector; the web view reads `component.goal` for its session
+summary and operator controls. Neither host adds a periodic goal read.
+
+## Reading the held-input and goal paths in Gleam
+
+The following paths describe the implementation merged at `8b3455493`
+(#583), including the request ownership correction. Start with the `## Flow`
+module comments, then follow the private helpers named there. The gateway and
+renderer keep their larger subsystem sections; the guide names the small path
+through each rather than requiring a read of every command or drawing routine.
+
+| Question | Source path and reading order |
+|---|---|
+| Why does input stay held after the interrupt retires? | [`snapshot_view.queue_halted`](../../packages/session_view/src/session_view/snapshot_view.gleam), then [`model.active_queue_halted`](../../packages/session_view/src/session_view/model.gleam), [`tui/model.active_queue_halted`](../../packages/tui/src/tui/model.gleam) and [`render.input_behavior`](../../packages/tui/src/tui/render.gleam). |
+| What announces a goal cell write? | [`advisor.store_goal` / `clear_goal`](../../packages/client/src/client/advisor.gleam), `write_cell` / `delete_cell`, then `goal_written`. |
+| Which attached peers receive it? | [`bus.publish` / `topic_of`](../../packages/events/src/events/bus.gleam), then [`gateway.handle`](../../packages/client/src/client/gateway.gleam), `push_to_subscribed`, `deliver` and `check_binding`. |
+| Why can't an old read consume a newer invalidation? | [`session_channel.receive`](../../packages/session_view/src/session_view/session_channel.gleam), `apply_pushed`, `apply_reply`, `send_queued`, `flush_queued` and `read_changed_goal`. |
+| Which request owns a confirmation or refusal? | [`outbound.apply_submission` / `record_sent`](../../packages/session_view/src/session_view/outbound.gleam), then [`surfaces.receive_goal` / `owns_goal_report` / `refuse_goal`](../../packages/session_view/src/session_view/surfaces.gleam). |
+| Where does the host display an observation? | [`tui/model.hold_shared`](../../packages/tui/src/tui/model.gleam), `show_goal_observations` and `observe_goal`; on the web, [`component.goal`](../../packages/web_view/src/web_view/component.gleam) feeds the page's views. |
+
+### A cut can retain held input after a local interrupt is gone
+
+`snapshot_view.queue_halted` requires a known strand whose captured
+`live_phase` is `None`, plus a captured pending input for that strand. Both
+facts come from one validated cut. `pending_inputs: None` means the daemon
+provided no queue observation, so the predicate returns false rather than
+inferring a hold. Protocol 033 ensures ordinary queued input drains before
+an idle cut is exposed. Pending rows on an idle strand therefore describe
+input waiting for the operator's next submission.
+
+The local `Interrupt` names one operation and can retire when that operation
+ends. Its retirement leaves the cut's pending rows intact. This is why a
+second attachment, which never sent Escape and has no local interrupt, can
+still draw the same held-input guidance. `model.active_queue_halted` adds one
+composer rule: a submitting prompt or a live operation outranks the retained
+idle cut. The existing queue does not make a new prompt into another steer.
+
+In `render.input_behavior`, `use <- bool.guard(condition, value)` means the
+rest of the function is the callback used when the condition is false. A true
+condition returns `value`. The held-input guard therefore selects the stopped
+composer text before the ordinary prompt/steer cases. The value is a literal;
+it creates no eager fallback work. [`submit.toggle_submission_mode`](../../packages/tui/src/tui/submit.gleam)
+keeps steering unavailable while an interrupt is active, while normal prompt
+submission remains the way to release the held input with the new message.
+
+### Three different goal fields
+
+`Channel.goal_refresh` is the lane's invalidation debt, with private
+constructors `Idle` and `Due`. `Shared.goal_refresh` is the surface scheduler's
+request state, with `worktree_view.Requested` and `worktree_view.Settled`.
+The two fields share a spelling but have different owners. Lifecycle edges
+through `surfaces.sync_goal` schedule the latter; a pushed `GoalChanged`
+schedules the former. Neither field is the board itself.
+
+`Shared.goal_request: Option(Int)` names the currently issued goal command.
+`Shared.goal_report` describes what the operator is owed. Its
+`ConfirmGoal(line, request: Option(Int))` has `None` while a mutation waits
+behind a read, then `Some(id)` after that mutation's `Sent` update. `None`
+means an ID has not been issued; it is not zero, failure, or an anonymous
+request that any reply may settle.
+
+| State | Transition | Result |
+|---|---|---|
+| `Channel.goal_refresh = Idle` | `GoalChanged` in any open lane phase | `Due`; a ready lane enters `send_queued`. |
+| `Channel.goal_refresh = Due` | Another notice while a request owns the slot | `Due`; notices coalesce into one owed read. |
+| `Channel.goal_refresh = Due` | `read_changed_goal` matches `Ready, Due` | `Idle` at issuance; a new read owns the slot. |
+| `ConfirmGoal(request: None)` | An older goal read answers | Observation changes; confirmation stays unowned. |
+| `ConfirmGoal(request: None)` | The queued mutation emits `Sent(command, id)` | `ConfirmGoal(request: Some(id))`. |
+| `ConfirmGoal(request: Some(id))` | Its own board or refusal answers | Its report settles; an unrelated ID cannot consume it. |
+| `HoldGoalReport` | An automatic board or refusal answers | Observation changes without transcript confirmation. |
+
+The source's `Phase` table lists the actual constructors (`AwaitingBegin`,
+`Receiving`, `AwaitingReply`, `Ready`, `Closed`) and the admission guards.
+`Ready` is an intermediate boundary in a completed reply: `send_queued` may
+immediately use the slot again. It first tries queued operator intent, then
+an invalidation read, then transcript capture debt. The last two remain due
+when the earlier operation takes the slot.
+
+`read_changed_goal` matches `channel.phase` and `channel.goal_refresh` in
+one `case`; a comma separates those subjects. Only the `Ready, Due` arm
+issues a read. Its argument to `send` uses this record expression:
+
+```gleam
+Channel(..channel, goal_refresh: Idle)
+```
+
+The record update constructs a new value with all other fields retained.
+It never mutates the earlier channel, so `channel.request_id` can still
+name an older reply while `sent.request_id` names the read issued afterward.
+The wildcard arm returns the original tuple `#(channel, updates)` when the
+phase or debt does not permit issuance.
+
+### An invalidation before or after an older read
+
+Suppose read 7 is outstanding and the retained board says `Active`. The
+advisor writes the goal cell, receives the writer's successful reply and
+attempts best-effort publication of the data-free `GoalChanged` event.
+For a delivered event, `gateway.handle` pushes it only
+to subscribed connections; `deliver` rechecks each network peer's immutable
+binding. The client decoder treats it as a push, so it consumes no credit and
+cannot acquire read 7's identity.
+
+If the notice arrives before read 7's board, `Channel.goal_refresh` becomes
+`Due`. Read 7's reply makes the lane ready and supplies `Auxiliary(board7)`
+to `send_queued`. With no queued operator intent, `read_changed_goal` issues
+read 8 and appends `Submission(Sent("goal_get", 8))` *after* that auxiliary
+update. The shared reducer first accepts board 7 and clears read 7's slot,
+then records ID 8. The reverse order would let board 7 clear ID 8.
+
+If the notice arrives after read 7's reply, the ready lane issues read 8
+immediately. If a second notice arrives while read 8 is outstanding, it
+restores `Due`; read 8's reply cannot consume that later debt, so the lane
+issues read 9 afterward. Debt is cleared when the read is issued, rather
+than when its board succeeds. Repeated notices before issuance need only one
+read because every read asks for the current durable cell.
+
+### A queued mutation owns its own report
+
+Suppose read 7 is outstanding when the operator pauses the goal.
+`surfaces.confirming` stores the pending confirmation with `request: None`,
+and the lane keeps the encoded mutation in its one queued slot. Read 7's
+board can update the observation, but `owns_goal_report` cannot confirm a
+mutation whose ID has not been issued. `send_queued` emits the old board
+update before `flush_queued`'s `Sent("goal_pause", 8)` update. The latter
+binds the confirmation to ID 8 in `outbound.record_sent`.
+
+A pending goal invalidation waits while that mutation owns the slot. The
+mutation's board or refusal settles its own report first; if goal debt is
+still due, a subsequent automatic read gets another ID and no operator
+confirmation. Read IDs are allocated by the lane, so a caller's draft ID is
+not evidence that a waiting mutation was issued.
+
+The alternatives in `record_sent` share one body:
+
+```gleam
+"goal_set", ConfirmGoal(line:, ..)
+| "goal_check", ConfirmGoal(line:, ..)
+| "goal_clear", ConfirmGoal(line:, ..)
+| "goal_pause", ConfirmGoal(line:, ..)
+| "goal_resume", ConfirmGoal(line:, ..)
+-> ConfirmGoal(line:, request: Some(request_id))
+```
+
+The `|` combines patterns for different commands, not boolean conditions.
+`line:` binds the field to a local variable of the same name; `..` ignores
+other fields. Constructing `ConfirmGoal(line:, request: Some(request_id))`
+retains the line but binds it to this issued mutation. `goal_get` has no arm
+in this group, so a read cannot acquire a queued mutation's report.
+
+### A refused observation is visible without disconnecting
+
+A bounded goal read can fail with `snapshot_failed` while the gateway keeps
+the connection. `session_channel.apply_reply` returns `RequestRefused` with
+the exact correlated command and ID. `surfaces.refuse_goal` checks that ID
+against `Shared.goal_request` before clearing `Shared.goal` and recording
+`GoalUnavailable`. The composer and the web controls then have no current
+board. An open terminal inspector retains its old board with the failed
+refresh label through `tui/model.observe_goal`; that board is explicitly stale.
+An automatic refusal remains silent in the transcript. A queued mutation's
+unowned confirmation survives an older read refusal just as it survives an
+older board.
+
+The total decoder idiom in `snapshot_view.decode` is another way to read
+these functions without assuming exceptions:
+
+```gleam
+use fields <- result.try(object(captured.metadata))
+use cells <- result.try(captured_cells(captured))
+```
+
+Each `use` passes the following block as the continuation. `result.try`
+returns the error unchanged when the preceding step fails, and passes the
+successful value into that continuation otherwise. Validation completes
+before a host adopts the view. The public decoder is separate from the
+lane's request correlation, which determines whether this validated result
+belongs to the request being answered.
+
+Goal notifications remain best-effort. The guarantee covers a notice that
+reaches the lane and the reads it owes. A lost final goal notice can leave
+an auxiliary board stale until another goal notice, a lifecycle-triggered
+read, an explicit read or a new attachment observes the cell. Transcript
+catch-up is not a periodic goal read and cannot supply that missing board.

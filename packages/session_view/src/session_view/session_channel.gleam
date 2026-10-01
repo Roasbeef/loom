@@ -55,6 +55,18 @@
 //// on the model before the step, a replay passes its own time, which starts
 //// at zero, and a property test passes whatever schedule it generated. The
 //// same arguments therefore always produce the same transition.
+////
+//// ## Flow
+////
+//// `receive` records one transport message before decoding it.
+//// `apply_pushed` handles uncorrelated notices; `apply_reply` handles the
+//// outstanding request. A completed reply enters `send_queued`.
+//// `send_queued` gives `flush_queued` first use of the free slot, then calls
+//// `read_changed_goal`, then spends transcript capture debt if still ready.
+//// `send` allocates the identity; `emit` records issuance before transmission.
+//// `take_outputs` hands those effects to the host in their decision order.
+//// `submit` admits operator intent through `admit`; `tick` owns timeouts and
+//// idle transcript catch-up. Goal invalidation creates no periodic goal timer.
 
 import core/json
 import gleam/bool
@@ -195,13 +207,22 @@ pub type Disposition {
   DefinitelyNotSent(reason: String)
 }
 
+// The reply contract and uncertainty rule travel with the issued command.
 type Intent {
+  /// A presentation board can be refused without retrying the command.
   Read
+
+  /// A lost reply preserves unknown outcome instead of permitting resend.
   Mutation
+
+  /// Only the selected decision identities may answer this read.
   Lookup(ids: List(String))
+
+  /// The independently validated page stays inside these sequence bounds.
   History(after_seq: Int, before_seq: Int)
 }
 
+// An admitted frame keeps its encoded body while the lane assigns its ID.
 type Outbound {
   Outbound(name: String, suffix: String, intent: Intent)
 }
@@ -268,11 +289,34 @@ type Projection {
   OlderPage(after_seq: Int, before_seq: Int)
 }
 
+// The outstanding request, not a transport connection's lifecycle. A pushed
+// notice preserves its phase until that notice can use a free request slot.
+//
+// | Phase | Correlated receive | GoalChanged push | Tick | Submit | Close |
+// | --- | --- | --- | --- | --- | --- |
+// | AwaitingBegin | Begin -> Receiving; cursor Resumed -> Ready | Keep phase; Due | Expired -> Closed | One slot; mutation needs synchronized cut | Closed |
+// | Receiving | Chunk -> Receiving; valid End -> Ready, then send_queued | Keep phase; Due | Expired -> Closed | One slot; mutation needs synchronized cut | Closed |
+// | AwaitingReply | Valid board/refusal or Mutation(status) for Mutation -> Ready, then send_queued; Lookup/History Begin -> Receiving | Keep phase; Due | Expired -> Closed | Mutation refused behind Mutation; otherwise one slot | Closed |
+// | Ready | Unsolicited correlated reply -> Closed | Due; send_queued | Due cut -> AwaitingBegin | No queued frame -> AwaitingReply; mutation needs role | Closed |
+// | Closed | Ignored | Ignored by receive | Unchanged | DefinitelyNotSent | Unchanged |
+//
+// A malformed or mismatched reply closes every open phase. Every mutation
+// also needs can_mutate; a second queued command is refused. Ready in this
+// table is the intermediate state before send_queued may issue another request.
 type Phase {
+  /// Initial subscribe or catch-up awaits its begin marker.
   AwaitingBegin
+
+  /// Each valid chunk earns one next credit until a validated end.
   Receiving(snapshot.Transfer, Projection)
+
+  /// The single issued command owns every correlated reply until settlement.
   AwaitingReply(name: String, intent: Intent)
+
+  /// No correlated request is outstanding; debt or queued intent may issue.
   Ready
+
+  /// No further output may be transmitted; closure is not a drain witness.
   Closed
 }
 
@@ -1532,6 +1576,9 @@ pub fn history(
 // place a deferred notice can be spent. A waiting local command still goes
 // first: it keeps the lane busy, and the notice survives to the transition
 // after that one.
+// Reply updates settle the old owner before any newly issued request installs
+// another. Queued operator intent wins the slot; goal debt and transcript debt
+// remain due if that intent uses it. List order here is reducer order in both hosts.
 fn send_queued(
   channel: Channel(socket, recorder),
   updates: List(Update),
@@ -1559,36 +1606,9 @@ fn send_queued(
   }
 }
 
-// An invalidation is spent only when its read is issued. A notification
-// arriving during that read survives its reply and requests a newer board.
-// The host must know this read's ID to accept its refusal. Its sent update
-// follows the older reply's updates so that reply cannot clear the new owner.
-fn read_changed_goal(
-  channel: Channel(socket, recorder),
-  updates: List(Update),
-  now: Int,
-) {
-  case channel.phase, channel.goal_refresh {
-    Ready, Due -> {
-      let sent =
-        send(
-          Channel(..channel, goal_refresh: Idle),
-          Outbound(
-            "goal_get",
-            "\"goal_get\"" <> session_wire.command_body <> "{}}",
-            Read,
-          ),
-          now,
-        )
-      #(
-        sent,
-        list.append(updates, [Submission(Sent("goal_get", sent.request_id))]),
-      )
-    }
-    _, _ -> #(channel, updates)
-  }
-}
-
+// A held command keeps its original body, but uses the latest attachment
+// authority after reconciliation. Clearing queued before send gives this
+// issuance one owner and prevents later read servicing from issuing it again.
 fn flush_queued(
   channel: Channel(socket, recorder),
   updates: List(Update),
@@ -1621,6 +1641,41 @@ fn flush_queued(
         }
       }
     }
+  }
+}
+
+// An invalidation is spent only when its read is issued. A notification
+// arriving during that read survives its reply and requests a newer board.
+// The host must know this read's ID to accept its refusal. Its sent update
+// follows the older reply's updates so that reply cannot clear the new owner.
+fn read_changed_goal(
+  channel: Channel(socket, recorder),
+  updates: List(Update),
+  now: Int,
+) {
+  case channel.phase, channel.goal_refresh {
+    Ready, Due -> {
+      // Due becomes Idle at issuance, not at a successful board. A later
+      // notice can therefore restore Due while this read is outstanding.
+      let sent =
+        send(
+          Channel(..channel, goal_refresh: Idle),
+          Outbound(
+            "goal_get",
+            "\"goal_get\"" <> session_wire.command_body <> "{}}",
+            Read,
+          ),
+          now,
+        )
+
+      // Keep the older board or refusal first: applying it after this Sent
+      // would erase the new goal_request in the shared surface reducer.
+      #(
+        sent,
+        list.append(updates, [Submission(Sent("goal_get", sent.request_id))]),
+      )
+    }
+    _, _ -> #(channel, updates)
   }
 }
 

@@ -127,6 +127,15 @@
 //// than an error anybody sees. Both are read lazily on the first message
 //// rather than at start, because the runtime is borrowed from a holder
 //// that may not be up yet when a supervisor starts this actor.
+////
+//// ## Flow
+////
+//// `handle` dispatches the actor messages; `evaluate` applies the goal policy.
+//// For goal persistence, read `store_goal`, then `write_cell` and `goal_written`.
+//// For clearing, read `clear_goal`, then `delete_cell` and `goal_written`.
+//// Both persistence paths publish only after the reserved writer replies.
+//// The policy and the durable goal shape live in separate domain modules.
+//// The publication path announces an invalidated observation, not a verdict.
 
 import client/advisorguard
 import client/advisorslice
@@ -1255,7 +1264,9 @@ fn store_cursor(
 // The write goes through the reserved door because the ordinary one
 // refuses this prefix. The reads above stay on the plain `fact`, which
 // never consulted the reservation and is how every other owner of a
-// reserved namespace reads its own cells back.
+// reserved namespace reads its own cells back. The Ok arm is the publication
+// boundary: logging a refused write never invalidates a board as though the
+// new goal had become durable.
 fn write_cell(
   state: State,
   runtime: Runtime,
@@ -1291,6 +1302,8 @@ fn delete_cell(state: State, runtime: Runtime, key: String) -> Nil {
 
 // Publication follows the writer's successful reply, so a subscriber's read
 // cannot precede this write. Guard and cursor writes do not invalidate goals.
+// Outputs is the existing live delivery topic; the event deliberately carries
+// no goal data. Subscribers must ask the bounded reader for the current cell.
 fn goal_written(runtime: Runtime, key: String) -> Nil {
   case key == goal_key {
     False -> Nil

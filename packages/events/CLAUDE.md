@@ -216,6 +216,16 @@ the gateway relays it to subscribed peers, whose session lane re-reads the
 reserved cell with `goal_get`. It carries neither durable state nor a transcript
 frontier and does not wake projection subscribers on the six hint topics.
 
+## Goal invalidation on the live feed
+
+`GoalChanged` carries no goal data and maps to `Outputs`, not to `Commits`.
+A gateway subscribed to the live feed relays it after the advisor's successful
+reserved write or deletion. `hint_topics` deliberately excludes `Outputs`,
+so a projection subscribed only to commit hints does not consume this event.
+The bus owns no persistence acknowledgement and performs no read for the
+subscriber. The [delivery reading guide](../../docs/architecture/delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
+traces the publisher, gateway and client read as separate ownership boundaries.
+
 ## Deep Docs
 
 - [docs/architecture/durability.md](../../docs/architecture/durability.md)

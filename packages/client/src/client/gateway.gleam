@@ -131,6 +131,19 @@
 //// `stream_delta` events, never persisted, never seq'd) while the
 //// runtime's effect process consumes the stream unchanged. The tap
 //// lives entirely in the composition seam — the runtime is untouched.
+////
+//// ## Flow
+////
+//// `handle` dispatches `BusHint` as well as socket requests.
+//// The goal hint goes through `push_to_subscribed`, then `deliver`.
+//// `deliver` calls `check_binding` before an authenticated socket receives it.
+//// For the resulting goal read, follow `request_frame`, `network_dispatch`,
+//// `network_command`, `run_command` and `read_goal`. Bounded transcript
+//// capture uses `begin_transfer`; a goal board has its own reply path.
+//// `reader_failed` refuses a bounded read without treating that refusal as
+//// connection loss. `reply_error` uses the same authenticated reply path.
+//// For held input, start with `hold_prompt`, `release_halt` and `halted_queue`.
+//// These are separate paths inside one actor, not a single call chain.
 
 import broker/escalation as broker_escalation
 import broker/framing
@@ -1802,6 +1815,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     // Goal reads are auxiliary: a capture cannot refresh this reserved cell.
+    // The bus carries no board to trust or project. Each subscribed peer gets
+    // a data-free push through deliver, which rechecks its binding at emission.
     BusHint(published: bus.Published(event: bus.GoalChanged, ..)) -> {
       push_to_subscribed(state, protocol.GoalChanged)
       continue(state)
@@ -2465,6 +2480,10 @@ fn reader_failed(
       )
       retain_transfer(state, connection, None)
     }
+
+    // A refused bounded goal read can leave the socket attached. The client
+    // must invalidate its observation on this correlated snapshot_failed;
+    // waiting for transport loss would keep a stale board indefinitely.
     snapshot.StorageFailure(_), _
     | snapshot.InvalidRequest, _
     | snapshot.MetadataTooLarge, _

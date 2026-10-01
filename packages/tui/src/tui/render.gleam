@@ -10,6 +10,17 @@
 //// Transcript rows arrive as `Line`s from `session_view/transcript_lines`, already
 //// ordered; this module styles them, applies Markdown, wraps them to the
 //// pane width, and adds the speaker gutter.
+////
+//// ## Flow
+////
+//// `view` and `cached_frame` lead to `render_frame`.
+//// `render_frame` divides the screen and calls the owned rendering sections.
+//// For held input, `render_frame` passes `input_title` to
+//// `render_composer_chrome`; `input_title` calls `input_behavior`.
+//// Follow `render_inline_queue` for the matching queue hint.
+//// Both read the same shared projection rather than an old interrupt notice.
+//// `goal_availability` derives the inspector command state from the shared
+//// request slot; the composer goal summary is owned by `tui/layout`.
 
 import core/entry
 import core/json
@@ -1800,6 +1811,9 @@ fn recipient_label(model: Model) -> String {
   |> string.reverse
 }
 
+// Composer guidance answers what the next Enter does. The agent rail can
+// still display the last operation's outcome, so its terminal status alone
+// cannot establish whether this idle strand retains queued input.
 fn input_behavior(model: Model) -> String {
   use <- bool.guard(
     model.shared.captured != None
@@ -1978,6 +1992,9 @@ fn render_inline_queue(
   model: Model,
 ) -> buffer.Buffer {
   let state = model.view.queue_editor
+
+  // The queue card and composer use one shared hold predicate. Even the
+  // smallest card keeps the hold label instead of suggesting automatic drain.
   let held = tui_model.active_queue_halted(model)
   let held_hint = case held {
     True -> " · held until your next message "

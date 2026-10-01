@@ -2458,6 +2458,18 @@ The goal report and its issued request identity live in
 observations through its existing shared-state wrapper.
 
 
+## Reading held input and goal observations
+
+The scoped module `## Flow` comments connect shared decisions to terminal
+presentation. `model.hold_shared` consumes goal observations in order through
+`show_goal_observations` and `observe_goal`. `render.input_behavior` and
+`render_inline_queue` both use `model.active_queue_halted`; they do not infer
+held input from the last operation's terminal outcome or interrupt notice.
+A correlated refusal clears `Shared.goal`, while an open inspector can keep
+its old board with the failed refresh label. The
+[delivery reading guide](../../docs/architecture/delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
+shows the source paths, actual state constructors and request-ID traces.
+
 ## Deep Docs
 
 - [`docs/architecture/terminal.md`](../../docs/architecture/terminal.md)
