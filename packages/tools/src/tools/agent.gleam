@@ -13,6 +13,26 @@
 //// same arrangement `effects.ToolOutcome` uses to mirror the broker's
 //// `CallOutcome` without a broker dependency.
 ////
+//// ## Flow
+////
+//// `tools` → `spawn_tool` → `run_spawn` → `caller` → `refusal_outcome` → `wait_tool` → `run_wait`
+////
+//// 1. `tools` takes the host's `Agency` and builds one `Tool` per slot,
+////    binding each closure before the shell is made.
+//// 2. `spawn_tool` declares the arguments; `run_spawn` decodes them
+////    (`decode_result_schema`, `decode_provenance`) into a `SpawnRequest`.
+//// 3. `caller` builds the `Caller` from `Ctx` alone, so the model never states
+////    its own identity; the Agency judges the call against it.
+//// 4. An Agency `Refusal` becomes the model's answer through
+////    `refusal_outcome` and `describe`; success is rendered in the shell.
+//// 5. `run_wait` bounds the handle array (max_handles), parses each with
+////    `parse_handle`, and waits them against one deadline, rendering with
+////    `waited_text` and `waited_json`.
+//// 6. `run_send`, `run_note`, `run_notes` and `run_roster` are the same shape:
+////    decode, call the slot with `caller(ctx)`, render.
+//// 7. `call_site_digest` and `slug` are the minting half the Agency uses to
+////    name a child deterministically, so a replayed spawn reconciles.
+////
 //// ## Why a tool, and where the capability lives instead
 ////
 //// A tool runs in the harness: trusted code, policy-checked, able to
