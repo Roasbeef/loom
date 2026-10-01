@@ -150,7 +150,7 @@ fn decode_log(value: JsonValue) -> Result(CallLog, Nil) {
 
       // An itemised list longer than the count of calls cannot be a record
       // of this execution, so it is refused rather than drawn.
-      case list.length(items) <= total {
+      case list.drop(items, total) == [] {
         True ->
           Ok(CallLog(
             started_unix_ms:,
