@@ -32,12 +32,12 @@
 //// `run_tracked` → `run_loop` → `run_chunk` → `feed` → `forward` → `finish_attempt`
 ////
 //// 1. `run_tracked` prepares the transport, publishes the live request through
-////    `started`, arms the one absolute deadline and monitors the consumer and
-////    the transport owner; `run` is the fixture facade over it.
+////    the started callback, arms the one absolute deadline and monitors the
+////    consumer and the transport owner; `run` is the fixture facade over it.
 //// 2. `run_loop` waits on one selector for the next fact: an HTTP event, a
 ////    cancel, the deadline, or either monitor going down. Each of those ends
 ////    in an `AttemptOutcome` except a status or a chunk, which loop again.
-//// 3. `run_chunk` charges the chunk against `max_response_bytes` and asks the
+//// 3. `run_chunk` charges the chunk against the response byte cap and asks the
 ////    adapter's machine to fold it. The adapter does that with `feed`, which
 ////    splits bytes into `SseEvent`s through `feed_loop`, `take_line` and
 ////    `handle_line`; `dispatch` closes an event on the blank line.

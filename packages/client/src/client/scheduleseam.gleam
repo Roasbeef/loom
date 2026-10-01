@@ -18,7 +18,7 @@
 //// 2. `with_runtime` borrows the session runtime for every call and refuses in
 ////    band when it is not up.
 //// 3. `create` resolves the target, asks `schedulable` whether the caller may
-////    schedule onto it, then caps `wake` with `schedule.wake_under` and `wake_onto`.
+////    schedule onto it, then caps the wake with `schedule.wake_under` and `wake_onto`.
 //// 4. It builds the value through `schedule.build`, checks `room_for_one_more`
 ////    and `name_is_free`, and claims the cell's absence; `claim_refused`
 ////    words a lost race.

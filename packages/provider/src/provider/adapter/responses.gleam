@@ -16,7 +16,7 @@
 //// 3. `on_chunk` bounds the attempt's bytes, feeds a 200 body to the SSE
 ////    parser and each event to `handle_sse`; other statuses collect the error
 ////    body for `http_error`.
-//// 4. `handle_sse` checks the event name against the JSON `type` and the
+//// 4. `handle_sse` checks the event name against the JSON `"type"` and the
 ////    sequence number with `sequence`, then calls `dispatch`.
 //// 5. `dispatch` gives every supported event its own transition: `add_item`,
 ////    `add_part`, `change_part`, `close_part`, `add_annotation`, `arguments`
