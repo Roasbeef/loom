@@ -835,7 +835,10 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
   let interrupted =
     tui_model.Model(
       ..first,
-      interrupt: Some(tui_model.Interrupt("main", None, None)),
+      shared: session_model.Shared(
+        ..first.shared,
+        interrupt: Some(session_model.Interrupt("main", None, None)),
+      ),
     )
   let interrupted = receive(interrupted, pushed.notice("main", 10))
   let request = issued(events, "catch_up")
@@ -852,7 +855,8 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
       receive,
     )
   let #(second, _) = ready([pending("A")])
-  assert retired.interrupt == None as "the settled operation retired its marker"
+  assert retired.shared.interrupt == None
+    as "the settled operation retired its marker"
 
   list.each([retired, second], fn(model) {
     assert string.contains(painted(model), "stopped · enter sends held input")
@@ -860,21 +864,31 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
     let shown = painted(submit.open_queue(model))
     assert string.contains(shown, "held until your next message")
       as "the inspector explains how held rows are released"
-    assert !tui_model.active_strand_live(model)
+    assert !session_model.active_strand_live(model.shared)
       as "halted input does not make the composer a running strand"
   })
 
   let #(halted, events) = ready([pending("A")])
-  let sent = key(tui_model.Model(..halted, peer: tui_model.Attached), "enter")
+  let sent =
+    key(
+      tui_model.Model(
+        ..halted,
+        shared: session_model.Shared(
+          ..halted.shared,
+          peer: session_model.Attached,
+        ),
+      ),
+      "enter",
+    )
   let _ = issued(events, "prompt")
-  assert sent.submission_mode == tui_model.PromptNext
+  assert sent.view.submission_mode == tui_model.PromptNext
     as "Enter releases held input with an ordinary prompt, not a steer"
 
   let #(empty, _) = ready([])
   assert !string.contains(painted(empty), "stopped · enter sends held input")
     as "an idle strand without held rows is an ordinary prompt"
   let pending_stop = submit.toggle_submission_mode(interrupted)
-  assert pending_stop.notice
+  assert pending_stop.shared.notice
     == "stopped · enter sends held input with your message"
     as "the notice no longer claims an interrupt steer is armed"
 }

@@ -763,18 +763,23 @@ pub fn receive_goal(
   shared: Shared(socket, recorder, source, replay_source),
   board: goal_view.Board,
 ) -> Shared(socket, recorder, source, replay_source) {
-  case shared.goal_awaiting == None
-    || shared.goal_awaiting == Some(session_model.queue_owner(shared)) {
+  case
+    shared.goal_awaiting == None
+    || shared.goal_awaiting == Some(session_model.queue_owner(shared))
+  {
     False -> shared
 
     True -> {
-      let observed = Shared(
-        ..shared,
-        goal: Some(board),
-        goal_awaiting: None,
-        goal_request: None,
-        goal_observations: list.append(shared.goal_observations, [GoalObserved(board)]),
-      )
+      let observed =
+        Shared(
+          ..shared,
+          goal: Some(board),
+          goal_awaiting: None,
+          goal_request: None,
+          goal_observations: list.append(shared.goal_observations, [
+            GoalObserved(board),
+          ]),
+        )
       case owns_goal_report(shared) {
         True -> report_goal(observed, board)
         False -> session_model.invalidate_frame(observed)
@@ -786,7 +791,9 @@ pub fn receive_goal(
 // A queued mutation can replace an explicit read's report before that read
 // answers. Only the mutation's issued ID owns its confirmation; an older
 // valid board still replaces the observation without consuming that report.
-fn owns_goal_report(shared: Shared(socket, recorder, source, replay_source)) -> Bool {
+fn owns_goal_report(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Bool {
   case shared.goal_report {
     ConfirmGoal(request: Some(id), ..) -> shared.goal_request == Some(id)
     ConfirmGoal(request: None, ..) | HoldGoalReport -> False
@@ -863,10 +870,7 @@ pub fn refuse_goal(
   // older daemon refuses every one of them, and a row per idle boundary
   // would be a scrolling complaint about a feature this session lacks. A
   // mutation and an explicit `/goal` are always the operator's own.
-  use <- bool.guard(
-    !owns_goal_report(shared) && command == "goal_get",
-    cleared,
-  )
+  use <- bool.guard(!owns_goal_report(shared) && command == "goal_get", cleared)
 
   session_model.append_error(cleared, goal_view.refusal(code, message))
 }

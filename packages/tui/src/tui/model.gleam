@@ -1261,11 +1261,7 @@ pub fn reading_history(model: Model) -> Bool {
 /// ```
 @internal
 pub fn active_queue_halted(model: Model) -> Bool {
-  !session_model.active_strand_live(model.shared)
-  && case model.shared.captured {
-    None -> False
-    Some(#(_, view)) -> snapshot_view.queue_halted(view, model.shared.active_strand)
-  }
+  session_model.active_queue_halted(model.shared)
 }
 
 /// Appends a system line to the transcript and shows it as the notice.

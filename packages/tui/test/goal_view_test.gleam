@@ -1273,7 +1273,10 @@ pub fn a_refused_mutation_is_not_confirmed_test() {
       ..sent,
       shared: session_model.Shared(
         ..sent.shared,
-        goal_report: session_model.ConfirmGoal(line: "the session goal is held", request: Some(id)),
+        goal_report: session_model.ConfirmGoal(
+          line: "the session goal is held",
+          request: Some(id),
+        ),
       ),
     )
 
@@ -1499,7 +1502,8 @@ pub fn late_goal_writes_refresh_the_connected_panel_without_a_phase_edge_test() 
       let assert Some(goal_view.Pinned(status:, ..)) = refreshed.shared.goal
         as "the returned goal replaces the retained board"
       assert status == outcome.2
-      assert refreshed.shared.strands == observed.shared.strands as "no phase edge was needed"
+      assert refreshed.shared.strands == observed.shared.strands
+        as "no phase edge was needed"
       assert string.contains(painted(refreshed), goal_view.status_word(status))
         as "the refreshed outcome is painted beside the composer"
     },
@@ -1510,7 +1514,8 @@ pub fn late_goal_writes_refresh_the_connected_panel_without_a_phase_edge_test() 
 // Repeated notifications coalesce behind a queued operator command.
 pub fn a_goal_invalidation_during_an_older_read_survives_its_reply_test() {
   let #(asked, id) = outstanding(protocol.goal_get(99), "goal_get")
-  let assert Some(channel) = asked.shared.channel as "the connected lane is reading"
+  let assert Some(channel) = asked.shared.channel
+    as "the connected lane is reading"
   let #(channel, disposition) =
     session_channel.submit(channel, protocol.models(99), now: 0)
   let assert session_channel.Waiting("models") = disposition
@@ -1558,13 +1563,17 @@ pub fn a_goal_invalidation_during_an_older_read_survives_its_reply_test() {
 pub fn older_goal_reads_cannot_confirm_a_queued_pause_test() {
   list.each([BackgroundGoalRead, ExplicitGoalRead], fn(source) {
     let #(older, id) = older_goal_read(source)
-    let queued = tui_model.run_shared(older, fn(shared) { surfaces.submit_goal_action(shared, command.GoalPause) })
+    let queued =
+      tui_model.run_shared(older, fn(shared) {
+        surfaces.submit_goal_action(shared, command.GoalPause)
+      })
     let assert session_model.ConfirmGoal(..) = queued.shared.goal_report
       as "the pause awaits its own result"
     let sent = deliver(queued, pushed.reply(id, "snapshot", snapshot()))
     assert sent.shared.transcript == queued.shared.transcript
       as "the older Active board must not print the queued pause's confirmation"
-    let assert Some(goal_view.Pinned(status: goal_view.Active, ..)) = sent.shared.goal
+    let assert Some(goal_view.Pinned(status: goal_view.Active, ..)) =
+      sent.shared.goal
       as "the older board still updates the observation"
     assert sent.shared.goal_request == Some(id + 1)
       as "only after the old read settles does the pause get its request ID"
@@ -1626,7 +1635,11 @@ fn older_goal_read(source: OlderGoalRead) -> #(tui_model.Model, Int) {
   #(
     tui_model.Model(
       ..older,
-      shared: session_model.Shared(..older.shared, peer: session_model.Attached, strands: roster(None, None)),
+      shared: session_model.Shared(
+        ..older.shared,
+        peer: session_model.Attached,
+        strands: roster(None, None),
+      ),
     ),
     id,
   )
@@ -1652,7 +1665,10 @@ pub fn every_goal_mutation_owns_only_its_issued_reply_test() {
           submit.submit(
             tui_model.Model(
               ..older,
-              view: tui_model.View(..older.view, input: text_area.state_from_string(mutation.0)),
+              view: tui_model.View(
+                ..older.view,
+                input: text_area.state_from_string(mutation.0),
+              ),
             ),
           )
         let assert session_model.ConfirmGoal(..) = queued.shared.goal_report
@@ -1689,7 +1705,10 @@ pub fn every_goal_mutation_owns_only_its_issued_reply_test() {
 pub fn an_older_goal_read_refusal_cannot_settle_a_queued_mutation_test() {
   list.each([BackgroundGoalRead, ExplicitGoalRead], fn(source) {
     let #(older, id) = older_goal_read(source)
-    let queued = tui_model.run_shared(older, fn(shared) { surfaces.submit_goal_action(shared, command.GoalPause) })
+    let queued =
+      tui_model.run_shared(older, fn(shared) {
+        surfaces.submit_goal_action(shared, command.GoalPause)
+      })
     let sent = deliver(queued, goal_refusal(id))
     assert sent.shared.transcript == queued.shared.transcript
       as "an older refusal does not settle the newer command's report"

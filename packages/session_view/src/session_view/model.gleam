@@ -13,7 +13,7 @@
 //// no `Subject`: the four host handles it carries, the adopted lane's socket
 //// and recorder and the sources of its two inboxes, are type parameters.
 //// The terminal binds them in `tui/model` (`TerminalShared`) and holds the
-//// record beside its own `View`; the web view will bind them to its relay
+//// record beside its own `View`; the web view binds them to its relay
 //// and `Nil`.
 ////
 //// Four fields are presentation revisions rather than session facts:
@@ -977,6 +977,25 @@ pub fn queue_namespace(
         ]),
       )
     None -> ""
+  }
+}
+
+/// Whether the active strand's queue waits for an explicit submission.
+/// A prompt already being submitted outranks the retained idle cut.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let held = session_model.active_queue_halted(model.shared)
+/// ```
+@internal
+pub fn active_queue_halted(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Bool {
+  !active_strand_live(shared)
+  && case shared.captured {
+    None -> False
+    Some(#(_, view)) -> snapshot_view.queue_halted(view, shared.active_strand)
   }
 }
 

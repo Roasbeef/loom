@@ -379,31 +379,29 @@ pub fn a_goal_write_is_read_on_arrival_by_the_web_lane_test() {
   let following =
     simulate.message(simulation(), component.Opened(wire()))
     |> arrive(page_fixture.transfer("observer", []))
+    |> arrive(page_fixture.first_reads_refused())
+  assert !in_flight(following) as "all capture-triggered reads have settled"
   let invalidated =
     simulate.message(
       following,
-      component.Arrived(
-        [
-          connection_event.Incoming(
-            "{\"v\":2,\"event\":\"goal_changed\",\"body\":{}}",
-          ),
-        ],
-      ),
+      component.Arrived([
+        connection_event.Incoming(
+          "{\"v\":2,\"event\":\"goal_changed\",\"body\":{}}",
+        ),
+      ]),
     )
   assert in_flight(invalidated)
     as "the shared lane reads the goal immediately, without a tick"
   let answered =
     simulate.message(
       invalidated,
-      component.Arrived(
-        [
-          connection_event.Incoming(
-            "{\"v\":2,\"reply_to\":4,\"event\":\"snapshot\",\"body\":{\"mode\":\"goal\",\"board\":{\"status\":\"none\",\"observed_at_ms\":0}}}",
-          ),
-        ],
-      ),
+      component.Arrived([
+        connection_event.Incoming(
+          "{\"v\":2,\"reply_to\":8,\"event\":\"snapshot\",\"body\":{\"mode\":\"goal\",\"board\":{\"status\":\"none\",\"observed_at_ms\":0}}}",
+        ),
+      ]),
     )
   assert !in_flight(answered)
-  assert component.status(simulate.model(answered)) == component.Following
+  assert component.status(simulate.model(answered)) == component.Connected
     as "the correlated goal board is accepted by the web host's lane"
 }
