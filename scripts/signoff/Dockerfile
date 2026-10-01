@@ -150,6 +150,27 @@ RUN curl -fsSL -o /tmp/go.tar.gz \
 ENV PATH="/usr/local/go/bin:${PATH}"
 RUN go version
 
+# --- gopls ---------------------------------------------------------------
+# The language-server tests' Go variants (ADR-015) run a real jailed gopls,
+# and a lane whose image lacks it prints a SKIP that the census refuses.
+# GOPLS_VERSION is the pin ci.yml's jail lane uses and the version ADR-015's
+# Go measurements were taken against; moving it is a deliberate edit here
+# and there. The binary goes to /usr/local/bin through GOBIN, which is on
+# PATH, and not to `$GOPATH/bin`: GOPATH is the persisted volume's parent
+# below, and a toolchain installed under a path a volume is mounted over is
+# hidden by the mount on every run. The module cache and GOPATH are
+# throwaways for this one step for the same reason, and they are removed
+# so the layer carries the binary and not gopls's sources.
+ARG GOPLS_VERSION=v0.23.0
+RUN set -eux; \
+	GOBIN=/usr/local/bin \
+	GOPATH=/tmp/gopls-gopath \
+	GOMODCACHE=/tmp/gopls-modcache \
+	GOFLAGS=-modcacherw \
+		go install "golang.org/x/tools/gopls@${GOPLS_VERSION}"; \
+	rm -rf /tmp/gopls-gopath /tmp/gopls-modcache /root/.cache/go-build; \
+	gopls version
+
 # The Hex and Go module caches are the two things scripts/signoff_remote.sh
 # says are allowed to persist across runs, named here at fixed, mountable
 # paths rather than left at whatever HOME resolves to, so the run script
