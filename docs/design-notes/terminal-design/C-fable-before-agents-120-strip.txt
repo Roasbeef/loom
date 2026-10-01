@@ -1,0 +1,40 @@
+ ◆ loom                        native-fixture · native UI fixture                        fixture-model · Ctrl+g details
+  worktree · COMPOSER Ctrl+d  / main
+ captured fixture worktree · 1 added · 1 deleted
+ Composer focus · Ctrl+d file navigation · Esc close
+ ▸ [ALL] 2 files
+   [A] docs/review/native-layout.md
+   [D] packages/tui/src/tui.gleam
+   [COMMITS] Since session start
+ All files · observation complete · 0 omitted
+  5 ▎ +added status visible
+  6 ▎ +deleted status visible
+  7 ▎ +binary status visible
+  8 ▎ +sticky file header visible
+  9 ▎ +page one complete
+ 10 ▎ +page two begins
+ 11 ▎ +composer draft retained
+ 12 ▎ +native patch paging tail
+    ▎
+ ◇ packages/tui/src/tui.gleam · text · complete
+
+ ▎ -legacy agent overlay path
+ ▎
+ ◇ Observation complete · 0 files omitted
+
+
+╭ queue · 3 pending · Alt+q inspect ───────────────────────────────────────────────────────────────────────────────────╮
+│Review the failed compact-layout assertion. Confirm the selected identity. Check the steer bad… · [STEER] [EDIT] · 1/3│
+│Prepare the native layout report with the wide and compact evidence attached. · [QUEUE] [EDIT] · 2/3                  │
+│This captured input belongs to an attachment without replacement authority. · [QUEUE] [READ-ONLY] · 3/3               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+─ To main · ↑↓ select agent · enter opens · x stops · esc back                                                         ─
+ ◒ Message to sub:protocol-review (45s)
+ goal paused (you paused it) · 51200/400000 tokens · 3 continuations · Finish the native agent workspace, preserve eve…
+ advisor nudges pending (1) · held for your next prompt to main
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ agents closed · fixture-model · ctx — · est $0.00                                    6 agents · 2 working · 3 attention
+› ● main                   agent_send                                                                                45s
+❯ ? sub:protocol-review    Approval required                                                                         45s
+  ! sub:paused-review      Operation aborted

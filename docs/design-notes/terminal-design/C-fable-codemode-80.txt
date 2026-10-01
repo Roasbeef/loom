@@ -1,0 +1,24 @@
+ ◆ loom                    ws · main · ~/code/pi-gui   kimi-k3 · Ctrl+g details 
+  transcript / main · ^O strands                                                
+ │   cap/fs only.                                                               
+ │ ◐ code_mode · vet_imports_2.gleam · running 0.6s · esc interrupts            
+ │   ╭─ running · vet_imports_2.gleam · 19 lines ─────────────────────────╮     
+ │   │ import cap/fs                                                            
+ │   │ import cap/proc                                                          
+ │   │ pub fn main() {                                                          
+ │   │   let files = fs.glob("packages/cap/src/cap/*.gleam")                    
+ │   │ ▸ 15 more lines · budget 12k of 40k · Ctrl+g                             
+ │   ╰──────────────────────────────────────────────────────────────────────╯   
+ │ ✓ code_mode · count_exports.gleam · completed · 1.1s · value: 41 exports     
+ ▸ todo · Change 1/3 · ▸ check it · 3/5 done                                    
+─ To main · enter queues · tab steers ──────────────────────────────────────────
+ ◐ thinking · 9s · esc interrupts                                               
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+ kimi-k3 · ctx ~41% · est $1.86 · ← sessions                                    
+ 5 agents · 2 working · 1 attention                                             
+› ● main                   Working · code_mode                     1m 02s    41k
+  ◷ advisor                Waiting · 1 nudge pending                         12k
+  ? sub:tests              Needs approval · network                   34s     9k
+  ✓ sub:docs               Finished 1m 12s                                      
+  ○ lnd-review             peer · asked 1 question                              

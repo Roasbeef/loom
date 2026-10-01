@@ -1,0 +1,40 @@
+ ◆ loom                                     ws · main · ~/code/pi-gui (main)                   kimi-k3 · Ctrl+g details 
+  transcript / main · 6 agents                                                ╭ 1 Strands! 2 Changes 3 Trace 4 Session─╮
+ │ ◆ Both reviewers expired their wall-clock budget without producing results.│ STRANDS · 6 · 4 working · 1 needs you  │
+ │   Respawning with leaner briefs and longer budgets:                        │› ◷ main               Waiting · 2 sub… │
+ ● ● agent_spawn adversarial code review → sub:main/adversarial-…-48f3c1      │❯ ? adversaria…-48f3c1 Needs approval … │
+ ● ● agent_spawn docs accuracy review → sub:main/documentation-…-0455         │  ● documentat…-0455ab Writing an earl… │
+ │ ✓ agent_wait · 2 subagents ×15 · 4m 12s · latest 4s ago · Ctrl+g lists     │  ● adversaria…-ec14f0 Grep herdr:loom… │
+ │   └ sub:main/adversarial-…-48f3c1 still working after 30s                  │  ● documentat…-9b1a77 Grepping bootst… │
+ │ ◌ loom · background job 01a0eff2-c250 was lost when its sandbox helper     │  ○ advisor            Idle · 0 nudges  │
+ │   went away without reporting an exit · Ctrl+g expands                     │────────────────────────────────────────│
+ │ ◆ Mail watcher re-armed. Both reviewers are still working; waiting.        │ adversarial-…-48f3c1 · Needs approval …│
+ │ ◐ agent_wait · 2 subagents · awaiting result · 51s                         │ TASK   Adversarial code review: wire f…│
+ ? ? sub:main/adversarial-…-48f3c1 wants network access                       │ NOW    deepseek-v41-flash · ctx 65k · …│
+ │ ◇ queued · after this turn · once the review comments are in, implement…   │                                        │
+                                                                              │ MESSAGES                               │
+                                                                              │ ← main   Review wire format, effect or…│
+                                                                              │ INBOX  0 unread · 1 approval pending (…│
+                                                                              │                                        │
+                                                                              │ RECENT                                 │
+                                                                              │ ? proc.run gleam test · network · waits│
+                                                                              │ ✓ fs_read session_step.gleam           │
+                                                                              │ ✓ grep publish_herdr                   │
+                                                                              │                                        │
+                                                                              │ a opens the approval · x stops the str…│
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │                                        │
+                                                                              │ ↑↓ select · enter opens · x stops · a …│
+                                                                              ╰────────────────────────────────────────╯
+─ ? approval · sub:main/adversarial-…-48f3c1 · network ────────────────────────────────────────────────────────────────…
+ fetch https://proxy.golang.org                                                                                         
+ reason: the reviewer asked to fetch module metadata · once or for this session                                         
+   1  Allow once      2  Allow for session      3  Deny                                                                 
+ ↑↓ or 1-3 select · enter confirms · d raw request · esc defers                                                         
+ ✓ todo · all 3 tasks closed · queue · 1 pending · Alt+q inspects                                                       
+─ To main · enter queues · tab steers ────────────────────────────────────────────────────────────── loom-herdr-update ─
+ ◐ agent_wait · 2 subagents · 51s · esc interrupts                                                                      
+ once the review comments are in, implement them                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ streaming thinking · GLM-5.3 · ctx ~24% · est $13.42 · ← sessions                   6 agents · 5 working · 1 attention 
