@@ -70,6 +70,27 @@
 //// dropped on arrival for carrying the older number. The cost is one
 //// stale wake per period change — two per turn — and what it buys is that
 //// the strand never holds two chains, each arming its own successor.
+////
+//// ## Flow
+////
+//// `handle` → `drive_loop` → `plan_with` → `commit_then` → `start_effect` → `finish`
+////
+//// 1. `handle` takes one `Message` off the mailbox; every arm but the
+////    recovery barrier and the poll tick reaches the chain through `finish`.
+//// 2. `drive` runs the planning loop under a fuel bound, and `drive_loop`
+////    reloads the registers with `load`, recording whether work is open.
+//// 3. `plan_with` builds `build_inputs` for the pure planner and
+////    dispatches on the action it returns.
+//// 4. `commit_then` commits the planned transaction, reloading on a stale
+////    expectation, and only then continues the loop.
+//// 5. `start_effect` begins a dispatched effect on a monitored process
+////    (`spawn_provider_effect` or `spawn_tool`) adopted into the reaper.
+//// 6. `await_effect_action` resolves an awaited key through `resolve_key`;
+////    `park_retry` schedules the retry timer for a retry wait.
+//// 7. `provider_done`, `tool_done` and `effect_exit` turn an effect's
+////    outcome into the next observation and re-enter `drive`.
+//// 8. `finish` maps the `Outcome` onto `actor.Next` and re-arms the poll
+////    through `arm_poll` at the period the drive's occupancy earned.
 
 import core/clock.{type Clock}
 import core/corruption
