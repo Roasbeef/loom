@@ -13,6 +13,26 @@
 //// to one `{op_id, step_id}`, for a caller that owns a step rather than
 //// the operation it belongs to.
 ////
+//// ## Flow
+////
+//// `clear_call` → `clear_awaiting_helper` → `handle` → `do_clear_call` →
+//// `authorize` → `dispatch` → `relay` → `settle`
+////
+//// 1. `clear_call` is the caller's entry; it hands the spec to
+////    `clear_awaiting_helper`, which asks the broker actor and, on a full pool,
+////    retries in the caller's own process within its waiting budget.
+//// 2. `handle` is the broker actor's one message handler; a `ClearCall` is
+////    judged against the abort epoch there, then given to `do_clear_call`.
+//// 3. `do_clear_call` composes the policy with `policy.compose`, refuses or
+////    narrows, and validates what remains.
+//// 4. `authorize` reserves a budget slot (`reserve_budget`), then `mint_token`
+////    binds a single-use token and `checkout_helper` borrows a helper.
+//// 5. `dispatch` starts the execution and spawns the per-call relay, which
+////    `relay` drives: it forwards output and enforces the wall deadline.
+//// 6. `settle` tells the broker the call ended; `reclaim` returns the helper,
+////    revokes the token and releases the budget, and `handle_relay_down` runs
+////    the same tail when a relay dies unsettled.
+////
 //// ## The pooled budget is keyed per execution: `{op_id, step_id}`
 ////
 //// Design §6.5 pools broker-side limits "per execution, not per call":

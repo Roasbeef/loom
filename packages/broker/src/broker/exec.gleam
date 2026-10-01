@@ -70,6 +70,41 @@
 //// in-process fake speaking the same bytes. Helper failure of any kind
 //// settles in-band as an `ExecFailure` event — never a crash of the
 //// caller.
+////
+//// ## Flow
+////
+//// `spawn_helper` → `prepare` → `begin` → `handle` → `activate` →
+//// `handle_bytes` → `handle_run` → `dispatch_exec` → `handle_exec_exit`
+////
+//// 1. `spawn_helper` builds the transport and the helper's owner with
+////    `prepare_helper`, releases it with `begin`, and waits in `await_ready`
+////    for the hello to settle; `start_pool` and `checkout` lend those helpers.
+//// 2. `handle` is the machine's one step function: it matches the `Phase`
+////    against the `Msg`, so every pairing is written out.
+//// 3. `activate` opens the transport on `Begin` and moves `Prepared` to
+////    `AwaitingHello`, whose `entered` call arms the handshake deadline.
+//// 4. `handle_bytes` deframes inbound bytes, and `apply_inbound` gives each
+////    frame to `handle_frame`; `handle_hello` and `complete_handshake` move the
+////    machine to `Idle`.
+//// 5. `handle_run` weighs the hello's features against the request's demand,
+////    and `dispatch_exec` records the execution in the `Running` state and
+////    writes the exec_start frame.
+//// 6. `handle_exec_exit` checks the enforcement report, and `settle` returns
+////    the machine to `Idle`; `mark_dead` and `die` are where every failure
+////    lands, notifying waiters through `notify_death`.
+////
+//// ## Transitions
+////
+//// <!-- transitions: exec.Phase -->
+////
+//// | state | `Begin` | hello frame | `Run` | `CancelExec` | exit or error frame | deadline | `Shutdown` | wire closed or fault |
+//// | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+//// | `Prepared` | `AwaitingHello`, or `Dead` if the transport will not open | ignored | refused, `NotReady` | ignored | ignored | ignored | `Dead`, no native resource | ignored |
+//// | `AwaitingHello` | ignored | `Idle`; `Dead` on a protocol version mismatch | refused, `NotReady` | ignored | ignored | `HandshakeDeadline` gives `Dead` | postponed until the handshake settles | `Dead` |
+//// | `Idle` | ignored | `Dead`, protocol violation | `Running`; refused if the helper is degraded | ignored | ignored | stale, ignored | `Dead` | `Dead`; a missed heartbeat also gives `Dead` |
+//// | `Running` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | `Cancelling` after the TERM write, `Dead` if the write fails | the execution's own id gives `Idle`; other ids dropped | stale, ignored | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
+//// | `Cancelling` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | ignored, the first deadline keeps running | the execution's own id gives `Idle` and disarms the deadline | `CancelDeadline` kills the transport, `Dead` | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
+//// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored | ignored | ignored; the retirement proof is kept |
 
 import broker/framing.{type Fault, type Frame, type OutputStream}
 import broker/internal/call
@@ -330,17 +365,6 @@ pub type HelperConfig {
   )
 }
 
-/// A `HelperConfig` with contract-derived defaults: 5s handshake, 3s
-/// cancel grace (above the helper's 2s ladder), 30s heartbeats.
-pub fn default_config(transport: Transport) -> HelperConfig {
-  HelperConfig(
-    transport:,
-    handshake_timeout_ms: 5000,
-    cancel_grace_ms: 3000,
-    heartbeat_interval_ms: 30_000,
-  )
-}
-
 /// Bytes arriving from the helper (used directly by fake transports;
 /// the port transport produces these internally).
 pub type WireEvent {
@@ -541,6 +565,17 @@ type Data {
 /// the result back into a step with `advance`.
 type Machine {
   Machine(phase: Phase, data: Data)
+}
+
+/// A `HelperConfig` with contract-derived defaults: 5s handshake, 3s
+/// cancel grace (above the helper's 2s ladder), 30s heartbeats.
+pub fn default_config(transport: Transport) -> HelperConfig {
+  HelperConfig(
+    transport:,
+    handshake_timeout_ms: 5000,
+    cancel_grace_ms: 3000,
+    heartbeat_interval_ms: 30_000,
+  )
 }
 
 // --- helper lifecycle ---------------------------------------------------
