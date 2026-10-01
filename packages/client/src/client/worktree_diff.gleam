@@ -15,6 +15,26 @@
 //// deadline does not reach are omitted from it, as the byte ceiling omits
 //// files it cannot fit. The captured HEAD is pinned, but status and file reads
 //// are not atomic with concurrent edits; this is an observation, not a commit.
+////
+//// ## Flow
+////
+//// `capture` → `capture_since` → `capture_status` → `capture_repository` → `capture_files` → `run_git` → `fit_board` → `to_json`
+////
+//// 1. `capture` supplies an unavailable baseline and calls `capture_since`,
+////    which `new_capture` equips with a clock, a deadline and a byte budget.
+//// 2. `capture_status` runs `git status` first; a non-repository answers with
+////    an empty board, anything else goes on to `capture_repository`.
+//// 3. `capture_repository` parses the NUL-delimited identities, adds
+////    `capture_untracked`, resolves HEAD with `comparison`, and asks
+////    `capture_committed` what changed since the session's baseline.
+//// 4. `capture_files` reads at most twenty-four patches one by one through
+////    `capture_file`; a spent deadline ends the patch phase early.
+//// 5. Every Git call is `run_git`: it checks the deadline and byte budget,
+////    clears through the broker, and returns `settled` output.
+//// 6. `fit_board` adds files while the encoded board fits the response ceiling,
+////    and `to_json` is the form the gateway sends.
+//// 7. `starting_revision` is the sibling entry point that records the
+////    baseline `capture_since` later compares against.
 
 import broker/broker
 import broker/budget

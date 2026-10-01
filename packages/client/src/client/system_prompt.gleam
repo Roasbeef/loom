@@ -10,6 +10,25 @@
 //// that every later boot of the same session sends exactly the string the
 //// first one did.
 ////
+//// ## Flow
+////
+//// `pinned_in` → `pack_source` → `render_pack` → `assemble` → `pin`
+////
+//// 1. `pinned_in` (or `pinned_for`, under an enforcement demand) reads the
+////    pinned cell straight off the store before `api.open`, because no
+////    writer exists yet.
+//// 2. `assemble` chooses this boot's prompt: an explicit override, else the
+////    pin, else a fresh render. The render is a thunk, so a resumed session
+////    never runs it.
+//// 3. A fresh render starts at `pack_source`, which reads the shipped pack or
+////    the file the operator named, and `render_pack` decodes it and renders
+////    it against `environment`.
+//// 4. The instruction files in that environment come from `guidance`, which
+////    calls `discover` and warns about a file it cannot use rather than
+////    failing the boot.
+//// 5. Once the session is open, `pin` (or `pin_for`) writes the text back
+////    through `write`, and `write_provenance` records where it came from.
+////
 //// ## Why pinning, and why the bytes must not move
 ////
 //// The rendered string sits behind a one-hour prompt-cache breakpoint,

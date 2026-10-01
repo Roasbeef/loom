@@ -8,6 +8,27 @@
 //// layer; with the client package serving sessions for real it was
 //// promoted here (spec-gaps, M2 integration item 7).
 ////
+//// ## Flow
+////
+//// `build_effects` → `dispatch` → `prepare_dispatch` → `provider_request` → `generation_request`; `build_effects` → `run_tool` → `tool_context`
+////
+//// 1. `build_effects` assembles the `Effects` record a host hands to
+////    `api.open`: clock, entropy, timers, a provider surface, a tool surface
+////    and `compaction_hooks`.
+//// 2. A model call enters at `dispatch`, which is `prepare_dispatch` followed
+////    by the begin permit; only a generation reaches the gateway, and polls
+////    and summaries are refused as unsupported.
+//// 3. `provider_request` picks the target. `request_image_bearing` and
+////    `vision_route` send an image-bearing request from a text-only model down
+////    the vision chain, and `generation_request` builds the wire request.
+//// 4. A tool call enters at `run_tool`, which reads the session's standing
+////    directory and permission grants, widens the base policy with them, and
+////    dispatches through `tool_context`'s `Ctx`.
+//// 5. `clear`, `replay_still_safe` and `execution_mode` answer the machine's
+////    declaration questions from the projected table.
+//// 6. `compaction_hooks` wires admission and the compaction signals, using
+////    the same model facts `strand_window` reports.
+////
 //// ## Mapping decisions (each recorded here because the spec leaves the
 //// seam's production shape open)
 ////

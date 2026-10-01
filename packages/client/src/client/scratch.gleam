@@ -100,6 +100,32 @@ pub type Bounds {
   Bounds(max_entry_bytes: Int, max_total_bytes: Int, max_entries: Int)
 }
 
+/// What the store is asked. Opaque: a caller reaches it through `seam`,
+/// never by building a message, so there is one place that decides what
+/// a wedged or absent store answers.
+pub opaque type Message {
+  Get(key: String, reply_with: Subject(Option(BitArray)))
+  Set(key: String, value: BitArray, reply_with: Subject(Result(Nil, KvRefusal)))
+  Delete(key: String, reply_with: Subject(Nil))
+
+  /// How many entries and how many bytes the store holds. For a test and
+  /// for an operator's line; nothing in the capability path reads it.
+  Stat(reply_with: Subject(#(Int, Int)))
+  Stop
+}
+
+type Entry {
+  Entry(key: String, value: BitArray, bytes: Int)
+}
+
+// `entries` is newest-written first, so the eviction victim is the last
+// element and a `set` is a prepend. `total_bytes` and `count` are
+// tracked rather than recomputed: both are asked on every `set`, and
+// `list.length` on every write is the shape lint R5 exists to find.
+type State {
+  State(bounds: Bounds, entries: List(Entry), total_bytes: Int, count: Int)
+}
+
 /// The nearest coherent `Bounds` to the one given.
 ///
 /// The record's stated invariants are a comment, and a caller can write
@@ -156,20 +182,6 @@ pub fn default_bounds() -> Bounds {
   )
 }
 
-/// What the store is asked. Opaque: a caller reaches it through `seam`,
-/// never by building a message, so there is one place that decides what
-/// a wedged or absent store answers.
-pub opaque type Message {
-  Get(key: String, reply_with: Subject(Option(BitArray)))
-  Set(key: String, value: BitArray, reply_with: Subject(Result(Nil, KvRefusal)))
-  Delete(key: String, reply_with: Subject(Nil))
-
-  /// How many entries and how many bytes the store holds. For a test and
-  /// for an operator's line; nothing in the capability path reads it.
-  Stat(reply_with: Subject(#(Int, Int)))
-  Stop
-}
-
 /// The three closures the workspace seam's `kv.*` arms are built from,
 /// bound to one store.
 pub type Scratch {
@@ -178,18 +190,6 @@ pub type Scratch {
     set: fn(String, BitArray) -> Result(Nil, KvRefusal),
     delete: fn(String) -> Result(Nil, KvRefusal),
   )
-}
-
-type Entry {
-  Entry(key: String, value: BitArray, bytes: Int)
-}
-
-// `entries` is newest-written first, so the eviction victim is the last
-// element and a `set` is a prepend. `total_bytes` and `count` are
-// tracked rather than recomputed: both are asked on every `set`, and
-// `list.length` on every write is the shape lint R5 exists to find.
-type State {
-  State(bounds: Bounds, entries: List(Entry), total_bytes: Int, count: Int)
 }
 
 /// Starts the store under `name`, on the nearest coherent reading of

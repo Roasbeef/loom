@@ -27,6 +27,44 @@
 //// every event before forwarding it for non-preview consumers, such as durable
 //// summaries and internal fixtures.
 ////
+//// ## Flow
+////
+//// `wrap` → `prepare_observed` → `start_guard` → `published` → `begin_guard` → `handle` → `admit` → `open_inner` → `forward_observed` → `entered`
+////
+//// 1. `wrap` (or `prepare`, which it calls) asks `prepare_observed` for a
+////    parked guard; `wrap` then starts it through `stream.start_prepared`.
+//// 2. `start_guard` starts the unlinked machine in `Parked` and `published`
+////    wraps it in the public custodian and the handle the caller holds.
+//// 3. `begin_guard` sends the permit once the caller has published the owner,
+////    and waits for the guard's acknowledgement.
+//// 4. `handle` is the one event matrix; `Begin` goes to `admit`, which starts
+////    the observer and adopts it under the custodian.
+//// 5. `open_inner` prepares the inner request, adopts it, begins it and
+////    swaps in the full selector, entering `Forwarding`.
+//// 6. `observe` hands each inner event to the observer, and `forwarded` (via
+////    `forward_observed`) relays it once the observer has seen it.
+//// 7. A terminal moves the guard through the proving states, where
+////    `fail_and_drain`, `abandon` and `unconfirmed` cancel the inner owner;
+////    the guard stops only when its exit proves the subtree drained.
+//// 8. `entered` arms each state's deadline on the way in.
+////
+//// ## Transitions
+////
+//// <!-- transitions: provider_relay.Phase -->
+////
+//// | state | Begin | Inner | Observed | CancelRequested | ConsumerDown | ObserverDown | InnerRetired | deadline |
+//// | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+//// | `Parked` | `admit`: `Forwarding`, or `Cancelling` when the custodian refuses the inner owner; stops if it refuses the observer | ignored | ignored | stop, nothing to tear down | stop, nothing to tear down | ignored | ignored | none armed |
+//// | `Forwarding` | ignored | stays, observation queued | consumer gone: `Proving`; delta: stays and re-arms the request deadline; terminal: `ProvingTerminal` | `Cancelling`, inner cancelled | `Proving`, inner cancelled | `ProvingFailure` | stays, proof recorded | `RequestExpired`: `ProvingFailure`; others ignored |
+//// | `Cancelling` | ignored | stays, observed and deltas discarded | delta: stays; terminal: `ProvingTerminal` | ignored, grace not restarted | `Proving`, inner cancelled | `Proving`, after sending `CancellationUnconfirmed` | stays, proof recorded | `CancelExpired`: `Proving`, after sending `CancellationUnconfirmed`; others ignored |
+//// | `ProvingFailure` | ignored | ignored | ignored | ignored | ignored | ignored | drained: sends `TransportFailed` and stops; proof lost: sends `DrainProofLost` and stops abnormally | `DrainExpired`: `Proving`, after sending `CancellationUnconfirmed`; others ignored |
+//// | `Proving` | ignored | ignored | ignored | ignored | ignored | ignored | drained: stops; proof lost: stops abnormally | ignored |
+//// | `ProvingTerminal` | ignored | ignored | ignored | ignored | ignored | ignored | drained: delivers the held terminal if the consumer lives, then stops; proof lost: stops abnormally, terminal withheld | ignored |
+////
+//// A proving state entered after the inner owner has already exited is handed
+//// that `InnerRetired` at once by `entered`, so it never waits on a `Down`
+//// that was delivered earlier.
+////
 //// ## The guard is a `weft/state_machine`
 ////
 //// `Parked → Forwarding → Cancelling → Proving*`. `Parked` is the wait for
