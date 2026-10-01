@@ -1,0 +1,40 @@
+ Sessions · active                                                                                a archived · Esc back 
+                                                                                                                        
+ All 6   Needs you 1   Working 0   Idle 1   Inactive 2                                                       Tab filter 
+───────────────────────━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+ No session is working right now.                                                                                       
+ Needs you has 1 · Tab moves to it.                                                                                     
+                                                                                                                        
+                                                                                                                        
+ WHILE THE CATALOGUE LOADS                                                                                              
+                                                                                                                        
+ ◌ reading sessions from the daemon…                                                                                    
+                                                                                                                        
+ WHEN A ROW'S ACTIVITY HAS NOT ANSWERED YET                                                                             
+                                                                                                                        
+   ◌ loom-herdr-update · herdr-update  observing…                                                                       
+                                                                                                                        
+ WHEN CONTROL IS UNAVAILABLE                                                                                            
+                                                                                                                        
+ × daemon control is unavailable · /reconnect, or restart loom                                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ Tab filter · n new · a archived · Esc back                                                                             
+                                                                                                                        
+╭─ To main · the list owns the keys ─────────────────────────────────────────────────────────────────────── ws · main ─╮
+│ ›                                                                                                                    │
+╰─ kimi-k3 · low › pi-gui › main *1 › ctx ~41% › est $1.86 ────────────────────────────────────────────── 1 needs you ─╯

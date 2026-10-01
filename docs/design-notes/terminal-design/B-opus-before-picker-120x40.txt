@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭ SESSIONS · active ───────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │                                                                                                                  │  
+  │  All 6  Needs you 1  Working 1  Idle 1  Inactive 2                                                    Tab filter │  
+  │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────── │  
+  │ /Users/roasbeef/gocode/src/github.com/roasbeef/loom 4             │ terminal revamp concepts                     │  
+  │   ● loom-herdr-update · herdr-update · 01a07d71-e1fb      current │ ! Needs you · 1 approval pending             │  
+  │ ▸ ! terminal revamp concepts · 01a07d74-272d                      │                                              │  
+  │   ◌  · 01a07d75-0000                                              │ Last message                                 │  
+  │   · review htlc interceptor [saved] · 01a07d76-0000               │ Three concepts are drafted; B needs the      │  
+  │                                                                   │ owner's pick of the key bindings before the  │  
+  │ /Users/roasbeef/code/pi-gui 2                                     │ mockups can be finished and committed.       │  
+  │   ○ ws · main · 01a07d77-0000                                     │                                              │  
+  │   · nightly: deps bump [recovery blocked] · 01a07d78-0000         │ Workspace                                    │  
+  │                                                                   │ /Users/roasbeef/gocode/src/github.com/roasbe │  
+  │                                                                   │ ef/loom                                      │  
+  │                                                                   │                                              │  
+  │                                                                   │ Model                                        │  
+  │                                                                   │ baseten-kimi-k3                              │  
+  │                                                                   │                                              │  
+  │                                                                   │ Session                                      │  
+  │                                                                   │ 01a07d74-272d-7cc1-beeb-8da1658eec68         │  
+  │                                                                                                                  │  
+  │ ↑↓ select · Enter open · Tab filter · l link · n new · r rename · d archive · a archived · ←→ pages · Esc close  │  
+  │                                                                                                                  │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
