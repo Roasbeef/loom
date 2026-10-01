@@ -25,6 +25,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import tools/call_record
 import tools/codemode
 import tools/directory_access
 import tools/fs
@@ -196,6 +197,7 @@ fn echoing_over(seams: codemode.Seams) -> codemode.CodeMode {
         ),
         enforcement: jailed(),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )
     },
     seams:,
@@ -209,6 +211,7 @@ fn ran(outcome: codemode.Outcome) -> codemode.Execution {
     result: codemode.Ran(outcome:, manifest_hash: "sha256-abc"),
     enforcement: jailed(),
     refusal: codemode.NothingRefused,
+    calls: call_record.empty(),
   )
 }
 
@@ -331,6 +334,7 @@ pub fn a_vetting_rejection_names_the_rule_and_the_import_test() {
         ]),
         enforcement: nothing_ran(),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )),
       [#("program", json.String("import gleam/io"))],
     )
@@ -384,6 +388,7 @@ pub fn every_violation_is_listed_in_one_pass_test() {
         ]),
         enforcement: nothing_ran(),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )),
       [#("program", json.String("..."))],
     )
@@ -409,6 +414,7 @@ pub fn a_parse_error_points_at_a_byte_test() {
         ]),
         enforcement: nothing_ran(),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )),
       [#("program", json.String("pub fn main( {"))],
     )
@@ -439,6 +445,7 @@ pub fn a_compile_error_comes_back_as_readable_text_test() {
           node: codemode.Unreported("the program did not compile"),
         ),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )),
       [#("program", json.String("..."))],
     )
@@ -463,6 +470,7 @@ pub fn a_build_that_could_not_run_is_not_blamed_on_the_program_test() {
         )),
         enforcement: nothing_ran(),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )),
       [#("program", json.String("..."))],
     )
@@ -488,6 +496,7 @@ pub fn a_deadline_says_what_died_and_how_to_fix_it_test() {
           ),
         ),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )),
       [#("program", json.String("..."))],
     )
@@ -514,6 +523,7 @@ pub fn an_unreported_jail_is_never_implied_test() {
         ),
         enforcement: nothing_ran(),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )),
       [#("program", json.String("..."))],
     )
@@ -584,6 +594,7 @@ pub fn a_degraded_stage_says_so_test() {
           ),
         ),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )),
       [#("program", json.String("..."))],
     )
@@ -746,6 +757,7 @@ pub fn a_rejection_names_the_seam_it_was_judged_against_test() {
       ]),
       enforcement: nothing_ran(),
       refusal: codemode.NothingRefused,
+      calls: call_record.empty(),
     )
   let outcome =
     call(scripted_over(both_seams(), refusal), [
@@ -785,6 +797,7 @@ pub fn a_workspace_submission_is_judged_against_the_workspace_seam_test() {
       ]),
       enforcement: nothing_ran(),
       refusal: codemode.NothingRefused,
+      calls: call_record.empty(),
     )
   let outcome =
     call(scripted_over(both_seams(), refusal), [
@@ -872,6 +885,7 @@ pub fn a_parse_rejection_does_not_claim_an_obsolete_dialect_gap_test() {
         ]),
         enforcement: nothing_ran(),
         refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
       )),
       [#("program", json.String("..."))],
     )
@@ -1193,6 +1207,7 @@ fn widenable(crossings: Subject(List(policy.Grant))) -> codemode.CodeMode {
             ),
             enforcement: jailed(),
             refusal: codemode.NothingRefused,
+            calls: call_record.empty(),
           )
         False -> run_refused()
       }
@@ -1234,6 +1249,7 @@ fn run_refused() -> codemode.Execution {
       ),
       deadline_ms: 9000,
     ),
+    calls: call_record.empty(),
   )
 }
 
@@ -1438,6 +1454,7 @@ fn parse_failure_at(
       ]),
       enforcement: nothing_ran(),
       refusal: codemode.NothingRefused,
+      calls: call_record.empty(),
     )),
     [#("program", json.String(source))],
   )
@@ -1569,4 +1586,109 @@ pub fn own_message_inspection_is_discoverable_in_offered_program_modes_test() {
     )
     assert string.contains(surface, "never an inbound mailbox row")
   })
+}
+
+// --- the call record (protocol change 060) ---------------------------------
+
+// A record with one failed call, so a result that carries it is told apart
+// from one that carries the empty log.
+fn some_calls() -> call_record.CallLog {
+  call_record.CallLog(
+    started_unix_ms: 1_790_000_000_000,
+    elapsed_ms: 40,
+    total: 1,
+    failed: 1,
+    cancelled: 0,
+    unsettled: 0,
+    items: [
+      call_record.CallRecord(
+        cap: "fs.read",
+        args: Some("a.txt"),
+        status: call_record.CallFailed,
+        error: Some("policy"),
+        start_ms: 3,
+        duration_ms: 0,
+      ),
+    ],
+  )
+}
+
+fn with_calls(execution: codemode.Execution) -> codemode.Execution {
+  codemode.Execution(..execution, calls: some_calls())
+}
+
+fn has_key(fields: List(#(String, json.JsonValue)), key: String) -> Bool {
+  case list.key_find(fields, key) {
+    Ok(_) -> True
+    Error(Nil) -> False
+  }
+}
+
+pub fn a_completed_result_carries_the_call_record_test() {
+  let outcome =
+    call(
+      scripted(with_calls(ran(codemode.Completed(msgpack.StringValue("done"))))),
+      [#("program", json.String("..."))],
+    )
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.contains(fields, #("calls", call_record.to_json(some_calls())))
+}
+
+pub fn a_failed_program_result_carries_the_call_record_test() {
+  let outcome =
+    call(
+      scripted(
+        with_calls(
+          ran(codemode.Errored(message: "no", details: msgpack.NilValue)),
+        ),
+      ),
+      [#("program", json.String("..."))],
+    )
+  assert outcome.is_error
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.contains(fields, #("calls", call_record.to_json(some_calls())))
+}
+
+pub fn a_run_failure_carries_the_calls_made_so_far_test() {
+  let outcome =
+    call(
+      scripted(codemode.Execution(
+        result: codemode.RunFailed(codemode.DeadlineExceeded),
+        enforcement: jailed(),
+        refusal: codemode.NothingRefused,
+        calls: some_calls(),
+      )),
+      [#("program", json.String("..."))],
+    )
+  assert outcome.is_error
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.contains(fields, #("status", json.String("run_failed")))
+  assert list.contains(fields, #("calls", call_record.to_json(some_calls())))
+}
+
+pub fn a_vetting_failure_has_no_call_record_test() {
+  let outcome =
+    call(
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([]),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: some_calls(),
+      )),
+      [#("program", json.String("..."))],
+    )
+  let assert Some(json.Object(fields)) = outcome.details
+  assert !has_key(fields, "calls")
+}
+
+pub fn the_background_value_never_carries_the_call_record_test() {
+  // `execution_value` is what a background execution stores and the model
+  // reads back, so a record there would spend model context. The record is
+  // foreground only.
+  let value =
+    codemode.execution_value(
+      with_calls(ran(codemode.Completed(msgpack.StringValue("done")))),
+    )
+  let assert json.Object(fields) = value
+  assert !has_key(fields, "calls")
 }
