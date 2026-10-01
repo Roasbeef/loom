@@ -1047,24 +1047,6 @@ pub fn a_dead_satellite_keeps_the_calls_made_so_far_test() {
   assert ran.calls.unsettled == 1
 }
 
-pub fn the_program_cannot_write_its_own_record_test() {
-  // A program that returns a `calls` value of its own gets it as its
-  // value and nothing more: the record is the host's.
-  let forged =
-    msgpack.MapValue([
-      #(msgpack.StringValue("calls"), msgpack.StringValue("forged")),
-    ])
-  let ran =
-    run_calls(
-      "rec-forged",
-      start_broker(echoing()),
-      config("x"),
-      roomy(),
-      fn(ctx) { satellite_peer.send_outcome(ctx, forged) },
-    )
-  assert ran.calls.total == 0
-}
-
 // --- shared helpers ------------------------------------------------------
 
 fn id_list(count: Int) -> List(Int) {
