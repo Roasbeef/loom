@@ -428,8 +428,9 @@ A session whose `loom.toml` carries an `[lsp.<name>]` table gets:
 
 The server runs as an ordinary jailed exec under the session's own enforcement
 demand, after a probe proves that demand is met, one per session, with a lazy
-restart. Nothing is discovered or installed; an unconfigured workspace starts
-nothing.
+restart. A server starts only for a configured `[lsp.<name>]` table or an
+installed profile extension; an unconfigured workspace with no installed
+profile starts nothing.
 
 Validated on a cgroup-v1 container, so under `BestEffort`: the scripted-model
 acceptance in `conformance/lsp_e2e_test.gleam` against a jailed `gleam lsp`
