@@ -1,6 +1,24 @@
 //// The `schedule_*` tools: the model's own door onto scheduled
 //// heartbeats.
 ////
+//// ## Flow
+////
+//// `tools` → `run_create` → `requested_timing` → `licensed_bounds` → `created_outcome` → `refusal_outcome`
+////
+//// 1. `tools` takes the host's `Schedules` seam and the `Limits` it states in
+////    the descriptions, and builds `create_tool`, `list_tool` and `cancel_tool`.
+//// 2. `run_create` decodes the arguments: `requested_wake` reads the milder
+////    default, `requested_timing` picks one of the four timings.
+//// 3. `licensed_bounds` refuses max_fires and expiry arguments that make
+////    no sense beside the chosen timing, before the seam is asked.
+//// 4. The seam's create closure decides what is admitted; `created_outcome`
+////    reports what was granted, including a wake the operator's policy
+////    withheld.
+//// 5. `run_list` shows the caller's own schedules, and `run_cancel` retires one
+////    by name, both keyed on the owner.
+//// 6. Any seam `Refusal` becomes the model's answer through `refusal_outcome`,
+////    worded by `describe`.
+////
 //// # Why this door exists at all, and what it deliberately cannot do
 ////
 //// A scheduled heartbeat fires text into a strand's context on a timer,

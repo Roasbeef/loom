@@ -9,6 +9,26 @@
 //// functions take. That split is deliberate and it is the whole of the
 //// security argument here.
 ////
+//// ## Flow
+////
+//// `glob` or `grep` → `walk_tree` → `walk_names` → `walk_name` → `visit_name` → `offer` → `descend`
+////
+//// 1. `glob` and `grep` validate the query against its ceilings, compile the
+////    patterns (`compile_glob`, `compile_regexp`), and build a `Walker`
+////    whose visitor does the collecting.
+//// 2. `walk_tree` checks the root is a directory, then hands its sorted names
+////    to `walk_names` with a `Cursor` carrying the visitor's state.
+//// 3. `walk_name` applies the hidden rule and the visit budget before
+////    `visit_name` classifies the entry with lstat, never following a link.
+//// 4. `offer` gives the entry to the visitor (`glob_visitor` or `grep_visitor`),
+////    which may halt the walk; otherwise `descend` enters unpruned directories.
+//// 5. `grep_visitor` selects files by the globs, and `scan_file` reads each
+////    through `scan_lines` and `record_line`, counting skipped files.
+//// 6. Each visitor collects one result past the bound, so `glob` and `grep`
+////    can tell a result that filled exactly from one cut short, reporting
+////    it as `Truncated` or `MatchesCapped`.
+//// 7. `stat` and `read_lines` are the single-path calls and need no walk.
+////
 //// ## Containment is the caller's, and the walk keeps it
 ////
 //// Nothing in this module performs path discipline. Every `root` and

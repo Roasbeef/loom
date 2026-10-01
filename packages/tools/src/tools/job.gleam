@@ -1,5 +1,24 @@
 //// The `job_*` tools: the model's own door onto background jobs.
 ////
+//// ## Flow
+////
+//// `tools` → `run_poll` → `run_poll_one` → `polled_outcome` → `render_polled` → `refusal_outcome`
+////
+//// 1. `tools` takes the host's `Jobs` seam and builds `poll_tool`,
+////    `kill_tool` and `send_tool`, binding the closures each one needs.
+//// 2. `run_poll` is the listing when no job_id is given (`run_list`) and a
+////    single-job poll otherwise.
+//// 3. `run_poll_one` parses the opaque cursor with `parse_cursor`, clamps the
+////    wait to max_wait_ms, and asks the seam for what arrived since.
+//// 4. `polled_outcome` renders the answer: `render_polled` for the text and
+////    `polled_json` for the details; a still-running job is a success.
+//// 5. `run_kill` stops the job through the seam, then polls once with zero
+////    wait so the result can say what state it settled in.
+//// 6. `run_send` writes bytes to the job's stdin, closing it when
+////    `requested_end` says so.
+//// 7. A seam `Refusal` becomes the model's answer through `refusal_outcome`;
+////    `scheme` exposes the same state to `job://` reads.
+////
 //// # What a job is, from this side of the seam
 ////
 //// A background job is a jailed command the harness started on the
