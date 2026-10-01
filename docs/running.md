@@ -66,6 +66,11 @@ state directory. Its owner credential is `owner.token`, a `0600` file
 reused across daemon restarts, not a token per session. Session IDs come
 from the catalogue, not database filenames.
 
+To add a tools MCP server, put a `[mcp.<name>]` table in the model catalogue
+and export its credential before launching the daemon. The
+[Jev MCP walkthrough](jev-mcp.md) includes a separate test instance, generated
+API discovery, and a code-mode query with a local fixture option.
+
 For a direct attachment, first open the session through the picker, then
 replace `SESSION_ID` below with its catalogue ID:
 

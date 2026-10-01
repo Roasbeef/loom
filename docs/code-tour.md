@@ -1429,8 +1429,9 @@ vetting allowlist names one module per configured server.
 At boot, `client/mcp` spawns each server over `gleam_mcp/transport`'s port
 transport with its `api_key_env` resolved from the harness's own
 environment, hand-shakes, lists its tools, and hands the listing to
-`mcp/codegen`, which renders a module of typed façades plus the surface
-the `code_mode` description carries. A server that fails any of those
+`mcp/codegen`, which renders a module of typed façades plus its complete API
+surface. The `code_mode` description indexes the module; `fs_read` at
+`cap://mcp/<server>` returns the declarations. A server that fails any of those
 steps is one `mcp.unavailable` line and no boot failure. The listing is
 attacker-controlled JSON, so the generator's discretion stops at names
 and signatures: every body closes over the original tool and parameter
@@ -1440,6 +1441,7 @@ single `@` survives outside a comment or a literal. A call then travels
 as the capability `mcp.<server>` carrying `{tool, arguments}`, served by
 the harness over the socket it already owns — no jail, no policy, bounded
 by the pooled effect cap, the wall deadline and one call timeout.
+The [Jev walkthrough](jev-mcp.md) covers setup and a tested code-mode query.
 `docs/architecture/mcp.md` is the depth, including the worked program a
 model would write and the decision about jailing a server, which is open
 rather than merely unbuilt.
