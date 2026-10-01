@@ -54,6 +54,29 @@
 //// it enforced, as `loom ext install` prints its build's), and one line
 //// per check, `ok` or `FAIL`. A failed check prints both sets. The verb
 //// exits 1 when any check failed, and the lines still say which.
+////
+//// ## Flow
+////
+//// ```text
+//// run
+////   → checkable          the three refusals, before anything starts
+////   → groups             one group per (server, fixture) pair
+////   → approved           the server, from the install record
+////   → run_group          once per group
+////       → prepared       scratch dirs, real path, outside_tmp, written_fixture
+////       → serve.lsp_server_roots → serve.start_check_plane
+////       → on_plane       leases, jailed backend, probe, manager.start
+////           → profile_check.run_all through manager.door
+////           → manager.stop → released
+////       → serve.stop_check_plane, then the scratch directory is removed
+////   → Report
+////
+//// lines (failed, total, enforcement_line)   what the verb prints
+//// ```
+////
+//// Everything that starts a process sits under `run_group`, which is also
+//// where the cleanup is, so no path out of a group can skip it. The report
+//// accessors come last in the file because they run after `run` returns.
 
 import broker/broker
 import broker/exec.{type EnforcementDemand}
@@ -160,105 +183,6 @@ pub fn run(root: Root, name: String, setup: Setup) -> Result(Report, String) {
   Ok(Report(name: written.name, version: written.version, runs:))
 }
 
-/// How many checks failed, over every run.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert check.failed(check.Report("lsp_go", "0.1.0", [])) == 0
-/// ```
-///
-pub fn failed(report: Report) -> Int {
-  list.fold(report.runs, 0, fn(count, run) {
-    count
-    + list.count(run.outcomes, fn(entry) { !profile_check.passed(entry.1) })
-  })
-}
-
-/// How many checks ran, over every run.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert check.total(check.Report("lsp_go", "0.1.0", [])) == 0
-/// ```
-///
-pub fn total(report: Report) -> Int {
-  list.fold(report.runs, 0, fn(count, run) { count + list.length(run.outcomes) })
-}
-
-/// The lines `loom ext check` prints: a heading, then per server its jail
-/// line and one line per check.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // check.lines(report)
-/// // -> ["checked lsp_go 0.1.0: 2 of 2 checks passed",
-/// //     "  lsp.go against fixture",
-/// //     "    jail:  the language server's probe enforced [...]",
-/// //     "    ok    definition util.Greet", ...]
-/// ```
-///
-pub fn lines(report: Report) -> List(String) {
-  let passed = total(report) - failed(report)
-  let heading =
-    "checked "
-    <> report.name
-    <> " "
-    <> report.version
-    <> ": "
-    <> int.to_string(passed)
-    <> " of "
-    <> int.to_string(total(report))
-    <> " checks passed"
-  [
-    heading,
-    ..list.flat_map(report.runs, fn(run) {
-      [
-        "  lsp." <> run.server <> " against " <> run.fixture,
-        "    jail:  " <> enforcement_line(run.enforcement),
-        ..list.map(run.outcomes, fn(entry) {
-          "    " <> profile_check.describe(entry.0, entry.1)
-        })
-      ]
-    })
-  ]
-}
-
-/// What the probe's helper enforced, in the shape `loom ext install`
-/// prints its build's jail in: the layers applied, any skipped, and
-/// `DEGRADED` when the helper said so. A report that does not exist says
-/// why rather than being left out, since silence would read as a jail.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert check.enforcement_line(enforcement.Unreported("no helper"))
-///   == "the language server's probe made NO enforcement report: no helper"
-/// ```
-///
-pub fn enforcement_line(report: enforcement.Report) -> String {
-  case report {
-    enforcement.Unreported(reason:) ->
-      "the language server's probe made NO enforcement report: " <> reason
-    enforcement.Reported(entries: _, degraded:) -> {
-      let #(applied, skipped) = enforcement.layers(report)
-      "the language server's probe enforced ["
-      <> string.join(applied, ", ")
-      <> "]"
-      <> case skipped {
-        [] -> ""
-        missing -> ", SKIPPED [" <> string.join(missing, ", ") <> "]"
-      }
-      <> case degraded {
-        True -> " (DEGRADED)"
-        False -> ""
-      }
-    }
-  }
-}
-
 // --- what can be checked ----------------------------------------------------
 
 // The three refusals, each by name and each before anything runs. The
@@ -297,6 +221,9 @@ fn checkable(
   }
 }
 
+// The profile is looked up in the install record, never in the manifest,
+// because the record holds what the operator approved. A check that names
+// a server the record lacks is a manifest and record that disagree.
 fn approved(written: Record, name: String) -> Result(LspServer, String) {
   list.find(written.lsp, fn(server) { server.name == name })
   |> result.map_error(fn(_absent) {
@@ -340,6 +267,10 @@ fn run_group(
       root,
       "check-" <> int.to_string(now) <> "-" <> int.to_string(setup.entropy()),
     )
+
+  // The block runs the group's steps in order and yields its result
+  // without leaving the function, so the scratch removal below still
+  // runs after a failure at any step.
   let ran = {
     use real <- result.try(prepared(tree, fixture, scratch))
     use expanded <- result.try(serve.lsp_server_roots(server, setup.places))
@@ -350,6 +281,9 @@ fn run_group(
       tmp_dir: real <> "/tmp",
       clock: setup.clock,
     ))
+
+    // The plane is stopped whatever `on_plane` returned, for the same
+    // reason: it holds a helper process and a broker.
     let ran = on_plane(plane, real <> "/work", expanded, fixture, checks, setup)
     serve.stop_check_plane(plane)
     ran
@@ -396,6 +330,9 @@ fn prepared(
   Ok(real)
 }
 
+// Judged by component, so `/tmpfoo` is not under `/tmp`. Both spellings
+// are listed because macOS's `/tmp` is a link to `/private/tmp` and the
+// real path is the one a link resolves to.
 fn outside_tmp(real: String) -> Result(Nil, String) {
   let under = fn(directory) {
     real == directory || string.starts_with(real, directory <> "/")
@@ -547,4 +484,108 @@ fn released(counter: leases.Leases) -> Nil {
       }
     })
   Nil
+}
+
+// --- the report -------------------------------------------------------------
+
+// Read after `run` returns, by the verb that prints them. Kept together so
+// the exit code (`failed`) and the lines (`lines`) cannot count differently.
+
+/// How many checks failed, over every run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert check.failed(check.Report("lsp_go", "0.1.0", [])) == 0
+/// ```
+///
+pub fn failed(report: Report) -> Int {
+  list.fold(report.runs, 0, fn(count, run) {
+    count
+    + list.count(run.outcomes, fn(entry) { !profile_check.passed(entry.1) })
+  })
+}
+
+/// How many checks ran, over every run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert check.total(check.Report("lsp_go", "0.1.0", [])) == 0
+/// ```
+///
+pub fn total(report: Report) -> Int {
+  list.fold(report.runs, 0, fn(count, run) { count + list.length(run.outcomes) })
+}
+
+/// The lines `loom ext check` prints: a heading, then per server its jail
+/// line and one line per check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // check.lines(report)
+/// // -> ["checked lsp_go 0.1.0: 2 of 2 checks passed",
+/// //     "  lsp.go against fixture",
+/// //     "    jail:  the language server's probe enforced [...]",
+/// //     "    ok    definition util.Greet", ...]
+/// ```
+///
+pub fn lines(report: Report) -> List(String) {
+  let passed = total(report) - failed(report)
+  let heading =
+    "checked "
+    <> report.name
+    <> " "
+    <> report.version
+    <> ": "
+    <> int.to_string(passed)
+    <> " of "
+    <> int.to_string(total(report))
+    <> " checks passed"
+  [
+    heading,
+    ..list.flat_map(report.runs, fn(run) {
+      [
+        "  lsp." <> run.server <> " against " <> run.fixture,
+        "    jail:  " <> enforcement_line(run.enforcement),
+        ..list.map(run.outcomes, fn(entry) {
+          "    " <> profile_check.describe(entry.0, entry.1)
+        })
+      ]
+    })
+  ]
+}
+
+/// What the probe's helper enforced, in the shape `loom ext install`
+/// prints its build's jail in: the layers applied, any skipped, and
+/// `DEGRADED` when the helper said so. A report that does not exist says
+/// why rather than being left out, since silence would read as a jail.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert check.enforcement_line(enforcement.Unreported("no helper"))
+///   == "the language server's probe made NO enforcement report: no helper"
+/// ```
+///
+pub fn enforcement_line(report: enforcement.Report) -> String {
+  case report {
+    enforcement.Unreported(reason:) ->
+      "the language server's probe made NO enforcement report: " <> reason
+    enforcement.Reported(entries: _, degraded:) -> {
+      let #(applied, skipped) = enforcement.layers(report)
+      "the language server's probe enforced ["
+      <> string.join(applied, ", ")
+      <> "]"
+      <> case skipped {
+        [] -> ""
+        missing -> ", SKIPPED [" <> string.join(missing, ", ") <> "]"
+      }
+      <> case degraded {
+        True -> " (DEGRADED)"
+        False -> ""
+      }
+    }
+  }
 }
