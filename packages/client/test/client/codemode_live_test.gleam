@@ -976,7 +976,7 @@ pub fn mcp_process_program_source() -> String {
   <> "    message: \""
   <> wire_message
   <> "\",\n"
-  <> "    options: fixture.McpT1OptionsEchoArgs(..fixture.echo_args_defaults, tag: option.Some(\""
+  <> "    options: fixture.McpT1OptionsEchoArgs(tag: option.Some(\""
   <> wire_tag
   <> "\")),\n"
   <> "  ) {\n"
