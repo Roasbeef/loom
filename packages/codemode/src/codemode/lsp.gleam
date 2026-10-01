@@ -66,7 +66,7 @@
 ////   → answer                      Ok: render fields into a CapOk map
 ////                                 Error: refusal, which picks a channel
 ////
-//// rename, preview:  door.prepare_rename → preview → changed_spans
+//// rename, preview:  door.prepare_rename → preview → lsp_tools.changed_spans
 ////                   → paired → preview_fields
 //// rename, apply:    Seam.rename → applied_fields
 //// ```
@@ -74,7 +74,7 @@
 //// The split between the plan and its closure is the admission boundary.
 //// A bad argument is refused while the plan is built, before an ordinal
 //// is spent or the server is asked. A server error is only discovered by
-//// running the closure, and travels back as a `cap_result`.
+//// running the closure, and travels back as a `"cap_result"`.
 
 import broker/framing.{type CapOutcome}
 import codemode/internal/args

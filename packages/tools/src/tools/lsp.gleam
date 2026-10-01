@@ -93,7 +93,7 @@
 ////
 //// land:
 ////   plan_file → target_file → check_disk, each over every file via phase;
-////   then write_all → land_file → after_write → combine
+////   then write_all → land_file → the after-write callback → combine
 //// ```
 ////
 //// Every decode happens before the door is asked, so a malformed call costs

@@ -39,8 +39,9 @@
 //// 4. A read goes on through `read_outcome` (text windows) or `image_outcome`.
 //// 5. `run_write` resolves for writing, so the protected-path list applies,
 ////    and `write_whole` creates parents and writes; `write_outcome` answers.
-//// 6. `run_edit` resolves, reads the pre-image with `read_text`, applies the
-////    digest-bound plan with `hashline.apply`, and writes the result;
+//// 6. `run_edit` resolves, reads the pre-image with `read_text_file`,
+////    applies the digest-bound plan with `hashline.apply`, and writes the
+////    result;
 ////    `edit_outcome` or `apply_error_outcome` answers with fresh anchors.
 //// 7. `path_outcome` and `fs_error_outcome` turn refusals into in-band results.
 ////

@@ -10,6 +10,26 @@
 //// carries fresh anchors for the stale regions, so a caller can replan
 //// without another full read.
 ////
+//// ## Flow
+////
+//// `annotate` → `window` → `render` on the read side; `plan_between` →
+//// `apply` → `apply_checked` → `apply_if_current` → `apply_hunks` on the
+//// write side.
+////
+//// 1. `annotate` gives every line its `anchor`, and `window` cuts the
+////    annotated file to the slice a read asked for; `render` draws it.
+//// 2. `plan_between` turns an intended file into hunks against the base it
+////    was planned from (`hunks_between`), and binds them to its `digest`.
+//// 3. `apply` rejects a malformed plan first (`malformed_reason`), then
+////    `apply_checked` compares each referenced anchor with the current
+////    content (`stale_references`).
+//// 4. `apply_if_current` compares the whole-file digest, which catches the
+////    shift an anchor cannot see, and answers `touched_regions` if stale.
+//// 5. `apply_hunks` places each hunk, refuses two that `overlap`, and
+////    splices the result with `apply_placed`.
+//// 6. `applied_regions` and `render_diff` describe a landed edit, so the
+////    caller can answer with fresh anchors rather than a second read.
+////
 //// ## The anchor algorithm (version 1, package-internal)
 ////
 //// An anchor is the first 8 lowercase hex characters of a 64-bit

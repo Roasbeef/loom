@@ -7,6 +7,24 @@
 //// gains nothing per extension, and the install record is the approval —
 //// so if this decoder is loose, there is nothing downstream to catch it.
 ////
+//// ## Flow
+////
+//// `decode` → `tier_field` → `jailed_body` or `profile_body` → `absent`
+////
+//// 1. `decode` parses the TOML, refuses any top-level key outside the
+////    closed list through `known_keys`, and reads the identity with
+////    `name_field`.
+//// 2. `tier_field` decides what the extension is, and the body for that
+////    tier decodes only the tables the tier may declare.
+//// 3. `jailed_body` reads code: `tools_of` (each `tool_of` checks its
+////    schema with `schema_exists` and its entry with `module_exists`),
+////    `hooks_of`, and `net_of` with its `secrets_of`.
+//// 4. `profile_body` reads data: `profiles_of`, which defers to the
+////    loom.toml profile decoder, and `checks_of` for the fixtures that
+////    prove a profile.
+//// 5. `absent` refuses the other tier's tables by name, with
+////    `runs_no_code` saying why a profile cannot carry code.
+////
 //// # Unknown keys are errors, everywhere
 ////
 //// The same rule `client/catalog` holds `loom.toml` to, for the same
