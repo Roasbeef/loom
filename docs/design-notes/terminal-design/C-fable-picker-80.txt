@@ -1,0 +1,24 @@
+ ◆ loom                    ws · main · ~/code/pi-gui   kimi-k3 · Ctrl+g details 
+ ╭ SESSIONS  All 7  Needs 1  Working 2  Idle 1  Inactive 3 ────────────── tab ╮ 
+ │ ~/code/pi-gui                                                             3│ 
+ │ ❯ ● ws · main                      2 working · 1 approval           kimi-k3│ 
+ │   ○ fix readme badge               idle · last run completed        kimi-k3│ 
+ │   · extension api probe            saved · created 3d ago                  │ 
+ │                                                                            │ 
+ │ ~/code/lnd-review                                                         2│ 
+ │   ● review htlc interceptor        1 working                        GLM-5.3│ 
+ │   ! nightly: deps bump             needs you · last run failed · …  GLM-5.3│ 
+ │                                                                            │ 
+ │ ~/code/loom-worktrees                                                     2│ 
+ │   ◌ loom-herdr-update · herdr-upd… opening                                 │ 
+ │   · vision-routing                 recovery blocked                        │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │                                                                            │ 
+ │────────────────────────────────────────────────────────────────────────────│ 
+ │  ws · main · I added subtract next to add. Both tests should pass once…    │ 
+ │  ● main code_mode · ? sub:tests gleam test · ✓ sub:docs README draft       │ 
+ │  ↑↓ move · enter open · n new · r rename · d archive · ←→ page · esc       │ 
+ ╰────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                
