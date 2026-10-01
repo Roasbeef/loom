@@ -18,9 +18,19 @@
 //// qualified span only the alias is checked, against the module's imports;
 //// the function behind it lives in another file and is that file's concern.
 ////
-//// Fenced blocks are refused inside the section because a fence is exactly
-//// where a stale name would hide from the span check, and a spine is meant
-//// to be a short numbered list, not a code listing.
+//// A spine may also be drawn as a diagram in a ```` ```text ```` fence, the
+//// form the language-server modules use for a path with branches. A fence
+//// has no backticks to say which words are names, so it is checked by
+//// shape instead: a word with an interior underscore (`begin_server`) or
+//// written as a call (`ask(Acquire)`) must be a function or a constant the
+//// module defines, because prose has no such words. A plain word such as
+//// `handle` or `door` is not checked, since prose is made of those, but it
+//// still counts towards the three functions a spine must name when it is
+//// one. A qualified word (`lsp.settle`, `backend.connect`) is not checked
+//// in a fence, where it is as often a field call as an import, and a
+//// pattern such as `decode_<name>` or `render_*` is a family rather than a
+//// name. Any other fenced block, one that is not `text`, is refused: a
+//// code listing is not a spine.
 
 import glance
 import gleam/int
@@ -115,29 +125,59 @@ type Reference {
   Prose
 }
 
-/// What reading the section's lines produced: the spans worth resolving, and
-/// the findings about fences, which are decided as the lines go by.
+/// What reading the section's lines produced: the spans worth resolving, the
+/// words of a diagram, and the findings about fences, which are decided as
+/// the lines go by.
 type Scan {
-  Scan(spans: List(#(Int, String)), fences: List(Raw), inside: Fence)
+  Scan(
+    spans: List(#(Int, String)),
+    words: List(Word),
+    fences: List(Raw),
+    inside: Fence,
+  )
 }
 
-/// Whether the walk is inside a fenced block, whose contents are neither
-/// spine nor checked.
+/// Whether the walk is inside a fenced block. A `text` fence is a diagram
+/// whose words are read by shape; any other fence is refused and skipped.
 type Fence {
   Outside
-  Inside
+  Diagram
+  Listing
+}
+
+/// One word of a diagram, located by the offset of its doc line.
+type Word {
+  Word(offset: Int, name: String, shape: Shape)
+}
+
+/// Whether a diagram word looks like a name or might be prose.
+type Shape {
+  /// An interior underscore or a call: prose has no such words, so it must
+  /// resolve.
+  NameShaped
+
+  /// A plain word: counted when it resolves, never reported when it does not.
+  Plain
 }
 
 fn check_section(module: glance.Module, section: Section) -> List(Raw) {
-  let scan = read_lines(section.body, Scan([], [], Outside))
+  let scan = read_lines(section.body, Scan([], [], [], Outside))
   let spans = list.reverse(scan.spans)
+  let words = list.reverse(scan.words)
   let defined = defined_functions(module)
   let aliases = import_aliases(module)
+
+  // A diagram may name a constant (a table of served names, say) as well as
+  // a function; a backticked span may not, because the numbered list is
+  // where a spine names the steps themselves.
+  let nameable = set.union(defined, defined_constants(module))
   let unresolved = list.filter_map(spans, resolve(_, defined, aliases))
-  let named = named_functions(spans, defined)
+  let unnamed = list.filter_map(words, resolve_word(_, nameable))
+  let named = named_functions(spans, words, defined)
   list.flatten([
     list.reverse(scan.fences),
     unresolved,
+    unnamed,
     too_few(section.heading, named),
   ])
 }
@@ -145,27 +185,154 @@ fn check_section(module: glance.Module, section: Section) -> List(Raw) {
 fn read_lines(lines: List(DocLine), scan: Scan) -> Scan {
   case lines, scan.inside {
     [], _ -> scan
-    [line, ..rest], Inside ->
-      read_lines(rest, Scan(..scan, inside: closes(line, scan.inside)))
+
+    // A diagram line contributes its words until the closing fence.
+    [line, ..rest], Diagram ->
+      case is_fence(line) {
+        True -> read_lines(rest, Scan(..scan, inside: Outside))
+        False ->
+          read_lines(rest, Scan(..scan, words: words_of(line, scan.words)))
+      }
+
+    [line, ..rest], Listing ->
+      case is_fence(line) {
+        True -> read_lines(rest, Scan(..scan, inside: Outside))
+        False -> read_lines(rest, scan)
+      }
+
+    // An opening fence decides what the block is: a `text` diagram is read,
+    // anything else is refused once, at its opening line.
     [line, ..rest], Outside ->
-      case string.starts_with(string.trim(line.text), "```") {
-        True ->
+      case is_fence(line), opens_diagram(line) {
+        True, True -> read_lines(rest, Scan(..scan, inside: Diagram))
+        True, False ->
           read_lines(
             rest,
-            Scan(..scan, fences: [fence(line), ..scan.fences], inside: Inside),
+            Scan(..scan, fences: [fence(line), ..scan.fences], inside: Listing),
           )
-        False ->
+        False, _ ->
           read_lines(rest, Scan(..scan, spans: spans_of(line, scan.spans)))
       }
   }
 }
 
-/// A fence closes on the next fence line; anything else leaves the walk
-/// inside the block.
-fn closes(line: DocLine, inside: Fence) -> Fence {
-  case string.starts_with(string.trim(line.text), "```") {
-    True -> Outside
-    False -> inside
+fn is_fence(line: DocLine) -> Bool {
+  string.starts_with(string.trim(line.text), "```")
+}
+
+fn opens_diagram(line: DocLine) -> Bool {
+  string.trim(line.text) == "```text"
+}
+
+/// The words of one diagram line, by the shape rules in the module doc.
+///
+/// A word is a maximal run of letters, digits and underscores. It is
+/// dropped when it starts with a capital or a digit (a type, a constructor,
+/// a number), when a `.` joins it to a neighbour (a qualified call), and
+/// when it begins or ends with `_` or touches `<`, `>` or `*` (a pattern).
+fn words_of(line: DocLine, found: List(Word)) -> List(Word) {
+  let graphemes = string.to_graphemes(line.text)
+  runs(graphemes, "", [], "", found, line.offset)
+}
+
+/// Walk the line keeping the grapheme before the current run, so a run can
+/// be judged by both of its neighbours when it ends.
+fn runs(
+  rest: List(String),
+  before: String,
+  run: List(String),
+  previous: String,
+  found: List(Word),
+  offset: Int,
+) -> List(Word) {
+  case rest {
+    [] -> keep(run, before, "", "", found, offset)
+    [grapheme, ..tail] ->
+      case is_word_grapheme(grapheme) {
+        True ->
+          case run {
+            [] -> runs(tail, previous, [grapheme], grapheme, found, offset)
+            _ -> runs(tail, before, [grapheme, ..run], grapheme, found, offset)
+          }
+        False -> {
+          let after = case tail {
+            [next, ..] -> next
+            [] -> ""
+          }
+          let found = keep(run, before, grapheme, after, found, offset)
+          runs(tail, "", [], grapheme, found, offset)
+        }
+      }
+  }
+}
+
+/// Decide one finished run. `next` is the grapheme that ended it and
+/// `after` the one beyond, which is what tells `handle.` at the end of a
+/// clause from `lsp.settle`.
+fn keep(
+  run: List(String),
+  before: String,
+  next: String,
+  after: String,
+  found: List(Word),
+  offset: Int,
+) -> List(Word) {
+  let name = string.concat(list.reverse(run))
+  let qualified =
+    before == "." || { next == "." && is_word_grapheme(after) && after != "" }
+  let pattern =
+    string.starts_with(name, "_")
+    || string.ends_with(name, "_")
+    || list.contains(["<", ">", "*"], before)
+    || list.contains(["<", ">", "*"], next)
+  case name == "" || qualified || pattern || !starts_lowercase(name) {
+    True -> found
+    False -> {
+      let shape = case string.contains(name, "_") || next == "(" {
+        True -> NameShaped
+        False -> Plain
+      }
+      [Word(offset:, name:, shape:), ..found]
+    }
+  }
+}
+
+fn is_word_grapheme(grapheme: String) -> Bool {
+  case string.to_utf_codepoints(grapheme) {
+    [point] -> {
+      let code = string.utf_codepoint_to_int(point)
+      code == 95
+      || { code >= 48 && code <= 57 }
+      || { code >= 65 && code <= 90 }
+      || { code >= 97 && code <= 122 }
+    }
+    _ -> False
+  }
+}
+
+fn starts_lowercase(name: String) -> Bool {
+  case string.first(name) {
+    Ok(first) ->
+      first == "_" || string.lowercase(first) == first && !is_digit(first)
+    Error(Nil) -> False
+  }
+}
+
+fn is_digit(grapheme: String) -> Bool {
+  string.contains("0123456789", grapheme)
+}
+
+/// One finding if a name-shaped diagram word names nothing the module
+/// defines. A plain word that resolves to nothing is prose.
+fn resolve_word(word: Word, nameable: Set(String)) -> Result(Raw, Nil) {
+  case word.shape, set.contains(nameable, word.name) {
+    NameShaped, False ->
+      Ok(unresolved(
+        word.offset,
+        word.name,
+        "is not a function or constant this module defines",
+      ))
+    NameShaped, True | Plain, _ -> Error(Nil)
   }
 }
 
@@ -183,8 +350,9 @@ fn fence(line: DocLine) -> Raw {
     rule: finding.FlowSpine,
     offset: line.offset,
     function: "",
-    detail: "a fenced code block inside the Flow section hides names from the"
-      <> " check; write the spine as a numbered list of backticked names",
+    detail: "a code listing inside the Flow section hides names from the"
+      <> " check; draw the spine as a ```text diagram or a numbered list of"
+      <> " backticked names",
   )
 }
 
@@ -193,6 +361,13 @@ fn fence(line: DocLine) -> Raw {
 /// resolve.
 fn defined_functions(module: glance.Module) -> Set(String) {
   module.functions
+  |> list.map(fn(definition) { { definition.definition }.name })
+  |> set.from_list
+}
+
+/// Every constant this module defines, which a diagram may name.
+fn defined_constants(module: glance.Module) -> Set(String) {
+  module.constants
   |> list.map(fn(definition) { { definition.definition }.name })
   |> set.from_list
 }
@@ -258,18 +433,21 @@ fn unresolved(offset: Int, name: String, reason: String) -> Raw {
 /// The distinct local functions the section names. Counting distinct names
 /// is what stops one function repeated three times from passing for a
 /// spine.
-fn named_functions(spans: List(#(Int, String)), defined: Set(String)) -> Int {
-  spans
-  |> list.filter_map(fn(span) {
-    case reference(span.1) {
-      Local(name) ->
-        case set.contains(defined, name) {
-          True -> Ok(name)
-          False -> Error(Nil)
-        }
-      Qualified(_, _) | Prose -> Error(Nil)
-    }
-  })
+fn named_functions(
+  spans: List(#(Int, String)),
+  words: List(Word),
+  defined: Set(String),
+) -> Int {
+  let from_spans =
+    list.filter_map(spans, fn(span) {
+      case reference(span.1) {
+        Local(name) -> Ok(name)
+        Qualified(_, _) | Prose -> Error(Nil)
+      }
+    })
+  let from_words = list.map(words, fn(word) { word.name })
+  list.append(from_spans, from_words)
+  |> list.filter(set.contains(defined, _))
   |> list.unique
   |> list.length
 }

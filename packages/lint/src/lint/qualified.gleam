@@ -52,6 +52,7 @@ pub fn loom_roots() -> List(String) {
     "ext",
     "host",
     "lint",
+    "lsp",
     "machine",
     "mcp",
     "prompt",

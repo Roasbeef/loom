@@ -193,7 +193,46 @@ pub fn fenced_block_is_a_finding_and_hides_nothing_test() {
   let found = spine(with_flow(flow))
   let assert [one] = found
   assert one.line == 6
-  assert string.contains(one.detail, "fenced")
+  assert string.contains(one.detail, "code listing")
+}
+
+/// A `text` fence is a diagram, the form the language-server modules draw a
+/// branching path in. It is read by shape, so prose around the names passes.
+pub fn a_text_diagram_is_a_spine_test() {
+  let flow =
+    "//// ```text\n//// a query: a → b → hidden(Ask) → the answer\n//// ```"
+  assert spine(with_flow(flow)) == []
+}
+
+/// A name-shaped word in a diagram must resolve, so a renamed function still
+/// fails the gate when the spine is drawn rather than listed.
+pub fn a_stale_name_in_a_diagram_is_a_finding_test() {
+  let flow = "//// ```text\n//// a → b → hidden → begin_server\n//// ```"
+  let assert [one] = spine(with_flow(flow))
+  assert string.contains(one.detail, "begin_server")
+}
+
+/// A call-shaped word is a name even without an underscore.
+pub fn a_call_in_a_diagram_must_resolve_test() {
+  let flow = "//// ```text\n//// a → b → hidden → ghost(x)\n//// ```"
+  let assert [one] = spine(with_flow(flow))
+  assert string.contains(one.detail, "ghost")
+}
+
+/// Qualified words are field calls as often as imports, and a pattern names
+/// a family; neither is checked inside a diagram.
+pub fn qualified_words_and_patterns_pass_in_a_diagram_test() {
+  let flow =
+    "//// ```text\n//// a → b → hidden → backend.connect → decode_<name> → render_*\n//// ```"
+  assert spine(with_flow(flow)) == []
+}
+
+/// Plain words count toward the minimum only when they are functions, so a
+/// diagram of prose is not a spine.
+pub fn a_diagram_of_prose_is_too_few_test() {
+  let flow = "//// ```text\n//// the request goes to the answer\n//// ```"
+  let assert [one] = spine(with_flow(flow))
+  assert string.contains(one.detail, "0")
 }
 
 pub fn names_in_the_next_section_are_not_checked_test() {
