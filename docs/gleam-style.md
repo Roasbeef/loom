@@ -549,8 +549,11 @@ program can only approximate (R18). Read their warnings as a prompt to
 look, as you read R8's.
 
 **1. Open a large module with a flow spine.** A module of a thousand lines
-or more (`policy.spine_lines`) ends its module doc with a `//// ## Flow`
-section. The spine is one arrow line naming the main path, then a numbered
+or more (`policy.spine_lines`) carries a `//// ## Flow` section in its
+module doc, after the paragraphs that say why the module exists. The
+section runs to the next `#` or `##` heading, so put it before the deeper
+sections rather than above a paragraph it would swallow. The spine is one
+arrow line naming the main path, then a numbered
 list saying what each step does, in the order a reader meets the steps. It
 runs ten to twenty lines. It shows the main road and leaves the detail to
 the doc comment on each function. This is `tui/inbound`'s:
@@ -582,6 +585,10 @@ module imports (`lane_fold.receive` above; the function behind it is not
 checked). A spine names at least three local functions and holds no fenced
 code block, which would hide names from the check. Anything else in
 backticks, such as a type or a constructor, is prose and is left alone.
+That includes a quoted literal, which is how a spine names a wire field:
+`settle` runs on `"message_stop"`, not on `message_stop`, which the lint
+would read as a function the module lacks. A parameter, a field or a
+constant is not a function either, so write it as a plain word.
 Rename a function and the build fails until the spine follows. A smaller
 module may carry a spine too, and it is checked the same way. R13 gates.
 
@@ -592,8 +599,9 @@ read `receive` then finds `apply_pushed` and `apply_reply` below it, and
 not eleven screens away beside whatever they share a prefix with. Gleam
 does not care about definition order, so the order is yours to give. R17
 counts a module's private helpers that sit above their first caller, and
-warns when a module has ten or more helpers and half of them are out of
-order. It is a census because a helper called from five places has no
+warns when a module has ten or more helpers and more than half of them are
+out of order. The tree reads entry point first today, so the census is zero
+and the rule stands guard over that. It is a census because a helper called from five places has no
 single right position, and moving one to please the count would hurt four
 callers to help one.
 
@@ -607,13 +615,17 @@ by scrolling to the imports. Qualified, `lane_fold.apply_channel_update`
 names the module that owns the step without leaving the line. R16 flags an
 unqualified import of a Loom function and gates.
 
-The check has an allow list, because qualification is not free. A generic
-combinator or a constructor carries no domain meaning for the qualifier to
-supply, and `option.Some(option.unwrap(...))` is harder to read than
-`Some(unwrap(...))`. So types, constructors and a small set of combinators
-may be imported unqualified, which is the convention the Imports section
-already gives for `type Option, None, Some`. What the list excludes is the
-call a reader cannot place: a function that does domain work.
+The rule reaches only Loom's own modules, those whose first path segment
+is a package root under `packages/*/src` (`qualified.loom_roots`, which a
+test holds to the tree). The standard library and dependencies follow the
+Imports section above, where `type Option, None, Some` stay unqualified.
+Types and constructors are never findings, because a constructor names
+itself, and neither is a type. Qualification is not free, so the rule also
+has an allow list (`qualified.allowed`) for a Loom function whose bare name
+reads better, the way a `use <- or_fault(...)` continuation combinator
+might. It is empty: the tree held two unqualified Loom values, both
+constants, and both read better qualified. What the rule refuses is the
+call a reader cannot place, a function that does domain work.
 
 ```gleam
 // Bad: `tick` and `receive` could be this module's, or anyone's.
@@ -640,17 +652,26 @@ inside the caller.
 
 This complements R8 and does not repeat it. R8 looks at the shape of a
 one-caller function wide enough to be a pyramid moved elsewhere. R18 looks
-at the name of a small one-caller function, which a short comment would
-often serve better. Both warn and neither is a reason to inline by itself,
-because naming a domain operation is a judgement.
+at the name of a small one: a private function with exactly one caller,
+spanning six lines or fewer (`policy.unnamed_helper_lines`), whose name the
+module doc never mentions. A helper the module doc names has been promoted
+to part of the module's story by the one reader entitled to say so. Both
+warn and neither is a reason to inline by itself, because naming a domain
+operation is a judgement. Never add helper names to a module doc to quiet
+R18: that defeats the only signal it gives.
 
 **5. Put the state, message and effect types first.** In a module that is
 a state machine (a reducer, a channel, a supervisor loop), define its
 custom types above its first function. A reader of a transition needs the
 states before the transitions, and "go to definition" on a constructor
 should land near the top and not at line 1,100. The move is free because
-Gleam resolves types in any order. R15 flags a module whose state, message
-or effect type is defined below the first function, and gates.
+Gleam resolves types in any order. R15 decides which module is a state
+machine and which types are its state space without guessing from names: a
+module that defines a step function (`update`, `step`, `transition`,
+`handle_message` or `handle`, the table in `state_first.step_names`) is
+one, and the local types its signature names, through type arguments,
+tuples and function types, are the state space. Each must be defined above
+the first function. R15 gates.
 `tui/inbound` defined `ReconnectDecision` after the function that returns
 it; the fix was a pure move above `reconnect_decision`.
 
