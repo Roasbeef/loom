@@ -2097,6 +2097,29 @@ pub fn drain_resident(resident: Resident, within_ms: Int) -> Nil {
   )
 }
 
+/// Composes the peer router after the existing per-execution host wrapper.
+/// Only that wrapper is retained: unrelated code-mode configuration belongs
+/// to execution and must not be duplicated inside its own router callback.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.with_code_mode_peers(config, peer_wiring)
+/// ```
+@internal
+pub fn with_code_mode_peers(
+  config: codemode_wiring.Config,
+  peer_wiring: peers.Wiring,
+) -> codemode_wiring.Config {
+  let wrap_router = config.wrap_router
+  codemode_wiring.Config(
+    ..config,
+    wrap_router: fn(request: codemode_tool.Request, router) {
+      peers.router(peer_wiring, request.strand, wrap_router(request, router))
+    },
+  )
+}
+
 // Code mode, and the MCP servers it reaches — one decision, because the
 // second is unreachable without the first.
 //
@@ -3538,18 +3561,7 @@ fn assemble_in(
   let code_mode_host =
     option.map(code_mode_host, codemode_wiring.over_lsp(_, lsp_door))
   let code_mode_host =
-    option.map(code_mode_host, fn(config) {
-      codemode_wiring.Config(
-        ..config,
-        wrap_router: fn(request: codemode_tool.Request, router) {
-          peers.router(
-            peer_wiring,
-            request.strand,
-            config.wrap_router(request, router),
-          )
-        },
-      )
-    })
+    option.map(code_mode_host, with_code_mode_peers(_, peer_wiring))
   let code_mode =
     option.map(code_mode_host, fn(config) {
       let mode = async_codemode.seam(config, async_name, agency_config)
