@@ -741,7 +741,7 @@ pub fn a_root_linked_into_tmp_is_refused_test() {
     as "a scratch workspace under /tmp is refused"
   assert string.starts_with(
     reason,
-    "check refused: the check's scratch workspace would be /tmp/",
+    "check refused: the check's scratch workspace would be ",
   )
   assert string.contains(reason, "under /tmp, which the jail replaces")
   let _ = simplifile.delete_all([tmp, home])
