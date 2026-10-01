@@ -1,18 +1,21 @@
 # Current handoff
 
 The MCP extraction is rebased onto `origin/main` at
-`7b1c662cfd4e9f6fe8d4b63dc8a40e5a54e3a55d`. The recovery ref
-`codex/mcp-extraction-pre-rebase-a569` retains the previous tested head.
-Upstream already contains the Git fixture isolation correction, including
-process-specific workspace names, so the duplicate branch fix was omitted.
-Both upstream session-lifetime documentation and the extracted MCP boundary
-were retained. The final independent GPT-6.1 Sol review at high reasoning
-found no high or medium findings at `14dc4545d`. Its one low finding was a
-stale ownership comment in `client/mcp`, corrected without changing executable
-code. The fresh seed and full local gate passed the rebased source/dependency
-baseline with 2,401 client tests, zero lint errors and 944 warnings. Hosted CI
-and Linux signoff for the final published head are recorded on PR #669; the
-historical results below stay attached to their original commits.
+`275efc42e7909c3c3ec481b7466c3484f381eb80`, including the typed capability
+surface from PR #670. Recovery refs retain the previously tested `a569e1f68`
+and `a102a3523` heads. The import conflict retains both main's typed-operation
+module and the extracted SDK client; the package documentation retains both
+main's typed schedule projections and the MCP boundary. Main's capability
+sources, generated prelude and protocol 057 remain unchanged by extraction.
+
+The independent GPT-6.1 Sol review at high reasoning found no high or medium
+findings at `14dc4545d`; its stale ownership comment was corrected without
+changing executable code. The preceding published head `a102a3523` passed
+complete hosted Linux/macOS CI in [run 36795638550](https://github.com/Roasbeef/loom/actions/runs/36795638550)
+and a fresh containerized Linux signoff, including all six lanes, release
+updates and a clean skip census. Its full local gate passed with 2,401 client
+tests and zero lint errors. These results belong to that head; validation of
+the latest rebase is recorded on PR #669 before merge.
 
 ## Standalone MCP extraction
 
