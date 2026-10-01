@@ -140,7 +140,7 @@ reasons, and name the primitive in the commit:
 - **Janitors that defend an untrappable kill stay.** `on_shutdown` cannot
   run on a brutal kill; `broker/exec.watch_cleanup` and `codemode/launch`'s
   janitor exist for exactly that case.
-- **Per-key deadline tables stay.** `mcp/client`'s in-flight expiry dict is
+- **Per-key deadline tables stay.** `gleam_mcp/client`'s in-flight expiry dict is
   N independent deadlines; a machine's timeouts belong to its one current
   state.
 - **`broker.clear_awaiting_helper` stays**, and it is the one logical-clock

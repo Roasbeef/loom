@@ -2,296 +2,97 @@
 
 ## Purpose
 
-Loom's whole client side of the Model Context Protocol (issue #106):
-JSON-RPC 2.0 and MCP codecs, newline-delimited stdio framing, the
-supervised actor that owns one server process over a transport seam, and
-the generator that turns a server's `tools/list` into a `cap/mcp/<server>`
-Gleam module plus the description surface `code_mode` carries for it. MCP
-reaches a model through code mode only — per-server generated modules,
-never a registered harness tool and never a generic dispatcher.
+Loom's adapter for the standalone `gleam_mcp` library. This package turns
+untrusted tool listings into `cap/mcp/<server>` Gleam source and translates
+values between Loom's capability MessagePack wire and the library's JSON
+vocabulary. Protocol codecs, stdio framing, the client state machine and
+native process ownership belong to `gleam_mcp`.
 
-**This package generates source text and never compiles it.**
-`codegen.generate` runs in the harness VM, at boot, once per configured
-server, and hands back a `Generated` whose `source` the caller holds in
-memory. Compiling that text is a different verb in a different place:
-once per code-mode execution, inside that execution's jailed hermetic
-build, and only for the servers the submitted program imported. Nothing
-here should grow a compiler, a build root, or a filesystem write —
-`docs/architecture/mcp.md` §*Generated at boot, compiled per execution*
-is the account of the split.
-
-What is *not* here either: reading `[mcp.<name>]` out of `loom.toml`
-(`client/catalog`), starting a client per configured server, widening
-the workspace seam, and routing `mcp.<server>` capability calls. That is
-harness wiring and it lives in `client/mcp`; this package is the
-protocol, the client, the generator and the value translation it is
-built out of.
+MCP reaches a model through code mode only: one generated module per server.
+`codegen.generate` returns source text and a rendered surface at boot. It
+never compiles code, starts a process, or writes a file. The jailed build
+compiles only the generated modules the submitted program imports.
+`client/mcp` owns configuration, client startup, cleanup custody, and routing.
 
 ## Key Types
 
-- `mcp/jsonrpc.{Id, Inbound, RpcError, MessageFault}` — the envelope. We
-  mint `IdInt`; the decoder accepts `IdString` too because the peer picks
-  its own ids. `Inbound` is discriminated the way JSON-RPC discriminates:
-  `Response(id, Result(JsonValue, RpcError))` for a message with no
-  `method`, `ServerRequest(id, method, params)` for a method with an id,
-  `Notification(method, params)` for one without. A hostile line settles
-  as `MalformedMessage(CorruptionReport)` or `BadMessage(reason)`.
-- `mcp/protocol.{requested_version, supported_versions}` — `"2025-06-18"`
-  asked for, and the closed newest-first list accepted (`2025-06-18`,
-  `2025-03-26`, `2024-11-05`).
-- `mcp/protocol.{InitializeResult, ToolsCapability, ToolDescriptor,
-  ToolsPage, CallToolResult, ContentBlock, ProtocolFault}` — the decoded
-  handshake (its `protocol_version` is a member of `supported_versions`
-  by construction), one listed tool with its `input_schema` carried
-  **raw**, one `tools/list` page with its optional `next_cursor`, and a
-  `tools/call` result whose `Text` blocks survive and whose every other
-  block kind reduces to `Other(kind)`.
-- `mcp/stdio.{Buffer, push, frame, max_line_bytes, FramingFault}` — line
-  framing both ways. `push` feeds a chunk in and returns completed lines;
-  `frame` renders compact single-line JSON plus `\n`; a line past 16 MiB
-  is `LineTooLong`.
-- `mcp/transport.{Transport, PortTransport, ChannelTransport, Spawn,
-  Connection, TransportEvent, open, utf8_prefix}` — the seam the client
-  is written against. `Spawn` is executable plus argv (never a shell
-  string), explicit env pairs, optional cwd. `utf8_prefix` splits a byte
-  chunk into its valid-UTF-8 prefix and a held tail of at most three
-  bytes, since the pipe cuts characters in half.
-- `mcp/client.{Client, Options, Msg, ClientError, StartError, RetirementError,
-  prepare, prepare_owned, connect, start, shutdown, list_tools, call_tool, stop}` — the
-  state machine. `Client` and `Msg` are both
-  opaque, so nothing outside can forge a settlement or an expiry.
-  `ClientError` is `Unavailable | CallTimedOut | ServerError |
-  ResultMalformed | TooManyPages`; `StartError` is `TransportFailed |
-  HandshakeFailed | VersionUnsupported | ToolsNotDeclared |
-  CleanupUnconfirmed(Client)`. `shutdown` returns `RetirementTimedOut` or
-  `RetirementUnconfirmed` when explicit retirement cannot be established.
-- `mcp/schema.{Plan, Typed, WholeValue, Param, ParamType, Optional,
-  plan}` — the total three-tier reading of a raw `inputSchema`.
-  `Simple`/`ListOf` are the typed subset, `Structured(reason)` is
-  anything else required, `WholeValue(reason)` is an unusable top level.
-  No parameter is ever dropped.
-- `mcp/name.{mangle, mangle_label, first_collision}` — a server-chosen
-  name into a Gleam identifier, with the injected
-  `digest: fn(String) -> String` (lowercase hex over UTF-8 bytes;
-  SHA-256 in production) supplying the eight-character suffix.
-- `mcp/interchange.{InterchangeFault, to_json, to_msgpack, describe,
-  max_msgpack_int, min_msgpack_int}` — the value translation between the
-  capability wire and the MCP wire, total both ways. A msgpack integer
-  always fits `core/json.Int`; a JSON integer outside `[-2^63, 2^64 - 1]`
-  fails the **whole** conversion rather than being wrapped or clamped; a
-  msgpack binary and a non-string map key are refused in an argument
-  (JSON has neither, and both encodings a caller might expect are
-  guesses); `NilValue` and `Null` are each other. A fault names the path
-  it was found at. Depth needs no ceiling here: both parsers bound
-  nesting at the same `max_depth`.
-- `mcp/codegen.{Generated, GenerateError, generate, describe, sanitize,
-  truncate, escape, scan_for_at}` — the generator.
-  `Generated(module_name, source, surface)`; `GenerateError` is
-  `TooManyTools | ToolNameCollision | SurfaceTooLarge | SanitizerBreach`.
+- `mcp/codegen.Generated(module_name, source, surface)` is the complete
+  generated artifact. `GenerateError` refuses excessive tool counts,
+  name collisions, excessive rendered surfaces, and sanitizer failures.
+- `mcp/schema.Plan` is `Typed(parameters, optionals)` or `WholeValue(reason)`.
+  Every required parameter survives as a typed or structured argument; an
+  unusable schema becomes a whole-value argument rather than an omission.
+- `mcp/name` maps wire names to Gleam identifiers, retaining an injected
+  digest suffix whenever a name changes. Wire names themselves never change.
+- `mcp/interchange.InterchangeFault` names an unrepresentable value's path.
+  `to_json` converts `core/msgpack.MsgPackValue` directly to
+  `gleam_mcp/json.JsonValue`; `to_msgpack` performs the reverse conversion.
+- `gleam_mcp/protocol.ToolDescriptor` supplies the generator's tool name,
+  descriptions and raw schemas. The library's JSON type is used directly
+  throughout this adapter; Loom's frozen `core/json` remains independent.
 
 ## Relationships
 
-- **Depends on**: `gleam_stdlib`; `core` (the `JsonValue` ADT with its
-  total parser and serializer, and `CorruptionReport`); `gleam_erlang`
-  (`Subject`, `Selector`, `Port`, monitors — the client actor and the
-  port transport); `gleam_otp` (actor start errors); `weft` (the lifecycle
-  state machine and monotonic deadline clock). `mcp/{jsonrpc, protocol, stdio,
-  schema, name, codegen, interchange}` import none of the last two and are pure
-  functions of their arguments, but the package as a whole is impure and
-  is **not** in the portable subset lint R6 gates.
-- **Depended on by**: `client`, through `client/mcp` — the wiring that
-  starts a client per configured server, generates its module, widens
-  the workspace seam's allowlist and description, and answers
-  `mcp.<server>` capability calls. `packages/cap` is the counterpart the
-  generated modules import, and this package does not depend on it (the
-  generator emits import lines as text).
-- **FFI**: `mcp/internal/ffi_port` over `src/mcp_ffi.erl` — the package's
-  complete inventory of impurity. `erlang:open_port/2` with
-  `spawn_executable` (binary stream mode, `exit_status`, deliberately no
-  `stderr_to_stdout`), `port_command/2`, `port_info/2`
-  for the OS pid, `os:cmd` running `kill -KILL`, and the shim that takes
-  a raw port message apart into `PortBytes | PortClosed | PortJunk`.
-  There is deliberately **no** `port_close/1` here, where `broker`'s
-  sibling module has one: see the SIGKILL-only invariant below.
+- **Depends on**: `gleam_stdlib`; `core` for `core/msgpack`; `gleam_mcp`
+  for protocol descriptors and JSON values. The four local modules perform
+  no I/O. The dependency includes an Erlang runtime, so this package does
+  not claim the portable subset held by `core`, `machine` and `prompt`.
+- **Depended on by**: `client`, through `client/catalog`'s name checks and
+  `client/mcp`'s generation and capability conversion. Generated source
+  imports `cap/internal/mcp`, `cap/mcp` and `cap/report`, but this package
+  has no dependency on `cap`: those imports are emitted as source text.
+- **FFI**: none. Native stdio process operations belong to the external
+  library's `gleam_mcp/internal/ffi_port` module.
 
 ## Traffic
 
-- **Actor messages**: `mcp/client.Msg`, all sent to the one client actor.
-  `Request(build, deadline_ms, reply)` is a call — `build` receives the
-  actor-minted `Id` and returns the whole JSON-RPC message — sent by
-  `start`'s handshake, `list_tools` and `call_tool`. `Notify(message)` is
-  a cast, used for `notifications/initialized`. `FromTransport(event)`
-  arrives from the port selector or a `ChannelTransport` peer.
-  `Expire(id)` is the actor's own `process.send_after` timer. `Open(reply)`
-  opens a parked client after its cleanup handle has been published.
-  `Shutdown` is a request-only cast from `stop`; `Retire(reply)` waits
-  through `Closing` until `TransportClosed`, returns explicit evidence,
-  and then stops normally. A parked client returns explicit no-resource
-  evidence without ever opening a transport.
-- **Commits**: none. Nothing here touches a session store.
-- **Registers**: none.
-- **Wire**: the MCP stdio wire — newline-delimited JSON-RPC 2.0, one
-  message per line, `\r\n` tolerated inbound, written to the child's
-  stdin and read from its stdout. v1 sends exactly `initialize`,
-  `notifications/initialized`, `tools/list`, `tools/call`, `ping`, and
-  the `-32601` error response to any server-initiated request.
-  `mcp/stdio.frame` is the only place the bytes-on-the-wire shape is
-  decided.
-- **Generated artifacts**: `codegen.generate` returns Gleam source for
-  `cap/mcp/<segment>` — importing `cap/internal/mcp as internal`,
-  `cap/mcp`, `cap/report`, and `gleam/list` only when a body needs it —
-  and a surface rendered in `scripts/gen-prelude.py`'s one-line
-  `label: Type` form. Both are values, not files: this package writes
-  nothing to disk. `client/mcp` holds the source for the session, and
-  `codemode/build` writes it into one execution's build root, after the
-  seed clone and before `gleam build`.
+- **Actor messages, commits and registers**: none in this package.
+- **Wire values**: `interchange` translates the arguments and structured
+  results crossing `client/mcp`'s `mcp.<server>` capability arm. It does
+  not own either wire's transport or framing.
+- **Generated artifacts**: `codegen.generate` returns source for
+  `cap/mcp/<segment>` plus the surface shown to the model. `client/mcp`
+  retains both. `codemode/build` writes selected modules inside the
+  vendored capability package after seed cloning and before compilation.
 
 ## Invariants
 
-- **Publish before third-party execution.** `prepare` allocates a parked
-  state machine, never a native process. The harness publishes every prepared
-  client in one immutable cleanup census before `connect` opens any server.
-  Failed handshakes and listings remain in that census, even though they do
-  not contribute tools to the successful layer. `prepare_owned` monitors a
-  custodian independently from the startup builder. Builder loss leaves a
-  parked client's no-resource proof available to that custodian; loss of both
-  lifetimes does not leave an unclaimed parked actor. An active client whose
-  custodian dies still waits for real native exit before stopping.
-- **Termination requests are not retirement evidence.** The transport keeps
-  the exact port open while requesting its current child's termination.
-  `shutdown` requires either explicit no-resource evidence or that port's
-  native `TransportClosed`, followed by the original normal actor `DOWN`.
-  Both receives share one deadline. A timeout or unexpected actor death
-  returns uncertainty; it cannot authorize replacement. Existing unjailed
-  MCP servers are operator-trusted: PID lookup and SIGKILL have a TOCTOU
-  window, and native exit proves neither descendant drain nor rollback of
-  remote effects. This is not the sandbox helper's containment contract.
-- **Shutdown is SIGKILL only, and the missing stdin EOF is the price of
-  the witness.** A stdio server's documented shutdown signal is EOF on
-  its stdin, and `erlang:port_close/1` is the only way a BEAM port can
-  deliver one — but it destroys the port, and with it the `exit_status`
-  message the invariant above rests on. The two cannot both be had
-  without an FFI shim that half-closes the child's stdin, which
-  `open_port/2` has no supported way to do, so custody wins and
-  `mcp/transport.Connection`'s doc carries the argument. The package
-  therefore declares no port-closing external at all: an unused one
-  would read as an oversight and invite its restoration.
-- **Every decoder is total.** Wrong `jsonrpc`, missing fields, wrong
-  types anywhere, a float or null id, `result` and `error` both present
-  or both absent, a non-object list entry, an oversized line — each
-  settles as `MessageFault`, `ProtocolFault` or `FramingFault`, never a
-  crash. `mcp/schema.plan` goes further and has no error case at all:
-  tier 3 *is* the failure mode, carried as data.
-- **Strict envelope, tolerant content** (the `client/protocol` posture).
-  Discriminators are refused when wrong; unknown extra fields inside
-  known shapes are ignored; `params`, `result`, error `data`, tool input
-  and output schemas and `structuredContent` cross raw and
-  uninterpreted, to be treated downstream as untrusted data.
-- **The declared client capabilities are an empty object, and that is a
-  security decision.** No `sampling` (a server must not spend our model),
-  no `roots` (a server learns nothing about the filesystem), no
-  `elicitation` (a server must not put questions to a human through us).
-  A test pins the emptiness, so widening it is a deliberate,
-  test-breaking act.
-- **A negotiated version outside `supported_versions` is refused** as
-  `UnsupportedVersion` carrying both sides — never a connection limping
-  along on a revision this client cannot speak.
-- **One lying tool fails the whole listing.** A `tools/list` entry that
-  is not an object, lacks a non-empty string `name`, or lacks its
-  `inputSchema` fails the entire page with a fault naming the index: a
-  server lying about one tool is not a server to half-trust.
-- **Wire names travel verbatim.** Every generated body closes over the
-  original tool name and the original parameter names as escaped string
-  literals; `mcp/name`'s output is a display artifact. Renaming can never
-  change what crosses the wire, and `escape` is total — `\` and `"`
-  escaped, every codepoint outside printable ASCII emitted as `\u{...}` —
-  so server text reaches the module only as inert literal content.
-- **Mangling digests on any change, and a residual collision refuses the
-  server.** Whenever mangling altered anything (or the name ran past 32
-  characters) the result carries eight hex characters of
-  `digest(original)`, so `createIssue` and `create_issue` stay distinct.
-  What survives that is byte-identical originals or an engineered digest
-  near-miss, and `codegen` refuses the whole module naming both
-  originals rather than repairing it. A *label* collision inside one tool
-  degrades that one function to its whole-value form instead.
-- **The sanitizer cage plus the `@` backstop.** Server text bound for a
-  doc comment loses every control and direction-changing codepoint and is
-  capped (400 characters for a description, 120 for a note); every
-  comment line the generator writes begins `/// `, and every line break
-  comes from the generator's own wrap. `scan_for_at` then proves it held:
-  generated code needs no attribute, so an `@` outside a comment or a
-  string literal means the sanitizer failed, and generation fails loudly
-  rather than handing the compiler an `@external`.
-- **Every death path settles the in-flight calls.** `die` answers every
-  waiting caller `Unavailable(reason)`, closes the transport, and latches
-  the reason, idempotently — reached from a failed write, a closed
-  transport, non-UTF-8 bytes, a framing fault, a malformed or non-JSON-RPC
-  line, and `Shutdown`. A well-formed message the client merely does not
-  act on (an unknown or forgotten response id, a notification, a string
-  id) is dropped and the channel stays open. `handle_closed` swaps in an
-  inert connection first, so a port close never chases an exited child's
-  possibly recycled OS pid with a kill.
-- **Callers never `process.call` the actor.** Every public call is a
-  monitored send-and-select (the `broker/internal/call.try_call` shape,
-  reproduced here because this package does not depend on the broker):
-  `process.call` panics on a timeout and on a dead callee, and a caller
-  holding a tool-call verdict must answer `Unavailable` instead of dying.
-  The cost is one possible stale reply in the caller's mailbox.
-- **Pagination and listing size are capped.** `list_tools` follows
-  `nextCursor` for at most `max_tool_pages` (64) pages before
-  `TooManyPages`, and `codegen` refuses a listing past `max_tools` (256)
-  or a surface past `max_surface_bytes` (64 KiB) after truncation — so a
-  hostile server cannot loop or flood the harness.
-- **Framing is bounded on both sides of the newline.** A pending line
-  grown past `max_line_bytes` and a completed line larger than it are
-  both `LineTooLong`; the cap matches the cap channel's frame cap, so one
-  hostile message has one cost ceiling everywhere. `frame`'s output can
-  never contain a literal newline, because `core/json` escapes every
-  control character inside strings.
-- **The transport seam is where jailing will attach.** `PortTransport` is
-  the production primitive and spawns unjailed; **who may spawn a real
-  server binary is harness wiring's decision, made elsewhere**. Do not
-  read the current spawn as the final security posture, and do not
-  collapse the seam — `ChannelTransport` is what makes every client
-  behaviour provable in-process.
-- **stderr is never merged into stdout.** `stderr_to_stdout` would
-  interleave the server's diagnostics into the JSON-RPC line stream and
-  corrupt framing, so the child inherits the BEAM's stderr.
-- **v1 speaks five methods and subscribes to nothing.** Resources,
-  prompts, logging, sampling, roots, elicitation, progress, cancellation,
-  completion, `listChanged` handling, HTTP/SSE transports and the
-  2026-07-28 stateless mode are refused rather than deferred. A dead peer
-  is not restarted or reconnected; that substrate grows teeth in phase 5
-  with the LSP client (#25).
+- **Code-mode authority stays per server.** Generated functions close over
+  the original server and tool names and call `cap/internal/mcp.invoke`.
+  The adapter does not expose a generic model-callable dispatcher.
+- **Wire names travel verbatim.** Mangling affects Gleam names only.
+  Escaped literals preserve original tool and parameter names; a residual
+  tool-name collision refuses the server. A parameter-label collision
+  degrades that tool to whole-value arguments.
+- **Server prose remains inert.** Descriptions lose control and direction
+  changing codepoints and are capped. Every generated doc line starts
+  `/// `. `scan_for_at` refuses an attribute outside a string or comment.
+- **Generation is bounded.** `max_tools` is 256; `max_surface_bytes` is
+  65,536. A listing exceeding either limit refuses the server.
+- **Value translation is total.** JSON integers outside `[-2^63, 2^64 - 1]`
+  fail the whole MessagePack conversion. Binary values and non-string map
+  keys cannot become JSON arguments. No wrapping, clamping or guessed
+  encoding is permitted. JSON and MessagePack parser nesting limits remain
+  aligned, and the client separately checks the final capability envelope.
+- **Loom owns result reduction.** The library retains non-text blocks as
+  `Other(kind, raw)`. `client/mcp.content_block` sends only their kind to
+  `cap/mcp.Other`; raw image, audio and resource payloads do not enter the
+  capability result. Text and structured results retain existing handling.
+- **Loom owns lifecycle policy.** `client/mcp` uses the library's parked
+  `prepare_owned` clients, publishes every cleanup handle before connecting,
+  and requires explicit native exit and normal actor retirement. Moving
+  these primitives out of the tree does not weaken that custody boundary.
+- **Client identity is caller-owned.** The external library defaults to
+  `gleam-mcp`; `client/mcp.start_one` explicitly identifies Loom as `loom`.
+  The declared client capabilities remain empty.
 
 ## Deep Docs
 
-- [README.md](README.md) — the design stance in prose: why MCP is
-  code-mode only, how a hostile `tools/list` is held, and what the module
-  map looks like.
-- [docs/architecture/mcp.md](../../docs/architecture/mcp.md) — the
-  subsystem end to end, including the half this package does not hold:
-  one `[mcp.<name>]` table through boot and codegen to one
-  `mcp.<server>` capability call, the denial codes a program reads, and
-  the worked surface and program a model sees. Three of its sections
-  cover what this file states only in summary — *Generated at boot,
-  compiled per execution*, *A worked example: an issue triage pass*, and
-  *What runs where* with its trust-boundary diagram.
-- [docs/architecture/code-mode.md](../../docs/architecture/code-mode.md)
-  — the vetting theorem the per-server module granularity rests on, and
-  what each layer confines.
-- [packages/cap/CLAUDE.md](../cap/CLAUDE.md) — the other end: `cap/mcp`'s
-  result vocabulary and the `cap/internal/mcp.invoke` seam every
-  generated façade calls.
-- [packages/client/CLAUDE.md](../client/CLAUDE.md) — `client/protocol`,
-  the house pattern for strict-envelope, tolerant-content wire codecs.
-- [docs/gleam-style.md](../../docs/gleam-style.md) — Part IV §2 (total
-  decoders) and §4 (FFI confinement), the rules this package is shaped
-  by.
-- [docs/next.md](../../docs/next.md) — the #106 design rulings and what
-  the work still owes. The hostile-`tools/list` corpus is built and lives
-  in `codegen_test` and `schema_test`; the open items are filed — #109
-  (the jail decision), #110 (an end-to-end against a server from the
-  wild), #108, #111, #112.
-- [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc
-  graph.
+- [README.md](README.md) explains the extraction boundary and local tests.
+- [MCP architecture](../../docs/architecture/mcp.md) follows configuration,
+  startup, generation, compilation, calls and retirement end to end.
+- [Code-mode architecture](../../docs/architecture/code-mode.md) describes
+  import vetting and the jailed build that compiles generated modules.
+- [Capability package](../cap/CLAUDE.md) owns the frozen result vocabulary.
+- [Client package](../client/CLAUDE.md) owns lifecycle wiring and routing.
+- [Root CLAUDE.md](../../CLAUDE.md) holds repository rules and the doc graph.

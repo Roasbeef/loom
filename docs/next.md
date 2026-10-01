@@ -1,5 +1,161 @@
 # Current handoff
 
+The MCP extraction is rebased onto `origin/main` at
+`275efc42e7909c3c3ec481b7466c3484f381eb80`, including the typed capability
+surface from PR #670. Recovery refs retain the previously tested `a569e1f68`
+and `a102a3523` heads. The import conflict retains both main's typed-operation
+module and the extracted SDK client; the package documentation retains both
+main's typed schedule projections and the MCP boundary. Main's capability
+sources, generated prelude and protocol 057 remain unchanged by extraction.
+
+The independent GPT-6.1 Sol review at high reasoning found no high or medium
+findings at `14dc4545d`; its stale ownership comment was corrected without
+changing executable code. The preceding published head `a102a3523` passed
+complete hosted Linux/macOS CI in [run 36795638550](https://github.com/Roasbeef/loom/actions/runs/36795638550)
+and a fresh containerized Linux signoff, including all six lanes, release
+updates and a clean skip census. Its full local gate passed with 2,401 client
+tests and zero lint errors. These results belong to that head; validation of
+the latest rebase is recorded on PR #669 before merge.
+
+## Standalone MCP extraction
+
+Generic JSON/JSON-RPC, framing, client actors and native process custody
+live in [Gleam MCP](https://github.com/Roasbeef/gleam-mcp). Both direct
+consumers and the conformance closure pin
+`686955fc0461630bf64a4dc8eb51565dc7ca1ac9`. Its full Linux/macOS CI passed
+[run 36765278006](https://github.com/Roasbeef/gleam-mcp/actions/runs/36765278006):
+232 unit tests, including every required Draft 2020-12 vector; 139 linter
+tests; five tooling checks; and 39 native stdio/HTTP/TLS checks. Independent
+review findings were fixed and rechecked before publication.
+
+The direct Mist dependency matches the SDK at
+`28b43178ff57bfb619c64b8c3544831646d5fdb9`; all affected locks resolve Glisten
+to `3eb785919be0736da0a20732a56275dce0132327`. Glisten registers its connection
+factory before its listener and acceptors start. Mist registers its SSE
+factory before Glisten starts. Reverse shutdown stops admission before
+retiring those factories. Mist's framing and startup fixes passed
+[CI](https://github.com/Roasbeef/mist/actions/runs/36764236673) and remain
+open in [PR #2](https://github.com/Roasbeef/mist/pull/2) and
+[PR #3](https://github.com/Roasbeef/mist/pull/3).
+
+[Glisten PR #1](https://github.com/Roasbeef/glisten/pull/1) merged into
+`compat/v9.0.1` at `1e53a4d9befb3fe6fb6f9cee2d9b13ba621a2e67`. Consumers
+retain the tested `3eb7859` commit rather than moving to that merge commit.
+The upstream startup-order report is
+[rawhat/glisten#55](https://github.com/rawhat/glisten/issues/55).
+
+The SDK adds released MCP `2026-07-28`, typed tool definitions, HTTP, explicit
+multi-round-trip continuations and owned subscriptions. Loom continues to
+use its initialized stdio profile and supplies its own client identity,
+server isolation and result reduction. Optional resource and prompt APIs
+are tracked in [SDK issue #1](https://github.com/Roasbeef/gleam-mcp/issues/1).
+
+`packages/mcp` retains four pure adapters: code generation, schema planning,
+name sanitization and MessagePack interchange. Frozen core and capability
+interfaces are unchanged. `client/mcp` reduces lossless non-text content
+only when constructing the existing capability result. The generic suites
+moved with their implementation; local adapter and actual-server fixtures
+remain here. Current main's other dependencies, including weft 0.4.5 and
+its shared UI packages, were preserved during rebase.
+
+The fresh offline seed and focused `make check-mcp` passed at `7b8cd39f9`,
+each with its own zero exit status. The full local `make check` also exited
+zero through the public SDK/Mist/Glisten pins with that fresh seed and the
+CI-matching patched Gleam 1.19.0-rc2 compiler. All packages, native tests,
+static gates and lint passed; lint reported zero errors and 943 warnings.
+Published extraction head `6de0188aaea01ede036082d0d5c19ce0d06dd5af`
+passed the required Linux gate and macOS advisory package check in
+[run 36767905423](https://github.com/Roasbeef/loom/actions/runs/36767905423).
+A fresh public Linux checkout built its helper and seed, then passed 102
+adapter tests, 29 native client MCP tests and both actual MCP/configured-server
+code-mode exchanges with no skips. An independent rerun of both E2Es passed
+at that same head. These results belong to `6de0188`, rather than being
+reassigned to the subsequent fixture correction.
+
+The first macOS e2e attempt timed out observing the shipped multiplayer tool's
+return to idle after its final answer was visible. The original shipped-bootstrap
+target passed locally, followed by five fresh runs of the original multiplayer
+module. The hosted rerun also passed bootstrap. The first timeout remains
+intermittent with no established source cause; no deadline or assertion changed.
+
+The macOS rerun then failed `worktree_diff_test.gleam:95` with GitFailed(128),
+matching [exact base main `01f14ef8`](https://github.com/Roasbeef/loom/actions/runs/36694588061/job/109820029705).
+The earlier assumption that repository layout alone explained this failure was
+incomplete. A normal local clone still passed under Apple Git 2.39; changing
+only the Git version to 2.55 reproduced the failure. Both independent runs
+used the original source and helper: fourteen tests passed under 2.39, while
+2.55 failed one with `fatal: error reading '<checkout>/.git'`.
+
+The uninitialized fixture was beneath the source checkout, so it did not
+satisfy its outside-Git premise. Seatbelt correctly denied reads of ancestor
+repository metadata, and Git 2.55 treats that discovery denial as fatal.
+Correction `b69de8672` constructs private fixtures under `/var/tmp`, following
+the existing shipped-jobs convention and avoiding Linux's `/tmp` scratch mount.
+All fourteen assertions pass on the changed source under Git 2.55 with no skips.
+The full client gate also passed under Git 2.55: 2,398 tests, formatting and
+warning-free compilation. The documentation check exited zero.
+The sandbox grants, production error classification and test deadlines remain
+unchanged. Independent review found no additional affected assertion.
+Published correction head `314c3071c` passed its required Linux gate. Its actual
+Linux jail ran all fourteen observations under Git 2.55 with eleven enforcement
+layers active and zero skips, and its terminal-observation skip census was clean.
+
+That head's macOS run passed multiplayer, then failed the shipped-confinement
+turn at `daemon_shipped_confinement_test.gleam:353` before reaching the corrected
+Git fixture. The interval between the token tool-use and final-text provider
+announcements was 7.887702 seconds; the final announcement preceded the original
+eight-second UI timeout by only 32.902 ms. That interval includes transport,
+durable transitions, tool execution and the next provider request, so it cannot
+be attributed to shell execution from the uploaded evidence. Five fresh local
+runs of the original confinement fixture passed. Neither this timeout nor the
+earlier multiplayer timeout has an established source cause.
+
+Diagnostic commit `759ab088d` uses the existing terminal recorder in those two
+fixtures, with unique session/role paths. Their assertions and deadlines remain
+identical. `LOOM_TEST_TIMING=1` adds a second stock OTP handler only to the private
+shipped daemon launcher; it retains UTC event timestamps and existing debug
+provider/tool dispatch and settlement events without changing the JSON handler.
+Terminal recordings are unconditional in the two fixtures; the extra daemon
+handler is opt-in. Its 8,192-character limit applies per event, not to the file.
+The actual local confinement and multiplayer suites passed with this handler,
+and their generated logs and raw frames were inspected. Independent review
+approved the unchanged cleanup, grants and assertions. The complete local
+client gate also passed all 2,398 tests, formatting and warning-free compilation;
+the documentation check exited zero.
+
+CI commit `a0300e896` enables this evidence for shipped bootstrap and uploads the
+private effect logs and terminal recordings. The original hard macOS terminal
+observations run before bootstrap so its failure cannot hide their result; the
+zero-skip census and failing fan-in are unchanged. Pre-rebase head
+`a569e1f681fae2098979ff79bd327fc30e43ebde` passed both aggregate gates in
+[run 36779051580](https://github.com/Roasbeef/loom/actions/runs/36779051580).
+Its timing artifacts were inspected. Both intermittent timeout causes remain
+unconfirmed; a green run does not prove their correction. The rebased head
+requires its own hosted verification.
+
+[Jevelin MCP](https://github.com/Roasbeef/jevelin-mcp) consumes the SDK and
+existing Jevelin library directly. Published application head
+`fb5b434bde8d48736c835d44a4a176efb17d007d` passed Linux/macOS CI in
+[run 36766066616](https://github.com/Roasbeef/jevelin-mcp/actions/runs/36766066616).
+Its four shared typed definitions retain original label/rubric/batch
+decoders. An independent Linux build passed the full application gate through
+the public dependencies, then fifty fresh runs of the original HTTP peer.
+Those runs retained all assertions, including 150 bearer refusals and fifty
+Origin refusals. The inherited startup blocker is closed by the published
+factory-order fixes above. No authenticated live Jev request has been made.
+
+[PR #669](https://github.com/Roasbeef/loom/pull/669) records the current
+validation boundary and review status. Continue to require the full gate,
+real native MCP process and configured-server code-mode exchanges when
+updating this dependency. Remote MCP admission policy remains separate
+from the reusable library's HTTP implementation.
+
+## Existing work on main
+
+The preceding main handoff is preserved below. Its references and validation
+are attached to the heads it names, rather than reassigned to this extraction.
+
+
 This handoff is baselined against `998be7a64` (`main` after #666, the last
 pull request that closed [#569](https://github.com/Roasbeef/loom/issues/569))
 on 2026-09-30. Tracker state was read with `gh` the same day. Every claim

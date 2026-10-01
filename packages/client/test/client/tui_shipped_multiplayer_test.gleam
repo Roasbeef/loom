@@ -497,11 +497,29 @@ fn exercise(
   )
   observer_mutation_refused(port, reader_token, id)
 
-  let assert Ok(alice) = tui_driver.start(address, alice_token, id)
+  let assert Ok(alice) =
+    tui_driver.start_recorded(
+      address,
+      alice_token,
+      id,
+      "build/shipped-multiplayer-" <> id <> "-alice.jsonl",
+    )
     as "Alice owns one native terminal and socket"
-  let assert Ok(bob) = tui_driver.start(address, bob_token, id)
+  let assert Ok(bob) =
+    tui_driver.start_recorded(
+      address,
+      bob_token,
+      id,
+      "build/shipped-multiplayer-" <> id <> "-bob.jsonl",
+    )
     as "Bob owns a separate native terminal and socket"
-  let assert Ok(reader) = tui_driver.start(address, reader_token, id)
+  let assert Ok(reader) =
+    tui_driver.start_recorded(
+      address,
+      reader_token,
+      id,
+      "build/shipped-multiplayer-" <> id <> "-reader.jsonl",
+    )
     as "the observer attaches without opening execution"
   let alice_ready = await_open(alice.data, writable)
   let bob_ready = await_open(bob.data, writable)
@@ -577,7 +595,13 @@ fn exercise(
       })
     assert configuration_of(detached) == configuration_of(alice_view)
   })
-  let assert Ok(rejoined) = tui_driver.start(address, bob_token, id)
+  let assert Ok(rejoined) =
+    tui_driver.start_recorded(
+      address,
+      bob_token,
+      id,
+      "build/shipped-multiplayer-" <> id <> "-bob-rejoined.jsonl",
+    )
     as "Bob rejoins the same session with his unchanged member credential"
   let bob_returned =
     tui_v2_test.await(rejoined.data, fn(sample) {
@@ -738,7 +762,13 @@ fn live_tool_switches(
 
   // Independent A1 terminals retain their original attachments while Alice
   // replaces hers, so their final captures witness execution custody.
-  let assert Ok(peer) = tui_driver.start(address, owner, original)
+  let assert Ok(peer) =
+    tui_driver.start_recorded(
+      address,
+      owner,
+      original,
+      "build/shipped-multiplayer-" <> original <> "-held-tool-owner.jsonl",
+    )
     as "an independent owner stays with Reader on A1 throughout the tool"
   let before = tui_v2_test.await(peer.data, writable)
   let original_attachment = attachment_of(before)
@@ -908,7 +938,13 @@ fn live_tool_switches(
   // Fresh native attachments after A1's completion obtain new accepted cuts,
   // rather than treating an unchanged local frame as an isolation barrier.
   list.each([#(a2, a2_done), #(foreign, b_done)], fn(target) {
-    let assert Ok(probe) = tui_driver.start(address, owner, target.0)
+    let assert Ok(probe) =
+      tui_driver.start_recorded(
+        address,
+        owner,
+        target.0,
+        "build/shipped-multiplayer-" <> target.0 <> "-completion-probe.jsonl",
+      )
       as "the owner obtains a fresh post-completion cut for the other session"
     let sample = tui_v2_test.await(probe.data, writable)
     assert sample.model.shared.session == target.0
@@ -1129,7 +1165,13 @@ fn failed_switch_preserves_channel(
 
   // A separate owner terminal must still attach to the exact refused target.
   // This excludes target unavailability without touching Alice's retained view.
-  let assert Ok(probe) = tui_driver.start(address, owner, target)
+  let assert Ok(probe) =
+    tui_driver.start_recorded(
+      address,
+      owner,
+      target,
+      "build/shipped-multiplayer-" <> target <> "-refusal-probe.jsonl",
+    )
     as "the target remains attachable to its authorized owner after Alice's refusal"
   let _ =
     tui_v2_test.await(probe.data, fn(sample) {
@@ -1190,7 +1232,13 @@ fn successful_switches(
 
   // A separate authorized terminal stays on A while Alice uses B. Requests
   // are sequenced for the finite provider, but both runtimes remain attached.
-  let assert Ok(peer) = tui_driver.start(address, owner, original)
+  let assert Ok(peer) =
+    tui_driver.start_recorded(
+      address,
+      owner,
+      original,
+      "build/shipped-multiplayer-" <> original <> "-switch-owner.jsonl",
+    )
     as "the independent owner terminal attaches to the original session"
   let peer_ready = tui_v2_test.await(peer.data, writable)
   assert origin.stable_identity(attachment_of(peer_ready).origin)
@@ -1577,7 +1625,13 @@ fn exercise_peer_link_overlay(
   member: String,
   epoch: String,
 ) -> actor.Started(process.Subject(tui_driver.Message)) {
-  let assert Ok(driver) = tui_driver.start(address, owner, source)
+  let assert Ok(driver) =
+    tui_driver.start_recorded(
+      address,
+      owner,
+      source,
+      "build/shipped-multiplayer-" <> source <> "-peer-link-source.jsonl",
+    )
     as "the owner terminal attaches to the resident source session"
   let _ = await_open(driver.data, writable)
 
@@ -1668,7 +1722,13 @@ fn exercise_peer_link_overlay(
       "link", source, "main", target, "main", "--wake", "may_wake",
     ])
     as "the owner explicitly widens only this recipient's wake policy"
-  let assert Ok(recipient) = tui_driver.start(address, owner, target)
+  let assert Ok(recipient) =
+    tui_driver.start_recorded(
+      address,
+      owner,
+      target,
+      "build/shipped-multiplayer-" <> target <> "-peer-link-recipient.jsonl",
+    )
     as "the target terminal observes its own resident session"
   let _ = await_open(recipient.data, writable)
   let assert Ok(receipt) = peer_exchange(address, owner, epoch, forward)

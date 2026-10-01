@@ -520,7 +520,12 @@ fn attach(
 ) -> actor.Started(process.Subject(tui_driver.Message)) {
   let session = create(connected, key, directory, config)
   let assert Ok(started) =
-    tui_driver.start(connected.address, connected.owner, session)
+    tui_driver.start_recorded(
+      connected.address,
+      connected.owner,
+      session,
+      directory <> "/terminal.jsonl",
+    )
     as "the fixture attaches over the actual session socket"
   let _ = tui_v2_test.await(started.data, writable)
   started

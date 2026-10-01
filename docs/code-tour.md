@@ -1426,7 +1426,7 @@ registered tool, so the model's tool array and its cached prefix do not
 grow with a server's tool count, and trust is per server because the
 vetting allowlist names one module per configured server.
 
-At boot, `client/mcp` spawns each server over `mcp/transport`'s port
+At boot, `client/mcp` spawns each server over `gleam_mcp/transport`'s port
 transport with its `api_key_env` resolved from the harness's own
 environment, hand-shakes, lists its tools, and hands the listing to
 `mcp/codegen`, which renders a module of typed façades plus the surface

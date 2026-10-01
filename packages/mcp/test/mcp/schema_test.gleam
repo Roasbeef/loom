@@ -1,7 +1,7 @@
-import core/json.{type JsonValue}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam_mcp/json.{type JsonValue}
 import mcp/schema
 
 // --- fixtures ------------------------------------------------------------

@@ -19,6 +19,7 @@ provider = { path = "../provider" }
 tools = { path = "../tools" }
 codemode = { path = "../codemode" }
 mcp = { path = "../mcp" }
+gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "686955fc0461630bf64a4dc8eb51565dc7ca1ac9" }
 telemetry = { path = "../telemetry" }
 session_view = { path = "../session_view" }
 web_view = { path = "../web_view" }
@@ -28,7 +29,7 @@ gleam_otp = ">= 1.0.0 and < 2.0.0"
 weft = "== 0.4.5"
 gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
-mist = { git = "https://github.com/Roasbeef/mist.git", ref = "65b29375ecefc9a5d58bf4190a2eee41d7dd1db5" }
+mist = { git = "https://github.com/Roasbeef/mist.git", ref = "28b43178ff57bfb619c64b8c3544831646d5fdb9" }
 simplifile = ">= 2.0.0 and < 3.0.0"
 argv = ">= 1.1.0 and < 2.0.0"
 tom = ">= 2.1.0 and < 3.0.0"

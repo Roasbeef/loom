@@ -2,12 +2,15 @@
 
 An MCP (Model Context Protocol) server is a third-party program that
 offers tools for a model to call, speaking JSON-RPC 2.0 over a pipe.
-Loom's MCP client has two parts. `packages/mcp` holds the protocol
-codecs, the actor that owns one server process, the generator that turns
-a tool listing into Gleam source, and the value translation between the
-capability wire and the MCP wire. `client/mcp` is the harness wiring: it
-reads the configuration, starts one client per server, and answers
-capability calls to them.
+Loom uses the standalone `gleam_mcp` library for protocol codecs, bounded
+stdio framing, and the actor that owns one server process. `packages/mcp`
+holds the Loom adapter: source generation, schema planning, name mangling,
+and conversion between capability MessagePack and the library's JSON values.
+`client/mcp` reads configuration, starts one library client per server,
+and answers capability calls. Loom's `core/json` and capability wire types
+remain unchanged; the adapter converts directly into the library's JSON type.
+The library retains non-text result payloads, and the client adapter drops
+those payloads before constructing Loom's kind-only `cap/mcp.Other`.
 
 One decision shapes the rest of this document: **a server's tools reach
 a model only through code mode, as one generated Gleam module per
@@ -120,8 +123,8 @@ does four things per server, in this order:
 
 1. **Resolve the secret**, as above, before any process exists.
 2. **Spawn and hand-shake.** The client actor starts over
-   `mcp/transport.PortTransport` (a child OS process on an Erlang port,
-   with stdin and stdout as the wire). It sends `initialize` requesting
+   `gleam_mcp/transport.PortTransport` (a child OS process on an Erlang port,
+   with stdin and stdout as the wire). It identifies the client as `loom` and sends `initialize` requesting
    revision 2025-06-18, accepts `2025-03-26` and `2024-11-05`, refuses
    anything else, and then sends `notifications/initialized`.
 3. **List the tools.** `tools/list`, following `nextCursor` for at most
@@ -142,7 +145,7 @@ sequenceDiagram
     participant C as client/mcp
     participant A as mcp client actor
     participant S as server process
-    participant W as workspace seam
+    participant W as code-mode seams
     C->>C: read [mcp.github], resolve api_key_env
     C->>A: start over PortTransport
     A->>S: spawn argv, stdin and stdout as the wire
@@ -187,11 +190,11 @@ The four are one field for the same reason the code-mode surface is one
 field: a host that could set them separately eventually would, and each
 mismatched pair is its own failure. The model could be told about a
 module that vetting rejects, or vetting could admit a module the build
-never writes. **The orchestration seam, code mode's other capability
-surface, is never widened by any of it.** The two-seam split exists to
-control which capabilities travel together, and an orchestrator that
-could also call a third-party server is materially more dangerous to
-hand a model than one that cannot.
+never writes. `client/codemode.seam_mcp` supplies the same configured layer
+to both workspace and orchestration selections. Their imports, generated
+source, advertised surfaces and router capabilities therefore agree.
+Installed extensions retain their fixed authority, and resident hooks have
+no capability loader; neither receives this host-configured layer.
 
 ## Generated at boot, compiled per execution
 
@@ -973,7 +976,7 @@ problem was found, never a crash and never a silent substitution. Four
 rules settle where the two formats disagree, and each was a deliberate
 choice:
 
-- **A msgpack integer always fits JSON**, since `core/json.Int` is
+- **A msgpack integer always fits JSON**, since `gleam_mcp/json.Int` is
   arbitrary precision. The asymmetry runs the other way.
 - **A JSON integer outside `[-2^63, 2^64 - 1]` fails the whole
   conversion** rather than being wrapped, clamped, or turned into a
@@ -1049,7 +1052,7 @@ error output appears on the harness's own stderr.
 
 ### The spawn is a primitive, and the jail is an open decision
 
-`mcp/client` is written against `mcp/transport.Transport` and nothing
+`gleam_mcp/client` is written against `gleam_mcp/transport.Transport` and nothing
 lower. `PortTransport` is the production mechanism, and it spawns the
 server **unjailed**. `ChannelTransport` is the test seam: an in-process
 peer that receives the connect, records every outbound line, and
@@ -1111,16 +1114,16 @@ lint.
 
 | Path | What it holds |
 |---|---|
-| `mcp/jsonrpc.gleam` | The JSON-RPC 2.0 envelope: encoders, and one total decoder for the three inbound shapes. |
-| `mcp/protocol.gleam` | The five methods v1 speaks, version negotiation against a closed list, and the deliberately empty client capabilities. |
-| `mcp/stdio.gleam` | Line framing both ways: a push buffer bounded at 16 MiB, and `frame` for the outbound side. |
-| `mcp/transport.gleam` | The `Transport` seam, the `Spawn` spec, and `utf8_prefix`, which reassembles characters split across pipe chunks. |
-| `mcp/client.gleam` | The actor: handshake, `list_tools` with bounded pagination, `call_tool`, `stop`, and the death latch. |
+| `gleam_mcp/jsonrpc.gleam` | The JSON-RPC 2.0 envelope: encoders, and one total decoder for the three inbound shapes. |
+| `gleam_mcp/protocol.gleam` | The five methods v1 speaks, version negotiation against a closed list, and the deliberately empty client capabilities. |
+| `gleam_mcp/stdio.gleam` | Line framing both ways: a push buffer bounded at 16 MiB, and `frame` for the outbound side. |
+| `gleam_mcp/transport.gleam` | The `Transport` seam, the `Spawn` spec, and `utf8_prefix`, which reassembles characters split across pipe chunks. |
+| `gleam_mcp/client.gleam` | The actor: handshake, `list_tools` with bounded pagination, `call_tool`, `stop`, and the death latch. |
 | `mcp/schema.gleam` | The three-tier reading of a raw `inputSchema` into a parameter plan; no error case. |
 | `mcp/name.gleam` | Mangling a server-chosen name into a Gleam identifier, with the digest rule that keeps two originals distinct. |
 | `mcp/codegen.gleam` | The generator: one `cap/mcp/<server>` module and its rendered surface, the sanitizer, the `@` backstop, and every refusal. |
 | `mcp/interchange.gleam` | msgpack ↔ JSON, total both ways, with the four disagreements decided. |
-| `mcp/internal/ffi_port.gleam` | The port externals over `mcp_ffi.erl` — this package's complete inventory of impurity. |
+| `gleam_mcp/internal/ffi_port.gleam` | The port externals over the library's Erlang shim; the local adapter has no FFI. |
 | `client/catalog.gleam` | `[mcp.<name>]`: the key grammar, the mangling gate, and the `api_key_env` indirection. |
 | `client/mcp.gleam` | The layer: boot per server, the refusal wording, the `mcp.<server>` router arm, the pinned result shape, and the result ceilings. |
 | `client/codemode.gleam` | `over_mcp`, `seam_allowlist`, `seam_caps_on` — the one `Config.mcp` field and the four things it widens. |
@@ -1129,7 +1132,8 @@ lint.
 | `client/test/support/mcp_fixture.escript` | The checked-in third-party server the end-to-end spawns: three tools, one of them an oracle that echoes its arguments back. |
 | `client/test/client/codemode_live_test.gleam` | A program reaching a real server process through a real pipe, and the wire-fidelity assertions on what crossed. |
 
-Each Gleam path is relative to its package's source root
+The `gleam_mcp/*` paths belong to the external dependency's `src/` tree.
+Other Gleam paths are relative to their Loom package's source root
 (`mcp/codegen.gleam` is `packages/mcp/src/mcp/codegen.gleam`), except
 the last two rows, which are under `packages/client/test/`.
 

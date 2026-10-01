@@ -2143,7 +2143,7 @@ catalogue without opening runtimes. Explicit admission invokes
   than N consecutive ones; `weft.start` hands outcomes back sorted by
   input position, so zipping them against the unchanged `servers` list is
   what restores catalogue order regardless of which server answers first.
-  Each task still spawns its server over `mcp/transport.PortTransport`,
+  Each task still spawns its server over `gleam_mcp/transport.PortTransport`,
   hand-shakes, lists its tools and generates its `cap/mcp/<server>`
   façade, keeping the client **running** for the session because dispatch
   is the same client; each failing step refuses *that* server with a
@@ -2158,7 +2158,7 @@ catalogue without opening runtimes. Explicit admission invokes
   not depend on which process runs `start_one` — a weft worker moves who
   calls it, not how the actor is severed from its caller, so bring-up
   needed no re-link back to the boot's own process and no accessor onto
-  `mcp/client.Client` to do one. `Layer` is then the only handle on the
+  `gleam_mcp/client.Client` to do one. `Layer` is then the only handle on the
   clients, and `serve.shutdown` is what stops them.
 - `client/system_prompt.{Host, Rendered, Assembled, Origin, assemble,
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
@@ -4767,3 +4767,14 @@ expose granted bounds, and cron preserves its fixed UTC offset. Neither the
 durable schedule encoding nor wake authority changes.
 
 See [protocol 057](../../protocol-change/057-typed-capability-results.md).
+
+## Standalone MCP dependency
+
+`gleam_mcp` owns MCP protocol codecs, JSON values, framing, the client state
+machine and native transport. `client/mcp` sets `with_client_name("loom")`
+before connecting and preserves the parked-client publication and retirement
+contract. The local `mcp` package retains code generation, name/schema
+planning and direct `core/msgpack` conversion. `gleam_mcp/protocol.Other`
+retains a raw non-text block; `client/mcp.content_block` deliberately drops
+that payload when constructing the existing capability result. Core JSON
+and capability wire contracts are unchanged.

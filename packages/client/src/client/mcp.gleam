@@ -2,13 +2,13 @@
 //// what they let a code-mode program import, and the router arm that
 //// carries a `mcp.<server>` capability call out to one of them.
 ////
-//// This is the harness wiring `packages/mcp` deliberately does not do
-//// (issue #106). That package holds the protocol, the client actor and
-//// the generator; `client/catalog` holds the `[mcp.<name>]` tables. Here
-//// the two meet: for every configured server, spawn it, hand-shake,
-//// list its tools, generate the `cap/mcp/<server>` façade module, and
-//// keep the client running for the life of the session, because the
-//// dispatch path is the same client.
+//// This is the harness wiring the reusable `gleam_mcp` library does not do
+//// (issue #106). That library owns the protocol and client actor; the local
+//// `mcp` package owns generation and interchange. `client/catalog` holds the
+//// `[mcp.<name>]` tables. This module starts each configured server,
+//// performs its handshake, lists its tools, and generates the
+//// `cap/mcp/<server>` façade module. The same client serves capability
+//// calls for the life of the session.
 ////
 //// ## MCP reaches a model through code mode, and nowhere else
 ////
@@ -68,7 +68,6 @@ import codemode/satellite.{
   type CapDenial, type CapPlan, type CapRequest, type CapRouter, CapDenial,
   ServedHere,
 }
-import core/json.{type JsonValue}
 import core/msgpack.{type MsgPackValue}
 import gleam/bit_array
 import gleam/erlang/process
@@ -77,11 +76,12 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import mcp/client as mcp_client
+import gleam_mcp/client as mcp_client
+import gleam_mcp/json.{type JsonValue}
+import gleam_mcp/protocol
+import gleam_mcp/transport
 import mcp/codegen
 import mcp/interchange
-import mcp/protocol
-import mcp/transport
 import provider/secret.{type SecretStore}
 import tools/blob
 import weft
@@ -568,6 +568,7 @@ fn start_one(
     mcp_client.connect(
       client,
       mcp_client.options(options.client_version)
+        |> mcp_client.with_client_name("loom")
         |> mcp_client.with_handshake_timeout(options.handshake_timeout_ms),
     )
     |> result.map_error(fn(error) {
@@ -646,7 +647,7 @@ fn stopping(client: mcp_client.Client, refusal: Refusal) -> Refusal {
 // --- what the layer publishes ----------------------------------------------
 
 /// The module names this layer's servers generated, plus the shared
-/// vocabulary module they all import — exactly what the workspace seam's
+/// vocabulary module they all import — exactly what the code-mode seam's
 /// allowlist is widened by, and empty when no server came up.
 ///
 /// ## Examples
@@ -804,8 +805,8 @@ fn arguments_json(args: MsgPackValue) -> Result(JsonValue, CapDenial) {
 /// Public because it is the whole of what a server's answer turns into
 /// and the only part of the answer path a hermetic test can hold still:
 /// the two ceilings below are reachable from a hostile server but not
-/// from a fake one, whose own answer has to survive `core/json.parse`
-/// and `mcp/stdio`'s line cap on the way in.
+/// from a fake one, whose own answer has to survive `gleam_mcp/json.parse`
+/// and `gleam_mcp/stdio`'s line cap on the way in.
 ///
 /// ## Examples
 ///
@@ -846,7 +847,7 @@ pub fn tool_result(answer: protocol.CallToolResult) -> CapOutcome {
 //
 // A `tools/call` result is bounded by everything upstream at *JSON* size
 // and *JSON* depth, and neither bound is the one the cap channel
-// enforces. A legal line just under `mcp/stdio.max_line_bytes` can
+// enforces. A legal line just under `gleam_mcp/stdio.max_line_bytes` can
 // re-encode larger — a JSON `0.1` is three bytes and a msgpack float64
 // is nine — and the frame the host builds around this value is two
 // containers deep, so a structured value at the JSON parser's own
@@ -963,7 +964,8 @@ fn structured_value(
 
 // A text block keeps its text; every other kind travels as its `type`
 // alone, which is what `cap/mcp.Other` carries. The payload of a
-// non-text block is dropped by `mcp/protocol` before it reaches here.
+// non-text block stays in the library result but is dropped at this
+// capability boundary. Loom exposes only its kind to the jailed program.
 fn content_block(block: protocol.ContentBlock) -> MsgPackValue {
   case block {
     protocol.Text(text:) ->
@@ -971,7 +973,7 @@ fn content_block(block: protocol.ContentBlock) -> MsgPackValue {
         #(msgpack.StringValue("type"), msgpack.StringValue("text")),
         #(msgpack.StringValue("text"), msgpack.StringValue(text)),
       ])
-    protocol.Other(kind:) ->
+    protocol.Other(kind:, raw: _) ->
       msgpack.MapValue([
         #(msgpack.StringValue("type"), msgpack.StringValue(kind)),
       ])
@@ -1008,7 +1010,7 @@ fn call_failure(error: mcp_client.ClientError) -> CapOutcome {
   }
 }
 
-/// One `mcp/client.StartError`, worded for a boot log line. The two
+/// One `gleam_mcp/client.StartError`, worded for a boot log line. The two
 /// sides of a version refusal are both named, because "unsupported
 /// protocol version" without either is a line an operator cannot act on.
 ///
@@ -1035,7 +1037,7 @@ pub fn describe_start_error(error: mcp_client.StartError) -> String {
   }
 }
 
-/// One `mcp/client.ClientError`, worded for a boot log line.
+/// One `gleam_mcp/client.ClientError`, worded for a boot log line.
 ///
 /// ## Examples
 ///

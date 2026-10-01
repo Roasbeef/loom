@@ -13,7 +13,7 @@
 ////
 //// Four decisions, each of which was a choice rather than a fact:
 ////
-//// 1. **msgpack `Int` always fits JSON.** `core/json.Int` is arbitrary
+//// 1. **msgpack `Int` always fits JSON.** `gleam_mcp/json.Int` is arbitrary
 ////    precision, so no integer a program can build is unrepresentable
 ////    on the way out. The asymmetry is real and runs the other way.
 ////
@@ -45,17 +45,17 @@
 //// ## Depth needs no bound here
 ////
 //// Both container types are bounded at `max_depth` (256) by the parser
-//// that produced them — `core/json.parse` for a server's answer,
+//// that produced them — `gleam_mcp/json.parse` for a server's answer,
 //// `core/msgpack.decode` for a program's arguments — and the two
 //// constants are the same. So a value that arrives here is already
 //// shallow enough for the encoder on the far side, and this module adds
 //// no ceiling of its own to keep in step with theirs.
 
-import core/json.{type JsonValue}
 import core/msgpack.{type MsgPackValue}
 import gleam/int
 import gleam/list
 import gleam/result
+import gleam_mcp/json.{type JsonValue}
 
 /// The largest integer msgpack encodes (`uint64`).
 pub const max_msgpack_int = 18_446_744_073_709_551_615
@@ -206,7 +206,7 @@ fn msgpack_at(
   }
 }
 
-// `core/json.Int` is arbitrary precision and msgpack is not, so this is
+// `gleam_mcp/json.Int` is arbitrary precision and msgpack is not, so this is
 // the one place a value can be too large for the wire it is headed for.
 fn msgpack_int(
   value: Int,
