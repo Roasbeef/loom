@@ -13,6 +13,29 @@
 ////
 //// ## Flow
 ////
+//// `view` → `cached_frame` → `render_frame` → `render_transcript` → `render_rows` → `render_footer`
+////
+//// 1. `view` is what etui calls each frame. If the tick cached a frame and the
+////    screen has not changed, `cached_frame` returns it; otherwise `render_frame`
+////    builds one.
+//// 2. `render_frame` takes every rectangle from `tui/layout`, then paints in
+////    z-order: the canvas (`repaint_canvas`), header, transcript, agent rail,
+////    changes panel, queue and todo, composer, pending band, footer and strip,
+////    and the command palette last among the base surfaces.
+//// 3. `render_transcript` shows the notes, the diff or the transcript rows the
+////    projection already built; `render_rows` takes the visible window and
+////    `render_transcript_row` paints each. Those rows come from `render_line`,
+////    which picks a speaker's gutter (`speaker_rows`) and reflows with
+////    `tui/markdown`.
+//// 4. `render_footer` shows the compact footer unless details are expanded, and
+////    otherwise a single, stacked or split footer by height
+////    (`render_single_footer`, `render_stacked_footer`, `render_split_footer`).
+//// 5. The open overlay is painted over the base, so each overlay's own
+////    render function decides what it covers; the selection highlight and the
+////    cursor come last.
+//// 6. `render_summary_surface` and `render_context_surface` take over the frame
+////    when their surfaces are open, and `appearance.apply` maps the palette.
+////
 //// `view` and `cached_frame` lead to `render_frame`.
 //// `render_frame` divides the screen and calls the owned rendering sections.
 //// For held input, `render_frame` passes `input_title` to

@@ -16,6 +16,30 @@
 //// drives directly after handing the slot a reply with `runtime.hold`. An
 //// opened session comes back as an attachment candidate instead, through
 //// `tui/attachment`.
+////
+//// ## Flow
+////
+//// `load_catalogue` → `start_control` → `drain_control` → `apply_control_reply` → `staged` → `finish_control`
+////
+//// 1. An operator action calls a `begin_*` or `load_*` function (`load_catalogue`,
+////    `begin_rename`, `begin_removal`, `begin_peer_link`, `begin_access_request`).
+////    It refuses a second request while the one control slot is busy, then
+////    `start_control` queues a `job.Control` with `tui_model.start_job` and
+////    parks a `ControlRequest` on the view.
+//// 2. The runtime puts the reply in that slot, and the tick calls `drain_control`,
+////    which takes it with `job.take`.
+//// 3. `apply_control_reply` maps every weft outcome (completed, failed, crashed,
+////    abandoned, relay lost) to either a stored result or an error line;
+////    `staged` keeps the result on the slot until the relay reports it is done.
+//// 4. On `weft.AllDelivered`, `finish_control` applies the outcome: a catalogue
+////    page opens the selector, a rename or removal updates the catalogue
+////    (`catalogue_removed`), peer and access replies go to `finish_peer_workspace`,
+////    `finish_peer_inspection`, `finish_access_listing` and `finish_access_change`.
+//// 5. `begin_open` is the other half: it starts an attach job and an attachment
+////    candidate, and `tui/attachment` finishes it.
+//// 6. Three more slots follow the same shape: `drain_reconnect` (after a lost
+////    connection), `drain_configuration` (`create_session`) and `drain_activity`
+////    (`service_activity`).
 
 import core/json
 import gleam/int
