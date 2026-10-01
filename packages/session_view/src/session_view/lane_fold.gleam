@@ -18,6 +18,31 @@
 //// fold wrote the host's state itself (`docs/design-notes/step-extraction.md`,
 //// question 11). The terminal's loop is in `tui/inbound`, and a host with no
 //// surfaces of its own runs the same loop with no facts to apply.
+////
+//// ## Flow
+////
+//// `tick` / `receive` → `apply_channel_update` → `fold_update` → `reconcile_cut` → `apply_cut` → `render_cut`
+////
+//// 1. `tick`, `receive` and `cancel_unsent` give the lane its time or a socket
+////    message and return the `session_channel.Update` values it produced; the
+////    host applies them one at a time.
+//// 2. `apply_channel_update` calls `fold_update` for the update's own effect,
+////    then keeps a reply's words apart so a later event cannot write
+////    them over; `host_read` says which refusals are no command's outcome.
+//// 3. `fold_update` dispatches by update. A captured cut goes to
+////    `reconcile_cut`, a history page to `receive_history`, a refusal to
+////    `apply_request_refused`, and a pushed event on to `event_fold.apply_event`.
+//// 4. `reconcile_cut` leaves an unchanged cut alone and otherwise calls
+////    `apply_cut`, then asks for the worktree and for any pending approval that
+////    vanished (`request_visible_worktree`, `request_decisions`).
+//// 5. `apply_cut` projects the cut's approvals, calls `render_cut` to rebuild
+////    the transcript and surfaces, and `close_settled_approval` shuts a dialog
+////    whose question was answered elsewhere.
+//// 6. `receive_unlaned` and `service_history` serve a host before or between
+////    lanes: a connection event, and the history read a paging control wants.
+//// 7. `take_replayed` and `apply_replay_change` are the same fold for a replay:
+////    each recorded change goes through `apply_replay_change` in place of a
+////    live update.
 
 import core/message
 import core/origin

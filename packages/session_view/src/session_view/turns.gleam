@@ -24,6 +24,28 @@
 //// waits on an approval: the reader must be able to see the step that is
 //// asking. The duration and counts a divider shows come from the records
 //// (the input's and the last step's own timestamps), never from a clock.
+////
+//// ## Flow
+////
+//// `pieces` → `joined` → `classify` → `split` → `lay_out` → `worked` → `divider`
+////
+//// 1. `pieces` takes the strand's blocks and the host's `Latest` and `Expansion`
+////    and returns the lane's `Piece` values in order.
+//// 2. `joined` pairs each tool call with its result across blocks, so a step can
+////    carry both however the terminal grouped them.
+//// 3. `classify` decides what each block, or each call in a tool group, is to a
+////    turn (`Classified`): an input, a candidate answer, a step, or a row that
+////    stays outside the fold. `entry_kind` reads the entry and `step` builds a
+////    call's step; `spawned` and `returned` make the agent rows.
+//// 4. `split` cuts the classified rows at each input into turns. `grouped` is the
+////    same cut over bare blocks, for a host that pages older turns in.
+//// 5. `lay_out` keeps the last message with the strand's own prose as the answer
+////    and puts every other message and step under one divider, placed where the
+////    first of them stood. The last turn stays `Open` while the strand runs.
+//// 6. `worked` takes the divider's figures from the records alone, and `divider`
+////    words them, leaving out a figure the records did not give.
+//// 7. `pictured` and `picture` are the separate readers over the finished pieces
+////    that find a row's images by name, so a host serves only an image the lane draws.
 
 import core/entry
 import core/json
@@ -201,6 +223,23 @@ pub type Piece {
   Missed(key: String, text: String)
 }
 
+/// Whether the pieces carry the rows a reader can expand a row to, and how
+/// they are bounded.
+///
+/// The expansion of a call or a reasoning block is what the terminal's
+/// `Ctrl+g` shows, which can be a whole program or a tool's whole output.
+/// It is built where the compact rows are, once per projection, and the
+/// host's `cap` cuts it there, so no piece ever holds the uncapped text.
+pub type Expansion {
+  /// The host draws no expansion. The terminal does not use `turns` at
+  /// all, and a caller that only asks where turns begin skips the work.
+  Skip
+
+  /// Build each expansion and cut it with `cap`, which may add a line
+  /// saying it cut. The web view passes `web_view/view/expansion.capped`.
+  Expand(cap: fn(List(Line)) -> List(Line))
+}
+
 /// A strand's hue from its position among the captured strands.
 ///
 /// ## Examples
@@ -247,23 +286,6 @@ pub fn latest(
     True -> Running
     False -> Settled
   }
-}
-
-/// Whether the pieces carry the rows a reader can expand a row to, and how
-/// they are bounded.
-///
-/// The expansion of a call or a reasoning block is what the terminal's
-/// `Ctrl+g` shows, which can be a whole program or a tool's whole output.
-/// It is built where the compact rows are, once per projection, and the
-/// host's `cap` cuts it there, so no piece ever holds the uncapped text.
-pub type Expansion {
-  /// The host draws no expansion. The terminal does not use `turns` at
-  /// all, and a caller that only asks where turns begin skips the work.
-  Skip
-
-  /// Build each expansion and cut it with `cap`, which may add a line
-  /// saying it cut. The web view passes `web_view/view/expansion.capped`.
-  Expand(cap: fn(List(Line)) -> List(Line))
 }
 
 /// The pieces of one strand's lane, in order.

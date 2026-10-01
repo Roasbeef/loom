@@ -24,6 +24,26 @@
 //// whole record after every event. A host that rebuilds its view on every
 //// update may ignore them (`docs/design-notes/step-extraction.md`, question
 //// 3).
+////
+//// ## Flow
+////
+//// `hold_channel` → `record_surface` → `invalidate_transcript` → `invalidate_frame` → `mark_activity` → `presentation`
+////
+//// 1. `hold_channel` stores the adopted lane after every transition, moving the
+////    outputs the lane queued into the shared outbox so none is lost when the
+////    lane is replaced.
+//// 2. `record_surface` appends a `SurfaceFact` for the host's own surfaces to
+////    follow, in the order the reducers decided it; `record_arrival` queues the
+////    recording line for a message that came with no lane.
+//// 3. `append_error` and `append_notice` add a transcript line and the notice,
+////    then `invalidate_transcript` and `invalidate_frame` advance the revisions
+////    a host compares with the ones it last drew.
+//// 4. `mark_activity` says that something happened; the host decides what that
+////    means for its idle pacing.
+//// 5. The readers (`queue_rows`, `queue_owner`, `active_strand_live`,
+////    `active_strand_phase`, `strand_running`, `is_known_strand`) answer
+////    questions about the record without changing it.
+//// 6. `presentation` gives the transcript's line builders the fields they read.
 
 import core/entry
 import core/json

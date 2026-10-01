@@ -35,6 +35,32 @@
 //// functions that open a surface, move its cursor or decide a surface's
 //// target read the terminal's state, take the whole model, and live in the
 //// terminal (`tui/side_surfaces`).
+////
+//// ## Flow
+////
+//// `sync_context` → `service_context_read` → `receive_jobs` → `receive_goal` → `refuse_goal`
+////
+//// Each surface follows one cycle, and the module repeats it per surface:
+//// want, service, receive, refuse.
+////
+//// 1. A host or a `sync_*` edge records that a surface wants data, or one is
+////    opened. `sync_context`, `sync_goal` and `sync_advisor_nudges` compare the
+////    state before and after an event and mark a surface stale; `context_refresh_due`
+////    decides whether the context is worth another read.
+//// 2. The tick calls each `service_*_read` after draining the socket:
+////    `service_notes_read`, `service_queue_read`, `service_worktree_read`,
+////    `service_jobs_read`, `service_context_read` and `service_goal_read`. Each
+////    sends its frame only when the channel is ready and no other read holds the
+////    worker slot.
+//// 3. A read that can no longer go out is dropped with a notice
+////    (`drop_queue_read`, `unreachable_goal`) rather than left standing.
+//// 4. A reply is checked against the attachment that asked, then taken by its
+////    receiver: `receive_jobs`, `receive_goal` through `report_goal`, and
+////    `receive_advisor_nudges`. A reply for an older attachment is dropped.
+//// 5. `refuse_goal` and `retire_delivered_nudges` close the cycle when a read
+////    fails or a committed entry delivers what a nudge announced.
+//// 6. `goal_action`, `submit_goal_action` and `confirming` are the commands the
+////    goal panel sends, over the same shared record.
 
 import core/entry
 import gleam/bool

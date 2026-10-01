@@ -47,6 +47,30 @@
 //// one map access. A definition line whose label is in that map is dropped
 //// from the output wherever it stands; any other line that merely looks
 //// like one is paragraph text.
+////
+//// ## Flow
+////
+//// `parse` → `definitions` → `blocks` → `collect` → `next_block` → `inlines` → `scan`
+////
+//// 1. `parse` normalises line endings and leading tabs, then calls `definitions`
+////    once over the whole text so every later reference lookup is one map access.
+//// 2. `blocks` runs `collect`, which reads the lines front to back; `classify`
+////    decides what kind of line opens each block, and `next_block` takes that
+////    block's lines and returns the lines it left.
+//// 3. A container (`quoted` and `quote_block`, `list_items` and `list_block`, or a
+////    footnote's `item_body`) gathers its lines with their markers removed and
+////    calls `blocks` again one level down, where `deeper` stops at the depth limit.
+//// 4. `fence_body`, `indented_code`, `table` and `paragraph` take the leaf
+////    blocks; `paragraph` joins its lines until `continuation` says one
+////    interrupts, and `setext` turns an underlined paragraph into a heading.
+//// 5. Every block of text goes to `inlines`, which splits it with `tokens` and
+////    walks the pieces in `scan`, one construct per step.
+//// 6. `scan` hands each marker to its reader: `code_span`, `delimiter_run`,
+////    `open_link` and `close_bracket`, `autolink`, `bare_link`, `footnote_ref`
+////    and `escaped`. Each consumes input or finishes a construct, which is what
+////    keeps the work linear.
+//// 7. `finish` closes whatever is still open as text, and `plain` is the
+////    separate entry a host calls to read an image's alternative text.
 
 import gleam/bit_array
 import gleam/dict.{type Dict}
