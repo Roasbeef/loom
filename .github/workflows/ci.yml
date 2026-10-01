@@ -455,6 +455,14 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
 
+      # The language-server manager's live rust-analyzer fixture runs in
+      # the client bucket, and rustup's `rust-analyzer` link exists on the
+      # runner without the component, so without this the fixture skips
+      # and the gate's census refuses it. Same script as the jail lane's.
+      - name: Install rust-analyzer for the language-server fixture
+        if: matrix.bucket == 'client'
+        run: .github/scripts/install_rust_analyzer.sh
+
       - name: make check (${{ matrix.bucket }})
         # Set for every bucket, as the old single job set it for the whole
         # of `make check`: more than one package reads it (the client's

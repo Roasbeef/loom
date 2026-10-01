@@ -18,11 +18,13 @@
 //// judged under. The lease base is the session's own, with the three
 //// per-command limits zeroed (`broker/policy.session_lease`, `OutputIsWire`)
 //// and widened by exactly what the operator wrote in `loom.toml` — the extra
-//// roots, the environment names, and the mount the server's own executable
-//// needs. Nothing the model supplies widens it, and in particular the
-//// project root does not: a root the session base cannot already reach is
-//// refused, never granted. The requirements then ask for the root (writable
-//// only for `ProjectWritable`), those extra roots, a private scratch
+//// roots, the environment names, the private caches `cache_env` names
+//// under Loom's own `<cache>/loom/lsp/<server>/`, and the mount the
+//// server's own executable needs. Nothing the model supplies widens it,
+//// and in particular the project root does not: a root the session base
+//// cannot already reach is refused, never granted. The requirements then
+//// ask for the root (writable only for `ProjectWritable`), those extra
+//// roots and private caches, a private scratch
 //// directory for `TMPDIR`, the network off, and unlimited wall, CPU and
 //// output. The zeros are written into the requirements literally rather
 //// than derived from the base, so a base that kept a cap is a narrowing
@@ -55,6 +57,86 @@
 //// `broker.abort_step` stops exactly one server. The budget is one
 //// outstanding execution and a deadline twelve hours out, the lease's real
 //// bound now that the helper's own wall is zero.
+////
+//// ## Flow
+////
+//// The file reads policy first, then transport, because a start builds the
+//// jail before it spawns anything. The relay's state types are at the top,
+//// before either half.
+////
+//// ```text
+//// policy half (pure except where noted):
+////   locate → executable_path → measured → followed → landed → ending
+////   directory_unlinked, caches_unlinked      (read the disk; the manager
+////                                             calls them before any clearance)
+////   policy_for → regions → unshadowed → unrewritable → environment
+////             → covered → call_spec
+//// transport half:
+////   transport → connect → start_relay → handle
+////   Clearing: clear → leases.acquire → dispatch → Relaying
+////   Relaying: Write → stdin, FromCall → output → TransportData
+////   Close → Closing → (grace) abort → Aborting → settled_text → finish
+////   finish → leases.release → stop
+//// ```
+////
+//// ## Transitions of the relay
+////
+//// `Phase` is the relay's state. A cell is the phase after the signal.
+//// "Ignored" means the signal is legal in that phase and changes nothing;
+//// "stops" means the relay returns its lease and exits. A stdout chunk that
+//// was truncated, anywhere `FromCall` is handled, tells the client the wire
+//// is gone, aborts the step and moves to `Draining`.
+////
+//// | `Phase`    | `Clear` | `Write` | `Close` | `FromCall` | `OwnerDown` | `CloseGraceElapsed` | `SettleGraceElapsed` |
+//// | ---------- | ------- | ------- | ------- | ---------- | ----------- | ------------------- | -------------------- |
+//// | `Clearing` | `Relaying` once cleared, or stops on a refusal | postponed | postponed | ignored | stops, nothing was dispatched | ignored | ignored |
+//// | `Relaying` | ignored | stays; stdin is written | `Closing`, stdin EOF sent, grace armed | stays on output; stops on settlement; `Draining` on truncated stdout | `Draining`, step aborted | ignored | ignored |
+//// | `Closing`  | ignored | ignored | ignored | as `Relaying` | `Draining`, step aborted | `Aborting`, step aborted, settle grace armed | ignored |
+//// | `Aborting` | ignored | ignored | ignored | as `Relaying` | `Draining` | ignored | stops after telling the client the server never settled |
+//// | `Draining` | ignored | ignored | ignored | stops on settlement, ignores output | ignored | ignored | stops |
+////
+//// ## What each containment rule stops
+////
+//// Each refusal in this module exists because of one specific attack by a
+//// project or a model with write access to it.
+////
+//// - **Widening through the project root.** The lease base is the session's
+////   base plus only what the operator's table names. A project root the
+////   session cannot already reach is refused by `covered`, so a model that
+////   convinces the harness to open a file under `~/.ssh` cannot get a
+////   server started there.
+//// - **A link in the executable's directory** (`directory_unlinked`). If
+////   `node_modules/.bin` were replaced with a link to a directory beside a
+////   credential, `regions` would mount that credential's directory by its
+////   spelling. The real path of the directory below a writable root must
+////   equal the root's real path plus the same components.
+//// - **A link as the executable** (`unrewritable`). A link at or under a
+////   path the server writes could be retargeted at a file beside a
+////   credential, and the next lease would mount the credential's directory.
+//// - **A mount that hides a write** (`unshadowed`). An explicit mount is
+////   laid over every root, so a read-only region at or above a writable root
+////   would make a path the policy grants read-only in the jail, and
+////   nothing downstream would say so.
+//// - **A planted link in a private cache** (`caches_unlinked`). `mkdir -p`
+////   and the helper's writable bind both follow links, so a link under the
+////   cache place would make Loom create, and the server write, in a host
+////   directory nobody approved. It is judged before and after the
+////   directories are made.
+//// - **An install prefix mounted wholesale** (`regions`). Mounting
+////   `~/.cargo` read-only to run `rust-analyzer` would put the registry
+////   token inside every server's jail. Only the directories the executable
+////   chain passes through are mounted.
+//// - **A relative command** (`executable_path`). It would resolve against
+////   whatever directory the daemon happened to start in.
+//// - **A server that runs without confinement.** The enforcement probe in
+////   `client/lsp/manager` clears a trivial command under this exact policy
+////   and demand before the server is cleared, and `call_spec` takes the
+////   demand as a parameter so the server cannot clear under a weaker one.
+//// - **A lease that dies hours in.** The three per-command limits are
+////   written as zero in the requirements, so a base that kept a cap is
+////   refused at the start, not killed at the cap later.
+//// - **A corrupt wire.** A truncated stdout chunk is fatal, because JSON-RPC
+////   framing cannot recover from missing bytes.
 
 import broker/broker.{type CallEvent, type CallSpec}
 import broker/budget
@@ -82,6 +164,54 @@ import simplifile
 import tools/fs
 import tools/tool.{type RunningCall}
 import weft/state_machine as sm
+
+// --- the relay's state -------------------------------------------------------
+
+// What moves the relay. `Clear` is its own first message; `Write` and
+// `Close` come from the client actor; `FromCall` is the broker; `OwnerDown`
+// is the client actor's monitor; the two graces are its state timeouts.
+type Signal {
+  Clear
+  Write(bytes: BitArray)
+  Close
+  FromCall(event: CallEvent)
+  OwnerDown
+  CloseGraceElapsed
+  SettleGraceElapsed
+}
+
+// The relay's phases. A phase's payload never changes while the relay is in
+// it (docs/weft.md rule 1): everything that moves per event is in `Relay`.
+type Phase {
+  // Waiting for the lease and the clearance. Writes and a close are
+  // postponed until the server exists.
+  Clearing
+
+  // The server runs; `call` is its stdin and cancel.
+  Relaying(call: RunningCall)
+
+  // The client closed stdin and the server has `close_grace_ms` to exit.
+  Closing(call: RunningCall)
+
+  // The grace ran out and the step was aborted; the settlement is owed.
+  Aborting
+
+  // The client has already been told the wire is gone (a truncated stdout,
+  // or its own death); the relay stays only to see the helper settle, so
+  // the lease is returned when the helper actually is.
+  Draining
+}
+
+// Everything that moves per event.
+type Relay {
+  Relay(
+    launch: Launch,
+    inbound: Subject(transport.TransportEvent),
+    events: Subject(CallEvent),
+    lease: Option(leases.Lease),
+    stderr: BitArray,
+  )
+}
 
 // --- identity -------------------------------------------------------------
 
@@ -257,6 +387,14 @@ pub fn locate(
 // works, and refusing it there would be refusing a server over a feature
 // it does not use. An absolute path is checked by `measured`, which has to
 // read it without following it anyway.
+//
+// The `head == "gleam"` guard is the one place this module knows a language
+// by name, and it is deliberate. Code mode bundles a Gleam compiler with
+// its release and has already located it, so the compiler that analyses the
+// project (`gleam lsp` is a subcommand of that compiler) is then the same
+// one that builds the project's programs, and its version cannot disagree
+// with the one the user's code mode runs. No other server has a bundled
+// copy, so every other bare name is looked up on `PATH`.
 fn executable_path(
   name: String,
   head: String,
@@ -465,6 +603,194 @@ fn unreadable(
   <> reason
 }
 
+// --- what the disk says before a start ----------------------------------
+
+/// Refuses an executable whose spelled directory passes through a link at
+/// or under a path the server writes.
+///
+/// `unrewritable` judges every link *file* on the way to the executable,
+/// but a link can also be a directory component of the path `command`
+/// spells: `node_modules/.bin` replaced by a link to a directory beside a
+/// credential leaves `node_modules/.bin/server` an ordinary file, and
+/// `regions` mounts `node_modules/.bin` by its spelling, which the helper's
+/// bind follows. So when a path in `writes` holds the executable's
+/// directory, the part of that directory below it must have no link in
+/// it: its real path must be the write's own real path with the same
+/// components after it. Links *above* the write — a workspace reached
+/// through `/var -> /private/var` — are the operator's and are admitted.
+/// `writes` is the requirements' `writable_roots`.
+///
+/// It reads the disk, so it is not part of `policy_for`, which stays a
+/// pure function of its inputs; the manager calls it with a jail's other
+/// preparation, before any clearance. It resolves with
+/// `tools/fs.resolve_real` rooted at `/`, the walker `locate` follows
+/// links with, and a component that does not exist is kept as written.
+/// The answer is point-in-time, as `resolve_real`'s always is: it closes
+/// the link a start would otherwise bind, not one swapped in between this
+/// read and the helper's bind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With /w/app/node_modules/.bin -> /home/o/.ssh on disk:
+/// // jail.directory_unlinked(
+/// //   "ts",
+/// //   jail.Executable("/w/app/node_modules/.bin/server", jail.PlainExecutable),
+/// //   ["/w/app"],
+/// // )
+/// // -> Error("lsp.ts's executable ... is reached through a directory link ...")
+/// ```
+///
+pub fn directory_unlinked(
+  name: String,
+  executable: Executable,
+  writes: List(String),
+) -> Result(Nil, String) {
+  let directory = filepath.directory_name(executable.path)
+  let holding =
+    list.filter(writes, fn(write) {
+      policy.covers(root: write, path: directory)
+    })
+  list.try_each(holding, fn(write) {
+    use real_write <- result.try(real_path(name, write))
+    use real_directory <- result.try(real_path(name, directory))
+    let expected = join_below(real_write, below(write, directory))
+    case real_directory == expected {
+      True -> Ok(Nil)
+      False ->
+        Error(
+          "lsp."
+          <> name
+          <> "'s executable "
+          <> executable.path
+          <> " is reached through a directory link under "
+          <> write
+          <> ", which the server can rewrite: "
+          <> directory
+          <> " resolves to "
+          <> real_directory
+          <> "; name the file it leads to in `command`",
+        )
+    }
+  })
+}
+
+/// Refuses a private cache whose directory is not where Loom put it: its
+/// real path must be the cache place's own real path joined with
+/// `loom/lsp/<server>/<dir>`, so no component below the cache place is a
+/// link.
+///
+/// The decoder refuses a table that names Loom's private cache, and
+/// `profile.unnested` a cache inside another, but a link can still reach
+/// one of these directories some other way — a daemon whose cache place
+/// lies inside the session's workspace, or a host process — and both
+/// `mkdir -p` and the helper's writable bind follow it. This is the check
+/// that holds whatever the route, which is why it is kept although the
+/// decoder's refusals close the ones a table could open. The cache place
+/// itself is canonicalised first, so an operator whose `~/.cache` is a link
+/// to another disk is admitted: only what lies below it is Loom's.
+///
+/// The manager runs it both before `mkdir -p`, so a planted link is not
+/// followed to make a directory where it points, and after, so the
+/// directory the helper binds is the one judged. Resolution is
+/// `tools/fs.resolve_real` rooted at `/`, as `locate`'s; a component that
+/// does not exist yet is kept as written, which is what makes the first
+/// run meaningful. A server with no `cache_env` passes untouched.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With /home/o/.cache/loom/lsp/go/xdg -> /home/o/.ssh on disk:
+/// // jail.caches_unlinked(go, Places(home: Some("/home/o"), cache: Some("/home/o/.cache")))
+/// // -> Error("lsp.go's private cache /home/o/.cache/loom/lsp/go/xdg resolves to /home/o/.ssh, ...")
+/// ```
+///
+pub fn caches_unlinked(
+  server: LspServer,
+  places: Places,
+) -> Result(Nil, String) {
+  use caches <- result.try(private_caches(server, places))
+  case caches, places.cache {
+    [], _ -> Ok(Nil)
+
+    // `private_caches` has already refused a cache with no place to be in,
+    // so this arm answers only for totality.
+    [_, ..], None ->
+      Error("lsp." <> server.name <> "'s private caches have no cache place")
+    [_, ..], Some(place) -> {
+      use real_place <- result.try(real_path(server.name, place))
+      list.try_each(profile.cache_env_paths(server), fn(entry) {
+        cache_where_placed(server.name, entry.1, places, real_place)
+      })
+    }
+  }
+}
+
+// One private cache against the real cache place: its spelled path, its
+// real path, and the real path it must have.
+fn cache_where_placed(
+  name: String,
+  path: profile.LspPath,
+  places: Places,
+  real_place: String,
+) -> Result(Nil, String) {
+  use spelled <- result.try(profile.expand_path(path, places))
+  use real <- result.try(real_path(name, spelled))
+  let expected = case path {
+    profile.CachePath(rest) -> join_below(real_place, "/" <> rest)
+    profile.AbsolutePath(_) | profile.HomePath(_) -> spelled
+  }
+  case real == expected {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "lsp."
+        <> name
+        <> "'s private cache "
+        <> spelled
+        <> " resolves to "
+        <> real
+        <> ", not "
+        <> expected
+        <> ": a link below the cache place leads it out of the directory"
+        <> " Loom owns, and binding it would grant the server a host"
+        <> " directory nobody approved; remove the link",
+      )
+  }
+}
+
+// What `path` adds to `root`, which covers it: empty for the root itself,
+// and otherwise beginning with `/`, whether or not `root` is `/`.
+fn below(root: String, path: String) -> String {
+  case string.drop_start(path, string.length(root)) {
+    "" -> ""
+    "/" <> _rest as tail -> tail
+    tail -> "/" <> tail
+  }
+}
+
+// `below` is empty or begins with `/`; the root `/` is not doubled.
+fn join_below(real: String, below: String) -> String {
+  case real, below {
+    _, "" -> real
+    "/", _ -> below
+    _, _ -> real <> below
+  }
+}
+
+// A path with every link in it resolved, or the refusal naming it.
+fn real_path(name: String, path: String) -> Result(String, String) {
+  fs.resolve_real(fs.real_filesystem(), workspace: "/", path:)
+  |> result.map_error(fn(error) {
+    "lsp."
+    <> name
+    <> "'s jail could not resolve "
+    <> path
+    <> ": "
+    <> unresolved(error)
+  })
+}
+
 /// The host regions the jail must bind for `executable` to run: its own
 /// directory, and for a link the directory of every file the link leads
 /// through. Never an install prefix.
@@ -558,6 +884,11 @@ pub type Jail {
     cwd: String,
     /// The server's private scratch directory; `TMPDIR` is its `tmp`.
     scratch: String,
+    /// The server's private caches (`profile.cache_env_paths`), expanded.
+    /// Each is a writable root and must exist before the jail starts,
+    /// because bwrap refuses a read-write bind whose source is missing;
+    /// making them is the caller's one impure step, as the scratch is.
+    caches: List(String),
     /// `lsp/<server>/<root-digest>`.
     step_id: String,
     /// Configured `env` names the daemon's environment does not set. They
@@ -596,8 +927,16 @@ pub fn policy_for(
   use Nil <- result.try(absolute_root(server.name, root))
   use readable <- result.try(expanded(server.readable, placement.places))
   use writable <- result.try(expanded(server.writable, placement.places))
+
+  // The private caches join the table's writable roots from here on: they
+  // are granted as any `writable` entry is, and they are shadowed, covered
+  // and composed under the same rules. What sets them apart is only that
+  // their paths are Loom's, never the operator's cache or another tool's.
+  use caches <- result.try(private_caches(server, placement.places))
+  let writable =
+    list.unique(list.append(writable, list.map(caches, fn(pair) { pair.1 })))
   let scratch = scratch_directory(placement.workspace, server.name, root)
-  let #(env, unset) = environment(placement, scratch, reading)
+  let #(env, unset) = environment(placement, scratch, caches, reading)
   let names = list.map(env, fn(pair) { pair.0 })
 
   // The lease base: the session's base with the per-command limits zeroed,
@@ -668,6 +1007,7 @@ pub fn policy_for(
     env:,
     cwd: root,
     scratch:,
+    caches: list.map(caches, fn(pair) { pair.1 }),
     step_id: step_id(server.name, root),
     unset:,
   ))
@@ -811,6 +1151,17 @@ fn expanded(
   list.try_map(paths, profile.expand_path(_, places))
 }
 
+// Each `cache_env` variable with the host path of its private directory.
+fn private_caches(
+  server: LspServer,
+  places: Places,
+) -> Result(List(#(String, String)), String) {
+  list.try_map(profile.cache_env_paths(server), fn(entry) {
+    profile.expand_path(entry.1, places)
+    |> result.map(fn(path) { #(entry.0, path) })
+  })
+}
+
 // Mounts are met by exact path, so a region the lease base already binds —
 // the toolchain mounts code mode put on the session base, say — is asked
 // for under the base's own path, and only a region nothing covers is added
@@ -849,10 +1200,14 @@ fn read_only(path: String) -> Mount {
 // set. PATH leads with the executable's own directory so a server that
 // re-executes itself finds itself, then follows the daemon's PATH, which is
 // where an operator's `go` or `cargo` is; a PATH entry names a place to
-// look and grants nothing, since reach is the policy's.
+// look and grants nothing, since reach is the policy's. The `cache_env`
+// variables come last and carry values the daemon never supplied: each is
+// the private directory the policy grants, so a tool inside the jail keeps
+// its cache there rather than in one the host's own tools read.
 fn environment(
   placement: Placement,
   scratch: String,
+  caches: List(#(String, String)),
   reading: fn(String) -> Result(String, Nil),
 ) -> #(List(#(String, String)), List(String)) {
   let path =
@@ -883,7 +1238,7 @@ fn environment(
         Error(Nil) -> #(acc.0, [name, ..acc.1])
       }
     })
-  #(list.append(owned, list.reverse(present)), list.reverse(unset))
+  #(list.flatten([owned, list.reverse(present), caches]), list.reverse(unset))
 }
 
 // Composes the two exactly as the broker will, so a lease that would be
@@ -1093,6 +1448,10 @@ pub fn transport(launch: Launch) -> transport.Transport {
   transport.ChannelTransport(connect: fn(inbound) { connect(launch, inbound) })
 }
 
+// The transport's `connect`, run in the client actor's process. It hands
+// back two closures over the relay's subject, so the client talks to the
+// relay as it would to a pipe: `send` is a cast, because stdin has no
+// backpressure here (ADR-015 §1) and the client must never block on it.
 fn connect(
   launch: Launch,
   inbound: Subject(transport.TransportEvent),
@@ -1124,56 +1483,15 @@ fn connect(
   }
 }
 
-// What moves the relay. `Clear` is its own first message; `Write` and
-// `Close` come from the client actor; `FromCall` is the broker; `OwnerDown`
-// is the client actor's monitor; the two graces are its state timeouts.
-type Signal {
-  Clear
-  Write(bytes: BitArray)
-  Close
-  FromCall(event: CallEvent)
-  OwnerDown
-  CloseGraceElapsed
-  SettleGraceElapsed
-}
-
-// The relay's phases. A phase's payload never changes while the relay is in
-// it (docs/weft.md rule 1): everything that moves per event is in `Relay`.
-type Phase {
-  // Waiting for the lease and the clearance. Writes and a close are
-  // postponed until the server exists.
-  Clearing
-
-  // The server runs; `call` is its stdin and cancel.
-  Relaying(call: RunningCall)
-
-  // The client closed stdin and the server has `close_grace_ms` to exit.
-  Closing(call: RunningCall)
-
-  // The grace ran out and the step was aborted; the settlement is owed.
-  Aborting
-
-  // The client has already been told the wire is gone (a truncated stdout,
-  // or its own death); the relay stays only to see the helper settle, so
-  // the lease is returned when the helper actually is.
-  Draining
-}
-
-// Everything that moves per event.
-type Relay {
-  Relay(
-    launch: Launch,
-    inbound: Subject(transport.TransportEvent),
-    events: Subject(CallEvent),
-    lease: Option(leases.Lease),
-    stderr: BitArray,
-  )
-}
-
 /// How many bytes of the server's stderr the relay keeps: the last 8 KiB,
 /// enough for the panic or the refusal a restart message wants to quote.
 pub const stderr_ring_bytes = 8192
 
+// Spawns the relay, unlinked from the client actor so that neither can
+// crash the other. The client's death is learned by monitor instead, and
+// the relay then stays alive long enough to return the lease properly.
+// `sm.continuing(Clear)` makes the clearance the relay's own first message,
+// so the start happens inside its handler and not in the client's process.
 fn start_relay(
   launch: Launch,
   inbound: Subject(transport.TransportEvent),
@@ -1208,6 +1526,12 @@ fn start_relay(
   })
 }
 
+// The relay's handler: one arm per cell of the transition table in the
+// module doc. `sm.postpone` re-delivers a message after the next phase
+// change, which is how a write that arrives before the server exists is
+// held rather than lost. `sm.with_state_timeout` arms a timer that belongs
+// to the phase being entered, so leaving the phase cancels it and a fire
+// that raced the settlement is dropped.
 fn handle(
   phase: Phase,
   relay: Relay,
@@ -1327,6 +1651,9 @@ fn clear(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
   }
 }
 
+// The impure half of a clearance: make the scratch `tmp` the jail will bind
+// as `TMPDIR` (it must exist before the helper binds it), then ask the
+// broker to clear and start the call.
 fn dispatch(relay: Relay) -> Result(RunningCall, String) {
   let launch = relay.launch
   let tmp = launch.scratch <> "/tmp"
@@ -1415,6 +1742,9 @@ fn orphaned(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
   drain(relay)
 }
 
+// Enters `Draining`: the client has been told, or has died, and the relay
+// waits, bounded, for the helper to settle so the lease is not returned
+// while the helper still holds the server.
 fn drain(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
   sm.transition(to: Draining, data: relay)
   |> sm.with_state_timeout(
@@ -1434,6 +1764,7 @@ fn finish(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
   sm.stop()
 }
 
+// The one `TransportClosed` the client receives, carrying the reason.
 fn tell(relay: Relay, reason: String) -> Nil {
   process.send(relay.inbound, transport.TransportClosed(reason:))
 }

@@ -48,26 +48,6 @@ import weft/actor
 /// (ADR-015 §1, "Pool pressure").
 pub const reserved_helpers = 3
 
-/// The number of leases a pool of `pool_size` helpers admits:
-/// `pool_size - reserved_helpers`, and never below zero.
-///
-/// At `exec.min_pool_size` (four) that is one, which is exactly the one
-/// language server a session runs; at the largest default pool it is
-/// thirteen. A pool smaller than the reservation — reachable only in a
-/// test, since the boot clamps — admits none.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert leases.cap_for(4) == 1
-/// assert leases.cap_for(16) == 13
-/// assert leases.cap_for(2) == 0
-/// ```
-///
-pub fn cap_for(pool_size: Int) -> Int {
-  int.max(pool_size - reserved_helpers, 0)
-}
-
 /// The running counter: an actor holding one entry per granted lease.
 ///
 /// Opaque, so a lease can only be granted through `acquire` and given back
@@ -94,29 +74,6 @@ pub type Refusal {
   LeasesUnavailable
 }
 
-/// A refusal as the sentence a server's `no_server` answer carries.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert leases.refusal_text(leases.AtCap(cap: 1, pool_size: 4))
-///   == "all 1 session-lived helper lease(s) a pool of 4 admits are held (pool size - 3, the three kept for bash, a code-mode satellite and its nested call)"
-/// ```
-///
-pub fn refusal_text(refusal: Refusal) -> String {
-  case refusal {
-    AtCap(cap:, pool_size:) ->
-      "all "
-      <> int.to_string(cap)
-      <> " session-lived helper lease(s) a pool of "
-      <> int.to_string(pool_size)
-      <> " admits are held (pool size - "
-      <> int.to_string(reserved_helpers)
-      <> ", the three kept for bash, a code-mode satellite and its nested call)"
-    LeasesUnavailable -> "the session's helper lease counter did not answer"
-  }
-}
-
 // What the counter's mailbox carries. `Acquire` and `Held` are exchanges;
 // `Release` is a cast, because a holder releasing on its way out must not
 // block on the counter; `HolderDown` is the monitor's word for the same
@@ -140,6 +97,49 @@ type State {
     next_id: Int,
     held: Dict(Int, Monitor),
   )
+}
+
+/// The number of leases a pool of `pool_size` helpers admits:
+/// `pool_size - reserved_helpers`, and never below zero.
+///
+/// At `exec.min_pool_size` (four) that is one, which is exactly the one
+/// language server a session runs; at the largest default pool it is
+/// thirteen. A pool smaller than the reservation — reachable only in a
+/// test, since the boot clamps — admits none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert leases.cap_for(4) == 1
+/// assert leases.cap_for(16) == 13
+/// assert leases.cap_for(2) == 0
+/// ```
+///
+pub fn cap_for(pool_size: Int) -> Int {
+  int.max(pool_size - reserved_helpers, 0)
+}
+
+/// A refusal as the sentence a server's `no_server` answer carries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert leases.refusal_text(leases.AtCap(cap: 1, pool_size: 4))
+///   == "all 1 session-lived helper lease(s) a pool of 4 admits are held (pool size - 3, the three kept for bash, a code-mode satellite and its nested call)"
+/// ```
+///
+pub fn refusal_text(refusal: Refusal) -> String {
+  case refusal {
+    AtCap(cap:, pool_size:) ->
+      "all "
+      <> int.to_string(cap)
+      <> " session-lived helper lease(s) a pool of "
+      <> int.to_string(pool_size)
+      <> " admits are held (pool size - "
+      <> int.to_string(reserved_helpers)
+      <> ", the three kept for bash, a code-mode satellite and its nested call)"
+    LeasesUnavailable -> "the session's helper lease counter did not answer"
+  }
 }
 
 /// Starts the counter for a pool of `pool_size` helpers, linked to the
@@ -242,6 +242,9 @@ pub fn stop(leases: Leases) -> Nil {
   process.send(leases.subject, Stop)
 }
 
+// The counter's one handler. Every message maps to one transition of the
+// `held` dictionary, and none of them blocks: the counter never waits on
+// a holder, so a stuck relay cannot stall another session's lease.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     // A grant at the cap is a refusal, never a queue: the helpers a lease
@@ -276,16 +279,21 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(State(..state, held:))
     }
 
+    // A read of the current count, answered from the same dictionary the
+    // grants mutate, so it can never disagree with the cap check.
     Held(reply:) -> {
       process.send(reply, dict.size(state.held))
       actor.continue(state)
     }
 
+    // Monitors die with the actor, so nothing is left to demonitor.
     Stop -> actor.stop()
   }
 }
 
 // Grants one lease: a fresh id, a monitor on the holder, and the reply.
+// The monitor is taken before the reply is sent, so a holder that dies
+// the instant it receives its lease still produces a `HolderDown`.
 fn grant(
   state: State,
   holder: Pid,

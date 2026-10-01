@@ -42,8 +42,38 @@
 //// beside the identifier. An offset past the end of a line clamps to the
 //// line's end, as the LSP specification requires.
 ////
+//// # Why the protocol counts UTF-16 units
+////
+//// LSP was specified against editors written in JavaScript and C#, whose
+//// strings are arrays of UTF-16 code units, so the offset a server reports
+//// is an index into such an array. A codepoint above U+FFFF takes two
+//// units (a surrogate pair). Treating the offset as a codepoint or byte
+//// index therefore drifts by one for every such character earlier on the
+//// line: a hover or rename lands on the wrong symbol, or an edit cuts a
+//// character in half. Both measured servers negotiate no other encoding
+//// (ADR-015), so the unit is fixed and `utf16_width` is the only place
+//// the difference is computed.
+////
 //// Everything here is pure: no I/O, no processes. Only `lsp/range`,
 //// `lsp/query` and the standard library are imported.
+////
+//// ## Flow
+////
+//// The module has four groups, in the order the file presents them. The
+//// path of a typical query and of a rename:
+////
+//// ```text
+//// query:   symbol_position -> document -> occurrences -> to_utf16_character
+//// answer:  to_site / to_sites -> site_in -> resolve -> codepoint_offset -> walk_units
+//// rename:  check_selects -> resolve_edit      (each edit selects the old name)
+////          apply -> resolve_edit -> refuse_overlaps -> splice -> between
+//// error:   describe
+//// ```
+////
+//// `lines` and `join` underlie everything: `document` indexes `lines` once
+//// so that many positions against one text do not re-split it. The file
+//// is grouped by that flow (Lines, Columns, Sites, Symbols, Edits,
+//// Faults).
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -495,7 +525,10 @@ pub fn symbol_position(
   Position(line: line - 1, character:)
 }
 
-/// Refuse a 1-based line the document does not have, else continue.
+/// Refuse a 1-based line the document does not have, else continue. It
+/// takes the rest of the caller's body as `then`, which is what lets the
+/// caller write `use <- guard_line(line, count)` and keep the happy path
+/// unindented.
 fn guard_line(
   line: Int,
   count: Int,

@@ -514,6 +514,30 @@ storage suite over the backends.
   this package's `src`. Only `test/` disables R7. Bare assertions remain
   lint debt, not an exemption from the guide.
 
+## The language-server suites
+
+One test module drives a real language server through the jail,
+feature-detected and printing `SKIP <suite>: <what is missing>` where a
+prerequisite is absent (CI's skip census decides which skips a lane may
+have; `.github/declared-skips*`):
+
+- `lsp_e2e_test` — issue #25's acceptance: whole sessions booted by
+  `serve.open_instance` from a `loom.toml` with an `[lsp]` table, a
+  scripted model renaming across a Gleam fixture (and a stale apply), and
+  `gopls` through the tool path. It looks executables up with
+  `jail.find_executable` and reads the Go toolchain's directories from the
+  environment `go` reads, so it needs no shell command.
+
+The language profiles are not tested here. They live in their own
+repositories (ADR-016, addendum), whose CI builds Loom and runs
+`loomd ext check`. The mechanism they depend on is tested in `client`
+(`client/extension/profile_test`, `client/lsp/profile_check_test`).
+
+The suite demands `exec.BestEffort`: the ordinary runner's helper cannot
+apply every layer platform enforcement demands, and the probe would
+refuse the server before any question. The jailed Linux lane installs
+`gopls` and runs the Go session with no waiver.
+
 ## Deep Docs
 
 - [docs/architecture/simulation.md](../../docs/architecture/simulation.md) —

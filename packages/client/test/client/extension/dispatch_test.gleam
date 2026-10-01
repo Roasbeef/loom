@@ -868,6 +868,8 @@ fn a_manifest() -> manifest.Manifest {
       requests_per_call: 0,
       secrets: [],
     ),
+    lsp: [],
+    checks: [],
   )
 }
 
@@ -987,6 +989,7 @@ fn identity_for(op_id: ids.OpId) -> identity.PhaseIdentity {
 fn a_record() -> record.Record {
   record.Record(
     format: record.format_version,
+    tier: manifest.Jailed,
     name: "hello",
     version: "0.1.0",
     source: "./hello",
@@ -1003,6 +1006,7 @@ fn a_record() -> record.Record {
     ),
     tools: ["hello"],
     hooks: [],
+    lsp: [],
     approved_at: "1970-01-01T00:00:00Z",
     approved_by: "nobody",
     artifact: "/nowhere/artifact",

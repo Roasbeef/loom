@@ -45,6 +45,70 @@
 //// actor exits only from `Retiring`, or at once when the transport
 //// reports the close itself.
 ////
+//// ## Transition table
+////
+//// `Phase` is the state type. Each cell is the phase the actor is in after
+//// the message, or what the message does when it leaves the phase alone.
+//// "Faulted" and "Forced" name the `Ending` a `Retiring` phase carries.
+//// The per-id timers are `Expire`, `SettleExpired`, `ReadyQuiet` and
+//// `ReadyExpired`; a caller request is `Ask`, `Sync`, `Settle` or `Ready`.
+////
+//// | Phase | `Handshake` | Caller request | `Read` | `Stop` | `Abandoned` |
+//// |---|---|---|---|---|---|
+//// | `Initializing` | stays; sends `initialize` and arms the handshake timeout (a failed write goes to `Retiring`, Faulted) | postponed until the phase changes | postponed | `Retiring`, Forced | `Retiring`, Forced |
+//// | `Serving` | refused to the starter; stays | handled; stays (a failed write goes to `Retiring`, Faulted) | answered; stays | `ShuttingDown` (a failed write goes to `Retiring`, Forced) | `ShuttingDown` with `abandon_grace_ms` |
+//// | `ShuttingDown` | refused; stays | refused `Unavailable`; stays | refused; stays | stays; the caller joins the stoppers | ignored |
+//// | `Retiring` | refused; stays | refused `Unavailable`; stays | refused; stays | stays; the caller joins the stoppers | ignored |
+////
+//// | Phase | Transport bytes | Transport closed | Per-id timers | Phase timers |
+//// |---|---|---|---|---|
+//// | `Initializing` | stays; the `initialize` answer goes to `Serving`, a refusal or a framing fault to `Retiring` (Faulted) | actor exits, abnormally | ignored | `HandshakeExpired` goes to `Retiring` (Faulted); the others are ignored |
+//// | `Serving` | stays; a framing fault or a bad body goes to `Retiring` (Faulted) | actor exits, abnormally | handled; stays | all ignored |
+//// | `ShuttingDown` | stays; the `shutdown` answer goes to `Retiring` (Graceful), a fault to `Retiring` (Faulted) | actor exits normally, report Forced | `Expire` is handled; the rest are ignored | `GraceExpired` goes to `Retiring` (Forced); the others are ignored |
+//// | `Retiring` | drained and ignored | actor exits: normally after a requested stop, abnormally after a fault | ignored | `RetireExpired` exits abnormally and reports `Unconfirmed`; the others are ignored |
+////
+//// A message that reaches a phase with nothing to do in it is dropped
+//// rather than refused, because every such message is either a timer whose
+//// work already finished or a notice that has no caller waiting on it.
+////
+//// ## Flow
+////
+//// The caller side and the actor side meet only through `Msg`:
+////
+//// ```text
+//// start    -> channel_of -> spawn -> (actor) initializing -> begin_handshake
+////          -> feed -> body -> message -> response -> answered
+////          -> handshake_answered -> accept_initialize        phase becomes Serving
+//// query    definition / hover / ... -> uri_of -> ask -> exchange -> call.try_call
+////          -> (actor) serving -> ask_server -> mint -> send   reply is held in `pending`
+////          -> feed -> response -> answered                    caller is answered
+////          -> expire                                          or the deadline answers TimedOut
+//// sync     sync -> resolve -> exchange -> (actor) sync_documents -> apply_op
+//// settle   settle -> exchange -> begin_settle -> open_barrier -> release_settled
+////          fed by notification -> record, and by answered -> barrier_answered
+//// ready    ready -> exchange -> begin_ready -> progressed / moved -> quiet_lapsed
+//// stop     stop -> (actor) begin_shutdown -> acknowledged / force_close
+////          -> witnessed                                       actor exits
+//// death    peer_closed or fail -> settle_all -> close
+//// ```
+////
+//// `handle` dispatches on the phase to `initializing`, `serving`,
+//// `shutting_down` or `retiring`. Handlers that may change the phase in
+//// the middle of their work return a `Flow` (a phase and its data), and
+//// `conclude` turns it into the step the state machine expects.
+////
+//// ## Reading the handlers
+////
+//// The actor is a `weft/state_machine`, imported as `sm`. A handler returns
+//// `sm.keep(data)` to stay in the phase, `sm.transition(to:, data:)` to
+//// move to another, `sm.postpone` to hold the message until the phase
+//// changes, and `sm.stop` or `sm.stop_abnormal` to exit. A state timeout
+//// (`sm.with_state_timeout`) is a message the machine sends itself after a
+//// delay and cancels when the phase changes, which is why `entered` is
+//// the one place a phase's deadline is armed. The per-id timers use
+//// `process.send_after` instead, because many are live at once; each is
+//// checked for staleness against the table its id lives in.
+////
 //// # Death is reported, never survived
 ////
 //// A transport close, a framing fault, a body that is not JSON-RPC or a
@@ -65,6 +129,21 @@
 //// least as new as the version last synced. A deadline that lapses first
 //// answers `DeadlineExpired` with whatever arrived — never a claim that
 //// the code is clean.
+////
+//// # Readiness is the server's own progress
+////
+//// A server may answer while it is still loading its project, and
+//// `rust-analyzer` does: an empty `definition`, references holding only
+//// the declaration, no hover — answers indistinguishable from true ones.
+//// The initialize request declares `window.workDoneProgress`, so a server
+//// reports that loading as `$/progress` tokens running `begin` → `report`
+//// … → `end`, and the actor keeps the set of tokens still active. `ready`
+//// answers `Quiet` once no token has been active for a caller-chosen quiet
+//// window, and `StillBusy` with the active titles if its deadline lapses
+//// first. It is built the way settlement is: a waiter plus timers in actor
+//// state, answered when the token set changes, never a blocked handler.
+//// A server that reports no progress is quiet from the start, and waits
+//// only the window.
 ////
 //// Callers reach the actor only through `lsp/call.try_call`, the
 //// monitored call that answers a dead or wedged callee as a value rather
@@ -122,6 +201,15 @@ pub const default_initialize_ms = 30_000
 /// `request_deadline`.
 pub const default_request_ms = 10_000
 
+/// The most work-done progress tokens the client tracks at once. Past it,
+/// the token that began earliest is forgotten. A server runs a handful of
+/// concurrent tasks; a server that begins tokens and never ends them, or
+/// mints a fresh one per file, would otherwise grow the actor's state
+/// without end. The oldest is the one to drop because a genuinely long
+/// load keeps reporting under its token, and a report for an unknown
+/// token puts it back.
+pub const max_progress_tokens = 64
+
 /// How long a client that has closed its transport waits for the
 /// transport to report the close before it exits without that witness.
 pub const retire_ms = 5000
@@ -174,36 +262,6 @@ pub type Options {
     /// The deadline callers are advised to use per request; see
     /// `request_deadline`.
     request_ms: Int,
-  )
-}
-
-/// Options with the default budgets and the root's last segment as the
-/// folder name.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let options = client.options(server: "gleam", root: "/work/app", language_id: "gleam")
-/// assert options.folder_name == "app"
-/// assert options.initialize_ms == client.default_initialize_ms
-/// ```
-///
-pub fn options(
-  server server: String,
-  root root: String,
-  language_id language_id: String,
-) -> Options {
-  let folder_name = case list.last(string.split(root, "/")) {
-    Ok("") | Error(Nil) -> root
-    Ok(name) -> name
-  }
-  Options(
-    server:,
-    root:,
-    folder_name:,
-    language_id:,
-    initialize_ms: default_initialize_ms,
-    request_ms: default_request_ms,
   )
 }
 
@@ -296,6 +354,19 @@ pub type Settlement {
   )
 }
 
+/// The answer to `ready`: whether the server has finished the work it
+/// reported through `$/progress`.
+pub type Readiness {
+  /// No work-done progress was active for the whole quiet window.
+  Quiet
+
+  /// The deadline lapsed while work was active, or before the quiet
+  /// window closed. `titles` are the active tokens' titles, oldest first,
+  /// for a message; empty when the window, not an active token, was the
+  /// wait.
+  StillBusy(titles: List(String))
+}
+
 /// How a `stop` ended.
 pub type StopReport {
   /// The server answered `shutdown`, was sent `exit`, and its transport
@@ -352,6 +423,21 @@ pub opaque type Msg {
 
   /// A settlement's deadline lapsed. Stale when it already settled.
   SettleExpired(token: Int)
+
+  /// Wait until no work-done progress has been active for `quiet_ms`.
+  Ready(
+    quiet_ms: Int,
+    deadline_ms: Int,
+    reply: Subject(Result(Readiness, RequestError)),
+  )
+
+  /// A readiness waiter's quiet window lapsed. Armed when the token set
+  /// was empty at `epoch`; stale when the set has changed since, or when
+  /// the waiter was already answered.
+  ReadyQuiet(token: Int, epoch: Int)
+
+  /// A readiness waiter's deadline lapsed. Stale when it was answered.
+  ReadyExpired(token: Int)
 
   /// A read of the actor's own state; never reaches the server.
   Read(reading: Reading)
@@ -455,6 +541,22 @@ type Target {
   Target(uri: String, version: Option(Int))
 }
 
+// One work-done progress token the server has begun and not ended.
+// `title` is what a caller still waiting at its deadline is told; `order`
+// is its arrival count, which the `max_progress_tokens` bound evicts by.
+type Activity {
+  Activity(title: String, order: Int)
+}
+
+// A caller waiting for `ready`. Its deadline timer is armed when it
+// arrives; its quiet timer whenever the token set is, or becomes, empty.
+type Readier {
+  Readier(reply: Subject(Result(Readiness, RequestError)), quiet_ms: Int)
+}
+
+// A caller waiting in `settle`: where to answer, the publication sequence
+// to collect from, the changed documents whose versions it waits on, and
+// the state of its `documentSymbol` barrier.
 type Waiter {
   Waiter(
     reply: Subject(Result(Settlement, RequestError)),
@@ -464,40 +566,94 @@ type Waiter {
   )
 }
 
+// The actor's state in the state-machine sense. A phase decides which
+// messages are acted on, refused or dropped; the module doc's transition
+// table lists every pair.
 type Phase {
+  // `initialize` is in flight, or about to be sent. Callers cannot hold a
+  // handle yet.
   Initializing
+
+  // The handshake succeeded; requests, syncs and settlements are served.
   Serving
+
+  // `shutdown` has been sent, and the client waits at most `grace_ms` for
+  // its answer before closing anyway.
   ShuttingDown(grace_ms: Int)
+
+  // The transport has been closed and every waiter answered. `ending` says
+  // how the client got here and `reason` is what callers were told. The
+  // actor leaves only on the transport's close or after `retire_ms`.
   Retiring(ending: Ending, reason: String)
 }
 
 // Why the client is retiring, which decides the stop report and whether
 // the exit is normal.
 type Ending {
+  // A caller or the owner's death asked for the stop. `report` is what
+  // `stop` returns once the transport confirms the close.
   Requested(report: StopReport)
+
+  // The server or the transport failed. The exit is abnormal so the
+  // manager's monitor sees it, and any `stop` caller is told `Forced`.
   Faulted
 }
 
+// Everything the actor owns, beyond the phase. Grouped by purpose below:
+// identity, the transport, request correlation, documents, diagnostics,
+// settlement waiters, readiness, and stop callers.
 type Data {
   Data(
+    /// The configured server name, for messages.
     server: String,
+    /// The `languageId` for a `Change` to a document not yet open.
     language_id: String,
+    /// The root as a `file://` URI, sent in `initialize`.
     root_uri: String,
+    /// The one workspace folder, also the answer to
+    /// `workspace/workspaceFolders`.
     folders: List(WorkspaceFolder),
+    /// The handshake budget, in milliseconds.
     initialize_ms: Int,
+    /// The actor's own mailbox, which its timers send to.
     commands: Subject(Msg),
+    /// The write and close ends of the transport. Replaced by an inert
+    /// connection once closed.
     connection: transport.Connection,
+    /// Bytes read from the server that have not yet made a whole frame.
     buffer: framing.Buffer,
+    /// What the server advertised; empty until `initialize` answers.
     capabilities: ServerCapabilities,
+    /// The next JSON-RPC id to mint. Ids are integers, counted from 1.
     next_id: Int,
+    /// Requests in flight, by minted id.
     pending: Dict(Int, Pending),
+    /// The next document version, shared by every document.
     next_version: Int,
+    /// The documents the server holds open, by URI.
     documents: Dict(String, Document),
+    /// The count of publications received, so "published since" is a
+    /// comparison.
     sequence: Int,
+    /// Whether the server has ever versioned a publication.
     versioning: Versioning,
+    /// The latest publication for each URI.
     publications: Dict(String, Publication),
+    /// The next key for a settlement or readiness waiter.
     next_token: Int,
+    /// Settlements in progress, by token.
     waiters: Dict(Int, Waiter),
+    /// Work-done progress tokens begun and not ended.
+    progress: Dict(protocol.ProgressToken, Activity),
+    /// The next arrival count for a progress token.
+    next_activity: Int,
+    // Moves on every change to the set of active tokens, so a quiet
+    // timer armed while the set was empty knows, when it fires, whether
+    // it has stayed empty since.
+    quiet_epoch: Int,
+    /// Readiness waiters, by token.
+    readiers: Dict(Int, Readier),
+    /// Callers of `stop` to be told how it ended.
     stoppers: List(Subject(StopReport)),
   )
 }
@@ -510,6 +666,36 @@ type Flow {
 }
 
 // --- lifecycle ----------------------------------------------------------------
+
+/// Options with the default budgets and the root's last segment as the
+/// folder name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let options = client.options(server: "gleam", root: "/work/app", language_id: "gleam")
+/// assert options.folder_name == "app"
+/// assert options.initialize_ms == client.default_initialize_ms
+/// ```
+///
+pub fn options(
+  server server: String,
+  root root: String,
+  language_id language_id: String,
+) -> Options {
+  let folder_name = case list.last(string.split(root, "/")) {
+    Ok("") | Error(Nil) -> root
+    Ok(name) -> name
+  }
+  Options(
+    server:,
+    root:,
+    folder_name:,
+    language_id:,
+    initialize_ms: default_initialize_ms,
+    request_ms: default_request_ms,
+  )
+}
 
 /// Starts a client over `transport`: opens it, sends `initialize` with the
 /// root as `rootUri` and only workspace folder, decodes the capabilities,
@@ -944,6 +1130,38 @@ pub fn settle(
   |> result.flatten
 }
 
+/// Waits until the server has reported no active work-done progress for a
+/// continuous `quiet_ms`, measured from the later of this call and the
+/// end of the last active token, and answers `Quiet`; or answers
+/// `StillBusy` with the active titles once `deadline_ms` lapses first.
+/// With `quiet_ms` 0 it answers at once when nothing is active. Ask it
+/// before a query whose answer a loading server would get wrong: a server
+/// may answer while loading with empty results rather than errors.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // client.ready(client, quiet_ms: 300, deadline_ms: 60_000)
+/// // -> Ok(client.Quiet)
+/// // client.ready(client, quiet_ms: 0, deadline_ms: 50)
+/// // -> Ok(client.StillBusy(titles: ["Indexing"]))
+/// ```
+///
+pub fn ready(
+  client: Client,
+  quiet_ms quiet_ms: Int,
+  deadline_ms deadline_ms: Int,
+) -> Result(Readiness, RequestError) {
+  let deadline_ms = int.max(deadline_ms, 1)
+  let quiet_ms = int.max(quiet_ms, 0)
+  exchange(client, deadline_ms + reply_margin_ms, Ready(
+    quiet_ms,
+    deadline_ms,
+    _,
+  ))
+  |> result.flatten
+}
+
 /// The latest stored publication for `path`, or for every path the
 /// server has published about when `None`, sorted by path.
 ///
@@ -996,6 +1214,10 @@ pub fn open_paths(client: Client) -> Result(List(String), RequestError) {
 
 // --- the caller side ------------------------------------------------------------
 
+// The one path every typed request takes: gate and send in the actor,
+// answer back through `exchange`. The nested `Result` that `exchange`
+// returns is the call's own outcome on the outside and the actor's answer
+// on the inside; `result.flatten` joins them.
 fn ask(
   client: Client,
   feature: Feature,
@@ -1014,6 +1236,8 @@ fn ask(
   |> result.flatten
 }
 
+// A read of the actor's own state. `reading` builds the `Reading` variant
+// from the reply subject, so each public reader names only what it asks.
 fn read(
   client: Client,
   reading: fn(Subject(Result(a, RequestError))) -> Reading,
@@ -1035,6 +1259,8 @@ fn exchange(
   |> result.map_error(unreachable)
 }
 
+// A failed call, not a failed request: the actor could not be reached at
+// all, which the caller sees as `Unavailable`.
 fn unreachable(fault: call.CallFault) -> RequestError {
   case fault {
     call.CalleeGone -> Unavailable(reason: "the lsp client is not running")
@@ -1042,10 +1268,14 @@ fn unreachable(fault: call.CallFault) -> RequestError {
   }
 }
 
+// Every public function that takes a path resolves it here first, so a
+// relative path is refused in the caller and never reaches the actor.
 fn uri_of(path: String) -> Result(String, RequestError) {
   protocol.path_to_uri(path) |> result.replace_error(InvalidPath(path:))
 }
 
+// Resolves a document operation's path in the caller, so a bad path in a
+// batch sends nothing at all.
 fn resolve(op: DocOp) -> Result(Resolved, RequestError) {
   case op {
     Open(path:, language_id:, text:) -> {
@@ -1060,6 +1290,8 @@ fn resolve(op: DocOp) -> Result(Resolved, RequestError) {
   }
 }
 
+// A decoder's fault, as the error a caller sees. `BadResult` is the only
+// `ProtocolFault`, so the plain `let` pattern below always matches.
 fn malformed(fault: protocol.ProtocolFault) -> RequestError {
   let protocol.BadResult(reason:) = fault
   Malformed(reason:)
@@ -1097,6 +1329,12 @@ fn channel_of(
 
 // --- the actor ------------------------------------------------------------------
 
+// Starts the actor and returns its handle. The initialiser below runs in
+// the new process: it builds the selector, calls `connect` there so the
+// transport's events are addressed to this process, and returns the first
+// phase and the empty `Data`. A selector chooses which of several message
+// sources the actor listens to and maps each into `Msg`: its own command
+// mailbox, the transport's events, and the owner's death.
 fn spawn(
   connect: fn(Subject(transport.TransportEvent)) -> transport.Connection,
   options: Options,
@@ -1139,6 +1377,10 @@ fn spawn(
         publications: dict.new(),
         next_token: 1,
         waiters: dict.new(),
+        progress: dict.new(),
+        next_activity: 0,
+        quiet_epoch: 0,
+        readiers: dict.new(),
         stoppers: [],
       )
     sm.initialised(Initializing, data)
@@ -1178,6 +1420,8 @@ fn nothing_advertised() -> ServerCapabilities {
   )
 }
 
+// Renders a failure to start the actor itself, as opposed to a failed
+// handshake, which `describe_refusal` renders.
 fn describe_start_error(error: actor.StartError) -> String {
   case error {
     actor.InitTimeout -> "the lsp client's transport did not open in time"
@@ -1202,6 +1446,8 @@ fn entered(_from: Phase, to: Phase, data: Data) -> sm.Enter(Phase, Data, Msg) {
   }
 }
 
+// The state machine's one event handler. It does nothing but choose the
+// handler for the current phase, so each phase's rules read in one place.
 fn handle(phase: Phase, data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
   case phase {
     Initializing -> initializing(data, msg)
@@ -1228,12 +1474,19 @@ fn initializing(data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
     }
     Abandoned ->
       conclude(Initializing, abandon(data, "the lsp client was abandoned"))
-    Ask(..) | Sync(..) | Settle(..) | Read(..) -> sm.keep(data) |> sm.postpone
-    Expire(..) | SettleExpired(..) | GraceExpired | RetireExpired ->
-      sm.keep(data)
+    Ask(..) | Sync(..) | Settle(..) | Ready(..) | Read(..) ->
+      sm.keep(data) |> sm.postpone
+    Expire(..)
+    | SettleExpired(..)
+    | ReadyQuiet(..)
+    | ReadyExpired(..)
+    | GraceExpired
+    | RetireExpired -> sm.keep(data)
   }
 }
 
+// The working phase. A request becomes a pending entry and a timer; a
+// transport chunk is fed to the framer; the stop messages move the phase.
 fn serving(data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
   case msg {
     Ask(feature:, build:, deadline_ms:, reply:) ->
@@ -1244,6 +1497,10 @@ fn serving(data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
       conclude(Serving, begin_settle(data, uris, deadline_ms, reply))
     SettleExpired(token:) ->
       conclude(Serving, settle_expired(Flow(Serving, data), token))
+    Ready(quiet_ms:, deadline_ms:, reply:) ->
+      sm.keep(begin_ready(data, quiet_ms, deadline_ms, reply))
+    ReadyQuiet(token:, epoch:) -> sm.keep(quiet_lapsed(data, token, epoch))
+    ReadyExpired(token:) -> sm.keep(ready_expired(data, token))
     Read(reading) -> {
       answer_read(data, reading)
       sm.keep(data)
@@ -1285,7 +1542,8 @@ fn shutting_down(
     Stop(reply:, ..) ->
       sm.keep(Data(..data, stoppers: [reply, ..data.stoppers]))
     Expire(id:) -> conclude(phase, expire(Flow(phase, data), id))
-    Ask(..) | Sync(..) | Settle(..) -> refuse(data, reply_of(msg), reason)
+    Ask(..) | Sync(..) | Settle(..) | Ready(..) ->
+      refuse(data, reply_of(msg), reason)
     Read(reading) -> {
       refuse_read(reading, reason)
       sm.keep(data)
@@ -1294,8 +1552,12 @@ fn shutting_down(
       process.send(reply, Error(TransportRefused(reason)))
       sm.keep(data)
     }
-    SettleExpired(..) | Abandoned | HandshakeExpired | RetireExpired ->
-      sm.keep(data)
+    SettleExpired(..)
+    | ReadyQuiet(..)
+    | ReadyExpired(..)
+    | Abandoned
+    | HandshakeExpired
+    | RetireExpired -> sm.keep(data)
   }
 }
 
@@ -1318,7 +1580,8 @@ fn retiring(
     }
     Stop(reply:, ..) ->
       sm.keep(Data(..data, stoppers: [reply, ..data.stoppers]))
-    Ask(..) | Sync(..) | Settle(..) -> refuse(data, reply_of(msg), reason)
+    Ask(..) | Sync(..) | Settle(..) | Ready(..) ->
+      refuse(data, reply_of(msg), reason)
     Read(reading) -> {
       refuse_read(reading, reason)
       sm.keep(data)
@@ -1330,23 +1593,28 @@ fn retiring(
     FromTransport(transport.TransportData(..))
     | Expire(..)
     | SettleExpired(..)
+    | ReadyQuiet(..)
+    | ReadyExpired(..)
     | GraceExpired
     | HandshakeExpired
     | Abandoned -> sm.keep(data)
   }
 }
 
-// The three caller messages share one refusal. Returned as a closure so
-// the refusing phase does not repeat the three shapes.
+// The four caller messages share one refusal. Returned as a closure so
+// the refusing phase does not repeat the four shapes.
 fn reply_of(msg: Msg) -> fn(RequestError) -> Nil {
   case msg {
     Ask(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
     Sync(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
     Settle(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
+    Ready(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
     Handshake(..)
     | HandshakeExpired
     | Expire(..)
     | SettleExpired(..)
+    | ReadyQuiet(..)
+    | ReadyExpired(..)
     | Read(..)
     | Stop(..)
     | GraceExpired
@@ -1365,6 +1633,9 @@ fn refuse(
   sm.keep(data)
 }
 
+// Turns a handler's result into a step. If the phase did not change the
+// actor stays put, which keeps the phase's state timeout armed; if it did,
+// `sm.transition` runs `entered` for the new phase.
 fn conclude(before: Phase, flow: Flow) -> sm.Next(Phase, Data, Msg) {
   case flow.phase == before {
     True -> sm.keep(flow.data)
@@ -1395,6 +1666,8 @@ fn begin_handshake(
   }
 }
 
+// The handshake budget lapsed with no `initialize` answer. The starter is
+// told `TimedOut`, and the client faults.
 fn handshake_expired(data: Data) -> Flow {
   let data =
     dict.fold(data.pending, data, fn(data, id, pending) {
@@ -1415,6 +1688,10 @@ fn handshake_expired(data: Data) -> Flow {
   )
 }
 
+// The `initialize` answer arrived. On success, `initialized` is sent and
+// the phase becomes `Serving`; on any failure the starter is told why and
+// the client faults. The block below runs the same two fallible steps with
+// `use`, so the first failure becomes `accepted`.
 fn handshake_answered(
   data: Data,
   reply: Subject(Result(Nil, StartError)),
@@ -1436,6 +1713,8 @@ fn handshake_answered(
   }
 }
 
+// Decodes the `initialize` outcome, and refuses a server that chose a
+// position encoding the harness cannot convert.
 fn accept_initialize(
   outcome: Result(JsonValue, jsonrpc.RpcError),
 ) -> Result(InitializeResult, StartError) {
@@ -1458,6 +1737,8 @@ fn accept_initialize(
   }
 }
 
+// The reason string a failed handshake faults the client with, which every
+// other waiter is then told.
 fn describe_refusal(error: StartError) -> String {
   case error {
     BadRoot(root:) -> "bad root " <> root
@@ -1524,6 +1805,8 @@ fn expire(flow: Flow, id: Int) -> Flow {
   }
 }
 
+// Tells the server to stop computing a request the client has forgotten.
+// A failed write is the server gone, which faults the client.
 fn cancel(flow: Flow, id: Int) -> Flow {
   case send(flow.data, protocol.cancel_request(jsonrpc.IdInt(id))) {
     Ok(Nil) -> flow
@@ -1531,6 +1814,8 @@ fn cancel(flow: Flow, id: Int) -> Flow {
   }
 }
 
+// Takes the next id and records what its answer will do. The id is
+// pending from this point, before anything is sent.
 fn mint(data: Data, pending: Pending) -> #(Data, Int) {
   let id = data.next_id
   let data =
@@ -1645,6 +1930,7 @@ fn answered(
   }
 }
 
+// A JSON-RPC error object as the `ServerError` a caller sees.
 fn server_error(error: jsonrpc.RpcError) -> RequestError {
   ServerError(code: error.code, message: error.message)
 }
@@ -1670,19 +1956,25 @@ fn answer_server(
   }
 }
 
-// A malformed publication is dropped rather than fatal: its envelope was
-// well formed, so the stream is still trustworthy, and the next
-// publication for that file replaces it anyway.
+// A malformed publication or progress is dropped rather than fatal: its
+// envelope was well formed, so the stream is still trustworthy, and the
+// next publication for that file replaces it anyway. A dropped progress
+// costs at most a wait: a lost `end` holds readiness until the caller's
+// deadline, and a lost `begin` comes back with the token's next report.
 fn notification(data: Data, method: String, params: Option(JsonValue)) -> Data {
   case protocol.classify_notification(method, params) {
     Ok(protocol.Published(diagnostics:)) ->
       release_settled(record(data, diagnostics))
+    Ok(protocol.Progressed(progress:)) -> progressed(data, progress)
     Ok(protocol.Ignored(..)) | Ok(protocol.Unrecognised(..)) | Error(..) -> data
   }
 }
 
 // --- documents ------------------------------------------------------------------
 
+// Applies a batch of resolved operations in order, stopping at the first
+// failed write. Success answers the caller once every notification has
+// been written; the server is not asked whether it accepted them.
 fn sync_documents(
   data: Data,
   ops: List(Resolved),
@@ -1703,6 +1995,8 @@ fn sync_documents(
   }
 }
 
+// One resolved operation. A `Change` to a document the server does not
+// hold becomes an open, with the options' language id.
 fn apply_op(data: Data, op: Resolved) -> Result(Data, String) {
   case op {
     Opening(uri:, path:, language_id:, text:) ->
@@ -1743,6 +2037,8 @@ fn open_or_change(
   Ok(Data(..data, documents: dict.insert(data.documents, uri, document)))
 }
 
+// Closing a document that is not open does nothing, so a repeated close
+// from the caller sends nothing.
 fn close_document(data: Data, uri: String) -> Result(Data, String) {
   case dict.has_key(data.documents, uri) {
     False -> Ok(data)
@@ -1768,6 +2064,8 @@ fn make_room(data: Data) -> Result(Data, String) {
   }
 }
 
+// The URI with the smallest version, which is the document synced longest
+// ago. Folding keeps one candidate, the smallest seen so far.
 fn least_recent(documents: Dict(String, Document)) -> Option(String) {
   dict.fold(documents, None, fn(oldest, uri, document) {
     case oldest {
@@ -1807,6 +2105,9 @@ fn record(data: Data, published: PublishDiagnostics) -> Data {
   }
 }
 
+// Makes room for one more URI under `max_published_uris` by dropping the
+// oldest publication. A URI already stored is replaced in place, so it
+// never evicts anything.
 fn room_for_publication(
   publications: Dict(String, Publication),
   uri: String,
@@ -1868,6 +2169,8 @@ fn begin_settle(
   }
 }
 
+// The earliest sync mark among the changed documents; a URI that is not
+// open contributes nothing, so the mark never rises above the sequence.
 fn change_mark(data: Data, uris: List(String)) -> Int {
   list.fold(uris, data.sequence, fn(mark, uri) {
     case dict.get(data.documents, uri) {
@@ -1901,6 +2204,8 @@ fn open_barrier(
   }
 }
 
+// The `documentSymbol` barrier answered for the waiter holding `token`.
+// An unknown token is a waiter that already expired, and is ignored.
 fn barrier_answered(data: Data, token: Int) -> Data {
   case dict.get(data.waiters, token) {
     Error(Nil) -> data
@@ -1943,6 +2248,8 @@ fn settled(data: Data, waiter: Waiter) -> Bool {
   }
 }
 
+// Whether a changed document's diagnostics have reached the version that
+// was synced. A document that is not open has no version to reach.
 fn caught_up(data: Data, target: Target) -> Bool {
   case target.version, dict.get(data.publications, target.uri) {
     None, _ -> True
@@ -1972,6 +2279,9 @@ fn settle_expired(flow: Flow, token: Int) -> Flow {
   }
 }
 
+// The answer to a settlement: every URI published after the waiter's mark,
+// plus each changed URI's stored publication, as `#(path, diagnostics)`
+// sorted by path.
 fn collect(
   data: Data,
   waiter: Waiter,
@@ -1986,6 +2296,175 @@ fn collect(
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
 }
 
+// --- readiness ----------------------------------------------------------------------
+
+// A readiness waiter arrives. With nothing active and no window to wait,
+// it is answered now and arms nothing. Otherwise its deadline is armed,
+// and — when nothing is active — its quiet window too, from this call; if
+// something is active the window is armed later, when the set empties.
+fn begin_ready(
+  data: Data,
+  quiet_ms: Int,
+  deadline_ms: Int,
+  reply: Subject(Result(Readiness, RequestError)),
+) -> Data {
+  let idle = dict.is_empty(data.progress)
+  case idle && quiet_ms == 0 {
+    True -> {
+      process.send(reply, Ok(Quiet))
+      data
+    }
+    False -> {
+      let token = data.next_token
+      let readiers =
+        dict.insert(data.readiers, token, Readier(reply:, quiet_ms:))
+      process.send_after(data.commands, deadline_ms, ReadyExpired(token:))
+      case idle {
+        True -> arm_quiet(token, quiet_ms, data)
+        False -> Nil
+      }
+      Data(..data, next_token: token + 1, readiers:)
+    }
+  }
+}
+
+// Starts a quiet window under the current epoch. The epoch it carries is
+// what lets `quiet_lapsed` tell a window that stayed empty from one that
+// was interrupted.
+fn arm_quiet(token: Int, quiet_ms: Int, data: Data) -> Nil {
+  process.send_after(
+    data.commands,
+    quiet_ms,
+    ReadyQuiet(token:, epoch: data.quiet_epoch),
+  )
+  Nil
+}
+
+// A quiet window lapsed. The epoch it was armed under is the proof: the
+// window was armed only while the set was empty, and every change to the
+// set moves the epoch, so an unmoved epoch means nothing was active for
+// the whole window. A moved one means a later window, armed when the set
+// last emptied, is the one that counts.
+fn quiet_lapsed(data: Data, token: Int, epoch: Int) -> Data {
+  case dict.get(data.readiers, token), epoch == data.quiet_epoch {
+    Ok(readier), True -> {
+      process.send(readier.reply, Ok(Quiet))
+      Data(..data, readiers: dict.delete(data.readiers, token))
+    }
+    Ok(_), False | Error(Nil), _ -> data
+  }
+}
+
+// The deadline lapsed first. The caller hears what is still running, so
+// its refusal can name the work rather than guess at it.
+fn ready_expired(data: Data, token: Int) -> Data {
+  case dict.get(data.readiers, token) {
+    Error(Nil) -> data
+    Ok(readier) -> {
+      process.send(readier.reply, Ok(StillBusy(titles: active_titles(data))))
+      Data(..data, readiers: dict.delete(data.readiers, token))
+    }
+  }
+}
+
+// The titles of the tokens still active, oldest first, as a caller's
+// message names the work that kept the server busy.
+fn active_titles(data: Data) -> List(String) {
+  dict.values(data.progress)
+  |> list.sort(fn(left, right) { int.compare(left.order, right.order) })
+  |> list.map(fn(activity) { activity.title })
+}
+
+// One work-done progress notification. A `begin` or an unknown token's
+// `report` adds the token, since a server may report before the `begin`
+// reaches us or never send one; an `end` removes it. Only a change to the
+// set moves the epoch, and a set that has just emptied starts every
+// waiter's quiet window from now.
+fn progressed(data: Data, progress: protocol.WorkDoneProgress) -> Data {
+  case progress {
+    protocol.ProgressBegin(token:, title:) ->
+      case dict.get(data.progress, token) {
+        Ok(activity) -> {
+          let activity = Activity(..activity, title:)
+          Data(..data, progress: dict.insert(data.progress, token, activity))
+        }
+        Error(Nil) -> activate(data, token, title)
+      }
+    protocol.ProgressReport(token:) ->
+      case dict.has_key(data.progress, token) {
+        True -> data
+        False -> activate(data, token, token_text(token))
+      }
+    protocol.ProgressEnd(token:) ->
+      case dict.has_key(data.progress, token) {
+        False -> data
+        True -> moved(Data(..data, progress: dict.delete(data.progress, token)))
+      }
+  }
+}
+
+// Adds a token under the `max_progress_tokens` bound, evicting the one
+// that began earliest when the set is full.
+fn activate(data: Data, token: protocol.ProgressToken, title: String) -> Data {
+  let order = data.next_activity
+  let room = case dict.size(data.progress) >= max_progress_tokens {
+    False -> data.progress
+    True -> evict_oldest(data.progress)
+  }
+  let progress = dict.insert(room, token, Activity(title:, order:))
+  moved(Data(..data, progress:, next_activity: order + 1))
+}
+
+// Drops the token that began earliest, by arrival count.
+fn evict_oldest(
+  progress: Dict(protocol.ProgressToken, Activity),
+) -> Dict(protocol.ProgressToken, Activity) {
+  let oldest =
+    dict.fold(progress, None, fn(oldest, token, activity) {
+      case oldest {
+        Some(#(_, order)) if order <= activity.order -> oldest
+        Some(_) | None -> Some(#(token, activity.order))
+      }
+    })
+  case oldest {
+    None -> progress
+    Some(#(token, _)) -> dict.delete(progress, token)
+  }
+}
+
+// The set of active tokens changed. The epoch moves, so every quiet
+// window armed before now fires stale; and if the set is now empty, each
+// waiter's window starts again from here — at once for one that asked
+// for no window at all.
+fn moved(data: Data) -> Data {
+  let data = Data(..data, quiet_epoch: data.quiet_epoch + 1)
+  case dict.is_empty(data.progress) {
+    False -> data
+    True ->
+      dict.fold(data.readiers, data, fn(data, token, readier) {
+        case readier.quiet_ms {
+          0 -> {
+            process.send(readier.reply, Ok(Quiet))
+            Data(..data, readiers: dict.delete(data.readiers, token))
+          }
+          quiet_ms -> {
+            arm_quiet(token, quiet_ms, data)
+            data
+          }
+        }
+      })
+  }
+}
+
+// A token named for a caller's message when no `begin` gave it a title.
+fn token_text(token: protocol.ProgressToken) -> String {
+  case token {
+    protocol.IntToken(value:) -> int.to_string(value)
+    protocol.StringToken(value:) -> value
+  }
+}
+
+// Answers a read from the actor's state. Nothing here reaches the server.
 fn answer_read(data: Data, reading: Reading) -> Nil {
   case reading {
     TextOf(uri:, reply:) -> {
@@ -2014,6 +2493,7 @@ fn answer_read(data: Data, reading: Reading) -> Nil {
   }
 }
 
+// Answers a read the phase refuses, with the phase's reason.
 fn refuse_read(reading: Reading, reason: String) -> Nil {
   let error = Unavailable(reason:)
   case reading {
@@ -2073,12 +2553,18 @@ fn abandon(data: Data, reason: String) -> Flow {
 // The transport itself reported the close while the client was working:
 // the server died. The close is the witness, so the actor settles every
 // waiter and exits at once, abnormally, for the manager's monitor.
+// The server's end of the transport closed while the client was working.
+// `inert_connection` is swapped in first so that answering the waiters
+// writes nothing to a closed peer.
 fn peer_closed(data: Data, reason: String) -> sm.Next(Phase, Data, Msg) {
   let reason = "the language server exited: " <> reason
   let _ = settle_all(Data(..data, connection: inert_connection()), reason)
   sm.stop_abnormal(reason)
 }
 
+// The transport confirmed its close. A requested stop reports what it
+// recorded and exits normally; a fault reports `Forced` and exits
+// abnormally with the original reason.
 fn witnessed(
   data: Data,
   ending: Ending,
@@ -2103,6 +2589,10 @@ fn fail(data: Data, reason: String) -> Flow {
   Flow(Retiring(Faulted, reason), close(data))
 }
 
+// Answers every caller still waiting, with the same reason, and empties
+// the three tables. Barrier and shutdown entries have no caller of their
+// own: the settlement waiter owns the barrier's reply, and a stop caller is
+// answered by `witnessed`.
 fn settle_all(data: Data, reason: String) -> Data {
   let error = Unavailable(reason:)
   dict.each(data.pending, fn(_, pending) {
@@ -2116,7 +2606,10 @@ fn settle_all(data: Data, reason: String) -> Data {
   dict.each(data.waiters, fn(_, waiter) {
     process.send(waiter.reply, Error(error))
   })
-  Data(..data, pending: dict.new(), waiters: dict.new())
+  dict.each(data.readiers, fn(_, readier) {
+    process.send(readier.reply, Error(error))
+  })
+  Data(..data, pending: dict.new(), waiters: dict.new(), readiers: dict.new())
 }
 
 // Closes the transport once: the connection is replaced by an inert one,
@@ -2126,10 +2619,15 @@ fn close(data: Data) -> Data {
   Data(..data, connection: inert_connection())
 }
 
+// A connection whose writes fail and whose close does nothing, used once
+// the real one has been closed.
 fn inert_connection() -> transport.Connection {
   transport.Connection(send: fn(_) { Error(Nil) }, close: fn() { Nil })
 }
 
+// Frames and writes one message. The only I/O a handler performs. A failed
+// write means the server stopped reading, and the caller turns the reason
+// into a fault.
 fn send(data: Data, message: JsonValue) -> Result(Nil, String) {
   data.connection.send(framing.frame(message))
   |> result.map_error(fn(_) {
@@ -2137,6 +2635,7 @@ fn send(data: Data, message: JsonValue) -> Result(Nil, String) {
   })
 }
 
+// Renders a framing fault into the reason callers are given.
 fn describe_fault(fault: framing.FramingFault) -> String {
   case fault {
     framing.HeaderTooLong(limit:) ->

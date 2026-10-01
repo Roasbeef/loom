@@ -507,7 +507,53 @@ message type want no blank lines at all — but a comment giving the
 *reasoning* for an arm still wants one above it, which is the first rule
 arriving in the second place.
 
-### What the formatter decides, and what you do
+### Reading order: spine, flow, state first, tables
+
+A reader usually arrives in a large module through go-to-definition, in
+the middle of a file, with no map. Six habits give them one. They came
+out of an outside read of the tree ([issue #593](https://github.com/Roasbeef/loom/issues/593)), and the LSP modules
+were the first to be written this way, so each habit below points at a
+real example there. **These are style rules, not lint gates yet.** Issue
+#593 tracks which of them can be checked mechanically (a required
+`## Flow` heading, types-before-functions, a doc-check for transition
+tables) and which stay judgement.
+
+1. **A spine at the top of a large module.** Under a `## Flow` heading in
+   the module doc, sketch the main path as a text block of function
+   names, in the order a reader will meet them, about 10 to 20 lines. It
+   names real functions, so it goes stale visibly. Example: the `## Flow`
+   section of `client/lsp/manager.gleam`, which traces a path-scoped
+   query from `door` through the keeper to the answer.
+2. **Order the file by call flow.** Put the entry point first and the
+   helpers it calls after it, roughly depth-first, so reading down the
+   file follows a call down the stack. The manager's `## Flow` says the
+   order out loud: types, the actor, the keeper, the door, then the
+   helpers the door's closures call, and the production backend last
+   because it is a plug-in and not part of the path. A helper shared by
+   several callers has no single right place, and that is fine.
+3. **Keep domain calls qualified.** `resolve.admit`, `lsp.settle` and
+   `manager.door` tell the reader which domain a call belongs to, which
+   in Gleam is the nearest thing to a method receiver. Import types
+   unqualified and functions qualified (see Imports above), and do not
+   relax this for domain functions.
+4. **Extract a helper only when its name is a domain operation.**
+   `gate`, `readied` and `named_uri` in the manager each say what
+   happens in the domain, so the call site reads as the story. A helper
+   named for its position (`do_step2`) that wraps six lines and has one
+   caller hides a step the reader would rather see in place. Lint R8
+   measures width; this rule asks about the name.
+5. **State, `Msg` and `Effect` types first.** In a module that is a state
+   machine, put the state, message and effect types above the first
+   function, so the reader sees the state space before the code that
+   moves through it. Example: `lsp/client.gleam` declares `Msg`,
+   `Phase` and the rest of its types before its first function.
+6. **A transition table for the key state machines.** Put a table in the
+   module doc: a row per state, a column per message, and in each cell
+   the next state or what the message does when the state stays. Cells
+   are prose and need only make the legal state space visible. Examples:
+   `## Transition table` in `lsp/client.gleam` and `## Transitions of
+   the relay` in `client/lsp/jail.gleam`.
+
 
 `gleam format` gives a call or signature exactly two layouts: everything
 on one line when the whole form fits in 80 columns, otherwise one
