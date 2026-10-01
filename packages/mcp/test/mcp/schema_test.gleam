@@ -1,6 +1,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import gleam_mcp/json.{type JsonValue}
 import mcp/schema
 
@@ -432,4 +433,55 @@ pub fn required_order_wins_test() {
     )
   let assert schema.Typed(params:, optionals: []) = plan
   assert list.map(params, fn(param) { param.original }) == ["a", "b"]
+}
+
+// A last leaf consumes bytes even when no child remains in the traversal.
+pub fn budget_refuses_a_single_oversized_terminal_string_test() {
+  let huge = json.String(string.repeat("x", 262_145))
+  let assert Error(_) = schema.check_budget([huge])
+}
+
+pub fn nullable_one_of_preserves_optional_null_test() {
+  let nullable =
+    json.Object([#("oneOf", json.Array([typed("string"), typed("null")]))])
+  let assert Ok([schema.Field(shape:, presence:, ..)]) =
+    schema.input_fields(object_schema([#("cursor", nullable)], []))
+  assert presence == schema.OptionalField
+  assert shape == schema.Nullable(schema.Primitive(schema.ScalarString))
+}
+
+// Range annotations cannot prove branch exclusivity in this structural subset.
+pub fn overlapping_numeric_one_of_retains_the_field_test() {
+  let numeric =
+    json.Object([#("oneOf", json.Array([typed("integer"), typed("number")]))])
+  assert schema.shape(numeric)
+    == schema.ValueFallback("oneOf branches are not structurally disjoint")
+}
+
+pub fn nested_lists_and_typed_mappings_plan_recursively_test() {
+  assert schema.shape(array_of(array_of(typed("string"))))
+    == schema.Sequence(schema.Sequence(schema.Primitive(schema.ScalarString)))
+  let mapping =
+    json.Object([
+      #("type", json.String("object")),
+      #("additionalProperties", typed("number")),
+    ])
+  assert schema.shape(mapping)
+    == schema.Mapping(schema.Primitive(schema.ScalarFloat))
+}
+
+pub fn one_of_branch_budget_preserves_the_complete_field_test() {
+  let branches =
+    int.range(from: 0, to: 33, with: [], run: fn(acc, index) {
+      [
+        json.Object([
+          #("type", json.String("string")),
+          #("const", json.String(int.to_string(index))),
+        ]),
+        ..acc
+      ]
+    })
+  let declared = json.Object([#("oneOf", json.Array(branches))])
+  assert schema.shape(declared)
+    == schema.ValueFallback("oneOf exceeds 32 branches")
 }

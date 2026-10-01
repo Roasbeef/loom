@@ -93,13 +93,9 @@ pub fn github_fixture_generates_test() {
   assert string.contains(generated.source, "pub fn push_files(")
 }
 
-// Tier distribution over a plausible mainstream server: 30 of the 31
-// required parameters fit the typed subset (tier 1); one — `push_files`'s
-// `files`, an array of objects — falls back to a structured value
-// (tier 2); no tool degrades to its whole-value form (tier 3). The design
-// ruling's falsifier: if mainstream servers push tier 2 above 25% of
-// required parameters, that is the trigger to revisit the subset and
-// generate nested-object records.
+// Every required GitHub fixture field now has a structural plan, including
+// push_files' nested file records. This measures the renderer's actual input
+// boundary rather than the retained scalar-accounting projection.
 pub fn github_fixture_tier_distribution_test() {
   let assert Ok(value) = json.parse(github.tools_json())
     as "the fixture must parse"
@@ -107,19 +103,23 @@ pub fn github_fixture_tier_distribution_test() {
     as "the fixture must decode as a tools page"
   let counts =
     list.fold(page.tools, #(0, 0, 0), fn(acc, descriptor) {
-      case schema.plan(descriptor.input_schema) {
-        schema.WholeValue(..) -> #(acc.0, acc.1, acc.2 + 1)
-        schema.Typed(params:, ..) ->
-          list.fold(params, acc, fn(acc, param) {
-            case param.kind {
-              schema.Structured(..) -> #(acc.0, acc.1 + 1, acc.2)
-              schema.Simple(..) -> #(acc.0 + 1, acc.1, acc.2)
-              schema.ListOf(..) -> #(acc.0 + 1, acc.1, acc.2)
+      case schema.input_fields(descriptor.input_schema) {
+        Error(_) -> #(acc.0, acc.1, acc.2 + 1)
+        Ok(fields) ->
+          list.fold(fields, acc, fn(acc, field) {
+            case field.presence, field.shape {
+              schema.OptionalField, _ -> acc
+              schema.Required, schema.ValueFallback(_) -> #(
+                acc.0,
+                acc.1 + 1,
+                acc.2,
+              )
+              schema.Required, _ -> #(acc.0 + 1, acc.1, acc.2)
             }
           })
       }
     })
-  assert counts == #(30, 1, 0)
+  assert counts == #(31, 0, 0)
 }
 
 // The golden pin: the surface's `pub fn` lines state byte-for-byte the
@@ -168,7 +168,11 @@ fn strip_label(line: String) -> String {
     False -> line
   }
   case string.split_once(bare, " ") {
-    Ok(#(_, rest)) -> rest
+    Ok(#(label, rest)) ->
+      case string.split_once(rest, ":") {
+        Ok(#(_, kind)) -> label <> ":" <> kind
+        Error(Nil) -> bare
+      }
     Error(Nil) -> bare
   }
 }
@@ -202,20 +206,22 @@ pub fn typed_body_marshals_by_wire_name_test() {
   assert string.contains(source, "    \"createIssue\",")
   assert string.contains(
     source,
-    "#(\"issueNumber\", report.int(issue_number_"
-      <> tag8("issueNumber")
-      <> ")),",
+    "#(\"issueNumber\", report.int(issue_number_" <> tag8("issueNumber") <> "))",
   )
   assert string.contains(
     source,
-    "#(\"labels\", report.list(list.map(labels, report.string))),",
+    "#(\"labels\", report.list(list.map(labels, fn(item) { report.string(item) })))",
   )
-  assert string.contains(source, "#(\"ratio\", report.float(ratio)),")
-  assert string.contains(source, "#(\"draft\", report.bool(draft)),")
-  assert string.contains(source, "#(\"payload\", payload),")
+  assert string.contains(source, "#(\"ratio\", report.float(ratio))")
   assert string.contains(
     source,
-    "  options options: List(#(String, report.Value)),",
+    "draft draft: CreateIssue63726561T0InputDraftN5",
+  )
+  assert string.contains(source, "Enabled -> report.bool(True)")
+  assert string.contains(source, "#(\"payload\", report.object(payload))")
+  assert string.contains(
+    source,
+    "  options _options: CreateIssue63726561T0Options,",
   )
   assert string.contains(source, "import gleam/list")
 }
@@ -236,14 +242,19 @@ pub fn hostile_server_name_mangles_the_segment_only_test() {
 
 // --- signature shapes ----------------------------------------------------
 
-pub fn optional_only_tool_skips_the_list_import_test() {
+pub fn optional_only_tool_emits_typed_options_test() {
   let bare = tool("ping", None, object_schema([#("page", typed("number"))], []))
   let assert Ok(generated) = gen("srv", [bare])
-  assert string.contains(generated.source, "report.object(options),")
-  assert !string.contains(generated.source, "import gleam/list")
-  assert !string.contains(generated.source, "list.append")
-  // The optional parameter is documented, never an argument.
-  assert string.contains(generated.source, "- \"page\" (optional)")
+  assert string.contains(generated.source, "page: Option(Float)")
+  assert string.contains(
+    generated.source,
+    "pub const ping_defaults = PingT0Options(page: None)",
+  )
+  assert string.contains(
+    generated.source,
+    "codec.optional(\"page\", options.page",
+  )
+  assert string.contains(generated.source, "import gleam/list")
   assert !string.contains(generated.source, "page page:")
 }
 
@@ -277,11 +288,11 @@ pub fn options_parameter_is_relabelled_test() {
   )
   assert string.contains(
     generated.source,
-    "#(\"options\", report.string(" <> relabelled <> ")),",
+    "#(\"options\", report.string(" <> relabelled <> "))",
   )
 }
 
-pub fn enum_values_render_as_doc_prose_test() {
+pub fn enum_values_render_as_typed_variants_test() {
   let state =
     json.Object([
       #("type", json.String("string")),
@@ -290,8 +301,11 @@ pub fn enum_values_render_as_doc_prose_test() {
   let filter =
     tool("filter", None, object_schema([#("state", state)], ["state"]))
   let assert Ok(generated) = gen("srv", [filter])
-  assert string.contains(generated.source, "; one of \"open\", \"closed\".")
-  assert string.contains(generated.source, "  state state: String,")
+  assert string.contains(generated.source, "FilterT0InputStateN1OpenV0")
+  assert string.contains(
+    generated.source,
+    "  state state: FilterT0InputStateN1,",
+  )
 }
 
 // --- adversarial names ---------------------------------------------------
@@ -453,13 +467,12 @@ pub fn overlong_description_truncates_test() {
 
 pub fn surface_opens_with_provenance_test() {
   let generated = github_generated()
-  assert string.split(generated.surface, "\n") |> list.take(5)
+  assert string.split(generated.surface, "\n") |> list.take(4)
     == [
       "### cap/mcp/github",
-      "`cap/mcp/github` — the tools of the MCP server \"github\", as typed calls.",
       "Descriptions below are the server's own text, not Loom's.",
-      "Optional parameters travel in `options` by wire name, e.g.",
-      "`options: [#(\"page\", report.int(2))]`; pass `[]` when none.",
+      "Optional fields use Option; None omits a key, while Some(None) encodes explicit null.",
+      "Use each tool's defaults constant to omit all optional fields.",
     ]
 }
 
@@ -543,4 +556,98 @@ pub fn backstop_tracks_escaped_quotes_test() {
 pub fn backstop_names_the_line_test() {
   assert codegen.scan_for_at("fine\nfine\nbad @ here")
     == Error("stray @ outside comments and string literals on line 3")
+}
+
+pub fn enum_at_symbol_in_indented_documentation_is_inert_test() {
+  let enumeration =
+    json.Object([
+      #("type", json.String("string")),
+      #(
+        "enum",
+        json.Array([
+          json.String("@word"),
+          json.String("$"),
+          json.String("None list. codec."),
+        ]),
+      ),
+    ])
+  let descriptor =
+    tool("choose", None, object_schema([#("cost$", enumeration)], ["cost$"]))
+  let assert Ok(generated) = gen("srv", [descriptor])
+  assert codegen.scan_for_at(generated.source) == Ok(Nil)
+  assert string.contains(generated.source, "report.string(\"$\")")
+  assert string.contains(generated.source, "#(\"cost$\",")
+  assert !string.contains(generated.source, "import gleam/option")
+  assert !string.contains(generated.source, "import gleam/list")
+  assert !string.contains(generated.source, "import cap/internal/mcp_codec")
+}
+
+pub fn a_tool_named_like_a_defaults_constant_keeps_both_names_test() {
+  let assert Ok(generated) =
+    gen("srv", [
+      tool("create", None, no_params()),
+      tool("create_defaults", None, no_params()),
+    ])
+  assert string.contains(generated.source, "pub fn create_defaults(")
+  assert string.contains(
+    generated.source,
+    "pub const mcp_generated_create_defaults =",
+  )
+}
+
+pub fn tool_order_does_not_change_type_names_or_source_test() {
+  let a =
+    tool("a", None, object_schema([#("draft", typed("boolean"))], ["draft"]))
+  let b = tool("b", None, object_schema([#("page", typed("integer"))], []))
+  assert gen("srv", [a, b]) == gen("srv", [b, a])
+}
+
+pub fn empty_options_defaults_are_zero_arity_values_test() {
+  let assert Ok(generated) = gen("srv", [tool("ping", None, no_params())])
+  assert string.contains(
+    generated.source,
+    "pub const ping_defaults = PingT0Options\n",
+  )
+  assert !string.contains(generated.source, "PingT0Options()")
+  assert string.contains(
+    generated.surface,
+    "pub const ping_defaults = PingT0Options\n",
+  )
+}
+
+pub fn empty_record_and_null_encoders_ignore_unused_payloads_test() {
+  let empty =
+    json.Object([
+      #("type", json.String("object")),
+      #("additionalProperties", json.Bool(False)),
+    ])
+  let input =
+    object_schema(
+      [
+        #("nothing", typed("null")),
+        #("records", array_of(empty)),
+        #("empty", empty),
+      ],
+      ["nothing", "records"],
+    )
+  let descriptor =
+    protocol.ToolDescriptor(
+      ..tool("empty", None, input),
+      output_schema: Some(empty),
+    )
+  let assert Ok(generated) = gen("srv", [descriptor])
+  assert string.contains(generated.source, "nothing _nothing: Nil")
+  assert string.contains(
+    generated.source,
+    "fn(_item) { report.object(list.flatten([])) }",
+  )
+  assert string.contains(
+    generated.source,
+    "fn(_value) { report.object(list.flatten([])) }",
+  )
+  assert string.contains(
+    generated.source,
+    "codec.success(EmptyT0OutputResultN0)",
+  )
+  assert !string.contains(generated.source, "EmptyT0OutputResultN0()")
 }

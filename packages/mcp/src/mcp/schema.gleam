@@ -1,44 +1,32 @@
-//// `mcp/schema` — total interpretation of a tool's `inputSchema` into a
-//// typed parameter plan.
+//// `mcp/schema` keeps untrusted wire schemas separate from generated code.
 ////
-//// `gleam_mcp/protocol` carries a listed tool's input schema raw and untrusted;
-//// this module is the one place that reads it, and it reads it into an
-//// intermediate plan that both the code generator and the prompt-surface
-//// renderer consume. The interpretation is deliberately three-tiered and
-//// never fails:
+//// Reading path: check_budget first bounds all schema, annotation and literal
+//// text; input_fields validates an object-shaped input and preserves required
+//// wire names; shape and shape_at recursively build bounded structural Shapes.
+//// shape_fields chooses combinators before primitive declarations, record_fields
+//// preserves presence/default metadata, and union_shape admits only branches
+//// whose shapes prove exclusivity. An unsupported field remains ValueFallback.
+//// Nullable data and optional presence are independent, so explicit null cannot
+//// silently become an absent property. Numeric ranges, formats and other scalar
+//// annotations remain the remote server's responsibility.
 ////
-//// - **Tier 1** — a *required* parameter whose schema fits the typed
-////   subset (`string`, `integer`, `number`, `boolean`, or an array of one
-////   of those four) becomes a typed argument. Extra annotation keys
-////   (`description`, `format`, `default`, `minLength`, …) never
-////   disqualify; a string `enum` stays a `String` whose values are doc
-////   prose.
-//// - **Tier 2** — any other required-parameter schema (nested object,
-////   array of objects, `anyOf`/`oneOf`/`allOf`, `$ref`, a type array, a
-////   missing type, a boolean schema, or a `required` name with no
-////   `properties` entry) becomes a required structured argument. No
-////   parameter is ever dropped.
-//// - **Tier 3** — an unusable top level (not `{"type": "object"}`,
-////   `properties` present but not an object, `required` present but not
-////   an array of strings) collapses the whole tool to `WholeValue`: one
-////   argument carrying the entire arguments map, with the reason worded
-////   for the generated doc comment.
-////
-//// Optional parameters — everything under `properties` that the
-//// top-level `required` array does not name — are never typed arguments;
-//// they surface as `Optional` notes and travel through the generated
-//// façade's one `options` argument, keyed by original wire name.
+//// The older plan/Plan/ParamType projection remains available for callers doing
+//// scalar-tier accounting. The renderer consumes input_fields and Shape instead;
+//// it does not inherit the legacy optional pass-through representation.
 
 import gleam/dict.{type Dict}
+import gleam/float
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set.{type Set}
+import gleam/string
 import gleam_mcp/json.{type JsonValue}
 
 /// The four scalar shapes the typed subset admits.
 pub type Scalar {
-  /// `{"type": "string"}` — enums included.
+  /// The string scalar; the richer plan handles enum literals separately.
   ScalarString
 
   /// `{"type": "integer"}`.
@@ -321,5 +309,407 @@ fn declared_note(declared: JsonValue) -> Option(String) {
   case declared {
     json.Object(fields) -> note_of(fields)
     _ -> None
+  }
+}
+
+/// Whether a record field must occur on the wire.
+pub type Presence {
+  /// Missing values fail decoding.
+  Required
+
+  /// Missing values are distinct from explicit nullable values.
+  OptionalField
+}
+
+/// Additional properties follow the schema's explicit object policy.
+pub type Openness {
+  /// Unknown properties may be present in decoded records.
+  Open
+
+  /// Unknown properties fail decoding.
+  Closed
+}
+
+/// A bounded structural plan. Unsupported constraints remain server-validated;
+/// unsupported shapes retain their entire field as a value.
+pub type Shape {
+  /// A primitive scalar.
+  Primitive(
+    /// Scalar wire category.
+    scalar: Scalar,
+  )
+
+  /// String literals become a closed constructor set.
+  Enumeration(
+    /// Distinct admitted string literals.
+    values: List(String),
+  )
+
+  /// A recursively typed homogeneous list.
+  Sequence(
+    /// Shape of every list item.
+    item: Shape,
+  )
+
+  /// Named properties have their own presence and nullable semantics.
+  Record(
+    /// Required-first named property plans.
+    fields: List(Field),
+    /// Whether unknown decoded properties are admitted.
+    openness: Openness,
+  )
+
+  /// A homogeneous map keeps its dynamic wire keys.
+  Mapping(
+    /// Shape of every dynamically keyed value.
+    item: Shape,
+  )
+
+  /// Explicit null is represented separately from absence.
+  Nullable(
+    /// Shape admitted beside explicit null.
+    inner: Shape,
+  )
+
+  /// Exactly one branch must decode successfully.
+  Alternatives(
+    /// Structurally disjoint branch plans.
+    branches: List(Shape),
+  )
+
+  /// An object whose internal shape is unspecified.
+  RawObject
+
+  /// An array whose item shape is unspecified.
+  RawArray
+
+  /// Only the JSON null value.
+  NullValue
+
+  /// A field outside the supported structural subset.
+  ValueFallback(
+    /// Why this field retains the unrestricted wire representation.
+    reason: String,
+  )
+}
+
+/// One field keeps the server's wire identity separate from its generated label.
+pub type Field {
+  Field(
+    /// Original wire property name.
+    original: String,
+    /// Structural interpretation of this property's schema.
+    shape: Shape,
+    /// Required or optional wire presence.
+    presence: Presence,
+    /// Untrusted description, sanitized by the renderer.
+    note: Option(String),
+    /// Untrusted schema default, shown as prose; omission lets the server apply it.
+    default: Option(JsonValue),
+  )
+}
+
+/// Interprets a field or output schema into a recursive shape. Depth is bounded
+/// even when callers bypass generation's aggregate node and byte budget.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schema.shape(json.Null) == schema.ValueFallback("schema is not an object")
+/// ```
+pub fn shape(value: JsonValue) -> Shape {
+  shape_at(value, 0)
+}
+
+fn shape_at(value: JsonValue, depth: Int) -> Shape {
+  case depth >= 12 {
+    True -> ValueFallback("schema depth exceeds 12")
+    False ->
+      case value {
+        json.Object(fields) -> shape_fields(fields, depth)
+        _ -> ValueFallback("schema is not an object")
+      }
+  }
+}
+
+fn shape_fields(fields: List(#(String, JsonValue)), depth: Int) -> Shape {
+  // References and mixed combinators are retained as values rather than
+  // interpreted as a weaker primitive declaration beside them.
+  case
+    dict.has_key(dict.from_list(fields), "$ref")
+    || dict.has_key(dict.from_list(fields), "allOf")
+    || dict.has_key(dict.from_list(fields), "anyOf")
+  {
+    True -> ValueFallback("references or unsupported combinators")
+    False ->
+      case list.key_find(fields, "oneOf") {
+        Ok(json.Array(branches)) if branches != [] ->
+          case list.drop(branches, 32) != [] {
+            True -> ValueFallback("oneOf exceeds 32 branches")
+            False -> union_shape(list.map(branches, shape_at(_, depth + 1)))
+          }
+        Ok(_) -> ValueFallback("oneOf is not a nonempty array")
+        Error(Nil) -> declared_shape(fields, depth)
+      }
+  }
+}
+
+fn declared_shape(fields: List(#(String, JsonValue)), depth: Int) -> Shape {
+  case list.key_find(fields, "type") {
+    Ok(json.String("string")) -> string_shape(fields)
+    Ok(json.String("integer")) -> Primitive(ScalarInt)
+    Ok(json.String("number")) -> Primitive(ScalarFloat)
+    Ok(json.String("boolean")) -> Primitive(ScalarBool)
+    Ok(json.String("null")) -> NullValue
+    Ok(json.String("object")) -> record_shape(fields, depth)
+    Ok(json.String("array")) ->
+      case list.key_find(fields, "items") {
+        Ok(items) -> Sequence(shape_at(items, depth + 1))
+        Error(Nil) -> RawArray
+      }
+    Ok(json.Array(types)) -> nullable_shape(types, fields, depth)
+    _ -> ValueFallback("undeclared or unsupported type")
+  }
+}
+
+fn string_shape(fields: List(#(String, JsonValue))) -> Shape {
+  case list.key_find(fields, "const"), list.key_find(fields, "enum") {
+    Ok(json.String(value)), _ -> Enumeration([value])
+    Ok(_), _ -> ValueFallback("string const is not a string")
+    Error(Nil), Ok(json.Array(values)) ->
+      case
+        list.try_map(values, fn(value) {
+          case value {
+            json.String(text) -> Ok(text)
+            _ -> Error(Nil)
+          }
+        })
+      {
+        Ok(values) if values != [] -> Enumeration(dedupe(values))
+        _ -> ValueFallback("string enum is empty or contains nonstrings")
+      }
+    Error(Nil), Error(Nil) -> Primitive(ScalarString)
+    Error(Nil), Ok(_) -> ValueFallback("enum is not an array")
+  }
+}
+
+fn nullable_shape(
+  types: List(JsonValue),
+  fields: List(#(String, JsonValue)),
+  depth: Int,
+) -> Shape {
+  let nonnull = list.filter(types, fn(t) { t != json.String("null") })
+  case nonnull, list.contains(types, json.String("null")) {
+    [json.String(kind)], True ->
+      Nullable(declared_shape(
+        list.key_set(fields, "type", json.String(kind)),
+        depth + 1,
+      ))
+    _, _ -> ValueFallback("type array is not one type plus null")
+  }
+}
+
+fn record_shape(fields: List(#(String, JsonValue)), depth: Int) -> Shape {
+  case list.key_find(fields, "properties") {
+    Ok(json.Object(_)) ->
+      case record_fields(fields, depth) {
+        Ok(properties) -> Record(properties, object_openness(fields))
+        Error(reason) -> ValueFallback(reason)
+      }
+    Error(Nil) ->
+      case list.key_find(fields, "additionalProperties") {
+        Ok(json.Object(_) as item) -> Mapping(shape_at(item, depth + 1))
+        Ok(json.Bool(False)) -> Record([], Closed)
+        _ -> RawObject
+      }
+    Ok(_) -> ValueFallback("properties is not an object")
+  }
+}
+
+fn object_openness(fields: List(#(String, JsonValue))) -> Openness {
+  case list.key_find(fields, "additionalProperties") {
+    Ok(json.Bool(False)) -> Closed
+    _ -> Open
+  }
+}
+
+fn record_fields(
+  fields: List(#(String, JsonValue)),
+  depth: Int,
+) -> Result(List(Field), String) {
+  use required <- result.try(required_names(fields))
+  let properties = case list.key_find(fields, "properties") {
+    Ok(json.Object(properties)) -> properties
+    _ -> []
+  }
+  let declared = first_declarations(properties)
+  let required_set = set.from_list(required)
+  let ordered =
+    list.append(
+      required,
+      dedupe(list.map(properties, fn(p) { p.0 }))
+        |> list.filter(fn(n) { !set.contains(required_set, n) }),
+    )
+  Ok(
+    list.map(ordered, fn(original) {
+      let presence = case set.contains(required_set, original) {
+        True -> Required
+        False -> OptionalField
+      }
+      case dict.get(declared, original) {
+        Error(Nil) ->
+          Field(
+            original,
+            ValueFallback("required but undeclared"),
+            presence,
+            None,
+            None,
+          )
+        Ok(value) -> {
+          let annotations = case value {
+            json.Object(fs) -> fs
+            _ -> []
+          }
+          Field(
+            original,
+            shape_at(value, depth + 1),
+            presence,
+            note_of(annotations),
+            list.key_find(annotations, "default")
+              |> result.map(Some)
+              |> result.unwrap(None),
+          )
+        }
+      }
+    }),
+  )
+}
+
+/// Returns all top-level input fields in required-first order. Malformed input
+/// preserves the original whole-value form through an explicit error.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schema.input_fields(json.Null) == Error("inputSchema is not an object")
+/// ```
+pub fn input_fields(value: JsonValue) -> Result(List(Field), String) {
+  use _ <- result.try(top_level(value))
+  case value {
+    json.Object(fields) -> record_fields(fields, 0)
+    _ -> Error("inputSchema is not an object")
+  }
+}
+
+/// Refuses oversized schemas before recursive planning or rendering. This
+/// bounded walk covers annotations and default values as well as shape nodes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schema.check_budget([json.Null]) == Ok(Nil)
+/// ```
+pub fn check_budget(values: List(JsonValue)) -> Result(Nil, String) {
+  budget_loop(list.map(values, fn(v) { #(v, 0) }), 0, 0)
+}
+
+// The budget is checked before even the empty worklist succeeds: a terminal
+// string or default can exhaust bytes without leaving a child to inspect.
+fn budget_loop(
+  pending: List(#(JsonValue, Int)),
+  nodes: Int,
+  bytes: Int,
+) -> Result(Nil, String) {
+  use _ <- result.try(case nodes > 16_384 || bytes > 262_144 {
+    True -> Error("schema exceeds 16384 nodes or 262144 text bytes")
+    False -> Ok(Nil)
+  })
+  case pending {
+    [] -> Ok(Nil)
+    [#(value, depth), ..rest] ->
+      case nodes >= 16_384 || bytes >= 262_144 || depth > 32 {
+        True ->
+          Error("schema exceeds 16384 nodes, 262144 text bytes, or depth 32")
+        False -> {
+          let #(children, added) = case value {
+            json.Object(fields) -> #(
+              list.map(fields, fn(p) { #(p.1, depth + 1) }),
+              list.fold(fields, 0, fn(n, p) { n + string.byte_size(p.0) }),
+            )
+            json.Array(items) -> #(
+              list.map(items, fn(v) { #(v, depth + 1) }),
+              0,
+            )
+            json.String(text) -> #([], string.byte_size(text))
+            json.Int(value) -> #([], string.byte_size(int.to_string(value)))
+            json.Float(value) -> #([], string.byte_size(float.to_string(value)))
+            _ -> #([], 0)
+          }
+          budget_loop(list.append(children, rest), nodes + 1, bytes + added)
+        }
+      }
+  }
+}
+
+// Branches are typed only when the declared shapes prove exclusivity without
+// interpreting annotations such as ranges or patterns. Otherwise a field
+// remains a value, rather than rejecting valid wire data as ambiguous.
+fn union_shape(branches: List(Shape)) -> Shape {
+  case mutually_disjoint(branches) {
+    True -> {
+      let nonnull = list.filter(branches, fn(branch) { branch != NullValue })
+      case list.contains(branches, NullValue), nonnull {
+        True, [inner] -> Nullable(inner)
+        True, [] -> NullValue
+        True, rest -> Nullable(Alternatives(rest))
+        False, rest -> Alternatives(rest)
+      }
+    }
+    False -> ValueFallback("oneOf branches are not structurally disjoint")
+  }
+}
+
+fn mutually_disjoint(branches: List(Shape)) -> Bool {
+  case branches {
+    [] -> True
+    [branch, ..rest] ->
+      list.all(rest, disjoint(branch, _)) && mutually_disjoint(rest)
+  }
+}
+
+fn disjoint(left: Shape, right: Shape) -> Bool {
+  case left, right {
+    Alternatives(branches), other -> list.all(branches, disjoint(_, other))
+    other, Alternatives(branches) -> list.all(branches, disjoint(other, _))
+    Nullable(inner), other ->
+      disjoint(NullValue, other) && disjoint(inner, other)
+    other, Nullable(inner) ->
+      disjoint(other, NullValue) && disjoint(other, inner)
+    Enumeration(a), Enumeration(b) -> !list.any(a, list.contains(b, _))
+    Record(a, _), Record(b, _) ->
+      list.any(a, fn(field) {
+        field.presence == Required
+        && list.any(b, fn(other) {
+          other.presence == Required
+          && field.original == other.original
+          && disjoint(field.shape, other.shape)
+        })
+      })
+    _, _ ->
+      shape_category(left) != "unknown"
+      && shape_category(right) != "unknown"
+      && shape_category(left) != shape_category(right)
+  }
+}
+
+fn shape_category(shape: Shape) -> String {
+  case shape {
+    Primitive(ScalarString) | Enumeration(_) -> "string"
+    Primitive(ScalarInt) | Primitive(ScalarFloat) -> "number"
+    Primitive(ScalarBool) -> "boolean"
+    Record(_, _) | Mapping(_) | RawObject -> "object"
+    Sequence(_) | RawArray -> "array"
+    NullValue -> "null"
+    _ -> "unknown"
   }
 }
