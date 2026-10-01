@@ -1,12 +1,14 @@
 # Current handoff
 
-The MCP extraction is based on `01f14ef8f36f1fa87f7fb7977470d8ad34c28943`
-and records source/dependency baseline
-`7b8cd39f9744181d95f856f33b8b880f982dd11e`, followed by fixture correction
-`b69de8672`. The earlier extraction
-candidate used an old local main; its focused tests and four reproduced
-Git-launcher failures belong to that old baseline. Current main already
-contains the launcher fix. Those results are not signoff for this head.
+The MCP extraction is rebased onto `origin/main` at
+`7b1c662cfd4e9f6fe8d4b63dc8a40e5a54e3a55d`. The recovery ref
+`codex/mcp-extraction-pre-rebase-a569` retains the previous tested head.
+Upstream already contains the Git fixture isolation correction, including
+process-specific workspace names, so the duplicate branch fix was omitted.
+Both upstream session-lifetime documentation and the extracted MCP boundary
+were retained. Validation of this rebased head and the final independent
+review are pending; the historical results below stay attached to their
+original commits.
 
 ## Standalone MCP extraction
 
@@ -117,8 +119,12 @@ the documentation check exited zero.
 CI commit `a0300e896` enables this evidence for shipped bootstrap and uploads the
 private effect logs and terminal recordings. The original hard macOS terminal
 observations run before bootstrap so its failure cannot hide their result; the
-zero-skip census and failing fan-in are unchanged. Require exact-head hosted
-verification for these diagnostics. The preceding macOS aggregate remains red.
+zero-skip census and failing fan-in are unchanged. Pre-rebase head
+`a569e1f681fae2098979ff79bd327fc30e43ebde` passed both aggregate gates in
+[run 36779051580](https://github.com/Roasbeef/loom/actions/runs/36779051580).
+Its timing artifacts were inspected. Both intermittent timeout causes remain
+unconfirmed; a green run does not prove their correction. The rebased head
+requires its own hosted verification.
 
 [Jevelin MCP](https://github.com/Roasbeef/jevelin-mcp) consumes the SDK and
 existing Jevelin library directly. Published application head
@@ -132,7 +138,7 @@ Origin refusals. The inherited startup blocker is closed by the published
 factory-order fixes above. No authenticated live Jev request has been made.
 
 [PR #669](https://github.com/Roasbeef/loom/pull/669) records the current
-validation boundary and draft status. Continue to require the full gate,
+validation boundary and review status. Continue to require the full gate,
 real native MCP process and configured-server code-mode exchanges when
 updating this dependency. Remote MCP admission policy remains separate
 from the reusable library's HTTP implementation.
