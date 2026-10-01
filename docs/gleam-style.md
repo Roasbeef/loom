@@ -520,6 +520,170 @@ intermediates so the call takes short references, and split a function
 whose signature cannot fit rather than living with a tall one. Never
 trade clarity for a saved line.
 
+### Orientation in large modules
+
+Stanzas orient a reader inside one body. This section orients a reader
+inside one *module*, and it is a rule about layout rather than about any
+single function, which is why it sits beside the stanza rules and not in
+Part III. The reader it serves arrives from "go to definition" or a search
+hit, lands in the middle of a two-thousand-line file, and has not read the
+module doc, the types or the function above. Small bodies and prose over
+every stanza keep each function readable, but they do not tell that reader
+where the function sits in the whole. Six rules do, and they are cheap to
+follow because they ask for what the author already knows.
+
+| # | Rule | Lint | Tier |
+| --- | --- | --- | --- |
+| 1 | A large module opens with a flow spine | R13 | gates |
+| 2 | Functions follow the call flow | R17 | census |
+| 3 | Domain functions are called qualified | R16 | gates |
+| 4 | A helper is extracted only if it names a domain operation | R18 | census |
+| 5 | State, message and effect types come before the first function | R15 | gates |
+| 6 | A critical state machine carries a checked transition table | R14 | gates |
+
+R13, R14, R15 and R16 are decidable without judgement, so they gate once
+the tree is clean. R17 and R18 never gate: they are censuses that warn
+forever. A helper shared by several callers has no single right place
+(R17), and whether a name is a domain operation is a judgement that a
+program can only approximate (R18). Read their warnings as a prompt to
+look, as you read R8's.
+
+**1. Open a large module with a flow spine.** A module of a thousand lines
+or more (`policy.spine_lines`) ends its module doc with a `//// ## Flow`
+section. The spine is one arrow line naming the main path, then a numbered
+list saying what each step does, in the order a reader meets the steps. It
+runs ten to twenty lines. It shows the main road and leaves the detail to
+the doc comment on each function. This is `tui/inbound`'s:
+
+```gleam
+//// ## Flow
+////
+//// `drain_connection` → `handle_connection_message` → `apply_channel_update`
+//// → `run_settled` → `settle_surfaces` → `show_surface`
+////
+//// 1. `drain_connection` takes a batch from the adopted inbox with
+////    `take_connection` and records whether it stopped at the batch.
+//// 2. `handle_connection_message` gives one message to the session channel
+////    through `lane_fold.receive`, which answers with channel updates.
+//// 3. `tick_channel` is the timer's way in: `lane_fold.tick` yields the same
+////    updates when a deadline or the idle refresh falls due.
+//// 4. `apply_channel_update` reads `surroundings`, then folds one update
+////    through `run_settled`, which holds the result and settles it.
+//// 5. `settle_surfaces` replays each recorded fact through `show_surface`,
+////    then `restore_returned_drafts` moves returned drafts to the editors.
+//// 6. `show_surface` writes one fact to the terminal; a lost connection ends
+////    in `begin_reconnect`, which asks `reconnect_decision` if one is owed.
+```
+
+The lint checks the names, which keeps a spine from rotting the way a
+paragraph would. Every backticked snake_case name in the section must be a
+function defined in the module, and `alias.name` must use an alias the
+module imports (`lane_fold.receive` above; the function behind it is not
+checked). A spine names at least three local functions and holds no fenced
+code block, which would hide names from the check. Anything else in
+backticks, such as a type or a constructor, is prose and is left alone.
+Rename a function and the build fails until the spine follows. A smaller
+module may carry a spine too, and it is checked the same way. R13 gates.
+
+**2. Order a large file by call flow.** Put an entry point above the
+helpers it calls, and the helpers in the order the entry point reaches
+them, so that reading downward follows the spine. A reader who has just
+read `receive` then finds `apply_pushed` and `apply_reply` below it, and
+not eleven screens away beside whatever they share a prefix with. Gleam
+does not care about definition order, so the order is yours to give. R17
+counts a module's private helpers that sit above their first caller, and
+warns when a module has ten or more helpers and half of them are out of
+order. It is a census because a helper called from five places has no
+single right position, and moving one to please the count would hurt four
+callers to help one.
+
+**3. Call domain functions qualified.** Import a Loom module and write
+`session_channel.tick(...)`, not
+`import session_view/session_channel.{tick}` and a bare `tick(...)`. This
+is the Imports rule above, enforced for Loom modules. A bare `tick` or
+`apply` in the middle of a body could be this module's own function or
+another's, and the reader dropped in from "go to definition" answers that
+by scrolling to the imports. Qualified, `lane_fold.apply_channel_update`
+names the module that owns the step without leaving the line. R16 flags an
+unqualified import of a Loom function and gates.
+
+The check has an allow list, because qualification is not free. A generic
+combinator or a constructor carries no domain meaning for the qualifier to
+supply, and `option.Some(option.unwrap(...))` is harder to read than
+`Some(unwrap(...))`. So types, constructors and a small set of combinators
+may be imported unqualified, which is the convention the Imports section
+already gives for `type Option, None, Some`. What the list excludes is the
+call a reader cannot place: a function that does domain work.
+
+```gleam
+// Bad: `tick` and `receive` could be this module's, or anyone's.
+import session_view/session_channel.{receive, tick}
+
+let #(lane, updates) = receive(lane, message, now:)
+
+// Good: the module that owns the transition is on the line.
+import session_view/session_channel
+
+let #(lane, updates) = session_channel.receive(lane, message, now:)
+```
+
+**4. Extract a helper only if its name is a domain operation.** A helper
+earns its place by naming a step of the domain: `settle_cache`,
+`apply_submission` and `capture_again` each say what changes when they run,
+so the reader of the caller can skip the body because the name is the
+summary. `do_thing2`, `helper` and `process_inner` name only where the
+author cut the function. They add a jump without a meaning, and the reader
+pays the jump to learn that the body is no more than the lines the caller
+lost. When you cannot name the extracted piece as an operation, it is
+probably not one, and the better change is a stanza break and a comment
+inside the caller.
+
+This complements R8 and does not repeat it. R8 looks at the shape of a
+one-caller function wide enough to be a pyramid moved elsewhere. R18 looks
+at the name of a small one-caller function, which a short comment would
+often serve better. Both warn and neither is a reason to inline by itself,
+because naming a domain operation is a judgement.
+
+**5. Put the state, message and effect types first.** In a module that is
+a state machine (a reducer, a channel, a supervisor loop), define its
+custom types above its first function. A reader of a transition needs the
+states before the transitions, and "go to definition" on a constructor
+should land near the top and not at line 1,100. The move is free because
+Gleam resolves types in any order. R15 flags a module whose state, message
+or effect type is defined below the first function, and gates.
+`tui/inbound` defined `ReconnectDecision` after the function that returns
+it; the fix was a pure move above `reconnect_decision`.
+
+**6. Give a critical state machine a checked transition table.** A
+function that dispatches on a state type shows what happens in each case
+but never lets the reader see one state whole. A table does: one row per
+state, one column per event. For the machines whose misuse costs the most,
+put the table in the module doc under a marker that names the type, and
+the lint holds it to the code. This is a part of `session_view/session_channel`'s,
+whose `Phase` has five states:
+
+```gleam
+//// <!-- transitions: session_channel.Phase -->
+////
+//// | state | receive | tick | submit | close | retire |
+//// | --- | --- | --- | --- | --- | --- |
+//// | `AwaitingBegin` | `Receiving` on a valid begin; `Ready` on a resumed marker; a push is applied in place; anything else `Closed` | `Closed` once the deadline passes | queued (`Waiting`); a mutation also needs a held cut and a mutating role, else refused | `Closed` | `Closed` |
+//// | `Closed` | ignored | nothing | refused | unchanged | unchanged |
+```
+
+The marker names `module.Type`, where `module` is the last path segment
+or the full path, and the type must be a custom type defined in the
+module. The body rows must name exactly the type's variants: a missing,
+extra or duplicated row fails, as does a row whose cell count differs from
+the header's and an empty cell. So adding a variant to `Phase` fails the
+build until someone decides what every event does to it, which is the
+decision the table exists to force. The cells are prose: name the next
+state, say "refused" or "ignored", and add a few words where the answer
+depends on something. The lint checks the shape and not the claims, so
+derive the table from the code with the code open, and read it against the
+model where one exists (`protocol/models/terminal-attachment` for this
+channel). R14 gates.
+
 ### Deprecation
 
 `@deprecated("Use x instead")` with a message that names the replacement;
