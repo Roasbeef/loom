@@ -171,8 +171,10 @@ for a host with no surfaces.
   divider per turn (`Folded`, or `Open` while the strand runs or waits on an
   approval; its `Worked` figures come from the records), `Spawned` and
   `Returned` rows for sub-agents, `Nudged` for a delivered advisor frame,
-  `Peer` for another session's message, `Missed` for a cache notice and
-  `Commentary` for the advisor's board. It reads
+  `Peer` for another session's message, `Sibling` for a message a strand of
+  the same session sent (stored origin `StrandOrigin`, framing removed by
+  `strand_framing.strip`, a brief's result-contract trailer kept apart),
+  `Missed` for a cache notice and `Commentary` for the advisor's board. It reads
   `transcript_lines.keyed_record_blocks` (`transcript.blocks`), which tags
   each block with its `Source`. `turns.grouped(blocks, strands)` splits
   the same blocks at their inputs, the lead before the first input and
@@ -493,6 +495,14 @@ observer's page holds no command.
   `ToolDetail` rows (a peer message, an expanded `agent_wait` report) so
   the terminal's rule is one speaker set; the web view's result, nudge
   and peer cards draw their bodies as Markdown too.
+- **`strand_framing` owns the Agency's framing strings, and `strip` runs only
+  for a stored `StrandOrigin`.** `client/agency` builds `frame_message`,
+  `frame_brief` and `result_contract` from them, because `client` depends on
+  `session_view`. `strip` compares exact strings built from the origin's own
+  strand, anchors a brief's trailer on the last foot plus opening line and the
+  closing marker at the end, and returns any text that is not exactly the
+  framing whole. Text never selects the strand rendering: a framed text under
+  origin `None` or in a tool result stays ordinary input.
 - **`turns` keys a turn's work by its input.** `Work.key` is
   `work:<input key>`, or `work:window-start` for the turn the window opens
   inside, never the key of the work's first item. The window drops its

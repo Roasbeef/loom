@@ -23,13 +23,20 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 - `core/message.Origin` distinguishes human attribution from peer-agent
   attribution. `Origin(principal, name)` preserves the human identity admitted
   under protocol 016. `PeerOrigin(session, strand)` records the host-bound peer
-  sender under protocol 048. Both carry attribution only, without credentials
-  or authority. Historical unattributed turns remain `None`.
+  sender under protocol 048. `StrandOrigin(strand)` records a strand of the
+  same session that sent the message through the Agency (protocol 059). All
+  carry attribution only, without credentials or authority. Historical
+  unattributed turns remain `None`.
 - `core/origin` owns validation, encoding, decoding and presentation of that
   field. Human records keep their legacy untagged encoding; peer records use
-  `{kind: "peer", session, strand}`. A malformed present origin is corruption.
-  `project` adds an explicit human or peer-agent label at the provider boundary
-  while preserving stored content. `display_label` gives existing client views
+  `{kind: "peer", session, strand}` and strand records
+  `{kind: "strand", strand}`, validated by `validate_strand` with the bounds
+  of a peer's strand. A malformed present origin is corruption.
+  `stable_identity` of a strand is `strand:` plus its id, which no human
+  principal can equal. `project` adds an explicit human or peer-agent label at
+  the provider boundary while preserving stored content, and leaves a strand
+  message's content unchanged so the model sees only the Agency's framing.
+  `display_label` gives existing client views
   an explicit peer label instead of treating a strand name as a human name.
 - `core/todo_list.{Board, Phase, Task, Status}` — a strand's todo board,
   kept here because three readers on two sides of a wire need one shape:

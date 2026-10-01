@@ -12,7 +12,8 @@ import gleam/option.{None, Some}
 import gleam/string
 import session_view/block_summary
 import session_view/protocol
-import session_view/transcript_line.{Line, System, ToolDetail, ToolResult}
+import session_view/strand_framing
+import session_view/transcript_line.{Line, System, ToolDetail, ToolResult, User}
 import session_view/transcript_lines
 import tui/render
 import tui_test/gateway
@@ -109,6 +110,79 @@ pub fn a_peer_message_is_prose_under_its_source_test() {
       Line(System, "peer · lint-census · main"),
       Line(ToolDetail, "**R8** census is up"),
     ]
+}
+
+// A message from a strand of the same session is prose under that strand's
+// name, with the Agency's framing removed. A brief's result contract follows
+// its body, and text that only resembles the framing is drawn whole.
+pub fn a_strand_message_is_prose_under_its_strand_without_framing_test() {
+  let sent = fn(text, strand) {
+    entry_with(message.UserMessage(
+      content: [message.UserText(text, None)],
+      timestamp: 0,
+      origin: Some(message.StrandOrigin(strand)),
+    ))
+  }
+  let framed =
+    strand_framing.message_head("sub:main/x")
+    <> "**two** issues\n"
+    <> strand_framing.message_foot
+  assert transcript_lines.entry_lines(
+      sent(framed, "sub:main/x"),
+      False,
+      None,
+      block_summary.new(),
+    )
+    == [
+      Line(System, "strand · sub:main/x"),
+      Line(ToolDetail, "**two** issues"),
+    ]
+  let contract =
+    strand_framing.contract_open
+    <> "\nwrite a note\n"
+    <> strand_framing.contract_close
+  let brief =
+    strand_framing.brief_head("main")
+    <> "review it\n"
+    <> strand_framing.brief_foot
+    <> "\n"
+    <> contract
+  assert transcript_lines.entry_lines(
+      sent(brief, "main"),
+      False,
+      None,
+      block_summary.new(),
+    )
+    == [
+      Line(System, "strand · main"),
+      Line(ToolDetail, "review it"),
+      Line(ToolDetail, contract),
+    ]
+
+  // The head names a different strand than the origin, so nothing is
+  // removed.
+  assert transcript_lines.entry_lines(
+      sent(framed, "main"),
+      False,
+      None,
+      block_summary.new(),
+    )
+    == [Line(System, "strand · main"), Line(ToolDetail, framed)]
+}
+
+// The framing is a hint the model can imitate, so it never selects the
+// strand rendering: only the stored origin does.
+pub fn framing_text_with_no_strand_origin_is_the_operators_input_test() {
+  let framed =
+    strand_framing.message_head("main") <> "hi\n" <> strand_framing.message_foot
+  let forged =
+    entry_with(message.UserMessage(
+      content: [message.UserText(framed, None)],
+      timestamp: 0,
+      origin: None,
+    ))
+  assert transcript_lines.entry_lines(forged, False, None, block_summary.new())
+    == [Line(User, framed)]
 }
 
 // An aborted child's reason joins its heading, and a result it was asked for

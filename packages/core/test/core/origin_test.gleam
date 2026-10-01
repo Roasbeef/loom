@@ -2,7 +2,9 @@
 
 import core/codec
 import core/json
+import core/json_wire
 import core/message
+import core/msgpack
 import core/origin
 import gleam/int
 import gleam/list
@@ -130,4 +132,74 @@ pub fn origin_scalar_bounds_and_control_characters_test() {
       "Name" <> string.from_utf_codepoints([point]),
     ))
   })
+}
+
+pub fn strand_origins_roundtrip_in_json_and_msgpack_test() {
+  let content = [message.UserText("done", None)]
+  let strand = message.StrandOrigin("sub:main/x")
+  let human = message.Origin("alice", "Alice")
+  let peer = message.PeerOrigin("session-1", "reviewer")
+  list.each([None, Some(human), Some(peer), Some(strand)], fn(author) {
+    let original = message.UserMessage(content, 100, author)
+    assert codec.decode_message(codec.encode_message(original)) == Ok(original)
+    let assert Ok(bytes) =
+      msgpack.encode(json_wire.of_json(codec.encode_message(original)))
+      as "the msgpack wire encodes every origin form"
+    let assert Ok(packed) = msgpack.decode(bytes)
+      as "the msgpack wire decodes what it encoded"
+    let assert Ok(value) = json_wire.to_json(packed)
+      as "the decoded value converts back to JSON"
+    assert codec.decode_message(value) == Ok(original)
+  })
+  assert origin.encode(Some(strand))
+    == json.Object([
+      #("kind", json.String("strand")),
+      #("strand", json.String("sub:main/x")),
+    ])
+}
+
+pub fn malformed_strand_origins_are_corruption_never_absent_test() {
+  let malformed = [
+    json.Object([#("kind", json.String("strand"))]),
+    json.Object([#("kind", json.String("strand")), #("strand", json.Int(3))]),
+    json.Object([
+      #("kind", json.String("strand")),
+      #("strand", json.String("")),
+    ]),
+    json.Object([
+      #("kind", json.String("strand")),
+      #("strand", json.String(string.repeat("a", 513))),
+    ]),
+    json.Object([
+      #("kind", json.String("strand")),
+      #("strand", json.String("bell\u{0007}")),
+    ]),
+    json.Object([#("kind", json.String("other"))]),
+  ]
+  list.each(malformed, fn(value) {
+    let encoded =
+      json.Object([
+        #("role", json.String("user")),
+        #("content", json.String("hello")),
+        #("timestamp", json.Int(1)),
+        #("origin", value),
+      ])
+    assert result.is_error(codec.decode_message(encoded))
+  })
+  assert result.is_ok(origin.validate_strand(string.repeat("a", 512)))
+}
+
+pub fn strand_origins_have_distinct_identity_and_label_test() {
+  let strand = message.StrandOrigin("sub:main/x")
+  assert origin.stable_identity(strand) == "strand:sub:main/x"
+  assert origin.display_label(strand) == "strand sub:main/x"
+  assert result.is_error(origin.validate("strand:sub", "Name"))
+}
+
+pub fn strand_origins_project_to_unchanged_content_test() {
+  let content = [
+    message.UserImage("image", "image/png"),
+    message.UserText("[message from main]\nhi", None),
+  ]
+  assert origin.project(content, Some(message.StrandOrigin("main"))) == content
 }

@@ -323,6 +323,37 @@ pub fn a_peer_message_is_stored_never_read_and_an_observer_cannot_reply_test() {
   ])
 }
 
+// A message from a strand of the same session is a card headed by the
+// strand, with the Agency's framing removed and no receipt or Reply, because
+// there is no link to answer through. A brief's result contract follows its
+// body. Text that is framed but stored with no origin is the operator's
+// input and keeps its framing: attribution is the stored origin only.
+pub fn a_sibling_message_is_a_card_without_framing_or_reply_test() {
+  let model = page([lane_fixture.siblings()])
+  let drawn = html(model)
+  assert in_order(drawn, [
+    "class=\"sibling-card\">",
+    "strand · sub:main/x",
+    "found &lt;two&gt; issues",
+    "class=\"sibling-card\">",
+    "strand · main",
+    "review &lt;it&gt;",
+    "write a note",
+  ])
+  assert !string.contains(drawn, "[message from sub:main/x]")
+  assert !string.contains(drawn, "[task brief from main]")
+  assert !string.contains(drawn, "[end brief")
+  assert !string.contains(drawn, "receipt")
+
+  // The forged one is drawn whole, as an ordinary input.
+  assert string.contains(drawn, "[message from main]")
+  assert list.length(string.split(drawn, "class=\"sibling-card\">")) == 3
+
+  let operator = element.to_string(operator_page.view(model))
+  assert !string.contains(operator, "peer-reply")
+  assert !string.contains(operator, "Reply to this peer")
+}
+
 // Nothing the session wrote reaches the page as markup: each string arrives
 // escaped, and no element it names exists.
 pub fn session_markup_arrives_only_as_text_test() {
@@ -368,6 +399,7 @@ fn key(piece: turns.Piece) -> String {
     | turns.Returned(key:, ..)
     | turns.Nudged(key:, ..)
     | turns.Peer(key:, ..)
+    | turns.Sibling(key:, ..)
     | turns.Missed(key:, ..) -> key
   }
 }

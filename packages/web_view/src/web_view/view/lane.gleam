@@ -325,6 +325,7 @@ fn piece_key(piece: turns.Piece) -> String {
     | turns.Returned(key:, ..)
     | turns.Nudged(key:, ..)
     | turns.Peer(key:, ..)
+    | turns.Sibling(key:, ..)
     | turns.Missed(key:, ..) -> key
   }
 }
@@ -369,6 +370,7 @@ fn belongs_to(piece: turns.Piece, marks: Marks) -> #(turns.Hue, Option(Int)) {
       position(marks, agent_roster.advisor),
     )
     turns.Peer(..) -> #(turns.Unplaced, None)
+    turns.Sibling(strand:, ..) -> #(turns.Unplaced, position(marks, strand))
   }
 }
 
@@ -499,6 +501,24 @@ fn piece_element(
         ]),
         card_body(text),
         ..peer_actions(replies, key, session)
+      ])
+
+    // A strand of this same session. There is no peer link behind it, so
+    // there is no receipt and no Reply button: the recipient's model answers
+    // with its own `agent_send`. A brief's result-contract trailer is the
+    // harness's instruction and follows the sender's words as a second body.
+    turns.Sibling(strand:, text:, trailer:, ..) ->
+      html.article([attribute.class("sibling-card")], [
+        html.p([attribute.class("card-head")], [
+          html.span([attribute.class("peer-from")], [
+            html.text("strand · " <> strand),
+          ]),
+        ]),
+        card_body(text),
+        ..case trailer {
+          Some(instruction) -> [card_body(instruction)]
+          None -> []
+        }
       ])
 
     turns.Missed(text:, ..) ->

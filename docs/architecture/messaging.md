@@ -344,6 +344,15 @@ projecting provider input. Human origins keep their existing
 representation, and a malformed peer origin is reported as corruption
 rather than replayed as anonymous text.
 
+A message one strand sends another in the same session (`agent_send`, a
+spawn brief) has its own origin variant, `StrandOrigin(strand)`
+(protocol-change/059). The terminal and the web view read it, draw a
+`strand · <id>` heading and remove the Agency's framing with
+`session_view/strand_framing`, and provider projection leaves its content
+unchanged. In release N nothing writes it yet: the Agency still admits these
+messages with `origin: None`, and release N+1 sets it from the authenticated
+caller.
+
 A background execution keeps one satellite alive under a fixed deadline.
 `cap/execution.receive` reads committed input that the program can decode
 into messages for its typed actors. Children belong to that execution and
