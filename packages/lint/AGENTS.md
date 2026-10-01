@@ -421,6 +421,28 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   module, for a non-type, or with no table after it reports that one
   finding and stops. The cells themselves stay prose; only the row set is
   checked, so adding a state without a row fails the gate.
+- **R17 `flow-order`** — a module where strictly more than
+  `flow_order_percent` (50) per cent of its private helpers are defined
+  above their first caller, once it has `flow_order_min_helpers` (10) of
+  them. A helper is a private function with at least one in-module caller;
+  public functions are entry points and never counted; "above" means it
+  starts before the earliest-defined of its callers. One finding per module,
+  at offset 0, naming up to three examples. A census, never a gate: a leaf
+  grouped under its siblings is a fair reason to disagree. The call graph is
+  `lint/calls` (shared with R8 and R18): recursion is not a caller and a
+  reference from a constant is invisible. Whole-tree census is zero at the
+  defaults; the worst module is `cap/actor` at 27 per cent, so the tree
+  already reads entry-point first and the rule is a regression guard on
+  that, not a backlog.
+- **R18 `unnamed-helper`** — a private function with exactly one in-module
+  caller, spanning at most `unnamed_helper_lines` (6) lines from `fn` to the
+  closing brace (doc comments excluded), whose name is not a whole word of
+  the module doc. Suggestion 4 of issue #593 as a census: an extraction buys
+  a name, and a helper that names no domain operation buys only a jump. The
+  module doc is read from `glexer` tokens, so a `////` inside a string does
+  not count. It over-reports by construction (a short helper is often
+  right), so it warns forever; the census is 884, more than half of it at
+  exactly six lines, which is where the formatter lands a short `case`.
 - **R0 `unparseable`** — not a house rule. A file `glance` could not
   parse is reported, so a parse failure is never silence.
 
