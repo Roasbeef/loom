@@ -20,25 +20,25 @@ peers, a fleet routes clients by session id (`docs/loom-design.md`
 
 - **Fan-out.** Every durable emit — `entry`, `usage`, `op_transition`,
   `strand_result`, `escalation` — and every ephemeral `stream_delta`
-  is written to every subscribed connection (`client/gateway.gleam:593-627`,
+  is written to every subscribed connection (`client/gateway.gleam:717-717`,
   `1167`, `1880-1900`). The issuing connection's copy is suppressed and
   re-sent as its `reply_to` frame with the same seq, so each client
-  sees each event exactly once (`client/gateway.gleam:1839-1878`).
+  sees each event exactly once (`client/gateway.gleam:1864-1903`).
 - **One order.** The envelope `seq` is the storage seq of the write that
   produced the event, one strictly increasing space per session
-  (`client/gateway.gleam:14-22`). N clients get one total order for free, and
+  (`client/gateway.gleam:40-48`). N clients get one total order for free, and
   resync is `subscribe{from_seq}` or `catch_up` replaying
   `[from_seq, high_water]` from storage
   ([historical subscribe implementation](https://github.com/Roasbeef/loom/blob/f019322/packages/client/src/client/gateway.gleam#L1382-L1481)).
 - **Serialised writes.** The hub is one actor and every write goes
   through the session's single writer, so two clients' commands queue in
   mailbox order and never race at the store. A second prompt on a live
-  strand is refused as `StrandBusy` (`runtime/api.gleam:61`); two
+  strand is refused as `StrandBusy` (`runtime/api.gleam:80`); two
   steers both admit, in writer order, and both reach the run at
   successive checkpoints.
 - **Per-connection state is only `subscribed`.** Every command names
   its strand; there is no per-connection "active strand" to fall out of
-  step (`client/protocol.gleam:101-170`).
+  step (`client/protocol.gleam:124-193`).
 - **Two clients on one server is already exercised**, as a benchmark
   setup (`docs/performance.md:355-366`) and as `tui_e2e_test`'s second
   raw subscribe (`client/tui_e2e_test.gleam:294-307`).
@@ -64,7 +64,7 @@ Numbered as the survey found them; **frozen** means spec Part 1 and a
    design.
 4. **`set_config` is invisible to other clients.** It replies to the
    issuer only and `register_events` emits no config event
-   (`client/gateway.gleam:2838-2863`, `824-838`); `queue_mode` and
+   (`client/gateway.gleam:2863-2888`, `824-838`); `queue_mode` and
    `tool_execution` are hub memory (issue #184). A `config` event is
    frozen (§1.6 event union).
 5. **Presence is a count.** `gateway.attached()` answers "is a human
@@ -74,11 +74,11 @@ Numbered as the survey found them; **frozen** means spec Part 1 and a
 6. **Concurrent steers are silent about each other.** Both admit, both
    inject, neither operator learns of the other.
 7. **`deny` is not CAS-guarded** where `approve` is: compare `deny` at
-   `client/gateway.gleam:2294` with the
+   `client/gateway.gleam:2319` with the
    [historical approval CAS](https://github.com/Roasbeef/loom/blob/f019322/packages/client/src/client/gateway.gleam#L2203-L2220).
    Two clients racing approve and deny have no ordering on the deny side.
    Not frozen.
-8. **Approvals record grants, not granters** (`client/gateway.gleam:2199-2215`).
+8. **Approvals record grants, not granters** (`client/gateway.gleam:2224-2240`).
 9. **The native TUI cannot yet be the second operator.** It does not
    send protocol-change/007's action-and-grant approval, and it has no
    automatic reconnect or sparse catch-up (`client.md:544-547`), though

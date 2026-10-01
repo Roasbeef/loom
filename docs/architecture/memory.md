@@ -62,7 +62,7 @@ derived from. The *head* is a register naming the rows currently in force.
 The per-source cursors and the notes cursor are registers too.
 
 **The pipeline** on the managed path is
-`client/distill.gleam:612` (`prepare`). It runs in four steps:
+`client/distill.gleam:634` (`prepare`). It runs in four steps:
 
 1. Resolve explicit catalogue sources, after cleanup ownership is published.
 2. Extract candidates from each source on a cheap model.
@@ -73,11 +73,11 @@ The standalone `run` adapter can still scan a directory, but it is not the
 managed daemon's source authority.
 
 **The lifecycle worker** schedules passes. It is parked by
-`client/distillpass.gleam:770` (`prepare_domain`) before publication, then
+`client/distillpass.gleam:789` (`prepare_domain`) before publication, then
 started through `begin_domain`. While a pass runs, it coalesces authorized
 triggers, and it retains the original cleanup witness.
 
-**The injection** is `client/memory.gleam:1676` (`digest_hooks`), which
+**The injection** is `client/memory.gleam:1697` (`digest_hooks`), which
 appends the fenced, attributed digest to every accepted run's opening
 messages.
 
@@ -88,7 +88,7 @@ domain, and refuses the overflow. Reserved registrations are not sources,
 and the resolver never falls back to scanning a directory.
 
 Each source opens under its ordinary writer lease, with its canonical
-session identity checked (`client/distill.gleam:1261`, `harvest_one`). A
+session identity checked (`client/distill.gleam:1283`, `harvest_one`). A
 resident session holds that lease until its effects retire, so extraction
 skips it. Shared history has a separate read-only path for live sources;
 those reads are not distillation and do not take over the writer lease.
@@ -107,7 +107,7 @@ void and the source is read again from zero, because a precise rewrite
 renumbers every entry.
 
 What extraction may read is decided by entry type, not by text
-(`client/distill.gleam:257`, `extractable`). Settled assistant text and
+(`client/distill.gleam:279`, `extractable`). Settled assistant text and
 compaction or branch summaries contribute. A **user** message contributes
 nothing, which permanently prevents an injected digest from being
 re-ingested. A `CustomEntry` contributes nothing, which excludes
@@ -120,8 +120,8 @@ defeat it.
 | Lease | TTL | Who takes it | Why that length |
 |---|---|---|---|
 | The source session's | the session owner's | The resident instance, through confirmed retirement | It is what makes "skip the live session" exact. |
-| The memory session's, per `remember` call | `lease_ttl_ms`, 30 s (`client/memory.gleam:253`) | `remember_seam` (`client/memory.gleam:1298`) | One open per call, one commit; nothing slow between. |
-| The memory session's, per pass | `run_lease_ttl_ms`, 600 s (`client/memory.gleam:276`) | The owned distillation pass | Its commits are separated by whole provider turns, and a lease that expired between them would be stolen mid-run. |
+| The memory session's, per `remember` call | `lease_ttl_ms`, 30 s (`client/memory.gleam:274`) | `remember_seam` (`client/memory.gleam:1319`) | One open per call, one commit; nothing slow between. |
+| The memory session's, per pass | `run_lease_ttl_ms`, 600 s (`client/memory.gleam:297`) | The owned distillation pass | Its commits are separated by whole provider turns, and a lease that expired between them would be stolen mid-run. |
 
 The lifecycle worker deliberately has **no new lease type**. A pass takes the
 memory session's ordinary writer lease, and that makes concurrency safe by
@@ -140,14 +140,14 @@ life runs through these steps:
    witness. A pass result describes pipeline work; it does not prove that
    every resource has closed.
 2. **Follow-ups.** Clean session retirement sends `notify_domain`
-   (`client/distillpass.gleam:848`). An active pass retains at most one
+   (`client/distillpass.gleam:867`). An active pass retains at most one
    follow-up, so several closes cannot build an unbounded work queue.
    There is no periodic timer. A failed pass discards the pending
    follow-up instead of retrying; a later authorized trigger may start a
    new pass.
 3. **Quiescence.** When the last session retires, the manager sends the
    final close hint and then
-   `request_quiesce` (`client/distillpass.gleam:933`), in that order.
+   `request_quiesce` (`client/distillpass.gleam:952`), in that order.
    Quiescence fences new triggers and waits for the current pass and
    any follow-up already coalesced. Only then does the manager cancel the
    domain host.
@@ -170,9 +170,9 @@ internal callers. Its per-session boot cadence is not the managed path.
 
 A pass writes in a fixed order: rows first, then the CAS over the head and
 cursors, then the sidecar. The three steps are
-`client/memory.gleam:717` (`append_distillates`),
-`client/memory.gleam:901` (`advance_head`), and
-`client/memory.gleam:1185` (`reconcile_digest`).
+`client/memory.gleam:738` (`append_distillates`),
+`client/memory.gleam:922` (`advance_head`), and
+`client/memory.gleam:1206` (`reconcile_digest`).
 
 - A failure before the CAS leaves the previous head and cursors intact. Any
   rows already appended are orphans, invisible through that head.
@@ -192,7 +192,7 @@ proof.
 ## When a new digest becomes visible
 
 The sidecar is read once per accepted run, at **run start**, by the hook
-that `client/serve.gleam` installs over `client/memory.gleam:1565`
+that `client/serve.gleam` installs over `client/memory.gleam:1586`
 (`read_digest`). Two consequences follow:
 
 - A digest written by a pass reaches the **next run** of any session mapped
@@ -215,9 +215,9 @@ temporal, so a digest injected earlier in the same session still
 contributes nothing to later extraction.
 
 The digest body is rendered from the head
-(`client/memory.gleam:1449`, `render_digest`): scrubbed, capped in bytes,
+(`client/memory.gleam:1470`, `render_digest`): scrubbed, capped in bytes,
 and marked where truncated. The fence and attribution are added at
-injection time (`client/memory.gleam:1730`, `wrapped`), so the file cannot
+injection time (`client/memory.gleam:1751`, `wrapped`), so the file cannot
 forge its own provenance. The message is a user turn of its own ahead of the
 prompt. Both views draw it as one line, `memory context (n lines)`, which
 opens to the whole message: `session_view/composer.memory_context_lines`
@@ -237,7 +237,7 @@ have produced it.
 
 The domain's persisted configuration reference supplies its maintenance
 catalogue and its `[memory]` table, which
-`client/distillpass.gleam:205` (`parse`) decodes. This configuration is
+`client/distillpass.gleam:301` (`parse`) decodes. This configuration is
 independent of each session's runtime configuration. An explicit empty
 domain reference does not fall back to a later daemon default.
 
@@ -255,7 +255,7 @@ document's table names are checked.
 session plus one consolidation turn; #149 did not change it. The turns are
 routed exactly as the hand-run command routes them: to the `summarize` role
 when the catalogue declares one, and to the resolved main model otherwise
-(`client/distill.gleam:1568`, `target`). Both turns' usage rows land in the
+(`client/distill.gleam:1590`, `target`). Both turns' usage rows land in the
 memory session's own ledger, so memory's cost is visible rather than folded into
 another session's.
 
@@ -297,7 +297,7 @@ would drown the `info` stream that carries the counts. With
 
 `remember` is the one write path the model initiates, and it is why the
 store exists before any pass has run.
-`client/memory.gleam:1298` (`remember_seam`) opens the store per call
+`client/memory.gleam:1319` (`remember_seam`) opens the store per call
 under the short lease, then scrubs and caps the note. It
 refuses in band, naming the owner, when a pass holds the run-scale lease.
 Notes are a separate entry type from the pipeline's three, so a model cannot
@@ -307,12 +307,12 @@ in, and the notes cursor advances with the head CAS.
 ## Erasure, and the rebuild it schedules
 
 The erasure cascade is the pipeline's second command,
-`client/distill.gleam:1019` (`cascade`). After `session/repo` has rewritten
+`client/distill.gleam:1041` (`cascade`). After `session/repo` has rewritten
 a source session, the cascade drops from the head every distillate whose
 provenance names that session
-(`client/memory.gleam:694`, `names_source`). It then re-renders the
+(`client/memory.gleam:715`, `names_source`). It then re-renders the
 sidecar without them, through a head CAS that writes no new
-rows (`client/memory.gleam:1076`, `replace_head`). It needs no catalogue and
+rows (`client/memory.gleam:1097`, `replace_head`). It needs no catalogue and
 dispatches no model turn.
 
 The cascade is **first-order**, and we state that limit openly. A distillate
@@ -357,7 +357,7 @@ pass, and a cascade stays a deliberate operator action.
 
 The store and the sidecar join the session base policy's `protected` list
 wherever a writable root reaches them
-(`client/serve.gleam:5079`, `protecting_memory`).
+(`client/serve.gleam:5101`, `protecting_memory`).
 `protected` bars writes and leaves reads alone, and that asymmetry is
 intended: writing is the entire poisoning path, since the digest is injected
 into every run of every session on the repository without anyone asking for

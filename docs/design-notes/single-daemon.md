@@ -65,13 +65,13 @@ acceptance results are in [sessions](../architecture/sessions.md).
 
 | Existing boundary | Evidence | Consequence |
 |---|---|---|
-| One served database per entry point | `client/serve.gleam:1874` opens SQLite once; `assemble` constructs one runtime and hub. | Split daemon boot from session boot. |
-| One gateway per connection | `client/server.gleam:122` captures one gateway; `client/gateway.gleam:1395` reports rejection of another session name. | Add routing above the hub rather than combining hub state. |
-| Runtime handles are session-specific | `runtime/api.gleam:92` holds the session, tree, effects, and canonical ID. | Retain one runtime handle per live session. |
+| One served database per entry point | `client/serve.gleam:1896` opens SQLite once; `assemble` constructs one runtime and hub. | Split daemon boot from session boot. |
+| One gateway per connection | `client/server.gleam:122` captures one gateway; `client/gateway.gleam:1420` reports rejection of another session name. | Add routing above the hub rather than combining hub state. |
+| Runtime handles are session-specific | `runtime/api.gleam:111` holds the session, tree, effects, and canonical ID. | Retain one runtime handle per live session. |
 | Opening can execute recovered work | `runtime/supervisor.gleam:153` starts drivers for stored strands and unfinished operations. | Listing or previewing must not call runtime open. |
-| Close waits for external owners | `runtime/api.gleam:770` releases storage only after the drain barrier. | A stop deadline cannot authorize immediate replacement. |
+| Close waits for external owners | `runtime/api.gleam:789` releases storage only after the drain barrier. | A stop deadline cannot authorize immediate replacement. |
 | Runtime names allocate atoms | `runtime/registry.gleam:77` allocates a name per new strand; session boot also calls `process.new_name`. | Repeated opens need reclaimable addressing before a long-lived shared VM ships. |
-| Memory and search outlive a conversation | `client/serve.gleam:1840` derives shared sidecar paths; `distillpass` runs at session boot. | Explicitly assign shared maintenance ownership. |
+| Memory and search outlive a conversation | `client/serve.gleam:1862` derives shared sidecar paths; `distillpass` runs at session boot. | Explicitly assign shared maintenance ownership. |
 
 Prime Agent is a useful reference for the public ownership model. Its
 supervisor owns routing, attachments, worker health, and discovery;

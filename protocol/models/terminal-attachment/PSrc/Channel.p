@@ -157,7 +157,7 @@ fun chanCredit(c: tChan): tChan {
   return chanEmit(next, SNAPSHOT_NEXT, next.reqId, -1);
 }
 
-// session_channel.close (session_channel.gleam:1083): Closed, the unsent
+// session_channel.close (session_channel.gleam:1119): Closed, the unsent
 // slot dropped, the Shut queued. A lane is closed once: close on a lane that
 // is already Closed returns it unchanged and queues no second Shut.
 fun chanClose(c: tChan): tChan {
@@ -318,7 +318,7 @@ fun chanAdmitRead(c: tChan): tChan {
   return next;
 }
 
-// session_channel.receive (session_channel.gleam:629). A transport loss
+// session_channel.receive (session_channel.gleam:665). A transport loss
 // fails an open lane (the arm at line 644); a later report of the same loss
 // finds the lane Closed and does nothing, because a socket reports its end
 // more than once (NetworkFault, then the transport's Closed). Pushes are read

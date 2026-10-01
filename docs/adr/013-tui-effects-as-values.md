@@ -367,8 +367,8 @@ The survey of mailbox reads, at the commit this slice started from:
 - **Moved into the runtime by this slice.** `inbound.drain_connection`,
   which read through `connection.receive`, and the four places that call it:
   the wheel and drag arms of `apply_input`
-  (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
-  key drain (`tui/interaction.gleam:1467` (`drain_connection`)) and the tick
+  (`packages/tui/src/tui.gleam:1500`, `packages/tui/src/tui.gleam:1520`), the
+  key drain (`tui/interaction.gleam:1491` (`drain_connection`)) and the tick
   (`tui/tick.gleam:146` (`drain_connection`)). The attachment's reads:
   `tui/attachment.gleam:492` (`prepare`),
   `tui/attachment.gleam:537` (`drain`) and
@@ -377,7 +377,7 @@ The survey of mailbox reads, at the commit this slice started from:
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:143` (`drain_reconnect`)), the control reply
   (`tui/tick.gleam:142` (`drain_control`)), the picker's activity reply
-  (`tui/session_control.gleam:1327` (`drain_activity`)), and the session
+  (`tui/session_control.gleam:1351` (`drain_activity`)), and the session
   switch, which read through `sessions.receive` and `weft.pull` in
   `tui/sessions`, a module S5 deleted with the unreachable local switch.
   Each answers a job the step started, and they move when job starts
@@ -388,7 +388,7 @@ The survey of mailbox reads, at the commit this slice started from:
   no mailbox, and the attachment job's cancel drains the job's messages
   instead (`tui/job_runner.gleam:411` (`drain`)). `sessions.discard`, now `buffered.discard`, is the
   `Discard` effect. The bootstrap snapshot wait
-  (`tui/bootstrap.gleam:1205` (`await_snapshot`)) runs before the loop, the
+  (`tui/bootstrap.gleam:1227` (`await_snapshot`)) runs before the loop, the
   daemon control handshake in `tui/daemon.gleam` runs in its own process, and
   the virtual backend's frame collection (`tui/virtual_backend.gleam:315`
   (`drain`)) is test infrastructure outside the model.
@@ -905,11 +905,11 @@ around it, at the commit this slice started from:
 
 | Read | Site | Where it ran | After S6 |
 |---|---|---|---|
-| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:137` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:207` |
-| a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:517` | in the step | a job, `Configure` at `tui/job_runner.gleam:302` |
+| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:161` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:207` |
+| a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:541` | in the step | a job, `Configure` at `tui/job_runner.gleam:302` |
 | the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:551` | the attachment worker, since S5 | unchanged |
 | the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
-| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:710`, `discover_from` at `tui.gleam:742`, `read` at `tui.gleam:1270`, `read_private_bounded` at `tui.gleam:1915`, `start` at `tui.gleam:867`, `decode_file` at `tui.gleam:1720`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
+| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:729`, `discover_from` at `tui.gleam:761`, `read` at `tui.gleam:1289`, `read_private_bounded` at `tui.gleam:1934`, `start` at `tui.gleam:886`, `decode_file` at `tui.gleam:1739`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
 | the record-based session discovery that fed the local switch | `tui/sessions` and `tui/bootstrap` | deleted in S5 | gone; no definition or caller remains |
 
 Recording appends are writes, and have been effects since S3. Two reads in
@@ -1070,7 +1070,7 @@ Two reads remain in the step, and neither touches the file system. Adoption
 asks whether the replacement socket's actor is alive (phase 3 moved the
 read to `tui/runtime.gleam:309` (`connection.adopt`)). And the
 build-mismatch notice reads this client's build identity from two environment variables on
-every coherent cut (`tui/model.gleam:996` (`build_identity`)). Phase 3
+every coherent cut (`tui/model.gleam:1018` (`build_identity`)). Phase 3
 takes both: once etui's events are replaced by a domain message type, the
 runtime can read the liveness when it delivers the message that carries the
 socket, and the build identity, which does not change while the process

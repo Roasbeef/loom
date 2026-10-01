@@ -104,7 +104,7 @@ what these postures mean at the kernel.
 
 ### Rendering
 
-`render` (`prompt/pack.gleam:885`) walks each non-fragment section once.
+`render` (`prompt/pack.gleam:906`) walks each non-fragment section once.
 Bindings come in two tiers. Literal bindings are strings taken straight
 from the environment, such as `{workspace}` or `{network_allow}`. Selected
 bindings, such as `{enforcement}` or `{repository_guidance}`, name a
@@ -195,7 +195,7 @@ the result into the session store so that every later boot of the same
 session sends exactly the bytes the first one did.
 
 A boot chooses its prompt from three sources, in this order
-(`assemble`, `client/system_prompt.gleam:449`):
+(`assemble`, `client/system_prompt.gleam:468`):
 
 1. `LOOM_SYSTEM_PROMPT`, a literal prompt that bypasses the pack entirely.
    A value that is empty or whitespace counts as unset.
@@ -260,7 +260,7 @@ complaint.
 ## Project instructions
 
 The `repository_guidance` section carries the session's instruction files.
-`discover` (`client/system_prompt.gleam:834`) fills three slots, in the
+`discover` (`client/system_prompt.gleam:853`) fills three slots, in the
 order they render:
 
 1. The operator's standing file: `AGENTS.md` under `~/.agents/`, then under
@@ -308,7 +308,7 @@ reaches the model in the next session, not the current one.
 The tool array has two views, and they are ordered differently on purpose.
 
 The wire array comes from `wiring.tool_specs`
-(`client/wiring.gleam:1451`). It takes the strand's `active_tool_names`,
+(`client/wiring.gleam:1472`). It takes the strand's `active_tool_names`,
 sorts and de-duplicates them, and looks each up in the registry for its
 name, description and input schema. The sort is load-bearing: the array is
 the first region of the cached prefix, and two requests with the same set

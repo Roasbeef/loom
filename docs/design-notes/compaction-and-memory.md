@@ -38,7 +38,7 @@ every decision:
 2. **Prompt caching is live and priced.** The Anthropic adapter spends
    four cache breakpoints on every request — two one-hour marks on the
    tools and system prompt, two five-minute marks rolling on the last
-   two user turns (`provider/adapter/anthropic.gleam:322`). Compaction
+   two user turns (`provider/adapter/anthropic.gleam:378`). Compaction
    replaces the head of the projected message list, so it invalidates the
    message-region cache while leaving the tools+system head intact.
    Memory injection, done wrong, is worse: a single changed byte in the
@@ -59,7 +59,7 @@ the rest of the note can say "wire X" and mean something checkable.
   (summary, complete `retained_tail` copy, `tokens_before`, `from_hook`,
   `usage`) and `BranchSummaryEntry` (`from_id`, summary). Both are
   write-once rows in the conversation tree, frozen in spec Part 1.1.
-- **Projection.** `session/session.gleam:604` scans the branch
+- **Projection.** `session/session.gleam:626` scans the branch
   newest-first, stops inclusively at the first compaction, and projects
   the compaction as its summary — *as a user message*, because the
   summary is injected context, not model output — followed by the
@@ -73,14 +73,14 @@ the rest of the note can say "wire X" and mean something checkable.
   does.
 - **The machine.** The checkpoint procedure runs threshold compaction as
   step 3, at most once per trigger boundary
-  (`machine/planner.gleam:746`). The structural-decision hook chooses
+  (`machine/planner.gleam:766`). The structural-decision hook chooses
   between declining, supplying a finished summary, or generating one
   (`StructuralVerdict`, planner line 261); generation loops nested
   `SummaryRequest`s until `SummaryProduced`, with per-request usage rows
   and retry classification. Standalone compaction operations and
   summarized navigation exist as operation kinds, and the client
   protocol already carries `Compact(strand, instructions)`
-  (`client/protocol.gleam:118`).
+  (`client/protocol.gleam:141`).
 - **Blob offload.** Tool outputs over 64 KiB never enter the transcript
   wholesale: `tools/blob.gleam` writes them content-addressed and stores
   `{ref, size, head_excerpt, tail_excerpt}` with 2 KiB excerpts. This
@@ -90,8 +90,8 @@ the rest of the note can say "wire X" and mean something checkable.
 
 ## Inert in production — the three unplugged seams
 
-`client/serve.gleam:652` builds effects through `wiring.build_effects`,
-which installed `effects.default_hooks()` (`client/wiring.gleam:102`),
+`client/serve.gleam:674` builds effects through `wiring.build_effects`,
+which installed `effects.default_hooks()` (`client/wiring.gleam:123`),
 wrapped only by `agency.reaping_hooks` for child-reaping. The defaults
 (`runtime/effects.gleam:288`):
 
@@ -113,7 +113,7 @@ Two adjacent facts complete the picture. The default admission hook
 grants a fictional 1,000,000-token window under api `"unknown"`, so even
 the *accounting* a threshold would need is fake in production. And the
 compaction visible in `make check-client`'s demo is the demo answering
-itself: `client/demo.gleam:922` installs hooks whose
+itself: `client/demo.gleam:941` installs hooks whose
 `structural_decision` returns `VerdictSupplied` with a canned string. No
 provider is ever asked to summarize anything, anywhere.
 
@@ -459,7 +459,7 @@ threshold compaction, because they exercise the identical seams.
 ## Pricing the cache interaction, concretely
 
 The adapter's own comment block states the mechanism ("What rewriting
-history costs", `anthropic.gleam:371`); here is the arithmetic for this
+history costs", `anthropic.gleam:427`); here is the arithmetic for this
 design. Layout: two 1h breakpoints on tools+system, two 5m breakpoints
 rolling on the last two user turns.
 

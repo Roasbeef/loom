@@ -102,7 +102,7 @@ flowchart LR
   holds a credential.
 - **The router** is `client/daemon/server.handle`, which sends every
   `/ui/...` path to the web view's checks (`web_view` at
-  `packages/client/src/client/daemon/server.gleam:163`) when the view is
+  `packages/client/src/client/daemon/server.gleam:186`) when the view is
   on. The checks themselves are pure functions of the request in
   `client/daemon/ui_http`.
 - **`client/daemon/ui_sessions`** is one `weft/actor` that owns the ticket
@@ -162,7 +162,7 @@ sequenceDiagram
 ```
 
 `loom ui --session <id> [--operate] [--open]` is `tui.run_view`
-(`packages/tui/src/tui.gleam:1005`). It resolves the daemon with
+(`packages/tui/src/tui.gleam:1024`). It resolves the daemon with
 `bootstrap.resolve_viewing_daemon`, which adds `--ui` to the launch
 arguments when it has to start one. A daemon that is already running and
 whose `hello` has no `ui` field was started without the view; `loom`
@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:186`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:209`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1060`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:1090`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.

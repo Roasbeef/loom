@@ -86,8 +86,8 @@ a model's request, and carries a `lineage/` cell naming its parent.
 `agent_send` and `agent_wait` check that cell before one strand may
 address another, and `strand.roster` lists strands from it.
 
-`ensure_strand` (`client/advisor.gleam:3484`) creates the advisor through
-`create_idle_strand` (`runtime/api.gleam:1471`) instead. That is the
+`ensure_strand` (`client/advisor.gleam:3503`) creates the advisor through
+`create_idle_strand` (`runtime/api.gleam:1490`) instead. That is the
 runtime's own door, not the Agency's, so the advisor has no lineage cell
 at all. Three consequences follow, and all three are intended.
 
@@ -287,7 +287,7 @@ the session, so the summarizer may label them whichever service it
 belongs to.
 
 **A tool result is clipped from the middle**, by `middle_clip`
-(`client/advisorslice.gleam:423`), because both ends carry signal. A
+(`client/advisorslice.gleam:442`), because both ends carry signal. A
 build says what it was doing at the top and whether it failed at the
 bottom, so a head-only clip throws the verdict away. The marker between
 the halves names how many bytes were removed.
@@ -328,7 +328,7 @@ same reason: `tools` depends on neither `runtime` nor `client`.
 The model supplies neither its own identity nor the verdict's cost.
 `judge` is handed `Ctx.strand`, which the driver set from its own durable
 name, so a verdict cannot be attributed to a strand that did not produce
-it. `judge` (`client/advisor.gleam:1564`) refuses any caller whose name
+it. `judge` (`client/advisor.gleam:1583`) refuses any caller whose name
 is not `advisor`. The cost is set by the emission guard, described below.
 
 `decode_verdict` (`tools/advise.gleam:230`) is total and decodes the
@@ -478,7 +478,7 @@ rather than becoming `Woke` or `Delivered`. A downgrade means the primary
 was *not* stopped for it, and either of those acks would claim
 otherwise. The wake is appended to the downgrade's own reason instead.
 
-The actor's `decide` (`client/advisor.gleam:2851`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:2870`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the
 send costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the
@@ -530,7 +530,7 @@ literal again.
 
 The advisor's instructions are prepended transiently to every one of its
 requests through the wrapped `context` slot, and are **never stored**.
-The constant is `brief` (`client/advisor.gleam:664`).
+The constant is `brief` (`client/advisor.gleam:683`).
 
 A transient prepend beats a durable first message in three ways. A
 durable message would be summarized away by the advisor's own compaction,
@@ -698,7 +698,7 @@ effect is the seam, and it asks the broker for nothing at all.
 
 **The operator** sees everything, because the daemon builds its strand
 list from the `StrandConfig` registers rather than from the lineage
-ledger (`strand_names`, `client/gateway.gleam:2865`). The advisor has
+ledger (`strand_names`, `client/gateway.gleam:2890`). The advisor has
 such a register, so it appears in the agent rail and its branch is one
 strand switch away. That visibility is deliberate: the isolation is
 between the two models, not between the harness and the person running
@@ -736,8 +736,8 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`session_view/transcript_lines.gleam:1933`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`session_view/transcript_lines.gleam:2038`) renders
+`advisor_payload` (`session_view/transcript_lines.gleam:1959`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`session_view/transcript_lines.gleam:2064`) renders
 them. Delivered advice and nudges shorter than 512 bytes show their
 complete bodies even in compact mode, with a delivery label. A longer one
 collapses in compact mode to its heading and, beneath it as dim text of
@@ -816,7 +816,7 @@ feed_every_steps = 20           # default; 0 is the run-end-only cadence
 block_cooldown_reviews = 2      # default; 0 lets every block through
 ```
 
-The `advisor` route is a sixth routable role, parsed to `advisor_role` (`client/catalog.gleam:289`). It is `model.Custom("advisor")` rather than
+The `advisor` route is a sixth routable role, parsed to `advisor_role` (`client/catalog.gleam:308`). It is `model.Custom("advisor")` rather than
 a sixth named variant, because `provider/model.Role`'s five names are the
 design vocabulary and `Custom` is what that type provides for a role an
 application defines. It is last in the canonical order because it is the
@@ -838,7 +838,7 @@ cases an operator could not otherwise tell apart. A catalogue with no
 catalogue that routes the role to a chain this host cannot serve would
 otherwise show only a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:1552`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:1571`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is. An unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default

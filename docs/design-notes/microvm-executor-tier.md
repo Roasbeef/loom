@@ -61,7 +61,7 @@ already names remote pools among its intended carriers
 frames is a helper, whatever it is running on.
 
 **The channel is already a seam with two implementations.**
-`Transport` (`packages/broker/src/broker/exec.gleam:289`) has exactly two
+`Transport` (`packages/broker/src/broker/exec.gleam:324`) has exactly two
 variants: `PortTransport`, a real OS port onto a spawned helper, and
 `ChannelTransport`, an in-process fake the tests drive the same actor
 with. A vsock or virtio-serial transport is a third variant of a type
@@ -70,10 +70,10 @@ handshake, the frame loop, the deadline ladder, the settlement — knows
 which one it has.
 
 **The pool is where a VM lifecycle would live, and its callers do not
-watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:2505`)
+watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:2540`)
 takes a `spawn` closure and hands helpers out through `checkout`
-(`packages/broker/src/broker/exec.gleam:2515`) and `checkin`
-(`packages/broker/src/broker/exec.gleam:2527`). "One microVM per helper"
+(`packages/broker/src/broker/exec.gleam:2550`) and `checkin`
+(`packages/broker/src/broker/exec.gleam:2562`). "One microVM per helper"
 and "a warm pool of snapshot-restored VMs" are both descriptions of what
 that closure does. Its own doc comment already flags the place a warm
 pool would change things. Spawning runs inside the pool actor, which
@@ -88,7 +88,7 @@ milliseconds becomes one of hundreds, once per cold slot.
 
 **Driver choice is a wiring decision, not a broker one.** Production
 injects the pool into the broker as two closures — `checkout` at
-`packages/client/src/client/serve.gleam:906`, `checkin` on the line below
+`packages/client/src/client/serve.gleam:928`, `checkin` on the line below
 — so a session could be wired to a VM-backed pool without the broker, the
 tools, or the runtime being recompiled against a different type.
 
@@ -115,19 +115,19 @@ selected matrix described below. `required_layers_for_features` now chooses
 Linux or Darwin from the helper's hello features, and each backend names its
 own mechanisms. The discussion remains as the argument that led there.
 
-`required_layers` (`packages/broker/src/broker/exec.gleam:1470`) derives
+`required_layers` (`packages/broker/src/broker/exec.gleam:1505`) derives
 the layer tags an execution must be able to show as applied. Four are
 unconditional — `["bwrap", "mounts", "landlock", "no-new-privs"]` — and
 four more are conditional on what the policy asked for: `seccomp-net`
 when the network is off or proxied, `cgroup-v2` under a memory or pid
 ceiling, `rlimit-cpu` under a CPU ceiling, `rlimit-fsize` under a
 file-size ceiling. `unapplied_layers`
-(`packages/broker/src/broker/exec.gleam:1581`) subtracts what the report
+(`packages/broker/src/broker/exec.gleam:1616`) subtracts what the report
 shows from what the policy demanded, splitting each report entry at its
 first `:` or `=` through `layer_tag`
-(`packages/broker/src/broker/exec.gleam:1596`) so that `landlock:abi=5`
+(`packages/broker/src/broker/exec.gleam:1631`) so that `landlock:abi=5`
 counts as the landlock layer and `mounts:ro=2,rw=1,…` as the mount layer.
-`degraded_report` (`packages/broker/src/broker/exec.gleam:1626`) then
+`degraded_report` (`packages/broker/src/broker/exec.gleam:1661`) then
 fails a `FullEnforcement` demand on any of three grounds: the helper's
 degraded bool, any `skip:` entry, or any required layer simply absent
 from the list.
@@ -154,10 +154,10 @@ refuses everything.
 The fix is that the demanded set has to become a property of the driver
 rather than a constant, or be negotiated at handshake. The helper already
 sends a `hello` with a feature list the broker reads
-(`handle_hello`, `packages/broker/src/broker/exec.gleam:1783`), and at the time
+(`handle_hello`, `packages/broker/src/broker/exec.gleam:1818`), and at the time
 that list was consulted for exactly one thing: whether it contained
 `"degraded"` (`degraded_features`,
-`packages/broker/src/broker/exec.gleam:1425`). Issue #64 already proposes
+`packages/broker/src/broker/exec.gleam:1460`). Issue #64 already proposes
 putting a protocol version in that frame and explicitly raises the
 adjacent question — "what is versioned, the frame protocol as a whole, or
 a feature set the client can negotiate against?" — while noting that
@@ -170,7 +170,7 @@ strict. Doing this without a VM tier is a refactor; doing it with one is
 a prerequisite.
 
 There is a companion trap. `host_platform_for`
-(`packages/broker/src/broker/exec.gleam:1292`) answers `JailedHost` for
+(`packages/broker/src/broker/exec.gleam:1327`) answers `JailedHost` for
 `"linux"` and `UnjailedHost` for everything else, mirroring the helper's
 own `jail.PlatformFor` — which, as `packages/sandbox/CLAUDE.md` is
 careful to say, is "not a probe of the kernel but a fact about the
@@ -184,7 +184,7 @@ put a real capability question into a type designed to hold a build fact.
 `packages/tools/CLAUDE.md` states the invariant without hedging: "Path
 discipline is the sole boundary for the filesystem tools. `fs_*` run in
 the harness and never pass through the broker or the kernel jail."
-`resolve_real` (`packages/tools/src/tools/fs.gleam:235`) walks the
+`resolve_real` (`packages/tools/src/tools/fs.gleam:255`) walks the
 candidate path and the workspace root component by component through
 `read_link`, follows at most forty links, and requires the fully resolved
 candidate to land under the fully resolved root. It is a careful boundary
@@ -334,7 +334,7 @@ stay truthful, which means it is still set from the driver's own state
 machine and never inferred from how the guest exited. And `abort` must
 still leave nothing running, which for a VM means the janitor pattern
 applies unchanged: `watch_cleanup`
-(`packages/broker/src/broker/exec.gleam:1419`) spawns an unlinked process
+(`packages/broker/src/broker/exec.gleam:1454`) spawns an unlinked process
 that runs an idempotent cleanup when a pid dies, "including a brutal kill
 that skips every in-actor path" — exactly the guarantee a VM handle
 needs, since a leaked microVM is a leaked *machine*, not a leaked
@@ -392,7 +392,7 @@ but the operator-delegation problem — the part that produced #52 — goes
 away entirely.
 
 **4. `Proxy(allowlist)` finally gets somewhere to live.**
-`narrow_unenforceable` (`packages/broker/src/broker/policy.gleam:547`)
+`narrow_unenforceable` (`packages/broker/src/broker/policy.gleam:569`)
 has exactly one rule today: `NetworkProxy` becomes `NetworkOff`, because
 the egress proxy sidecar does not exist and a proxy-mode jail would
 otherwise run with unrestricted direct egress. Spec Part 5 track 10
@@ -413,10 +413,10 @@ two tracks composed rather than two separate projects.
 **6. Snapshot-boot warm pools.** Track 3's own words, and the answer to
 the one cost lazy spawning still carries. The production pool is no
 longer a literal: it is the node's scheduler count clamped to `[4, 16]`
-(`pool_size_for`, `packages/broker/src/broker/exec.gleam:2454`), wired
+(`pool_size_for`, `packages/broker/src/broker/exec.gleam:2489`), wired
 through `LOOM_HELPER_POOL`
-(`packages/client/src/client/serve.gleam:826`) into `start_pool`
-(`packages/client/src/client/serve.gleam:389`), which means there are
+(`packages/client/src/client/serve.gleam:848`) into `start_pool`
+(`packages/client/src/client/serve.gleam:411`), which means there are
 several cold slots to fill rather than one, and a wide first batch pays
 for each of them in turn. Snapshot restore is fast enough that a warm
 pool's checkout can beat a cold process spawn. This is a performance
@@ -431,7 +431,7 @@ and it is routinely absent on a developer laptop (macOS without HVF, a
 Linux VM without nested virt enabled) and inside CI containers. This is
 decisive for the shape of the work: the VM tier is an **additional tier,
 not a replacement**. The bwrap driver stays the local default, and
-`host_platform_for` (`packages/broker/src/broker/exec.gleam:2128`) grows
+`host_platform_for` (`packages/broker/src/broker/exec.gleam:2163`) grows
 a third answer rather than having its two replaced. Any plan that treats
 the microVM as the new baseline is a plan to make the tree untestable on
 the machines it is developed on.

@@ -382,8 +382,8 @@ not split the batch. These are transient wire projections.
   ledger-side concern, not an adapter's.
 - **Human attribution is projected here and nowhere else.** All four
   adapters encode a `UserMessage` through `core/origin.project`
-  (`adapter/anthropic.gleam:199`, `adapter/openai.gleam:190`,
-  `adapter/gemini.gleam:308`), which prepends one JSON-quoted author label
+  (`adapter/anthropic.gleam:255`, `adapter/openai.gleam:213`,
+  `adapter/gemini.gleam:331`), which prepends one JSON-quoted author label
   to the *transient* content list it builds for the wire. The stored blocks
   are unchanged, so a message keeps one durable form no matter how many
   dialects render it, and the label reaches the model as data inside the

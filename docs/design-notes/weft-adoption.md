@@ -75,7 +75,7 @@ Ranked by LOC-reduction-per-risk:
 ### Tier 1 — high confidence, self-contained
 
 1. **`runtime/strand_runtime` recovery gate → `weft/actor.continuing`**
-   (`strand_runtime.gleam:209` `RecoveryGate`, dispatch around `:433`,
+   (`strand_runtime.gleam:230` `RecoveryGate`, dispatch around `:433`,
    ~60 lines). The driver starts before the reaper's predecessor-drain
    claim resolves, so every handler opens with a
    `case state.recovery_gate, message` matrix: pre-barrier `Nudge` is
@@ -102,7 +102,7 @@ Ranked by LOC-reduction-per-risk:
    core guarantee: workers link to weft's scope, never to the caller.
 
 3. **`broker/exec` timer bookkeeping → `weft/state_machine`**
-   (`exec.gleam:328-329` message variants, `:399-404` handshake arm,
+   (`exec.gleam:363-364` message variants, `:399-404` handshake arm,
    `:693-747` cancel escalation and staleness guards, ~130 lines of the
    ~180 the file spends on timers). The helper actor is a
    `AwaitingHello → Ready → Dead` machine whose `CancelDeadline(exec_id)`
@@ -120,7 +120,7 @@ Ranked by LOC-reduction-per-risk:
 ### Tier 2 — strong pattern match, denser invariants
 
 4. **`codemode/launch` node-report holder → `weft/state_machine`**
-   (`launch.gleam:350-448` plus the types, ~118 lines). A raw
+   (`launch.gleam:373-471` plus the types, ~118 lines). A raw
    `spawn_unlinked` + `receive_forever` loop over
    `Pending | Running | Done` with a hand-kept `waiting: List(Subject)`
    of askers to flush on settlement and a final bounded receive so the
@@ -146,7 +146,7 @@ Ranked by LOC-reduction-per-risk:
    `weft/state_machine`, not an actor hook.
 
 6. **`conformance/simulation/control.attempt` → `weft` single-task run**
-   (`control.gleam:597-650`, ~55 lines). Same spawn/monitor/deadline/kill
+   (`control.gleam:621-674`, ~55 lines). Same spawn/monitor/deadline/kill
    shape as the TUI's; `Answered`/`Raised`/`Expired` is weft's outcome
    taxonomy with local names. The port must preserve the comment trail
    explaining why this one function reads the wall clock inside an
@@ -156,9 +156,9 @@ Ranked by LOC-reduction-per-risk:
 ### Tier 3 — biggest LOC, needs a spike first
 
 7. **`provider/gateway.guard_request`/`guard_cancelling` →
-   `weft/state_machine`** (`provider/gateway.gleam:495-770`, ~276 lines) and
+   `weft/state_machine`** (`provider/gateway.gleam:697-797`, ~276 lines) and
 8. **`client/provider_relay` four-state forward/cancel guard**
-   (`provider_relay.gleam:314-669`, ~320 lines, the same grace-timer arm
+   (`provider_relay.gleam:352-707`, ~320 lines, the same grace-timer arm
    copied at three sites). Both are the README's `Connecting`/`Backoff`
    example at production scale: mutually-recursive functions standing in
    for states, one grace timer per state armed by hand. The multi-source
@@ -174,12 +174,12 @@ Ranked by LOC-reduction-per-risk:
    current topology. Spike on `gateway` first; `provider_relay` follows
    only once the pattern proves out. The same verdict covers the
    provider-await two-phase timeout duplicated at
-   `strand_runtime.gleam:1879` and `internal/provider_custodian.gleam:192`
+   `strand_runtime.gleam:1900` and `internal/provider_custodian.gleam:192`
    (~220 lines): textbook state-timeout shape, wrong process packaging to
    adopt blindly.
 
 9. **`client/mcp.start` server bring-up → `weft.start` + `partition`**
-   (`client/mcp.gleam:299-324`, ~30 lines). Today each server handshake blocks
+   (`client/mcp.gleam:321-346`, ~30 lines). Today each server handshake blocks
    the next, so N misconfigured servers pay their timeouts serially at
    boot. `weft.start` returns outcomes in input order, so the documented
    "in catalogue order" contract holds; verify nothing depends on

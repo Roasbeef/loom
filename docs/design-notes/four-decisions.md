@@ -32,21 +32,21 @@ label, and D3 is a bug plus a decision. The verdicts, one line each:
 
 The refusal side is exactly as the plan describes. A broker denial reaches
 the model as an ordinary in-band error: `refusal_outcome`
-(`packages/tools/src/tools/tool.gleam:746`) renders the denial with its
+(`packages/tools/src/tools/tool.gleam:766`) renders the denial with its
 wanted grants attached as structured details via `denial_to_json`
-(`packages/tools/src/tools/tool.gleam:793`), and nothing in production
+(`packages/tools/src/tools/tool.gleam:813`), and nothing in production
 consumes those details. The raiser exists — `raise_escalation_for`
-(`packages/runtime/src/runtime/api.gleam:2889`) writes a durable record
+(`packages/runtime/src/runtime/api.gleam:2908`) writes a durable record
 scoped to the exact call — but its only callers are the demo, through the
 unscoped legacy `raise_escalation`
-(`packages/client/src/client/demo.gleam:252`), and the simulation surface
-(`packages/conformance/src/conformance/simulation/surface.gleam:548`). The
+(`packages/client/src/client/demo.gleam:271`), and the simulation surface
+(`packages/conformance/src/conformance/simulation/surface.gleam:573`). The
 machinery beneath is real and hardened: `clear_tool_call`
-(`packages/runtime/src/runtime/strand_runtime.gleam:1460`) filters approved
+(`packages/runtime/src/runtime/strand_runtime.gleam:1481`) filters approved
 records by exact `CallScope`
 (`packages/runtime/src/runtime/escalation.gleam:74`) and consumes before
 clearing (`consume_escalations`,
-`packages/runtime/src/runtime/strand_runtime.gleam:1554`), with the
+`packages/runtime/src/runtime/strand_runtime.gleam:1575`), with the
 two-directional fail-safe the plan notes: a lost consume race drops the
 grants, a crash after consumption spends the grant without executing.
 
@@ -63,7 +63,7 @@ settled. Production settles every policy refusal: the denial surfaces
 inside the tool run, after clearance, and comes back as a completed result.
 The one caller that ever spends a scoped approval is the simulation, and
 look at what it has to do: `escalation_dance`
-(`packages/conformance/src/conformance/simulation/surface.gleam:498`)
+(`packages/conformance/src/conformance/simulation/surface.gleam:523`)
 raises, approves, and then **kills its own driver** instead of returning a
 clearance, precisely so that recovery re-clears the same durable
 coordinates with the approval in place. A model that reads the in-band
@@ -78,12 +78,12 @@ is severed at the production wiring seam.** `ClearanceQuery`
 (`packages/runtime/src/runtime/effects.gleam:130`) carries the consumed
 grants, and its own doc comment says production wiring maps them onto the
 tool's context. It does not. Production `clear`
-(`packages/client/src/client/wiring.gleam:930`) checks registry membership
+(`packages/client/src/client/wiring.gleam:951`) checks registry membership
 and returns, never touching the query's grants; `tool_context`
-(`packages/client/src/client/wiring.gleam:1002`) builds `Ctx.grants` from
+(`packages/client/src/client/wiring.gleam:1023`) builds `Ctx.grants` from
 the static session config instead (`config.grants`,
-`packages/client/src/client/wiring.gleam:1010`), which `serve` sets to the
-empty list once at boot (`packages/client/src/client/serve.gleam:743`); and
+`packages/client/src/client/wiring.gleam:1031`), which `serve` sets to the
+empty list once at boot (`packages/client/src/client/serve.gleam:765`); and
 `ToolRun` (`packages/runtime/src/runtime/effects.gleam:220`) had no grants
 field at all, so the clearance-time grants *could not* reach the run-time
 context without changing the runtime-internal effects seam. The seam is not
@@ -120,7 +120,7 @@ questions the option list runs together:
      under the widened policy. Spendable without parking anything; needs
      grants read at dispatch rather than captured in a boot-time closure.
    - **Host re-executes.** The documented semantics of the unscoped path
-     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:2905`):
+     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:2924`):
      an explicit `consume_escalation` by a host that re-runs the denied
      action itself. The demo does this today. It spends, but nothing in
      the session loop benefits.
@@ -249,7 +249,7 @@ backlog of four fixes. They are:
   correct; its word order fails the heuristic.
 - **Two real drifts, both in the code tour.** `docs/code-tour.md:536`
   cites `settle_assistant` at a line it has left (now
-  `packages/machine/src/machine/planner.gleam:1223`), and
+  `packages/machine/src/machine/planner.gleam:1243`), and
   `docs/code-tour.md:1099` cites a result-register write that has moved
   several hundred lines.
 
@@ -343,10 +343,10 @@ exotic favor" into "consume the standard delegation contract".
 
 **The new finding, which raises the stakes:** the gap is *silent at the
 strict tier*. `FullEnforcement`'s contract
-(`EnforcementDemand`, `packages/broker/src/broker/exec.gleam:91`) is that
+(`EnforcementDemand`, `packages/broker/src/broker/exec.gleam:126`) is that
 any layer the policy called for and the helper did not apply refuses the
 result — the settle path keys on `skip:` entries
-(`packages/broker/src/broker/exec.gleam:762`). But when no cgroup
+(`packages/broker/src/broker/exec.gleam:797`). But when no cgroup
 attaches, `enforcementEntries`
 (`packages/sandbox/internal/jail/run.go:376`) merely omits `cgroup-v2`
 from the list; it emits no `skip:` entry, and the `degraded` bool tracks
@@ -435,9 +435,9 @@ this seam leans on hardest"
 **WP-J 15** (`docs/spec-gaps.md:616`): every clearance the code-mode
 pipeline makes passes empty grants — `grants: []` at the build call
 (`packages/codemode/src/codemode/build.gleam:292`), the node launch
-(`packages/codemode/src/codemode/launch.gleam:706`), the launch policy
-composition (`packages/codemode/src/codemode/launch.gleam:821`), and the
-cap router (`packages/codemode/src/codemode/satellite.gleam:1204`). An
+(`packages/codemode/src/codemode/launch.gleam:729`), the launch policy
+composition (`packages/codemode/src/codemode/launch.gleam:844`), and the
+cap router (`packages/codemode/src/codemode/satellite.gleam:1241`). An
 approved escalation widens nothing, and it fails closed.
 
 **WP-J 16** (`docs/spec-gaps.md:624`): identity and budget are specified
@@ -445,8 +445,8 @@ in three places — `ExecConfig`
 (`packages/codemode/src/codemode/codemode.gleam:74`) has the caller
 assemble `BuildConfig`
 (`packages/codemode/src/codemode/build.gleam:93`), `SatelliteConfig`
-(`packages/codemode/src/codemode/satellite.gleam:319`), and `ExecId`
-(`packages/codemode/src/codemode/satellite.gleam:176`), each carrying its
+(`packages/codemode/src/codemode/satellite.gleam:357`), and `ExecId`
+(`packages/codemode/src/codemode/satellite.gleam:214`), each carrying its
 own operation, step, and budget. The broker opens one ledger per
 `{op_id, step_id}` (`packages/broker/src/broker/budget.gleam:11`), and the
 e2e builds under `step_id <> "-build"`
@@ -496,7 +496,7 @@ the package into the queue for the decision.
   mechanism applied to the code-mode pipeline and cannot be specified
   until that mechanism is chosen — a re-run "carrying the grants" means
   grants threaded into `ExecConfig` and composed at
-  `packages/codemode/src/codemode/launch.gleam:821`, and *when* a re-run
+  `packages/codemode/src/codemode/launch.gleam:844`, and *when* a re-run
   happens is precisely D1's open half. The v0.1 milestone's escalation
   claim ("some production path raises an escalation") is fully satisfied
   by the workspace tool path; keeping the code-mode half in #4 couples a
@@ -524,7 +524,7 @@ caller", wherever that caller comes from.
 They are one decision surface touched at two seams. The grants channel —
 approval to consumed record to composed policy — is severed in the
 workspace tool path at `clear`
-(`packages/client/src/client/wiring.gleam:930`) and never opened in the
+(`packages/client/src/client/wiring.gleam:951`) and never opened in the
 code-mode path (WP-J 15's four `grants: []` sites). D1's verdict re-threads
 the first; WP-J 15 is the same re-threading at the second, and both sit
 downstream of D1's single open question, the spend mechanism. Decide the
@@ -542,8 +542,8 @@ conclusions, the rest are calibration.
 
 1. **"Nothing consumes them" understates it.** Below the missing raiser,
    the production wiring drops clearance-time grants entirely
-   (`packages/client/src/client/wiring.gleam:930` ignores them,
-   `packages/client/src/client/serve.gleam:743` pins session grants
+   (`packages/client/src/client/wiring.gleam:951` ignores them,
+   `packages/client/src/client/serve.gleam:765` pins session grants
    empty, and `ToolRun` cannot carry them), and `ClearanceQuery`'s doc
    comment claims a mapping that does not exist. The approval flow is not
    merely unreachable; reached, it would be inert.

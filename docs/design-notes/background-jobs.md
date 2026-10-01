@@ -75,7 +75,7 @@ owns.
 The consequence we accept is that the machine cannot wait on a job. A
 model that wants to block on one calls `job_poll` with a wait, and a
 pending job is a successful result, not a failure (the "pending is an
-answer" rule `agent_wait` already follows, `client/agency.gleam:229`).
+answer" rule `agent_wait` already follows, `client/agency.gleam:249`).
 
 ### 2. The durable record is a reserved prefix, and restart reaps
 
@@ -83,10 +83,10 @@ Each job has a `job/<id>` register in the session store. It is a key
 prefix inside the existing `fact.custom` namespace, so it costs no
 protocol change (`core/register.gleam:27-28` freezes the namespace set;
 prefixes are free). It becomes the tenth reserved corner: one line in
-`reserved_fact_key` (`runtime/api.gleam:2481`), one row in the table
-at `api.gleam:1650-1663`, written only through
+`reserved_fact_key` (`runtime/api.gleam:2500`), one row in the table
+at `api.gleam:1669-1682`, written only through
 `put_reserved_fact_expecting`. Creation uses the expect-absent CAS the
-schedule seam uses for a named create (`client/scheduleseam.gleam:372-383`),
+schedule seam uses for a named create (`client/scheduleseam.gleam:390-401`),
 so two incarnations racing to start the same job cannot both land. Every
 commit arm handles `LeaseLost` as reopen, never retry (protocol-change 005).
 
@@ -111,14 +111,14 @@ that is the right behaviour: it is a live process, not a conversation
 event, and navigating the tree must neither kill nor resurrect it. #184's
 branch-blindness is a bug for fired-marks and a feature here, and the
 module doc says so rather than leaving a reader to wonder. A register is
-also state, not a channel (`api.gleam:1290-1293`): the model learns of a
+also state, not a channel (`api.gleam:1309-1312`): the model learns of a
 transition by polling, never by an injected message, which keeps the jobs
 actor out of the strand's turn machinery entirely.
 
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:3632`), bound to a
+beside `extension_hosts` (`client/serve.gleam:3654`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule
@@ -128,10 +128,10 @@ the fatal children.
 Each job is a weft managed task, the *runner*, adopted under the actor.
 The runner, not the actor, calls `broker.clear_call`, for two reasons
 that both come from the broker's contract. `clear_call` waits out a full
-pool in the caller's process (`broker/broker.gleam:37-49`), and an actor
+pool in the caller's process (`broker/broker.gleam:57-69`), and an actor
 blocked on congestion could not answer a poll. And the relay monitors the
 caller (the owner of the events subject) and cancels the execution when
-that process dies (`broker.gleam:970-976`), so the caller has to be a
+that process dies (`broker.gleam:990-996`), so the caller has to be a
 process that lives exactly as long as the job. The runner then folds the `CallOutput` stream
 into the tail and the spill and reports `CallSettled` to the actor as a
 relayed outcome. The actor matches all seven `weft.Outcome` variants and
@@ -159,10 +159,10 @@ gets the most words.
 
 A capability token is bound to `{op_id, step_id, policy, deadline}` and
 the token deadline *is* the budget deadline (`broker/token.gleam:38-45`,
-`broker.gleam:857`); there is no second clock. Budget is pooled per
+`broker.gleam:877`); there is no second clock. Budget is pooled per
 `{op_id, step_id}` where `step_id` is the model batch (ADR-005), the
 first clearance opens the ledger with its `max_outstanding`, and a later
-clearance cannot widen it (`broker.gleam:120-127`). `bash` opens that
+clearance cannot widen it (`broker.gleam:140-147`). `bash` opens that
 ledger with `max_outstanding: 1` (`bash.gleam:816`). So if a job cleared
 under the batch's own identity, a foreground `bash` earlier in the same
 batch would cap it, and a second job in the batch would be refused
@@ -181,7 +181,7 @@ path for the same resource.
 
 What the operation binding buys us is abort semantics we do not have to
 build. `broker.abort(op_id)` revokes every token of the operation and
-cancels every active helper under it (`broker.gleam:677-705`). So an
+cancels every active helper under it (`broker.gleam:697-725`). So an
 operator aborting the operation that *started* a job kills that job,
 which is what they meant; an abort of a later operation does not touch
 it, because detachment is what the model asked for.
@@ -221,7 +221,7 @@ that timer is armed once from the request's own `WallSeconds` (`sandbox/internal
 so extending it is a new frame and a protocol change. Long-lived servers
 are covered the other way round: the clamp is an operator knob, a
 `[jobs]` table in `loom.toml` with `max_wall` (parsed beside the known
-tables in `client/catalog.gleam:278`), so a workspace that runs a dev
+tables in `client/catalog.gleam:297`), so a workspace that runs a dev
 server for a day says so once, and the default clamp stays an hour.
 
 ## Policy, approval and the pool
@@ -230,7 +230,7 @@ A job admits under exactly the rules a foreground `bash` does: the same
 `ExecRequest`, the same `RefuseNarrowed`, the same enforcement demand,
 the same escalation. The requested wall becomes the request's `wall_s`,
 and if the composed policy narrows it (the default `wall_s` is 600,
-`broker/policy.gleam:229`) that narrowing goes through the same refuse or
+`broker/policy.gleam:251`) that narrowing goes through the same refuse or
 escalate path a widened `bash` would. So a thirty-minute job on a policy
 that allows ten minutes is exactly the thing an operator approves, with
 no new mechanism. The approval binds to the digest of the starting call's
@@ -241,7 +241,7 @@ owner strand may always stop what it started. The shipped-approval gap
 
 A running job occupies one helper for its whole life, and the pool is
 four to sixteen processes sized from the scheduler count
-(`broker/exec.gleam:2454-2465`). That is the honest cost of the design
+(`broker/exec.gleam:2489-2500`). That is the honest cost of the design
 and the reason for a ceiling: a `tail -f` held for a session is one
 fewer helper for every parallel tool batch. The ceiling is per strand,
 four concurrent jobs, refused in band as a `job_ceiling` failure the way
@@ -253,7 +253,7 @@ job pool is the follow-up, and it is a pool-sizing change rather than a
 design change.
 
 Jobs are not tool effects, so `tool_may_start`'s exclusivity
-(`strand_runtime.gleam:2295-2311`) does not see them, and a background
+(`strand_runtime.gleam:2316-2332`) does not see them, and a background
 job runs beside an `Exclusive` foreground call. `bash` is exclusive to
 keep the model's own foreground calls from racing each other over the
 workspace; a job racing a later `fs_edit` is a race the model chose when
@@ -265,7 +265,7 @@ serialise it.
 The helper already caps each stream at `output_bytes` (4 MiB by default)
 and streams 32 KiB `exec_out` chunks that the broker surfaces as
 `CallOutput`. Today `tool.collect_events` folds every chunk into a list
-and emits nothing until settlement (`tools/tool.gleam:958-966`), which is
+and emits nothing until settlement (`tools/tool.gleam:978-986`), which is
 #186's complaint. The runner is the first consumer that keeps the stream
 as a stream.
 
@@ -323,7 +323,7 @@ since the cursor for each stream, the new cursors, and the `ExecResult`
 if the job is terminal (with the spill ref). With no `job_id` it lists
 every job the strand owns with state and age, which is why there is no
 separate `job_list`. `wait_ms` is clamped to `agency.max_wait_ms`
-(30 s, `client/agency.gleam:215`) and is a `weft/poll` on the job's
+(30 s, `client/agency.gleam:235`) and is a `weft/poll` on the job's
 state under the session clock; the deadline expiring during a wait
 returns the terminal state, and a job still running returns pending as
 a success.
@@ -337,8 +337,8 @@ exactly as a foreground cancel does today.
 
 `job_send(job_id, data, eof?)` writes to the job's stdin. This is cheaper
 than it looks: the helper wire already has `exec_stdin`
-(`broker/framing.gleam:83`) and the broker already exposes `stdin`
-(`broker.gleam:543`); today's `bash` closes stdin immediately
+(`broker/framing.gleam:108`) and the broker already exposes `stdin`
+(`broker.gleam:563`); today's `bash` closes stdin immediately
 (`bash.gleam:112`) and nothing above the broker writes to it. A
 background job leaves stdin open until `eof` or kill. It is the
 difference between "watch a log" and "drive a REPL", and it ships in
@@ -377,7 +377,7 @@ a `job_poll` argument, and keeping it that way is what keeps the tool
 surface at three definitions.
 
 The cap routes `ServedHere` in the workspace router
-(`codemode/workspace.gleam:625`, plus `serviced_caps`) rather than as a
+(`codemode/workspace.gleam:650`, plus `serviced_caps`) rather than as a
 jailed `ClearedCall`, because the operation is answered by the harness
 actor and only the job's own process is jailed. It lands on
 `default_cap_modules` and nowhere else so the `{cap/report}` intersection
@@ -399,7 +399,7 @@ registers, and `Cut.cells` is namespace and key addressed
 (`storage/snapshot.gleam:149`), so the TUI's cut decoder can count
 `job/*` cells without a type change; poll results are tool results and
 already visible. `live_phase` cannot express *n* jobs because it is
-derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:4791`),
+derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:4816`),
 and we do not bend it: an idle strand with two jobs shows idle, with a
 job count beside it once the renderer grows one. A live `job_output`
 event and a jobs panel are follow-ups that #186 and #240 already own,
@@ -425,7 +425,7 @@ first consumer of `CallOutput` chunks as a stream. #185, adjacent: the
 spill is called from one place for jobs, and the seam-level refactor for
 foreground tools stays #185. #74 lands first, because the jobs work adds
 variants to `ExecFailure` and today they would fall silently into
-`denial_for_failure`'s `_ -> None` (`broker/broker.gleam:662`).
+`denial_for_failure`'s `_ -> None` (`broker/broker.gleam:682`).
 
 ## Contracts touched
 
