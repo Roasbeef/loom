@@ -427,7 +427,9 @@ page keys and nonces, and the relay into the session's gateway.
   `<loom-composer>` puts it in an empty editor or after the draft and never over
   it. The terminal has no reply command: the model answers a peer under the
   owner's link with `peer_send`, at the operator's prompt. Nothing is sent by
-  `reply`. `component.pending_nudges(model)` and `component.goal(model)` read
+  `reply`. A `turns.Sibling` piece (a strand of the same session) is a
+  `sibling-card` headed `strand · <id>` with no receipt and no Reply, since
+  no peer link exists to answer through. `component.pending_nudges(model)` and `component.goal(model)` read
   `Shared.nudges` and `Shared.goal`.
 - `operator_page.Msg(socket)`: `Observed(component.Msg)`, `Submitted(text,
   delivery, images)`, `Decided(id, seq, answer)`, `Controlled(component.Control)` and

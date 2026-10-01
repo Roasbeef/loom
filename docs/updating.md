@@ -232,6 +232,14 @@ release-specific recovery procedure before attempting that rollback. Retaining
 binaries does not establish backward compatibility of future durable data
 formats either: check the release's compatibility notes.
 
+A client built before protocol-change/059 cannot decode a message whose origin
+is `{"kind":"strand"}`, and one such entry makes the whole session unreadable
+to it: the snapshot, the live `entries` frame and `loom replay` all fail. The
+first release that reads and draws that origin writes none. A later release
+that writes it must not be selected while an older client build is installed.
+Rerun installation so the `client` link names a build from the writing release
+before the `server` link does.
+
 ## Manual cleanup
 
 Keep every tree selected by `server`, `client`, or `tui`, and any rollback

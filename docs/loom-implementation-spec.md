@@ -865,5 +865,6 @@ records. Typed serving has an explicit idle limit, and each initiating
 operation has a cumulative launch ceiling. `Exclusive` serializes tool
 invocations, not admitted satellite lifetimes. Protocol 048 and the
 [async architecture](architecture/async-collaboration.md) define these limits.
-Conversation codecs preserve a distinct `PeerOrigin(session, strand)` while
-retaining the existing human-origin encoding.
+Conversation codecs preserve a distinct `PeerOrigin(session, strand)` and a
+distinct `StrandOrigin(strand)` (protocol-change/059) while retaining the
+existing human-origin encoding.

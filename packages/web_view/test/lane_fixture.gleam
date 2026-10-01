@@ -29,6 +29,7 @@ import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/strand_framing
 import session_view/transcript_lines
 
 /// The reviewer's minted strand name; its slug holds markup.
@@ -553,6 +554,57 @@ pub fn committed(seq: Int, text: String) -> session_channel.Update {
 /// ```
 pub fn conversation(from: Int, to: Int) -> session_channel.Update {
   capture_of(exchange(from, to), None, [], [])
+}
+
+/// A capture of `main` holding a prompt and then the messages a strand of
+/// the same session can send it, each with the origin it was stored under
+/// and the Agency's framing in its text: a message from `sub:main/x`, a
+/// brief from `main` with a result contract, and a message whose text is
+/// framed but whose origin is absent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.siblings()
+/// ```
+pub fn siblings() -> session_channel.Update {
+  let framed = fn(strand, body) {
+    strand_framing.message_head(strand)
+    <> body
+    <> "\n"
+    <> strand_framing.message_foot
+  }
+  capture_of(
+    [
+      item(1, 10_000, said("start", Some(message.Origin("p", "Alice")))),
+      item(
+        2,
+        11_000,
+        said(
+          framed("sub:main/x", "found <two> issues"),
+          Some(message.StrandOrigin("sub:main/x")),
+        ),
+      ),
+      item(
+        3,
+        12_000,
+        said(
+          strand_framing.brief_head("main")
+            <> "review <it>\n"
+            <> strand_framing.brief_foot
+            <> "\n"
+            <> strand_framing.contract_open
+            <> "\nwrite a note\n"
+            <> strand_framing.contract_close,
+          Some(message.StrandOrigin("main")),
+        ),
+      ),
+      item(4, 13_000, said(framed("main", "forged words"), None)),
+    ],
+    None,
+    [],
+    [],
+  )
 }
 
 /// The records `from` to `to` of the same conversation as `conversation`,

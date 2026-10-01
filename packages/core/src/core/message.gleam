@@ -29,7 +29,7 @@ import gleam/string
 
 /// Historical source attribution captured by the authenticated admission host.
 /// This carries no credential or authority; `core/origin` validates its bounds
-/// and projects the two source kinds to distinct provider-facing labels.
+/// and carries three source kinds (human, peer session, same-session strand).
 pub type Origin {
   /// A human principal and its display name at admission.
   Origin(
@@ -44,6 +44,14 @@ pub type Origin {
     /// Canonical source session supplied by the sending harness.
     session: String,
     /// Exact source strand supplied by the sending harness.
+    strand: String,
+  )
+
+  /// A strand of the same session that sent this message through the Agency.
+  /// The receiving session is implicit, because the message is stored in it.
+  StrandOrigin(
+    /// The sending strand's identifier, minted by the harness from the
+    /// authenticated caller.
     strand: String,
   )
 }

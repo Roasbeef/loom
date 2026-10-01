@@ -40,10 +40,12 @@ import session_view/snapshot_view
 import session_view/step as session_step
 import session_view/transcript_line.{type Line}
 import tui
+import tui/buffered
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
 import tui/projection
+import tui/tick
 import tui/workspace
 import web_view/component
 import web_view/operator_page
@@ -613,4 +615,48 @@ fn drain(wire: process.Subject(String)) -> List(String) {
     Ok(frame) -> [frame, ..drain(wire)]
     Error(Nil) -> []
   }
+}
+
+// The frames a script delivers, held in the terminal's inbox as the runtime
+// leaves them before a step.
+fn filed(
+  model: tui_model.Model,
+  frames: List(connection_event.Message),
+) -> tui_model.Model {
+  let inbox = list.fold(frames, model.shared.inbox, buffered.push)
+  tui_model.Model(..model, shared: session_model.Shared(..model.shared, inbox:))
+}
+
+// The terminal's real tick, not a copy of it. `session_step.update` is the
+// shared step's composition of the units the terminal runs one at a time, and
+// `tui/tick.update_tick` is the order the terminal actually runs them in.
+// Nothing but a test holds the two to one order, and the copy of the
+// terminal's tick in `session_view/step_test` checks the step against its own
+// documentation, so a reordering inside `update_tick` fails it not at all.
+// This test files a first capture into the terminal's inbox, ticks the real
+// `update_tick` and then the `session_step.settle` that `tui.settle_update`
+// runs after every event, ticks `session_step.update` over the record the
+// terminal started from, and requires the same record. The terminal's
+// projection and frame cache are left out, since they write fields the step
+// has no surface for. The lane here has no socket, so no frame leaves; a
+// mis-ordered read still shows in the lane's state.
+//
+// The capture is the order-sensitive script. The drain comes before the
+// reads, so the strand's notes read leaves in the tick that drained the
+// capture; a tick that serviced the reads first would send it a tick later.
+pub fn the_terminals_real_tick_runs_the_shared_steps_order_test() {
+  let held = filed(terminal(), transfer())
+  let at = msg.Stamp(now_ms: 10, transport_ms: 10)
+  let #(by_step, _) =
+    session_step.update(held.shared, msg.Input(at, msg.Ticked))
+  let started = session_model.Shared(..held.shared, stamp: at)
+  let ticked =
+    tui_model.run_shared(
+      tick.update_tick(tui_model.Model(..held, shared: started)),
+      session_step.settle(started, _),
+    )
+  let by_terminal = ticked.shared
+
+  assert by_step.captured != None as "the capture was drained"
+  assert by_terminal == by_step
 }
