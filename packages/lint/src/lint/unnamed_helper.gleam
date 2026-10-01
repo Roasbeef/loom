@@ -16,10 +16,11 @@
 //// module's story, so it has been promoted to a domain operation by the one
 //// reader who is entitled to say so.
 ////
-//// The module doc is read from `glexer` comment tokens rather than from
-//// lines of text, for the reason `lint/source` lexes its comments: a `////`
-//// at the start of a line inside a multi-line string is a string, and a
-//// name "documented" there would silence the rule for nothing.
+//// The module doc is read by `lint/module_doc` from `glexer` comment tokens
+//// rather than from lines of text, for the reason `lint/source` lexes its
+//// comments: a `////` at the start of a line inside a multi-line string is
+//// a string, and a name "documented" there would silence the rule for
+//// nothing.
 ////
 //// Both readings over-report, as every census here does, so the rule warns
 //// forever. A short helper with one caller is often right — it is the
@@ -30,10 +31,9 @@ import gleam/int
 import gleam/list
 import gleam/set.{type Set}
 import gleam/string
-import glexer
-import glexer/token
 import lint/calls.{type Helper}
 import lint/finding
+import lint/module_doc
 import lint/policy.{type Policy}
 import lint/scan.{type Raw, Raw}
 import lint/source.{type Lines}
@@ -113,17 +113,12 @@ fn finding_for(function: glance.Function, caller: String, span: Int) -> Raw {
 /// Every whole word the module doc contains, where a word is a maximal run
 /// of ASCII letters, digits and underscores — exactly the characters of a
 /// Gleam function name, so `run` is a word of "calls `run` first" and not of
-/// "runner". The tokens are rendered back to source and only those that
-/// begin `////` are read, which a string token never does: it renders with
-/// its quotes, so a `////` inside a string is not module doc, and naming
-/// the token variant would need a catch-all over glexer's sixty-odd kinds.
+/// "runner". The doc lines come from `lint/module_doc`, the same reader R13
+/// and R14 use, so the three rules agree about what the module doc is: a
+/// `////` inside a multi-line string is not part of it.
 fn doc_words(code: String) -> Set(String) {
-  glexer.new(code)
-  |> glexer.discard_whitespace
-  |> glexer.lex
-  |> list.map(fn(lexed) { token.to_source(lexed.0) })
-  |> list.filter(string.starts_with(_, "////"))
-  |> list.flat_map(words)
+  module_doc.lines(code)
+  |> list.flat_map(fn(line) { words(line.text) })
   |> set.from_list
 }
 
