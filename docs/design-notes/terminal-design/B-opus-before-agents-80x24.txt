@@ -1,0 +1,24 @@
+ ◆ loom       native-fixture · native UI fixture       fixture-model · Ctrl+g d…
+                                                                                
+ ╭ AGENT WORKSPACE 6 agents · 2 working · 3 attention ────────────────────────╮ 
+ │ ▸ main · 1/6                                                               │ 
+ │                                                                            │ 
+ │ [1 Activity]  2 Messages  3 Notes  4 Collaborate                           │ 
+ │                                                                            │ 
+ │ main                                                                       │ 
+ │ To: main · Enter opens selected transcript                                 │ 
+ │ ↑/↓ inspect · n attention · a review permission                            │ 
+ │ 1/2/3/4 view · PgUp/Dn scroll · Tab write · Esc close                      │ 
+ ╰────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                
+─ To main · Tab writes · Enter opens agent                                     ─
+ ◑ Message to sub:protocol-review (10s)                                         
+ goal paused (you paused it) · 51200/400000 tokens · 3 continuations · Finish … 
+ advisor nudges pending (1) · held for your next prompt to main                 
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+ illustrative fixture · no provider calls · fixture-model · ctx — · est $0.00   
+ 6 agents · 2 working · 3 attention                                             
+› ● main             agent_send                                              11s
+  ? sub:protocol-re… Approval required                                       11s
+  ! sub:paused-revi… Operation aborted                                          

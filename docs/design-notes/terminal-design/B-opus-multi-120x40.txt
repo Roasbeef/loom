@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ● main                                                                                                                 
+   Both reviewers expired their wall-clock budget without producing results. Respawning with leaner briefs and longer   
+   budgets.                                                                                                             
+                                                                                                                        
+ ● agent_spawn ×2  adversarial-code-review-48f3 · adversarial-code-review-ec14                                          
+                                                                                                                        
+ ◇ loom · background job 01a0eff2 lost: its sandbox helper exited without a status · Ctrl+G                             
+                                                                                                                        
+ ● ✓ agent_wait · 2 subagents ×15 · 7m 30s · both still working                                                         
+                                                                                                                        
+ ● sub:tests waits for approval · fetch https://proxy.golang.org · a reviews                                            
+ queue · 1 pending · Alt+q inspect                                                                                      
+ ◐ main · agent_wait · 2 subagents · 51s                                                                 Esc interrupts 
+╭─ To main · Enter queues · Tab steers ──────────────────────────────────────────────────────────────────── ws · main ─╮
+│ › ← sessions · ↓ strands · / commands                                                                                │
+╰─ kimi-k3 · low › pi-gui › main *1 › ctx ~41% › est $1.86 ────────────────────────────────── 1 needs you · 6 working ─╯
+   ● main                              Waiting for adversarial-code-review, docs-accuracy-review      4m 10s · 259k ctx 
+ ❯ ? sub:tests                         Needs approval · network                                           34s ·  9k ctx 
+   ● sub:adversarial-code-review-48f3  Tracing quit-path publish_herdr reachability                    2m 45s · 65k ctx 
+   ● sub:adversarial-code-review-ec14  Grep-searching herdr:loom references                           1m 03s · 144k ctx 
+   ● sub:docs-accuracy-review          Writing an early note before reading herdr.gleam                2m 38s · 74k ctx 
+   ● sub:bootstrap-resume              Grepping bootstrap.gleam for resume references                    51s · 119k ctx 
+   ◆ advisor                           Reviewing main's plan · 1 nudge pending                            18s · 22k ctx 

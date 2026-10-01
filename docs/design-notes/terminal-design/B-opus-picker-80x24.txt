@@ -1,0 +1,24 @@
+ Sessions · active                                                     Esc back 
+ All 6   Needs you 1   Working 1   Idle 1   Off 2                           Tab 
+─━━━━━──────────────────────────────────────────────────────────────────────────
+ ~/gocode/src/github.com/roasbeef/loom · 4                                      
+   ● loom-herdr-update · …pdate  working · 5 of 6 strands               current 
+ ❯ ! terminal revamp concepts    needs you · 1 approval                         
+   ◌ unnamed · 01a07d75          observing…                                     
+   · review htlc interceptor     saved                                          
+                                                                                
+ ~/code/pi-gui · 2                                                              
+   ○ ws · main                   idle · last run failed                         
+   · nightly: deps bump          recovery blocked                               
+────────────────────────────────────────────────────────────────────────────────
+ ! terminal revamp concepts · 1 approval pending · 3 strands                    
+   Three concepts are drafted; B needs the owner's pick of the key…             
+ ↑↓ Enter open · Tab filter · n new · r rename · ? keys · Esc                   
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+╭─ To main · the list owns the keys ─────────────────────────────── ws · main ─╮
+│ ›                                                                            │
+╰─ kimi-k3 › ctx ~41% › $1.86 ─────────────────────────────────── 1 needs you ─╯

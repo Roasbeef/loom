@@ -1,0 +1,24 @@
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ● Owner · operator                                                             
+    Here is the latency chart. Why does the p99 line jump after 14:00?          
+   ▣ image 1 · image/png · 1200×700 · 84 KB · o opens externally                
+     inside Herdr: pane graphics are not passed through                         
+                                                                                
+ ● main                                                                         
+   The jump lines up with the 14:00 deploy: the p99 doubles while p50 stays     
+   flat, which points at a slow path rather than load.                          
+ ○ main · idle                                                   Ctrl+T selects 
+╭─ To main · Tab steers ─────────────────────────────────────────── ws · main ─╮
+│ › ← sessions · ↓ strands · / commands                                        │
+╰─ kimi-k3 › ctx ~41% › $1.86 ──────────────────────────────────── 0 need you ─╯
