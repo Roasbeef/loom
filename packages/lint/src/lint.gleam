@@ -58,11 +58,17 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import glexer/token
 import lint/finding.{type Finding, Finding}
+import lint/flow_order
 import lint/layout
 import lint/policy.{type Eager, type Policy}
 import lint/portable
+import lint/qualified
 import lint/scan.{type Raw, Raw}
 import lint/source
+import lint/spine
+import lint/state_first
+import lint/transitions
+import lint/unnamed_helper
 
 /// Lint one source. `path` labels findings, and also — via `module_path`
 /// below — gives R1's structural half something to key a locally-defined
@@ -135,12 +141,28 @@ pub fn check_with(
       let lines = source.classify(code)
       let blocks = layout.blocks(module, code)
       let at = source.line_map(lines.starts, layout.offsets(blocks))
+      let own = module_path(path)
+
+      // R13 to R18 are about how a reader finds their way around a large
+      // module (issue #593): its spine, its order, its state space, and
+      // what each call's qualifier says. They read the module doc as well
+      // as the tree, so each takes the line table alongside the AST.
+      let orientation =
+        list.flatten([
+          spine.findings(module, code, lines, policy, own),
+          transitions.findings(module, code, lines, policy, own),
+          state_first.findings(module, code, lines, policy, own),
+          qualified.findings(module, code, lines, policy, own),
+          flow_order.findings(module, code, lines, policy, own),
+          unnamed_helper.findings(module, code, lines, policy, own),
+        ])
       let all =
         found
         |> list.append(backstop(found, code, policy))
         |> list.append(foreign)
         |> list.append(portable.imports(package, module))
         |> list.append(layout.findings(blocks, lines, at, policy))
+        |> list.append(orientation)
       locate(path, lines.starts, all)
     }
   }

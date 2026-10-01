@@ -145,6 +145,19 @@ pub type Policy {
     /// strictly exceeds this. Counted in statements, never in lines: a
     /// constructor the formatter broke over nine lines is one statement.
     dense_stanza_run: Int,
+    /// R13 requires a `//// ## Flow` spine in any module with at least this
+    /// many lines. A thousand is where a reader stops holding a module in
+    /// their head and starts navigating it.
+    spine_lines: Int,
+    /// R17 reports a module with at least this many private functions that
+    /// have an in-module caller…
+    flow_order_min_helpers: Int,
+    /// …when strictly more than this percentage of them are defined above
+    /// their first caller.
+    flow_order_percent: Int,
+    /// R18 counts a one-caller private function whose body spans at most
+    /// this many lines.
+    unnamed_helper_lines: Int,
   )
 }
 
@@ -157,6 +170,10 @@ pub fn default() -> Policy {
     assert_message: True,
     lone_caller_arity: 7,
     dense_stanza_run: 8,
+    spine_lines: 1000,
+    flow_order_min_helpers: 10,
+    flow_order_percent: 50,
+    unnamed_helper_lines: 6,
   )
 }
 

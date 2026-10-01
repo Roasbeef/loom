@@ -97,6 +97,41 @@ pub type Rule {
   /// has no type widths or lifetime information, so this is a warning about
   /// a measurable capture shape rather than a claim about memory cost.
   BroadClosureCapture
+
+  /// R13. A module over the policy's line threshold whose module doc has no
+  /// `//// ## Flow` spine, or whose spine names a function the module does
+  /// not define. The spine is the local orientation a reader dropped in by
+  /// "go to definition" needs (issue #593, 1); checking every name it lists
+  /// is what keeps it from going stale silently.
+  FlowSpine
+
+  /// R14. A transition table marked `<!-- transitions: module.Type -->` in a
+  /// module doc whose rows do not match the constructors of the named type
+  /// exactly (issue #593, 6). The cells stay prose; the row set is checked,
+  /// so adding a state without updating the table fails the gate.
+  TransitionTable
+
+  /// R15. A state-machine module whose state, message or effect types are
+  /// defined after its first function (issue #593, 5). A reader should see
+  /// the state space before the code that moves through it.
+  StateFirst
+
+  /// R16. An unqualified import of a function from one of Loom's own
+  /// modules. The qualifier says which domain a call belongs to — the
+  /// closest thing Gleam has to a method receiver (issue #593, 3).
+  QualifiedDomainCall
+
+  /// R17. A census: modules where many private helpers are defined before
+  /// their first caller, so the file does not read in call order (issue
+  /// #593, 2). Helpers shared by several callers have no single right
+  /// place, so this warns forever.
+  FlowOrder
+
+  /// R18. A census: a short private function with one caller whose name
+  /// the module doc never mentions — a likely helper that hides a step
+  /// rather than naming a domain operation (issue #593, 4). Whether a name
+  /// is a domain operation is judgement, so this warns forever.
+  UnnamedHelper
 }
 
 /// Every rule, in report order.
@@ -115,6 +150,12 @@ pub fn rules() -> List(Rule) {
     CommentStanza,
     DenseStanza,
     BroadClosureCapture,
+    FlowSpine,
+    TransitionTable,
+    StateFirst,
+    QualifiedDomainCall,
+    FlowOrder,
+    UnnamedHelper,
   ]
 }
 
@@ -269,6 +310,12 @@ pub fn id(rule: Rule) -> String {
     CommentStanza -> "R10"
     DenseStanza -> "R11"
     BroadClosureCapture -> "R12"
+    FlowSpine -> "R13"
+    TransitionTable -> "R14"
+    StateFirst -> "R15"
+    QualifiedDomainCall -> "R16"
+    FlowOrder -> "R17"
+    UnnamedHelper -> "R18"
   }
 }
 
@@ -288,6 +335,12 @@ pub fn name(rule: Rule) -> String {
     CommentStanza -> "comment-stanza"
     DenseStanza -> "dense-stanza"
     BroadClosureCapture -> "broad-closure-capture"
+    FlowSpine -> "flow-spine"
+    TransitionTable -> "transition-table"
+    StateFirst -> "state-first"
+    QualifiedDomainCall -> "qualified-domain-call"
+    FlowOrder -> "flow-order"
+    UnnamedHelper -> "unnamed-helper"
   }
 }
 
