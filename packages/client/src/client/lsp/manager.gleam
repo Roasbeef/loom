@@ -96,6 +96,76 @@
 //// settles undegraded (ADR-015 §1). A server lives for hours; the helper
 //// reports what it enforced only in an exit report, and a lease must not
 //// learn that it ran unjailed at the end of its life.
+////
+//// ## Flow
+////
+//// The file is ordered the way a query travels. The types come first, then
+//// the actor, then the keeper, then the door, then the helpers the door's
+//// closures call, and the production backend last, because it is a plug-in
+//// the config carries rather than part of the path.
+////
+//// ```text
+//// start / supervised → builder → handle        (the manager actor)
+//// door → definition | references | hover | outline | calls
+////      | diagnostics | prepare_rename | after_write
+//// a path-scoped query:
+////   session_for → owned → acquire → ask(Acquire) → handle
+////     → begin → start_keeper → keep_server → begin_server
+////     → backend.connect (jailed: connect_jailed → jail_for → probe)
+////     → lsp.start → KeeperReady → settle_start → answer waiters
+////   → resync (pull) → readied (cold query only) → the request
+////   → sites / named_uri / gate → the door's answer
+//// a bare name: target → anywhere → searched → backend.search
+////   → resync → readied → definitions → defined_at
+//// a write: after_write → pushed → lsp.sync → lsp.settle → from_settlement
+//// session end: stop → ask(Shutdown) → handle
+//// ```
+////
+//// ## Transitions of the manager
+////
+//// `Phase` is the manager's state. Each cell is the phase after the
+//// message. "Waiters" are the callers parked in `Data.waiters` for the
+//// start in progress. A keeper that is not the current one is a stale
+//// report about a server this manager has already moved past.
+////
+//// | `Phase`    | `Acquire`, same identity | `Acquire`, other identity | `Peek`, `Opened` | `KeeperReady` | `KeeperDown` | `StrayDown` | `Shutdown` |
+//// | ---------- | ------------------------ | ------------------------- | ---------------- | ------------- | ------------ | ----------- | ---------- |
+//// | `Idle`     | `Starting` (or stay `Idle` when no keeper can be spawned) | same as the left | `Idle` | ignored | ignored | ignored | stopped; replies no keeper |
+//// | `Starting` | `Starting`, caller joins the waiters | `Starting`, the message is postponed until the start settles | `Starting` | `Running` on success, `Idle` on a refusal, ignored if from another keeper | `Idle` if it is the current keeper (waiters get `Unavailable`), else ignored | ignored | stopped; waiters get `Unavailable`; replies the keeper |
+//// | `Running`  | `Running`, answered `Warm` | `Starting` after telling the old keeper to release (eviction) | `Running` | ignored | `Idle` if it is the current keeper, else ignored | ignored | stopped; replies the keeper |
+////
+//// ## Transitions of a keeper
+////
+//// `KeeperPhase` is a keeper's state. The start itself runs inside
+//// `Beginning`'s `Begin` handler, so a keeper that is starting serves
+//// nobody; a `Release` that arrives meanwhile is postponed and replays
+//// once the keeper is `Holding`.
+////
+//// | `KeeperPhase`      | `Begin` | `PreviousGone` | `Release` | `ClientDown` | `ManagerDown` |
+//// | ------------------ | ------- | -------------- | --------- | ------------ | ------------- |
+//// | `AwaitingPrevious` | stays; arms the `previous_ms` timer | `Beginning`, then handles `Begin` | postponed | ignored | stopped |
+//// | `Beginning`        | `Holding` on a started client, stopped after reporting the refusal | ignored | postponed | ignored | stopped |
+//// | `Holding`          | ignored | ignored | stops the client gracefully, then stopped | stopped | stops the client gracefully, then stopped |
+////
+//// ## The two timing rules that are easy to misread
+////
+//// **Readiness** is asked only by the query that paid for the start
+//// (`readied`), and only about work-done progress: `lsp.ready` answers
+//// `Quiet` once no token has been active for `Timing.quiet_ms` (300 ms in
+//// production) and `StillBusy` if `Timing.ready_ms` (a minute) lapses first.
+//// The quiet window is what stops a server that has not yet begun reporting
+//// from looking ready. `StillBusy` becomes `Unavailable`, the server stays
+//// running, and the next query is warm and does not wait, so a progress
+//// token that never ends costs one "still loading" answer, not one per
+//// query.
+////
+//// **Settled diagnostics** are decided by `lsp/client.settle`, which this
+//// module calls with `Timing.settle_ms` and never reimplements. Settlement
+//// holds when a barrier request sent after the change has answered, and,
+//// for a server that versions its publications, when every changed
+//// document has a publication at least as new as the version last sent.
+//// If the deadline lapses first the result is `query.Unsettled`, which
+//// carries what arrived and never claims the code is clean.
 
 import broker/broker.{type CallEvent, type CallSpec}
 import broker/budget
@@ -164,30 +234,6 @@ pub type Timing {
     /// it asks: a server may begin reporting its load only after
     /// `initialized` is sent.
     quiet_ms: Int,
-  )
-}
-
-/// The production bounds: a minute to start, five seconds a request, the
-/// ADR's 1.5 s settlement, two seconds of shutdown grace, ten seconds for
-/// the probe and for a search, a minute for a server to finish loading,
-/// and a 300 ms quiet window after a start.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert manager.default_timing().settle_ms == 1500
-/// ```
-///
-pub fn default_timing() -> Timing {
-  Timing(
-    start_ms: 60_000,
-    request_ms: 5000,
-    settle_ms: 1500,
-    stop_grace_ms: 2000,
-    previous_ms: 2000 + lsp.retire_ms + 2000,
-    exec_ms: 10_000,
-    ready_ms: 60_000,
-    quiet_ms: 300,
   )
 }
 
@@ -260,483 +306,7 @@ pub type Config {
   )
 }
 
-// --- the production backend ------------------------------------------------
-
-/// What the jailed backend needs from the session: where the server runs,
-/// what the session grants, the enforcement it demands, and the broker
-/// seams a clearance goes through.
-pub type Jailed {
-  Jailed(
-    /// The session's workspace root.
-    workspace: String,
-    /// The session's base policy (the one `bash` clears under).
-    session_base: SandboxPolicy,
-    /// The session's enforcement demand, `settings.demand` — the same one
-    /// `bash` uses. The server, its probe and every search clear under it.
-    demand: exec.EnforcementDemand,
-    /// Code mode's located toolchain, which is the `gleam` a bare `gleam`
-    /// command means (`jail.locate`).
-    toolchain: Option(Toolchain),
-    /// The daemon's own `HOME` and cache directory, which expand a
-    /// table's `~/` and `<cache>/` roots.
-    places: Places,
-    /// The daemon's environment, read for `PATH` and the configured names.
-    reading: fn(String) -> Result(String, Nil),
-    /// Clears and dispatches one call: `tool.broker_runner` in production.
-    run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
-    /// Aborts one step of the language servers' operation:
-    /// `broker.abort_step(broker, op_id, step_id: _)` in production.
-    abort_step: fn(String) -> Nil,
-    /// The session's helper-lease counter.
-    leases: leases.Leases,
-    /// The language servers' attribution operation (`jail.operation`).
-    op_id: OpId,
-    /// The session's clock, for budget deadlines.
-    clock: Clock,
-    /// The probe's and each search's bound.
-    exec_ms: Int,
-  )
-}
-
-/// The production backend: every server and every search runs in the jail
-/// under the session's demand, and a server starts only after the probe
-/// proves the jail enforced what was demanded.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // manager.jailed(manager.Jailed(workspace:, session_base:, demand:
-/// //   settings.demand, run: tool.broker_runner(broker:, waiting:
-/// //   jail.clearance_wait_ms), ..))
-/// ```
-///
-pub fn jailed(jailed: Jailed) -> Backend {
-  Backend(
-    connect: connect_jailed(jailed, _),
-    search: search_jailed(jailed, _),
-    protected: jailed.session_base.protected,
-  )
-}
-
-/// The command the enforcement probe runs: the jail's own shell, exiting
-/// at once. `/bin/sh` is what every jailed command already runs under
-/// (`client/serve.shell_path`), and the helper's system view binds `/bin`
-/// on every Linux layout; a server's own `--version` flag is not
-/// universal, and a probe must not depend on the thing it vets.
-pub const probe_argv = ["/bin/sh", "-c", "exit 0"]
-
-/// Builds one server's jail, proves enforcement with the probe, and
-/// answers the transport the client is started over.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // manager.connect_jailed(jailed, Identity(gleam, "/work/app"))
-/// // -> Ok(transport.ChannelTransport(..))
-/// ```
-///
-pub fn connect_jailed(
-  jailed: Jailed,
-  identity: Identity,
-) -> Result(Transport, String) {
-  use built <- result.try(jail_for(jailed, identity.server, identity.root))
-  let #(now, _clock) = clock.read(jailed.clock)
-  use Nil <- result.try(probe(
-    jailed.run,
-    built,
-    jailed.demand,
-    jailed.op_id,
-    now_ms: now,
-    waiting: jailed.exec_ms,
-  ))
-
-  // The probe just proved this demand holds under this policy, so the
-  // lease clears under the same demand and nothing weaker or stronger.
-  let spec =
-    jail.call_spec(built, jailed.op_id, now_ms: now, demand: jailed.demand)
-  Ok(
-    jail.transport(jail.Launch(
-      run: jailed.run,
-      abort: fn() { jailed.abort_step(built.step_id) },
-      leases: jailed.leases,
-      spec:,
-      scratch: built.scratch,
-      timing: jail.default_timing(),
-    )),
-  )
-}
-
-// Locates the executable, composes the jail, judges the real paths of the
-// spellings a link could redirect, and makes the directories the jail
-// binds that may not exist yet. This is where a jail's impure
-// preparation lives, and the private caches belong with it rather than at
-// boot: the probe, a search and the server all clear through here, so a
-// directory made here exists before any policy that binds it is cleared,
-// and a server nobody queries costs no directory, which is ADR-015 §1's
-// laziness kept. The scratch directory's `tmp` is made for the same reason;
-// the relay makes it only for the server itself.
-fn jail_for(
-  jailed: Jailed,
-  server: LspServer,
-  root: String,
-) -> Result(jail.Jail, String) {
-  use executable <- result.try(jail.locate(server, jailed.toolchain))
-  let placement =
-    jail.Placement(
-      server:,
-      root:,
-      workspace: jailed.workspace,
-      executable:,
-      places: jailed.places,
-    )
-  use built <- result.try(jail.policy_for(
-    placement,
-    jailed.session_base,
-    reading: jailed.reading,
-  ))
-
-  // The policy was built from spellings; the helper will bind them by
-  // following whatever links they pass through. Two of those spellings
-  // lie where a link could be planted — the executable's directory under
-  // a path the server writes, and a private cache — so their real paths
-  // are judged here, from the disk, before anything is made or cleared.
-  use Nil <- result.try(jail.directory_unlinked(
-    server.name,
-    executable,
-    built.requirements.writable_roots,
-  ))
-  use Nil <- result.try(jail.caches_unlinked(server, jailed.places))
-  use Nil <- result.try(
-    simplifile.create_directory_all(built.scratch <> "/tmp")
-    |> result.map_error(fn(error) {
-      "the language server's scratch directory could not be made: "
-      <> simplifile.describe_error(error)
-    }),
-  )
-
-  // `mkdir -p` over a directory that already exists is a no-op, so a cache
-  // a previous start filled is kept, and warm.
-  use Nil <- result.try(
-    list.try_each(built.caches, fn(cache) {
-      simplifile.create_directory_all(cache)
-      |> result.map_error(fn(error) {
-        "lsp."
-        <> server.name
-        <> "'s private cache "
-        <> cache
-        <> " could not be made: "
-        <> simplifile.describe_error(error)
-      })
-    }),
-  )
-
-  // Judged again now the directories exist: the first read proved no
-  // link would be followed to make them, and this one proves the
-  // directories the helper is about to bind are the ones Loom made.
-  use Nil <- result.try(jail.caches_unlinked(server, jailed.places))
-  Ok(built)
-}
-
-/// Clears `probe_argv` under exactly the server's policy and `demand`, and
-/// answers `Ok` only if it exited cleanly under that demand.
-///
-/// Under `PlatformEnforcement` a helper that could not apply a layer
-/// settles the probe as `DegradedExecution` or `DegradedHelper`, and the
-/// refusal names the layers it skipped. Under `BestEffort` the helper
-/// reports but never refuses, so whatever runs is accepted — which is what
-/// that demand means. The probe has its own step (`<step>/probe`), so it
-/// never counts against the lease's one outstanding execution.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // manager.probe(run, built, exec.PlatformEnforcement, op, now_ms: 0, waiting: 10_000)
-/// // -> Error("… could not enforce … (skip:cgroup)")
-/// ```
-///
-pub fn probe(
-  run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
-  built: jail.Jail,
-  demand: exec.EnforcementDemand,
-  op_id: OpId,
-  now_ms now_ms: Int,
-  waiting waiting: Int,
-) -> Result(Nil, String) {
-  use outcome <- result.try(probe_outcome(
-    run,
-    built,
-    demand,
-    op_id,
-    now_ms:,
-    waiting:,
-  ))
-  judged(outcome)
-}
-
-/// Builds `server`'s jail over `root` exactly as a start would, clears the
-/// enforcement probe under it, and answers how the probe settled, before
-/// any verdict is drawn from it.
-///
-/// `probe` is the gate a start passes; this is the same clearance for a
-/// caller that has to *say* what the jail enforced rather than only
-/// refuse on a degraded one. `loom ext check` prints it, as an install
-/// prints its build's jail: an operator proving a profile is entitled to
-/// know whether the server it proved was actually confined. The `Error`
-/// is a jail that could not be built, or a probe that did not settle.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // manager.probe_server(jailed, gleam, "/work/app")
-/// // -> Ok(broker.CallExited(result: ..))
-/// ```
-///
-pub fn probe_server(
-  jailed: Jailed,
-  server: LspServer,
-  root: String,
-) -> Result(broker.CallOutcome, String) {
-  use built <- result.try(jail_for(jailed, server, root))
-  let #(now, _clock) = clock.read(jailed.clock)
-  probe_outcome(
-    jailed.run,
-    built,
-    jailed.demand,
-    jailed.op_id,
-    now_ms: now,
-    waiting: jailed.exec_ms,
-  )
-}
-
-// The probe's clearance and its settlement, with no verdict: `probe`
-// judges it, and `probe_server` hands it to a caller that reports it.
-fn probe_outcome(
-  run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
-  built: jail.Jail,
-  demand: exec.EnforcementDemand,
-  op_id: OpId,
-  now_ms now_ms: Int,
-  waiting waiting: Int,
-) -> Result(broker.CallOutcome, String) {
-  let spec =
-    broker.CallSpec(
-      ..jail.call_spec(built, op_id, now_ms:, demand:),
-      step_id: built.step_id <> "/probe",
-      argv: probe_argv,
-      budget: budget.Budget(max_outstanding: 1, deadline_ms: now_ms + waiting),
-    )
-  let events = process.new_subject()
-  use running <- result.try(
-    run(spec, events) |> result.map_error(jail.refusal_text),
-  )
-  running.stdin(<<>>, True)
-  case tool.collect_events(events, waiting:) {
-    Error(Nil) -> {
-      running.cancel()
-      Error(
-        "the language server was not started: its enforcement probe did not "
-        <> "settle within "
-        <> int.to_string(waiting)
-        <> " ms",
-      )
-    }
-    Ok(collected) -> Ok(collected.outcome)
-  }
-}
-
-// The probe's verdict. Only a clean exit under the demand passes; every
-// failure names what went wrong, and a degraded one names the layers the
-// helper reported it skipped, which is what an operator has to go and fix.
-fn judged(outcome: broker.CallOutcome) -> Result(Nil, String) {
-  case outcome {
-    broker.CallExited(result:) if result.code == 0 -> Ok(Nil)
-    broker.CallExited(result:) ->
-      Error(
-        "the language server was not started: its enforcement probe exited "
-        <> "with code "
-        <> int.to_string(result.code),
-      )
-    broker.CallFailed(failure:) ->
-      Error(
-        "the language server was not started: the jail could not enforce "
-        <> "the demanded policy ("
-        <> tool.exec_failure_text(failure)
-        <> skipped_layers(failure)
-        <> ")",
-      )
-  }
-}
-
-fn skipped_layers(failure: exec.ExecFailure) -> String {
-  case failure {
-    exec.DegradedExecution(result:) ->
-      case list.filter(result.enforcement, string.starts_with(_, "skip:")) {
-        [] -> ""
-        skipped -> "; skipped " <> string.join(skipped, ", ")
-      }
-    exec.DegradedHelper(features:) ->
-      "; the helper reported " <> string.join(features, " ")
-    exec.NotReady
-    | exec.HandshakeTimeout
-    | exec.HelperBusy
-    | exec.RefusedByHelper(..)
-    | exec.ChannelFault(..)
-    | exec.ChannelClosed(..)
-    | exec.ProtocolViolation(..)
-    | exec.ProtocolVersionMismatch(..)
-    | exec.SendFailed
-    | exec.CancelEscalated
-    | exec.HeartbeatMissed
-    | exec.HelperUnresponsive -> ""
-  }
-}
-
-/// How many matching lines one file may contribute to a search, so one
-/// file full of calls cannot spend the whole hit budget.
-const max_hits_per_file = 4
-
-/// Runs `rg` in the jail — the server's jail with the project read-only,
-/// under the session's demand — as a literal whole-word search restricted
-/// to the server's extensions, and answers at most `max_search_hits` hits
-/// in at most `max_search_files` files.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // manager.search_jailed(jailed, Search(gleam, "/work/app", "greet"))
-/// // -> Ok([Hit("/work/app/src/app.gleam", 3)])
-/// ```
-///
-pub fn search_jailed(
-  jailed: Jailed,
-  search: Search,
-) -> Result(List(Hit), String) {
-  let server =
-    profile.LspServer(..search.server, project: profile.ProjectReadOnly)
-  use built <- result.try(jail_for(jailed, server, search.root))
-  let #(now, _clock) = clock.read(jailed.clock)
-  let argv =
-    list.flatten([
-      [
-        "rg",
-        "--json",
-        "--word-regexp",
-        "--fixed-strings",
-        "--max-count",
-        int.to_string(max_hits_per_file),
-      ],
-      list.flat_map(search.server.extensions, fn(extension) {
-        ["--glob", "*" <> extension]
-      }),
-      ["--", search.identifier, search.root],
-    ])
-
-  // The lease's zeros would let a search run and print without bound; a
-  // search is a command, so it gets a command's caps. Both are narrower
-  // than the lease base's zeros, so composition narrows nothing.
-  let requirements =
-    policy.SandboxPolicy(
-      ..built.requirements,
-      limits: policy.Limits(
-        ..built.requirements.limits,
-        wall_s: int.max(jailed.exec_ms / 1000, 1),
-        output_bytes: 4_194_304,
-      ),
-    )
-  let spec =
-    broker.CallSpec(
-      ..jail.call_spec(built, jailed.op_id, now_ms: now, demand: jailed.demand),
-      step_id: built.step_id <> "/search",
-      requirements:,
-      argv:,
-      budget: budget.Budget(
-        max_outstanding: 4,
-        deadline_ms: now + jailed.exec_ms,
-      ),
-    )
-  let events = process.new_subject()
-  use running <- result.try(
-    jailed.run(spec, events) |> result.map_error(jail.refusal_text),
-  )
-  running.stdin(<<>>, True)
-  use collected <- result.try(
-    tool.collect_events(events, waiting: jailed.exec_ms)
-    |> result.map_error(fn(_nil) {
-      running.cancel()
-      "the symbol search did not settle within its bound"
-    }),
-  )
-  search_result(collected)
-}
-
-// Why a bare name could not be searched for when ripgrep is missing, and
-// the form of the question that needs no search at all.
-const rg_missing =
-  "finding a bare name searches the project with ripgrep (rg), "
-  <> "which is not installed where the sandbox can run it; give the `path` "
-  <> "(and the 1-based `line`) of a file that mentions the symbol, and the "
-  <> "language server is asked directly"
-
-// ripgrep exits 0 with matches and 1 without; anything else is its own
-// error, which it wrote to stderr. 126 and 127 are the helper's own codes
-// for a program it could not resolve or run inside the jail: ripgrep is
-// not installed where the jail can see it, which a bare name cannot work
-// around but a named file can, so that is what the answer says.
-fn search_result(collected: tool.Collected) -> Result(List(Hit), String) {
-  case collected.outcome {
-    broker.CallExited(result:) if result.code == 126 || result.code == 127 ->
-      Error(rg_missing)
-    broker.CallExited(result:) if result.code == 0 || result.code == 1 ->
-      bit_array.to_string(collected.stdout)
-      |> result.unwrap("")
-      |> grep.parse_matches
-      |> list.map(fn(match) { Hit(path: match.path, line: match.line) })
-      |> bounded_hits
-      |> Ok
-    broker.CallExited(result:) ->
-      Error(
-        "the symbol search failed with code "
-        <> int.to_string(result.code)
-        <> ": "
-        <> string.trim(result.unwrap(bit_array.to_string(collected.stderr), "")),
-      )
-    broker.CallFailed(failure: exec.RefusedByHelper(code: "spawn_failed", ..)) ->
-      Error(rg_missing)
-    broker.CallFailed(failure:) ->
-      Error("the symbol search failed: " <> tool.exec_failure_text(failure))
-  }
-}
-
-/// Keeps at most `max_hits_per_file` hits per file, `max_search_files`
-/// files and `max_search_hits` hits, in the order found.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // manager.bounded_hits(hits) |> list.length <= manager.max_search_hits
-/// ```
-///
-pub fn bounded_hits(hits: List(Hit)) -> List(Hit) {
-  let #(kept, _counts) =
-    list.fold(hits, #([], dict.new()), fn(acc, hit) {
-      let #(kept, counts) = acc
-      let seen = dict.get(counts, hit.path)
-      let admitted = case seen {
-        Ok(count) -> count < max_hits_per_file
-        Error(Nil) -> dict.size(counts) < max_search_files
-      }
-      case admitted {
-        False -> acc
-        True -> #(
-          [hit, ..kept],
-          dict.insert(counts, hit.path, result.unwrap(seen, 0) + 1),
-        )
-      }
-    })
-  list.reverse(kept) |> list.take(max_search_hits)
-}
-
-// --- the manager actor -------------------------------------------------------
+// --- the manager's state, and the keeper's -------------------------------------
 
 /// A handle on a manager. Sendable; the door's closures carry it.
 ///
@@ -814,8 +384,13 @@ type Phase {
   Running(identity: Identity, client: lsp.Client, keeper: Keeper)
 }
 
+// The manager's data: what survives a change of `Phase`. The phase holds
+// what a start in progress or a running server is made of; `Data` holds
+// the bookkeeping that outlives them, which is why the waiters and the
+// record of open documents live here and not in a phase constructor.
 type Data {
   Data(
+    // The session's servers, bounds and effects, fixed for the manager's life.
     config: Config,
     // The manager's own subject, which each keeper reports to.
     self: Subject(Msg),
@@ -826,6 +401,75 @@ type Data {
     // The documents `last`'s server holds open, most recent first, at most
     // `lsp.max_open_documents`.
     opened: List(String),
+  )
+}
+
+// What moves a keeper. `Begin` is injected at start; `PreviousGone` is the
+// previous keeper's DOWN or the bound on waiting for it; `Release` is the
+// manager's; the two DOWNs are the monitors.
+type KeeperMsg {
+  Begin
+  PreviousGone
+  Release
+  ClientDown
+  ManagerDown
+}
+
+// A keeper's life. The start runs inside the `Begin` handler of
+// `Beginning`: the keeper serves nobody while it starts, and a `Release`
+// that arrives meanwhile simply waits in its mailbox.
+type KeeperPhase {
+  // Waiting for the evicted server's keeper to exit.
+  AwaitingPrevious
+
+  // About to start the server.
+  Beginning
+
+  // Holding the running client.
+  Holding(client: lsp.Client)
+}
+
+// A keeper's data. Nothing in it changes after the keeper starts: the
+// identity it serves and the documents to re-open are fixed by the manager
+// at `begin`, and the phase carries the only thing that moves, the client.
+type Keeping {
+  Keeping(
+    config: Config,
+    identity: Identity,
+    // The documents the previous server of this identity held open.
+    reopen: List(String),
+    // Where the keeper reports `KeeperReady`.
+    manager: Subject(Msg),
+    // The keeper's own subject, re-selected when the client is held.
+    commands: Subject(KeeperMsg),
+    // The monitor on the manager, kept so the later selector can reuse it.
+    manager_watch: process.Monitor,
+  )
+}
+
+// --- the manager actor -------------------------------------------------------
+
+/// The production bounds: a minute to start, five seconds a request, the
+/// ADR's 1.5 s settlement, two seconds of shutdown grace, ten seconds for
+/// the probe and for a search, a minute for a server to finish loading,
+/// and a 300 ms quiet window after a start.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert manager.default_timing().settle_ms == 1500
+/// ```
+///
+pub fn default_timing() -> Timing {
+  Timing(
+    start_ms: 60_000,
+    request_ms: 5000,
+    settle_ms: 1500,
+    stop_grace_ms: 2000,
+    previous_ms: 2000 + lsp.retire_ms + 2000,
+    exec_ms: 10_000,
+    ready_ms: 60_000,
+    quiet_ms: 300,
   )
 }
 
@@ -893,6 +537,9 @@ pub fn addressed(name: address.Address(Msg), config: Config) -> Manager {
   handle_for(fn() { address.lookup(name) }, config)
 }
 
+// The handle both `start` and `addressed` build. `workspaces` holds the
+// workspace as written and as its real path resolves, so `shown` can strip
+// either spelling when it renders a path for the model.
 fn handle_for(
   reach: fn() -> Result(Subject(Msg), Nil),
   config: Config,
@@ -911,8 +558,11 @@ fn handle_for(
 // is exactly the machine a test starts.
 fn builder(config: Config) -> sm.Builder(Phase, Data, Msg, Subject(Msg)) {
   sm.new_with_initialiser(1000, fn(commands) {
-    // Keepers are monitored as they are started, so one selector arm for
-    // every DOWN covers all of them.
+    // A selector merges several sources into one mailbox read: the
+    // manager's own subject and every monitor it takes. Keepers are
+    // monitored as they are started, so one arm for every process DOWN
+    // covers all of them. A port DOWN cannot occur, because the manager
+    // monitors no port, and `StrayDown` exists so the selector is total.
     let selector =
       process.new_selector()
       |> process.select(commands)
@@ -986,6 +636,14 @@ fn tell(manager: Manager, message: Msg) -> Nil {
   }
 }
 
+// The manager's one handler: a `case` over the pair of current phase and
+// message, so every cell of the transition table in the module doc is one
+// arm here. Three weft verbs appear. `sm.keep` stays in the phase,
+// `sm.transition` moves to another, and `sm.postpone` puts the message
+// back to be handled again after the next transition, which is how an
+// `Acquire` for a different project waits out a start without the handler
+// ever blocking. Every phase and message pair is listed, with no catch-all,
+// so a new `Msg` or `Phase` constructor fails to compile until it is placed.
 fn handle(phase: Phase, data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
   case phase, msg {
     Idle, Acquire(identity:, reply:) -> begin(data, identity, None, reply)
@@ -1126,6 +784,9 @@ fn begin(
   }
 }
 
+// The current keeper reported. Success and refusal both clear the waiters
+// and answer each of them exactly once with the same outcome, which is
+// what makes one start serve however many callers asked during it.
 fn settle_start(
   data: Data,
   identity: Identity,
@@ -1146,6 +807,7 @@ fn settle_start(
   }
 }
 
+// Delivers one outcome to every parked caller.
 fn answer(
   waiters: List(Subject(Result(Granted, QueryError))),
   outcome: Result(Granted, QueryError),
@@ -1174,42 +836,13 @@ fn opened(data: Data, identity: Identity, paths: List(String)) -> Data {
 
 // --- the keeper --------------------------------------------------------------
 
-// What moves a keeper. `Begin` is injected at start; `PreviousGone` is the
-// previous keeper's DOWN or the bound on waiting for it; `Release` is the
-// manager's; the two DOWNs are the monitors.
-type KeeperMsg {
-  Begin
-  PreviousGone
-  Release
-  ClientDown
-  ManagerDown
-}
-
-// A keeper's life. The start runs inside the `Begin` handler of
-// `Beginning`: the keeper serves nobody while it starts, and a `Release`
-// that arrives meanwhile simply waits in its mailbox.
-type KeeperPhase {
-  // Waiting for the evicted server's keeper to exit.
-  AwaitingPrevious
-
-  // About to start the server.
-  Beginning
-
-  // Holding the running client.
-  Holding(client: lsp.Client)
-}
-
-type Keeping {
-  Keeping(
-    config: Config,
-    identity: Identity,
-    reopen: List(String),
-    manager: Subject(Msg),
-    commands: Subject(KeeperMsg),
-    manager_watch: process.Monitor,
-  )
-}
-
+// Spawns the keeper for one server start. The keeper is `unlinked` from
+// the manager: it learns of the manager's death through its monitor and
+// stops its server gracefully, which a crash propagated along a link could
+// cut short. The state machine starts in `AwaitingPrevious` when an
+// evicted server's keeper is still stopping, and `Beginning` otherwise;
+// `sm.continuing(Begin)` queues the first message for itself so the start
+// happens in the keeper's own handler, never in the manager's.
 fn start_keeper(
   config: Config,
   manager: Subject(Msg),
@@ -1252,6 +885,9 @@ fn start_keeper(
   })
 }
 
+// The keeper's handler, one arm per cell of the keeper's transition table.
+// The arms marked unreachable are listed rather than collapsed into a
+// wildcard, so a future message or phase must be placed deliberately.
 fn keep_server(
   phase: KeeperPhase,
   keeping: Keeping,
@@ -1429,6 +1065,13 @@ type Target {
   Target(session: Session, path: String, at: Position)
 }
 
+// Every door query below has the same shape, which is the one to learn
+// first: resolve the question to a position (`target`), which acquires the
+// server, pulls the disk into it and, on a cold start, waits for its load;
+// ask the server inside the caller's process with the manager's deadline;
+// then turn each location the server named into a `Site` through the gate.
+// `use ... <- result.try(...)` makes each fallible step return its `Error`
+// early, so the happy path reads top to bottom.
 fn definition(
   manager: Manager,
   asked: SymbolQuery,
@@ -1546,6 +1189,8 @@ fn outline_of(
   }
 }
 
+// Hover is the one query whose answer may legitimately be empty. A server
+// with nothing to say at a position is `NotFound`, not a failure.
 fn hover(
   manager: Manager,
   asked: SymbolQuery,
@@ -1576,6 +1221,8 @@ fn hover(
   }
 }
 
+// The symbols of one file. A path is all it takes, so there is no
+// position to resolve and the file is read once for the line text.
 fn outline(
   manager: Manager,
   path: String,
@@ -1592,6 +1239,9 @@ fn outline(
   ))
 }
 
+// Incoming or outgoing calls of the symbol the question names. The
+// server is asked twice, once to prepare the hierarchy item at the
+// position and once for the edges of that item.
 fn calls(
   manager: Manager,
   asked: SymbolQuery,
@@ -1686,6 +1336,9 @@ fn call_edge(
   )
 }
 
+// Diagnostics for one file, or for every document the server holds open.
+// Neither waits for readiness: settlement has its own bound, and an
+// unsettled answer is honest where an empty query result would not be.
 fn diagnostics(
   manager: Manager,
   path: Option(String),
@@ -1789,6 +1442,10 @@ fn converted(
   })
 }
 
+// Computes a rename and lands nothing. The answer is the edited text of
+// every file the server would touch, which the caller applies or refuses
+// whole; one file the gate withholds, or one edit that does not select
+// the old identifier, refuses all of it.
 fn prepare_rename(
   manager: Manager,
   asked: SymbolQuery,
@@ -1932,6 +1589,9 @@ fn file_edit(
   ))
 }
 
+// The post-edit push. It answers `None` unless the path's server is the one
+// already running, because an edit must never pay for a start or evict
+// another project's server (see `door`).
 fn after_write(manager: Manager, path: String) -> Option(Diagnostics) {
   case resolve.owner(manager.config.servers, manager.config.workspace, path) {
     Error(_unowned) -> None
@@ -2422,6 +2082,8 @@ fn acquire(
   }
 }
 
+// What the manager would answer without starting anything. A manager that
+// does not answer is reported as having run nothing.
 fn peek(manager: Manager) -> Peeked {
   ask(manager, waiting: 5000, sending: Peek)
   |> result.unwrap(Peeked(identity: None, client: None))
@@ -2518,6 +2180,9 @@ type Named {
   Withheld(path: String)
 }
 
+// The single decision point of the gate. It does not read the file: it
+// asks `resolve.admit` for the path's real location and keeps only that
+// verdict, so the reads that follow need not repeat the check.
 fn gate(manager: Manager, identity: Identity, path: String) -> Named {
   case
     resolve.admit(
@@ -2570,6 +2235,8 @@ fn texts_for(files: List(Named)) -> Dict(String, String) {
   |> dict.from_list
 }
 
+// A path as the model sees it: relative to the workspace when it is under
+// one, in either spelling, and absolute otherwise (`resolve.display`).
 fn shown(manager: Manager, path: String) -> String {
   resolve.display(manager.workspaces, path)
 }
@@ -2612,4 +2279,480 @@ fn request_error(session: Session, error: lsp.RequestError) -> QueryError {
         <> ", and only text edits can be landed",
       )
   }
+}
+
+// --- the production backend ------------------------------------------------
+
+/// What the jailed backend needs from the session: where the server runs,
+/// what the session grants, the enforcement it demands, and the broker
+/// seams a clearance goes through.
+pub type Jailed {
+  Jailed(
+    /// The session's workspace root.
+    workspace: String,
+    /// The session's base policy (the one `bash` clears under).
+    session_base: SandboxPolicy,
+    /// The session's enforcement demand, `settings.demand` — the same one
+    /// `bash` uses. The server, its probe and every search clear under it.
+    demand: exec.EnforcementDemand,
+    /// Code mode's located toolchain, which is the `gleam` a bare `gleam`
+    /// command means (`jail.locate`).
+    toolchain: Option(Toolchain),
+    /// The daemon's own `HOME` and cache directory, which expand a
+    /// table's `~/` and `<cache>/` roots.
+    places: Places,
+    /// The daemon's environment, read for `PATH` and the configured names.
+    reading: fn(String) -> Result(String, Nil),
+    /// Clears and dispatches one call: `tool.broker_runner` in production.
+    run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
+    /// Aborts one step of the language servers' operation:
+    /// `broker.abort_step(broker, op_id, step_id: _)` in production.
+    abort_step: fn(String) -> Nil,
+    /// The session's helper-lease counter.
+    leases: leases.Leases,
+    /// The language servers' attribution operation (`jail.operation`).
+    op_id: OpId,
+    /// The session's clock, for budget deadlines.
+    clock: Clock,
+    /// The probe's and each search's bound.
+    exec_ms: Int,
+  )
+}
+
+/// The production backend: every server and every search runs in the jail
+/// under the session's demand, and a server starts only after the probe
+/// proves the jail enforced what was demanded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.jailed(manager.Jailed(workspace:, session_base:, demand:
+/// //   settings.demand, run: tool.broker_runner(broker:, waiting:
+/// //   jail.clearance_wait_ms), ..))
+/// ```
+///
+pub fn jailed(jailed: Jailed) -> Backend {
+  Backend(
+    connect: connect_jailed(jailed, _),
+    search: search_jailed(jailed, _),
+    protected: jailed.session_base.protected,
+  )
+}
+
+/// The command the enforcement probe runs: the jail's own shell, exiting
+/// at once. `/bin/sh` is what every jailed command already runs under
+/// (`client/serve.shell_path`), and the helper's system view binds `/bin`
+/// on every Linux layout; a server's own `--version` flag is not
+/// universal, and a probe must not depend on the thing it vets.
+pub const probe_argv = ["/bin/sh", "-c", "exit 0"]
+
+/// Builds one server's jail, proves enforcement with the probe, and
+/// answers the transport the client is started over.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.connect_jailed(jailed, Identity(gleam, "/work/app"))
+/// // -> Ok(transport.ChannelTransport(..))
+/// ```
+///
+pub fn connect_jailed(
+  jailed: Jailed,
+  identity: Identity,
+) -> Result(Transport, String) {
+  use built <- result.try(jail_for(jailed, identity.server, identity.root))
+  let #(now, _clock) = clock.read(jailed.clock)
+  use Nil <- result.try(probe(
+    jailed.run,
+    built,
+    jailed.demand,
+    jailed.op_id,
+    now_ms: now,
+    waiting: jailed.exec_ms,
+  ))
+
+  // The probe just proved this demand holds under this policy, so the
+  // lease clears under the same demand and nothing weaker or stronger.
+  let spec =
+    jail.call_spec(built, jailed.op_id, now_ms: now, demand: jailed.demand)
+  Ok(
+    jail.transport(jail.Launch(
+      run: jailed.run,
+      abort: fn() { jailed.abort_step(built.step_id) },
+      leases: jailed.leases,
+      spec:,
+      scratch: built.scratch,
+      timing: jail.default_timing(),
+    )),
+  )
+}
+
+// Locates the executable, composes the jail, judges the real paths of the
+// spellings a link could redirect, and makes the directories the jail
+// binds that may not exist yet. This is where a jail's impure
+// preparation lives, and the private caches belong with it rather than at
+// boot: the probe, a search and the server all clear through here, so a
+// directory made here exists before any policy that binds it is cleared,
+// and a server nobody queries costs no directory, which is ADR-015 §1's
+// laziness kept. The scratch directory's `tmp` is made for the same reason;
+// the relay makes it only for the server itself.
+fn jail_for(
+  jailed: Jailed,
+  server: LspServer,
+  root: String,
+) -> Result(jail.Jail, String) {
+  use executable <- result.try(jail.locate(server, jailed.toolchain))
+  let placement =
+    jail.Placement(
+      server:,
+      root:,
+      workspace: jailed.workspace,
+      executable:,
+      places: jailed.places,
+    )
+  use built <- result.try(jail.policy_for(
+    placement,
+    jailed.session_base,
+    reading: jailed.reading,
+  ))
+
+  // The policy was built from spellings; the helper will bind them by
+  // following whatever links they pass through. Two of those spellings
+  // lie where a link could be planted — the executable's directory under
+  // a path the server writes, and a private cache — so their real paths
+  // are judged here, from the disk, before anything is made or cleared.
+  use Nil <- result.try(jail.directory_unlinked(
+    server.name,
+    executable,
+    built.requirements.writable_roots,
+  ))
+  use Nil <- result.try(jail.caches_unlinked(server, jailed.places))
+  use Nil <- result.try(
+    simplifile.create_directory_all(built.scratch <> "/tmp")
+    |> result.map_error(fn(error) {
+      "the language server's scratch directory could not be made: "
+      <> simplifile.describe_error(error)
+    }),
+  )
+
+  // `mkdir -p` over a directory that already exists is a no-op, so a cache
+  // a previous start filled is kept, and warm.
+  use Nil <- result.try(
+    list.try_each(built.caches, fn(cache) {
+      simplifile.create_directory_all(cache)
+      |> result.map_error(fn(error) {
+        "lsp."
+        <> server.name
+        <> "'s private cache "
+        <> cache
+        <> " could not be made: "
+        <> simplifile.describe_error(error)
+      })
+    }),
+  )
+
+  // Judged again now the directories exist: the first read proved no
+  // link would be followed to make them, and this one proves the
+  // directories the helper is about to bind are the ones Loom made.
+  use Nil <- result.try(jail.caches_unlinked(server, jailed.places))
+  Ok(built)
+}
+
+/// Clears `probe_argv` under exactly the server's policy and `demand`, and
+/// answers `Ok` only if it exited cleanly under that demand.
+///
+/// Under `PlatformEnforcement` a helper that could not apply a layer
+/// settles the probe as `DegradedExecution` or `DegradedHelper`, and the
+/// refusal names the layers it skipped. Under `BestEffort` the helper
+/// reports but never refuses, so whatever runs is accepted — which is what
+/// that demand means. The probe has its own step (`<step>/probe`), so it
+/// never counts against the lease's one outstanding execution.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.probe(run, built, exec.PlatformEnforcement, op, now_ms: 0, waiting: 10_000)
+/// // -> Error("… could not enforce … (skip:cgroup)")
+/// ```
+///
+pub fn probe(
+  run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
+  built: jail.Jail,
+  demand: exec.EnforcementDemand,
+  op_id: OpId,
+  now_ms now_ms: Int,
+  waiting waiting: Int,
+) -> Result(Nil, String) {
+  use outcome <- result.try(probe_outcome(
+    run,
+    built,
+    demand,
+    op_id,
+    now_ms:,
+    waiting:,
+  ))
+  judged(outcome)
+}
+
+/// Builds `server`'s jail over `root` exactly as a start would, clears the
+/// enforcement probe under it, and answers how the probe settled, before
+/// any verdict is drawn from it.
+///
+/// `probe` is the gate a start passes; this is the same clearance for a
+/// caller that has to *say* what the jail enforced rather than only
+/// refuse on a degraded one. `loom ext check` prints it, as an install
+/// prints its build's jail: an operator proving a profile is entitled to
+/// know whether the server it proved was actually confined. The `Error`
+/// is a jail that could not be built, or a probe that did not settle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.probe_server(jailed, gleam, "/work/app")
+/// // -> Ok(broker.CallExited(result: ..))
+/// ```
+///
+pub fn probe_server(
+  jailed: Jailed,
+  server: LspServer,
+  root: String,
+) -> Result(broker.CallOutcome, String) {
+  use built <- result.try(jail_for(jailed, server, root))
+  let #(now, _clock) = clock.read(jailed.clock)
+  probe_outcome(
+    jailed.run,
+    built,
+    jailed.demand,
+    jailed.op_id,
+    now_ms: now,
+    waiting: jailed.exec_ms,
+  )
+}
+
+// The probe's clearance and its settlement, with no verdict: `probe`
+// judges it, and `probe_server` hands it to a caller that reports it.
+fn probe_outcome(
+  run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
+  built: jail.Jail,
+  demand: exec.EnforcementDemand,
+  op_id: OpId,
+  now_ms now_ms: Int,
+  waiting waiting: Int,
+) -> Result(broker.CallOutcome, String) {
+  let spec =
+    broker.CallSpec(
+      ..jail.call_spec(built, op_id, now_ms:, demand:),
+      step_id: built.step_id <> "/probe",
+      argv: probe_argv,
+      budget: budget.Budget(max_outstanding: 1, deadline_ms: now_ms + waiting),
+    )
+  let events = process.new_subject()
+  use running <- result.try(
+    run(spec, events) |> result.map_error(jail.refusal_text),
+  )
+  running.stdin(<<>>, True)
+  case tool.collect_events(events, waiting:) {
+    Error(Nil) -> {
+      running.cancel()
+      Error(
+        "the language server was not started: its enforcement probe did not "
+        <> "settle within "
+        <> int.to_string(waiting)
+        <> " ms",
+      )
+    }
+    Ok(collected) -> Ok(collected.outcome)
+  }
+}
+
+// The probe's verdict. Only a clean exit under the demand passes; every
+// failure names what went wrong, and a degraded one names the layers the
+// helper reported it skipped, which is what an operator has to go and fix.
+fn judged(outcome: broker.CallOutcome) -> Result(Nil, String) {
+  case outcome {
+    broker.CallExited(result:) if result.code == 0 -> Ok(Nil)
+    broker.CallExited(result:) ->
+      Error(
+        "the language server was not started: its enforcement probe exited "
+        <> "with code "
+        <> int.to_string(result.code),
+      )
+    broker.CallFailed(failure:) ->
+      Error(
+        "the language server was not started: the jail could not enforce "
+        <> "the demanded policy ("
+        <> tool.exec_failure_text(failure)
+        <> skipped_layers(failure)
+        <> ")",
+      )
+  }
+}
+
+fn skipped_layers(failure: exec.ExecFailure) -> String {
+  case failure {
+    exec.DegradedExecution(result:) ->
+      case list.filter(result.enforcement, string.starts_with(_, "skip:")) {
+        [] -> ""
+        skipped -> "; skipped " <> string.join(skipped, ", ")
+      }
+    exec.DegradedHelper(features:) ->
+      "; the helper reported " <> string.join(features, " ")
+    exec.NotReady
+    | exec.HandshakeTimeout
+    | exec.HelperBusy
+    | exec.RefusedByHelper(..)
+    | exec.ChannelFault(..)
+    | exec.ChannelClosed(..)
+    | exec.ProtocolViolation(..)
+    | exec.ProtocolVersionMismatch(..)
+    | exec.SendFailed
+    | exec.CancelEscalated
+    | exec.HeartbeatMissed
+    | exec.HelperUnresponsive -> ""
+  }
+}
+
+/// How many matching lines one file may contribute to a search, so one
+/// file full of calls cannot spend the whole hit budget.
+const max_hits_per_file = 4
+
+/// Runs `rg` in the jail — the server's jail with the project read-only,
+/// under the session's demand — as a literal whole-word search restricted
+/// to the server's extensions, and answers at most `max_search_hits` hits
+/// in at most `max_search_files` files.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.search_jailed(jailed, Search(gleam, "/work/app", "greet"))
+/// // -> Ok([Hit("/work/app/src/app.gleam", 3)])
+/// ```
+///
+pub fn search_jailed(
+  jailed: Jailed,
+  search: Search,
+) -> Result(List(Hit), String) {
+  let server =
+    profile.LspServer(..search.server, project: profile.ProjectReadOnly)
+  use built <- result.try(jail_for(jailed, server, search.root))
+  let #(now, _clock) = clock.read(jailed.clock)
+  let argv =
+    list.flatten([
+      [
+        "rg",
+        "--json",
+        "--word-regexp",
+        "--fixed-strings",
+        "--max-count",
+        int.to_string(max_hits_per_file),
+      ],
+      list.flat_map(search.server.extensions, fn(extension) {
+        ["--glob", "*" <> extension]
+      }),
+      ["--", search.identifier, search.root],
+    ])
+
+  // The lease's zeros would let a search run and print without bound; a
+  // search is a command, so it gets a command's caps. Both are narrower
+  // than the lease base's zeros, so composition narrows nothing.
+  let requirements =
+    policy.SandboxPolicy(
+      ..built.requirements,
+      limits: policy.Limits(
+        ..built.requirements.limits,
+        wall_s: int.max(jailed.exec_ms / 1000, 1),
+        output_bytes: 4_194_304,
+      ),
+    )
+  let spec =
+    broker.CallSpec(
+      ..jail.call_spec(built, jailed.op_id, now_ms: now, demand: jailed.demand),
+      step_id: built.step_id <> "/search",
+      requirements:,
+      argv:,
+      budget: budget.Budget(
+        max_outstanding: 4,
+        deadline_ms: now + jailed.exec_ms,
+      ),
+    )
+  let events = process.new_subject()
+  use running <- result.try(
+    jailed.run(spec, events) |> result.map_error(jail.refusal_text),
+  )
+  running.stdin(<<>>, True)
+  use collected <- result.try(
+    tool.collect_events(events, waiting: jailed.exec_ms)
+    |> result.map_error(fn(_nil) {
+      running.cancel()
+      "the symbol search did not settle within its bound"
+    }),
+  )
+  search_result(collected)
+}
+
+// Why a bare name could not be searched for when ripgrep is missing, and
+// the form of the question that needs no search at all.
+const rg_missing =
+  "finding a bare name searches the project with ripgrep (rg), "
+  <> "which is not installed where the sandbox can run it; give the `path` "
+  <> "(and the 1-based `line`) of a file that mentions the symbol, and the "
+  <> "language server is asked directly"
+
+// ripgrep exits 0 with matches and 1 without; anything else is its own
+// error, which it wrote to stderr. 126 and 127 are the helper's own codes
+// for a program it could not resolve or run inside the jail: ripgrep is
+// not installed where the jail can see it, which a bare name cannot work
+// around but a named file can, so that is what the answer says.
+fn search_result(collected: tool.Collected) -> Result(List(Hit), String) {
+  case collected.outcome {
+    broker.CallExited(result:) if result.code == 126 || result.code == 127 ->
+      Error(rg_missing)
+    broker.CallExited(result:) if result.code == 0 || result.code == 1 ->
+      bit_array.to_string(collected.stdout)
+      |> result.unwrap("")
+      |> grep.parse_matches
+      |> list.map(fn(match) { Hit(path: match.path, line: match.line) })
+      |> bounded_hits
+      |> Ok
+    broker.CallExited(result:) ->
+      Error(
+        "the symbol search failed with code "
+        <> int.to_string(result.code)
+        <> ": "
+        <> string.trim(result.unwrap(bit_array.to_string(collected.stderr), "")),
+      )
+    broker.CallFailed(failure: exec.RefusedByHelper(code: "spawn_failed", ..)) ->
+      Error(rg_missing)
+    broker.CallFailed(failure:) ->
+      Error("the symbol search failed: " <> tool.exec_failure_text(failure))
+  }
+}
+
+/// Keeps at most `max_hits_per_file` hits per file, `max_search_files`
+/// files and `max_search_hits` hits, in the order found.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.bounded_hits(hits) |> list.length <= manager.max_search_hits
+/// ```
+///
+pub fn bounded_hits(hits: List(Hit)) -> List(Hit) {
+  let #(kept, _counts) =
+    list.fold(hits, #([], dict.new()), fn(acc, hit) {
+      let #(kept, counts) = acc
+      let seen = dict.get(counts, hit.path)
+      let admitted = case seen {
+        Ok(count) -> count < max_hits_per_file
+        Error(Nil) -> dict.size(counts) < max_search_files
+      }
+      case admitted {
+        False -> acc
+        True -> #(
+          [hit, ..kept],
+          dict.insert(counts, hit.path, result.unwrap(seen, 0) + 1),
+        )
+      }
+    })
+  list.reverse(kept) |> list.take(max_search_hits)
 }
