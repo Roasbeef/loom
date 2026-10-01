@@ -1,6 +1,29 @@
 //// The goal loop's transitions, as a pure function of the goal and what
 //// the session was observed to be doing.
 ////
+//// ## Flow
+////
+//// `next_action` → `record` → `decide` → `running` → `await` → `offer` →
+//// `checked_or_fed`
+////
+//// 1. `next_action` takes the goal and what was observed and answers with the
+////    goal as it now stands plus one `Action`; a verdict and an ended review
+////    leave through `answer_feed` and `after_review` before the level read.
+//// 2. `record` applies the occasion's own bookkeeping, and `relevel` repairs
+////    from the store what a lost notification would have recorded.
+//// 3. `decide` rests unless the goal is `Active`; `running` stops it at once
+////    when `bound` names a limit that was crossed.
+//// 4. `await` rests while a verdict or a woken run is owed and otherwise
+////    hands the idle goal to `offer`.
+//// 5. `offer` never rests when both strands are idle, because that is the
+////    stall; `checked_or_fed` runs the operator's check first if one is
+////    pinned, and otherwise feeds the reviewer.
+//// 6. `answer_feed` accepts a verdict only against the feed it was asked for,
+////    and `settle` completes the goal or wakes the primary through
+////    `continue_work`.
+//// 7. The caller narrows the phase afterwards with `feed_opened`,
+////    `feed_refused` or `primary_woken`, once the send says which run opened.
+////
 //// ## Why this is a level read rather than a set of edges
 ////
 //// The first draft of the loop was edge-triggered. Each occasion — the

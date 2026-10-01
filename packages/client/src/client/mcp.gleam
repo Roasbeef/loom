@@ -10,6 +10,28 @@
 //// `cap/mcp/<server>` façade module. The same client serves capability
 //// calls for the life of the session.
 ////
+//// ## Flow
+////
+//// `prepare` → `start_prepared` → `start_one` → `routing` → `call_plan` →
+//// `tool_result` → `close`
+////
+//// 1. `prepare` builds one parked client per configured server through
+////    `prepare_one`, reading the key with `server_env`; a refusal is recorded
+////    per server.
+//// 2. `start_prepared` runs `start_one` for every entry as concurrent weft
+////    jobs, handshaking and listing tools, and `resolve_outcome` folds each
+////    outcome back into a `Server` or a `Refusal`. `start` is the two steps
+////    together.
+//// 3. The resulting `Layer` publishes what a program may import
+////    (`allowed_imports`, `generated`, `surfaces`, `serviced_caps`).
+//// 4. `routing` wraps the session's cap router: a `mcp.<server>` call goes to
+////    `call_plan`, which finds the server (`find`), reads the tool and
+////    arguments (`string_arg`, `arguments_json`) and serves the call.
+//// 5. `tool_result` and `call_failure` turn the server's answer into a
+////    `CapOutcome`, bounded by `carriable` and `max_result_bytes`.
+//// 6. `close_prepared`, `close` and `stop` retire the clients, with `close`
+////    waiting for transport proof under one shared deadline.
+////
 //// ## MCP reaches a model through code mode, and nowhere else
 ////
 //// Nothing here registers a tool. A server's tools are a *module* a

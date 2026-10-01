@@ -2,6 +2,26 @@
 //// accepted formats decode into, plus the merge, the render, the
 //// trust hash, and the load-time diagnostics that sit on top of it.
 ////
+//// ## Flow
+////
+//// `parse_claude` or `parse_loom` → `merge` → `notes` → `hash` → `to_toml`
+////
+//// 1. `parse_claude` and `parse_claude_settings` read the Claude JSON shape
+////    through `hooks_object`, `parse_event`, `parse_group` and
+////    `parse_json_handler`; `parse_loom` reads the Loom TOML through
+////    `loom_events`, `parse_loom_group` and `parse_loom_handler`.
+//// 2. Both handler parsers end in `handler_from_common`, which is where the
+////    kind decides which fields are required, so the two formats share one
+////    rule set and one `Config`.
+//// 3. `merge` folds the configs of several sources into one, grouping per
+////    event in first-occurrence order.
+//// 4. `notes` runs over the merged config and reports the entries that would
+////    load but never fire, through `handler_notes`.
+//// 5. `hash` is the input to the trust record, taken over the model rather
+////    than the source text.
+//// 6. `to_toml` renders the model back out through `render_event` and
+////    `render_handler`, which makes `loom hooks convert` lossless.
+////
 //// # Why one model, and two parsers
 ////
 //// The compatibility target of #350 is an operator's existing hook

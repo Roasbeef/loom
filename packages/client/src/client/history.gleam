@@ -111,6 +111,47 @@ pub type PreparedShared {
   )
 }
 
+/// What the holder is asked. Opaque: callers reach it through `seam`,
+/// `poke` and `synchronize`, so there is one place that decides what a
+/// wedged or absent holder answers.
+pub opaque type Message {
+  /// A commit landed: pull whatever is new into the index.
+  Pull
+
+  /// Pull, and say whether it worked — the deterministic form a test
+  /// (or an operator's line) needs, since `Pull` is a cast.
+  Synchronize(reply_with: Subject(Result(Nil, String)))
+  Query(
+    text: String,
+    limit: Int,
+    scope: history_tool.Scope,
+    reply_with: Subject(Result(List(history_tool.Hit), String)),
+  )
+  ReadEntry(
+    session: SessionId,
+    entry: ids.EntryId,
+    reply_with: Subject(Result(JsonValue, String)),
+  )
+  Recent(
+    limit: Int,
+    reply_with: Subject(Result(List(history_tool.Hit), String)),
+  )
+  Stop
+}
+
+type State {
+  // `None` is an index that could not be opened: the holder stays alive
+  // and answers in band rather than crashing, because it sits in the
+  // restartable tier where a start that can fail turns a bad file on
+  // disk into a restart loop that spends the tier's shared budget and
+  // takes the whole server with it — for a projection with no
+  // authority. `None` is settled for this incarnation: `start` is the
+  // one place the file is opened, so a supervisor restart over a
+  // repaired file is the recovery — deliberately not a retry on every
+  // message, which is machinery for a state an operator repairs once.
+  State(index: Option(Search), config: Config)
+}
+
 /// Prepares the domain-owned coordinator without opening the index.
 ///
 /// ## Examples
@@ -344,47 +385,6 @@ pub fn sqlite_generation(session_path: String) -> fn() -> Result(Int, String) {
       <> string.inspect(error)
     })
   }
-}
-
-/// What the holder is asked. Opaque: callers reach it through `seam`,
-/// `poke` and `synchronize`, so there is one place that decides what a
-/// wedged or absent holder answers.
-pub opaque type Message {
-  /// A commit landed: pull whatever is new into the index.
-  Pull
-
-  /// Pull, and say whether it worked — the deterministic form a test
-  /// (or an operator's line) needs, since `Pull` is a cast.
-  Synchronize(reply_with: Subject(Result(Nil, String)))
-  Query(
-    text: String,
-    limit: Int,
-    scope: history_tool.Scope,
-    reply_with: Subject(Result(List(history_tool.Hit), String)),
-  )
-  ReadEntry(
-    session: SessionId,
-    entry: ids.EntryId,
-    reply_with: Subject(Result(JsonValue, String)),
-  )
-  Recent(
-    limit: Int,
-    reply_with: Subject(Result(List(history_tool.Hit), String)),
-  )
-  Stop
-}
-
-type State {
-  // `None` is an index that could not be opened: the holder stays alive
-  // and answers in band rather than crashing, because it sits in the
-  // restartable tier where a start that can fail turns a bad file on
-  // disk into a restart loop that spends the tier's shared budget and
-  // takes the whole server with it — for a projection with no
-  // authority. `None` is settled for this incarnation: `start` is the
-  // one place the file is opened, so a supervisor restart over a
-  // repaired file is the recovery — deliberately not a retry on every
-  // message, which is machinery for a state an operator repairs once.
-  State(index: Option(Search), config: Config)
 }
 
 /// Starts the holder under its configured name, opening the index file.

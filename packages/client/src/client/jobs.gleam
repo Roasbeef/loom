@@ -10,6 +10,38 @@
 //// has. `client/jobstate` is the state space and the durable codec, and
 //// holds no process; this module is everything that needs one.
 ////
+//// ## Flow
+////
+//// `start_job` → `admit` → `spawn_runner` → `run` → `fold` → `finish` →
+//// `reported` → `settle` → `record_settlement` → `commit`
+////
+//// 1. `start_job` is the door: it sends one `Start` to the actor, which `handle`
+////    routes to `admit`.
+//// 2. `admitted` checks the ceiling (`room_for_one_more`), mints an id, fixes
+////    the wall (`granted_wall`) and claims the durable record before anything
+////    runs; the caller's reply subject waits in the job's custody.
+//// 3. `spawn_runner` starts one weft run for the job, and `run` clears the call
+////    with the broker and publishes the controls back to the actor.
+//// 4. `fold` is the runner's loop over the broker's events and the actor's
+////    asks, moving through `Phase` as the wall passes; `absorb` keeps the tails
+////    and staging files, and `finish` promotes them to content addresses.
+//// 5. The weft outcome reaches `reported`, which hands it to `settle`; only
+////    then does `record_settlement` write the terminal state, so "finished" is
+////    never claimed before the process is gone.
+//// 6. `commit` applies one `jobstate.JobEvent` and persists it, and `announce`
+////    tells the owner through `tell` unless the end was requested.
+//// 7. `poll_job`, `kill_job` and `release_job` are the other doors; `beat`
+////    runs the idle heartbeat, and `sweep` marks leftovers `Lost` on restart.
+////
+//// ## Transitions
+////
+//// <!-- transitions: jobs.Phase -->
+////
+//// | state | output chunk | `CallSettled` | `Tails` ask | window elapsed |
+//// | --- | --- | --- | --- | --- |
+//// | `Streaming` | stays `Streaming`; `absorb` extends the tails and staging | leaves the loop: `finish` reports no `stopped_by` | stays `Streaming`; the tails are sent back | `Draining`; `DeadlinePassed` goes to the actor, `ByDeadline` is noted and the grace begins (never fires for a wall of zero) |
+//// | `Draining` | stays `Draining`; the ladder's output is still kept | leaves the loop: `finish` reports `ByDeadline` | stays `Draining`; the tails are sent back | refused: `NeverSettled` ends the runner and the actor records `Lost` |
+////
 //// ## Why the runner and not the actor calls the broker
 ////
 //// Two clauses of the broker's contract force it, and both are about
@@ -435,6 +467,96 @@ pub type Spill {
   )
 }
 
+/// What the actor is asked. Opaque: every caller reaches it through
+/// `client/jobseam`, so there is one place that decides what a wedged or
+/// absent actor answers.
+pub opaque type Message {
+  Start(
+    strand: String,
+    operation: OpId,
+    request: Request,
+    caller: Pid,
+    reply_with: Subject(Result(Started, Refusal)),
+  )
+
+  /// A waiting caller gives up on a job: from here its owner is told when
+  /// it ends, unless it already has.
+  Release(
+    strand: String,
+    id: JobId,
+    reply_with: Subject(Result(Released, Refusal)),
+  )
+
+  /// A waiting caller died without releasing its job.
+  CallerLeft(id: JobId)
+
+  /// The heartbeat's sample tick. See `client/notice`.
+  Beat
+
+  PollOne(
+    strand: String,
+    id: JobId,
+    cursors: Cursors,
+    reply_with: Subject(Result(Polled, Refusal)),
+  )
+
+  ListAll(strand: String, reply_with: Subject(Result(List(Listed), Refusal)))
+
+  LiveJobs(strand: String, reply_with: Subject(Result(JsonValue, Refusal)))
+
+  Kill(strand: String, id: JobId, reply_with: Subject(Result(Nil, Refusal)))
+
+  Write(
+    strand: String,
+    id: JobId,
+    data: BitArray,
+    end: StdinEnd,
+    reply_with: Subject(Result(Nil, Refusal)),
+  )
+
+  /// The runner's clearance returned, one way or the other. `Ok` carries
+  /// the closures that cancel the execution and write to its stdin; both
+  /// are plain sends into the broker, so the actor may hold and call them
+  /// from its own process.
+  Clearance(id: JobId, outcome: Result(Control, broker.Refusal))
+
+  /// The runner's wall deadline passed. Attribution only: the broker's
+  /// relay is already cancelling, and this is what makes a poll during
+  /// the ladder read `Draining(ByDeadline)` rather than `Running`.
+  DeadlinePassed(id: JobId)
+
+  /// One runner's weft outcome. The drain proof, and the only thing that
+  /// may write a terminal state.
+  Reported(id: JobId, pulled: weft.Pulled(Settlement, RunnerFault))
+
+  /// The restart sweep, injected before the mailbox is ever read.
+  Reap
+}
+
+type State {
+  State(
+    wiring: Wiring,
+    self: Subject(Message),
+    generator: ids.Generator,
+    jobs: Dict(JobId, Held),
+    /// The report channels of runners whose outcome has been taken but
+    /// whose relay has not yet said its last word.
+    ///
+    /// A relay sends the outcome and then `AllDelivered`, and taking the
+    /// outcome is exactly what ends a job's custody — so a selector built
+    /// from the live set alone would stop carrying that channel one
+    /// message too early and leave the second message unmatched in the
+    /// mailbox for the rest of the session. This is the one ledger that
+    /// outlives the custody, and it outlives the *record* too, which is
+    /// what covers a refused start whose cell is deleted outright.
+    last_words: Dict(JobId, Subject(weft.Pulled(Settlement, RunnerFault))),
+    /// How long each owner of live work has been idle, for the heartbeat.
+    /// Volatile: the restart that forgets it also kills every job it was
+    /// counting.
+    idle: notice.IdleClock,
+  )
+}
+
 /// The production spill over one blob root.
 ///
 /// The staging files live in the blob root itself so the promotion's
@@ -679,72 +801,6 @@ pub type Wiring {
 
 // --- messages -------------------------------------------------------------
 
-/// What the actor is asked. Opaque: every caller reaches it through
-/// `client/jobseam`, so there is one place that decides what a wedged or
-/// absent actor answers.
-pub opaque type Message {
-  Start(
-    strand: String,
-    operation: OpId,
-    request: Request,
-    caller: Pid,
-    reply_with: Subject(Result(Started, Refusal)),
-  )
-
-  /// A waiting caller gives up on a job: from here its owner is told when
-  /// it ends, unless it already has.
-  Release(
-    strand: String,
-    id: JobId,
-    reply_with: Subject(Result(Released, Refusal)),
-  )
-
-  /// A waiting caller died without releasing its job.
-  CallerLeft(id: JobId)
-
-  /// The heartbeat's sample tick. See `client/notice`.
-  Beat
-
-  PollOne(
-    strand: String,
-    id: JobId,
-    cursors: Cursors,
-    reply_with: Subject(Result(Polled, Refusal)),
-  )
-
-  ListAll(strand: String, reply_with: Subject(Result(List(Listed), Refusal)))
-
-  LiveJobs(strand: String, reply_with: Subject(Result(JsonValue, Refusal)))
-
-  Kill(strand: String, id: JobId, reply_with: Subject(Result(Nil, Refusal)))
-
-  Write(
-    strand: String,
-    id: JobId,
-    data: BitArray,
-    end: StdinEnd,
-    reply_with: Subject(Result(Nil, Refusal)),
-  )
-
-  /// The runner's clearance returned, one way or the other. `Ok` carries
-  /// the closures that cancel the execution and write to its stdin; both
-  /// are plain sends into the broker, so the actor may hold and call them
-  /// from its own process.
-  Clearance(id: JobId, outcome: Result(Control, broker.Refusal))
-
-  /// The runner's wall deadline passed. Attribution only: the broker's
-  /// relay is already cancelling, and this is what makes a poll during
-  /// the ladder read `Draining(ByDeadline)` rather than `Running`.
-  DeadlinePassed(id: JobId)
-
-  /// One runner's weft outcome. The drain proof, and the only thing that
-  /// may write a terminal state.
-  Reported(id: JobId, pulled: weft.Pulled(Settlement, RunnerFault))
-
-  /// The restart sweep, injected before the mailbox is ever read.
-  Reap
-}
-
 /// Whether a write to a job's stdin closes it.
 ///
 /// A two-variant type rather than the `Bool` the broker's own `stdin`
@@ -859,30 +915,6 @@ type Listener {
   Owner
   Caller(monitor: process.Monitor)
   Program
-}
-
-type State {
-  State(
-    wiring: Wiring,
-    self: Subject(Message),
-    generator: ids.Generator,
-    jobs: Dict(JobId, Held),
-    /// The report channels of runners whose outcome has been taken but
-    /// whose relay has not yet said its last word.
-    ///
-    /// A relay sends the outcome and then `AllDelivered`, and taking the
-    /// outcome is exactly what ends a job's custody — so a selector built
-    /// from the live set alone would stop carrying that channel one
-    /// message too early and leave the second message unmatched in the
-    /// mailbox for the rest of the session. This is the one ledger that
-    /// outlives the custody, and it outlives the *record* too, which is
-    /// what covers a refused start whose cell is deleted outright.
-    last_words: Dict(JobId, Subject(weft.Pulled(Settlement, RunnerFault))),
-    /// How long each owner of live work has been idle, for the heartbeat.
-    /// Volatile: the restart that forgets it also kills every job it was
-    /// counting.
-    idle: notice.IdleClock,
-  )
 }
 
 // --- starting -------------------------------------------------------------
