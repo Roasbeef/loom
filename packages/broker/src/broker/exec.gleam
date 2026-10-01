@@ -15,9 +15,9 @@
 ////
 //// ## The helper's lifecycle is a `weft/state_machine`
 ////
-//// `AwaitingHello → Idle → Running → Cancelling → Idle`, with `Dead` as
-//// the absorbing state every failure settles into. Those five are the
-//// `Phase` type — the machine's *state* — and everything else the
+//// `Prepared → AwaitingHello → Idle → Running → Cancelling → Idle`, with
+//// `Dead` as the absorbing state every failure settles into. Those six are
+//// the `Phase` type — the machine's *state* — and everything else the
 //// process carries is its *data*. The split is what makes both of the
 //// helper's deadlines structural rather than guarded by hand: the
 //// handshake window is a **state timeout** on `AwaitingHello` and the
