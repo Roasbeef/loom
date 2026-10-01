@@ -172,7 +172,7 @@ independently of uncommitted work, add a git worktree — but **not under
 replaces `/tmp` with the scratch tmpfs. `docs/execution.md` §4 has the rest.
 
 `make lint` is Loom's own house-rule lint over the Gleam sources, and it
-runs at the end of `make check`. Thirteen rules: R0 unparseable source, R1
+runs at the end of `make check`. Nineteen rules: R0 unparseable source, R1
 eager fallbacks, R2 `case` nesting depth, R3 catch-all patterns, R4
 `panic` and `let assert` in `src`, R5 O(n) answers to bounded questions,
 R6 the portable subset `core`, `machine`, `prompt` and `session_view` are held to, R7 a
@@ -180,10 +180,20 @@ R6 the portable subset `core`, `machine`, `prompt` and `session_view` are held t
 enough to be a moved pyramid, R9 a naked `Bool` in a parameter or field,
 R10 a comment with no blank line above it, R11 a body written as one
 undivided block, R12 a closure that captures a whole outer value only to
-read its fields. **R0, R2, R4, R6 and R10 fail the build**; the other
-eight warn and cost nothing. R3 and R8 are censuses and will never gate:
-both over-report by construction, which is the point of measuring rather
-than refusing.
+read its fields, and six about finding your way around a large module
+(issue #593, `docs/gleam-style.md` Part II, "Orientation in large
+modules"): R13 a module of a thousand lines or more with no `//// ## Flow`
+spine, or a spine naming a function the module does not define, R14 a
+`<!-- transitions: module.Type -->` table whose rows are not exactly the
+type's constructors, R15 a state-machine module whose state, message or
+effect types sit below its first function, R16 an unqualified import of a
+function from a Loom module, R17 a module whose helpers sit above their
+callers, and R18 a short one-caller helper the module doc never names.
+**R0, R2, R4, R6, R10, R13, R14, R15 and R16 fail the build**; the other
+ten warn and cost nothing. R3, R8, R17 and R18 are censuses and will never
+gate: they over-report by construction, which is the point of measuring
+rather than refusing. A spine is prose that names code, so a renamed
+function fails the build until the spine is told.
 A rule reaches the error tier by a census that is zero, decidable and
 argued — the staging lives in `finding.error_by_default`, and
 `packages/lint/CLAUDE.md` says what each rule is for. `make lint-<package>`
