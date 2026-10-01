@@ -28,10 +28,12 @@ import core/msgpack.{type MsgPackValue}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import simplifile
 import support/fake_helper
 import support/satellite_peer.{type PeerCtx}
+import tools/call_record
 
 const t = 1_700_000_000_000
 
@@ -771,6 +773,296 @@ fn abandoned_call_peer(ctx: PeerCtx) -> Nil {
       #(msgpack.StringValue("second_code"), msgpack.StringValue(second_code)),
     ]),
   )
+}
+
+// --- the call record (protocol change 060) ---------------------------------
+//
+// The host writes the record from its own decisions and its own clock, so
+// every case below reads it off `Run.calls` and none off the program's
+// outcome. Most use the fixed clock, under which every offset is zero and
+// the assertions are about order, status, code and count; the two that are
+// about time use a stepping clock and assert only what stepping decides.
+
+fn run_calls(
+  name: String,
+  broker: broker.Broker,
+  cfg: satellite.SatelliteConfig,
+  limits: budget.Budget,
+  script: fn(PeerCtx) -> Nil,
+) -> satellite.Run {
+  let dir = fresh_dir(name)
+  let cfg = satellite.SatelliteConfig(..cfg, cap_socket_path: dir <> "/sock")
+  let ran =
+    satellite.run(
+      artifact(),
+      run_phase(limits),
+      broker,
+      satellite.SatelliteConfig(
+        ..cfg,
+        write_token_file: satellite.private_token_writer(dir),
+      ),
+      satellite_peer.launcher(script),
+    )
+  broker.stop(broker)
+  ran
+}
+
+fn roomy() -> budget.Budget {
+  budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)
+}
+
+fn path_args(path: String) -> MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("path"), msgpack.StringValue(path)),
+  ])
+}
+
+pub fn calls_are_recorded_in_admission_order_with_their_statuses_test() {
+  let ran =
+    run_calls(
+      "rec-order",
+      start_broker(echoing()),
+      config("x"),
+      roomy(),
+      fn(ctx) {
+        satellite_peer.send_proc_run(ctx, ctx.token, 1, ["/bin/echo", "hi"])
+        let _first = satellite_peer.collect_results(ctx, 1, 3000)
+
+        // The default router serves no `fs.read`, so the host refuses it
+        // before dispatch, and the refusal is on the record all the same.
+        satellite_peer.send_cap_call(
+          ctx,
+          ctx.token,
+          2,
+          "fs.read",
+          path_args("a.txt"),
+        )
+        let _second = satellite_peer.collect_results(ctx, 1, 3000)
+        satellite_peer.send_outcome(ctx, msgpack.NilValue)
+      },
+    )
+  let assert Ok(satellite.Completed(_)) = ran.outcome
+  assert ran.calls.started_unix_ms == t
+  assert ran.calls.total == 2
+  assert ran.calls.failed == 1
+  let assert [first, second] = ran.calls.items
+  assert first.cap == "proc.run"
+  assert first.status == call_record.CallOk
+  assert first.args == Some("echo +1 args")
+  assert first.error == None
+  assert second.cap == "fs.read"
+  assert second.status == call_record.CallFailed
+  assert second.args == Some("a.txt")
+  assert second.error == Some("unsupported_cap")
+  assert second.duration_ms == 0
+}
+
+pub fn a_call_with_a_bad_token_is_not_recorded_test() {
+  let ran =
+    run_calls(
+      "rec-bad-token",
+      start_broker(echoing()),
+      config("x"),
+      roomy(),
+      denied_peer(3),
+    )
+  let assert Ok(satellite.Completed(msgpack.IntValue(3))) = ran.outcome
+  assert ran.calls.total == 0
+  assert ran.calls.items == []
+}
+
+pub fn a_cancelled_call_and_an_unsettled_one_are_told_apart_test() {
+  let ran =
+    run_calls(
+      "rec-cancel",
+      start_broker(holding()),
+      config("x"),
+      roomy(),
+      cancel_peer,
+    )
+  let assert Ok(satellite.Completed(_)) = ran.outcome
+  assert ran.calls.total == 2
+  assert ran.calls.cancelled == 1
+  assert ran.calls.unsettled == 1
+  let assert [cancelled, unsettled] = ran.calls.items
+  assert cancelled.status == call_record.CallCancelled
+  assert unsettled.status == call_record.CallUnsettled
+}
+
+pub fn overlapping_calls_overlap_in_time_test() {
+  // A stepping clock makes every read later than the last, so two calls
+  // held open together must show intervals that overlap.
+  let cfg =
+    satellite.SatelliteConfig(
+      ..config("x"),
+      clock: clock.stepping(from: t, by: 10),
+    )
+  let ran =
+    run_calls("rec-overlap", start_broker(holding()), cfg, roomy(), fn(ctx) {
+      satellite_peer.send_proc_run(ctx, ctx.token, 1, ["a"])
+      satellite_peer.send_proc_run(ctx, ctx.token, 2, ["b"])
+      let _none = satellite_peer.drain_results(ctx, 300)
+      satellite_peer.send_outcome(ctx, msgpack.NilValue)
+    })
+  let assert [first, second] = ran.calls.items
+  assert first.status == call_record.CallUnsettled
+  assert second.status == call_record.CallUnsettled
+  assert first.start_ms < second.start_ms
+  assert second.start_ms < first.start_ms + first.duration_ms
+  assert first.duration_ms > second.duration_ms
+  assert ran.calls.elapsed_ms >= first.start_ms + first.duration_ms
+}
+
+pub fn a_call_refused_by_a_ceiling_is_recorded_as_failed_test() {
+  let cfg =
+    satellite.SatelliteConfig(..config("x"), ceilings: [
+      satellite.CapCeiling(cap: "proc.run", admissions: 1, code: "proc_ceiling"),
+    ])
+  let ran =
+    run_calls("rec-ceiling", start_broker(echoing()), cfg, roomy(), fn(ctx) {
+      satellite_peer.send_proc_run(ctx, ctx.token, 1, ["one"])
+      let _first = satellite_peer.collect_results(ctx, 1, 3000)
+      satellite_peer.send_proc_run(ctx, ctx.token, 2, ["two"])
+      let _second = satellite_peer.collect_results(ctx, 1, 3000)
+      satellite_peer.send_outcome(ctx, msgpack.NilValue)
+    })
+  let assert [first, second] = ran.calls.items
+  assert first.status == call_record.CallOk
+  assert second.status == call_record.CallFailed
+  assert second.error == Some("proc_ceiling")
+}
+
+pub fn a_call_refused_by_the_pooled_cap_is_recorded_as_failed_test() {
+  let ran =
+    run_calls(
+      "rec-pooled",
+      start_broker(echoing()),
+      config("x"),
+      budget.Budget(max_outstanding: 0, deadline_ms: t + 5000),
+      budget_peer(3),
+    )
+  assert ran.calls.total == 3
+  assert ran.calls.failed == 3
+  assert list.all(ran.calls.items, fn(record) {
+    record.error == Some("budget") && record.duration_ms == 0
+  })
+}
+
+pub fn the_record_keeps_the_first_calls_and_counts_every_one_test() {
+  let ran =
+    run_calls(
+      "rec-bounds",
+      start_broker(echoing()),
+      config("x"),
+      roomy(),
+      fn(ctx) {
+        each_id(130, fn(i) {
+          satellite_peer.send_cap_call(
+            ctx,
+            ctx.token,
+            i + 1,
+            "fs.read",
+            path_args("f-" <> int.to_string(i)),
+          )
+        })
+        let _all = satellite_peer.collect_results(ctx, 130, 5000)
+        satellite_peer.send_outcome(ctx, msgpack.NilValue)
+      },
+    )
+  assert ran.calls.total == 130
+  assert ran.calls.failed == 130
+  assert list.length(ran.calls.items) == 128
+  let assert [first, ..] = ran.calls.items
+  assert first.args == Some("f-0")
+}
+
+pub fn reusing_a_live_call_id_faults_the_channel_test() {
+  let ran =
+    run_calls("rec-dup", start_broker(holding()), config("x"), roomy(), fn(ctx) {
+      satellite_peer.send_proc_run(ctx, ctx.token, 7, ["first"])
+      satellite_peer.send_proc_run(ctx, ctx.token, 7, ["second"])
+      satellite_peer.wait_for_close(ctx)
+    })
+  assert ran.outcome == Error(satellite.ChannelFaulted("duplicate cap_call id"))
+
+  // The first call is on the record, closed as unsettled when the fault
+  // ended the execution; the duplicate was never admitted.
+  assert ran.calls.total == 1
+  assert ran.calls.unsettled == 1
+}
+
+pub fn reusing_a_settled_call_id_is_accepted_test() {
+  let ran =
+    run_calls(
+      "rec-reuse",
+      start_broker(echoing()),
+      config("x"),
+      roomy(),
+      fn(ctx) {
+        satellite_peer.send_proc_run(ctx, ctx.token, 7, ["first"])
+        let _first = satellite_peer.collect_results(ctx, 1, 3000)
+        satellite_peer.send_proc_run(ctx, ctx.token, 7, ["second"])
+        let _second = satellite_peer.collect_results(ctx, 1, 3000)
+        satellite_peer.send_outcome(ctx, msgpack.NilValue)
+      },
+    )
+  let assert Ok(satellite.Completed(_)) = ran.outcome
+  assert ran.calls.total == 2
+  assert list.map(ran.calls.items, fn(record) { record.status })
+    == [call_record.CallOk, call_record.CallOk]
+}
+
+pub fn a_deadline_keeps_the_calls_made_so_far_test() {
+  let ran =
+    run_calls(
+      "rec-deadline",
+      start_broker(holding()),
+      config("x"),
+      budget.Budget(max_outstanding: 8, deadline_ms: t + 200),
+      fn(ctx) {
+        satellite_peer.send_proc_run(ctx, ctx.token, 1, ["held"])
+        satellite_peer.wait_for_close(ctx)
+      },
+    )
+  assert ran.outcome == Error(satellite.DeadlineExceeded)
+  assert ran.calls.total == 1
+  assert ran.calls.unsettled == 1
+}
+
+pub fn a_dead_satellite_keeps_the_calls_made_so_far_test() {
+  let ran =
+    run_calls(
+      "rec-gone",
+      start_broker(holding()),
+      config("x"),
+      roomy(),
+      fn(ctx) {
+        satellite_peer.send_proc_run(ctx, ctx.token, 1, ["held"])
+        process.sleep(100)
+        process.send(ctx.wire, satellite.WireClosed(reason: "the node died"))
+      },
+    )
+  assert ran.outcome == Error(satellite.SatelliteGone("the node died"))
+  assert ran.calls.total == 1
+  assert ran.calls.unsettled == 1
+}
+
+pub fn the_program_cannot_write_its_own_record_test() {
+  // A program that returns a `calls` value of its own gets it as its
+  // value and nothing more: the record is the host's.
+  let forged =
+    msgpack.MapValue([
+      #(msgpack.StringValue("calls"), msgpack.StringValue("forged")),
+    ])
+  let ran =
+    run_calls(
+      "rec-forged",
+      start_broker(echoing()),
+      config("x"),
+      roomy(),
+      fn(ctx) { satellite_peer.send_outcome(ctx, forged) },
+    )
+  assert ran.calls.total == 0
 }
 
 // --- shared helpers ------------------------------------------------------

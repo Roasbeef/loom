@@ -39,9 +39,11 @@ import core/msgpack
 import gleam/erlang/process
 import gleam/io
 import gleam/list
+import gleam/option
 import gleam/string
 import simplifile
 import support/rig.{type Prerequisites, type Rig}
+import tools/call_record
 import tools/tool
 
 // What the jailed `/bin/echo` prints, and therefore what the program's
@@ -50,14 +52,18 @@ const echoed = "loom-code-mode"
 
 const expected_outcome = "echo=loom-code-mode exit=0"
 
-/// A program that vets, compiles, and makes one genuine capability call.
+/// A program that vets, compiles, and makes one genuine capability call,
+/// after one the default router does not serve, so the host's call record
+/// holds a refusal and a success with known arguments.
 pub fn program_source() -> String {
-  "import cap/proc\n"
+  "import cap/fs\n"
+  <> "import cap/proc\n"
   <> "import cap/report\n"
   <> "import gleam/int\n"
   <> "import gleam/string\n"
   <> "\n"
   <> "pub fn main() -> report.Outcome {\n"
+  <> "  let _refused = fs.read(\"notes.txt\")\n"
   <> "  case proc.run(proc.command([\"/bin/echo\", \""
   <> echoed
   <> "\"])) {\n"
@@ -240,6 +246,23 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
   let assert satellite.Completed(msgpack.StringValue(text)) = outcome
     as "the program must complete with a text outcome"
   assert text == expected_outcome
+
+  // The host's own record of what the program did, which is not read from
+  // anything the program returned: one refused call and one that settled,
+  // in the order the program made them. The summaries are the allowlisted
+  // ones, the path and the executable with its argument count, and the
+  // `echoed` text, which is an argument, appears in neither.
+  assert execution.calls.total == 2
+  assert execution.calls.failed == 1
+  let assert [refused, settled] = execution.calls.items
+  assert refused.cap == "fs.read"
+  assert refused.args == option.Some("notes.txt")
+  assert refused.status == call_record.CallFailed
+  assert refused.error == option.Some("unsupported_cap")
+  assert settled.cap == "proc.run"
+  assert settled.args == option.Some("echo +1 args")
+  assert settled.status == call_record.CallOk
+  assert settled.start_ms >= refused.start_ms
 
   // Act two: the same build root again, with a stale artifact planted in
   // it. A build root is meant to be fresh, and this one is not — the
