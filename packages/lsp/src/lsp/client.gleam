@@ -1,5 +1,5 @@
 //// The language-server client actor: one process owning one language
-//// server over a `gleam_mcp/transport.Transport`, from the `initialize`
+//// server over an `lsp/transport.Transport`, from the `initialize`
 //// handshake to the witnessed close of its transport (ADR-015 §§1–3).
 ////
 //// # Why this is an actor, and what it refuses to do
@@ -26,11 +26,11 @@
 //// an unadvertised request answers `Unsupported` without a byte reaching
 //// the server.
 ////
-//// **Only a channel transport is accepted.** Rule Zero puts a language
-//// server in the jail, and the jail is reached through a
-//// `ChannelTransport` built over the broker's exec in `packages/client`.
-//// `gleam_mcp`'s unjailed port transport is refused at `start`, so no wiring
-//// mistake can run a server on the harness's own host.
+//// **Only a channel transport exists.** Rule Zero puts a language server in
+//// the jail, and the jail is reached through a `ChannelTransport` built over
+//// the broker's exec in `packages/client`. `lsp/transport.Transport` has no
+//// other variant, so no wiring mistake can run a server on the harness's own
+//// host, and `start` has no refusal to make for it.
 ////
 //// # The phases
 ////
@@ -76,7 +76,7 @@
 //// The caller side and the actor side meet only through `Msg`:
 ////
 //// ```text
-//// start    -> channel_of -> spawn -> (actor) initializing -> begin_handshake
+//// start    -> spawn -> (actor) initializing -> begin_handshake
 ////          -> feed -> body -> message -> response -> answered
 ////          -> handshake_answered -> accept_initialize        phase becomes Serving
 //// query    definition / hover / ... -> uri_of -> ask -> exchange -> call.try_call
@@ -149,6 +149,8 @@
 //// monitored call that answers a dead or wedged callee as a value rather
 //// than crashing the asker as `process.call` would.
 
+import core/corruption
+import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -158,12 +160,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
-import gleam_mcp/corruption
-import gleam_mcp/json.{type JsonValue}
-import gleam_mcp/jsonrpc.{type Id}
-import gleam_mcp/transport.{type Transport}
 import lsp/call
 import lsp/framing
+import lsp/jsonrpc.{type Id}
 import lsp/protocol.{
   type CallHierarchyItem, type DocumentSymbols, type Feature, type HoverResult,
   type IncomingCall, type InitializeResult, type Location, type OutgoingCall,
@@ -171,6 +170,7 @@ import lsp/protocol.{
   type ServerDiagnostic, type WorkspaceEdit, type WorkspaceFolder,
 }
 import lsp/range.{type Position}
+import lsp/transport.{type Transport}
 import weft/state_machine as sm
 
 // --- bounds -----------------------------------------------------------------
@@ -271,8 +271,9 @@ pub type StartError {
   /// The root is not an absolute path, so it has no `file://` URI.
   BadRoot(root: String)
 
-  /// The transport could not be used: it is not a channel transport, or
-  /// the actor that would own it could not start. `reason` says which.
+  /// The transport could not be used: the actor that would own it could
+  /// not start, or the transport failed before the handshake began.
+  /// `reason` says which.
   TransportRefused(reason: String)
 
   /// The `initialize` exchange failed: the server refused it, answered
@@ -732,7 +733,7 @@ pub fn start(
     protocol.path_to_uri(options.root)
     |> result.replace_error(BadRoot(root: options.root)),
   )
-  use connect <- result.try(channel_of(transport_spec))
+  let transport.ChannelTransport(connect:) = transport_spec
   let folders = [
     protocol.WorkspaceFolder(uri: root_uri, name: options.folder_name),
   ]
@@ -1316,23 +1317,6 @@ fn await_exit(client: Client, within: Int) -> Nil {
     |> process.selector_receive(within)
   process.demonitor_process(watch)
   Nil
-}
-
-// The jail is reached only through a channel transport; the port
-// transport would run the server unjailed on the harness's host.
-fn channel_of(
-  transport_spec: Transport,
-) -> Result(
-  fn(Subject(transport.TransportEvent)) -> transport.Connection,
-  StartError,
-) {
-  case transport_spec {
-    transport.ChannelTransport(connect:) -> Ok(connect)
-    transport.PortTransport(..) ->
-      Error(TransportRefused(
-        reason: "a language server runs only over a channel transport into the jail",
-      ))
-  }
 }
 
 // --- the actor ------------------------------------------------------------------

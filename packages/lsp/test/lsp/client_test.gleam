@@ -8,16 +8,15 @@
 //// sleeping — an absence is checked behind a later message the server
 //// must have seen first.
 
+import core/json.{type JsonValue}
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import gleam_mcp/json.{type JsonValue}
-import gleam_mcp/jsonrpc.{type Id, type Inbound}
-import gleam_mcp/transport
 import lsp/client
+import lsp/jsonrpc.{type Id, type Inbound}
 import lsp/protocol
 import lsp/range
 import support/fake_server.{
@@ -418,11 +417,6 @@ pub fn a_non_utf16_position_encoding_is_refused_test() {
 
   assert client.start(fake_server.seam(fake), options())
     == Error(client.EncodingUnsupported(encoding: "utf-8"))
-}
-
-pub fn a_port_transport_is_refused_before_anything_runs_test() {
-  let port = transport.PortTransport(transport.spawn("/bin/true", []))
-  let assert Error(client.TransportRefused(_)) = client.start(port, options())
 }
 
 // --- requests ---------------------------------------------------------------

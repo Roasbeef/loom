@@ -1,5 +1,5 @@
 //// The Language Server Protocol messages the harness sends and consumes,
-//// and nothing more, as total codecs over `gleam_mcp/json.JsonValue`.
+//// and nothing more, as total codecs over `core/json.JsonValue`.
 ////
 //// # Why the surface is this small
 ////
@@ -15,9 +15,9 @@
 ////
 //// # The posture
 ////
-//// It is `gleam_mcp/protocol`'s: builders return the whole JSON-RPC message,
+//// It is the posture of the MCP protocol layer: builders return the whole JSON-RPC message,
 //// ready for `lsp/framing.frame`, and decoders take the raw `result` or
-//// `params` value `gleam_mcp/jsonrpc` already extracted. Required discriminators
+//// `params` value `lsp/jsonrpc` already extracted. Required discriminators
 //// are strict and unknown extra fields are ignored. Every decoder is
 //// total, so a lying server settles as a `ProtocolFault` value and never a
 //// crash. Where the protocol allows several shapes for one answer — and
@@ -86,6 +86,7 @@
 //// association list, and every error string names the field (and list
 //// index) that failed.
 
+import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/bool
 import gleam/int
@@ -93,8 +94,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam_mcp/json.{type JsonValue}
-import gleam_mcp/jsonrpc.{type Id, type RpcError, RpcError}
+import lsp/jsonrpc.{type Id, type RpcError, RpcError}
 import lsp/query.{
   type Severity, SeverityError, SeverityHint, SeverityInformation,
   SeverityWarning,
@@ -1100,7 +1100,7 @@ fn decode_document_symbol_list(
   indexed_map(items, at, decode_document_symbol)
 }
 
-// Recursion here is bounded by `gleam_mcp/json.max_depth`: the parser refuses a
+// Recursion here is bounded by `core/json.max_depth`: the parser refuses a
 // document nested deeper than that before any decoder sees it.
 fn decode_document_symbol(
   value: JsonValue,
@@ -1834,8 +1834,8 @@ pub const method_not_found_code = -32_601
 pub const invalid_params_code = -32_602
 
 /// The answer to a request the server sent us, as the `result` value or
-/// the error to send back with `gleam_mcp/jsonrpc.response` or
-/// `gleam_mcp/jsonrpc.error_response`. Pure, so the actor only sends what this
+/// the error to send back with `lsp/jsonrpc.response` or
+/// `lsp/jsonrpc.error_response`. Pure, so the actor only sends what this
 /// returns.
 ///
 /// - `workspace/configuration`: one `null` per requested item. Servers
@@ -2094,7 +2094,7 @@ fn hex_digit(byte: Int, uri: String) -> Result(Int, UriFault) {
 // Maps a decoder over a list, naming each element `<at>[<index>]` so a
 // fault says which entry of which list broke. One lying entry fails the
 // whole list: a server lying about one location is not a server to
-// half-trust (the `gleam_mcp/protocol` posture).
+// half-trust (the MCP protocol layer's posture).
 fn indexed_map(
   items: List(JsonValue),
   at: String,
