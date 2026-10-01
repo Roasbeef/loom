@@ -31,6 +31,26 @@
 //// tool executions, deferred fetches, and summary requests go through the
 //// intent/settle sandwich as `Dispatch`.
 ////
+//// ## Flow
+////
+//// `next_action` → `run_action` → `checkpoint_action` → `assistant_action` → `tools_action` → `finish`
+////
+//// 1. `next_action` pairs the operation's state with its intent and sends a
+////    run, a standalone compaction or a navigation to its own handler; a
+////    mismatched pair is a `Fault`.
+//// 2. A running run goes to `run_action`, which owns the pass by phase; a
+////    cancelled one goes to `reconcile_run` instead.
+//// 3. `begin_run` consumes the run-start hook and enters the checkpoint.
+//// 4. `checkpoint_action` takes pi's ordered steps: deferred writes, steer,
+////    threshold compaction, generation, follow-up, run-end hook, finish.
+//// 5. `assistant_action` decides what a generation attempt becomes:
+////    dispatch, retry, overflow compaction, suspension, or a tool batch.
+//// 6. `tools_action` works the batch call by call and materializes the
+////    contiguous settled outcomes at the frontier.
+//// 7. `deferred_action`, `failure_drain_action` and `structural_action`
+////    cover the remaining run phases; `navigation_action` the third kind.
+//// 8. `finish` builds the one terminal transaction that ends the operation.
+////
 //// ## Reading this module
 ////
 //// One public function over a typed vocabulary, then a section per phase

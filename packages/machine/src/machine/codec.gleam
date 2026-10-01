@@ -16,6 +16,22 @@
 //// Optional typed fields are omitted when absent; opaque JSON fields
 //// (`details`, `data`, `streamOptions`) keep a present `null` distinct
 //// from absence where their type permits.
+////
+//// ## Flow
+////
+//// `decode_state` → `fields_of` → `require_string` → `decode_phase` → `decode_inbox`
+////
+//// 1. Each register payload has one public `encode_*`/`decode_*` pair; the
+////    pairs are independent, and the heaviest is `encode_state` and
+////    `decode_state` for the operation state register.
+//// 2. A decoder starts with `fields_of`, which refuses anything that is not
+////    a JSON object, then reads the kind discriminant with `require_string`.
+//// 3. `decode_state` dispatches on that kind to the run, compaction or
+////    navigation shape, pulling each field through `require`.
+//// 4. A run reads its `decode_settings`, `decode_phase` and `decode_inbox`
+////    sub-objects; the others read `decode_structural` or `decode_navigation`.
+//// 5. Every failure is a `CorruptionReport` naming the field, never a crash,
+////    so a damaged register surfaces as corruption at the durability boundary.
 
 import core/codec as core_codec
 import core/corruption.{type CorruptionReport}
