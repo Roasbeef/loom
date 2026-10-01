@@ -43,6 +43,7 @@ import lsp/range
 import provider/secret
 import simplifile
 import support/fake_lsp
+import tools/fs
 import tools/tool
 import weft/poll
 import weft/registry as address
@@ -1398,12 +1399,53 @@ pub fn gopls_answers_the_door_from_inside_the_jail_test() {
     ffi_os.find_executable("rg")
   {
     Error(Nil), _, _, _ -> Nil
-    Ok(_), Ok(True), Ok(go), Ok(_) -> run_gopls(live_rig_for_go(), gopls, go)
+    Ok(_), Ok(True), Ok(go), Ok(_) ->
+      case go_root(go) {
+        Ok(root) -> run_gopls(live_rig_for_go(), gopls, go, root)
+        Error(Nil) ->
+          io.println_error(
+            "SKIP lsp manager gopls: go's GOROOT cannot be derived",
+          )
+      }
     Ok(_), Ok(True), Ok(_), Error(_) ->
       io.println_error("SKIP lsp manager gopls: ripgrep (rg) is not on PATH")
     Ok(_), _, _, _ ->
       io.println_error("SKIP lsp manager gopls: gopls or go is not installed")
   }
+}
+
+// The directory holding go's standard library, which the jailed `gopls`
+// must read to load any package. On macOS the Seatbelt read view is per
+// region, so a toolchain outside the system view is unreadable unless the
+// profile names it; on Linux the read-only `/` hides the omission. The
+// environment's `GOROOT` wins, and otherwise the root is the directory
+// above the `bin` holding `go` once the link `go` was found through, such
+// as Homebrew's, is resolved. A candidate without the runtime sources is
+// refused, since granting the wrong directory would only hide the problem.
+fn go_root(go: String) -> Result(String, Nil) {
+  secret.lookup(secret.env(), "GOROOT")
+  |> result.try(fn(root) {
+    case root {
+      "/" <> _ -> Ok(root)
+      _ -> Error(Nil)
+    }
+  })
+  |> result.lazy_or(fn() {
+    fs.resolve_real(fs.real_filesystem(), "/", go)
+    |> result.replace_error(Nil)
+    |> result.try(fn(real) {
+      case string.ends_with(real, "/bin/go") {
+        True -> Ok(string.drop_end(real, 7))
+        False -> Error(Nil)
+      }
+    })
+  })
+  |> result.try(fn(candidate) {
+    case simplifile.is_directory(candidate <> "/src/runtime") {
+      Ok(True) -> Ok(candidate)
+      Ok(False) | Error(_) -> Error(Nil)
+    }
+  })
 }
 
 fn live_rig_for_go() -> Live {
@@ -1412,7 +1454,7 @@ fn live_rig_for_go() -> Live {
   live_rig(helper, "gopls")
 }
 
-fn run_gopls(live: Live, gopls: String, go: String) -> Nil {
+fn run_gopls(live: Live, gopls: String, go: String, goroot: String) -> Nil {
   let module = live.workspace <> "/gomod"
   write(module <> "/go.mod", "module example.com/m\n\ngo 1.21\n")
   write(
@@ -1435,7 +1477,7 @@ fn run_gopls(live: Live, gopls: String, go: String) -> Nil {
       extensions: [".go"],
       root_markers: ["go.mod"],
       project: catalog.ProjectReadOnly,
-      readable: [],
+      readable: [catalog.AbsolutePath(goroot)],
       writable: [catalog.AbsolutePath(cache), catalog.AbsolutePath(gopath)],
       env: ["GOCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN", "GOPROXY"],
     )
