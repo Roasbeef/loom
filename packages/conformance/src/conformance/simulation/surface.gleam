@@ -19,6 +19,31 @@
 //// threshold from the durable projection (so the decision is the same
 //// after a crash), supply or generate summaries, and prepare overflow
 //// compactions.
+////
+//// ## Flow
+////
+//// `build` → `request` → `effect_survival` → `settlement` → `send_settlement`,
+//// and `build` → `execute` → `effect_fault`, with `fire_due` → `apply` →
+//// `perform` beside them
+////
+//// 1. `build` closes the script, the schedule and the control actor into an
+////    `Effects` value: a clock and timers from the logical clock, a provider
+////    (`request`), the tools (`clearance`, `execute`) and the `hooks`.
+//// 2. `request` counts the effect, then `effect_survival` decides from the
+////    schedule whether this provider call is killed, starved into a transport
+////    failure, or runs.
+//// 3. A request that runs records its coverage with `mark_request`, offers
+////    scripted interventions through `intervene`, and answers from the script
+////    with `settlement`, which `send_settlement` turns into stream events keyed
+////    by the context's phase, never by a counter.
+//// 4. `execute` is the tool side: `effect_fault` may kill or delay it, and
+////    otherwise the scripted result is returned, with a `DuringCall`
+////    intervention offered first.
+//// 5. `fire_due` and `apply` carry a scripted intervention from the runner into
+////    the session through `apply_on` and `perform`, and `intervention_admitted`
+////    records whether it landed.
+//// 6. `hooks` supplies the decisions a default runtime declines: the compaction
+////    threshold from the durable projection, overflow preparation, and summaries.
 
 import conformance/simulation/control.{type Control}
 import conformance/simulation/fault.{type Schedule}

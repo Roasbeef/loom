@@ -35,6 +35,30 @@
 //// This module is test infrastructure: `let assert` appears here (as in
 //// `conformance/storage_suite`) because a runner whose control actor
 //// will not start has nothing to say.
+////
+//// ## Flow
+////
+//// `start` → `handle` → `commit_started` → `commit_succeeded` → `seam_quiet`,
+//// beside `attempt` → `record_attempt` and `await_intervention` →
+//// `take_pending_interventions` → `intervened`
+////
+//// 1. `start` spawns the one actor, outside the session tree, with every count
+////    at zero; each public function below is a thin call or send that `handle`
+////    answers against that state.
+//// 2. `bump`, `read` and `claim` are the schedule's counters and one-shot
+////    latches, which `current` reads so that "the Nth effect" survives a
+////    crash of whichever incarnation was running.
+//// 3. `commit_started`, `commit_succeeded` and `commit_failed` open and close a
+////    fence per committing process; `fences_held` and `release_fence` do the
+////    accounting, and a close with no open poisons the run through
+////    `poison_accounting`.
+//// 4. `arm`, `seam_done` and `seam_quiet` are how the runner learns the
+////    post-commit seam has drained, through `accounting_quiet` and
+////    `seam_closed`.
+//// 5. `attempt` runs an action on a disposable carrier and files an unobserved
+////    reply with `note_wait`; `claim_intervention` and `await_intervention`
+////    hand a scripted intervention to the runner, which collects the queue with
+////    `take_pending_interventions` and settles it with `intervened`.
 
 import conformance/simulation/script.{type Trigger}
 import gleam/dict.{type Dict}
