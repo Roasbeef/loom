@@ -9,6 +9,15 @@
 //// the interrupt, the stop and the quit, and the switch of strand, which
 //// must cancel unsent frames first so a queued frame cannot reach the
 //// wrong target.
+////
+//// ## Flow
+////
+//// `submit` parses input and separates shared session commands from
+//// terminal surface commands handled by `submit_surface`.
+//// `delivery` selects the prompt or steer mode for shared submission.
+//// `toggle_submission_mode` refuses steering while an interrupt is active.
+//// `interrupt_active` delegates to the shared command reducer.
+//// `switch_active_strand` cancels unsent intent before changing its target.
 
 import etui/widgets/textarea as text_area
 import gleam/int
@@ -319,6 +328,13 @@ fn history_item(history: List(String), index: Int) -> Option(String) {
 
 /// Switches the composer between prompting next and steering the running
 /// turn. Steering is offered only while the active strand is live.
+/// Held input resumes with an ordinary prompt, not by arming another steer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = submit.toggle_submission_mode(model)
+/// ```
 @internal
 pub fn toggle_submission_mode(model: Model) -> Model {
   case

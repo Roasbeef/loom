@@ -4,6 +4,14 @@
 //// parent ends the loaded projection; unrelated global records are never
 //// assigned to main as a fallback. Configuration, attribution and presence
 //// are decoded together so a metadata-only catch-up changes one coherent view.
+////
+//// ## Flow
+////
+//// `decode` validates metadata and cells, then `decode_view` builds one view.
+//// `branch` follows a captured leaf through `walk` without assigning foreign
+//// records to the active strand.
+//// `queue_halted` reads idle membership and pending rows from that same view.
+//// It proves retained input is held; composer admission is a separate decision.
 
 import core/codec
 import core/entry.{type Entry, MessageEntry}
@@ -770,6 +778,9 @@ fn decode_extension_refusals(
 /// // snapshot_view.queue_halted(view, "main")
 /// ```
 pub fn queue_halted(view: View, strand: String) -> Bool {
+  // Both predicates read one validated cut. None for pending_inputs means
+  // this daemon supplied no queue observation, so absence cannot imply held
+  // input. A known idle strand and at least one captured row are both needed.
   list.any(view.strands, fn(row) { row.id == strand && row.live_phase == None })
   && case view.pending_inputs {
     None -> False

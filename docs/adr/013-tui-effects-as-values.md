@@ -1070,7 +1070,7 @@ Two reads remain in the step, and neither touches the file system. Adoption
 asks whether the replacement socket's actor is alive (phase 3 moved the
 read to `tui/runtime.gleam:309` (`connection.adopt`)). And the
 build-mismatch notice reads this client's build identity from two environment variables on
-every coherent cut (`tui/model.gleam:996` (`build_identity`)). Phase 3
+every coherent cut (`tui/model.gleam:1003` (`build_identity`)). Phase 3
 takes both: once etui's events are replaced by a domain message type, the
 runtime can read the liveness when it delivers the message that carries the
 socket, and the build identity, which does not change while the process

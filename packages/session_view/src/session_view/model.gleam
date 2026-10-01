@@ -24,6 +24,15 @@
 //// whole record after every event. A host that rebuilds its view on every
 //// update may ignore them (`docs/design-notes/step-extraction.md`, question
 //// 3).
+////
+//// ## Flow
+////
+//// The state and observation types precede the operations over `Shared`.
+//// `hold_channel` moves lane outputs into the host-performed effect queue.
+//// `active_queue_halted` combines `active_strand_live` with the current cut.
+//// `active_strand_phase` and `active_interrupt` describe different facts:
+//// a retained queue belongs to the cut, while an interrupt names one operation.
+//// `presentation` collects the shared facts that transcript builders consume.
 
 import core/entry
 import core/json
@@ -992,6 +1001,9 @@ pub fn queue_namespace(
 pub fn active_queue_halted(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Bool {
+  // A prompt in flight outranks the idle cut it was sent against. Once no
+  // submission or operation is live, only captured rows establish a hold;
+  // the transient Interrupt belongs to the operation that has retired.
   !active_strand_live(shared)
   && case shared.captured {
     None -> False

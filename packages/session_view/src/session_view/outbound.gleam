@@ -24,6 +24,15 @@
 //// at the point of the call, where this module used to write them itself.
 //// Its forms of `send_frame`, `send_via` and `apply_submission`, for the
 //// reducers that still take the whole model, are in `tui/model`.
+////
+//// ## Flow
+////
+//// `send_frame` enters `send_via`, which stores the lane and applies its
+//// disposition through `apply_submission`.
+//// `record_sent` binds the actual issued ID to the surface that asked.
+//// Waiting keeps a draft locked; `has_unsent` checks the lane, not the notice.
+//// `mutation_refusal` checks authority before a caller encodes a mutation.
+//// A queued goal confirmation has no request ID until `record_sent` binds it.
 
 import gleam/bool
 import gleam/list
@@ -167,6 +176,9 @@ fn record_sent(
 ) -> Shared(socket, recorder, source, replay_source) {
   // Admission can queue a mutation behind an older goal read. Its report
   // gains an owner only when the lane actually issues that mutation.
+  // ConfirmGoal(request: None) is admitted intent; Some(request_id) is the
+  // issued command. The goal_get arm below records a read ID without binding
+  // a waiting mutation's confirmation to that older read.
   let goal_report = case command, shared.goal_report {
     "goal_set", ConfirmGoal(line:, ..)
     | "goal_check", ConfirmGoal(line:, ..)

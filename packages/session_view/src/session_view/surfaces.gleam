@@ -35,6 +35,16 @@
 //// functions that open a surface, move its cursor or decide a surface's
 //// target read the terminal's state, take the whole model, and live in the
 //// terminal (`tui/side_surfaces`).
+////
+//// ## Flow
+////
+//// For goal observations, `goal_action` and `sync_goal` mark an edge read due.
+//// `service_goal_read` waits for the lane; `unreachable_goal` reports no lane.
+//// `confirming` arms a mutation report before `submit_goal_action` sends it.
+//// `receive_goal` checks attachment ownership, then `owns_goal_report` before
+//// `report_goal` prints anything. `refuse_goal` checks the issued request ID.
+//// Both accepted replies record observations for a host to apply in order.
+//// Lane-owned goal invalidation reads use the same reply and refusal reducers.
 
 import core/entry
 import gleam/bool
@@ -58,6 +68,32 @@ import session_view/queue_request
 import session_view/session_channel
 import session_view/transcript_lines
 import session_view/worktree_view
+
+/// What one model transition asks of the pending-nudge panel.
+///
+/// Named rather than answered with a pair of booleans, because the three
+/// cases are genuinely different events and a caller reading `False, True`
+/// would have to remember which question each half asked.
+pub type NudgeAction {
+  /// The primary is running. Anything the panel holds is no longer a
+  /// pending queue, because a run start drains it into that run.
+  DropNudges
+
+  /// The primary is idle at a boundary worth exactly one observation.
+  ReadNudges
+
+  /// Nothing the panel depends on moved.
+  HoldNudges
+}
+
+/// What one model transition asks of the goal panel.
+pub type GoalAction {
+  /// The goal may have moved; one read is worth its round trip.
+  ReadGoal
+
+  /// Nothing the panel depends on moved.
+  HoldGoal
+}
 
 /// Sends the pending todo seed as an ordinary `notes` read once the read
 /// lane is free. An operator's own notes read goes first, and its reply
@@ -285,23 +321,6 @@ pub fn service_jobs_read(
 }
 
 // --- the advisor's pending nudges -------------------------------------------
-
-/// What one model transition asks of the pending-nudge panel.
-///
-/// Named rather than answered with a pair of booleans, because the three
-/// cases are genuinely different events and a caller reading `False, True`
-/// would have to remember which question each half asked.
-pub type NudgeAction {
-  /// The primary is running. Anything the panel holds is no longer a
-  /// pending queue, because a run start drains it into that run.
-  DropNudges
-
-  /// The primary is idle at a boundary worth exactly one observation.
-  ReadNudges
-
-  /// Nothing the panel depends on moved.
-  HoldNudges
-}
 
 /// Whether this transition is worth a pending-nudge read, a clear, or
 /// neither.
@@ -558,15 +577,6 @@ pub fn receive_advisor_nudges(
   }
 }
 
-/// What one model transition asks of the goal panel.
-pub type GoalAction {
-  /// The goal may have moved; one read is worth its round trip.
-  ReadGoal
-
-  /// Nothing the panel depends on moved.
-  HoldGoal
-}
-
 /// Whether this transition is worth one goal read.
 ///
 /// The three edges the pending-nudge panel reads on are all goal edges too:
@@ -723,6 +733,9 @@ pub fn service_goal_read(
   }
 }
 
+// A disconnected host cannot turn Requested into a board. Settle the local
+// read request and record unavailability; an open inspector retains its last
+// observation with that reason, while automatic reads stay transcript-silent.
 fn unreachable_goal(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
@@ -780,6 +793,10 @@ pub fn receive_goal(
             GoalObserved(board),
           ]),
         )
+
+      // Ownership is tested against the pre-reply record. The new record
+      // has already cleared that read's slot, but a queued mutation's report
+      // must survive until its own Sent update and reply.
       case owns_goal_report(shared) {
         True -> report_goal(observed, board)
         False -> session_model.invalidate_frame(observed)
@@ -850,6 +867,9 @@ pub fn refuse_goal(
   code: String,
   message: String,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // A snapshot_failed reply is a refusal of an observation, not evidence
+  // that the last displayed board still describes the durable cell. Its
+  // request ID must match before clearing the shared board or notifying a host.
   use <- bool.guard(shared.goal_request != Some(request_id), shared)
   let cleared =
     Shared(
