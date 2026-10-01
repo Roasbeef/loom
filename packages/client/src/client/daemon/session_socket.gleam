@@ -36,6 +36,17 @@
 //// runner drop sockets that a wider budget would only have dropped later. So
 //// `on_init` mints its subjects, sends itself `Admit`, and returns; the
 //// handler pays for admission where no deadline is watching.
+////
+//// ## Transitions
+////
+//// <!-- transitions: session_socket.Phase -->
+////
+//// | state | Admit | text frame | Push | Flush | Refused or GatewayDown | binary, closed, shutdown |
+//// | --- | --- | --- | --- | --- | --- | --- |
+//// | `Pending` | `Admitted` once the permit transfers and the gateway attach succeeds; either failure stops the socket | socket stops | socket stops | socket stops | socket stops | socket stops |
+//// | `Admitted` | socket stops | `respond`: one bounded gateway reply written, stays `Admitted`; socket stops if the exchange or the write fails | written to the client, stays `Admitted`; socket stops if the write fails | acknowledged to the hub, stays `Admitted` | socket stops | socket stops |
+////
+//// `on_close` detaches the gateway connection only from `Admitted`.
 
 import client/daemon/manager
 import client/daemon/root

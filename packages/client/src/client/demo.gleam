@@ -27,6 +27,25 @@
 //// parent with `api.send_to_strand` — the durable steer-or-start
 //// admission — and everything the client sees of it arrives through
 //// the protocol's event stream.
+////
+//// ## Flow
+////
+//// `run` → `run_in` → `drive` → `acceptance_flow` → `check_replay` →
+//// `final_snapshot`
+////
+//// 1. `run` starts an address registry and calls `run_in` with it; `main`
+////    prints the narrative `run` returns.
+//// 2. `run_in` builds the world: an in-memory session, the scripted
+////    `scripted_provider` and `scripted_tools`, production compaction hooks
+////    from `compaction_wiring`, a real runtime, the hub and the served socket.
+//// 3. `drive` attaches one `Client` to the hub and runs `acceptance_flow`.
+//// 4. `acceptance_flow` walks the M3 steps in order, each as a protocol
+////    command through `command_replied` and an `await` for the event that
+////    proves it settled: prompt, subagent strand, messaging, escalation,
+////    fork, navigate, compact.
+//// 5. `catch_up_all` and `collect_replay` resubscribe from the start, and
+////    `check_replay` proves the replayed stream equals what was seen live.
+//// 6. `final_snapshot` and `check_final` close the flow on the end state.
 
 import broker/broker
 import broker/exec

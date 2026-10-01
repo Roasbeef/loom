@@ -6,6 +6,28 @@
 //// gleam run -m client/distill -- --session-dir /data --config loom.toml
 //// ```
 ////
+//// ## Flow
+////
+//// `main` → `run_flags` → `run` → `pass` → `consolidated` → `finish` →
+//// `reconciled`
+////
+//// 1. `main` parses flags (`parse`) and calls `run_flags` or, for
+////    `--cascade`, `cascade_flags`; `announce` prints the outcome.
+//// 2. `run` validates the sources and opens the memory session under the
+////    run-scale lease; the daemon's `prepare` takes the same path under
+////    custody.
+//// 3. `pass` reads the head and the remembered notes, and `harvest_all` reads
+////    each source above its cursor, skipping any whose lease is held.
+//// 4. `extract_all` asks the distiller for candidates, one turn per source;
+////    only the sources that answered move cursors.
+//// 5. With candidates or notes `consolidated` asks for the new head and
+////    `finish` appends the rows and then advances the head; otherwise `quiet`
+////    records the cursors alone.
+//// 6. `reconciled` rewrites the sidecar to match the head, which every run
+////    ends with, so a crash after the head commit cannot leave it stale.
+//// 7. `cascade` is the erasure command: `cascaded` drops what a session
+////    contributed and `rewind_for` winds the cursors back.
+////
 //// # It is a command, not a resident
 ////
 //// The standalone command and `client/distillpass` invoke this bounded pass;

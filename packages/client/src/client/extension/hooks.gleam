@@ -12,6 +12,27 @@
 //// is deliberately the *only* place that knows an extension can be
 //// asked anything.
 ////
+//// ## Flow
+////
+//// `wire` → `gate` → `fan_out` → `handle` → `answer` → `ask` → `drain` →
+//// `first_block`
+////
+//// 1. `start` builds the two managers with one handler per extension, each
+////    from `handler_for`; `wire` wraps the session's effect slots so the
+////    harness reaches the bus.
+//// 2. A planned tool call enters `gate`, which sends `ToolCall` through
+////    `fan_out` onto the answering manager on a bounded worker.
+//// 3. `handle` in each handler picks the wire shape for the event and calls
+////    `answer` for events that need a reply or `settle` for notifications.
+//// 4. `ask` puts the question to the extension's satellite through its
+////    `Invoker`, and `read` decodes the reply totally.
+//// 5. `forward_verdict`, `forward_injection` or `forward_note` hands what the
+////    extension said to the caller's reply subject; a failure that costs the
+////    handler its place goes through `broken`.
+//// 6. `drain` collects the replies once the fan-out returns and `first_block`
+////    picks the verdict; `fold_context` and `fold_tool_result` are the chained
+////    transforms that run outside the managers.
+////
 //// ## Why a `weft/event_manager` and not a fan-out written here
 ////
 //// The shape the design note names is gen_event's exactly: an ordered
@@ -326,28 +347,6 @@ pub type HookFailure {
 pub type Invoker =
   fn(String, String, MsgPackValue, Int) -> Result(MsgPackValue, HookFailure)
 
-/// The invoker a server has before the persistent satellite host is
-/// wired: every call fails with `Gone`.
-///
-/// Phase 3 is built in two halves. This half — the bus, the runtime
-/// slots, the manifest and the record — knows how to ask an extension a
-/// question; the other half owns the satellite that answers. Until the
-/// two are joined, an honest server says the satellite is not there
-/// rather than pretending an extension declined, so the first event
-/// drops the handler with a reason an operator can read. Joining them is
-/// replacing this one call with `client/extension/hosts.invoke_event`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert hooks.unwired()("web_search", "tool_call", msgpack.NilValue, 0)
-///   == Error(hooks.Gone)
-/// ```
-///
-pub fn unwired() -> Invoker {
-  fn(_extension, _event, _args, _deadline_ms) { Error(Gone) }
-}
-
 /// One installed extension as the bus sees it: the name refusals are
 /// attributed to, the events its manifest declared, and the way to reach
 /// it.
@@ -365,8 +364,6 @@ pub type Extension {
     invoke: Invoker,
   )
 }
-
-// --- the bus --------------------------------------------------------------
 
 /// What a `tool_call` hook decided.
 pub type Verdict {
@@ -438,6 +435,30 @@ pub type Event {
   /// One cost-ledger row was committed. Notify-only.
   Usage(op_id: OpId, row: UsageRow)
 }
+
+/// The invoker a server has before the persistent satellite host is
+/// wired: every call fails with `Gone`.
+///
+/// Phase 3 is built in two halves. This half — the bus, the runtime
+/// slots, the manifest and the record — knows how to ask an extension a
+/// question; the other half owns the satellite that answers. Until the
+/// two are joined, an honest server says the satellite is not there
+/// rather than pretending an extension declined, so the first event
+/// drops the handler with a reason an operator can read. Joining them is
+/// replacing this one call with `client/extension/hosts.invoke_event`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert hooks.unwired()("web_search", "tool_call", msgpack.NilValue, 0)
+///   == Error(hooks.Gone)
+/// ```
+///
+pub fn unwired() -> Invoker {
+  fn(_extension, _event, _args, _deadline_ms) { Error(Gone) }
+}
+
+// --- the bus --------------------------------------------------------------
 
 /// Which of a bus's two managers a question is about.
 ///
