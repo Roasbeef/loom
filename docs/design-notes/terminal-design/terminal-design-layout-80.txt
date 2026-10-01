@@ -1,0 +1,24 @@
+ ◆ pi-gui · fix readme badge · strand main                        kimi-k3 · low 
+                                                                                
+ ● agent_spawn  sub:tests, sub:docs                                             
+▎  ├ ? sub:tests  Needs approval · network    34s ·  9k                         
+▎  └ ✓ sub:docs   Finished 1m 12s · 2 files    12k                              
+                                                                                
+▎◇ advisor · nudge for main · 12s ago · delivered on main's next run            
+▎  Consider running the unit tests before committing.                           
+                                                                                
+ ⇄ peer lnd-review asked a question · Ctrl+g shows it                           
+                                                                                
+ ∴ Reasoning (summarized) · 9s                                                  
+   Comparing list.range with int.range before choosing the loop.                
+ ● code_mode  check_subtract.gleam · running 1.2s · Trace tab                   
+                                                                                
+ ◆ main                                                                         
+   I added subtract next to add. Both tests should pass once sub:tests          
+   reports back, then I will update the README example.                         
+ ▸ Todo · 3 of 5 done · ▸ check it · Ctrl+g expands                             
+╭─ To main · Tab steers ────────────────── ◐ code_mode · 1.2s · queue 1 · Esc ─╮
+│ › ← sessions · ↓ agents · / commands                                         │
+╰─ kimi-k3 › ctx ~41% › $1.86 ─────────────────────────────────── 1 needs you ─╯
+   ● main                     Working · code_mode check_subtr… 1m 12s · 41k ctx 
+   ? sub:tests                Needs approval · network            34s ·  9k ctx 
