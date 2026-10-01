@@ -30,8 +30,8 @@
 //// and every variant is something a program can act on: `Ambiguous`
 //// carries the candidates to narrow with, `Unsupported` names the request
 //// the server does not offer, `NoServer` says why no server owns the
-//// path. Two wire channels carry them, and `LspError`'s docs say which
-//// variant travels on which.
+//// path. Two wire channels carry them; the table under "Where each error
+//// comes from" says which variant travels on which.
 ////
 //// # Lists are bounded, and the bound is reported
 ////
@@ -39,6 +39,53 @@
 //// inside a `Found`, whose `total` is how many there were. A program can
 //// always tell a complete answer (`total == list.length(items)`) from a
 //// capped one, which is what makes it safe to act on either.
+////
+//// ## Flow
+////
+//// Every capability is one call through `ask`, so reading it once covers
+//// all seven.
+////
+//// ```text
+//// definition / references / hover / outline / calls / diagnostics / rename
+////   → query_args                 the symbol's three keys, always present
+////   → ask
+////       → dispatch.call          over the capability channel
+////           Error → map_error    a refusal or a lost channel
+////       → decode_reply
+////           "unresolved" present → decode_unresolved   an LspError
+////           absent               → the capability's decoder
+////                                  (decode_found, decode_symbol,
+////                                   decode_diagnostics, decode_rename, ...)
+////       → a decode fault becomes LspUnavailable, naming the capability
+//// ```
+////
+//// ## Where each error comes from
+////
+//// ```text
+//// LspError            wire form
+//// NoServer            refusal code `no_server`
+//// Refused             refusal code `server_refused`
+//// LspUnavailable      refusal code `server_unavailable`, an unreachable
+////                     channel, or an answer this module cannot read
+//// LspDenied           any other refusal code, kept as the harness sent it
+//// NotFound            an answer tagged `unresolved` = `not_found`
+//// Ambiguous           an answer tagged `unresolved` = `ambiguous`
+//// Unsupported         an answer tagged `unresolved` = `unsupported`
+//// ```
+////
+//// The first four are sentences, so they travel as refusals. The last
+//// three carry a symbol, a list of sites, or a server and a request, which
+//// a message cannot hold, so the harness answers normally and tags the
+//// answer. `codemode/lsp.refusal` builds both forms from the other side.
+////
+//// ## A note on the decoders
+////
+//// Each `decode_*` function is a chain of `use field <- result.try(...)`
+//// lines. A `use` binds the unwrapped value and runs the rest of the
+//// function as the callback, or returns the first `Error` at once. The
+//// error is a `String` naming the field, and `ask` turns it into an
+//// `LspUnavailable`, since an answer this module cannot read is a wire
+//// disagreement and must not look like an empty result.
 
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
@@ -541,6 +588,8 @@ fn query_args(
   ])
 }
 
+// An unset optional is `nil` on the wire, matching what the harness's
+// decoder accepts for an absent value.
 fn optional_string(value: Option(String)) -> MsgPackValue {
   case value {
     Some(text) -> wire.string(text)
@@ -634,6 +683,8 @@ fn decode_unresolved(value: MsgPackValue) -> Result(LspError, String) {
   }
 }
 
+// Both capabilities that return a `Found` read the same two keys: the
+// capped list under `key` and the uncapped `total` beside it.
 fn decode_found(
   value: MsgPackValue,
   key: String,
@@ -644,6 +695,8 @@ fn decode_found(
   Ok(Found(items:, total:))
 }
 
+// The five keys of a `Site`, all required. The anchor is computed by the
+// harness, which can see `tools/hashline`; this side only carries it.
 fn decode_site(value: MsgPackValue) -> Result(Site, String) {
   use path <- result.try(wire.string_field(value, "path"))
   use line <- result.try(wire.int_field(value, "line"))
@@ -653,6 +706,7 @@ fn decode_site(value: MsgPackValue) -> Result(Site, String) {
   Ok(Site(path:, line:, column:, text:, anchor:))
 }
 
+// A site nested under `key`, as a reference or a symbol carries one.
 fn site_field(value: MsgPackValue, key: String) -> Result(Site, String) {
   use found <- result.try(wire.field(value, key))
   decode_site(found)
@@ -679,6 +733,8 @@ fn optional_text(
   }
 }
 
+// Recursive: `children` holds symbols decoded by this same function, so
+// the outline's nesting survives the wire at any depth.
 fn decode_symbol(value: MsgPackValue) -> Result(Symbol, String) {
   use name <- result.try(wire.string_field(value, "name"))
   use kind <- result.try(wire.string_field(value, "kind"))
@@ -761,6 +817,9 @@ fn decode_rename(value: MsgPackValue) -> Result(RenameReport, String) {
   }
 }
 
+// The two `decode_*` helpers below read a preview's per-file lines; the
+// landing decoder after them reads an apply's per-file outcomes. Which set
+// is read was already chosen by `decode_rename` from the answer's `mode`.
 fn decode_planned(value: MsgPackValue) -> Result(PlannedFile, String) {
   use path <- result.try(wire.string_field(value, "path"))
   use edits <- result.try(wire.int_field(value, "edits"))
