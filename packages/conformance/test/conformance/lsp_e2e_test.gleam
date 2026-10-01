@@ -275,7 +275,7 @@ fn run_code_mode(helper: String, seed: String) -> Nil {
 
   // Deep worktrees exceed the Unix socket path limit. The transport lives
   // in host scratch outside /tmp, which the satellite jail replaces.
-  let socket_parent = result.unwrap(ffi_shell.get_env("TMPDIR"), "/var/tmp/")
+  let socket_parent = "/var/tmp/"
   let socket_root =
     socket_parent <> "lsp-cap-" <> int.to_string(ffi_shell.unique_integer())
   let assert Ok(Nil) = simplifile.create_directory_all(socket_root)
