@@ -1,4 +1,4 @@
- ◆ loom demo · ~/gocode/src/github.com/roasbeef/loom/.claude/worktrees/loom-checkout-… baseten-kimi-k3 · Ctrl+g details
+ ◆ loom demo · ~/gocode/src/github.com/roasbeef/loom/.claude/worktrees/loom-checkout-… baseten-kimi-k3 · Ctrl+g details 
  transcript / main                                                                    ╭ AGENTS · ^O inspect ───────────╮
  ◇ etui input and gateway paths ready                                                 │3 · 2 working · 0 attention     │
                                                                                       │                                │
@@ -29,12 +29,12 @@
                                                                                       │                                │
                                                                                       │                                │
                                                                                       ╰────────────────────────────────╯
-                                                                                       CHANGES · /diff (not observed)
-
+                                                                                       CHANGES · /diff (not observed)   
+                                                                                                                        
 ─ To main · enter queues · tab steers                                                                                  ─
- ◒ streaming (8s)
-
+ ◒ streaming (8s)                                                                                                       
+                                                                                                                        
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  agent rail shown · baseten-kimi-k3 · ctx — · est $0.00                               3 agents · 2 working · 0 attention
-› ● main                   streaming
-  ● catalog audit          running tools
+› ● main                   streaming                                                                                    
+  ● catalog audit          running tools                                                                                

@@ -5,7 +5,7 @@ Writes one .txt grid per frame (source of truth, exact cell widths) and a
 runs JSON used by the HTML renderer.  Every row is built to an exact width
 and asserted, so a frame cannot silently drift from its claimed size.
 """
-import json, os, re, sys
+import json, os, re, sys, unicodedata
 
 """Usage: python3 A-sonnet-gen.py   (run from anywhere; writes beside itself)."""
 OUT = os.path.dirname(os.path.abspath(__file__))
@@ -794,13 +794,13 @@ def content_frame(W, H, rows_fn, title=" transcript / main "):
 
 def titled(w, title, tcls, bcls, inner_rows, foot=None, fcls="q"):
     """A code-mode style block: titled top border, left rule, closing line."""
-    top = [(" ", ""), ("╭─", bcls), (" ", "")] + [(ch, tcls) for ch in title] + [(" ", "")]
+    top = [(" ", ""), ("╭", bcls), ("─", bcls), (" ", "")] + [(ch, tcls) for ch in title] + [(" ", "")]
     top += [("─", bcls)] * (w - len(top) - 1) + [("╮", bcls)]
     out = [top[:w]]
     for r in inner_rows:
         out.append([(" ", ""), ("│", bcls), (" ", "")] + (r + blank(w))[: w - 5] + [(" ", ""), ("│", bcls)][: 2])
     if foot:
-        bot = [(" ", ""), ("╰─", bcls), (" ", "")] + [(ch, fcls) for ch in foot] + [(" ", "")]
+        bot = [(" ", ""), ("╰", bcls), ("─", bcls), (" ", "")] + [(ch, fcls) for ch in foot] + [(" ", "")]
         bot += [("─", bcls)] * (w - len(bot) - 1) + [("╯", bcls)]
     else:
         bot = [(" ", ""), ("╰", bcls)] + [("─", bcls)] * (w - 3) + [("╯", bcls)]
@@ -959,9 +959,14 @@ add("image-placeholder-80", 80, 24, content_frame(80, 24, lambda W: image_rows(W
 
 meta = {}
 for name, (W, H, grid, title) in FRAMES.items():
+    assert (W, H) in ((200, 50), (120, 40), (80, 24)), (name, W, H)
+    assert len(grid) == H, (name, "rows", len(grid), H)
+    for r in grid:
+        assert len(r) == W, (name, "cells", len(r), W)
+        assert all(len(ch) == 1 and unicodedata.east_asian_width(ch) not in "WF" for ch, _ in r), (name, "cell text")
     with open(os.path.join(OUT, P + name + ".txt"), "w") as f:
         for r in grid:
-            f.write("".join(ch for ch, _ in r).rstrip() + "\n")
+            f.write("".join(ch for ch, _ in r) + "\n")
     runs = []
     for r in grid:
         rr = []

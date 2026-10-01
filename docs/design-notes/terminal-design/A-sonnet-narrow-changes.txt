@@ -1,24 +1,24 @@
- ◆ loom   ws · pi-gui (main)                                   kimi-k3 · Ctrl+g
- Strands ●1  Changes  Trace  Session
+ ◆ loom   ws · pi-gui (main)                                   kimi-k3 · Ctrl+g 
+ Strands ●1  Changes  Trace  Session                                            
 ────────────────────────────────────────────────────────────────────────────────
- CHANGES · 3 files                                                       +14 −2
- from this session's edits
-
- ▾ calc.gleam                                                           +6 −0
-  @@ -12,3 +12,9 @@
-   pub fn add(a: Int, b: Int) -> Int {
- +pub fn subtract(a: Int, b: Int) -> Int {
- +  a - b
- +}
-   a + b
- -  // TODO
-
- ▸ README.md                                                            +8 −2
- ↑↓ file · Enter open · r refresh
- /diff shows the git worktree
+ CHANGES · 3 files                                                       +14 −2 
+ from this session's edits                                                      
+                                                                                
+ ▾ calc.gleam                                                           +6 −0   
+  @@ -12,3 +12,9 @@                                                             
+   pub fn add(a: Int, b: Int) -> Int {                                          
+ +pub fn subtract(a: Int, b: Int) -> Int {                                      
+ +  a - b                                                                       
+ +}                                                                             
+   a + b                                                                        
+ -  // TODO                                                                     
+                                                                                
+ ▸ README.md                                                            +8 −2   
+ ↑↓ file · Enter open · r refresh                                               
+ /diff shows the git worktree                                                   
 ─ To main · enter queues · tab steers ──────────────────────────────────────────
- ›
- ◒ streaming (3s) · esc to interrupt
-
- kimi-k3 · ctx ~41% · est $1.86
- F2 strands · F3 changes                     3 agents · 2 working · 1 needs you
+ ›                                                                              
+ ◒ streaming (3s) · esc to interrupt                                            
+                                                                                
+ kimi-k3 · ctx ~41% · est $1.86                                                 
+ F2 strands · F3 changes                     3 agents · 2 working · 1 needs you 

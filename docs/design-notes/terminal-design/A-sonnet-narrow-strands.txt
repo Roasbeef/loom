@@ -1,24 +1,24 @@
- ◆ loom   ws · pi-gui (main)                                   kimi-k3 · Ctrl+g
- Strands ●1  Changes  Trace  Session
+ ◆ loom   ws · pi-gui (main)                                   kimi-k3 · Ctrl+g 
+ Strands ●1  Changes  Trace  Session                                            
 ────────────────────────────────────────────────────────────────────────────────
- STRANDS · 4                                                         CACHE LEFT
-
-▌● main                                                                cache 3m
-▌  Working · code_mode
-
- ◇ advisor
-   1 nudge pending
-
- ● sub:tests                                                           cache 2m
-   Needs approval
-
- ✓ sub:docs
-   Finished 1m 12s
- ↑↓ select · Enter focus · x stop
- 1-4 tab · Esc to composer
+ STRANDS · 4                                                         CACHE LEFT 
+                                                                                
+▌● main                                                                cache 3m 
+▌  Working · code_mode                                                          
+                                                                                
+ ◇ advisor                                                                      
+   1 nudge pending                                                              
+                                                                                
+ ● sub:tests                                                           cache 2m 
+   Needs approval                                                               
+                                                                                
+ ✓ sub:docs                                                                     
+   Finished 1m 12s                                                              
+ ↑↓ select · Enter focus · x stop                                               
+ 1-4 tab · Esc to composer                                                      
 ─ To main · enter queues · tab steers ──────────────────────────────────────────
- ›
- ◒ streaming (3s) · esc to interrupt
-
- kimi-k3 · ctx ~41% · est $1.86
- F2 strands · F3 changes                     3 agents · 2 working · 1 needs you
+ ›                                                                              
+ ◒ streaming (3s) · esc to interrupt                                            
+                                                                                
+ kimi-k3 · ctx ~41% · est $1.86                                                 
+ F2 strands · F3 changes                     3 agents · 2 working · 1 needs you 
