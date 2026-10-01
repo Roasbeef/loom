@@ -96,19 +96,22 @@ pub type EunitTest {
 // Three modules and one function they share. `greet` is defined in
 // `app/util`, called twice on one line of `app/other`, and once from the
 // entry module, so a rename of it touches every file and one line twice.
-const util_source = "pub fn greet(name: String) -> String {
+const util_source =
+  "pub fn greet(name: String) -> String {
   \"Hello, \" <> name
 }
 "
 
-const other_source = "import app/util
+const other_source =
+  "import app/util
 
 pub fn twice(name: String) -> String {
   util.greet(name) <> util.greet(name)
 }
 "
 
-const app_source = "import app/other
+const app_source =
+  "import app/other
 import app/util
 
 pub fn main() -> String {
@@ -126,19 +129,22 @@ const app_call_edited = "  util.greet(\"loom\") <> other.twice(\"again\")"
 
 // What the test appends to `app/other.gleam` between the preview and the
 // apply: one more reference the preview never saw.
-const other_addition = "
+const other_addition =
+  "
 pub fn thrice(name: String) -> String {
   util.greet(name) <> twice(name)
 }
 "
 
 // The three files after the rename, byte for byte.
-const util_renamed = "pub fn welcome(name: String) -> String {
+const util_renamed =
+  "pub fn welcome(name: String) -> String {
   \"Hello, \" <> name
 }
 "
 
-const other_renamed = "import app/util
+const other_renamed =
+  "import app/util
 
 pub fn twice(name: String) -> String {
   util.welcome(name) <> util.welcome(name)
@@ -149,7 +155,8 @@ pub fn thrice(name: String) -> String {
 }
 "
 
-const app_renamed = "import app/other
+const app_renamed =
+  "import app/other
 import app/util
 
 pub fn main() -> String {
@@ -160,7 +167,8 @@ pub fn main() -> String {
 // The catalogue every Gleam session boots from. The `[lsp.gleam]` table
 // is the documented one: `gleam lsp` writes its manifest and `build/`
 // into the project, so the project is writable.
-const gleam_toml = "
+const gleam_toml =
+  "
 [models.acme]
 dialect = \"anthropic\"
 base_url = \"https://acme.test\"
@@ -523,7 +531,7 @@ pub fn lsp_gopls_end_to_end_test_() -> EunitTest {
         io.println_error(
           "SKIP lsp e2e gopls: gopls or go is not installed (" <> reason <> ")",
         )
-      Ok(#(helper_path, gopls, goroot)) -> run_gopls(helper_path, gopls, goroot)
+      Ok(#(helper_path, gopls, places)) -> run_gopls(helper_path, gopls, places)
     }
   })
 }
@@ -552,7 +560,7 @@ fn gopls_turns() -> List(script.Turn) {
   ]
 }
 
-fn run_gopls(helper_path: String, gopls: String, goroot: String) -> Nil {
+fn run_gopls(helper_path: String, gopls: String, places: GoPlaces) -> Nil {
   let rig = rig("gopls")
   let module = rig.workspace <> "/gomod"
   write(module <> "/go.mod", "module example.com/probe\n\ngo 1.21\n")
@@ -569,14 +577,11 @@ fn run_gopls(helper_path: String, gopls: String, goroot: String) -> Nil {
 
   // `gopls` shells out to `go`, whose toolchain it must read, and writes
   // its build and file caches under the user cache directory. Each is a
-  // root the operator lists, and the paths come from `go env` rather than
-  // being spelled: the cache directory is `~/.cache` on Linux but
-  // `~/Library/Caches` on macOS, and a jail that grants the wrong one leaves
-  // `go list` unable to write, so `gopls` loads no packages and every
-  // definition comes back empty.
-  let gocache = string.trim(ffi_shell.os_cmd("go env GOCACHE"))
-  let gomodcache = string.trim(ffi_shell.os_cmd("go env GOMODCACHE"))
-  let gopls_cache = parent_directory(gocache) <> "/gopls"
+  // root the operator lists (see `go_places` for where the paths come
+  // from), and a jail that grants the wrong cache leaves `go list` unable
+  // to write, so `gopls` loads no packages and every definition comes back
+  // empty.
+  let gopls_cache = parent_directory(places.cache) <> "/gopls"
   let toml = "
 [models.acme]
 dialect = \"anthropic\"
@@ -593,8 +598,8 @@ main = [\"acme\"]
 command = [\"" <> gopls <> "\", \"serve\"]
 extensions = [\".go\"]
 root_markers = [\"go.mod\"]
-readable = [\"" <> goroot <> "\", \"" <> gomodcache <> "\"]
-writable = [\"" <> gocache <> "\", \"" <> gopls_cache <> "\"]
+readable = [\"" <> places.root <> "\", \"" <> places.module_cache <> "\"]
+writable = [\"" <> places.cache <> "\", \"" <> gopls_cache <> "\"]
 env = [\"GOFLAGS\", \"GOTOOLCHAIN\"]
 "
   let messages =
@@ -833,6 +838,7 @@ fn settings(
     ),
     codemode_seed: rig.root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
+    codemode_sockets: None,
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
@@ -852,38 +858,103 @@ fn settings(
 // ripgrep before asking the server, so ripgrep is as much a prerequisite
 // here as `gleam` is.
 fn gleam_prerequisites() -> Result(String, String) {
-  case ffi_shell.find_executable("gleam"), ffi_shell.find_executable("rg") {
+  case jail.find_executable("gleam"), jail.find_executable("rg") {
     Error(Nil), _ -> Error("gleam is not on PATH")
     Ok(_gleam), Error(Nil) -> Error("ripgrep (rg) is not on PATH")
-    Ok(_gleam), Ok(_rg) -> jail.build_helper()
+    Ok(_gleam), Ok(_rg) -> jail.prebuilt_helper()
   }
 }
 
-// The helper, `go` (which `gopls` shells out to) and its root, and `gopls`
-// on `PATH` or where `go install` puts it.
-fn go_prerequisites() -> Result(#(String, String, String), String) {
-  case ffi_shell.find_executable("go") {
-    Error(Nil) -> Error("go is not on PATH")
-    Ok(_go) -> {
-      let goroot = string.trim(ffi_shell.os_cmd("go env GOROOT"))
-      let installed =
-        string.trim(ffi_shell.os_cmd("go env GOPATH")) <> "/bin/gopls"
-      let gopls = case ffi_shell.find_executable("gopls") {
-        Ok(found) -> Ok(found)
-        Error(Nil) ->
-          case simplifile.is_file(installed) {
-            Ok(True) -> Ok(installed)
-            Ok(False) | Error(_) -> Error("gopls was not found")
-          }
+// Where the Go toolchain keeps what `gopls` reads and writes.
+type GoPlaces {
+  GoPlaces(root: String, path: String, cache: String, module_cache: String)
+}
+
+// The helper, `go` (which `gopls` shells out to), the places its toolchain
+// and caches live, and `gopls` on `PATH` or where `go install` puts it.
+fn go_prerequisites() -> Result(#(String, String, GoPlaces), String) {
+  use go <- result.try(
+    jail.find_executable("go")
+    |> result.replace_error("go is not on PATH"),
+  )
+  use places <- result.try(go_places(go))
+  let installed = places.path <> "/bin/gopls"
+  use gopls <- result.try(case jail.find_executable("gopls") {
+    Ok(found) -> Ok(found)
+    Error(Nil) ->
+      case simplifile.is_file(installed) {
+        Ok(True) -> Ok(installed)
+        Ok(False) | Error(_) -> Error("gopls was not found")
       }
-      case gopls, string.starts_with(goroot, "/") {
-        Ok(gopls), True ->
-          jail.build_helper()
-          |> result.map(fn(helper) { #(helper, gopls, goroot) })
-        Error(reason), _ -> Error(reason)
-        Ok(_gopls), False -> Error("go env GOROOT is not absolute")
+  })
+  jail.prebuilt_helper()
+  |> result.map(fn(helper) { #(helper, gopls, places) })
+}
+
+// The places `go env` would report, read from the environment `go` itself
+// reads and the defaults it falls back to, because a shell command to ask
+// it would be a custom external for a question the filesystem answers.
+// `GOROOT` falls back to the directory above the `bin` holding `go`, which
+// is where a toolchain unpacks, and is refused unless it holds the
+// standard library's sources. A toolchain reached through a link, such as
+// Homebrew's, names its root in `GOROOT` or skips the variant. The build
+// cache is the first of the per-platform defaults that exists, since the
+// cache directory is `~/.cache` on Linux and `~/Library/Caches` on macOS,
+// and a jail that grants the wrong one leaves `go list` unable to write.
+fn go_places(go: String) -> Result(GoPlaces, String) {
+  let home = absolute_env("HOME")
+  let path =
+    absolute_env("GOPATH")
+    |> result.try(fn(listed) {
+      string.split(listed, ":") |> list.first |> result.replace_error(Nil)
+    })
+    |> result.lazy_or(fn() { result.map(home, fn(h) { h <> "/go" }) })
+  use root <- result.try(
+    absolute_env("GOROOT")
+    |> result.lazy_or(fn() {
+      case string.ends_with(go, "/bin/go") {
+        True -> Ok(string.drop_end(go, 7))
+        False -> Error(Nil)
       }
-    }
+    })
+    |> result.try(fn(candidate) {
+      case simplifile.is_directory(candidate <> "/src/runtime") {
+        Ok(True) -> Ok(candidate)
+        Ok(False) | Error(_) -> Error(Nil)
+      }
+    })
+    |> result.replace_error("GOROOT is not set and go's root cannot be derived"),
+  )
+  use path <- result.try(result.replace_error(
+    path,
+    "neither GOPATH nor HOME is set",
+  ))
+  let module_cache =
+    absolute_env("GOMODCACHE")
+    |> result.unwrap(path <> "/pkg/mod")
+  let defaults =
+    [
+      absolute_env("XDG_CACHE_HOME"),
+      home |> result.map(fn(h) { h <> "/Library/Caches" }),
+      home |> result.map(fn(h) { h <> "/.cache" }),
+    ]
+    |> list.filter_map(fn(base) { result.map(base, fn(b) { b <> "/go-build" }) })
+    |> list.find(fn(candidate) {
+      simplifile.is_directory(candidate) == Ok(True)
+    })
+  use cache <- result.try(
+    absolute_env("GOCACHE")
+    |> result.lazy_or(fn() { defaults })
+    |> result.replace_error("GOCACHE is not set and no go-build cache exists"),
+  )
+  Ok(GoPlaces(root:, path:, cache:, module_cache:))
+}
+
+// An environment variable that holds an absolute path, or nothing.
+fn absolute_env(name: String) -> Result(String, Nil) {
+  case ffi_shell.get_env(name) {
+    Ok("/" <> _ as value) -> Ok(value)
+    Ok(_) | Error(Nil) -> Error(Nil)
   }
 }
 
