@@ -19,6 +19,31 @@
 //// This module is test infrastructure: `let assert` appears here (as in
 //// `conformance/storage_suite`) for the fixtures a run cannot proceed
 //// without.
+////
+//// ## Flow
+////
+//// `check` → `plan` → `execute` → `drive_ops` → `admit` → `pump` → `verify` →
+//// `judge` → `adjudicate` → `shrink`
+////
+//// 1. `run`, `examine` and `check` are the entries; `check` asks `plan` for the
+////    seed's script, its fault schedule and the fault-free `Report`, whose
+////    commit count bounds where the schedule's faults may land.
+//// 2. `execute` builds one session in memory with a logical clock and the
+////    control actor, arms it, and opens the runtime; it is called once without
+////    faults and once under the schedule.
+//// 3. `drive_ops` takes the script's operations in order: `admit` gets one
+////    accepted through whatever the schedule is doing, `ring` wakes the strand,
+////    and `pump` drives it to a terminal result, advancing logical time when
+////    the event counter stops moving.
+//// 4. `drive_subagent` runs the scripted subagent coda, and `settle_seam` waits
+////    for the writer's post-commit seam before `execute` reads the story into a
+////    `Report`.
+//// 5. `verify` runs the faulted execution and hands both reports to `judge`;
+////    `adjudicate` applies the invariant checks, then compares outcomes,
+////    projection and ledger.
+//// 6. On a failure, `corroborate` re-plans the same seed to say whether it is
+////    stable, and only then does `shrink` search smaller schedules through
+////    `first_failing`.
 
 import conformance/simulation/control.{type Control}
 import conformance/simulation/fault.{type Schedule}

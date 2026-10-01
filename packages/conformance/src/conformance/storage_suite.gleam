@@ -18,6 +18,27 @@
 //// appear here despite living under `src` — the suite must be
 //// importable by backend packages' own test mains as well as this
 //// package's.
+////
+//// ## Flow
+////
+//// `run` → `atomicity_checks` → `seq_checks` → `register_checks` →
+//// `cas_checks` → `branch_index_checks` → `close_checks`
+////
+//// 1. `run` is the only entry. It takes a `Backend` and runs twelve check
+////    groups against fresh sessions, in the order the contract is built up, and
+////    the first violated clause stops the run through the assert keyword.
+//// 2. `atomicity_checks`, `seq_checks`, `write_order_checks` and
+////    `duplicate_id_checks` cover the commit itself: all-or-none, strictly
+////    increasing seqs, order within a transaction and the shared id namespace.
+//// 3. `register_checks` and `cas_checks` cover the registers and the
+////    compare-and-set expectation matrix.
+//// 4. `placement_checks`, `branch_scan_checks` and `branch_index_checks` cover
+////    reads: placement patterns, branch scans with `page_through`, and the
+////    branch-index invariant that every tip's scan reproduces its ancestor chain.
+//// 5. `entry_scan_checks` and `usage_scan_checks` cover the session-wide scans,
+////    and `close_checks` ends with close semantics.
+//// 6. Each group opens its own session through `Backend.open` and builds
+////    fixtures from `new_ctx`, `mint` and `message`, so groups share no state.
 
 import core/clock
 import core/entry.{
