@@ -4877,6 +4877,10 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   the same manager to every door. `stop` asks the manager to shut down and
   waits, in the caller and bounded by `Timing.previous_ms`, for the
   server's keeper to finish its graceful stop.
+  The module doc carries a `## Flow` spine and the transition tables for
+  the manager's `Phase` (`Idle`, `Starting`, `Running`) and the keeper's
+  `KeeperPhase` (`AwaitingPrevious`, `Beginning`, `Holding`); the state,
+  message and keeper types sit before the first function.
 - `client/lsp/resolve.{Identity, Owned, Unowned, Symbol, owner, admit,
   same, display, split_symbol, cased, satisfies, named, container,
   outline, site}` — the pure half: which `{server, root}` owns a path
@@ -4935,6 +4939,9 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   policy, since bwrap refuses a writable bind whose source is missing.
   `call_spec(jail, op, now_ms:, demand:)` takes the demand from its
   caller: the session's, which the probe proved.
+  The transport's relay is a state machine over `Clearing`, `Relaying`,
+  `Closing`, `Aborting` and `Draining`; its transition table, and a list
+  of the attack each containment rule stops, are in the module doc.
 - **Invariant: a server's executable region is directories, never an
   install prefix.** `locate` reads the executable without following it
   (`tools/fs.real_filesystem().read_link`, the existing
