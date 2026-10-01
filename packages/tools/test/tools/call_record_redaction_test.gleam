@@ -130,6 +130,20 @@ pub fn a_job_start_summarises_to_the_first_token_of_its_command_test() {
   never_contains(record_text(session), [secret])
 }
 
+pub fn a_job_start_skips_inline_assignments_test() {
+  let one = captured(fn() { job.start("API_KEY=" <> secret <> " ./deploy") })
+  assert summary(one) == Some("./deploy")
+  never_contains(record_text(one), [secret, "API_KEY"])
+
+  let two = captured(fn() { job.start("A=1 B=2 make") })
+  assert summary(two) == Some("make")
+
+  let only = captured(fn() { job.start("X=" <> secret) })
+  assert only.0 == "job.start"
+  assert summary(only) == None
+  never_contains(record_text(only), [secret, "X="])
+}
+
 pub fn job_calls_summarise_to_their_job_id_only_test() {
   let assert Ok(id) = job.parse_job_id("job-one")
   let poll = captured(fn() { job.poll(id, 0, job.from_start()) })

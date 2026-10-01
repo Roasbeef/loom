@@ -287,7 +287,7 @@ by default, because their argument shapes are not known to the host.
 |---|---|
 | `fs.read`, `fs.write`, `fs.edit`, `fs.list` | the `path` argument only |
 | `proc.run` | basename of `argv[0]`, then ` +N args`; `cwd`, `env` and `stdin` are not read |
-| `job.start` | the first whitespace-separated token of `command`, then nothing |
+| `job.start` | the first whitespace-separated token of `command` that is not an inline assignment (a token containing `=`); none if every token is one |
 | `job.poll`, `job.kill`, `job.send` | the `job_id` argument only |
 | `kv.get`, `kv.set`, `kv.delete` | the `key` argument only |
 | everything else | none |
