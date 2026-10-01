@@ -84,6 +84,15 @@ compiles only the generated modules the submitted program imports.
   generated source is capped at 524,288 bytes and the full surface at
   65,536 bytes. Aggregate overruns refuse the server; per-field depth
   fallback keeps the surrounding structure.
+- **Generated identities are construction-owned.** Trusted tool, direction,
+  node and variant ordinals precede every descriptive suffix. The suffix is
+  capped at 64 ASCII characters; clipping cannot alias declarations, and
+  resulting BEAM atoms remain below 255 bytes. Exact enum wire literals stay
+  in both the encoder and declaration comments.
+- **Rendered unions preserve their proof.** `schema.branches_disjoint` checks
+  the rendered child shapes, after field-name fallback. A lost discriminator
+  makes the whole union a raw value; unrelated fallback does not erase a
+  discriminator that still proves exclusive branches.
 - **Source and surface describe the same types.** `internal/typed_codegen`
   derives declarations, options constants, encoders and total output decoders
   from one plan. Optional defaults omit keys so the server applies its own

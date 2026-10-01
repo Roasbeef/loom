@@ -11,13 +11,23 @@ model discovered the generated API through `cap://mcp/jev`, submitted a
 Choice query to code mode, and received the Jev fixture's answer. The
 hermetic build, satellite, MCP process and HTTP adapter all ran. A fresh
 credited snapshot retained the completed tool result and final assistant
-response; authenticated daemon shutdown exited zero. The live Jev service
-remains untested because no API key was available.
+response; authenticated daemon shutdown exited zero. That earlier run used a dummy credential and a local HTTP fixture. Live
+Jev authentication and inference now pass through both installed Loom and
+the typed-generation shipment, using the installed self-contained Jevelin
+bundle at `18ab557`. The service identifies itself as `jev-1.13.0` and
+returns `logs` with confidence 1.0 and usage 324/31. Each isolated daemon
+retains the completed result and exits zero after authenticated cleanup;
+the credential remains outside model requests and configuration. Evidence
+is in `build/jev-live-20261001-150405` and
+`build/jev-live-20261001-151059`. A fresh session in the normal running
+daemon also passes the live query; `build/jev-live-20261001-151240` records
+its completed durable result and cleanup to saved state, preserving the
+daemon and existing sessions. The enabled Stop hook added one model turn.
 
-The next MCP verification step is the walkthrough against live Jev once a
-credential is available. Its exit criterion is a completed code-mode call
-with a valid decoded Jev answer and a persisted tool result. Keep the key
-in daemon environment configuration. Resources, prompts and Loom HTTP
+The normal daemon needs a newly assembled session to discover an installed
+MCP server; existing resident sessions keep their previous generated modules.
+Keep the key in daemon environment configuration or its command-backed
+secret store. Resources, prompts and Loom HTTP
 transport configuration remain separate scope.
 
 The validation history below belongs to the exact heads and runs it names.
@@ -49,18 +59,40 @@ distinguishes the earlier #669 integration proof from the typed program.
 The exact typed Choice program passed through a fresh production daemon on
 October 1, 2026: `fs_read` discovery, jailed compilation, satellite execution,
 Jevelin MCP, one HTTP fixture request, typed output decoding and a durable
-structured outcome. The run exited zero; `build/typed-jev-daemon-e2e.log` retains its output; evidence is retained in `build/jev-e2e-20261001-140558`.
+structured outcome. The run exited zero; `build/typed-reviewed-jev-daemon-e2e.log` retains its output; evidence is retained in `build/jev-e2e-20261001-144704`.
 The dummy credential stayed confined and authenticated cleanup exited zero.
-The focused native client suite passed six cases covering nested options
+The program in the guide matches the tested source byte for byte.
+The focused native client suite passed eight cases covering nested options
 and null presence, typed output, retained mismatch text/path, and compiler
 rejection of malformed enum/options/nested input before any tool call. The
 complete GitHub-shaped facade compiles in the jail, and the documented
-structured example runs unchanged.
+structured example runs unchanged. A schema-valid nested union result also
+survives a rendering fallback without an ambiguous decoder failure.
+
+The independent review reproduced three issues: constructor names whose
+semantic fragments imitated ordinals, a union discriminator lost during
+nested fallback, and an unused payload hidden by module-alias references.
+`832f17a2` fixes them with trusted ordinal prefixes, rendered-shape
+exclusivity checks and encoder-owned payload usage. The scoped independent
+recheck compiled all three original reproductions without warnings and
+decoded the valid union result unchanged. The final MCP suite passes all
+117 tests with zero lint errors. Generated display suffixes are capped at
+64 ASCII characters without changing wire literals or declaration identity.
+
+The complete local `make check` passed at the earlier `cb2effa5` head, with
+zero lint errors. Its own exit code is recorded in
+`build/typed-full-check-status.json`; that gate does not prove later review
+fixes. The current real code-mode suite passed all 26 tests, with the
+Linux-only process-retirement case feature-skipped on macOS.
+
 macOS Seatbelt filesystem/network enforcement was active; resource and
 lifecycle enforcement remained degraded. Live Jev authentication and
-inference remain untested. Full-gate and hosted-CI claims still belong to
+inference now pass in the separate runs recorded above. Full-gate and hosted-CI claims still belong to
 the exact final head and runs recorded with its pull request; the historical
-results below do not prove the new generator.
+results below do not prove the new generator. The affected full client gate
+passed all 2,614 tests after the review fixes. The subsequent official Go SDK
+v1.7.0 capture regression also passes in the real jail; its provenance pins
+the actual SDK-generated nullable input/output schemas.
 
 ## Extraction rebase history
 

@@ -52,6 +52,9 @@ dispatcher is introduced.
 The generation invariants remain local: every wire name is escaped verbatim,
 server descriptions stay in bounded doc comments, an unexpected attribute
 refuses generation, and schema, source and surface budgets bound generation.
+Trusted ordinal prefixes own generated type and constructor identity.
+Bounded descriptive suffixes keep names within the BEAM atom limit. Union
+decoders are emitted only while rendered branches remain structurally disjoint.
 MessagePack integer, binary and map-key disagreements are settled by total
 conversion errors, never guessed encodings.
 
@@ -62,6 +65,11 @@ protocol, framing, client, transport and custody suites. Loom's client tests
 still drive the production library over both a scripted channel and a real
 stdio fixture; its code-mode E2E compiles a generated facade inside the jail
 and calls the fixture through the capability wire.
+
+The official Go SDK fixture is captured output from typed Go structs, with
+its pinned SDK version and reproduction commands in
+[test/mcp/fixtures/go_sdk_provenance.md](test/mcp/fixtures/go_sdk_provenance.md).
+The client suite compiles its facade and decodes its nested output in the jail.
 
 [The package reference](CLAUDE.md) records types and invariants.
 [The MCP architecture](../../docs/architecture/mcp.md) follows the complete

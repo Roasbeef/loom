@@ -15,7 +15,7 @@ build and satellite.
 
 ## Build the MCP server
 
-Jevelin MCP requires Gleam >= 1.18 and Erlang/OTP >= 29:
+Building Jevelin MCP requires Gleam >= 1.18 and Erlang/OTP >= 29:
 
 ```sh
 git clone https://github.com/Roasbeef/jevelin-mcp.git
@@ -25,6 +25,15 @@ make release
 
 `bin/jevelin-mcp` runs the compiled shipment. Its stdout contains MCP
 frames, so Loom must launch that executable rather than a build command.
+For a launcher installed outside the checkout, the PATH installer in
+[Jevelin MCP PR #1](https://github.com/Roasbeef/jevelin-mcp/pull/1) adds
+`make install`, defaulting to `~/.local/bin/jevelin-mcp`. It bundles ERTS
+and the OTP applications and boots from its own absolute runtime paths.
+The installed server needs no host Erlang installation and does not select
+`erl` through the daemon's `PATH`. Use that absolute path in `command`
+after installation. `make release` builds the shipment
+without publishing a launcher onto PATH.
+
 The server consumes its Gleam libraries through pinned Git dependencies;
 this setup does not require publishing them to Hex.
 
@@ -107,7 +116,13 @@ produces `mcp.unavailable` with the server name and reason. Missing credentials,
 an unbuilt shipment, or an unavailable code-mode toolchain prevent discovery.
 Configuration changes take effect when a new session runtime boots; existing
 resident sessions retain their generated modules. Relaunch the test daemon
-to pick up changed environment variables.
+to pick up changed environment variables. Exporting a key in a new terminal
+does not change the environment of an already-running daemon. A configured
+server whose credential cannot be resolved has no generated module; its
+`mcp.unavailable` log entry records the cause. The model currently sees the
+missing module without that startup reason, so an absent `cap://mcp/jev`
+is not proof that the TOML entry is missing. Check discovery before treating
+a `cap/proc` command as a Jev integration test.
 
 ## Discover the generated API
 
@@ -135,10 +150,10 @@ The typed Choice signature is:
 
 ```gleam
 pub fn jev_choice(
-  state: JevChoiceT1InputStateN1,
-  choices: List(JevChoiceT1InputChoicesItemN6),
-  options: JevChoiceT1Options,
-) -> Result(JevChoiceT1OutputResultN0, mcp.McpError)
+  state: McpT1InputN1JevChoiceState,
+  choices: List(McpT1InputN6JevChoiceChoicesItem),
+  options: McpT1OptionsJevChoice,
+) -> Result(McpT1OutputN0JevChoiceResult, mcp.McpError)
 ```
 
 The API read declares every type named in that signature. The Choice state
@@ -194,21 +209,21 @@ import gleam/option.{None, Some}
 /// This entry point is run by Loom's code-mode satellite.
 pub fn main() -> report.Outcome {
   let choices = [
-    jev.JevChoiceT1InputChoicesItemN6(label: "logs", description: None),
-    jev.JevChoiceT1InputChoicesItemN6(label: "tests", description: None),
+    jev.McpT1InputN6JevChoiceChoicesItem(label: "logs", description: None),
+    jev.McpT1InputN6JevChoiceChoicesItem(label: "tests", description: None),
   ]
 
-  let options = jev.JevChoiceT1Options(
+  let options = jev.McpT1OptionsJevChoice(
     ..jev.jev_choice_defaults,
     instructions: Some(Some(
-      jev.JevChoiceT1InputInstructionsItemN15Branch0(
+      jev.McpT1InputN15V0BranchJevChoiceInstructionsItem(
         "Choose the most relevant next action.",
       ),
     )),
   )
 
   case jev.jev_choice(
-    state: jev.JevChoiceT1InputStateN1Branch0(
+    state: jev.McpT1InputN1V0BranchJevChoiceState(
       "The user wants to inspect a failed build.",
     ),
     choices: choices,
@@ -301,6 +316,33 @@ The fixture's successful response contains:
 
 ## Validation boundary
 
+On October 1, 2026, live Jev authentication and inference passed through
+both the installed Loom distribution at `f84842d` and the typed-generation
+shipment after `832f17a2`. Both launched the installed self-contained
+Jevelin bundle at `18ab557`, discovered `cap://mcp/jev`, compiled the query
+in the jail, executed it through the satellite and retained the completed
+result in an authenticated session snapshot. The live service answered as
+`jev-1.13.0`, chose `logs` with confidence `1.0`, and reported 324 input and
+31 output tokens. A scripted local model submitted the program; Jev itself
+was live. Authenticated cleanup exited zero for each isolated daemon.
+The real credential remained outside model requests and stored configuration.
+Evidence is retained in `build/jev-live-20261001-150405` for installed Loom
+and `build/jev-live-20261001-151059` for typed Loom. Their own commands exited
+zero; logs are `build/installed-live-jev-e2e.log` and
+`build/typed-live-jev-e2e.log`.
+
+
+A fresh session in the operator's already-running normal daemon also
+passed discovery and the live Choice query with the installed launcher.
+Its authenticated snapshot contained exactly one completed `code_mode`
+execution. The enabled Stop hook added one model continuation, so this run
+made four model calls with tools and one maintenance call. Cleanup stopped
+only the verification session and confirmed its saved state; the normal
+daemon and existing sessions were preserved. The command exited zero, with
+evidence in `build/jev-live-20261001-151240` and log
+`build/normal-live-jev-e2e.log`. This verifies the daemon launch environment
+that previously selected Loom's incomplete generic Erlang boot path.
+
 On October 1, 2026, the typed-generation worktree ran the exact program
 above through a fresh production Loom daemon. A scripted local model read
 `cap://mcp/jev` through `fs_read`, submitted the program to code mode, and
@@ -313,18 +355,21 @@ The run made one Jev HTTP request. It made three main model calls and one
 tool-free maintenance call. The dummy credential stayed confined to the
 configured server/HTTP exchange, and authenticated daemon cleanup exited
 zero. The run's own command exited zero; its log is
-`build/typed-jev-daemon-e2e.log` and its retained evidence is
-`build/jev-e2e-20261001-140558`. Both sandbox stages reported active macOS
+`build/typed-reviewed-jev-daemon-e2e.log` and its retained evidence is
+`build/jev-e2e-20261001-144704`. Both sandbox stages reported active macOS
 Seatbelt filesystem and network enforcement, with degraded memory/process
 resource limits and process lifecycle enforcement. This is a local-fixture
-proof; live Jev authentication and inference remain untested.
+proof; the separate live-service results are recorded above.
 
-The focused native client suite also passed six typed-generation cases:
+The focused native client suite also passed eight typed-generation cases:
 nested options retain exact wire keys and null presence, structured answers
 decode into typed values, schema mismatch retains text and its failure path,
 and wrong enums/options/nested inputs fail compilation before any tool call.
-The complete GitHub-shaped listing compiles warning-free in the jail, and
-the architecture guide example executes unchanged. These results do not claim a full gate or hosted CI for the final head.
+A schema-valid union result survives fallback of its nested discriminator
+as a raw value. The complete GitHub-shaped listing compiles warning-free in
+the jail, and the architecture guide example executes unchanged. An actual
+Go SDK-generated listing also sends nested inputs and decodes its nested
+result through the real jail, preserving SDK nullability. These results do not claim a full gate or hosted CI for the final head.
 
 The earlier raw-value integration proof is retained below under the exact
 heads that produced it.

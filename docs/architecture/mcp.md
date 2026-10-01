@@ -266,54 +266,56 @@ not a captured response from a live Ashby server. Configured as
 `[mcp.structured]`, its generated surface includes these declarations:
 
 ```gleam
-pub type ListApplicationsT1InputFilterN2 {
-  ListApplicationsT1InputFilterN2(region: String, tags: List(String))
+pub type McpT1InputN2ListApplicationsFilter {
+  McpT1InputN2ListApplicationsFilter(region: String, tags: List(String))
 }
 
-pub type ListApplicationsT1InputStatusN6 {
-  ListApplicationsT1InputStatusN6ActiveV0
-  ListApplicationsT1InputStatusN6HiredV1
-  ListApplicationsT1InputStatusN6ArchivedV2
-  ListApplicationsT1InputStatusN6LeadV3
+pub type McpT1InputN6ListApplicationsStatus {
+  McpT1InputN6V0ListApplicationsStatusActive
+  McpT1InputN6V1ListApplicationsStatusHired
+  McpT1InputN6V2ListApplicationsStatusArchived
+  McpT1InputN6V3ListApplicationsStatusLead
 }
 
-pub type ListApplicationsT1Options {
-  ListApplicationsT1Options(
-    status: Option(ListApplicationsT1InputStatusN6),
+pub type McpT1OptionsListApplications {
+  McpT1OptionsListApplications(
+    status: Option(McpT1InputN6ListApplicationsStatus),
     cursor: Option(Option(String)),
     limit: Option(Int),
-    include_archived: Option(ListApplicationsT1InputIncludeArchivedN10),
+    include_archived: Option(McpT1InputN10ListApplicationsIncludeArchived),
   )
 }
 
 pub const list_applications_defaults =
-  ListApplicationsT1Options(
+  McpT1OptionsListApplications(
     status: None, cursor: None, limit: None, include_archived: None,
   )
 
-pub type ListApplicationsT1OutputResultN0 {
-  ListApplicationsT1OutputResultN0(
-    results: List(ListApplicationsT1OutputResultN0ResultsItemN2),
+pub type McpT1OutputN0ListApplicationsResult {
+  McpT1OutputN0ListApplicationsResult(
+    results: List(McpT1OutputN2ListApplicationsResultResultsItem),
     next_cursor: Option(Option(String)),
   )
 }
 
 pub fn list_applications(
   job_id: String,
-  filter: ListApplicationsT1InputFilterN2,
-  options: ListApplicationsT1Options,
-) -> Result(ListApplicationsT1OutputResultN0, mcp.McpError)
+  filter: McpT1InputN2ListApplicationsFilter,
+  options: McpT1OptionsListApplications,
+) -> Result(McpT1OutputN0ListApplicationsResult, mcp.McpError)
 ```
 
 This is an excerpt; the complete API read also declares the result item,
-its status enum and the input/output boolean types. Generated names combine
-the tool name, its ordinal in the sorted listing and the schema path. The
-suffixes distinguish declarations that would otherwise collide. Read the
-current API rather than carrying names from an older listing into a session.
+its status enum and the input/output boolean types. Generated names start
+with trusted tool, input/output, node and variant ordinals. A readable tool/schema label follows that prefix, capped at 64 ASCII
+characters so even deep declarations remain within the BEAM atom limit.
+The ordinal prefix owns identity; server-supplied labels cannot imitate it.
+Read the current API rather than carrying names from an older listing into
+a session. Enum declarations also document their exact wire literals.
 
 In Gleam, these generated types with one variant and named fields are
-records, and their constructors have the same names as their types. `ListApplicationsT1InputFilterN2(...)` constructs the
-filter, and `found.results` reads a returned record field. `Some(value)`
+records, and their constructors have the same names as their types.
+`McpT1InputN2ListApplicationsFilter(...)` constructs the filter, and `found.results` reads a returned record field. `Some(value)`
 supplies an optional value; `None` omits it. The program starts with the
 omission constant and uses record-update syntax to select only the fields
 it needs:
@@ -326,12 +328,12 @@ import gleam/list
 import gleam/option.{Some}
 
 pub fn main() -> report.Outcome {
-  let filter = applications.ListApplicationsT1InputFilterN2(
+  let filter = applications.McpT1InputN2ListApplicationsFilter(
     region: "us", tags: ["engineering"],
   )
-  let options = applications.ListApplicationsT1Options(
+  let options = applications.McpT1OptionsListApplications(
     ..applications.list_applications_defaults,
-    status: Some(applications.ListApplicationsT1InputStatusN6ActiveV0),
+    status: Some(applications.McpT1InputN6V0ListApplicationsStatusActive),
     limit: Some(100),
   )
 
@@ -369,6 +371,16 @@ round trips and eleven bodies in the conversation. As a program, it is
 one execution that returns four numbers, a list of pairs, and a
 reference to a table the model can fetch if it needs one.
 
+The second integration fixture, `packages/mcp/test/mcp/fixtures/go_sdk.json`,
+was captured over stdio from the official Go MCP SDK v1.7.0. The SDK inferred
+input and output schemas from concrete Go structs; the fixture preserves its
+closed objects, nullable slices and optional nullable pointer fields. Its
+[provenance](../../packages/mcp/test/mcp/fixtures/go_sdk_provenance.md) pins
+the SDK commit, runnable server, capture commands and exact wire responses.
+The application data is synthetic. The client regression compiles this
+facade in the real jail, sends nested typed inputs, and reads a nested stage
+from the decoded result. No Go toolchain is needed to consume the fixture.
+
 ### The surface it was written against
 
 `packages/mcp/test/mcp/fixtures/github.gleam` is a checked-in ten-tool
@@ -377,41 +389,41 @@ types and signatures from it (wrapped here for readability). The complete
 API read includes the other tools and their declarations.
 
 ```gleam
-pub type GetIssueT5Options {
-  GetIssueT5Options
+pub type McpT5OptionsGetIssue {
+  McpT5OptionsGetIssue
 }
 
-pub const get_issue_defaults = GetIssueT5Options
+pub const get_issue_defaults = McpT5OptionsGetIssue
 
-pub type ListIssuesT7InputStateN3 {
-  ListIssuesT7InputStateN3OpenV0
-  ListIssuesT7InputStateN3ClosedV1
-  ListIssuesT7InputStateN3AllV2
+pub type McpT7InputN3ListIssuesState {
+  McpT7InputN3V0ListIssuesStateOpen
+  McpT7InputN3V1ListIssuesStateClosed
+  McpT7InputN3V2ListIssuesStateAll
 }
 
-pub type ListIssuesT7Options {
-  ListIssuesT7Options(
-    state: Option(ListIssuesT7InputStateN3),
+pub type McpT7OptionsListIssues {
+  McpT7OptionsListIssues(
+    state: Option(McpT7InputN3ListIssuesState),
     labels: Option(List(String)),
-    sort: Option(ListIssuesT7InputSortN6),
-    direction: Option(ListIssuesT7InputDirectionN7),
+    sort: Option(McpT7InputN6ListIssuesSort),
+    direction: Option(McpT7InputN7ListIssuesDirection),
     since: Option(String),
     page: Option(Float),
     per_page_77879bba: Option(Float),
   )
 }
 
-pub const list_issues_defaults = ListIssuesT7Options(
+pub const list_issues_defaults = McpT7OptionsListIssues(
   state: None, labels: None, sort: None, direction: None,
   since: None, page: None, per_page_77879bba: None,
 )
 
 pub fn get_issue(
-  owner: String, repo: String, issue_number: Int, options: GetIssueT5Options,
+  owner: String, repo: String, issue_number: Int, options: McpT5OptionsGetIssue,
 ) -> Result(mcp.ToolResult, mcp.McpError)
 
 pub fn list_issues(
-  owner: String, repo: String, options: ListIssuesT7Options,
+  owner: String, repo: String, options: McpT7OptionsListIssues,
 ) -> Result(mcp.ToolResult, mcp.McpError)
 ```
 
@@ -502,9 +514,9 @@ fn triage() -> Result(report.Outcome, String) {
     github.list_issues(
       owner: owner,
       repo: repo,
-      options: github.ListIssuesT7Options(
+      options: github.McpT7OptionsListIssues(
         ..github.list_issues_defaults,
-        state: option.Some(github.ListIssuesT7InputStateN3OpenV0),
+        state: option.Some(github.McpT7InputN3V0ListIssuesStateOpen),
         per_page_77879bba: option.Some(100.0),
       ),
     )
@@ -865,15 +877,15 @@ characters are all that keep them two functions rather than one. The
 generated function for the second row reads:
 
 ```gleam
-pub type CreateIssue48f762e0T0Options {
-  CreateIssue48f762e0T0Options
+pub type McpT0OptionsCreateIssue48f762e0 {
+  McpT0OptionsCreateIssue48f762e0
 }
 
-pub const create_issue_48f762e0_defaults = CreateIssue48f762e0T0Options
+pub const create_issue_48f762e0_defaults = McpT0OptionsCreateIssue48f762e0
 
 pub fn create_issue_48f762e0(
   title title: String,
-  options _options: CreateIssue48f762e0T0Options,
+  options _options: McpT0OptionsCreateIssue48f762e0,
 ) -> Result(mcp.ToolResult, mcp.McpError) {
   internal.invoke(
     "fixture",
@@ -972,12 +984,23 @@ success. Transport refusals and `ToolFailed` keep their existing meanings.
 | schema JSON nesting | 32 levels | `SchemaTooLarge`; the server is refused whole |
 | recursive typed shape nesting | 12 levels | the deeper field becomes an explicit raw-value fallback |
 | structural `oneOf` alternatives | 32 branches per union | The field falls back to `report.Value` |
+| generated type/variant display suffix | 64 ASCII characters | clipping preserves the trusted identity prefix |
 | generated source | 512 KiB | `SourceTooLarge`; the server is refused whole |
 | rendered surface | 64 KiB | `SurfaceTooLarge`; the server is refused whole |
 | `tools/list` pages | 64 | `TooManyPages`; the listing fails |
 | one JSON-RPC line | 16 MiB | `LineTooLong`, and the client latches dead |
 | one `cap_result` | the cap channel's frame cap, less a 64 KiB envelope margin | the call is refused `mcp_malformed` |
 | result nesting | msgpack's `max_depth`, less the two containers the frame adds | the call is refused `mcp_malformed` |
+
+Against the checked-in ten-tool GitHub-shaped listing, source grows from
+9,550 to 17,482 bytes and the complete API surface from 6,394 to 8,299 bytes.
+The required-input structural count moves from 30 scalar fields and one
+raw fallback to 31 typed fields and no fallback. The actual four-tool Jev
+listing generates 40,798 source bytes and a 15,163-byte surface. Both remain
+inside the unchanged byte ceilings; `code_mode` indexes these modules and
+`cap://` serves their complete declarations. These measurements belong to
+the typed generator and exact fixture listings, rather than arbitrary MCP
+servers.
 
 Two refusals are deliberately narrower than the rest. A residual *tool*
 name collision refuses the server, but a *label* collision inside one
