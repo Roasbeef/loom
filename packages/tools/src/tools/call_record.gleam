@@ -403,7 +403,7 @@ pub fn summarise(cap: String, args: MsgPackValue) -> Option(String) {
     "fs.read" | "fs.write" | "fs.edit" | "fs.list" -> text_field(args, "path")
     "kv.get" | "kv.set" | "kv.delete" -> text_field(args, "key")
     "job.poll" | "job.kill" | "job.send" -> text_field(args, "job_id")
-    "job.start" -> text_field(args, "command") |> result.map(first_token)
+    "job.start" -> text_field(args, "command") |> result.try(command_word)
     "proc.run" -> process_summary(args)
     _ -> Error(Nil)
   }
@@ -466,14 +466,22 @@ fn basename(path: String) -> String {
   |> result.unwrap(path)
 }
 
-// The first run of non-whitespace characters, which is the command a shell
-// string starts with and nothing that follows it.
-fn first_token(command: String) -> String {
-  string.to_utf_codepoints(string.trim_start(command))
-  |> list.take_while(fn(codepoint) {
-    !is_whitespace(string.utf_codepoint_to_int(codepoint))
+// The command a shell string runs: its first whitespace-separated token
+// that is not an inline assignment, and nothing that follows it. A token
+// holding `=` is skipped because `API_KEY=hunter2 ./deploy` carries its
+// secret in the very place a program name would be. A string made only of
+// assignments names no command, so it has no summary.
+fn command_word(command: String) -> Result(String, Nil) {
+  string.to_utf_codepoints(command)
+  |> list.map(fn(codepoint) {
+    case is_whitespace(string.utf_codepoint_to_int(codepoint)) {
+      True -> " "
+      False -> string.from_utf_codepoints([codepoint])
+    }
   })
-  |> string.from_utf_codepoints
+  |> string.concat
+  |> string.split(on: " ")
+  |> list.find(fn(token) { token != "" && !string.contains(token, "=") })
 }
 
 fn is_whitespace(code: Int) -> Bool {
