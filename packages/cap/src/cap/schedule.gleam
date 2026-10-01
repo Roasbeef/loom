@@ -83,6 +83,11 @@
 //// narrow a schedule — the host holds `Bounds` to its own ceilings, and
 //// `DefaultBounds` is what the four plain functions pass.
 ////
+//// Both `Created` and `Schedule` carry `cadence` for typed branching and
+//// `when` for display. Recurring cadence includes both granted expiry bounds;
+//// a relative one-shot reports the absolute Unix time the host resolved.
+//// Neither accessor requires a caller to parse a human description.
+////
 //// ## Not a scratch store, and not a way to keep a program alive
 ////
 //// A schedule outlives the execution that created it, which makes it the
@@ -99,7 +104,8 @@
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
 import cap/internal/wire
-import core/msgpack.{type MsgPackValue}
+import core/msgpack.{type MsgPackValue, ArrayValue}
+import gleam/bool
 import gleam/list
 import gleam/result
 
@@ -113,6 +119,9 @@ pub type ScheduleError {
 
   /// The capability channel could not carry the call.
   ScheduleUnavailable(reason: String)
+
+  /// The host answered with a malformed stable schedule record.
+  MalformedScheduleResult(reason: String)
 }
 
 /// What a schedule is allowed to do to this strand when it is idle at
@@ -131,6 +140,45 @@ pub type Wake {
   SteersOnly
 }
 
+/// The host-resolved timing, separate from its human-readable description.
+/// Relative one-shots arrive as their resolved UTC instant, so callers never
+/// need to parse display text or guess when the host read its clock.
+pub type Cadence {
+  /// A recurring epoch-aligned grid with both expiry bounds active.
+  Interval(
+    /// The grid period in positive whole seconds.
+    seconds: Int,
+    /// The bounds granted by the host.
+    expiry: Expiry,
+  )
+
+  /// A five-field expression read at a fixed UTC offset, without DST changes.
+  Cron(
+    /// The expression as the host accepted it.
+    expression: String,
+    /// Seconds east of UTC, between -50,400 and 50,400.
+    utc_offset_s: Int,
+    /// The bounds granted by the host.
+    expiry: Expiry,
+  )
+
+  /// One occurrence, carrying no recurring expiry.
+  OneShot(
+    /// The resolved occurrence time in UTC Unix seconds.
+    at_unix_s: Int,
+  )
+}
+
+/// Both mandatory limits of a recurring schedule; the first reached ends it.
+pub type Expiry {
+  Expiry(
+    /// The positive maximum number of fires granted by the host.
+    max_fires: Int,
+    /// The positive lifetime in seconds from the scanner's first observation.
+    expires_after_s: Int,
+  )
+}
+
 /// One schedule this strand owns.
 pub type Schedule {
   Schedule(
@@ -145,6 +193,8 @@ pub type Schedule {
     /// instant. A one-shot created with `after` reads as the instant the
     /// host resolved it to, not as the delay that was asked for.
     when: String,
+    /// The host-resolved timing and bounds, for branching without display parsing.
+    cadence: Cadence,
     /// Whether it may start a fresh run on an idle strand.
     wake: Wake,
     /// How many times it has fired so far.
@@ -162,6 +212,8 @@ pub type Created {
     /// no target was named.
     target: String,
     when: String,
+    /// The host-resolved timing and bounds, for branching without display parsing.
+    cadence: Cadence,
     /// What `wake` ended up being, which is not always what was asked
     /// for — see the module doc.
     wake: Wake,
@@ -691,8 +743,9 @@ fn create(
   use name <- result.try(field(value, "name"))
   use target <- result.try(field(value, "target"))
   use when <- result.try(field(value, "when"))
+  use cadence <- result.try(cadence_field(value))
   use wake <- result.try(wake_field(value, "wake"))
-  Ok(Created(name:, target:, when:, wake:))
+  Ok(Created(name:, target:, when:, cadence:, wake:))
 }
 
 /// Lists the schedules this strand owns, wherever each fires.
@@ -715,9 +768,7 @@ pub fn list() -> Result(List(Schedule), ScheduleError) {
     dispatch.call("schedule.list", wire.args([]))
     |> result.map_error(map_error),
   )
-  use rows <- result.try(
-    wire.array_field(value, "schedules") |> result.map_error(bad_result),
-  )
+  use rows <- result.try(schedule_rows(value))
   list.try_map(rows, decode_row)
 }
 
@@ -725,12 +776,17 @@ fn decode_row(row: MsgPackValue) -> Result(Schedule, ScheduleError) {
   use name <- result.try(field(row, "name"))
   use target <- result.try(field(row, "target"))
   use when <- result.try(field(row, "when"))
+  use cadence <- result.try(cadence_field(row))
   use body <- result.try(field(row, "body"))
   use wake <- result.try(wake_field(row, "wake"))
   use fired <- result.try(
     wire.int_field(row, "fired") |> result.map_error(bad_result),
   )
-  Ok(Schedule(name:, target:, when:, wake:, fired:, body:))
+  use <- bool.guard(
+    when: fired < 0,
+    return: Error(bad_result("negative fired count")),
+  )
+  Ok(Schedule(name:, target:, when:, cadence:, wake:, fired:, body:))
 }
 
 /// Cancels one schedule this strand set on itself, by name. It will not
@@ -808,12 +864,89 @@ fn wake_field(value: MsgPackValue, key: String) -> Result(Wake, ScheduleError) {
 }
 
 fn bad_result(reason: String) -> ScheduleError {
-  ScheduleUnavailable("bad schedule result: " <> reason)
+  MalformedScheduleResult(reason)
 }
 
 fn map_error(error: CallError) -> ScheduleError {
   case error {
     Unreachable(reason:) -> ScheduleUnavailable(reason:)
     Denied(code:, message:) -> ScheduleDenied(code:, message:)
+  }
+}
+
+// The display string is deliberately not an input here: it can change wording
+// while the stable tagged record continues to carry host-resolved values.
+fn cadence_field(value: MsgPackValue) -> Result(Cadence, ScheduleError) {
+  use cadence <- result.try(
+    wire.field(value, "cadence") |> result.map_error(bad_result),
+  )
+  use kind <- result.try(field(cadence, "kind"))
+  case kind {
+    "interval" -> {
+      use seconds <- result.try(positive_field(cadence, "seconds"))
+      use expiry <- result.try(expiry_field(cadence))
+      Ok(Interval(seconds:, expiry:))
+    }
+    "cron" -> {
+      use expression <- result.try(field(cadence, "expression"))
+      use utc_offset_s <- result.try(
+        wire.int_field(cadence, "utc_offset_s") |> result.map_error(bad_result),
+      )
+      use expiry <- result.try(expiry_field(cadence))
+      use <- bool.guard(
+        when: expression == "",
+        return: Error(bad_result("empty cron expression")),
+      )
+      use <- bool.guard(
+        when: utc_offset_s < -50_400
+          || utc_offset_s > 50_400
+          || utc_offset_s % 60 != 0,
+        return: Error(bad_result("invalid utc_offset_s")),
+      )
+      Ok(Cron(expression:, utc_offset_s:, expiry:))
+    }
+    "one_shot" -> {
+      use at_unix_s <- result.try(
+        wire.int_field(cadence, "at_unix_s") |> result.map_error(bad_result),
+      )
+      Ok(OneShot(at_unix_s:))
+    }
+    _ -> Error(bad_result("unknown cadence kind " <> kind))
+  }
+}
+
+fn expiry_field(value: MsgPackValue) -> Result(Expiry, ScheduleError) {
+  use expiry <- result.try(
+    wire.field(value, "expiry") |> result.map_error(bad_result),
+  )
+  use max_fires <- result.try(positive_field(expiry, "max_fires"))
+  use expires_after_s <- result.try(positive_field(expiry, "expires_after_s"))
+  Ok(Expiry(max_fires:, expires_after_s:))
+}
+
+fn positive_field(
+  value: MsgPackValue,
+  key: String,
+) -> Result(Int, ScheduleError) {
+  use number <- result.try(
+    wire.int_field(value, key) |> result.map_error(bad_result),
+  )
+  case number > 0 {
+    True -> Ok(number)
+    False -> Error(bad_result("field " <> key <> " must be positive"))
+  }
+}
+
+// Unlike optional arrays elsewhere on the channel, this stable response always
+// carries an array. Nil is malformed, rather than evidence of no schedules.
+fn schedule_rows(
+  value: MsgPackValue,
+) -> Result(List(MsgPackValue), ScheduleError) {
+  use rows <- result.try(
+    wire.field(value, "schedules") |> result.map_error(bad_result),
+  )
+  case rows {
+    ArrayValue(items:) -> Ok(items)
+    _ -> Error(bad_result("field schedules is not an array"))
   }
 }

@@ -879,6 +879,7 @@ pub fn a_relative_one_shot_resolves_against_the_session_clock_test() {
 
   // The rig's clock is fixed at zero, so now + 2700 is 2700 exactly.
   assert created.when == "once at " <> schedule.render_instant(2700)
+  assert created.cadence == schedule_tool.OneShotCadence(at_unix_s: 2700)
   let assert Ok(cells) =
     api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
     as "the config prefix must be readable"
@@ -931,6 +932,7 @@ pub fn a_cron_schedule_is_created_and_listed_with_its_rendering_test() {
   let assert Ok([listed]) = rig.seam.list(ctx("main"))
     as "the cron schedule must be listed"
   assert listed.when == created.when
+  assert listed.cadence == created.cadence
 
   // The cell holds the source text and decodes back to a Cron timing.
   let assert Ok(cells) =
@@ -965,6 +967,12 @@ pub fn a_cron_schedule_accepts_a_utc_offset_test() {
     )
     as "a cron schedule with an offset must be created"
   assert created.when == "cron \"0 9 * * 1-5\" UTC+02:00, at most 1000 times"
+  assert created.cadence
+    == schedule_tool.CronCadence(
+      expression: "0 9 * * 1-5",
+      utc_offset_s: 7200,
+      expiry: schedule_tool.Expiry(max_fires: 1000, expires_after_s: 604_800),
+    )
 
   let assert Ok(cells) =
     api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
@@ -1029,6 +1037,11 @@ pub fn a_narrower_max_fires_is_stored_and_rendered_test() {
   let assert Ok(created) = rig.seam.create(ctx("main"), asked)
     as "a narrowed schedule must be created"
   assert string.contains(created.when, "at most 4 times")
+  assert created.cadence
+    == schedule_tool.IntervalCadence(
+      seconds: 300,
+      expiry: schedule_tool.Expiry(max_fires: 4, expires_after_s: 3600),
+    )
 
   let assert Ok(cells) =
     api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)

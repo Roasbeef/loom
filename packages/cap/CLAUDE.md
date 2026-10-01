@@ -422,7 +422,7 @@ cannot hide the capability error. This does not grant the program a new effect.
 ## Background collaboration (protocol 048)
 
 `cap/execution.receive` reads the current background execution's durable input
-by cursor. `cap/peer` discovers and messages operator-linked peers; its JSON
+by cursor. `cap/peer` discovers and messages operator-linked peers; its typed
 receipts prove admission. The default server admits these modules from both
 program modes, with host routers supplying identity. `cap/workflow.step`
 requires a background execution and returns a `cap/strand.Handle` for a durable
@@ -462,7 +462,7 @@ process machinery or new capability.
 
 `cap/peer` also exposes caller-owned `inbox`, `inbox_get`, and `history` for
 same-session and remote inputs, plus existing remote admission `received`,
-`received_get`, and linked sender `sent_receipt` views. These are read-only JSON
+`received_get`, and linked sender `sent_receipt` views. These are read-only typed
 views; they neither acknowledge nor consume messages. Empty `roster` means no
 outgoing remote links and says nothing about the caller's inbound messages.
 Pending IDs and receipt keys paginate live sets; receipt hash cursors are not
@@ -480,3 +480,26 @@ remain bounded, other resource limits remain active, and session shutdown,
 owner kill or originating-operation abort cancels the execution. Quiet waiting
 has no completion or heartbeat wake unless the caller explicitly asks for the
 existing idle heartbeat. A VM restart loses the job and never replays it.
+
+## Typed capability boundaries (protocol 057)
+
+Peer calls decode stable response envelopes inside the satellite; callers receive
+pages, inputs, links and receipts rather than JSON strings. Optional lookups
+use `Option`, and pending, transcript and receipt cursors have distinct types.
+Open sender-owned values remain `cap/report.Value`. Peer, workflow and execution
+errors distinguish host denial, channel unavailability and malformed responses.
+Execution input cursors are nonnegative, and normal closure preserves its reason.
+
+`cap/strand` re-exports `core/ids.OpId` and `EntryId` with total parsers and
+renderers. Handles and deliveries use those identities; declared fields use
+`Required` or `Optional` before marshaling the existing boolean. `cap/job.JobId`
+validates the host's register-key grammar; stdout and stderr cursors are separate
+opaque types, while `from_start` and `after` retain the normal polling workflow.
+
+`cap/schedule.{Cadence, Expiry}` exposes the granted interval, cron expression
+with fixed UTC offset, or resolved one-shot Unix time. `Created` and `Schedule`
+retain their rendered `when` alongside `cadence`. Missing or malformed required
+fields return `MalformedScheduleResult`, separately from transport failure.
+These types grant no authority and change no queue, receipt or schedule custody.
+
+See [protocol 057](../../protocol-change/057-typed-capability-results.md).

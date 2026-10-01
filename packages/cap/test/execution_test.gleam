@@ -176,8 +176,8 @@ pub fn legacy_receive_wire_shape_is_preserved_test() {
     )
   })
 
-  assert execution.receive(after: 1, within_ms: 50)
-    == Ok(execution.Message(sequence: 2, value: report.string("legacy")))
+  assert execution.receive(after: cursor(1), within_ms: 50)
+    == Ok(execution.Message(sequence: cursor(2), value: report.string("legacy")))
   assert process.receive(seen, 100)
     == Ok(#(
       "execution.receive",
@@ -194,11 +194,40 @@ pub fn receive_wait_is_capped_with_deadline_slack_test() {
     Ok(msgpack.NilValue)
   })
 
-  assert execution.receive(after: 0, within_ms: 90_000)
+  assert execution.receive(after: execution.first_input(), within_ms: 90_000)
     == Ok(execution.TimedOut)
   assert process.receive(seen, 100)
     == Ok(#(
       map([#("after", wire.int(0)), #("within_ms", wire.int(30_000))]),
       31_000,
     ))
+}
+
+fn cursor(n: Int) -> execution.InputCursor {
+  let assert Ok(cursor) = execution.input_cursor(n)
+    as "the saved sequence is valid"
+  cursor
+}
+
+pub fn execution_errors_and_closure_reasons_remain_typed_test() {
+  install_fake(with: fn(_, _, _) {
+    Error(channel.Denied("not_ready", "refused"))
+  })
+  assert execution.progress(report.null())
+    == Error(execution.ExecutionDenied("not_ready", "refused"))
+  install_fake(with: fn(_, _, _) { Error(channel.Unreachable("offline")) })
+  assert execution.receive(execution.first_input(), 1)
+    == Error(execution.ExecutionUnavailable("offline"))
+  install_fake(with: fn(_, _, _) {
+    Ok(map([#("closed", wire.string("cancelled"))]))
+  })
+  assert execution.receive(execution.first_input(), 1)
+    == Ok(execution.Closed("cancelled"))
+  install_fake(with: fn(_, _, _) {
+    Ok(map([#("sequence", wire.int(0)), #("value", wire.int(3))]))
+  })
+  let assert Error(execution.ExecutionResultMalformed(_)) =
+    execution.receive(execution.first_input(), 1)
+    as "a nonadvancing response cannot masquerade as a valid message"
+  dispatch.reset()
 }

@@ -913,3 +913,14 @@ remain bounded, other resource limits remain active, and session shutdown,
 owner kill or originating-operation abort cancels the execution. Quiet waiting
 has no completion or heartbeat wake unless the caller explicitly asks for the
 existing idle heartbeat. A VM restart loses the job and never replays it.
+
+## Structured schedule responses (protocol 057)
+
+`tools/schedule.Created` and `Listed` carry `Cadence` in addition to their
+display sentence. `Interval` and `Cron` retain `Expiry`; `OneShot` retains the
+resolved Unix second. The client supplies these from its admitted timing, and
+code mode projects them without parsing the human-readable `when` field.
+Generated capability declarations expose the satellite's typed responses and
+identity helpers from the same compiled package interface.
+
+See [protocol 057](../../protocol-change/057-typed-capability-results.md).

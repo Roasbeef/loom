@@ -157,6 +157,13 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
         // strand; this fake stands in for the one the bridge binds.
         target: option.unwrap(request.target, "main"),
         when: "every 60s, at most 1000 times",
+        cadence: workspace.Interval(
+          seconds: 60,
+          expiry: workspace.ScheduleExpiry(
+            max_fires: 1000,
+            expires_after_s: 604_800,
+          ),
+        ),
         wake: request.wake,
       ))
     },
@@ -167,6 +174,13 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
           name: "poll",
           target: "main",
           when: "every 60s, at most 1000 times",
+          cadence: workspace.Interval(
+            seconds: 60,
+            expiry: workspace.ScheduleExpiry(
+              max_fires: 1000,
+              expires_after_s: 604_800,
+            ),
+          ),
           wake: workspace.WakesIdle,
           fired: 2,
           body: "look",
@@ -1046,6 +1060,7 @@ pub fn schedule_create_carries_the_request_and_the_granted_wake_test() {
   assert field(value, "name") == Ok(text("poll"))
   assert field(value, "wake") == Ok(msgpack.BoolValue(True))
   assert field(value, "when") == Ok(text("every 60s, at most 1000 times"))
+  assert field(value, "cadence") == Ok(interval_cadence())
 }
 
 // `wake` is optional and defaults false, so a program that never mentions
@@ -1269,6 +1284,7 @@ pub fn schedule_list_renders_every_row_test() {
   assert field(row, "fired") == Ok(int(2))
   assert field(row, "wake") == Ok(msgpack.BoolValue(True))
   assert field(row, "body") == Ok(text("look"))
+  assert field(row, "cadence") == Ok(interval_cadence())
 }
 
 pub fn schedule_cancel_names_the_schedule_test() {
@@ -1558,4 +1574,78 @@ pub fn session_lifetime_is_explicit_at_the_job_capability_boundary_test() {
     )
   assert conflict.code == "invalid_arguments"
   assert drain(seen) == []
+}
+
+fn interval_cadence() -> MsgPackValue {
+  map([
+    #("kind", text("interval")),
+    #("seconds", int(60)),
+    #(
+      "expiry",
+      map([
+        #("max_fires", int(1000)),
+        #("expires_after_s", int(604_800)),
+      ]),
+    ),
+  ])
+}
+
+// The response encoder receives a resolved host value: the request's spelling
+// cannot substitute for a cron offset, its bounds, or a resolved one-shot time.
+pub fn schedule_create_serializes_calendar_and_resolved_one_shot_test() {
+  let seen = recorder()
+  let fixtures = [
+    #(
+      workspace.Cron(
+        expression: "0 9 * * 1-5",
+        utc_offset_s: 7200,
+        expiry: workspace.ScheduleExpiry(max_fires: 4, expires_after_s: 3600),
+      ),
+      map([
+        #("kind", text("cron")),
+        #("expression", text("0 9 * * 1-5")),
+        #("utc_offset_s", int(7200)),
+        #(
+          "expiry",
+          map([#("max_fires", int(4)), #("expires_after_s", int(3600))]),
+        ),
+      ]),
+    ),
+    #(
+      workspace.OneShot(at_unix_s: 2700),
+      map([
+        #("kind", text("one_shot")),
+        #("at_unix_s", int(2700)),
+      ]),
+    ),
+  ]
+  list.each(fixtures, fn(fixture) {
+    let host =
+      workspace.Workspace(
+        ..answering(seen),
+        schedule_create: fn(request: workspace.ScheduleRequest) {
+          Ok(workspace.ScheduleCreated(
+            name: request.name,
+            target: "main",
+            when: "host display",
+            cadence: fixture.0,
+            wake: request.wake,
+          ))
+        },
+      )
+    let assert framing.CapOk(value:) =
+      serviced(
+        host,
+        "schedule.create",
+        map([
+          #("name", text("watch")),
+          #("body", text("Check.")),
+          #("in_seconds", int(2700)),
+        ]),
+      )
+    let assert Ok(bytes) = msgpack.encode(value)
+    let assert Ok(value) = msgpack.decode(bytes)
+    assert field(value, "cadence") == Ok(fixture.1)
+    assert field(value, "when") == Ok(text("host display"))
+  })
 }

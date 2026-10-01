@@ -77,6 +77,108 @@ import core/msgpack.{type MsgPackValue}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
+
+/// A job's validated identity: nonempty text with no register separator.
+/// The host owns authorization; possessing this value grants no authority.
+pub opaque type JobId {
+  JobId(
+    /// The register key segment accepted by the host.
+    text: String,
+  )
+}
+
+/// Parses a saved job identity using the host's register-key grammar.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert job.parse_job_id("job/other") == Error("job id must be nonempty and contain no '/'")
+/// ```
+pub fn parse_job_id(text: String) -> Result(JobId, String) {
+  case text == "" || string.contains(text, "/") {
+    True -> Error("job id must be nonempty and contain no '/'")
+    False -> Ok(JobId(text:))
+  }
+}
+
+/// Renders the identity for storage in a later program's input.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // job.job_id_to_string(started.id)
+/// ```
+pub fn job_id_to_string(id: JobId) -> String {
+  id.text
+}
+
+/// A nonnegative stdout byte position, never a stderr cursor.
+pub opaque type StdoutCursor {
+  StdoutCursor(
+    /// Bytes consumed from stdout, never negative.
+    offset: Int,
+  )
+}
+
+/// A nonnegative stderr byte position, never a stdout cursor.
+pub opaque type StderrCursor {
+  StderrCursor(
+    /// Bytes consumed from stderr, never negative.
+    offset: Int,
+  )
+}
+
+/// Restores a saved stdout position; a negative position is invalid.
+/// Prefer `after` when continuing directly from a poll.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert job.parse_stdout_cursor(-1) == Error("stdout cursor must be nonnegative")
+/// ```
+pub fn parse_stdout_cursor(offset: Int) -> Result(StdoutCursor, String) {
+  case offset >= 0 {
+    True -> Ok(StdoutCursor(offset:))
+    False -> Error("stdout cursor must be nonnegative")
+  }
+}
+
+/// Restores a saved stderr position; a negative position is invalid.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert job.parse_stderr_cursor(-1) == Error("stderr cursor must be nonnegative")
+/// ```
+pub fn parse_stderr_cursor(offset: Int) -> Result(StderrCursor, String) {
+  case offset >= 0 {
+    True -> Ok(StderrCursor(offset:))
+    False -> Error("stderr cursor must be nonnegative")
+  }
+}
+
+/// Renders a stdout position for persistence between programs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert job.stdout_cursor_to_int(job.from_start().stdout) == 0
+/// ```
+pub fn stdout_cursor_to_int(cursor: StdoutCursor) -> Int {
+  cursor.offset
+}
+
+/// Renders a stderr position for persistence between programs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert job.stderr_cursor_to_int(job.from_start().stderr) == 0
+/// ```
+pub fn stderr_cursor_to_int(cursor: StderrCursor) -> Int {
+  cursor.offset
+}
 
 /// Why a background-job call failed.
 ///
@@ -102,6 +204,9 @@ pub type JobError {
   /// for. `code` is the host's own, carried verbatim.
   JobDenied(code: String, message: String)
 
+  /// The host answered, but the payload violates this API.
+  JobResultMalformed(reason: String)
+
   /// The capability channel could not carry the call, or the host runs
   /// no background-jobs plane at all.
   JobUnavailable(reason: String)
@@ -111,7 +216,7 @@ pub type JobError {
 pub type Started {
   Started(
     /// The handle every other function here takes.
-    id: String,
+    id: JobId,
     /// The absolute instant its wall expires at, in milliseconds on the
     /// session's own time base. Zero denotes authorized session lifetime.
     deadline_ms: Int,
@@ -203,14 +308,15 @@ pub type State {
   Lost(reason: LostReason)
 }
 
-/// One stream's answer to a poll.
-pub type Stream {
+/// One stream's answer to a poll. `Job` fixes the cursor type separately
+/// for stdout and stderr, so swapping them cannot compile.
+pub type Stream(cursor) {
   Stream(
     /// What arrived after the cursor asked with and is still retained.
     bytes: BitArray,
     /// The cursor to hand to the next `poll`. Opaque — take it, do not
     /// compute it.
-    cursor: Int,
+    cursor: cursor,
     /// How many bytes left the retained window unread. Non-zero means
     /// poll more often, or read the spill at the end; it never means the
     /// output was lost.
@@ -232,21 +338,35 @@ pub type Spill {
 /// One job, as `poll` reads it.
 pub type Job {
   Job(
-    id: String,
+    /// The validated durable identity of this job.
+    id: JobId,
+    /// Its observed lifecycle state.
     state: State,
     /// How long the job has been alive, in milliseconds.
     age_ms: Int,
     /// The absolute instant its wall expires at.
     deadline_ms: Int,
-    stdout: Stream,
-    stderr: Stream,
+    /// The retained stdout tail and its next stdout cursor.
+    stdout: Stream(StdoutCursor),
+    /// The retained stderr tail and its next stderr cursor.
+    stderr: Stream(StderrCursor),
+    /// Content references for complete terminal output.
     spill: Spill,
   )
 }
 
 /// One row of this strand's job listing.
 pub type Row {
-  Row(id: String, state: State, age_ms: Int, deadline_ms: Int)
+  Row(
+    /// The validated durable identity of this job.
+    id: JobId,
+    /// Its observed lifecycle state.
+    state: State,
+    /// Elapsed lifetime in milliseconds.
+    age_ms: Int,
+    /// The absolute instant its wall expires at.
+    deadline_ms: Int,
+  )
 }
 
 /// Whether a job in this state is one to come back to.
@@ -270,7 +390,12 @@ pub fn is_pending(state: State) -> Bool {
 
 /// Where a poll left off in each stream.
 pub type Cursors {
-  Cursors(stdout: Int, stderr: Int)
+  Cursors(
+    /// The position consumed from stdout.
+    stdout: StdoutCursor,
+    /// The position consumed from stderr.
+    stderr: StderrCursor,
+  )
 }
 
 /// The cursors that read a job's whole retained tail: the first poll's.
@@ -278,11 +403,12 @@ pub type Cursors {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(watched) = job.poll("01JQ8XZ", 0, job.from_start())
+/// let assert Ok(id) = job.parse_job_id("01JQ8XZ")
+/// let assert Ok(watched) = job.poll(id, 0, job.from_start())
 /// ```
 ///
 pub fn from_start() -> Cursors {
-  Cursors(stdout: 0, stderr: 0)
+  Cursors(stdout: StdoutCursor(0), stderr: StderrCursor(0))
 }
 
 /// The cursors one poll's answer leaves behind, to hand to the next.
@@ -290,8 +416,9 @@ pub fn from_start() -> Cursors {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(first) = job.poll("01JQ8XZ", 0, job.from_start())
-/// let assert Ok(_next) = job.poll("01JQ8XZ", 0, job.after(first))
+/// let assert Ok(id) = job.parse_job_id("01JQ8XZ")
+/// let assert Ok(first) = job.poll(id, 0, job.from_start())
+/// let assert Ok(_next) = job.poll(id, 0, job.after(first))
 /// ```
 ///
 pub fn after(watched: Job) -> Cursors {
@@ -364,7 +491,7 @@ fn started(fields: List(#(String, MsgPackValue))) -> Result(Started, JobError) {
   use value <- result.try(
     dispatch.call("job.start", wire.args(fields)) |> result.map_error(map_error),
   )
-  use id <- result.try(text(value, "job_id"))
+  use id <- result.try(decode_job_id(value))
   use deadline_ms <- result.try(number(value, "deadline_ms"))
   use wall_ms <- result.try(number(value, "wall_ms"))
   Ok(Started(id:, deadline_ms:, wall_ms:))
@@ -384,11 +511,12 @@ fn started(fields: List(#(String, MsgPackValue))) -> Result(Started, JobError) {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(watched) = job.poll("01JQ8XZ", 5000, job.from_start())
+/// let assert Ok(id) = job.parse_job_id("01JQ8XZ")
+/// let assert Ok(watched) = job.poll(id, 5000, job.from_start())
 /// ```
 ///
 pub fn poll(
-  id: String,
+  id: JobId,
   wait_ms: Int,
   cursors: Cursors,
 ) -> Result(Job, JobError) {
@@ -396,10 +524,10 @@ pub fn poll(
     dispatch.call(
       "job.poll",
       wire.args([
-        #("job_id", wire.string(id)),
+        #("job_id", wire.string(job_id_to_string(id))),
         #("wait_ms", wire.int(wait_ms)),
-        #("since_stdout", wire.int(cursors.stdout)),
-        #("since_stderr", wire.int(cursors.stderr)),
+        #("since_stdout", wire.int(stdout_cursor_to_int(cursors.stdout))),
+        #("since_stderr", wire.int(stderr_cursor_to_int(cursors.stderr))),
       ]),
     )
     |> result.map_error(map_error),
@@ -445,11 +573,15 @@ pub fn list() -> Result(List(Row), JobError) {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(Nil) = job.kill("01JQ8XZ")
+/// let assert Ok(id) = job.parse_job_id("01JQ8XZ")
+/// let assert Ok(Nil) = job.kill(id)
 /// ```
 ///
-pub fn kill(id: String) -> Result(Nil, JobError) {
-  dispatch.call("job.kill", wire.args([#("job_id", wire.string(id))]))
+pub fn kill(id: JobId) -> Result(Nil, JobError) {
+  dispatch.call(
+    "job.kill",
+    wire.args([#("job_id", wire.string(job_id_to_string(id)))]),
+  )
   |> result.replace(Nil)
   |> result.map_error(map_error)
 }
@@ -465,10 +597,11 @@ pub fn kill(id: String) -> Result(Nil, JobError) {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(Nil) = job.send("01JQ8XZ", <<"2 + 2\n":utf8>>)
+/// let assert Ok(id) = job.parse_job_id("01JQ8XZ")
+/// let assert Ok(Nil) = job.send(id, <<"2 + 2\n":utf8>>)
 /// ```
 ///
-pub fn send(id: String, data: BitArray) -> Result(Nil, JobError) {
+pub fn send(id: JobId, data: BitArray) -> Result(Nil, JobError) {
   write(id, data, close: False)
 }
 
@@ -482,10 +615,11 @@ pub fn send(id: String, data: BitArray) -> Result(Nil, JobError) {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(Nil) = job.send_last("01JQ8XZ", <<"quit\n":utf8>>)
+/// let assert Ok(id) = job.parse_job_id("01JQ8XZ")
+/// let assert Ok(Nil) = job.send_last(id, <<"quit\n":utf8>>)
 /// ```
 ///
-pub fn send_last(id: String, data: BitArray) -> Result(Nil, JobError) {
+pub fn send_last(id: JobId, data: BitArray) -> Result(Nil, JobError) {
   write(id, data, close: True)
 }
 
@@ -494,14 +628,14 @@ pub fn send_last(id: String, data: BitArray) -> Result(Nil, JobError) {
 // are what keep that boolean off every call site: `send_last` names what
 // it does, and `send(id, data, True)` would not.
 fn write(
-  id: String,
+  id: JobId,
   data: BitArray,
   close close: Bool,
 ) -> Result(Nil, JobError) {
   dispatch.call(
     "job.send",
     wire.args([
-      #("job_id", wire.string(id)),
+      #("job_id", wire.string(job_id_to_string(id))),
       #("data", wire.binary(data)),
       #("eof", wire.bool(close)),
     ]),
@@ -518,22 +652,20 @@ fn write(
 // live job carries no exit report and none is looked for.
 
 fn decode_job(value: MsgPackValue) -> Result(Job, JobError) {
-  use id <- result.try(text(value, "job_id"))
+  use id <- result.try(decode_job_id(value))
   use state <- result.try(decode_state(value))
   use age_ms <- result.try(number(value, "age_ms"))
   use deadline_ms <- result.try(number(value, "deadline_ms"))
-  use stdout <- result.try(decode_stream(value, "stdout"))
-  use stderr <- result.try(decode_stream(value, "stderr"))
-  let spill =
-    Spill(
-      stdout_ref: optional_text(value, "stdout_ref"),
-      stderr_ref: optional_text(value, "stderr_ref"),
-    )
+  use stdout <- result.try(decode_stream(value, "stdout", parse_stdout_cursor))
+  use stderr <- result.try(decode_stream(value, "stderr", parse_stderr_cursor))
+  use stdout_ref <- result.try(optional_text(value, "stdout_ref"))
+  use stderr_ref <- result.try(optional_text(value, "stderr_ref"))
+  let spill = Spill(stdout_ref:, stderr_ref:)
   Ok(Job(id:, state:, age_ms:, deadline_ms:, stdout:, stderr:, spill:))
 }
 
 fn decode_row(row: MsgPackValue) -> Result(Row, JobError) {
-  use id <- result.try(text(row, "job_id"))
+  use id <- result.try(decode_job_id(row))
   use state <- result.try(decode_state(row))
   use age_ms <- result.try(number(row, "age_ms"))
   use deadline_ms <- result.try(number(row, "deadline_ms"))
@@ -619,14 +751,25 @@ fn decode_exit(value: MsgPackValue) -> Result(Exit, JobError) {
   ))
 }
 
-fn decode_stream(value: MsgPackValue, key: String) -> Result(Stream, JobError) {
+fn decode_job_id(value: MsgPackValue) -> Result(JobId, JobError) {
+  use raw <- result.try(text(value, "job_id"))
+  parse_job_id(raw) |> result.map_error(bad_result)
+}
+
+// The parser fixes the stream's cursor domain before its value is exposed.
+fn decode_stream(
+  value: MsgPackValue,
+  key: String,
+  parse: fn(Int) -> Result(cursor, String),
+) -> Result(Stream(cursor), JobError) {
   use found <- result.try(
     wire.field(value, key) |> result.map_error(bad_result),
   )
   use bytes <- result.try(
     wire.binary_field(found, "bytes") |> result.map_error(bad_result),
   )
-  use cursor <- result.try(number(found, "cursor"))
+  use offset <- result.try(number(found, "cursor"))
+  use cursor <- result.try(parse(offset) |> result.map_error(bad_result))
   use dropped <- result.try(number(found, "dropped"))
   Ok(Stream(bytes:, cursor:, dropped:))
 }
@@ -643,16 +786,19 @@ fn flag(value: MsgPackValue, key: String) -> Result(Bool, JobError) {
   wire.bool_field(value, key) |> result.map_error(bad_result)
 }
 
-fn optional_text(value: MsgPackValue, key: String) -> Option(String) {
+fn optional_text(
+  value: MsgPackValue,
+  key: String,
+) -> Result(Option(String), JobError) {
   case wire.optional_field(value, key) {
-    None -> None
-    Some(msgpack.StringValue(found)) -> Some(found)
-    Some(_other) -> None
+    None -> Ok(None)
+    Some(msgpack.StringValue(found)) -> Ok(Some(found))
+    Some(_other) -> Error(bad_result(key <> " must be text or null"))
   }
 }
 
 fn bad_result(reason: String) -> JobError {
-  JobUnavailable("bad job result: " <> reason)
+  JobResultMalformed("bad job result: " <> reason)
 }
 
 // The other half of a contract whose first half is

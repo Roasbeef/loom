@@ -541,17 +541,38 @@ fn assert_polled_lines(polled: String) -> Nil {
 // something to the host — and then sleeps well past the second hermetic
 // build, so "still running" is a property of the job rather than a race
 // against how long a compile took.
-fn starting_program(identity: PayloadIdentity) -> String {
+fn starting_program(
+  identity: PayloadIdentity,
+  lifetime: ProgramJobLifetime,
+) -> String {
+  let report_started =
+    "report.text(\"started \" <> job.job_id_to_string(started.id))"
+
+  // Generate each lifetime explicitly. Rewriting a finished source string
+  // could silently drop the zero-wall assertion when the typed API changes.
+  let #(start, answer) = case lifetime {
+    FiniteJob -> #("job.start", report_started)
+    SessionJob -> #(
+      "job.start_for_session",
+      "case started.wall_ms == 0 && started.deadline_ms == 0 { True -> "
+        <> report_started
+        <> " False -> report.failure(\"session lifetime was narrowed\") }",
+    )
+  }
   "import cap/job\n"
   <> "import cap/report\n"
   <> "\n"
   <> "pub fn main() -> report.Outcome {\n"
-  <> "  case job.start(\"printf 'one\\\\n'; printf '%s\\\\n' "
+  <> "  case "
+  <> start
+  <> "(\"printf 'one\\\\n'; printf '%s\\\\n' "
   <> program_announcement(identity)
   <> " > "
   <> start_marker
   <> "; sleep 600\") {\n"
-  <> "    Ok(started) -> report.text(\"started \" <> started.id)\n"
+  <> "    Ok(started) -> "
+  <> answer
+  <> "\n"
   <> "    Error(_error) -> report.failure(\"job.start did not admit\")\n"
   <> "  }\n"
   <> "}\n"
@@ -593,7 +614,7 @@ fn watching_program() -> String {
   <> "    Ok([row]) -> {\n"
   <> "      let seen = state_name(row.state)\n"
   <> "      case job.kill(row.id) {\n"
-  <> "        Ok(Nil) -> report.text(\"listed \" <> row.id <> \" \" <> seen)\n"
+  <> "        Ok(Nil) -> report.text(\"listed \" <> job.job_id_to_string(row.id) <> \" \" <> seen)\n"
   <> "        Error(_error) -> report.failure(\"job.kill did not answer\")\n"
   <> "      }\n"
   <> "    }\n"
@@ -632,18 +653,10 @@ fn starting_arguments(
   identity: PayloadIdentity,
   lifetime: ProgramJobLifetime,
 ) -> json.JsonValue {
-  let source = starting_program(identity)
+  let source = starting_program(identity, lifetime)
   case lifetime {
     FiniteJob -> program_arguments(source)
     SessionJob -> {
-      let source =
-        string.replace(source, "job.start(", "job.start_for_session(")
-      let source =
-        string.replace(
-          source,
-          "Ok(started) -> report.text(\"started \" <> started.id)",
-          "Ok(started) -> case started.wall_ms == 0 && started.deadline_ms == 0 { True -> report.text(\"started \" <> started.id) False -> report.failure(\"session lifetime was narrowed\") }",
-        )
       json.Object([
         #("program", json.String(source)),
         #("within_ms", json.Int(240_000)),

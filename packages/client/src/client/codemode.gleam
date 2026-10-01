@@ -2763,6 +2763,7 @@ fn schedule_create_in(
       name: created.name,
       target: created.target,
       when: created.when,
+      cadence: schedule_cadence(created.cadence),
       wake: granted_wake(created.wake),
     )
   })
@@ -2828,6 +2829,7 @@ fn schedule_list_in(
         name: row.name,
         target: row.target,
         when: row.when,
+        cadence: schedule_cadence(row.cadence),
         wake: granted_wake(row.wake),
         fired: row.fired,
         body: row.body,
@@ -3418,4 +3420,29 @@ fn notes_on(config: Config, seam: vet_policy.Seam) -> Option(notes.Door) {
     vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.notes
     vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
   }
+}
+
+// The bridge keeps the resolved timing typed until the workspace wire encoder.
+// It never reconstructs cadence by reading the human-facing `when` string.
+fn schedule_cadence(
+  cadence: schedule_tool.Cadence,
+) -> workspace.ScheduleCadence {
+  case cadence {
+    schedule_tool.IntervalCadence(seconds:, expiry:) ->
+      workspace.Interval(seconds:, expiry: schedule_expiry(expiry))
+    schedule_tool.CronCadence(expression:, utc_offset_s:, expiry:) ->
+      workspace.Cron(
+        expression:,
+        utc_offset_s:,
+        expiry: schedule_expiry(expiry),
+      )
+    schedule_tool.OneShotCadence(at_unix_s:) -> workspace.OneShot(at_unix_s:)
+  }
+}
+
+fn schedule_expiry(expiry: schedule_tool.Expiry) -> workspace.ScheduleExpiry {
+  workspace.ScheduleExpiry(
+    max_fires: expiry.max_fires,
+    expires_after_s: expiry.expires_after_s,
+  )
 }

@@ -4756,3 +4756,14 @@ remain bounded, other resource limits remain active, and session shutdown,
 owner kill or originating-operation abort cancels the execution. Quiet waiting
 has no completion or heartbeat wake unless the caller explicitly asks for the
 existing idle heartbeat. A VM restart loses the job and never replays it.
+
+## Typed schedule projections (protocol 057)
+
+`client/scheduleseam` projects its existing `client/schedule.Timing` into
+`tools/schedule.Cadence` and `Expiry` for create and list responses. The
+`client/codemode` adapter translates these into the workspace router's matching
+types. Relative one-shots expose their resolved Unix second, recurring timings
+expose granted bounds, and cron preserves its fixed UTC offset. Neither the
+durable schedule encoding nor wake authority changes.
+
+See [protocol 057](../../protocol-change/057-typed-capability-results.md).

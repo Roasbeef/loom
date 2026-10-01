@@ -440,6 +440,45 @@ pub type ScheduleRequest {
   )
 }
 
+/// The host-resolved timing, separate from its human-readable description.
+/// Relative one-shots arrive as their resolved UTC instant, so callers never
+/// need to parse display text or guess when the host read its clock.
+pub type ScheduleCadence {
+  /// A recurring epoch-aligned grid with both expiry bounds active.
+  Interval(
+    /// The grid period in positive whole seconds.
+    seconds: Int,
+    /// The bounds granted by the host.
+    expiry: ScheduleExpiry,
+  )
+
+  /// A five-field expression read at a fixed UTC offset, without DST changes.
+  Cron(
+    /// The expression as the host accepted it.
+    expression: String,
+    /// Seconds east of UTC, between -50,400 and 50,400.
+    utc_offset_s: Int,
+    /// The bounds granted by the host.
+    expiry: ScheduleExpiry,
+  )
+
+  /// One occurrence, carrying no recurring expiry.
+  OneShot(
+    /// The resolved occurrence time in UTC Unix seconds.
+    at_unix_s: Int,
+  )
+}
+
+/// Both mandatory limits of a recurring schedule; the first reached ends it.
+pub type ScheduleExpiry {
+  ScheduleExpiry(
+    /// The positive maximum number of fires granted by the host.
+    max_fires: Int,
+    /// The positive lifetime in seconds from the scanner's first observation.
+    expires_after_s: Int,
+  )
+}
+
 /// What a schedule creation produced. `wake` is what the host actually
 /// granted, which is not always what was asked for: an operator policy
 /// may permit scheduling and forbid waking.
@@ -449,7 +488,10 @@ pub type ScheduleCreated {
     /// The strand it fires onto, resolved by the host: the execution's
     /// own when the request named none.
     target: String,
+    /// The display description, preserved independently of the structured timing.
     when: String,
+    /// The host-resolved timing and bounds.
+    cadence: ScheduleCadence,
     wake: ScheduleWake,
   )
 }
@@ -462,7 +504,10 @@ pub type ScheduleRow {
     /// schedule rather than on where it fires, so it can hold rows for
     /// more than one strand and a row without this would be ambiguous.
     target: String,
+    /// The display description, preserved independently of the structured timing.
     when: String,
+    /// The host-resolved timing and bounds.
+    cadence: ScheduleCadence,
     wake: ScheduleWake,
     fired: Int,
     body: String,
@@ -1132,11 +1177,12 @@ fn schedule_create_plan(
         ))
       {
         Error(refusal) -> schedule_refused(refusal)
-        Ok(ScheduleCreated(name:, target:, when:, wake:)) ->
+        Ok(ScheduleCreated(name:, target:, when:, cadence:, wake:)) ->
           answered([
             #("name", msgpack.StringValue(name)),
             #("target", msgpack.StringValue(target)),
             #("when", msgpack.StringValue(when)),
+            #("cadence", schedule_cadence(cadence)),
             #("wake", msgpack.BoolValue(wake_flag(wake))),
           ])
       }
@@ -1255,6 +1301,7 @@ fn schedule_row(row: ScheduleRow) -> MsgPackValue {
     #(msgpack.StringValue("name"), msgpack.StringValue(row.name)),
     #(msgpack.StringValue("target"), msgpack.StringValue(row.target)),
     #(msgpack.StringValue("when"), msgpack.StringValue(row.when)),
+    #(msgpack.StringValue("cadence"), schedule_cadence(row.cadence)),
     #(msgpack.StringValue("wake"), msgpack.BoolValue(wake_flag(row.wake))),
     #(msgpack.StringValue("fired"), msgpack.IntValue(row.fired)),
     #(msgpack.StringValue("body"), msgpack.StringValue(row.body)),
@@ -1700,4 +1747,42 @@ pub fn kv_denial(refusal: KvRefusal) -> CapDenial {
     StoreUnavailable(reason:) ->
       CapDenial(code: kv_unavailable_code, message: reason)
   }
+}
+
+// One tagged record makes interval, calendar, and resolved one-shot timing
+// distinguishable without parsing display text. Recurring bounds stay paired.
+fn schedule_cadence(cadence: ScheduleCadence) -> MsgPackValue {
+  case cadence {
+    Interval(seconds:, expiry:) ->
+      schedule_cadence_map([
+        #("kind", msgpack.StringValue("interval")),
+        #("seconds", msgpack.IntValue(seconds)),
+        #("expiry", schedule_expiry(expiry)),
+      ])
+    Cron(expression:, utc_offset_s:, expiry:) ->
+      schedule_cadence_map([
+        #("kind", msgpack.StringValue("cron")),
+        #("expression", msgpack.StringValue(expression)),
+        #("utc_offset_s", msgpack.IntValue(utc_offset_s)),
+        #("expiry", schedule_expiry(expiry)),
+      ])
+    OneShot(at_unix_s:) ->
+      schedule_cadence_map([
+        #("kind", msgpack.StringValue("one_shot")),
+        #("at_unix_s", msgpack.IntValue(at_unix_s)),
+      ])
+  }
+}
+
+fn schedule_expiry(expiry: ScheduleExpiry) -> MsgPackValue {
+  schedule_cadence_map([
+    #("max_fires", msgpack.IntValue(expiry.max_fires)),
+    #("expires_after_s", msgpack.IntValue(expiry.expires_after_s)),
+  ])
+}
+
+fn schedule_cadence_map(fields: List(#(String, MsgPackValue))) -> MsgPackValue {
+  msgpack.MapValue(
+    list.map(fields, fn(field) { #(msgpack.StringValue(field.0), field.1) }),
+  )
 }

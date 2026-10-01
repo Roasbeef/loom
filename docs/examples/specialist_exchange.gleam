@@ -38,12 +38,14 @@ fn required_text(value: report.Value, name: String) -> Result(String, String) {
 }
 
 fn deliver_finding(finding: Finding) -> Result(Nil, String) {
-  use _receipt <- result.try(peer.send(
-    finding.session,
-    "main",
-    finding.message_id,
-    finding.text,
-  ))
+  use session <- result.try(
+    peer.parse_session_id(finding.session)
+    |> result.map_error(fn(_) { "Invalid recipient session." }),
+  )
+  use _receipt <- result.try(
+    peer.send(session, "main", finding.message_id, finding.text)
+    |> result.map_error(fn(_) { "Peer admission refused." }),
+  )
   execution.progress(
     report.object([
       #("message_id", report.string(finding.message_id)),
@@ -51,4 +53,5 @@ fn deliver_finding(finding: Finding) -> Result(Nil, String) {
     ]),
   )
   |> result.map(fn(_) { Nil })
+  |> result.map_error(fn(_) { "Progress publication refused." })
 }

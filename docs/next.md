@@ -186,11 +186,9 @@ change to the daemon's package also needs `make signoff`.
 
 ## Caller-owned messaging inspection and fair delivery
 
-The messaging work is based on `e79f722de`; its implementation and focused
-validation were checked at `54aeb10b4` on 2026-09-29. The upstream web and
-issue #569 priorities below retain their order. The original handoff baseline
-above describes those upstream priorities rather than claiming this feature
-has landed or that its final integration gates have passed.
+The messaging work landed in #667 at `01f14ef8f` on 2026-09-30. The upstream
+web and issue #569 priorities below retain their order; their original
+handoff baseline above is separate from this messaging update.
 
 The default code-mode host now exposes caller-owned pending and transcript
 inspection through `cap/peer`, existing recipient admission receipt history,
@@ -212,16 +210,48 @@ cap-channel proof passed. The next-request runtime regression checks exact
 local and remote bodies after a blocked tool completes. The parent's full
 `make check` at `c52038cd2` exited zero, including 2359 client tests, 990 TUI
 tests and zero lint errors. The next-request regression fails against the old
-policy; the page-seek regression fails against the old SQL. Platform signoff
-still must exercise shipped-daemon prerequisites before landing. Hosted macOS
-currently has a separately
+policy; the page-seek regression fails against the old SQL. The final PR head
+`00229385e` passed the fresh-container Linux signoff, including all six lanes,
+release verification and the skip census, before #667 merged. Hosted macOS
+has a separately
 confirmed baseline `worktree_diff_test` ancestor-read failure; do not describe
 that CI as fully green or change messaging scope to work around it.
 
+## Typed capability follow-up
+
+The owner's follow-up covers `cap/peer`, `cap/workflow`, `cap/execution`,
+`cap/strand`, `cap/job` and `cap/schedule`. [Protocol 057](../protocol-change/057-typed-capability-results.md)
+records the approved source API migration, and [the migration guide](capability-types.md)
+names the public records, variants, identity parsers and cursor constructors.
+Peer pages and receipts are decoded inside the satellite; workflow and
+execution preserve channel error categories. Child and job identities and
+independent cursors are validated before they become usable handles. Schedule
+creation and listing expose granted cadence projected from the host's timing
+record, while keeping `when` for display.
+
+The wire shapes remain unchanged except for the additive schedule cadence
+field. Sender-owned payloads and custom metadata remain open values. Authority,
+delivery priority, admission semantics and retention remain those of #667.
+The generated capability prelude prefers each module's own public identity
+aliases, so peer-only host programs need no child-strand import.
+
+The follow-up on `cap/typed-surface` is rebased onto `01f14ef8f`. The full
+`make check` at `01844b49a` exited zero, including 126 cap tests, 2,399 client
+tests, 1,032 terminal tests and zero lint errors. Real jailed proofs cover
+peer inspection with exact bodies in both host modes, schedule admission,
+listing and cancellation, resident actor input, cross-session grants and
+workflow recovery. The independent review's custom metadata collision and
+lost body assertion findings were fixed and rechecked. Negative checks kill
+both defects, invalid-ID admission, negative-cursor clamping and the original
+alias renderer. Capability mutations need a rebuilt code-mode seed; the final
+full gate used a restored seed. Hosted CI and Linux signoff on the new PR
+remain separate from this local verification.
+
 ## Next actions, in order
 
-Terminal CPU work on `tui/render-cpu` is locally verified against installed
-`3088ee3ce`: counting strip rows during layout and painting known-width
+Terminal CPU work merged in #664 at `a54effa07` and is locally verified
+against installed `3088ee3ce`: counting strip rows during layout and painting
+known-width
 padding directly reduced frame reductions by 37.6% and scroll reductions
 by 40.8% at 200×50, with identical styled-cell witnesses. Full `make check`
 passed; the changed client has not been installed or measured live. See

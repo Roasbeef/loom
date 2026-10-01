@@ -1117,11 +1117,17 @@ pub fn a_host_serving_both_offers_both_and_defaults_to_the_workspace_test() {
     let assert Ok(surface) =
       codemode_tool.cap_scheme(mode).read(ctx_for("/work"), "peer")
       as "the default Agency-backed host exposes own message inspection"
-    assert string.contains(surface, "pub fn inbox(after: String, limit: Int)")
-    assert string.contains(surface, "pub fn history(before: Int, limit: Int)")
     assert string.contains(
       surface,
-      "pub fn received(after: String, limit: Int)",
+      "pub fn inbox(after: PendingCursor, limit: Int)",
+    )
+    assert string.contains(
+      surface,
+      "pub fn history(before: HistoryCursor, limit: Int)",
+    )
+    assert string.contains(
+      surface,
+      "pub fn received(after: ReceiptCursor, limit: Int)",
     )
   })
   broker.stop(broker_actor)

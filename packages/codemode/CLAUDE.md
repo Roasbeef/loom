@@ -850,3 +850,13 @@ remain bounded, other resource limits remain active, and session shutdown,
 owner kill or originating-operation abort cancels the execution. Quiet waiting
 has no completion or heartbeat wake unless the caller explicitly asks for the
 existing idle heartbeat. A VM restart loses the job and never replays it.
+
+## Structured schedule responses (protocol 057)
+
+`codemode/workspace.ScheduleCreated` and `ScheduleRow` carry `ScheduleCadence` and
+`ScheduleExpiry`, projected from the host's admitted timing. The capability router emits
+a tagged `cadence` map beside the existing `when` string in both create and list
+responses. It changes no request decoding, schedule authority or durable record.
+The satellite owns total decoding of this response into public capability types.
+
+See [protocol 057](../../protocol-change/057-typed-capability-results.md).

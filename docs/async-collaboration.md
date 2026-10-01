@@ -52,13 +52,14 @@ count, while a retry of the same handle does not. An input journal holds at most
 ```gleam
 import cap/execution
 import cap/report
+import gleam/string
 
 pub fn main() -> report.Outcome {
-  case execution.receive(after: 0, within_ms: 30000) {
+  case execution.receive(after: execution.first_input(), within_ms: 30000) {
     Ok(execution.Message(sequence: _, value: value)) -> report.value(value)
     Ok(execution.TimedOut) -> report.text("No input yet.")
-    Ok(execution.Closed) -> report.text("Execution closed.")
-    Error(reason) -> report.text(reason)
+    Ok(execution.Closed(reason: reason)) -> report.text(reason)
+    Error(reason) -> report.text(string.inspect(reason))
   }
 }
 ```
@@ -78,13 +79,16 @@ integers on `number` and publishes each accepted value as progress:
 import cap/execution
 import cap/report
 import gleam/result
+import gleam/string
 
 pub fn main() -> report.Outcome {
   let decoder = fn(value) {
     report.as_int(value) |> result.map_error(fn(_) { "Expected an integer." })
   }
   let deliver = fn(number) {
-    execution.progress(report.int(number)) |> result.replace(Nil)
+    execution.progress(report.int(number))
+      |> result.replace(Nil)
+      |> result.map_error(string.inspect)
   }
   case execution.endpoint("number", decoder, deliver) {
     Error(_) -> report.text("Invalid endpoint name.")
@@ -158,12 +162,13 @@ immutable for that run, and the child assignment is immutable for that step.
 import cap/report
 import cap/strand
 import cap/workflow
+import gleam/string
 
 pub fn main() -> report.Outcome {
   let assignment =
     strand.assignment(purpose: "security", brief: "Review the proposed change.")
   case workflow.step("review-42", "v1", "commit-sha", "security", assignment) {
-    Error(reason) -> report.text(reason)
+    Error(reason) -> report.text(string.inspect(reason))
     Ok(child) -> case strand.wait([child], within_ms: 10000) {
       Ok([strand.Ready(report: text, ..)]) -> report.text(text)
       Ok(_) -> report.text("Review is still running.")
@@ -248,8 +253,9 @@ cannot use this command.
 
 The model gets three tools: `peer_roster`, `peer_send`, and `peer_describe`.
 `peer_send` takes `session`, `strand`, `message_id`, and `text`. The program API
-is `cap/peer.roster()` and `cap/peer.send(...)`, returning JSON text. Each program
-may admit at most 128 calls of each peer capability. Message IDs are 1–128 bytes;
+is `cap/peer.roster()` and `cap/peer.send(...)`, returning typed links and
+admission receipts. The satellite decodes the existing JSON wire response.
+Each program may admit at most 128 calls of each peer capability. Message IDs are 1–128 bytes;
 message bodies are at most 32,768 bytes.
 
 Reuse a message ID only to retry the exact same target and body. The recipient

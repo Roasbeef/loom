@@ -412,6 +412,7 @@ fn create(
     name: built.name,
     target:,
     when: describe_timing(built.timing),
+    cadence: granted_cadence(built.timing),
     wake: granted_wake(built.wake),
   ))
 }
@@ -709,6 +710,7 @@ fn listed(runtime: Runtime, sched: Schedule) -> schedule_tool.Listed {
     name: sched.name,
     target: sched.target,
     when: describe_timing(sched.timing),
+    cadence: granted_cadence(sched.timing),
     wake: granted_wake(sched.wake),
     fired: fire_count(runtime, sched),
     body: sched.body,
@@ -1050,4 +1052,27 @@ pub fn describe_timing(timing: schedule.Timing) -> String {
 ///
 pub fn cell(sched: Schedule) -> JsonValue {
   schedule.encode(sched)
+}
+
+// The structured projection comes from the same accepted timing as the display.
+// In particular, `In` has already resolved to `OneShot` before this boundary.
+fn granted_cadence(timing: schedule.Timing) -> schedule_tool.Cadence {
+  case timing {
+    schedule.Interval(seconds:, expiry:) ->
+      schedule_tool.IntervalCadence(seconds:, expiry: granted_expiry(expiry))
+    schedule.Cron(expression:, offset_s:, expiry:) ->
+      schedule_tool.CronCadence(
+        expression: cron.source(expression),
+        utc_offset_s: offset_s,
+        expiry: granted_expiry(expiry),
+      )
+    schedule.OneShot(at:) -> schedule_tool.OneShotCadence(at_unix_s: at)
+  }
+}
+
+fn granted_expiry(expiry: schedule.Expiry) -> schedule_tool.Expiry {
+  schedule_tool.Expiry(
+    max_fires: expiry.max_fires,
+    expires_after_s: expiry.expires_after_s,
+  )
 }
