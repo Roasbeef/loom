@@ -56,10 +56,10 @@
 //// 4. `on_chunk` feeds a 200 body to the SSE parser and each event to
 ////    `handle_sse`; other statuses collect the error body for `http_error`.
 //// 5. `handle_sse` settles at the `[DONE]` sentinel and otherwise parses the
-////    chunk; `handle_document` turns an embedded `error` into an in-band
+////    chunk; `handle_document` turns an embedded `"error"` into an in-band
 ////    failure and `handle_chunk_document` records usage and the first choice.
 //// 6. `handle_choice` reads the delta with `handle_delta` (text, reasoning,
-////    tool-call fragments) and then the `finish_reason` through
+////    tool-call fragments) and then the `"finish_reason"` through
 ////    `apply_finish_reason`.
 //// 7. `settle` builds the one assistant message in `settle_with_stop`;
 ////    `on_end` reaches it through `settle_or_disconnect` when the provider

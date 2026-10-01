@@ -68,7 +68,7 @@
 //// 4. `on_chunk` feeds a 200 body to the SSE parser and each event to
 ////    `handle_sse`; other statuses collect the error body for `http_error`.
 //// 5. `handle_sse` parses one document; `handle_document` treats a top-level
-////    `error` as an in-band failure, and `handle_response_document` records
+////    `"error"` as an in-band failure, and `handle_response_document` records
 ////    usage and routes the first candidate to `handle_candidate`.
 //// 6. `handle_candidate` folds each part with `handle_part` (text through
 ////    `append_text`, calls through `append_tool`) and then applies the

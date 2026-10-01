@@ -57,7 +57,7 @@
 ////    `on_end` turns into `http_error`.
 //// 5. `handle_sse` parses one event's JSON and `handle_message` dispatches on
 ////    its type to the block, delta and usage handlers.
-//// 6. `settle` runs on `message_stop`: `settle_with_stop` builds the content
+//// 6. `settle` runs on `"message_stop"`: `settle_with_stop` builds the content
 ////    with `build_blocks` and the usage with `build_usage`, applies the
 ////    overflow rule, and emits the one settled message. `fail` ends the
 ////    stream in-band wherever the path breaks.

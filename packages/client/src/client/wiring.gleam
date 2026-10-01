@@ -13,8 +13,8 @@
 //// `build_effects` → `dispatch` → `prepare_dispatch` → `provider_request` → `generation_request`; `build_effects` → `run_tool` → `tool_context`
 ////
 //// 1. `build_effects` assembles the `Effects` record a host hands to
-////    `api.open`: clock, entropy, timers, a provider surface, a tool surface
-////    and `compaction_hooks`.
+////    `runtime/api.open`: clock, entropy, timers, a provider surface, a tool
+////    surface and `compaction_hooks`.
 //// 2. A model call enters at `dispatch`, which is `prepare_dispatch` followed
 ////    by the begin permit; only a generation reaches the gateway, and polls
 ////    and summaries are refused as unsupported.
