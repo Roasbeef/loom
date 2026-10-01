@@ -2119,7 +2119,7 @@ fn run_rust_analyzer(live: Live, home: String) -> Nil {
   // empty Cargo home, offline, cannot resolve them (measured: "no matching
   // package named `hashbrown`"), std loads without them, and the call
   // inside `println!` — a std macro — is then never found. The home's
-  // registry is the host's own, granted read-only by name as the lsp_rust
+  // registry is the host's own, granted read-only by name as the loom-lsp-rust
   // profile grants it: the jail mounts only `~/.cargo/bin` for rustup's
   // link, never `~/.cargo` itself, so nothing else would reach it. Only
   // the home itself is writable.
