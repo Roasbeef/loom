@@ -395,6 +395,32 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   widths or closure lifetimes. Ordinary callback arguments are excluded too,
   since deciding whether an arbitrary callee retains one would require
   interprocedural analysis.
+- **R13 `flow-spine`** — a module of `policy.spine_lines` (1000) or more
+  lines whose module doc has no `//// ## Flow` section, or any module whose
+  Flow section is stale. The spine is the map a reader dropped in by "go to
+  definition" lacks: the functions on the main path, in order, as a short
+  numbered list. The section runs to the next level-1 or level-2 heading.
+  Every backtick span in it that is a bare snake_case name (optionally
+  `(...)` or `/N`) must be a function the module defines, public or private;
+  `alias.name` must have an `alias` the module imports (the function behind
+  it is the other file's concern); an UpperCamel type or anything with a
+  space is prose and unchecked. The section must name three distinct local
+  functions and holds no fenced block, since a fence is where a stale name
+  would hide. The doc is read from `glexer`'s comment tokens by
+  `lint/module_doc`, so a `////` line inside a multi-line string is not
+  doc. A missing spine is one finding at the top of the file; the rest are
+  at the offending line or the heading.
+- **R14 `transition-table`** — a `<!-- transitions: module.Type -->` marker
+  line in the module doc, followed by a markdown table, checked against the
+  custom type it names. `module` is this module's last path segment or its
+  full path and `Type` must be a custom type defined here. The first cell of
+  each body row, backticks and space stripped, is a constructor: a missing
+  constructor (one finding, at the marker), a row naming no constructor and
+  a repeated row (at the row) are findings, as is a row whose cell count
+  differs from the header's or that has an empty cell. A marker for another
+  module, for a non-type, or with no table after it reports that one
+  finding and stops. The cells themselves stay prose; only the row set is
+  checked, so adding a state without a row fails the gate.
 - **R0 `unparseable`** — not a house rule. A file `glance` could not
   parse is reported, so a parse failure is never silence.
 
