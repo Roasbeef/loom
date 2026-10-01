@@ -1,11 +1,11 @@
 //// An in-process fake language server for `lsp/client`'s tests. It plugs
-//// into the client through the real `mcp/transport.ChannelTransport`
+//// into the client through the real `gleam_mcp/transport.ChannelTransport`
 //// seam, so the actor runs its production path — `Content-Length`
 //// framing, JSON-RPC decoding, correlation, the death latch — with no OS
 //// process anywhere.
 ////
 //// The fake is a scripted actor. Every frame the client writes is
-//// unframed with `lsp/framing`, decoded with `mcp/jsonrpc` (a client
+//// unframed with `lsp/framing`, decoded with `gleam_mcp/jsonrpc` (a client
 //// request decodes as a `ServerRequest`, a notification as a
 //// `Notification`, and the client's answer to a server request as a
 //// `Response`), logged, and handed to the test's script, which threads
@@ -17,15 +17,15 @@
 ////
 //// Going silent is a script that answers nothing. Dying is `Close`.
 
-import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam_mcp/json.{type JsonValue}
+import gleam_mcp/jsonrpc.{type Id, type Inbound}
+import gleam_mcp/transport
 import lsp/framing
-import mcp/jsonrpc.{type Id, type Inbound}
-import mcp/transport
 import weft/poll
 
 /// One thing the fake does, delivered to the client in list order.
@@ -204,7 +204,10 @@ pub fn response(id: Id, result: JsonValue) -> JsonValue {
 
 /// A JSON-RPC error response, in the server's own words.
 pub fn error_response(id: Id, code: Int, message: String) -> JsonValue {
-  jsonrpc.error_response(id, jsonrpc.RpcError(code:, message:, data: None))
+  jsonrpc.error_response(
+    Some(id),
+    jsonrpc.RpcError(code:, message:, data: None),
+  )
 }
 
 /// A `textDocument/publishDiagnostics` notification carrying one error

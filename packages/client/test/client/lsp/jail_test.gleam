@@ -28,7 +28,6 @@ import client/lsp/jail
 import client/lsp/leases
 import core/clock
 import core/ids
-import core/json
 import filepath
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
@@ -38,8 +37,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import mcp/jsonrpc
-import mcp/transport
+import gleam_mcp/json
+import gleam_mcp/jsonrpc
+import gleam_mcp/transport
 import simplifile
 import tools/fs
 import tools/tool

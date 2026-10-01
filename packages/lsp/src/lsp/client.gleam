@@ -1,5 +1,5 @@
 //// The language-server client actor: one process owning one language
-//// server over a `mcp/transport.Transport`, from the `initialize`
+//// server over a `gleam_mcp/transport.Transport`, from the `initialize`
 //// handshake to the witnessed close of its transport (ADR-015 §§1–3).
 ////
 //// # Why this is an actor, and what it refuses to do
@@ -29,7 +29,7 @@
 //// **Only a channel transport is accepted.** Rule Zero puts a language
 //// server in the jail, and the jail is reached through a
 //// `ChannelTransport` built over the broker's exec in `packages/client`.
-//// `mcp`'s unjailed port transport is refused at `start`, so no wiring
+//// `gleam_mcp`'s unjailed port transport is refused at `start`, so no wiring
 //// mistake can run a server on the harness's own host.
 ////
 //// # The phases
@@ -66,12 +66,10 @@
 //// answers `DeadlineExpired` with whatever arrived — never a claim that
 //// the code is clean.
 ////
-//// Callers reach the actor only through `mcp/call.try_call`, the
+//// Callers reach the actor only through `lsp/call.try_call`, the
 //// monitored call that answers a dead or wedged callee as a value rather
 //// than crashing the asker as `process.call` would.
 
-import core/corruption
-import core/json.{type JsonValue}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -80,6 +78,11 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import gleam_mcp/corruption
+import gleam_mcp/json.{type JsonValue}
+import gleam_mcp/jsonrpc.{type Id}
+import gleam_mcp/transport.{type Transport}
+import lsp/call
 import lsp/framing
 import lsp/protocol.{
   type CallHierarchyItem, type DocumentSymbols, type Feature, type HoverResult,
@@ -88,9 +91,6 @@ import lsp/protocol.{
   type ServerDiagnostic, type WorkspaceEdit, type WorkspaceFolder,
 }
 import lsp/range.{type Position}
-import mcp/call
-import mcp/jsonrpc.{type Id}
-import mcp/transport.{type Transport}
 import weft/state_machine as sm
 
 // --- bounds -----------------------------------------------------------------
@@ -1022,7 +1022,7 @@ fn read(
   |> result.flatten
 }
 
-// Every exchange goes through `mcp/call.try_call`: the caller of a query
+// Every exchange goes through `lsp/call.try_call`: the caller of a query
 // or a settlement holds an edit's verdict, and a dead or wedged client
 // must answer `Unavailable` rather than exit the asker, which is what
 // `process.call` would do.
@@ -1662,7 +1662,7 @@ fn answer_server(
     protocol.answer_server_request(method, params, flow.data.folders)
   {
     Ok(value) -> jsonrpc.response(id, value)
-    Error(error) -> jsonrpc.error_response(id, error)
+    Error(error) -> jsonrpc.error_response(Some(id), error)
   }
   case send(flow.data, answer) {
     Ok(Nil) -> flow

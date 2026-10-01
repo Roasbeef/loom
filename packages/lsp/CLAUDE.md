@@ -28,7 +28,7 @@ The modules, in dependency order:
 - `lsp/text` (added by a sibling slice) — UTF-16 ↔ codepoint conversion
   and pure text-edit application.
 - `lsp/client` — the client actor, a `weft/state_machine` over
-  `mcp/transport.Transport`: one process owning one language server,
+  `gleam_mcp/transport.Transport`: one process owning one language server,
   its handshake, gated requests, document sync, the diagnostics store and
   settlement, and the stop sequence.
 
@@ -88,12 +88,15 @@ The modules, in dependency order:
 
 ## Relationships
 
-- **Depends on**: `gleam_stdlib`; `core` (`JsonValue`, its total parser
-  and serializer); `mcp` for exactly two things — `mcp/jsonrpc` (the
-  envelope, including its `response` and `error_response` encoders) and,
-  from the client slice on, `mcp/transport` and `mcp/call` (the one
-  monitored try-call outside the broker). `gleam_erlang`, `gleam_otp` and
-  `weft` are declared for the client actor; `range`, `query`, `framing`,
+- **Depends on**: `gleam_stdlib`; `core`; `gleam_mcp`, pinned to the same
+  ref as every other package, for the JSON value type and its total
+  parser and serializer (`gleam_mcp/json`), the JSON-RPC envelope with its
+  `response` and `error_response` encoders (`gleam_mcp/jsonrpc`), the
+  corruption report (`gleam_mcp/corruption`) and the transport seam
+  (`gleam_mcp/transport`). It does not depend on `mcp`. The monitored
+  try-call is `lsp/call`, which this package keeps itself because
+  `gleam_mcp` carries it only privately inside its own client.
+  `gleam_erlang`, `gleam_otp` and `weft` are declared for the client actor; `range`, `query`, `framing`,
   `protocol` and `text` import none of them and are pure functions of
   their arguments. The package as a whole is impure and not in the
   portable subset lint R6 gates.
@@ -102,7 +105,7 @@ The modules, in dependency order:
   `tools` (the `lsp_*` tools, over `Door`), `codemode` (`lsp.*` served
   here, over `Door`) — as those slices land.
 - **FFI**: none, and ADR-015 needs none. The production transport is a
-  `mcp/transport.ChannelTransport` over the broker's jailed exec.
+  `gleam_mcp/transport.ChannelTransport` over the broker's jailed exec.
 
 ## Traffic
 
@@ -110,7 +113,7 @@ The modules, in dependency order:
   `Handshake` (once, from `start`), `Ask(feature, build, deadline_ms,
   reply)`, `Sync(ops, reply)`, `Settle(uris, deadline_ms, reply)`,
   `Read(TextOf | OpenPaths | PublishedFor | CapabilitiesOf)` and
-  `Stop(grace_ms, reply)`, every one through `mcp/call.try_call`. The
+  `Stop(grace_ms, reply)`, every one through `lsp/call.try_call`. The
   transport sends `FromTransport(TransportData | TransportClosed)`. The
   actor sends itself `Expire(id)` and `SettleExpired(token)` (per-key
   `send_after` timers, stale-checked against the pending tables — the
@@ -177,7 +180,7 @@ The modules, in dependency order:
 - **Only a channel transport is accepted.** `start` refuses
   `PortTransport`, which would run the server unjailed (Rule Zero).
 - **No caller is ever crashed by the client.** Every exchange is
-  `mcp/call.try_call`; a dead or wedged client answers `Unavailable`.
+  `lsp/call.try_call`; a dead or wedged client answers `Unavailable`.
 - **Death settles everyone, then is reported.** A transport close, a
   framing fault, a body that is not JSON-RPC or a failed write answers
   every pending caller and settle-waiter `Unavailable(reason)`, closes
@@ -208,10 +211,11 @@ The modules, in dependency order:
   — the design ruling: the jail, the package split, settled diagnostics,
   rename through hashline, symbol addressing, and the measured behaviour
   of `gleam lsp` and `gopls` this package's tests replay.
-- [packages/mcp/CLAUDE.md](../mcp/CLAUDE.md) — `mcp/jsonrpc`,
-  `mcp/transport` and `mcp/call`, which this package reuses unchanged.
+- [packages/mcp/CLAUDE.md](../mcp/CLAUDE.md) — where the MCP runtime went
+  and why `gleam_mcp` is the shared home of the JSON-RPC envelope and the
+  transport seam this package reuses.
 - [docs/weft.md](../../docs/weft.md) — the monitored try-call gap
-  `mcp/call` stands in for.
+  `lsp/call` stands in for.
 - [docs/gleam-style.md](../../docs/gleam-style.md) — Part IV §2 (total
   decoders) and §4 (no FFI).
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc

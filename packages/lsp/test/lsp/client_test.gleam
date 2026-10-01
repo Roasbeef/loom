@@ -8,18 +8,18 @@
 //// sleeping — an absence is checked behind a later message the server
 //// must have seen first.
 
-import core/json.{type JsonValue}
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam_mcp/json.{type JsonValue}
+import gleam_mcp/jsonrpc.{type Id, type Inbound}
+import gleam_mcp/transport
 import lsp/client
 import lsp/protocol
 import lsp/range
-import mcp/jsonrpc.{type Id, type Inbound}
-import mcp/transport
 import support/fake_server.{
   type Action, type Fake, Close, Got, GotClose, Later, Raw, Reply,
 }

@@ -102,7 +102,7 @@ flowchart TB
     M --> C
     CR --> T
     CR --> D
-    C -->|mcp/transport ChannelTransport| J
+    C -->|gleam_mcp/transport ChannelTransport| J
     J --> L
     J -->|clear_call, exec_stdin, exec_out| B
     B --> S
@@ -117,11 +117,13 @@ holds total decoders for every structure consumed, the advertised-
 capability gate, and the answers to the server's own requests. `lsp/text`
 is the one place a server position becomes a line and codepoint, and the
 one place a server's text edits are applied. `lsp/client` is the actor
-that owns one server: a `weft/state_machine` over `mcp/transport`, which
+that owns one server: a `weft/state_machine` over `gleam_mcp/transport`, which
 runs the handshake, gates every request, syncs documents, stores
-diagnostics and decides when they have settled. The package reuses three
-things from `mcp` — the JSON-RPC envelope, the transport seam and the
-monitored try-call — and never imports `broker`. `packages/lsp/CLAUDE.md`
+diagnostics and decides when they have settled. The package takes the
+JSON value type, the JSON-RPC envelope and the transport seam from
+`gleam_mcp`, keeps its own small monitored try-call (`lsp/call`, because
+`gleam_mcp` carries one only privately), and never imports `broker` or
+`mcp`. `packages/lsp/CLAUDE.md`
 is the dense reference.
 
 **`client/lsp` is the harness wiring.** `client/lsp/manager` is the
@@ -215,7 +217,7 @@ twelve hours out, as for extension hosts.
 
 ### The transport
 
-`client/lsp/jail.transport` is an `mcp/transport.ChannelTransport` whose
+`client/lsp/jail.transport` is a `gleam_mcp/transport.ChannelTransport` whose
 `connect` starts a relay. The relay acquires a lease, clears the call
 through `broker.clear_call`, and turns broker events into transport
 events. A stdout chunk becomes data. The settlement becomes a close,

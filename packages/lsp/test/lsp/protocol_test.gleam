@@ -1,11 +1,11 @@
-import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam_mcp/json.{type JsonValue}
+import gleam_mcp/jsonrpc
 import lsp/protocol
 import lsp/query
 import lsp/range.{Position, Range, TextEdit}
-import mcp/jsonrpc
 
 // The payloads below are literal answers from `gleam lsp` 1.18.1 and
 // `gopls` v0.23.0, captured over stdio on 2026-09-25 against a two-module

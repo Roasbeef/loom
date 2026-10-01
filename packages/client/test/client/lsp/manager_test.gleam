@@ -26,7 +26,6 @@ import client/lsp/manager
 import client/lsp/resolve
 import core/clock
 import core/ids
-import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
@@ -36,10 +35,11 @@ import gleam/order
 import gleam/otp/static_supervisor as sup
 import gleam/result
 import gleam/string
+import gleam_mcp/json
+import gleam_mcp/transport
 import lsp/protocol
 import lsp/query
 import lsp/range
-import mcp/transport
 import provider/secret
 import simplifile
 import support/fake_lsp

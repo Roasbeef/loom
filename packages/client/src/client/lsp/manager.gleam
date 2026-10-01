@@ -97,6 +97,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import gleam_mcp/transport.{type Transport}
+import lsp/call
 import lsp/client as lsp
 import lsp/protocol.{type Location}
 import lsp/query.{
@@ -105,8 +107,6 @@ import lsp/query.{
 }
 import lsp/range.{type Position, type TextEdit}
 import lsp/text
-import mcp/call
-import mcp/transport.{type Transport}
 import simplifile
 import tools/grep
 import tools/tool.{type RunningCall}

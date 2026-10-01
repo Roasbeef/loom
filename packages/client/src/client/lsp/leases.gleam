@@ -39,7 +39,7 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/int
 import gleam/result
-import mcp/call
+import lsp/call
 import weft/actor
 
 /// How many helpers of a pool are kept out of reach of session-lived

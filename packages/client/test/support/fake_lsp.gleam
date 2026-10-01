@@ -1,6 +1,6 @@
 //// A compact in-process language server for the manager's tests.
 ////
-//// It plugs into `lsp/client` through the real `mcp/transport`
+//// It plugs into `lsp/client` through the real `gleam_mcp/transport`
 //// `ChannelTransport` seam, so the client runs its production path —
 //// framing, JSON-RPC correlation, capability gating, settlement — with no
 //// process outside the VM. `packages/lsp` has a richer fake of its own, but
@@ -13,15 +13,15 @@
 //// in reply to what the client tells it, as a server publishes
 //// diagnostics after a `didOpen`.
 
-import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam_mcp/json.{type JsonValue}
+import gleam_mcp/jsonrpc
+import gleam_mcp/transport
 import lsp/framing
-import mcp/jsonrpc
-import mcp/transport
 
 /// How the script answers one request.
 pub type Answer {
@@ -235,7 +235,7 @@ fn answer(
         Answer(result:) -> Some(jsonrpc.response(id, result))
         Refuse(message:) ->
           Some(jsonrpc.error_response(
-            id,
+            Some(id),
             jsonrpc.RpcError(code: -32_803, message:, data: None),
           ))
         Silent -> None

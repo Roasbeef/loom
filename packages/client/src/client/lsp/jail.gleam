@@ -29,7 +29,7 @@
 //// `RefuseNarrowed` refuses rather than a lease that silently dies of it
 //// hours in.
 ////
-//// **The transport** (`transport`) is a `mcp/transport.ChannelTransport`
+//// **The transport** (`transport`) is a `gleam_mcp/transport.ChannelTransport`
 //// whose `connect` starts a relay process. The relay acquires a helper
 //// lease (`client/lsp/leases`), clears the call, and turns broker events
 //// into transport events: stdout chunks become `TransportData`, the
@@ -76,8 +76,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam_mcp/transport
 import host/bootstrap
-import mcp/transport
 import simplifile
 import tools/fs
 import tools/tool.{type RunningCall}

@@ -7,7 +7,7 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
-mcp = { path = "../mcp" }
+gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "686955fc0461630bf64a4dc8eb51565dc7ca1ac9" }
 weft = "== 0.4.5"
 
 [dev_dependencies]

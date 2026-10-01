@@ -430,3 +430,24 @@ jail already reaches, and stays admitted. Judging once, at resolution, is
 enough, because the mounts are built from that resolution and nothing
 re-reads the chain; a link rewritten afterwards points outside what is
 mounted and fails to execute in the jail rather than widening anything.
+
+## Addendum: the JSON-RPC and transport seam moved to `gleam_mcp`
+
+Decision 2 says `packages/lsp` depends on `mcp` for the JSON-RPC envelope
+and the transport seam, and that LSP reuses the monitored try-call that
+`mcp` made public. Both statements described `packages/mcp` as it stood
+when the decision was made. The MCP runtime has since been extracted into
+the external library `gleam_mcp`: `mcp/jsonrpc`, `mcp/transport`,
+`mcp/client` and `mcp/call` no longer exist, and `packages/mcp` keeps only
+code generation, interchange, name planning and schema planning.
+
+The decision stands with its dependency renamed. `packages/lsp` depends on
+`gleam_mcp`, at the one ref the whole tree pins, for `gleam_mcp/json`,
+`gleam_mcp/jsonrpc`, `gleam_mcp/corruption` and `gleam_mcp/transport`. It
+no longer depends on `mcp`. Two details differ from the original text.
+`gleam_mcp/jsonrpc.error_response` takes an `Option(Id)`, because a reply
+to an unreadable request has no id to echo, so LSP passes `Some(id)`. And
+`gleam_mcp` keeps its monitored try-call private inside `gleam_mcp/client`,
+where it returns that client's own error type, so `lsp/call` holds the
+small pure-Gleam copy of it that LSP needs. When `docs/weft.md`'s gap is
+filled, that copy and the broker's collapse into the weft primitive.

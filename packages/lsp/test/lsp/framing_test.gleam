@@ -1,9 +1,9 @@
-import core/json
 import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
+import gleam_mcp/json
 import lsp/framing
 
 // Two frames back to back. The first body carries "é" (two UTF-8 bytes)
