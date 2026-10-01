@@ -30,7 +30,7 @@
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   dc1de7c9d376c1224193be85eb0ccbbf980dde14ab12532d8c718c570dfe62db  packages/cap/src/cap/job.gleam
 ////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
-////   7834f6423c6524768caa86bfb61f453f25986fa9b2b3cd3d2088ba2e219418b3  packages/cap/src/cap/lsp.gleam
+////   cef1b32af6ae85af5d83f90a81ae7813694d5c32ca9cec6a0eab59f3852cec14  packages/cap/src/cap/lsp.gleam
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
