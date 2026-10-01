@@ -13,6 +13,28 @@
 //// explicit `null` as absence. Opaque `Json` payload fields (`data`,
 //// `details`, `diagnostics`, `payload`) distinguish absent from `null`:
 //// absent decodes to `None`, a present `null` to `Some(json.Null)`.
+////
+//// ## Flow
+////
+//// `decode_entry` → `decode_message` → `decode_user_block` → `fields_of` → `require_string`
+////
+//// 1. `encode_entry` writes one durable entry, delegating a message entry to
+////    `encode_message`, which writes the blocks through `encode_user_block`
+////    and its siblings; `object_of` drops the absent optional fields.
+//// 2. `decode_entry` is the way back from the store: `fields_of` insists on
+////    an object, the shared header (id, parent, sequence, timestamp, type)
+////    is read once, and the type tag picks the entry's own fields.
+//// 3. A message entry hands its body to `decode_message`, which dispatches
+////    on role to `decode_user_message`, `decode_assistant_message`,
+////    `decode_tool_result_message` or `decode_custom_message`.
+//// 4. Content arrays go through `decode_user_block`, `decode_assistant_block`
+////    and `decode_tool_result_block`, one block at a time.
+//// 5. Every leaf read is `require_string`, `require_int` or an `optional_*`
+////    sibling, so a wrong shape becomes a `CorruptionReport` naming the
+////    field rather than a crash.
+//// 6. `encode_usage_row`, `encode_register_value` and
+////    `encode_corruption_report` (with their `decode_*` twins) are
+////    independent codecs for the rows and registers beside the transcript.
 
 import core/corruption.{type CorruptionReport}
 import core/entry.{
@@ -116,7 +138,7 @@ fn decode_usage_cost(value: JsonValue) -> Result(UsageCost, CorruptionReport) {
 
 // --- messages -----------------------------------------------------------
 
-/// Encodes an `AgentMessage` in pi's wire shape, discriminated by `role`.
+/// Encodes an `AgentMessage` in pi's wire shape, discriminated by role.
 ///
 /// ## Examples
 ///
@@ -208,7 +230,7 @@ pub fn encode_message(message: AgentMessage) -> JsonValue {
   }
 }
 
-/// Decodes an `AgentMessage`, dispatching on `role`. Total; an unknown
+/// Decodes an `AgentMessage`, dispatching on role. Total; an unknown
 /// role is corruption — pi's open custom-message roles arrive here only
 /// through the import shim, which maps them to the `"custom"` form.
 ///
@@ -645,7 +667,7 @@ fn decode_deferred_handle(
 
 // --- entries ------------------------------------------------------------
 
-/// Encodes an `Entry` in pi's wire shape, discriminated by `type`.
+/// Encodes an `Entry` in pi's wire shape, discriminated by type.
 ///
 /// ## Examples
 ///
@@ -726,7 +748,7 @@ pub fn encode_entry(entry: Entry) -> JsonValue {
   }
 }
 
-/// Decodes an `Entry`, dispatching on `type`. Total; unknown entry types
+/// Decodes an `Entry`, dispatching on type. Total; unknown entry types
 /// are corruption — the entry-type set is closed.
 ///
 /// ## Examples

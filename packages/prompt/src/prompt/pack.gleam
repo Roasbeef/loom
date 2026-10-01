@@ -1,6 +1,27 @@
 //// The system-prompt pack: a swappable file of named sections, a total
 //// decoder for it, and a pure renderer over a typed environment.
 ////
+//// ## Flow
+////
+//// `decode` → `assess` → `environment` → `render` → `substitute` → `tidy`
+////
+//// 1. `decode` splits the source into lines and folds `read_line` over
+////    them; `read_directive` routes `%%` lines to `read_header`,
+////    `read_version` and `read_section`, and every other line is kept as body
+////    text. Anything malformed is a `CorruptionReport` from `report_at`.
+//// 2. `assess` and `problems` judge a decoded pack for mistakes a loader
+////    should refuse, using `placeholders` to find the holes each template uses.
+//// 3. `environment` builds the typed host description, normalizing every list
+////    so the same set in any order renders the same bytes.
+//// 4. `render` calls `bindings` to resolve the placeholder values, with
+////    `fragment` choosing the wording for the host's enforcement and
+////    network posture, then runs `substitute` over each section that is
+////    not a fragment.
+//// 5. `substitute_loop` is the single pass that never rescans a substituted
+////    value; `tidy` normalizes the joined text so the prompt is byte-stable.
+//// 6. `fingerprint` digests the text for the cache-attribution record, and
+////    `encode` writes a pack back to its file form.
+////
 //// ## Why the words are not in this file
 ////
 //// The system prompt is text that will be optimized — mutated, scored,

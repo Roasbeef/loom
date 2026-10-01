@@ -11,6 +11,29 @@ import cap/internal/wire
 import cap/strand
 import gleam/result
 
+/// Why a durable workflow admission could not be recovered.
+pub type WorkflowError {
+  /// The host refused the operation under its stable denial code.
+  WorkflowDenied(
+    /// The stable denial code supplied by the host.
+    code: String,
+    /// The host denial explanation.
+    message: String,
+  )
+
+  /// The capability transport could not carry the request.
+  WorkflowUnavailable(
+    /// The complete diagnostic or closure reason.
+    reason: String,
+  )
+
+  /// A successful response did not contain a valid typed handle.
+  WorkflowResultMalformed(
+    /// The complete diagnostic or closure reason.
+    reason: String,
+  )
+}
+
 /// Starts or recovers a named child step in the current background execution.
 /// Join the returned handle with strand.wait, whose result is durable. Other
 /// completed steps retain their handles when a failed step is retried by name.
@@ -41,29 +64,6 @@ pub fn step(
     |> result.map_error(map_error),
   )
   strand.read_handle(value) |> result.map_error(WorkflowResultMalformed)
-}
-
-/// Why a durable workflow admission could not be recovered.
-pub type WorkflowError {
-  /// The host refused the operation under its stable denial code.
-  WorkflowDenied(
-    /// The stable denial code supplied by the host.
-    code: String,
-    /// The host denial explanation.
-    message: String,
-  )
-
-  /// The capability transport could not carry the request.
-  WorkflowUnavailable(
-    /// The complete diagnostic or closure reason.
-    reason: String,
-  )
-
-  /// A successful response did not contain a valid typed handle.
-  WorkflowResultMalformed(
-    /// The complete diagnostic or closure reason.
-    reason: String,
-  )
 }
 
 fn map_error(error: channel.CallError) -> WorkflowError {
