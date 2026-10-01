@@ -57,6 +57,7 @@ cap|strand_map_test|installs the capability channel in cap/internal/dispatch's V
 cap|strand_test|depends on the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|workflow_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 ext|ext_test|start_serving resets cap/internal/dispatch's VM-global persistent_term slot for every serving test
+tools|tools@call_record_redaction_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot to capture the arguments the cap encoders write
 
 # --- the node-wide httpc supervisor ----------------------------------------
 # `restart_httpc_manager` and `restart_httpc_handler_supervisor` in

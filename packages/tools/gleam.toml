@@ -11,5 +11,8 @@ gleam_regexp = ">= 1.1.1 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 
 [dev_dependencies]
+# The redaction tests drive the real `cap` encoders, so the allowlist and the
+# keys the program-side library writes are checked against each other.
+cap = { path = "../cap" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
