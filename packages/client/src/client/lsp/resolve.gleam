@@ -37,6 +37,52 @@
 //// paths in every answer, and the harness reads outside every jail, so a
 //// server-named path is read only once `admit` has placed its real
 //// location under the server's root and under no protected path.
+////
+//// # Naming a symbol: the qualifier narrows definitions, never hits
+////
+//// The model writes a symbol as one string, and a language spells a
+//// qualified name its own way, so `split_symbol` cuts it on the server's
+//// `qualifier_separators` (`.` by default, `::` for a server that says so).
+//// The last segment is the *identifier*, the thing searched for. The
+//// segments before it are the *qualifier*, and they are re-joined with `/`
+//// whatever the separator was, so `util::greet` and `util.greet` both
+//// qualify with `util`. That is deliberate: a qualifier is matched against
+//// a file tree, and `/` is the one separator every file tree shares, which
+//// is also why `/` can never be a separator itself. `pkg/mod.name` therefore
+//// reads as identifier `name` in qualifier `pkg/mod`, a path.
+////
+//// A qualifier is then used in two places, both of which only *remove*
+//// candidates. `named` keeps an outline entry whose parent chain ends with
+//// the qualifier (a type: `Server.handle`) or whose file satisfies it (a
+//// module). `satisfies` is the file test: the path under the project root,
+//// with and without its extension, must end with the qualifier on a segment
+//// boundary, so `probe` matches `src/probe.gleam` and `util/util.go`, and
+//// `prob` matches neither. The manager applies it to definitions found, not
+//// to search hits, because `probe.greet` is written at call sites in files
+//// that are not `probe`.
+////
+//// `module_case` says how a language names a module's file from the module's
+//// name. Under `AsWritten` the qualifier meets the file tree verbatim. Under
+//// `Snake` (Elixir, Ruby) `cased` first converts each `/`-segment from
+//// CamelCase, so `MyApp/Accounts` finds `my_app/accounts.ex`. Only the file
+//// test is cased: a parent chain in an outline is the server's own spelling
+//// of a type and is compared as written.
+////
+//// ## Flow
+////
+//// The file has two halves, in the order a question uses them. The first
+//// half decides whether a server may be asked, and the second turns words
+//// into positions and positions into text.
+////
+//// ```text
+//// owner → extension_of → workspace_real → marked_root → real
+////       → Owned | Unowned                       (may we ask?)
+//// admit → Ok(real path) | Error(reason)         (may the harness read it?)
+//// split_symbol → segments                       (what did the model name?)
+//// named → flatten → walk → satisfies → cased → snake
+//// container → flatten → holds → compare         (what contains this?)
+//// site | outline → entry → display, read_text   (show it)
+//// ```
 
 import broker/policy
 import client/lsp/profile.{type LspServer, type ModuleCase}
@@ -194,6 +240,10 @@ pub fn owner(
   }
 }
 
+// A path with every link resolved, below `workspace`, as the `Unowned`
+// refusal that says which way it failed. Both `owner` checks use it, once
+// for the root and once for the file, so the comparison between them is
+// between real locations on both sides.
 fn real(workspace: String, path: String) -> Result(String, Unowned) {
   fs.resolve_real(filesystem: fs.real_filesystem(), workspace:, path:)
   |> result.map_error(fn(error) {
@@ -436,6 +486,11 @@ pub fn split_symbol(symbol: String, separators: List(String)) -> Symbol {
   }
 }
 
+// A plain recursion over the string, one grapheme at a time, in three cases:
+// a separator starts here, so the segment so far is closed; an ordinary
+// grapheme, which extends the current segment; or the end, which closes the
+// last segment and puts the list in reading order.
+//
 // Walks `rest` once, cutting a segment wherever one of `separators`
 // begins. `current` is the segment being read and `done` the segments
 // already cut, newest first. The first separator in the list that matches
@@ -642,6 +697,9 @@ fn flatten(symbols: DocumentSymbols) -> List(Flat) {
   }
 }
 
+// The depth-first walk of one hierarchical level. `parents` is the dotted
+// chain down to this level and `into` accumulates entries, so the result
+// is newest-first, in the order the fold builds it.
 fn walk(
   symbols: List(DocumentSymbol),
   parents: String,
@@ -677,6 +735,8 @@ pub fn container(symbols: DocumentSymbols, at: Position) -> Option(String) {
   |> option.from_result
 }
 
+// Whether `at` lies in `span`, both ends included, since a reference may
+// sit on the first or last character of its container.
 fn holds(span: Range, at: Position) -> Bool {
   compare(span.start, at) != order.Gt && compare(at, span.end) != order.Gt
 }
@@ -729,6 +789,8 @@ pub fn outline(
   }
 }
 
+// One hierarchical outline entry, recursing into its children. The site is
+// the entry's name (`selection_range`), not the whole declaration.
 fn entry(
   symbol: DocumentSymbol,
   content: String,
