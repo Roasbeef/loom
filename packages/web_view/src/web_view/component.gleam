@@ -96,6 +96,31 @@
 //// The page's regions are drawn by the modules under `web_view/view`: the
 //// heading, the agent strip and the transcript lane. This module derives
 //// what they draw, when a message changes it, and `view` lays them out.
+////
+//// ## Flow
+////
+//// `init` → `update` → `stepping` → `finished` → `refreshed` → `view`
+////
+//// 1. `app` names the Lustre application; `init` builds the model with `new`,
+////    then `open` starts the transport and `arm` the deadline timer.
+//// 2. `update` receives one `Msg`. `Opened` starts the lane through
+////    `session_channel.start`, `Arrived` and `Ticked` run the shared step, and
+////    `OlderRequested` and `FocusRequested` go to `older_at` and `focus_at`.
+//// 3. `stepping` folds the messages through `step.update` and collects the
+////    effects each decided, then calls `finished`.
+//// 4. `finished` ends every message: `settled` takes what the step left,
+////    `refreshed` derives what the page draws, `rearm` sets the deadline timer
+////    for the lane's next due reading, and `perform` runs the effects.
+//// 5. `refreshed` rebuilds a projection only when its inputs moved: `relaned`
+////    projects the transcript window, `restripped` the agent strip, and
+////    `streamed` and `statused` follow the live answer and the connection.
+//// 6. `submit` and `decide` are the operator page's way in; `submitting` and
+////    `commanded` wrap a command as the step's message. `switch_to` asks the
+////    daemon to open another session.
+//// 7. `older`, `focus` and `invite` are the other public entries that change
+////    what the page shows; `apply` folds lane updates a caller took from the lane itself.
+//// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
+////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
 import gleam/dict
 import gleam/erlang/process.{type Subject}
