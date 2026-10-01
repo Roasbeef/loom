@@ -433,6 +433,8 @@ against a pinned prelude and execute outside the harness VM. For example,
 [loom-web-search](https://github.com/Roasbeef/loom-web-search) adds web search
 through broker-mediated HTTP.
 
+Try the [Jev MCP walkthrough](docs/jev-mcp.md) for setup, generated API
+discovery, and a code-mode query that also works against a local fixture.
 See the [MCP guide](docs/architecture/mcp.md) and
 [extension guide](docs/architecture/extensions.md) for configuration and the
 extension lifecycle.

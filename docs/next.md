@@ -1,5 +1,30 @@
 # Current handoff
 
+The MCP handoff was refreshed against `f875811be` on October 1, 2026.
+The previous edition described extraction validation as pending before
+merge. [PR #669](https://github.com/Roasbeef/loom/pull/669) has now merged
+at `1b2a1748deb4bafe59b4f12312d167eae1525c0b`.
+
+The [Jev MCP walkthrough](jev-mcp.md) records a successful real-daemon
+integration at the merged extraction tree `5aad549bd`. A scripted local
+model discovered the generated API through `cap://mcp/jev`, submitted a
+Choice query to code mode, and received the Jev fixture's answer. The
+hermetic build, satellite, MCP process and HTTP adapter all ran. A fresh
+credited snapshot retained the completed tool result and final assistant
+response; authenticated daemon shutdown exited zero. The live Jev service
+remains untested because no API key was available.
+
+The next MCP verification step is the walkthrough against live Jev once a
+credential is available. Its exit criterion is a completed code-mode call
+with a valid decoded Jev answer and a persisted tool result. Keep the key
+in daemon environment configuration. Resources, prompts and Loom HTTP
+transport configuration remain separate scope.
+
+The validation history below belongs to the exact heads and runs it names.
+It is not a new full-gate or hosted-CI claim for this documentation baseline.
+
+## Extraction rebase history
+
 The MCP extraction is rebased onto `origin/main` at
 `275efc42e7909c3c3ec481b7466c3484f381eb80`, including the typed capability
 surface from PR #670. Recovery refs retain the previously tested `a569e1f68`

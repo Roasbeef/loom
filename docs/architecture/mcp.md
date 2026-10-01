@@ -33,6 +33,10 @@ generator treats hostile input and what v1 leaves out.
 rests on and the pipeline the generated modules compile into; this
 document assumes both.
 
+The [Jev MCP walkthrough](../jev-mcp.md) covers operator setup, discovery
+through `cap://mcp/jev`, and a complete query exercised through a real
+Loom daemon and code-mode execution with local provider fixtures.
+
 ## One module per server
 
 Code mode bounds a program at the source level: a Gleam program's
@@ -69,15 +73,15 @@ cannot call `invoke` with a server string of its own. If it could,
 `invoke` would be a generic dispatcher by another route, and per-server
 trust would collapse to "any server the router knows".
 
-**A module's cost does not grow with the tool count.** A registered tool
+**The prompt index does not grow with the tool count.** A registered tool
 renders into the provider's cached prompt prefix and is paid for on
 every request of every strand (one agent's conversation within a
 session), so registering each tool would scale the cost with the
-server's tool count. A generated module renders its surface once, the
-way `cap/proc` does, whether the server lists three tools or three
-hundred. Cost is therefore controlled by which servers an operator
-enables, not by model-side discovery, and that is why Loom builds no
-tool search. `docs/design-notes/tool-search-and-code-mode.md` has the
+server's tool count. A generated module contributes a short index entry to
+the `code_mode` description; the model reads its full declarations on demand
+through `fs_read` at `cap://mcp/<server>`. The prompt therefore pays for the
+configured module index, while API reads pay for complete module declarations
+only when requested. `docs/design-notes/tool-search-and-code-mode.md` has the earlier
 arithmetic; its MCP half is superseded by what shipped.
 
 ## From a table to a callable module
@@ -132,9 +136,10 @@ does four things per server, in this order:
    default).
 4. **Generate the module.** `mcp/codegen.generate` turns the listing into
    a `Generated(module_name, source, surface)`: the Gleam *source text*
-   of the `cap/mcp/<name>` module, and the rendered description surface
-   the `code_mode` tool carries for it. No compiler runs here. The source
-   stays in memory, as part of the session's MCP layer, until an
+   of the `cap/mcp/<name>` module, and the full declaration surface served
+   through `cap://mcp/<name>`. The `code_mode` description indexes the module.
+   No compiler runs here. The source stays in memory, as part of the
+   session's MCP layer, until an
    execution needs it.
 
 The boot sequence for one server, ending with the four things its module
@@ -182,7 +187,7 @@ server in it widens four things together:
 | What widens | With what |
 |---|---|
 | The vetting **allowlist** | `cap/mcp` plus one `cap/mcp/<server>` per server (`client/codemode.seam_allowlist`) |
-| The rendered **description** | each server's surface, as the seam offer's extra surfaces |
+| The rendered **description and API reads** | each server's full surface, indexed in the description and resolved through `cap://` |
 | The **generated table** the hermetic build takes | `#(module name, source)` per server |
 | The capability **router** | one `mcp.<server>` arm per server |
 
@@ -246,11 +251,11 @@ for that execution.
 ## What the model reads, and what it writes
 
 A model writing a code-mode program has no autocomplete, no hover, and
-no language server. The rendered surface is its only reference, and it
-is part of the `code_mode` description the model has before it writes a
-line. For the three-tool fixture server that the client package's
-end-to-end tests run against, configured as `[mcp.fixture]`, the surface
-begins like this:
+no language server. The `code_mode` description indexes configured modules;
+the model reads complete declarations with `fs_read` at
+`cap://mcp/<server>`, filtered by the same offered-seam allowlists. For the
+three-tool fixture server that the client package's end-to-end tests run
+against, configured as `[mcp.fixture]`, the full API read begins like this:
 
 ```
 ### cap/mcp/fixture
