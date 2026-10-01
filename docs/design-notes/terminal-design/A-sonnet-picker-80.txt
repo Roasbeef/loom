@@ -1,0 +1,24 @@
+ ◆ loom   ws · pi-gui (main)                           kimi-k3 · Ctrl+g details
+
+  ╭ SESSIONS · active ───────────────────────────────────────────────────────╮
+  │                                                                          │
+  │  All 8   Needs you 2   Working 1   Idle 1   Inactive 4        Tab filter │
+  │ ──────────────────────────────────────────────────────────────────────── │
+  │  LOOM  ~/code/loom                                                    4  │
+  │   ● herdr-update               working    12m                            │
+  │ ▸ ! main                       needs you   2d                            │
+  │     1 approval pending · Waiting on your approval for a network fetch.   │
+  │   × reconnect                  blocked     3d                            │
+  │   · a-very-long-session-name-… saved       5d                            │
+  │                                                                          │
+  │  WEFT  ~/code/weft                                                    1  │
+  │   ! managed-tasks              needs you   1d                            │
+  │                                                                          │
+  │  LND  ~/code/lnd                                                      2  │
+  │   ↓ 5 more below                                                         │
+  │                                                                          │
+  │ ↑↓ move · Enter open · Tab filter · n new                                │
+  │ l link · r rename · d archive · a archived · Esc close                   │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+
+

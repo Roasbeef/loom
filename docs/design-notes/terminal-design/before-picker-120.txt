@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭ SESSIONS · active ───────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │                                                                                                                  │  
+  │  All 8  Needs you 1  Working 1  Idle 1  Inactive 4                                                    Tab filter │  
+  │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────── │  
+  │ …ode/src/github.com/roasbeef/loom-worktrees/loom · herdr-update 1 │ loom · main                                  │  
+  │   ● loom · herdr-update · 01a0eff2-c250                   current │ ! Needs you · 1 approval pending             │  
+  │                                                                   │                                              │  
+  │ …ator/gocode/src/github.com/roasbeef/loom-worktrees/loom · main 1 │ Last message                                 │  
+  │ ▸ ! loom · main · 01a0efca-c7e7                                   │ Waiting on your approval for a network       │  
+  │                                                                   │ fetch.                                       │  
+  │ …de/src/github.com/roasbeef/loom-worktrees/weft · managed-tasks 1 │                                              │  
+  │   ○ weft · managed-tasks · 01a0f013-44aa                          │ Workspace                                    │  
+  │                                                                   │ /Users/operator/gocode/src/github.com/roasbe │  
+  │ …github.com/roasbeef/loom-worktrees/lnd · static-panic-analysis 1 │ ef/loom-worktrees/loom · main                │  
+  │   ◌ lnd · static-panic-analysis · 01a0f02c-91de                   │                                              │  
+  │                                                                   │ Model                                        │  
+  │ …c/github.com/roasbeef/loom-worktrees/pi-gui · fix readme badge 1 │ moonshotai/Kimi-K3                           │  
+  │   · pi-gui · fix readme badge [saved] · 01a0f040-0b12             │                                              │  
+  │                                                                   │ Session                                      │  
+  │ …ees/loom · a-very-long-session-name-that-goes-on-and-on-and-on 1 │ 01a0efca-c7e7-7cc1-beeb-8da1658eec67         │  
+  │   · loom · a-very-long-session-name-that… [saved] · 01a0f041-77c3 │                                              │  
+  │                                                                   │                                              │  
+  │ …gocode/src/github.com/roasbeef/loom-worktrees/loom · reconnect 1 │                                              │  
+  │   · loom · reconnect [recovery blocked] · 01a0f055-e201           │                                              │  
+  │                                                                   │                                              │  
+  │ …/src/github.com/roasbeef/loom-worktrees/lnd · htlc interceptor 1 │                                              │  
+  │   · lnd · htlc interceptor [saved] · 01a0f060-3fa9                │                                              │  
+  │                                                                                                                  │  
+  │ ↑↓ select · Enter open · Tab filter · l link · n new · r rename · d archive · a archived · ←→ pages · Esc close  │  
+  │                                                                                                                  │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

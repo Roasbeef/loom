@@ -15,6 +15,12 @@ cells nothing docks two columns, below 117 nothing docks one, and at 80 by 24
 the panel is a full-width sheet. The rest of this note follows from that
 choice.
 
+The two views the owner called sloppy, the session picker and the agent
+workspace, come first, then the content the terminal must display well (code
+mode, strand and peer messages, images), then the layout. Keys are unchanged:
+Left opens the session picker, Down enters the agent strip, Shift+Tab toggles
+the rail.
+
 The source of truth for every frame is a plain-text grid,
 `A-sonnet-<frame>.txt`, at its exact cell size. The PNGs are
 renderings of those grids. `A-sonnet-gen.py` writes the grids
@@ -24,6 +30,329 @@ script and a rerun. The colours are the terminal's own palette
 (`packages/tui/src/tui/appearance.gleam`). The PNGs render the glyphs with
 the browser's fallback monospace font, so a few box-drawing joins are a pixel
 off; the grids are exact.
+
+## Part I: the two views to fix first
+
+The owner's first problem is how two existing views look, not which keys open
+them. The keys stay as they are: **Left from an empty composer opens the
+session picker, Down from an idle composer enters the agent strip, and
+Shift+Tab toggles the rail** (`interaction.gleam:1376`, `:1236`, `:1339`). An
+earlier draft of this concept moved Left to the strands; that is reverted.
+Both views below are redrawn in place, behind the same keys, and they are the
+first slices (section 12).
+
+### The session picker
+
+Today's picker is `session_selector.render`
+(`packages/tui/src/tui/session_selector.gleam:716`). Captures from the real
+renderer with eight fixture sessions, at 120 by 40 and 80 by 24:
+
+![Before, picker 120](before-picker-120.png)
+![Before, picker 80](before-picker-80.png)
+
+What is wrong with it, concretely:
+
+1. **The group header is a path cut from the left.** Every session is its own
+   group, so each row sits under `…ode/src/github.com/roasbeef/loom-worktrees/loom
+   · herdr-update 1`. The visible part of the header is the noise (the
+   enclosing directories) and the useful part is the end, which repeats the
+   row. Sessions in one workspace are not grouped, and the count is always 1.
+2. **The name appears twice and the id once more** per session: in the
+   header, in the row (`loom · main`), and as a 12-character id. The row has
+   nothing the header lacks except the id.
+3. **State is a lone glyph with no legend.** Five glyphs (`●`, `!`, `○`, `◌`,
+   `·`) and a `[saved]` or `[recovery blocked]` suffix in brackets that
+   appears on some rows only. The words (`needs you`, `working`) are in the
+   preview pane for the selected row alone, so no other row can be read
+   without selecting it. At 80 columns they move to a second line.
+4. **Nothing is aligned.** Name, state and id run on in one string, so no
+   column lines up and the eye cannot scan for a state. There is no age.
+5. **The preview wraps mid-word.** `/Users/operator/gocode/src/github.com/roasbe`
+   breaks inside `roasbeef`, and the session id is 36 characters on its own
+   line. Sections that have no data (`Model` when unknown) leave a labelled
+   gap.
+6. **The frame floats.** It is centred with blank rows above and below, 6
+   rows of chrome around 12 rows of content, and the hint line lists eleven
+   keys in one row that is cut at 80 columns (`d arc…`).
+7. **The tabs carry the right idea but little weight.** `All 8  Needs you 1
+   …` is Codex's command-center tabs, but the active tab is a coloured
+   block, `Tab filter` sits alone at the far right, and a count of zero
+   looks the same as a count of eight.
+8. **Empty and loading states are one dim line**, `No saved sessions. Press n
+   to create one explicitly.`
+
+The redesign keeps the overlay, the filter tabs, the preview split, and every
+key. It changes what is drawn:
+
+![After, picker 120, dark](A-sonnet-picker-120-dark.png)
+![After, picker 120, light](A-sonnet-picker-120-light.png)
+
+- Sessions are grouped under **one header per workspace**, with the path
+  shortened from the left of the home directory (`~/code/loom`), and a count
+  that is real.
+- A row is **one line in aligned columns**: marker, state glyph, name, state
+  word, one summary phrase (`1 approval`, `4 of 5 strands`, `last run
+  failed`), and age. The state word is always present, in the same colour
+  as its glyph, so it can be scanned. Glyphs: `●` working, `!` needs you,
+  `×` blocked, `○` idle, `·` saved.
+- A name too long for its column is cut with `…`, and the full name is in
+  the preview.
+- The selected row has the raised background and `▸`; nothing else has a
+  background.
+- The preview has fixed, dim, upper-case section labels (Last message,
+  Strands, Model, Workspace, ID) and wraps at word boundaries. Strands show
+  the daemon's glances, so a person sees what the session is doing without
+  opening it. The id is the 12-character form.
+- Two hint rows, in two tiers: movement and opening, then the rarer keys.
+- The same tabs, with the active one on the raised background, and a zero
+  count dimmed.
+
+Narrow (80 by 24) and the empty state:
+
+| Frame | Dark | Light |
+|---|---|---|
+| 80x24 | ![](A-sonnet-picker-80-dark.png) | ![](A-sonnet-picker-80-light.png) |
+| Empty, 120x40 | ![](A-sonnet-picker-120-empty-dark.png) | ![](A-sonnet-picker-120-empty-light.png) |
+| Empty, 80x24 | ![](A-sonnet-picker-80-empty-dark.png) | ![](A-sonnet-picker-80-empty-light.png) |
+
+At 80 columns the preview is not drawn. The selected row alone expands by one
+line, with its approval count and last message, and a `↓ 5 more below` row
+says what is scrolled out, where today a row is cut without saying so.
+
+Data: all of it is on the page the picker already holds. `protocol.Session`
+(`packages/tui/src/tui/daemon/protocol.gleam:396`) has the id, workspace, name,
+creation time and lifecycle. `protocol.Activity` (`:300`) has the state
+(`ActivityState`, `:325`), strand and working counts, approvals, last
+outcome, last message, model, and up to four `GlanceLine`s (`:353`). The
+filters are `session_selector.Filter` (`session_selector.gleam:55`). Nothing
+needs a wire change. Age is the creation age, because the page has no
+last-activity time; if the owner wants "last active" that is a protocol
+change to `sessions.activity`.
+
+### The agent workspace
+
+Today's view is `agents.render_inspection`
+(`packages/tui/src/tui/agents.gleam:239`): a roster beside a detail pane on
+wide terminals, and the selected row stacked above its detail on narrow ones.
+Captures with six fixture agents (one needing approval, one failed):
+
+![Before, agents 120](before-agents-many-120.png)
+![Before, agents 80](before-agents-many-80.png)
+
+What is wrong with it:
+
+1. **The roster is truncated on the wrong side.** The second line of each
+   row is cut in the middle (`● Working · …ocs-accuracy-review`,
+   `× Failed · … after three retries`), which drops the one thing a row is
+   for: the status. Task text is cut at `herdr update and…` mid-clause.
+2. **There are no columns.** The roster has no elapsed time and no context
+   size, which the strip under the footer already shows. The strip knows
+   more than the workspace does.
+3. **Three lines and a blank per agent**, so six agents take 24 rows and the
+   needs-input agent can scroll out of view. Order is capture order, not
+   attention order, and the header counts `2 attention` without saying
+   which.
+4. **Selection is one `▸`.** The selected row has no background, and the
+   detail pane does not visibly belong to it.
+5. **The detail repeats itself.** `CURRENT STATE` and `LATEST UPDATE` often
+   hold the same sentence (the demo shows `Needs approval: fs_write
+   docs/next.md` twice); `RECENT ACTIVITY` is bare tool names; `IDENTITY` is
+   the internal id (`a2`); the lower half of the pane is empty.
+6. **No messages in the Activity view**, although the Messages tab exists, so
+   "what did this strand just say or hear" is two keypresses away. A strand's
+   inbox is one line, `Pending input unknown`.
+7. **The dimming is inconsistent**: labels, values and placeholders such as
+   `Task unavailable` share a colour.
+8. **At 80 by 24 the detail does not fit.** The list collapses to a single
+   `▸ name · 3/5` stub, the three-row footer takes a seventh of the screen,
+   and the detail is cut at `RECENT ACTIVITY` with nothing under it.
+9. **The empty state explains its own mechanics** (`Selected strand
+   unavailable. Its draft remains with its original recipient`) rather than
+   saying there are no agents.
+
+The redesign keeps the overlay, the four views (Activity, Messages, Notes,
+Collaborate on keys 1 to 4), the selection rule (browsing never retargets the
+composer), and the actions (Enter opens, `n` jumps to attention, `a` reviews).
+
+![After, agents 120, dark](A-sonnet-agents-120-dark.png)
+![After, agents 120, light](A-sonnet-agents-120-light.png)
+
+- **One line per agent, in columns**: state glyph, name, current action, elapsed,
+  context size. Truncation cuts the action with `…`, never the status.
+- The list is in attention order after `main`: needs input, failed, working,
+  finished. The header says `!1 needs you`.
+- The selected row has the raised background and the detail names it.
+- The detail is a calm column of labelled sections with the same dim labels
+  everywhere: **Task**, **Now**, **Latest messages** (in and out, with age),
+  **Inbox**, **Tools**, and the identity in the dimmest line. It does not repeat
+  the same sentence under two labels.
+- **Messages in and out** appear in the Activity view, from the same items the
+  Messages tab shows, and the Messages tab keeps the full bodies.
+- A long task is cut at a word, with a line saying where the rest is:
+
+| State | Dark | Light |
+|---|---|---|
+| Failed agent | ![](A-sonnet-agents-120-failed-dark.png) | ![](A-sonnet-agents-120-failed-light.png) |
+| Long description | ![](A-sonnet-agents-120-long-dark.png) | ![](A-sonnet-agents-120-long-light.png) |
+| Empty, 120x40 | ![](A-sonnet-agents-120-empty-dark.png) | ![](A-sonnet-agents-120-empty-light.png) |
+| 80x24, list and detail | ![](A-sonnet-agents-80-dark.png) | ![](A-sonnet-agents-80-light.png) |
+| 80x24, Messages | ![](A-sonnet-agents-80-messages-dark.png) | ![](A-sonnet-agents-80-messages-light.png) |
+| Empty, 80x24 | ![](A-sonnet-agents-80-empty-dark.png) | ![](A-sonnet-agents-80-empty-light.png) |
+
+At 80 by 24 the list (up to eight rows) sits above a compact detail, with a
+one-row footer. The detail scrolls with PgUp and PgDn, as today.
+
+Data: `agent_view.Row` (`packages/session_view/src/session_view/agent_view.gleam:65`)
+has the task, activity, update, pending receipt, approvals, model, recent
+tools and decision preview. Elapsed time and context size are on
+`agent_roster.Line` (`agent_roster.gleam:84`, fields `elapsed_s` and
+`tokens`), which the strip already reads. Messages in and out are
+`agent_messages.Item` (`agent_messages.gleam:52`, projected by `observe` at
+99 and filtered by `for_strand` at 167), with the state (`SendPending`,
+`SendFailed`, `Accepted`, `Started`). Nothing needs a wire change. Tool
+arguments are not kept (`recent` is names only), so the Tools line shows names
+with counts.
+
+## Part II: content the terminal must display well
+
+Each item below has its frames at 120 by 40, and at 80 by 24 where the layout
+changes. They share one rule: a block says who or what it is from, in the
+speaker mark and the gutter, and none of them looks like a user turn (`›` on
+the user background) or assistant prose (`◆`).
+
+### Code mode
+
+Today a `code_mode` program is a fenced Gleam block with token styling
+(`docs/architecture/terminal.md:868`; `transcript_lines.code_mode_program`,
+`packages/session_view/src/session_view/transcript_lines.gleam:2371`), with
+no count of what it did. The proposal draws a program as a **titled block**
+(omp's `running [1/1] smoke test`, pi's `running rebuild states`):
+
+![Code mode, dark](A-sonnet-code-mode-120-dark.png)
+
+- A finished program collapses to the title, one result line and the key that
+  expands it: `✓ code_mode · read_config.gleam · 4 calls`.
+- A failed program stays open: a counted header (`program · 7 calls · 1
+  failed · 2 not run`), its capability calls as a tree in order, the failing
+  call with its exit status, and the result in the danger colour.
+- A running program shows the first lines of its source, and the calls that
+  have finished so far.
+- Nothing shows per-call timing: it is not on the wire, and #656 plans a
+  protocol change for it. The Trace tab (section 4) lists the same calls in
+  the same form, so a person sees one vocabulary in both places.
+
+The 80 by 24 frame drops the program source and the footers:
+
+![Code mode, 80](A-sonnet-code-mode-80-dark.png)
+
+Data: the program and its result exist (`code_mode_program`). The capability
+calls in order need a portable fold over the call records (`trace_view`),
+which the web Trace tab also needs; it is not on the wire as a ready list.
+Whether the existing tool-call records carry each call's capability name and
+status is unverified and must be checked before slice 5 starts. If they do,
+no wire change; if not, the daemon must publish them, which is a
+`protocol-change`.
+
+### Messages from other strands
+
+`agent_send` messages are projected by `agent_messages.observe`
+(`agent_messages.gleam:99`) and now interleave in the transcript (#667). The
+frame draws each as a block with the hue gutter of the strand it belongs to,
+a head line with direction, both names, age and the delivery state, and the
+body in the ordinary colour:
+
+![Strand messages, dark](A-sonnet-strand-messages-120-dark.png)
+
+Direction is an arrow (`→` sent, `←` received) and the delivery state is one of
+the four the item holds: `sent · started`, `received`, `sent · pending`,
+`send failed`. A message is never drawn with `›` or the user background, and
+it is not drawn as `◆` prose; the gutter and the head line mark it. Data is in
+`session_view` today; no wire change.
+
+### Messages from other sessions
+
+A peer message is a user message whose entry carries `message.PeerOrigin`
+(`packages/core/src/core/message.gleam:43`); `collaboration_view.peer_messages`
+(`packages/tui/src/tui/collaboration_view.gleam:182`) already projects them
+from the authenticated origin. The security rule is that an unauthenticated
+string must never look like an authenticated origin. The design makes the
+difference structural:
+
+![Peer messages, dark](A-sonnet-peer-messages-120-dark.png)
+
+- An authenticated message gets a **full-width band on the raised
+  background** that begins `⇄ from <peer>`, with the source strand and the
+  short session id, and the words `origin checked by the daemon`. The band is
+  drawn from the `PeerOrigin` field and from nothing else.
+- Text cannot produce the band: the transcript text is sanitised
+  (`text_hygiene`), which removes control characters, and a background is a
+  cell style that a string cannot set. A tool result or a web page that
+  prints `[peer lnd-review ✓ verified]` is drawn as plain dim text, and the
+  frame shows one under the fetch with a note saying it is not an origin.
+- An entry with a missing or malformed origin is drawn with the same band
+  shape but `origin not verified` in the danger colour and `shown as text
+  only`, so it is visibly worse than a verified one and cannot be mistaken
+  for it.
+- The 80 by 24 frame is `A-sonnet-peer-messages-80-dark.png`.
+
+No wire change: the origin is already authenticated by the daemon on the
+entry. The one new rule is a test that no transcript text of any speaker
+produces the band, and that a `PeerOrigin` of `None` never does.
+
+### Images
+
+Current facts: the terminal can attach images (`tui/image_drop`,
+`packages/tui/src/tui/image_drop.gleam:41`), and the line builders draw an
+image as the row `[image image/png]` (`transcript_lines.gleam:2274`). The
+bytes are reachable from `session_view/transcript_image`
+(`transcript_image.gleam:29` and `of_entry` at 49), which the web page uses
+(#661). The terminal cannot draw them: etui has braille graphics and OSC 8
+links but no kitty, iTerm2 or sixel protocol, and Herdr removed its
+pane-graphics API in 0.9.3.
+
+The design has three cases and one placeholder that is always correct:
+
+| Case | Frame |
+|---|---|
+| No graphics, or Herdr: one placeholder line with name, size, dimensions and the open key | ![](A-sonnet-image-placeholder-120-dark.png) |
+| No graphics, optional braille preview through `etui/braille` | ![](A-sonnet-image-braille-120-dark.png) |
+| Capable terminal: a reserved, labelled box that the terminal fills | ![](A-sonnet-image-rendered-120-dark.png) |
+| 80x24 placeholder | ![](A-sonnet-image-placeholder-80-dark.png) |
+
+- The **placeholder is the durable row** in every case. The rendered box is an
+  addition on top of it, so scrollback, a recording replay and `loom replay`
+  stay text.
+- Enter on the row opens the image externally through the platform opener,
+  as `loom ui --open` already does for links.
+- **Detection without guessing.** A terminal is treated as graphics-capable
+  only after a positive reply to a query, never from `TERM` alone. For kitty
+  graphics, the client sends a one-pixel query (`a=q`) followed by a primary
+  device attributes request, and reads the reply within a short timeout; a
+  reply to the second without the first means no support. iTerm2 is detected
+  from its reply to the terminal-version request, with `TERM_PROGRAM` only as
+  a hint to ask. Inside Herdr (`HERDR_ENV` set) the answer is no unless the
+  query is answered, because a protocol sent through a multiplexer pane is
+  consumed or dropped by it. The result is read once at launch, before the
+  alternate screen, and kept in the model.
+- **Scrollback and resize.** Image placements are cells the terminal owns, so
+  a placement is removed when its row scrolls out of the region the renderer
+  paints, and drawn again when it returns. Where the protocol supports
+  Unicode placeholder cells (kitty), the box is made of those cells, so it
+  reflows with the text on resize. Otherwise a resize deletes the placements
+  and redraws them from the retained image after the layout settles, and the
+  placeholder row is what the user sees in between.
+- The braille preview is computed from decoded pixels, which needs an image
+  decoder the client does not have; it may be left out of the first slice.
+
+This is an etui change, not a Loom one: capability detection, the escape
+sequences, placement and deletion all belong in `../etui`. In the slicing
+plan it is its own item (section 12).
+
+## Part III: the layout work
+
+The sections below are the layout concept: the docked panel, the sessions
+column, strand focus and layout memory. They come after the two views and the
+content blocks in the slicing order.
 
 ## 1. What the terminal draws today
 
@@ -90,8 +419,9 @@ them, the current one marked `▌` with one bar per live strand (`▮`). `●` i
 resident session and `○` a saved one. Bars show only for the session on
 screen; other rows carry no attention count, following the web ruling that no
 new data is fetched for them. It is today's session picker
-(`session_selector`) docked: F1 opens it today as an overlay (Left does, until section 7.1), and
-docked it takes focus instead.
+(`session_selector`) docked: Left from an empty composer opens it today as an
+overlay, and with the column docked it moves focus into the column instead.
+The overlay's own redesign is Part I.
 
 **Right panel.** Four tabs; the Strands tab carries the count of strands that
 need input. Section 4 describes each tab.
@@ -110,8 +440,8 @@ and the gutter marks:
 
 Opening the panel (F2 to F5, or Shift+Tab) docks it at 44 cells and hides the
 strip, because the Strands tab says the same thing. `75 + 1 + 44 = 120`. The
-sessions column does not dock here: `75 - 31` would leave 44. F1 opens the
-picker as an overlay.
+sessions column does not dock here: `75 - 31` would leave 44. Left opens
+the picker as an overlay, as today.
 
 | Tab | Dark | Light |
 |---|---|---|
@@ -240,27 +570,25 @@ Ctrl+R act in the queue editor only.
 |---|---|---|
 | F2, Ctrl+O | Open the panel on Strands (today: the `/agents` overlay). Pressed again with the panel focused, close it | Same keys, same meaning; below 117 columns it is a sheet instead of an overlay |
 | F3, F4, F5 | Panel on Changes, Trace, Session; toggle when already there | Unbound today |
-| F1 | Focus the sessions column when docked (146 columns and up), else open the picker; again to hide | Unbound; help is `/help`. Takes over the picker from Left |
+| F1 | Show or hide the sessions column (146 columns and up) | Unbound; help is `/help` |
 | Shift+Tab | Show or hide the panel | Replaces "toggle the rail", which the panel subsumes |
-| Left, from an empty composer with no attachment | Open the Strands tab with focus (a sheet below 117 columns). **Changes today's meaning**, which is the session picker | Left has no editing meaning in an empty editor, and today's binding already relies on that. The picker moves to F1 and `/sessions` (section 7.1) |
+| Left, from an empty composer with no attachment | **Unchanged**: opens the session picker. With the sessions column docked it focuses the column | Today's binding; a draft or a paste keeps Left as a cursor key |
+| Down, from an idle composer | **Unchanged**: enters the agent strip. While the panel is open the strip is hidden, and Down focuses the panel's Strands tab, which replaces it | Today's binding |
 | Ctrl+T, then a digit | Hint mode (section 5) | Ctrl+T is unbound |
 | In the panel: Up, Down, Enter, `x` | Select, focus or open, stop | The strip's existing set |
 | In the panel: `[`, `]`, `1` to `4`, Tab | Previous or next tab, jump, cycle the Strands filter | The inspector's existing digit and bracket convention; only while the panel has focus, so the composer keeps its characters |
 | Esc in the panel | Return focus to the composer (the panel stays open) | Panel focus only; Esc in the composer is unchanged |
 | Ctrl+D | Unchanged: composer or file navigator when Changes is showing | Unchanged |
 
-### 7.1 Which side, and which arrow
+### 7.1 The arrows stay
 
-The strand panel stays on the right, as in A2 and the web build: the
-transcript reads first, and context sits after it. The arrow does not have
-to match the side. The newer Codex recording opens its agents view with `←`
-from the composer, and the owner's branch for this work is named for it, so
-`←` becomes "strands" here too. It costs the session picker its `←` binding,
-which moves to F1 and `/sessions`; both stay one key from an empty
-composer. The footer hint reads `← strands`, as Codex's reads `← for
-agents`. Codex also uses F2 to view warnings, which is precedent for F-keys
-opening a side surface and not a collision, since Loom's F2 already opens the
-agents view.
+An earlier draft of this concept moved Left to open the strands, following the
+newer Codex recording ("← for agents"). The owner corrected it: Left already
+opens the session picker and Down already enters the agent strip, and the
+problem is how those two views look. Both keys are unchanged. The strand panel
+stays on the right, as in A2 and the web build. Codex also uses F2 to view
+warnings, which is precedent for function keys opening a side surface and not
+a collision, since Loom's F2 already opens the agent workspace.
 
 Ctrl+B is avoided on purpose: it is the tmux prefix and Herdr runs terminals
 in panes. Function keys need Fn on many laptops, so every key has a slash
@@ -324,12 +652,12 @@ Rejected, with reasons:
   are today. A graphics-protocol image inside a column that can be resized
   or hidden would need per-cell cleanup the renderer does not have.
 
-From the newer Codex recording (2026-09-30), taken: `←` for agents (section
-7.1); tool calls grouped under a summary header that carries a failure count,
+From the newer Codex recording (2026-09-30), taken: tool calls grouped under a summary header that carries a failure count,
 so the main frames show `◇ tools · 4 calls · 1 failed · Ctrl+g expands`
 where today's header gives the call count only; and dim one-line system notes
 that never look like user turns, which matches the harness notice in section
-10. Left for later: short diff previews under file writes, and a
+10. Rejected: `←` for agents, because Left already opens the session picker
+(section 7.1). Left for later: short diff previews under file writes, and a
 non-blocking numbered menu for offering a choice that is not an approval.
 
 ## 10. What we took from the owner's drives
@@ -365,30 +693,44 @@ This note does not depend on it: every data source in section 8 is a
 ## 12. Slicing into pull requests
 
 Each slice builds and passes `make check` alone, and each that changes what
-is drawn carries a virtual-terminal test at 200, 120 and 80 columns.
+is drawn carries a virtual-terminal test at 120 and 80 columns (200 where a
+column is involved). The two views the owner named come first.
 
-1. **Layout record and file.** `layout.json`, its total decoder, the
+1. **The session picker redraw** (Part I): grouping, columns, preview,
+   hints, states. `session_selector.gleam` only; no key changes.
+2. **The agent workspace redraw** (Part I): attention order, columns, the
+   detail's sections, messages in the Activity view, the 80 by 24 layout.
+   `agents.gleam` and its detail renderer.
+3. **Collapsed repeats and the harness speaker.** The line-builder fold
+   (`×15` lines, repeated errors) and, if the data check allows, the notice.
+4. **Strand message and peer blocks** (Part II), with the test that no text
+   produces the origin band.
+5. **Code mode as a titled block** and the `trace_view` fold. The Trace tab
+   reuses it.
+6. **Image placeholder rows** with the open key. Text only; no etui change.
+7. **An image protocol in etui** (a change to `../etui`, not to Loom):
+   capability detection, kitty and iTerm2 placement and deletion, Unicode
+   placeholders for reflow. Own pull request and release; Loom's rendered box
+   follows it.
+8. **Layout record and file.** `layout.json`, its total decoder, the
    `SaveLayout` effect. No visible change.
-2. **Collapsed repeats and the harness speaker.** The line-builder fold and,
-   if the data check allows, the notice. Fixes the owner's worst pain point
-   on its own.
-3. **The panel as a docked column.** Geometry in `layout.body_layout`, the
+9. **The panel as a docked column.** Geometry in `layout.body_layout`, the
    tab bar, the Strands tab over the existing roster, F2 to F5, Shift+Tab,
    `/panel`. The rail and the 72-cell diff pane go away here.
-4. **Changes and Session tabs** over `changes_view` and `session_summary`.
-5. **The sessions column** at 146 columns and up, and F1.
-6. **The inline strand tree and hint mode.**
-7. **Trace** with its new fold.
-8. **The 80 by 24 sheet.**
-9. **Persist the layout:** wire slice 1 to slices 3 to 5.
+10. **Changes and Session tabs** over `changes_view` and `session_summary`.
+11. **The sessions column** at 146 columns and up, and F1.
+12. **The inline strand tree and hint mode.**
+13. **Trace tab** over the fold from slice 5.
+14. **The 80 by 24 sheet.**
+15. **Persist the layout:** wire slice 8 to slices 9 to 11.
 
 ## 13. Open questions for the owner
 
 1. **Default at 200 columns and up: both columns open?** Recommended yes, as
    A2. Below that, nothing open.
-2. **Left from an empty composer opens the strands, and the session
-   picker moves to F1 and `/sessions`?** Recommended yes (Codex precedent,
-   section 7.1). It changes a binding users have today.
+2. **While the panel is open, Down from an idle composer focuses its Strands
+   tab (it replaces the hidden strip).** Recommended yes; the other choice
+   is that Down does nothing while the strip is hidden.
 3. **F1 to F5 as panel keys, given Herdr and laptop Fn keys?** Recommended
    yes with the `/panel` commands as the guaranteed path, after a check that
    Herdr passes them through.
@@ -407,3 +749,5 @@ is drawn carries a virtual-terminal test at 200, 120 and 80 columns.
    marker separately.
 9. **Sessions column on a launch with no daemon control** (demo, some remote
    attaches): hide it. Recommended yes.
+10. **Picker age: creation time now, or add a last-active time?** Recommended creation time now; a last-active field is a protocol change to `sessions.activity` and can follow.
+11. **Braille image preview in the first image slice?** Recommended no: it needs a pixel decoder the client lacks, and the one-line placeholder is enough until the etui protocol lands.

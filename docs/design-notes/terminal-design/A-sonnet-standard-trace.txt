@@ -37,4 +37,4 @@
                                                                            │
  ◒ streaming (3s) · esc to interrupt                                       │ Enter open · ↑↓ call
                                                                            │ no per-call timing yet
- baseten-kimi-k3 · ctx ~41% · est $1.86 · ← strands · F1 sessions · ⇧Tab panel       3 agents · 2 working · 1 needs you
+ baseten-kimi-k3 · ctx ~41% · est $1.86 · ↓ strip · ← sessions · ⇧Tab panel          3 agents · 2 working · 1 needs you
