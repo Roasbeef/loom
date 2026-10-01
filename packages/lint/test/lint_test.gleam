@@ -1966,7 +1966,9 @@ pub fn the_new_rules_only_warn_test() {
   gate_of(
     "packages/core/src/core/wide.gleam",
     module(
-      "fn caller(a) { wide(a, a, a, a, a, a, a, a) }
+      "//// The module doc names `wide`, so R18 has nothing to add to R8.
+
+fn caller(a) { wide(a, a, a, a, a, a, a, a) }
 
 fn wide(a, b, c, d, e, f, g, h) { #(a, b, c, d, e, f, g, h) }",
     ),
