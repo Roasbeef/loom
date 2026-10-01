@@ -1710,9 +1710,11 @@ pub type ServerNotification {
   /// the active tokens so a query waits until the server is ready.
   Progressed(progress: WorkDoneProgress)
 
-  /// `window/logMessage` or `window/showMessage`: known, and deliberately
-  /// not acted on. Their text is the server's to say and nobody's to
-  /// read; stderr's ring is the restart message's source.
+  /// An error-level window message. Servers can return null after a load
+  /// failure and explain it only here; discarding it would report success.
+  ServerFailure(message: String)
+
+  /// A non-error window message, deliberately not treated as failure.
   Ignored(method: String)
 
   /// Any other notification. Also dropped, but distinguishable from the
@@ -1728,8 +1730,8 @@ pub type ServerNotification {
 /// ## Examples
 ///
 /// ```gleam
-/// assert protocol.classify_notification("window/logMessage", None)
-///   == Ok(protocol.Ignored("window/logMessage"))
+/// // protocol.classify_notification("window/logMessage", params)
+/// // -> Ok(protocol.ServerFailure("dependency could not be read"))
 /// ```
 ///
 pub fn classify_notification(
@@ -1751,7 +1753,23 @@ pub fn classify_notification(
       )
       Ok(Progressed(progress:))
     }
-    "window/logMessage" | "window/showMessage" -> Ok(Ignored(method:))
+    "window/logMessage" | "window/showMessage" -> {
+      use fields <- result.try(object_fields(
+        option.unwrap(params, json.Null),
+        "a window message must be an object",
+      ))
+      use kind <- result.try(required_int(fields, "window message", "type"))
+      use message <- result.try(required_string(
+        fields,
+        "window message",
+        "message",
+      ))
+      case kind {
+        1 -> Ok(ServerFailure(message:))
+        2 | 3 | 4 | 5 -> Ok(Ignored(method:))
+        _ -> Error(BadResult("a window message type must be 1 through 5"))
+      }
+    }
     _ -> Ok(Unrecognised(method:))
   }
 }

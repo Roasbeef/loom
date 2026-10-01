@@ -74,6 +74,55 @@ fn silent(state: Nil, _inbound: Inbound) -> #(Nil, List(Action)) {
   #(state, [])
 }
 
+pub fn project_failure_is_not_an_empty_hover_or_clean_diagnostics_test() {
+  let #(started, _fake) =
+    started(gleam_like_capabilities(), 0, fn(state, inbound) {
+      case inbound {
+        jsonrpc.ServerRequest(id:, method: "textDocument/hover", ..) -> {
+          let replies = case state {
+            0 -> [
+              Reply(jsonrpc.notification(
+                "window/showMessage",
+                Some(
+                  json.Object([
+                    #("type", json.Int(1)),
+                    #("message", json.String("cannot read ../core")),
+                  ]),
+                ),
+              )),
+              Reply(fake_server.response(id, json.Null)),
+            ]
+            1 -> [
+              Reply(fake_server.response(
+                id,
+                json.Object([#("contents", json.String("recovered"))]),
+              )),
+            ]
+            _later -> [Reply(fake_server.response(id, json.Null))]
+          }
+          #(state + 1, replies)
+        }
+        jsonrpc.ServerRequest(id:, ..) -> #(state, [
+          Reply(fake_server.response(id, json.Null)),
+        ])
+        jsonrpc.Notification(..) | jsonrpc.Response(..) -> #(state, [])
+      }
+    })
+  let at = range.Position(0, 7)
+  let assert Error(client.Unavailable(reason)) =
+    client.hover(started, a, at, 1000)
+    as "a failed load cannot look like a legitimate missing hover"
+  assert string.contains(reason, "cannot read ../core")
+  assert client.diagnostics(started, None) == Error(client.Unavailable(reason))
+  assert client.settle(started, [a], 1000) == Error(client.Unavailable(reason))
+  let assert Ok(Some(hover)) = client.hover(started, a, at, 1000)
+    as "substantive semantic results demonstrate recovery"
+  assert hover.contents == "recovered"
+  assert client.hover(started, a, at, 1000) == Ok(None)
+  assert client.diagnostics(started, None) == Ok([])
+  client.stop(started, 1000)
+}
+
 fn field(value: JsonValue, key: String) -> JsonValue {
   case value {
     json.Object(fields) -> result.unwrap(list.key_find(fields, key), json.Null)

@@ -693,13 +693,30 @@ pub fn other_notifications_are_recognised_or_not_test() {
       Some(parse("{\"type\": 3, \"message\": \"x\"}")),
     )
     == Ok(protocol.Ignored("window/logMessage"))
-  assert protocol.classify_notification("window/showMessage", None)
-    == Ok(protocol.Ignored("window/showMessage"))
+  let assert Error(protocol.BadResult(_)) =
+    protocol.classify_notification("window/showMessage", None)
+    as "a server message without its severity and body is malformed"
   assert protocol.classify_notification("telemetry/event", None)
     == Ok(protocol.Unrecognised("telemetry/event"))
   let assert Error(protocol.BadResult(_)) =
     protocol.classify_notification("textDocument/publishDiagnostics", None)
     as "a publication with no params is malformed"
+}
+
+pub fn server_error_messages_remain_distinct_from_information_test() {
+  list.each(["window/logMessage", "window/showMessage"], fn(method) {
+    assert protocol.classify_notification(
+        method,
+        Some(parse("{\"type\":1,\"message\":\"cannot read ../core\"}")),
+      )
+      == Ok(protocol.ServerFailure("cannot read ../core"))
+    let assert Error(protocol.BadResult(_)) =
+      protocol.classify_notification(
+        method,
+        Some(parse("{\"type\":1,\"message\":7}")),
+      )
+      as "error bodies cannot be guessed from a malformed notification"
+  })
 }
 
 // Work-done progress in each of its three kinds, under both token

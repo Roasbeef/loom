@@ -149,6 +149,7 @@
 //// monitored call that answers a dead or wedged callee as a value rather
 //// than crashing the asker as `process.call` would.
 
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -639,6 +640,9 @@ type Data {
     versioning: Versioning,
     /// The latest publication for each URI.
     publications: Dict(String, Publication),
+    /// One bounded server load error, retained until a semantic answer
+    /// proves recovery. It is data, never an instruction to the harness.
+    server_failure: Option(String),
     /// The next key for a settlement or readiness waiter.
     next_token: Int,
     /// Settlements in progress, by token.
@@ -1375,6 +1379,7 @@ fn spawn(
         sequence: 0,
         versioning: Unversioned,
         publications: dict.new(),
+        server_failure: None,
         next_token: 1,
         waiters: dict.new(),
         progress: dict.new(),
@@ -1917,8 +1922,10 @@ fn answered(
 ) -> Flow {
   case pending {
     CallerWaits(reply:, ..) -> {
-      process.send(reply, result.map_error(outcome, server_error))
-      flow
+      let answered = result.map_error(outcome, server_error)
+      let #(data, answered) = semantic_answer(flow.data, answered)
+      process.send(reply, answered)
+      Flow(..flow, data:)
     }
 
     // Any answer, an error included, proves the server processed every
@@ -1927,6 +1934,26 @@ fn answered(
 
     HandshakeWaits(reply:) -> handshake_answered(flow.data, reply, outcome)
     ShutdownWaits -> acknowledged(flow.data)
+  }
+}
+
+// An empty result is ambiguous after a server-reported load failure. A
+// substantive result is evidence that analysis recovered; it retires the
+// retained error so later legitimate misses remain ordinary empty answers.
+fn semantic_answer(
+  data: Data,
+  outcome: Result(JsonValue, RequestError),
+) -> #(Data, Result(JsonValue, RequestError)) {
+  case outcome, data.server_failure {
+    Ok(json.Null), Some(reason) | Ok(json.Array([])), Some(reason) -> #(
+      data,
+      Error(Unavailable(reason:)),
+    )
+    Ok(json.Null), None | Ok(json.Array([])), None | Error(_), _ -> #(
+      data,
+      outcome,
+    )
+    Ok(_), _ -> #(Data(..data, server_failure: None), outcome)
   }
 }
 
@@ -1966,8 +1993,23 @@ fn notification(data: Data, method: String, params: Option(JsonValue)) -> Data {
     Ok(protocol.Published(diagnostics:)) ->
       release_settled(record(data, diagnostics))
     Ok(protocol.Progressed(progress:)) -> progressed(data, progress)
+    Ok(protocol.ServerFailure(message:)) ->
+      Data(..data, server_failure: Some(server_failure(message)))
     Ok(protocol.Ignored(..)) | Ok(protocol.Unrecognised(..)) | Error(..) -> data
   }
+}
+
+// Retain bytes, not grapheme count: a single grapheme may contain an
+// arbitrarily long sequence of combining marks. Invalid truncated UTF-8
+// keeps a fixed explanation rather than retaining the oversized original.
+fn server_failure(message: String) -> String {
+  let bytes = bit_array.from_string(message)
+  let length = int.min(bit_array.byte_size(bytes), 2048)
+  let bounded =
+    bit_array.slice(bytes, 0, length)
+    |> result.try(bit_array.to_string)
+    |> result.unwrap("server error message was truncated at 2048 bytes")
+  "the language server reported an error: " <> bounded
 }
 
 // --- documents ------------------------------------------------------------------
@@ -2226,8 +2268,11 @@ fn release_settled(data: Data) -> Data {
     case settled(data, waiter) {
       False -> data
       True -> {
-        let settlement = Settlement(Settled, collect(data, waiter))
-        process.send(waiter.reply, Ok(settlement))
+        let settlement = case data.server_failure {
+          None -> Ok(Settlement(Settled, collect(data, waiter)))
+          Some(reason) -> Error(Unavailable(reason:))
+        }
+        process.send(waiter.reply, settlement)
         Data(..data, waiters: dict.delete(data.waiters, token))
       }
     }
@@ -2487,7 +2532,11 @@ fn answer_read(data: Data, reading: Reading) -> Nil {
         |> list.filter(wanted)
         |> list.map(fn(entry) { #({ entry.1 }.path, { entry.1 }.diagnostics) })
         |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
-      process.send(reply, Ok(published))
+      let outcome = case data.server_failure {
+        None -> Ok(published)
+        Some(reason) -> Error(Unavailable(reason:))
+      }
+      process.send(reply, outcome)
     }
     CapabilitiesOf(reply:) -> process.send(reply, Ok(data.capabilities))
   }
