@@ -44,7 +44,27 @@ structural input/output types and explicit schema fallbacks, with real Go SDK
 captures and jailed compiler tests. Resources, prompts and Loom HTTP transport
 configuration remain separate scope.
 
-## Concurrent watcher and language-server reliability (PR #683)
+## Code-mode prompt cues
+
+The prompt change is rebased onto `5fbcda3ad` on October 1, 2026. It adds executable
+alternatives to the five direct workspace-tool descriptions only when the
+default code-mode seam admits and services the call. `loom-default-12` asks
+for immediate planned batching, API discovery before unfamiliar calls, and
+explicit completeness and truncation checks. The third-probe fallback remains.
+Compile failures retain diagnostics and state that execution never began.
+
+The comparison is recorded in [the prompt review](review/code-mode-prompt-cues.md).
+This change retains the complete capability types, discovery and recipes.
+Calling instrumentation remains in [PR #673](https://github.com/Roasbeef/loom/pull/673);
+the reduced-roster experiment remains in [PR #433](https://github.com/Roasbeef/loom/pull/433).
+Neither is implemented by these prompt cues. The next evaluation should compare
+model call choices and compile failures on the same workspace tasks; source
+size alone cannot establish improved batching behavior.
+
+The validation below predates this prompt change and belongs to its named
+heads. The new review record carries this branch's own gate results.
+
+## Concurrent watcher and language-server reliability (PR #687)
 
 The reliability work is based on `f84842d17bc3230c2a796f136d222b5179b5be28`,
 checked on October 1, 2026. Main's hosted
@@ -130,6 +150,8 @@ Read each gate's own exit code. See [execution](execution.md) for the remaining
 verification rules.
 
 ## Earlier baseline records
+
+## MCP handoff baseline
 
 The MCP handoff was refreshed against `f875811be` on October 1, 2026.
 The previous edition described extraction validation as pending before
