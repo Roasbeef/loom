@@ -31,7 +31,7 @@
 ////   dc1de7c9d376c1224193be85eb0ccbbf980dde14ab12532d8c718c570dfe62db  packages/cap/src/cap/job.gleam
 ////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
 ////   cef1b32af6ae85af5d83f90a81ae7813694d5c32ca9cec6a0eab59f3852cec14  packages/cap/src/cap/lsp.gleam
-////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
+////   98e88492562b1a4cfb829581b6fee9c6040a956994f8d10cbb2ae2ed6bac0e6c  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
 ////   856004f80f0e7be10b9ba36221abe3443f126f744ecac3cde407b0fb2c199ea4  packages/cap/src/cap/peer.gleam
@@ -45,7 +45,7 @@
 ////   ecf0eb240894825490bf17c4607e30d291d247279fef3b0a3feac44802d143bd  packages/cap/src/cap/workflow.gleam
 ////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 449a73c3667481eed0e58c2cccbc26c9ac62661f3b6e89227766fc3a061fb24d
+//// Body digest (every line after the marker): dc38d5378487258eb3eda92ae2ab80d18730cc0993140ba37c3b63a089737675
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -806,6 +806,12 @@ pub type Content {
   /// Any other block kind, carried as its `type` string verbatim.
   Other(kind: String)
 }
+/// A schema failure relative to the structured-content root.
+pub type DecodeError {
+  /// Literal path segments keep punctuation in property names
+  /// unambiguous.
+  DecodeError(path: List(String), reason: String)
+}
 /// Why an MCP call failed. Descriptive variants for the causes a program
 /// branches on; `McpDenied` carries any other broker code verbatim;
 /// `ServerUnavailable` is a transport or reachability failure.
@@ -824,6 +830,10 @@ pub type McpError {
   McpDenied(code: String, message: String)
   /// The `cap_result` did not match the pinned result shape.
   ResultMalformed(reason: String)
+  /// The tool succeeded but its structured output failed its declared
+  /// schema. The complete capability result survives for inspection or
+  /// text fallback.
+  ResultSchemaMismatch(error: DecodeError, result: ToolResult)
 }
 /// What a successful MCP tool call returns: the content blocks, plus the
 /// tool's optional structured output (`structuredContent` in MCP terms)
@@ -2598,6 +2608,12 @@ pub type Content {
   /// Any other block kind, carried as its `type` string verbatim.
   Other(kind: String)
 }
+/// A schema failure relative to the structured-content root.
+pub type DecodeError {
+  /// Literal path segments keep punctuation in property names
+  /// unambiguous.
+  DecodeError(path: List(String), reason: String)
+}
 /// Why an MCP call failed. Descriptive variants for the causes a program
 /// branches on; `McpDenied` carries any other broker code verbatim;
 /// `ServerUnavailable` is a transport or reachability failure.
@@ -2616,6 +2632,10 @@ pub type McpError {
   McpDenied(code: String, message: String)
   /// The `cap_result` did not match the pinned result shape.
   ResultMalformed(reason: String)
+  /// The tool succeeded but its structured output failed its declared
+  /// schema. The complete capability result survives for inspection or
+  /// text fallback.
+  ResultSchemaMismatch(error: DecodeError, result: ToolResult)
 }
 /// What a successful MCP tool call returns: the content blocks, plus the
 /// tool's optional structured output (`structuredContent` in MCP terms)
