@@ -447,6 +447,9 @@ pub fn a_compile_error_comes_back_as_readable_text_test() {
   // the pipeline, and the model can act on it directly.
   assert string.contains(text_of(outcome), "Type mismatch")
   assert string.contains(text_of(outcome), "List(String)")
+  assert string.contains(text_of(outcome), diagnostics)
+  assert string.contains(text_of(outcome), "did not run")
+  assert string.contains(text_of(outcome), "warnings also fail the build")
   let assert Some(json.Object(fields)) = outcome.details
     as "a compile failure must carry structured details"
   assert list.contains(fields, #("status", json.String("compile_failed")))
@@ -1000,21 +1003,16 @@ pub fn a_single_seam_description_guides_batches_without_a_choice_test() {
   // pays for no prose asking it to choose an unavailable alternative.
   let described = codemode.description(echoing())
   let before =
-    "Run a Gleam program in a jailed satellite and get one structured "
-    <> "result. Prefer it for batches of independent file reads, searches, "
-    <> "or checks, and for dependent steps you can express without inspecting "
-    <> "each result yourself. Loops, conditionals, and concurrency happen "
-    <> "inside the program, and only what `main` returns comes back — the "
-    <> "intermediate output never enters the conversation. When an "
-    <> "investigation grows past two probes against the same data source, "
-    <> "switch to a program: fetch once, filter internally, return the "
-    <> "answer. Write `pub fn main() -> report.Outcome`, returning "
-    <> "`report.text(...)` or `report.value(...)`. Imports are restricted to: cap/proc, "
+    "Run a Gleam program in a jailed satellite; only its returned result "
+    <> "enters the conversation. Use it immediately for planned batches or "
+    <> "dependent steps whose intermediate results need no judgment. "
+    <> "Write `pub fn main() -> report.Outcome`, returning `report.text(...)` "
+    <> "or `report.value(...)`. Filter internally; return relevant facts, "
+    <> "paths and failures. Imports are restricted to: cap/proc, "
     <> "cap/report, gleam/int. `@external` is refused. Capabilities "
     <> "serviced today: proc.run; the other `cap/*` modules compile but "
-    <> "answer unsupported_cap. A program that is refused or does not "
-    <> "compile comes back with the reason, so you can fix it and submit "
-    <> "again."
+    <> "answer unsupported_cap. Refusals and compile errors include diagnostics "
+    <> "for repair; warnings fail compilation too."
   assert string.starts_with(described, before)
   // And no word about a seam anywhere in the prose it pays for, which is
   // the half of the sentence this host controls. The signature blocks

@@ -1,5 +1,14 @@
 # tools
 
+## Code-mode description and repair
+
+The code-mode introduction and tool-index snippet ask for immediate planned
+batching and compact returned evidence. The description retains the offered
+seams, concurrency contract, recipes, module index and generated public types.
+A `BuildRejected` result says compilation and execution never completed and
+asks for diagnostic repair, including warnings. Compiler diagnostics and the
+structured failure fields remain intact; no automatic resubmission is added.
+
 ## Explicit directory access and approvals
 
 `directory_access.Access` carries explicit roots separately from the jail's
