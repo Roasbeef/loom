@@ -6,6 +6,28 @@
 //// while holding a cross-process launch lock. Repository content supplies the
 //// server's workspace data but never its executable, configuration, helper,
 //// working directory, or launch arguments.
+////
+//// ## Flow
+////
+//// `resolve` → `resolve_locked` → `reuse_endpoint` → `probe` → `start_server` → `release_and_await`
+////
+//// 1. `resolve` canonicalises the workspace, builds the private paths with
+////    `resolve_paths`, creates their directories and takes the launch lock with
+////    `acquire_lock`; the lock is released on every outcome.
+//// 2. `resolve_locked` reads the cached endpoint (`read_endpoint`). A record that
+////    `endpoint_matches` goes to `reuse_endpoint`; one that does not goes to
+////    `preserve_incompatible_or_start`; no record starts a server.
+//// 3. `reuse_endpoint` first `probe`s the endpoint with a real authenticated
+////    snapshot. On failure it waits (`await_starting`, `await_live`) while the
+////    recorded process is still the same one, and asks for a replacement only
+////    when `match_process` proves it is gone.
+//// 4. `start_server` finds the executable (`find_server`), `spawn`s it with the
+////    arguments `server_arguments` builds, publishes the endpoint with
+////    `write_endpoint`, and `release_and_await` waits in `await_new_server`
+////    until a probe succeeds.
+//// 5. The per-user daemon takes the sibling path: `resolve_daemon` and
+////    `resolve_viewing_daemon` share `resolve_daemon_with`, which hands
+////    `daemon_launch_arguments` and `resolve_config` to the daemon resolver.
 
 import core/json
 import filepath

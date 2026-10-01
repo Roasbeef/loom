@@ -10,6 +10,30 @@
 ////
 //// Geometry comes from `tui/layout`, so a click is interpreted against the
 //// same rectangles the last frame was painted with.
+////
+//// ## Flow
+////
+//// `update_ready_key` → `update_key` → `update_normal_key` → `update_main_key` → `update_palette_key` → `update_conversation_key`
+////
+//// 1. `update_ready_key` lets Escape or Ctrl+C cancel a queued final reply first;
+////    any other key drains bounded socket traffic so it acts on the newest state.
+//// 2. `update_key_over_selection` clears a mouse selection unless the key keeps it,
+////    then `update_key` takes the strip out of the keyboard's path when something
+////    covers it.
+//// 3. The context view, queue editor and summary surfaces each own the key in turn
+////    (`update_context_key`, `update_queue_key`, `update_summary_key`); if none is
+////    open, `update_key_without_context` falls to `update_normal_key`.
+//// 4. `update_normal_key` quits on Ctrl+C and otherwise hands the key to the open
+////    overlay's handler (`update_model_selector`, `update_agent_inspector`,
+////    `update_goal_inspector`, `update_daemon_selector`), or to `update_main_key`.
+//// 5. `update_main_key` sends the key to `update_strip_key` while the agent strip
+////    has the cursor and to `update_main_key_composing` otherwise, which routes
+////    the diff navigator (`update_diff_key`) or on to `update_palette_key`.
+//// 6. Keys the command palette does not take pass `update_main_key_without_palette`
+////    (it closes the diff on Escape) to `update_conversation_key`, which
+////    scrolls, toggles the notes and help surfaces and edits the composer.
+//// 7. Pastes enter at `handle_paste`; the mouse enters at `begin_selection`,
+////    `extend_selection`, `finish_selection` and `scroll_at`.
 
 import etui/buffer
 import etui/geometry.{type Rect}

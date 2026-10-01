@@ -3,6 +3,26 @@
 //// This module imports no server implementation. It validates complete control
 //// messages before returning metadata; decoding never opens a session. Epochs
 //// come from the authenticated hello and are added to lifecycle requests here.
+////
+//// ## Flow
+////
+//// `encode` → `command_fields` → `decode` → `decode_reply` → `summary`
+////
+//// 1. `encode` refuses a non-positive request id, asks `command_fields` for the
+////    body of one `Command` (validating every identifier and bound, and adding the
+////    authenticated epoch to lifecycle requests), wraps it with `name`, and
+////    refuses a frame over the byte limit.
+//// 2. `decode` takes what the daemon sends back: it bounds the frame, parses
+////    it, checks the control version, and dispatches on the event name.
+//// 3. A hello is validated field by field (`build_at`, `view_at`) into a
+////    greeting, and an error into a refusal carrying the optional request id.
+//// 4. Every other event must correlate to a request through a positive
+////    reply_to field and is turned into a typed `Reply` by `decode_reply`.
+//// 5. `decode_reply` hands the body to the reply's own decoder (`summary`, `page`,
+////    `session`, `lifecycle`, `deletion`, `activity`), all built from the bounded
+////    readers `field`, `text_at`, `number_at` and `positive_at`.
+//// 6. `mutates` says whether losing a command's reply may hide a durable change,
+////    which is what a caller must know before it resends.
 
 import core/ids
 import core/json

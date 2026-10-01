@@ -18,6 +18,26 @@
 //// the prioritized page (this workspace first) still leads. The highlight is
 //// an index into that drawn order, `visible`, never into the raw page, so
 //// what Enter opens is always the row the marker is on.
+////
+//// ## Flow
+////
+//// `prioritize` → `new` → `observe` → `update` → `browsing` → `render`
+////
+//// 1. `prioritize` puts this workspace's rows first in a catalogue page, and `new`
+////    builds the selector from the page, highlighting the current session.
+//// 2. `observe` files the daemon's sessions-activity answer, so `presence` can
+////    join what a registration is with what its resident session is doing;
+////    `with_filter` and `carry` keep the operator's tab across page replacements.
+//// 3. `update` dispatches by prompt: `browsing` for ordinary navigation,
+////    `renaming` for a draft, `confirming` for an archive or delete question.
+//// 4. Every key answers an `Action` for the shell, which turns it into a control
+////    job. `confirming` sends only on y, naming the session
+////    the question was asked about rather than the highlighted row.
+//// 5. A reply returns through `renamed` and `without`, which reshape the state and
+////    `reselect` the row so the highlight follows the identity.
+//// 6. `render` picks a layout by width, draws the grouped rows (`list_lines`,
+////    `row_lines`, `window`) beside the details pane (`detail_lines`), and ends
+////    with `help_line`; `visible` is the one drawn order the highlight indexes.
 
 import etui/buffer
 import etui/geometry.{type Rect}

@@ -33,6 +33,25 @@
 //// with the Erlang inliner, which never attempts a call into another
 //// module, so a long chain of steps applied to an expensive expression is
 //// only a hazard inside one module. `docs/execution.md` §8 has the history.
+////
+//// ## Flow
+////
+//// `main` → `parse_launch` → `interactive` → `update` → `step` → `reduce` → `settle_update`
+////
+//// 1. `main` answers help first (`help_for`), peels `--record` off the arguments,
+////    and lets `parse_launch` classify what is left into a `Launch`.
+//// 2. Launches that are not a terminal (version, update, ext, `replay`, sessions,
+////    claim, enroll, access, view) run to completion in their own functions.
+//// 3. `interactive_terminal` refuses a detached stdin, then `interactive` builds
+////    the model with `new_model` and connects it: `attach_daemon` for a local
+////    daemon, `connect_remote` for a remote address.
+//// 4. `interactive` opens the recording, starts the Herdr reporter and hands
+////    `update`, `render.view` and the quit test to etui's loop.
+//// 5. `update` turns one input into a message and calls `step`, which admits
+////    arrivals or sends an input through `reduce`.
+//// 6. `reduce` starts the step, dispatches the event in `apply_input`, and
+////    `settle_update` finishes what every event shares before the effects are
+////    taken for the loop to perform.
 
 import argv
 import etui/app

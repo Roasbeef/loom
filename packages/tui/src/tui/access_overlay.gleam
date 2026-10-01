@@ -23,6 +23,26 @@
 //// the owner's is the daemon's judgment, not the terminal's: a member who
 //// opens the overlay receives `forbidden`, and `failed` turns that one
 //// refusal into a sentence saying the overlay is for the owner.
+////
+//// ## Flow
+////
+//// `update` → `dispatch` → `browse_principals` → `propose_role` → `review` → `changed` → `reload` → `render`
+////
+//// 1. `update` classifies a key and, while a change is outstanding, refuses a
+////    second proposal; everything else goes to `dispatch`.
+//// 2. `dispatch` routes by prompt: an open question to `review`, a shown claim
+////    command back to browsing, and otherwise by focus to `browse_principals` or
+////    `browse_memberships`.
+//// 3. A browsing key either moves the selection or proposes a change through
+////    `propose_role`, `propose_revocation`, `propose_credentials` or
+////    `propose_rotation`; the first two open a y/N question and the last two only
+////    show the `loom access` line.
+//// 4. `review` sends on a lowercase y by returning `Apply` with the question
+////    closed; the shell turns that into a control job.
+//// 5. Replies come back as `decode_principals` and `decode_memberships` pages
+////    filed by `listed` and `memberships_listed`, and as `changed` or `failed`
+////    for a change; `changed` checks the acknowledgement and `reload` re-reads.
+//// 6. `render` draws whichever list, footer and question the state holds.
 
 import core/json.{type JsonValue}
 import etui/buffer
@@ -359,7 +379,7 @@ fn dispatch(state: State, input: Input) -> Action {
   }
 }
 
-// The y/N question. Only a lowercase `y` sends; Escape and `n` decline, and
+// The y/N question. Only a lowercase y sends; Escape and `n` decline, and
 // every other key leaves the question open, so a stray key or a held Enter
 // cannot confirm. The state handed to `Apply` has the review closed, which is
 // what keeps a second `y` from sending the same change twice.
