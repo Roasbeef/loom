@@ -65,9 +65,10 @@ decision.
 
 Two properties keep this design in place.
 
-**The marshaling seam is unimportable.** Every generated façade is a
-name, a signature, and one call to `cap/internal/mcp.invoke`, which
-builds the capability name `"mcp." <> server` and the argument map. Gleam
+**The marshaling seam is unimportable.** Every generated façade fixes its
+server and tool names and calls
+`cap/internal/mcp.invoke` or `invoke_typed`. That internal seam builds the
+capability name `"mcp." <> server` and the argument envelope. Gleam
 forbids another package from importing an internal module, so a program
 cannot call `invoke` with a server string of its own. If it could,
 `invoke` would be a generic dispatcher by another route, and per-server
@@ -112,9 +113,11 @@ marshaling layer.
 
 `command` is an argv list with the executable first, never a shell
 string. `api_key_env` names an environment *variable*, never a key. At
-spawn, the harness reads the variable from its own environment through
-the same `provider/secret` seam every other configured secret uses, and
-sets it in the child's environment under the same name. The value is
+spawn, the harness resolves that name through the same `provider/secret`
+store used by configured providers and sets the value in the child's
+environment under the same name. The store defaults to the daemon's
+environment; an operator's `[secrets]` command source can supply it instead,
+as described in the [Jev guide](../jev-mcp.md). The value is
 stored in no record, log line, or refusal message. If the configured
 variable is unset, the server is refused before anything is spawned,
 because a server started without its configured key would fail later,
@@ -239,8 +242,8 @@ reads the package from disk once, so a module written later would
 arrive too late. The location is also required. The module goes
 *inside* the vendored prelude's own source tree, at
 `vendor/cap/src/cap/mcp/<server>.gleam`, because a façade calls
-`cap/internal/mcp.invoke` and Gleam admits an internal module only to its
-own package.
+`cap/internal/mcp` and `cap/internal/mcp_codec`, and Gleam admits internal
+modules only to their own package.
 
 As a result, a generated façade compiles in the same network-off jail as
 the program that imports it, from source the harness wrote but never
@@ -250,90 +253,110 @@ for that execution.
 
 ## What the model reads, and what it writes
 
-A model writing a code-mode program has no autocomplete, no hover, and
-no language server. The `code_mode` description indexes configured modules;
-the model reads complete declarations with `fs_read` at
-`cap://mcp/<server>`, filtered by the same offered-seam allowlists. For the
-three-tool fixture server that the client package's end-to-end tests run
-against, configured as `[mcp.fixture]`, the full API read begins like this:
+The `code_mode` description indexes configured modules. The model reads
+complete declarations with `fs_read` at `cap://mcp/<server>`, filtered by
+the same offered-seam allowlists as imports. The declaration surface includes
+nested types, their constructor fields, enums, defaults and function
+signatures. A model can therefore construct a question and read its answer
+from the same API text, without inventing JSON keys.
 
+`packages/mcp/test/mcp/fixtures/structured.json` is an Ashby-shaped listing
+with nested filters and structured results. It is a checked-in fixture,
+not a captured response from a live Ashby server. Configured as
+`[mcp.structured]`, its generated surface includes these declarations:
+
+```gleam
+pub type ListApplicationsT1InputFilterN2 {
+  ListApplicationsT1InputFilterN2(region: String, tags: List(String))
+}
+
+pub type ListApplicationsT1InputStatusN6 {
+  ListApplicationsT1InputStatusN6ActiveV0
+  ListApplicationsT1InputStatusN6HiredV1
+  ListApplicationsT1InputStatusN6ArchivedV2
+  ListApplicationsT1InputStatusN6LeadV3
+}
+
+pub type ListApplicationsT1Options {
+  ListApplicationsT1Options(
+    status: Option(ListApplicationsT1InputStatusN6),
+    cursor: Option(Option(String)),
+    limit: Option(Int),
+    include_archived: Option(ListApplicationsT1InputIncludeArchivedN10),
+  )
+}
+
+pub const list_applications_defaults =
+  ListApplicationsT1Options(
+    status: None, cursor: None, limit: None, include_archived: None,
+  )
+
+pub type ListApplicationsT1OutputResultN0 {
+  ListApplicationsT1OutputResultN0(
+    results: List(ListApplicationsT1OutputResultN0ResultsItemN2),
+    next_cursor: Option(Option(String)),
+  )
+}
+
+pub fn list_applications(
+  job_id: String,
+  filter: ListApplicationsT1InputFilterN2,
+  options: ListApplicationsT1Options,
+) -> Result(ListApplicationsT1OutputResultN0, mcp.McpError)
 ```
-### cap/mcp/fixture
-`cap/mcp/fixture` — the tools of the MCP server "fixture", as typed calls.
-Descriptions below are the server's own text, not Loom's.
-Optional parameters travel in `options` by wire name, e.g.
-`options: [#("page", report.int(2))]`; pass `[]` when none.
 
-/// Echoes the arguments it was called with, verbatim.
-///
-/// Tool "echo_args" on MCP server "fixture". Optional parameters travel in
-/// `options` by wire name; pass [] when none.
-/// - message: wire "message", string. the text to echo
-/// - "tag" (optional): an optional label
-pub fn echo_args(message: String, options: List(#(String, report.Value))) -> Result(mcp.ToolResult, mcp.McpError)
-```
+This is an excerpt; the complete API read also declares the result item,
+its status enum and the input/output boolean types. Generated names combine
+the tool name, its ordinal in the sorted listing and the schema path. The
+suffixes distinguish declarations that would otherwise collide. Read the
+current API rather than carrying names from an older listing into a session.
 
-Those lines show three properties. The first paragraph of each block is
-the *server's* description, quoted and capped, and the surface labels
-it so a model does not read third-party prose as Loom's. Every required
-parameter is a labelled Gleam argument with its wire name stated beside
-it. Every optional parameter goes in one `options` list keyed by wire
-name, so the model can discover it without a signature slot for each.
-
-A program written against that surface looks like any other code-mode
-program. This one is the shape the client package's live suite submits,
-with one extra branch:
+In Gleam, these generated types with one variant and named fields are
+records, and their constructors have the same names as their types. `ListApplicationsT1InputFilterN2(...)` constructs the
+filter, and `found.results` reads a returned record field. `Some(value)`
+supplies an optional value; `None` omits it. The program starts with the
+omission constant and uses record-update syntax to select only the fields
+it needs:
 
 ```gleam
 import cap/mcp
-import cap/mcp/fixture
+import cap/mcp/structured as applications
 import cap/report
-import gleam/option
-import gleam/result
+import gleam/list
+import gleam/option.{Some}
 
 pub fn main() -> report.Outcome {
-  case
-    fixture.echo_args(
-      message: "loom-mcp-wire-fidelity",
-      options: [#("tag", report.string("Tag-With_Mixed.Case"))],
-    )
-  {
-    Ok(found) -> report.text(mcp.text(found) <> " " <> echoed(found))
-    Error(mcp.ToolFailed(message:, content: _content)) ->
-      report.failure("the tool ran and refused: " <> message)
-    Error(mcp.ServerUnavailable(reason: reason)) ->
-      report.failure("the server never answered: " <> reason)
-    Error(_other) -> report.failure("the mcp call did not settle")
-  }
-}
+  let filter = applications.ListApplicationsT1InputFilterN2(
+    region: "us", tags: ["engineering"],
+  )
+  let options = applications.ListApplicationsT1Options(
+    ..applications.list_applications_defaults,
+    status: Some(applications.ListApplicationsT1InputStatusN6ActiveV0),
+    limit: Some(100),
+  )
 
-/// What the server echoed back as structured content, read field by field.
-fn echoed(found: mcp.ToolResult) -> String {
-  let read = {
-    use echo_of <- result.try(option.to_result(found.structured, Nil))
-    use message <- result.try(report.field(echo_of, "message"))
-    use message <- result.try(report.as_string(message))
-    Ok("echoed=" <> message)
-  }
-  case read {
-    Ok(rendered) -> rendered
-    Error(Nil) -> "the structured echo carried no message"
+  case applications.list_applications(job_id: "job-1", filter:, options:) {
+    Ok(found) -> report.value(report.int(list.length(found.results)))
+    Error(mcp.ResultSchemaMismatch(error:, result:)) ->
+      report.failure(error.reason <> ": " <> mcp.text(result))
+    Error(_reason) -> report.failure("The application query failed.")
   }
 }
 ```
 
-Four details in it are properties of the design rather than style
-choices. The import list is the permission grant: this program was given
-the `fixture` server and nothing else, and it cannot touch the disk, the
-network, or a process. Arguments are built with `cap/report`'s value
-builders, the one structured-value vocabulary every seam already
-carries, so an MCP argument map is composed the same way as an
-`Outcome`. `ToolFailed` and `ServerUnavailable` are different events:
-the first is a *tool* verdict on a call that settled, and the second is
-a call that never reached a tool. Nothing below the program can
-distinguish them on its behalf. Finally, label shorthand in the patterns
-is ordinary Gleam syntax and passes through the same vetter as every
-other submitted construct.
+The success branch receives a typed result, so it never looks up the
+`"results"` key or casts a raw list. An invalid status constructor or an
+unknown option field fails compilation before any capability call. A
+server answer with the wrong shape fails the total decoder and retains its
+text in `ResultSchemaMismatch`; it never enters the success branch. This
+program is executed unchanged by the native client integration test. The
+[Jev walkthrough](../jev-mcp.md) records the real-daemon integration proof
+and its exact validation boundary.
+
+The import list still grants permission per server. The generated types
+improve what a caller can express, while the broker remains responsible
+for whether that caller may invoke the server. `cap/mcp` only supplies the
+shared result and error vocabulary; importing it alone grants no call.
 
 ## A worked example: an issue triage pass
 
@@ -348,58 +371,66 @@ reference to a table the model can fetch if it needs one.
 
 ### The surface it was written against
 
-Every signature below is generator output, not prose written for this
-document. `packages/mcp/test/mcp/fixtures/github.gleam` is a checked-in
-ten-tool `tools/list` from a GitHub-shaped server, and `codegen_test`
-generates a module from it and pins the surface against that module.
-Configured as `[mcp.github]`, the fixture renders the text below, exactly
-as the `code_mode` description carries it. The excerpt shows two of the
-ten tools, the only two the program calls.
+`packages/mcp/test/mcp/fixtures/github.gleam` is a checked-in ten-tool
+listing from a GitHub-shaped server. The generator derives the following
+types and signatures from it (wrapped here for readability). The complete
+API read includes the other tools and their declarations.
 
+```gleam
+pub type GetIssueT5Options {
+  GetIssueT5Options
+}
+
+pub const get_issue_defaults = GetIssueT5Options
+
+pub type ListIssuesT7InputStateN3 {
+  ListIssuesT7InputStateN3OpenV0
+  ListIssuesT7InputStateN3ClosedV1
+  ListIssuesT7InputStateN3AllV2
+}
+
+pub type ListIssuesT7Options {
+  ListIssuesT7Options(
+    state: Option(ListIssuesT7InputStateN3),
+    labels: Option(List(String)),
+    sort: Option(ListIssuesT7InputSortN6),
+    direction: Option(ListIssuesT7InputDirectionN7),
+    since: Option(String),
+    page: Option(Float),
+    per_page_77879bba: Option(Float),
+  )
+}
+
+pub const list_issues_defaults = ListIssuesT7Options(
+  state: None, labels: None, sort: None, direction: None,
+  since: None, page: None, per_page_77879bba: None,
+)
+
+pub fn get_issue(
+  owner: String, repo: String, issue_number: Int, options: GetIssueT5Options,
+) -> Result(mcp.ToolResult, mcp.McpError)
+
+pub fn list_issues(
+  owner: String, repo: String, options: ListIssuesT7Options,
+) -> Result(mcp.ToolResult, mcp.McpError)
 ```
-### cap/mcp/github
-`cap/mcp/github` — the tools of the MCP server "github", as typed calls.
-Descriptions below are the server's own text, not Loom's.
-Optional parameters travel in `options` by wire name, e.g.
-`options: [#("page", report.int(2))]`; pass `[]` when none.
 
-/// Get details of a specific issue in a GitHub repository.
-///
-/// Tool "get_issue" on MCP server "github". Optional parameters travel in
-/// `options` by wire name; pass [] when none.
-/// - owner: wire "owner", string. Repository owner
-/// - repo: wire "repo", string. Repository name
-/// - issue_number: wire "issue_number", integer. The number of the issue
-pub fn get_issue(owner: String, repo: String, issue_number: Int, options: List(#(String, report.Value))) -> Result(mcp.ToolResult, mcp.McpError)
+The property `perPage` gets the generated field name
+`per_page_77879bba`; its encoder still sends `"perPage"`. The fixture uses
+JSON Schema `number` for pagination, so the field takes `Float` and the
+program sends `100.0`. Its `state` is an enum constructor, so an arbitrary
+string cannot substitute for `open`.
 
-/// List issues in a GitHub repository with filtering options.
-///
-/// Tool "list_issues" on MCP server "github". Optional parameters travel in
-/// `options` by wire name; pass [] when none.
-/// - owner: wire "owner", string. Repository owner
-/// - repo: wire "repo", string. Repository name
-/// - "state" (optional): Filter by state
-/// - "labels" (optional): Filter by labels
-/// - "sort" (optional): Sort order
-/// - "direction" (optional): Sort direction
-/// - "since" (optional): Filter by date (ISO 8601 timestamp)
-/// - "page" (optional): Page number
-/// - "perPage" (optional): Results per page
-pub fn list_issues(owner: String, repo: String, options: List(#(String, report.Value))) -> Result(mcp.ToolResult, mcp.McpError)
-```
-
-A signature describes what a tool *takes*, not what it returns. MCP
-describes only a tool's input schema, and `structuredContent` crosses
-this client raw and uninterpreted. The way this program reads a result
-(`list_issues` returns an `issues` array, and `get_issue` returns an
-object with `title` and `body`) is therefore an assumption about the
-server, and the code treats it as one. Every read goes through
+These tools advertise no `outputSchema`, so they retain `ToolResult`.
+The program assumes `list_issues` returns an `issues` array and
+`get_issue` returns an object with `title` and `body`. Every read uses
 `cap/report`'s total readers, so a missing field becomes a reported
-failure rather than a crash.
+failure rather than a crash. A server that advertises supported output
+shapes would instead supply typed results through the generated decoder.
 
-One limit before the code: no suite runs this program, unlike
-`docs/examples/stale_symbol_sweep.gleam`, which `packages/codemode/test`
-runs verbatim. The suite pins only the surface above.
+No suite runs this entire triage program. The generator tests verify its
+fixture surface; the program remains an illustration of composing those
+calls with concurrency and an actor.
 
 ### The program
 
@@ -468,10 +499,15 @@ pub fn main() -> report.Outcome {
 
 fn triage() -> Result(report.Outcome, String) {
   use listed <- result.try(
-    github.list_issues(owner: owner, repo: repo, options: [
-      #("state", report.string("open")),
-      #("perPage", report.int(100)),
-    ])
+    github.list_issues(
+      owner: owner,
+      repo: repo,
+      options: github.ListIssuesT7Options(
+        ..github.list_issues_defaults,
+        state: option.Some(github.ListIssuesT7InputStateN3OpenV0),
+        per_page_77879bba: option.Some(100.0),
+      ),
+    )
     |> result.map_error(explain),
   )
   use numbers <- result.try(issue_numbers(listed))
@@ -504,7 +540,7 @@ fn classify_one(
       owner: owner,
       repo: repo,
       issue_number: number,
-      options: [],
+      options: github.get_issue_defaults,
     )
     |> result.map_error(explain),
   )
@@ -677,6 +713,9 @@ fn explain(error: mcp.McpError) -> String {
       "the call was denied as " <> code <> ": " <> message
     mcp.ResultMalformed(reason: reason) ->
       "the answer did not decode: " <> reason
+    mcp.ResultSchemaMismatch(error:, result:) ->
+      "the structured answer did not decode: " <> error.reason
+      <> ": " <> mcp.text(result)
   }
 }
 
@@ -779,18 +818,23 @@ hidden inside a jailed program.
 
 A server's listing is JSON the harness did not write, and the generator
 turns it into Gleam source that the harness compiles and the vetting
-allowlist admits. That makes the generator the most exposed part of the
-feature. Its defence is one governing rule, three mechanisms that
-enforce it, and two sets of bounds.
+allowlist admits. Generation therefore bounds structural planning and
+keeps every server-supplied name, literal and description inert.
 
-**The generator chooses names and signatures only, never marshaling.**
-Every façade it emits is a doc comment, a `pub fn` header, and one call
-to `cap/internal/mcp.invoke`. The marshaling (building the argument map,
-encoding it, decoding the pinned result, and mapping a denial onto
-`cap/mcp`'s error vocabulary) lives in that one internal module, written
-once by hand. Server-influenced text therefore reaches a generated
-module only as *identifiers and literals*, never as code that touches
-the wire.
+**Generated code composes a fixed codec vocabulary.** The generator emits
+records, enum and boolean variants, signatures, argument projections and
+result decoders. Those projections use `cap/report` builders, and the
+decoders compose the hand-written, total combinators in
+`cap/internal/mcp_codec`. No server supplies a callback or executable
+statement. Server names, tool names, property names and enum values enter
+source only as checked identifiers or escaped literals.
+
+The actual wire envelope and capability dispatch remain in
+`cap/internal/mcp`, written once by hand. A generated decoder can describe
+an expected result, but it cannot change the capability name, select
+another server or construct a different envelope. Both internal modules
+compile inside the vendored `cap` package; submitted programs can import
+neither.
 
 **Wire identity never changes.** Every generated body embeds the
 original tool name and the original parameter names as escaped string
@@ -821,24 +865,20 @@ characters are all that keep them two functions rather than one. The
 generated function for the second row reads:
 
 ```gleam
-/// A tool whose name is no Gleam identifier.
-///
-/// Tool "Create-Issue!" on MCP server "fixture". Optional parameters travel
-/// in `options` by wire name; pass [] when none.
-/// - title: wire "title", string.
+pub type CreateIssue48f762e0T0Options {
+  CreateIssue48f762e0T0Options
+}
+
+pub const create_issue_48f762e0_defaults = CreateIssue48f762e0T0Options
+
 pub fn create_issue_48f762e0(
   title title: String,
-  options options: List(#(String, report.Value)),
+  options _options: CreateIssue48f762e0T0Options,
 ) -> Result(mcp.ToolResult, mcp.McpError) {
   internal.invoke(
     "fixture",
     "Create-Issue!",
-    report.object(list.append(
-      [
-        #("title", report.string(title)),
-      ],
-      options,
-    )),
+    report.object([#("title", report.string(title))]),
   )
 }
 ```
@@ -846,9 +886,11 @@ pub fn create_issue_48f762e0(
 **Server prose stays inside the comment line it was written into.**
 `codegen.sanitize` replaces every control and direction-changing
 codepoint with a space: C0 and C1 controls, the bidi overrides and
-isolates, zero-width characters, and the tag-character plane. It caps a
-tool description at 400 characters and a parameter note at 120. Every
-comment line the generator emits begins `/// `, and every line break
+isolates, zero-width characters, and the tag-character plane. Generated
+tool and field doc text is capped at 400 characters. Parameter notes, wire
+names in doc text, and short literal/default annotations are capped at 120
+before that complete field-doc cap is applied. Every comment line the generator
+emits begins `/// `, and every line break
 comes from the generator's own word wrap; the sanitizer has already
 flattened any breaks in the server's text.
 
@@ -862,35 +904,76 @@ the server loudly rather than hand the compiler an attribute.
 
 ### Every schema settles, and no parameter is dropped
 
-`mcp/schema.plan` is the one place a tool's raw `inputSchema` is read,
-and it has no error case: tier 3 *is* its failure mode, represented as
-data. Each required parameter lands in one of three tiers.
+`mcp/schema` reads input and output schemas into recursive `Shape` plans.
+Planning is total: an unsupported field becomes `report.Value` with an
+explicit reason in its declaration. A malformed top-level input schema
+becomes one `arguments: report.Value`. Required names without a property
+schema survive as required raw-value arguments. Fallback therefore keeps
+the field the server requested, and preserves typed siblings around it.
 
-| Tier | What lands there | What the façade takes |
+| Tier | Schema shape | Generated Gleam surface |
 |---|---|---|
-| 1 | `string`, `integer`, `number`, `boolean`, or an array of those | a typed Gleam argument (`String`, `Int`, `Float`, `Bool`, `List(...)`) |
-| 2 | a nested object, a `$ref`, an `anyOf`, a missing type, or a `required` name with no `properties` entry | a required `report.Value` argument, with the reason in its doc line |
-| 3 | an unusable top level: the whole `inputSchema` is not an object schema | one `arguments: report.Value` holding the entire map |
+| 1 | `string`, `integer`, `number`, `null` | `String`, `Int`, `Float`, `Nil` |
+| 1 | `boolean` | A field-specific two-variant type, with constructors encoding true and false |
+| 1 | String `enum` or string `const` | Named enum variants or a singleton literal type |
+| 1 | Homogeneous arrays, including nested arrays and object items | `List(element)` with recursively generated element types |
+| 1 | Objects with declared properties | Named records, with required fields and `Option(field)` for optional fields |
+| 1 | An object with no declared properties and schema-valued `additionalProperties` | `List(#(String, value))` with recursively typed values |
+| 1 | An object or array whose inner shape is unspecified | `List(#(String, report.Value))` or `List(report.Value)` |
+| 1 | Nullable fields | `Option(value)`; an optional nullable field is `Option(Option(value))` |
+| 1 | Structurally disjoint `oneOf` alternatives | A generated union with one constructor per branch |
+| 2 | `$ref`, unresolved shapes, overlapping unions or unsupported schema constructs | `report.Value` at that field, with the fallback reason |
+| 3 | An unusable top-level input object or colliding parameter labels | One `arguments: report.Value` for that tool |
 
-Optional parameters are never typed arguments. They travel in the single
-`options` list keyed by their original wire name, and appear in the doc
-comment so the model can see they exist. No tier drops a parameter
-silently: a `required` name the server never declared becomes a tier-2
-argument with that fact as its reason, because dropping a parameter is
-the one thing this reading must never do.
+Every usable input object also gets a tool-specific `Options` record and
+defaults constant, normally named `<function>_defaults`. A collision with a
+tool function adds a generated prefix, shown in the API read. The constant
+omits optional fields; it does
+not send the schema's `default` annotations. The server applies its own
+defaults. To supply a field, update the constant with `Some(value)`. For a
+nullable optional field, `None` omits the key, `Some(None)` sends JSON
+null, and `Some(Some(value))` sends the value. Arrays and nested records
+use the same generated types in required and optional positions.
 
-The typed subset is deliberately narrow, and `codegen_test` records the
-measurement that would overturn that choice. Against a plausible
-GitHub-shaped listing, 30 of 31 required parameters land in tier 1. If
-mainstream servers ever push tier 2 past 25% of required parameters,
-that is the trigger to widen the subset and generate nested records.
+These constructors enforce the represented shape at compile time. They
+make an unknown option name, wrong element type or invalid enum spelling
+a compile error. They do not enforce every JSON Schema predicate: numeric
+bounds, string lengths and patterns, and general refinements remain the
+server's admission responsibility. An `Int` can still lie outside a
+server's declared range, and a raw-value fallback still needs validation.
+
+An advertised `outputSchema` generates a return type and a total decoder.
+Objects become records that callers read with normal field access; arrays,
+enums, nullable values and supported unions follow the same recursive
+rules as inputs. A tool without `outputSchema` retains
+`Result(mcp.ToolResult, mcp.McpError)`. Its caller still reads text with
+`mcp.text` or inspects raw structured content with `cap/report` readers.
+
+The typed call first decodes the existing capability result envelope, then
+requires `structuredContent` and decodes it. Missing structured content is
+a schema mismatch; a present JSON null reaches the schema decoder as null.
+Structural type checks, enum membership, string-literal equality and
+closed-object checks happen at that boundary. An open object's extra fields
+are accepted but omitted from its typed record. A schema-valued map retains
+dynamic keys and decodes each value; a raw-value fallback retains the field
+without interpreting it. A mismatch returns
+`ResultSchemaMismatch(error, result)` with literal property names and list
+indices in `error.path`, plus the original text and structured result.
+The caller can inspect the server's answer without treating it as typed
+success. Transport refusals and `ToolFailed` keep their existing meanings.
 
 ### Ceilings, and what each one costs a hostile server
 
 | Bound | Value | What happens past it |
 |---|---|---|
 | tools in one listing | 256 | the server is refused whole |
-| rendered surface | 64 KiB after truncation | the server is refused whole |
+| input and output schema nodes, across the listing | 16,384 | `SchemaTooLarge`; the server is refused whole |
+| schema text, including property names and numeric renderings | 256 KiB across the listing | `SchemaTooLarge`; the server is refused whole |
+| schema JSON nesting | 32 levels | `SchemaTooLarge`; the server is refused whole |
+| recursive typed shape nesting | 12 levels | the deeper field becomes an explicit raw-value fallback |
+| structural `oneOf` alternatives | 32 branches per union | The field falls back to `report.Value` |
+| generated source | 512 KiB | `SourceTooLarge`; the server is refused whole |
+| rendered surface | 64 KiB | `SurfaceTooLarge`; the server is refused whole |
 | `tools/list` pages | 64 | `TooManyPages`; the listing fails |
 | one JSON-RPC line | 16 MiB | `LineTooLong`, and the client latches dead |
 | one `cap_result` | the cap channel's frame cap, less a 64 KiB envelope margin | the call is refused `mcp_malformed` |
@@ -951,7 +1034,9 @@ sequenceDiagram
     S-->>A: one result line
     A-->>X: CallToolResult
     X-->>R: JSON to msgpack
-    R-->>P: cap_result, read as Result of ToolResult
+    R-->>F: cap_result, existing ToolResult envelope
+    F->>F: fixed total decoder when outputSchema is declared
+    F-->>P: typed result or ToolResult, or an in-band error
 ```
 
 ### What a program reads back
@@ -965,10 +1050,14 @@ sequenceDiagram
 | `unsupported_cap` | `mcp.<server>` naming a server this host never configured | `McpDenied(...)` |
 | `invalid_argument` | the call's own `{tool, arguments}` could not be read, or the arguments do not cross to JSON | `McpDenied(...)` |
 
-Two outcomes are not denials at all. A call that settled with
+A call that settled with
 `is_error: true` is a *tool* verdict and reaches the program as
 `ToolFailed(message, content)`. A `cap_result` that does not match the
-pinned shape becomes `ResultMalformed`. The server's own JSON-RPC code
+pinned shape becomes `ResultMalformed`. A successful tool result whose
+structured output misses its generated decoder becomes
+`ResultSchemaMismatch(error, result)`. Its `DecodeError` contains a path
+relative to the structured root and the expected shape, while `result`
+retains the content for inspection. The server's own JSON-RPC code
 travels in the code string rather than being folded into one name,
 because it is the one fact a program could branch on.
 
@@ -1017,12 +1106,14 @@ flowchart LR
     subgraph J[Kernel jail — untrusted]
       B[hermetic build: façade compiled into the vendored prelude]
       SAT[satellite: the program and the compiled façade]
+      CODEC[cap/internal/mcp_codec: fixed total readers, no authority]
     end
     SRV[third-party server process]
     CFG --> CL
     CL --> CG
     CG -->|source, only for imported servers| B
     B --> SAT
+    SAT -->|structured result projection| CODEC
     SAT -->|cap_call over the framed channel| CL
     CL --> AC
     AC -->|stdio pipe| SRV
@@ -1043,11 +1134,12 @@ under [What v1 leaves out](#what-v1-leaves-out). A server-initiated
 request is answered with JSON-RPC's
 method-not-found; a notification is decoded and dropped.
 
-**Inside the satellite:** the generated façades, compiled into the
-vendored prelude of that execution's hermetic build, running under the
-same jail and the same pooled budget as the rest of the program. A
-façade holds no socket and no server handle; it marshals the arguments
-and makes the call, and the capability channel carries it.
+**Inside the satellite:** the generated façades and fixed total codecs,
+compiled into the vendored prelude of that execution's hermetic build.
+They run under the same jail and pooled budget as the rest of the program.
+A façade holds no socket and no server handle. It builds arguments, makes
+the call and decodes the result when the server declared an output schema.
+The capability channel carries the same envelope for typed and raw calls.
 
 **On the child's own stdio:** the server. Its stderr is deliberately
 kept out of stdout, because `stderr_to_stdout` would interleave
@@ -1089,7 +1181,6 @@ bring it back.
 | `listChanged` handling | it decodes faithfully and is ignored: this client lists tools once per connection | a server whose tool set changes mid-session, which also means re-rendering a description the model was already given |
 | HTTP and SSE transports | a locally-spawned server speaks stdio, and a spawned child is what the jailing story attaches to | a server worth reaching that speaks nothing else, decided together with the jail question |
 | Restart and reconnect supervision | a dead peer latches dead and answers `Unavailable` in band | unbuilt; the LSP client (#25, ADR-015) restarts lazily on the next query rather than supervising a reconnect, so no shared substrate exists yet |
-| Nested records for tier-2 parameters | the typed subset covers 30 of 31 required parameters on a GitHub-shaped listing | tier 2 past 25% of required parameters on mainstream servers (the falsifier is in `codegen_test`) |
 | Per-tool trust | a human trusts a server, not a tool | a policy vocabulary keyed on tool identity, which is a protocol change and strictly more work than generating modules |
 
 One item is owed rather than declined. The end-to-end runs against a
@@ -1127,16 +1218,19 @@ lint.
 | `gleam_mcp/stdio.gleam` | Line framing both ways: a push buffer bounded at 16 MiB, and `frame` for the outbound side. |
 | `gleam_mcp/transport.gleam` | The `Transport` seam, the `Spawn` spec, and `utf8_prefix`, which reassembles characters split across pipe chunks. |
 | `gleam_mcp/client.gleam` | The actor: handshake, `list_tools` with bounded pagination, `call_tool`, `stop`, and the death latch. |
-| `mcp/schema.gleam` | The three-tier reading of a raw `inputSchema` into a parameter plan; no error case. |
+| `mcp/schema.gleam` | Recursive input/output shapes, field fallback, disjoint-union planning and aggregate schema budgets. |
 | `mcp/name.gleam` | Mangling a server-chosen name into a Gleam identifier, with the digest rule that keeps two originals distinct. |
-| `mcp/codegen.gleam` | The generator: one `cap/mcp/<server>` module and its rendered surface, the sanitizer, the `@` backstop, and every refusal. |
+| `mcp/codegen.gleam` | Generation admission: names, schema/source/surface budgets, and the `@` backstop. |
+| `mcp/internal/typed_codegen.gleam` | Matching record/enum declarations, options constants, argument encoders, result decoders and discovery surface. |
+| `mcp/internal/render_text.gleam` | The shared sanitizer, bounded doc text and total literal escaping. |
 | `mcp/interchange.gleam` | msgpack ↔ JSON, total both ways, with the four disagreements decided. |
 | `gleam_mcp/internal/ffi_port.gleam` | The port externals over the library's Erlang shim; the local adapter has no FFI. |
 | `client/catalog.gleam` | `[mcp.<name>]`: the key grammar, the mangling gate, and the `api_key_env` indirection. |
 | `client/mcp.gleam` | The layer: boot per server, the refusal wording, the `mcp.<server>` router arm, the pinned result shape, and the result ceilings. |
 | `client/codemode.gleam` | `over_mcp`, `seam_allowlist`, `seam_caps_on` — the one `Config.mcp` field and the four things it widens. |
-| `cap/mcp.gleam` | The generated façades' vocabulary: `Content`, `ToolResult`, `McpError`. Types only, no authority. |
-| `cap/internal/mcp.gleam` | The one marshaling seam: `invoke`, the pinned result decoder, and the denial-code mapping. A program cannot import it. |
+| `cap/mcp.gleam` | The façades' vocabulary: `Content`, `ToolResult`, `DecodeError`, `McpError`. Types and result readers only, no authority. |
+| `cap/internal/mcp.gleam` | The invocation seam: `invoke`, `invoke_typed`, the pinned envelope decoder and denial-code mapping. |
+| `cap/internal/mcp_codec.gleam` | Fixed total structural decoders and optional-value encoders, importable only inside `cap`. |
 | `client/test/support/mcp_fixture.escript` | The checked-in third-party server the end-to-end spawns: three tools, one of them an oracle that echoes its arguments back. |
 | `client/test/client/codemode_live_test.gleam` | A program reaching a real server process through a real pipe, and the wire-fidelity assertions on what crossed. |
 

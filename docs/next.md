@@ -23,6 +23,45 @@ transport configuration remain separate scope.
 The validation history below belongs to the exact heads and runs it names.
 It is not a new full-gate or hosted-CI claim for this documentation baseline.
 
+## Typed MCP generation (issue #449)
+
+The follow-up to extraction adds recursive structural schema planning and
+matching generated declarations. Required inputs can be nested records,
+lists, enums, named booleans, nullable values and supported disjoint unions.
+Optional inputs use tool-specific `Options` records and omission constants.
+Unknown shapes remain explicit `report.Value` fields, so typed siblings and
+required names survive fallback. An advertised `outputSchema` now produces
+a typed return with a total decoder inside the satellite.
+
+The fixed codec lives in `cap/internal/mcp_codec`; generated functions still
+call the internal per-server capability seam. `ResultSchemaMismatch` retains
+its path and original tool result. Structural shape, enum, literal and
+closed-object checks belong to this decoder. Numeric bounds and general
+JSON Schema refinements remain server admission checks. This work changes
+no frozen capability envelope and grants no additional server authority.
+
+The earlier claim that MCP describes only inputs is corrected in the
+[MCP architecture](architecture/mcp.md). Its GitHub triage example still
+uses raw result readers because that fixture advertises no output schemas;
+the input options now use generated types. The [Jev guide](jev-mcp.md)
+distinguishes the earlier #669 integration proof from the typed program.
+
+The exact typed Choice program passed through a fresh production daemon on
+October 1, 2026: `fs_read` discovery, jailed compilation, satellite execution,
+Jevelin MCP, one HTTP fixture request, typed output decoding and a durable
+structured outcome. The run exited zero; `build/typed-jev-daemon-e2e.log` retains its output; evidence is retained in `build/jev-e2e-20261001-140558`.
+The dummy credential stayed confined and authenticated cleanup exited zero.
+The focused native client suite passed six cases covering nested options
+and null presence, typed output, retained mismatch text/path, and compiler
+rejection of malformed enum/options/nested input before any tool call. The
+complete GitHub-shaped facade compiles in the jail, and the documented
+structured example runs unchanged.
+macOS Seatbelt filesystem/network enforcement was active; resource and
+lifecycle enforcement remained degraded. Live Jev authentication and
+inference remain untested. Full-gate and hosted-CI claims still belong to
+the exact final head and runs recorded with its pull request; the historical
+results below do not prove the new generator.
+
 ## Extraction rebase history
 
 The MCP extraction is rebased onto `origin/main` at

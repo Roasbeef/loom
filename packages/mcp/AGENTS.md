@@ -18,10 +18,18 @@ compiles only the generated modules the submitted program imports.
 
 - `mcp/codegen.Generated(module_name, source, surface)` is the complete
   generated artifact. `GenerateError` refuses excessive tool counts,
-  name collisions, excessive rendered surfaces, and sanitizer failures.
-- `mcp/schema.Plan` is `Typed(parameters, optionals)` or `WholeValue(reason)`.
-  Every required parameter survives as a typed or structured argument; an
-  unusable schema becomes a whole-value argument rather than an omission.
+  name collisions, schema budgets, excessive source or surface sizes, and
+  sanitizer failures.
+- `mcp/schema.Shape` is the recursive rendering plan: primitives, string
+  enums, lists, records, mappings, nullable values, disjoint alternatives,
+  raw object/array shapes, null and explicit `ValueFallback(reason)`.
+  `Field` retains each original name, required/optional presence, note and
+  default annotation; `Openness` records whether extra properties are allowed.
+  `input_fields` plans a usable top-level object, while `shape` handles a
+  recursive input or output value. The older `Plan` and `ParamType` remain
+  for scalar accounting; the structural renderer consumes `Shape`.
+  Every required name survives; an unusable input object becomes a whole
+  arguments value.
 - `mcp/name` maps wire names to Gleam identifiers, retaining an injected
   digest suffix whenever a name changes. Wire names themselves never change.
 - `mcp/interchange.InterchangeFault` names an unrepresentable value's path.
@@ -34,13 +42,14 @@ compiles only the generated modules the submitted program imports.
 ## Relationships
 
 - **Depends on**: `gleam_stdlib`; `core` for `core/msgpack`; `gleam_mcp`
-  for protocol descriptors and JSON values. The four local modules perform
+  for protocol descriptors and JSON values. The local modules perform
   no I/O. The dependency includes an Erlang runtime, so this package does
   not claim the portable subset held by `core`, `machine` and `prompt`.
 - **Depended on by**: `client`, through `client/catalog`'s name checks and
   `client/mcp`'s generation and capability conversion. Generated source
-  imports `cap/internal/mcp`, `cap/mcp` and `cap/report`, but this package
-  has no dependency on `cap`: those imports are emitted as source text.
+  imports `cap/internal/mcp`, the fixed `cap/internal/mcp_codec`, `cap/mcp`
+  and `cap/report`, but this package has no dependency on `cap`: those
+  imports are emitted as source text.
 - **FFI**: none. Native stdio process operations belong to the external
   library's `gleam_mcp/internal/ffi_port` module.
 
@@ -59,7 +68,8 @@ compiles only the generated modules the submitted program imports.
 
 - **Code-mode authority stays per server.** Generated functions close over
   the original server and tool names and call `cap/internal/mcp.invoke`.
-  The adapter does not expose a generic model-callable dispatcher.
+  Typed output calls use `invoke_typed`; neither form exposes a generic
+  model-callable dispatcher. The records and decoders grant no authority.
 - **Wire names travel verbatim.** Mangling affects Gleam names only.
   Escaped literals preserve original tool and parameter names; a residual
   tool-name collision refuses the server. A parameter-label collision
@@ -67,8 +77,24 @@ compiles only the generated modules the submitted program imports.
 - **Server prose remains inert.** Descriptions lose control and direction
   changing codepoints and are capped. Every generated doc line starts
   `/// `. `scan_for_at` refuses an attribute outside a string or comment.
-- **Generation is bounded.** `max_tools` is 256; `max_surface_bytes` is
-  65,536. A listing exceeding either limit refuses the server.
+- **Generation is bounded.** Across input and output schemas, the precheck
+  admits at most 16,384 JSON nodes, 262,144 text bytes and JSON depth 32.
+  Recursive typed planning falls back beyond depth 12 or 32 union branches.
+  `max_tools` is 256;
+  generated source is capped at 524,288 bytes and the full surface at
+  65,536 bytes. Aggregate overruns refuse the server; per-field depth
+  fallback keeps the surrounding structure.
+- **Source and surface describe the same types.** `internal/typed_codegen`
+  derives declarations, options constants, encoders and total output decoders
+  from one plan. Optional defaults omit keys so the server applies its own
+  defaults. Unknown shapes carry explicit raw-value reasons, and generated
+  booleans carry named variants rather than naked `Bool` fields.
+- **Structural typing has a stated limit.** Types and the fixed satellite
+  codec check represented shapes, enums, string literals and closed objects.
+  Numeric bounds, patterns and general schema refinements remain server
+  admission checks. Open-record output fields not in the declared projection
+  are accepted and omitted from the typed record; raw-value fallback fields
+  remain available for caller inspection.
 - **Value translation is total.** JSON integers outside `[-2^63, 2^64 - 1]`
   fail the whole MessagePack conversion. Binary values and non-string map
   keys cannot become JSON arguments. No wrapping, clamping or guessed
@@ -93,6 +119,7 @@ compiles only the generated modules the submitted program imports.
   startup, generation, compilation, calls and retirement end to end.
 - [Code-mode architecture](../../docs/architecture/code-mode.md) describes
   import vetting and the jailed build that compiles generated modules.
-- [Capability package](../cap/CLAUDE.md) owns the frozen result vocabulary.
+- [Capability package](../cap/CLAUDE.md) owns the invocation envelope,
+  result vocabulary and fixed structural codec.
 - [Client package](../client/CLAUDE.md) owns lifecycle wiring and routing.
 - [Root CLAUDE.md](../../CLAUDE.md) holds repository rules and the doc graph.

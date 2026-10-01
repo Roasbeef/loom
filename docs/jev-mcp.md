@@ -46,10 +46,11 @@ command = ["/absolute/path/jevelin-mcp/bin/jevelin-mcp"]
 api_key_env = "JEV_API_KEY"
 ```
 
-The model provider and Jev use separate credentials. `api_key_env` names an
-environment variable; the TOML file contains no Jev credential. Set
-`JEV_API_KEY` in the terminal that starts the daemon, using your secret
-manager, and export it. To enter it interactively in Bash or Zsh:
+The model provider and Jev use separate credentials. `api_key_env` names a
+credential in Loom's secret store; the TOML file contains no Jev credential.
+By default, that store reads the daemon's environment. For a terminal-only
+setup, set `JEV_API_KEY` using your secret manager and export it before
+starting the daemon. To enter it interactively in Bash or Zsh:
 
 ```sh
 read -r -s JEV_API_KEY
@@ -57,8 +58,28 @@ export JEV_API_KEY
 ```
 
 The silent read waits for the key and Enter. Keep the credential out of
-model prompts and tool arguments. Jevelin defaults to `jev-latest`; an
-exported `JEV_MODEL` selects another default, and a tool's optional `model`
+model prompts and tool arguments.
+
+For a credential that survives daemon restarts, store it in your existing
+secret manager and add Loom's existing command source to the same catalogue:
+
+```toml
+[secrets]
+JEV_API_KEY = { command = ["/absolute/path/to/jev-secret-helper"] }
+```
+
+Replace the helper with the command you use to retrieve the key. Each list
+entry is one argv argument; Loom performs no shell expansion. The helper
+must print only the credential on stdout and exit zero. Loom removes one
+trailing newline and resolves the command at session create/open, under a
+ten-second deadline. A resolved value overrides the environment value for
+that name and stays in daemon memory. Existing running sessions keep their
+assembled store. The helper's stderr reaches the daemon log, so its
+diagnostics must also keep the key private. This uses the existing
+`client/secrets` store, with the same `api_key_env = "JEV_API_KEY"` reference.
+
+Jevelin defaults to `jev-latest`; an exported `JEV_MODEL` selects another
+default, and a tool's optional `model`
 argument overrides it. The child inherits the daemon's process environment.
 Loom's MCP table accepts `command` and `api_key_env`, without an `env` table.
 
@@ -103,21 +124,46 @@ manual code-generation command is required. Startup generates source in
 memory, and each execution compiles the modules its program imports.
 
 The Jev module exposes `jev_choice`, `jev_score`, `jev_noul`, and `jev_batch`.
-The Choice signature is:
+The API follows the deployed Loom generator. The extraction baseline
+`f84842d17` still exposes structured inputs as `report.Value` and optional
+arguments as a list of wire-name/value pairs. A build with typed MCP
+generation exposes the signature below. Read `cap://mcp/jev` from the
+running session before submitting a program; that deployed surface is
+authoritative.
+
+The typed Choice signature is:
 
 ```gleam
 pub fn jev_choice(
-  state: report.Value,
-  choices: report.Value,
-  options: List(#(String, report.Value)),
-) -> Result(mcp.ToolResult, mcp.McpError)
+  state: JevChoiceT1InputStateN1,
+  choices: List(JevChoiceT1InputChoicesItemN6),
+  options: JevChoiceT1Options,
+) -> Result(JevChoiceT1OutputResultN0, mcp.McpError)
 ```
 
-Required arguments have labelled parameters. Structured schema fields use
-`report.Value`; optional arguments travel in `options` by their wire names.
-This generated signature does not prove that every constructed JSON value
-is a valid Jev question. Jevelin's smart constructors validate the input
-before HTTP runs, and its answer decoder checks the returned decision.
+The API read declares every type named in that signature. The Choice state
+has variants for text, a JSON object and a JSON array. Each choice is a record
+with a label and optional nullable description. The options record exposes
+`model` and `instructions`; `jev_choice_defaults` omits both. The returned
+record has `model`, `answer` and `usage` fields, so the program can read
+`found.answer.choice` and `found.usage.input_tokens` directly.
+
+In Gleam, call a record's named constructor to build it, and use
+`Constructor(..existing, field: value)` to update a field. Optional fields
+use `Option`: `None` omits a key and `Some(value)` supplies it. Nullable
+optional fields have a second layer: `Some(None)` sends null, while
+`Some(Some(value))` sends data. The generated API names every union branch
+and enum constructor. Read that surface each session, because schema changes
+can change the generated type names.
+
+These types restrict structural questions at compile time. Jevelin's smart
+constructors still validate conditions such as duplicate labels before HTTP
+runs, and its answer decoder validates the service's decision. Loom's total
+output decoder then checks the advertised structural schema inside the
+satellite. A mismatch returns `mcp.ResultSchemaMismatch(error, result)` with
+a path and the original content; a failed tool or transport keeps its own
+error variant. Numeric bounds and general schema refinements remain
+server admission checks.
 
 ## Run a Choice query
 
@@ -127,51 +173,78 @@ Give the Loom session this instruction:
 > `jev.jev_choice` for a failed build, choosing between reading compiler
 > logs and running tests. Return the choice, confidence, and token usage.
 
-The following complete program passed through the real code-mode tool:
+This complete program uses the typed declarations above. It constructs
+choice records and an instructions union, then reads the decoded answer and
+usage fields. This exact program passed through a fresh production daemon
+and the local HTTP fixture on October 1, 2026. The validation section below
+separates that typed run from the earlier raw-value integration proof.
 
 ```gleam
-//// A generated MCP facade carries this evaluation through the harness.
+//// A Choice request uses schema-derived inputs and a decoded answer record.
 
-import cap/mcp
 import cap/mcp/jev
 import cap/report
+import gleam/list
+import gleam/option.{None, Some}
 
+/// Returns the model, choice, confidence, probabilities, and token usage.
+///
+/// ## Examples
+///
+/// This entry point is run by Loom's code-mode satellite.
 pub fn main() -> report.Outcome {
-  let choices =
-    report.list([
-      report.object([
-        #("label", report.string("logs")),
-        #("description", report.string("Read the compiler error.")),
-      ]),
-      report.object([
-        #("label", report.string("tests")),
-        #("description", report.string("Run the test suite.")),
-      ]),
-    ])
+  let choices = [
+    jev.JevChoiceT1InputChoicesItemN6(label: "logs", description: None),
+    jev.JevChoiceT1InputChoicesItemN6(label: "tests", description: None),
+  ]
 
-  case
-    jev.jev_choice(
-      state: report.string("The user wants to inspect a failed build."),
-      choices: choices,
-      options: [
-        #(
-          "instructions",
-          report.string("Choose the most relevant next action."),
-        ),
-      ],
-    )
-  {
-    Ok(answer) -> report.text(mcp.text(answer))
+  let options = jev.JevChoiceT1Options(
+    ..jev.jev_choice_defaults,
+    instructions: Some(Some(
+      jev.JevChoiceT1InputInstructionsItemN15Branch0(
+        "Choose the most relevant next action.",
+      ),
+    )),
+  )
+
+  case jev.jev_choice(
+    state: jev.JevChoiceT1InputStateN1Branch0(
+      "The user wants to inspect a failed build.",
+    ),
+    choices: choices,
+    options: options,
+  ) {
+    Ok(found) -> {
+      let probabilities = list.map(found.answer.probabilities, fn(pair) {
+        #(pair.0, report.float(pair.1))
+      })
+
+      report.value(report.object([
+        #("model", report.string(found.model)),
+        #("usage", report.object([
+          #("input_tokens", report.int(found.usage.input_tokens)),
+          #("output_tokens", report.int(found.usage.output_tokens)),
+        ])),
+        #("answer", report.object([
+          #("type", report.string("choice")),
+          #("choice", report.string(found.answer.choice)),
+          #("confidence", report.float(found.answer.confidence)),
+          #("probabilities", report.object(probabilities)),
+        ])),
+      ]))
+    }
     Error(_reason) -> report.failure("The Jev MCP evaluation failed.")
   }
 }
 ```
 
-The array builder is `report.list`, not `report.array`. `mcp.text` joins the
-result's text blocks; Jevelin returns the evaluation as JSON text and as
-structured MCP content. The program reports that JSON to Loom, which stores
-the tool result and supplies it to the model's next turn. A live Jev answer
-depends on the service; the fixture answer below is deterministic.
+`report.object` and the other builders construct the program's final report;
+the MCP input is built with the generated records and variants. The success
+branch uses normal field access rather than raw key lookup or parsing the
+server's text block. The report contains the choice, confidence,
+probabilities and token usage. Loom stores that result and supplies it to
+the model's next turn. A live Jev answer depends on the service; the fixture
+response below is deterministic.
 
 ## Try the HTTP fixture without a Jev key
 
@@ -211,7 +284,7 @@ fixture uses Python's standard library and existing server test code; no
 additional Python package or helper script is needed. Stop the fixture
 with Ctrl-C when finished.
 
-For the program above, the fixture returns:
+The fixture's successful response contains:
 
 ```json
 {
@@ -226,12 +299,40 @@ For the program above, the fixture returns:
 }
 ```
 
-## What the end-to-end run proved
+## Validation boundary
+
+On October 1, 2026, the typed-generation worktree ran the exact program
+above through a fresh production Loom daemon. A scripted local model read
+`cap://mcp/jev` through `fs_read`, submitted the program to code mode, and
+received its structured outcome. The jailed compiler, satellite, Jevelin MCP
+process and HTTP fixture all executed. The satellite decoded the advertised
+output schema into the generated record, and the program read its answer
+and usage fields before constructing the durable report.
+
+The run made one Jev HTTP request. It made three main model calls and one
+tool-free maintenance call. The dummy credential stayed confined to the
+configured server/HTTP exchange, and authenticated daemon cleanup exited
+zero. The run's own command exited zero; its log is
+`build/typed-jev-daemon-e2e.log` and its retained evidence is
+`build/jev-e2e-20261001-140558`. Both sandbox stages reported active macOS
+Seatbelt filesystem and network enforcement, with degraded memory/process
+resource limits and process lifecycle enforcement. This is a local-fixture
+proof; live Jev authentication and inference remain untested.
+
+The focused native client suite also passed six typed-generation cases:
+nested options retain exact wire keys and null presence, structured answers
+decode into typed values, schema mismatch retains text and its failure path,
+and wrong enums/options/nested inputs fail compilation before any tool call.
+The complete GitHub-shaped listing compiles warning-free in the jail, and
+the architecture guide example executes unchanged. These results do not claim a full gate or hosted CI for the final head.
+
+The earlier raw-value integration proof is retained below under the exact
+heads that produced it.
 
 On October 1, 2026, an isolated Loom daemon ran the compiled Jevelin MCP
 server with this HTTP fixture and a scripted local model provider. The
-model discovered the APIs through `fs_read`, submitted the program, and
-received its result. Both the hermetic build and satellite executed;
+model discovered the APIs through `fs_read`, submitted the earlier raw-value
+Choice program, and received its result. Both the hermetic build and satellite executed;
 Jevelin made exactly one HTTP request with the expected dummy bearer
 credential. No model request contained that credential.
 
