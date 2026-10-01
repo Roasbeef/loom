@@ -7,6 +7,11 @@
 //// `tui/tick.update_tick` and `settle_tick` call the units, and applies the
 //// facts after each update as `inbound.settle_surfaces` does, then holds
 //// `update` to the same record and the same queued effects.
+////
+//// That copy documents the order and holds the step to it, in a package that
+//// cannot import the terminal. It does not prove the terminal still runs that
+//// order: `the_terminals_real_tick_runs_the_shared_steps_order_test` in
+//// `client`'s `web_view_parity_test` drives the real `tui/tick.update_tick`.
 
 import core/codec
 import core/json
