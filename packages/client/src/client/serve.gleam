@@ -1185,8 +1185,7 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
   }
 }
 
-const usage =
-  "usage: loomd --session <path.db>
+const usage = "usage: loomd --session <path.db>
   [--bind <host:port>]     listen interface (default 127.0.0.1:0)
   [--token-file <path>]    bearer token file (default <session>.token)
   [--workspace <dir>]      workspace root (default the current directory)
@@ -5802,8 +5801,7 @@ fn prepare_directories(
 /// drops out of `git status` without touching the repository's own
 /// ignore files or resolving where a linked worktree keeps its metadata.
 @internal
-pub const ignore_everything =
-  "# Written by loom: this directory is harness state.\n*\n"
+pub const ignore_everything = "# Written by loom: this directory is harness state.\n*\n"
 
 // Writes the ignore file only where none exists, so an operator who
 // replaced it with rules of their own keeps them. A write that fails is
@@ -6923,6 +6921,10 @@ fn summary_tap(
   name: address.Address(blocksummary.Message),
   config: wiring.Config,
 ) -> fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil {
+  // This observer is copied with both provider entry points and every runtime
+  // owner. Its classification capability owns only the session, rather than
+  // the executable registry held by the provider and tool dispatch configuration.
+  let image_bearing = wiring.request_image_classifier(config)
   case route {
     Some(route) ->
       blocksummary.observer(
@@ -6930,7 +6932,7 @@ fn summary_tap(
         // The dispatcher's own rule, so the observer and the dispatch agree
         // about which requests go to the `vision` chain.
         fn(operation, context) {
-          case wiring.request_image_bearing(config, operation, context) {
+          case image_bearing(operation, context) {
             True -> blocksummary.ImageTurn
             False -> blocksummary.TextTurn
           }

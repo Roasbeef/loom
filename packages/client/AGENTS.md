@@ -1,5 +1,16 @@
 # client
 
+## Provider observation capture
+
+`wiring.request_image_classifier` projects the session before constructing
+the callback used by `serve.summary_tap`. The dispatcher and the block summary
+observer still classify the current context and immutable admitted prompt
+batch with one implementation. The observer carries no tool registry or
+executable tool callbacks. Its flat copy cost must stay unchanged when an
+unrelated registration's run payload grows; `wiring_test` pins that property,
+and `vision_test` covers held image batches and their continuations through
+the classifier.
+
 ## Operator startup diagnostics
 
 Protocol 055 records the bounded operator diagnostics contract. The manager's

@@ -1118,8 +1118,30 @@ pub fn request_image_bearing(
   operation: OpId,
   context: List(AgentMessage),
 ) -> Bool {
-  vision.image_bearing(context)
-  || admitted_image_bearing(config.session, operation) |> result.unwrap(False)
+  request_image_bearing_projected(config.session, operation, context)
+}
+
+/// Captures the session alone for observers that share dispatch's image rule.
+///
+/// The registry and executable tool closures belong to tool dispatch. A live
+/// summary observer needs only the operation's immutable admitted prompt batch
+/// and current context, so retaining its classifier must not retain that graph.
+/// Each call still reads operation metadata from the same session as dispatch.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let classify = wiring.request_image_classifier(config)
+/// // classify(operation, context)
+/// ```
+@internal
+pub fn request_image_classifier(
+  config: Config,
+) -> fn(OpId, List(AgentMessage)) -> Bool {
+  let opened = config.session
+  fn(operation, context) {
+    request_image_bearing_projected(opened, operation, context)
+  }
 }
 
 fn request_image_bearing_projected(
