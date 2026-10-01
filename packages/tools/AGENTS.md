@@ -231,6 +231,16 @@ was asked.
   façade is generated from one host's configured server (issue #106), so
   it cannot be in `tools/prelude`, and it renders after the committed
   blocks under the same seam's heading.
+- `tools/call_record.{CallLog, CallRecord, CallStatus, Ledger}` (protocol
+  060) — the per-call record of a code-mode execution: the types, the
+  bounds (128 itemised calls, exact counters, 96-byte summaries with the `…`
+  counted, 64-byte capability names, 48-byte error codes), the redaction
+  allowlist (`summarise`) and the JSON encoder. Pure. `Execution.calls`
+  carries it from the satellite host to `ran_outcome` and
+  `run_failed_outcome`, which attach it as the `calls` key of `details`;
+  `execution_value` deliberately does not, so background executions carry no
+  record. `cap` is a dev dependency only, so the redaction tests can check
+  the allowlist against the keys the real `cap` functions write.
 - `tools/codemode.{PolicyRefusal, Execution.refusal}` — whether policy
   composition stopped this execution before it ran, and whether an
   approval could overturn it. `NothingRefused` or `RunRefused(denial:,

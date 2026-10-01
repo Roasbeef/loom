@@ -116,6 +116,14 @@ for a host with no surfaces.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
   observations that become lines: `Stream`, `ToolTail`, `CacheNotice`,
   `Submission`.
+- `call_tree.{read, summary, CallLog, Call, Status}` (protocol 060): the
+  total decoder for the `calls` key of a `code_mode` result's `details` and
+  the one-line summary (`7 calls · 1 failed`). An absent key and a
+  malformed one both read as `None`, and `transcript_lines` then renders the
+  result exactly as it did before the record existed. A `code_mode` failure
+  with a readable record shows the summary and rows under the failure text.
+  The golden JSON in `call_tree_test` is the same literal `tools` asserts
+  its encoder writes.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.

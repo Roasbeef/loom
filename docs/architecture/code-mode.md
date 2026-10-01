@@ -1096,6 +1096,81 @@ whole execution, so a pooled cap below two would starve every
 `cap_call`; the launcher refuses such a cap up front rather than
 deadlocking.
 
+### The call record
+
+A client that shows a `code_mode` result can show the program's source and
+its final value, but neither says what the program did. The host therefore
+keeps a record of the capability calls an execution made
+(`protocol-change/060`) and the foreground tool result carries it as a
+`calls` key in its `details`.
+
+**The host writes it, not the satellite.** The satellite host actor already
+sees every `cap_call` in order: it checks the token, routes, admits or
+refuses, and settles. It writes one `tools/call_record` entry per
+authenticated call from its own decisions and its own wall clock
+(`system_time_ms`, never the monotonic clock). It never reads the program's
+terminal `outcome` frame for this, so a program cannot write, edit or
+suppress its own record (Rule Zero). A call that fails the token check is
+not recorded.
+
+**What an entry holds.** The capability name, a redacted argument summary,
+a status, the `CapErr` code if there was one (never its message), and a
+start offset and duration in milliseconds from the execution's own zero.
+The statuses are `ok`, `failed` (a failed settlement, or a refusal before
+dispatch by the router, an admission ceiling or the pooled cap, which has a
+duration of zero), `cancelled` (the satellite sent `cancel` first) and
+`unsettled` (still in flight when the execution ended by return, deadline
+or a dead satellite). The list is flat and ordered by admission. There is
+no parent link, because the host cannot learn nesting without trusting the
+program to say it; concurrency shows as overlapping intervals.
+
+**Bounded.** The first 128 calls are itemised and every call is counted, so
+`total`, `failed`, `cancelled` and `unsettled` are exact for a program that
+makes thousands. A summary is at most 96 bytes including its `…` marker,
+cut on a UTF-8 boundary, with control characters removed first. A
+capability name is limited to 64 bytes of `[a-z0-9_.]` and an error code to
+48.
+
+**Redaction is an allowlist.** The summary is built from the decoded
+arguments by capability name, and a capability the list does not name has
+none, which is the default for MCP and extension capabilities:
+
+| Capability | Summary |
+|---|---|
+| `fs.read`, `fs.write`, `fs.edit`, `fs.list` | the `path` |
+| `kv.get`, `kv.set`, `kv.delete` | the `key` |
+| `job.poll`, `job.kill`, `job.send` | the `job_id` |
+| `job.start` | the first whitespace token of `command` |
+| `proc.run` | the executable's basename and ` +N args` |
+
+File bodies, `stdin`, `env`, the rest of an `argv`, and every message are
+never read. `tools/call_record_redaction_test` checks each row against the
+arguments the real `cap` functions write, so a key rename shows up as a
+failing test and not as a silent missing summary.
+
+**A reused call id is a channel fault.** The frame `id` is the satellite's
+to choose. A `cap_call` whose `id` is already in flight, after the token
+check, ends the execution as `ChannelFaulted("duplicate cap_call id")`.
+Without that, a second call would overwrite the first one's in-flight entry
+and the wrong settlement would finalise the wrong record. An id whose call
+has settled, or was refused, can be reused.
+
+**Foreground only.** `satellite.Run` and `codemode.Execution` carry the
+`CallLog`, and `tools/codemode.Execution` carries it to `ran_outcome` and
+`run_failed_outcome`, which attach it through `tool.with_details`. A run
+that failed (deadline, dead satellite, channel fault) still carries the
+calls made so far. `execution_value`, which the background path stores and
+the model reads back, does not carry it: that would spend model context,
+and a background execution has no record in this version. Foreground
+`details` are never projected to a provider, so the record costs no tokens.
+It is stored with the entry, so a reconnecting client sees it.
+
+**Reading it.** `session_view/call_tree` decodes the key with a total
+decoder: an absent key, and a malformed one, both read as no record, and the
+renderers then draw what they drew before the record existed. The terminal
+shows the summary line (`7 calls · 1 failed`) beside the status and, expanded,
+one row per call; an `is_error` result with a readable record shows it too.
+
 ## A worked example
 
 The program below is `docs/examples/stale_symbol_sweep.gleam`, the
@@ -1364,7 +1439,10 @@ and passes, so `make check` stays hermetic and fast.
    whole set, and the structured outcome carries
    `echo=loom-code-mode exit=0`, having passed through the cap channel,
    the broker's policy check, a second jail, and back, with nothing
-   scraped from stdout. Running the same program again over the same
+   scraped from stdout. The program first makes a call the default router
+   does not serve, so the host's call record is asserted too: a refused
+   `fs.read` and a settled `proc.run`, in that order, with the summaries
+   `notes.txt` and `echo +1 args`. Running the same program again over the same
    build root, with a stale `.beam` planted in it, must reproduce the
    outcome byte for byte with the same manifest hash, and must clear the
    plant.
