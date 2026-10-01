@@ -50,6 +50,7 @@ import gleam/option
 import gleam/result
 import gleam/string
 import gleam_mcp/client as mcp_client
+import gleam_mcp/json as mcp_json
 import machine/operation
 import mcp/codegen
 import provider/secret
@@ -269,15 +270,15 @@ const mcp_answer = "loom-mcp-round-trip"
 
 /// A program of the kind a model would submit against a configured MCP
 /// server: one typed façade call and a structured report. The signature
-/// is `mcp/codegen`'s — every parameter is labelled, and optionals ride
-/// in `options` by wire name.
+/// is `mcp/codegen`'s: required parameters are labelled, and an options
+/// record admits only the optional fields the server declared.
 pub fn mcp_program_source() -> String {
   "import cap/mcp\n"
   <> "import cap/mcp/alpha\n"
   <> "import cap/report\n"
   <> "\n"
   <> "pub fn main() -> report.Outcome {\n"
-  <> "  case alpha.search(query: \"loom\", options: []) {\n"
+  <> "  case alpha.search(query: \"loom\", options: alpha.search_defaults) {\n"
   <> "    Ok(found) -> report.text(mcp.text(found))\n"
   <> "    Error(_error) -> report.failure(\"the mcp call did not settle\")\n"
   <> "  }\n"
@@ -380,6 +381,370 @@ fn live_layer() -> mcp_wiring.Layer {
   )
 }
 
+// Shape errors must be rejected before a request can reach a server. These
+// programs use the discovered API, so the actual hermetic compiler is the
+// argument validator rather than a source-text assertion.
+/// Checks typed inputs and decoded outputs against the actual capability channel.
+///
+/// Omitted options, explicit null, enum constructors, and nested records must
+/// preserve their distinct wire meanings through compilation and dispatch.
+///
+/// ## Examples
+///
+/// This regression runs when the real code-mode prerequisites are available.
+pub fn typed_mcp_inputs_and_results_cross_the_real_channel_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println_error("SKIP typed_mcp_inputs_and_results: " <> reason)
+    Ok(ready) -> run_typed_mcp_round_trip(ready)
+  }
+}
+
+fn run_typed_mcp_round_trip(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = typed_mcp_layer(seen)
+  let outcome =
+    run_notes_program(
+      typed_mcp_config(rig, layer),
+      rig,
+      typed_mcp_program("valid"),
+      "typed-mcp",
+    )
+  assert !outcome.is_error as rendered_text(outcome)
+  assert notes_program_value(outcome) == json.String("application-1")
+  let assert Ok(#("list_applications", arguments)) = process.receive(seen, 1000)
+    as "the typed call must reach the server exactly once"
+  assert arguments
+    == mcp_json.Object([
+      #("job_id", mcp_json.String("valid")),
+      #(
+        "filter",
+        mcp_json.Object([
+          #("region", mcp_json.String("north")),
+          #("tags", mcp_json.Array([])),
+        ]),
+      ),
+      #("status", mcp_json.String("active")),
+      #("cursor", mcp_json.Null),
+      #("limit", mcp_json.Int(0)),
+    ])
+  assert process.receive(seen, 0) == Error(Nil)
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
+fn typed_mcp_program(job_id: String) -> String {
+  "import cap/mcp/typed\nimport cap/report\nimport gleam/option.{Some, None}\n"
+  <> "pub fn main() -> report.Outcome {\n"
+  <> "  let filter = typed.ListApplicationsT1InputFilterN2(region: \"north\", tags: [])\n"
+  <> "  let options = typed.ListApplicationsT1Options(..typed.list_applications_defaults, status: Some(typed.ListApplicationsT1InputStatusN6ActiveV0), cursor: Some(None), limit: Some(0))\n"
+  <> "  case typed.list_applications(job_id: \""
+  <> job_id
+  <> "\", filter: filter, options: options) {\n"
+  <> "    Ok(found) -> case found.results, found.next_cursor {\n"
+  <> "      [row], Some(None) -> case row.status, row.active {\n"
+  <> "        typed.ListApplicationsT1OutputResultN0ResultsItemN2StatusN4ActiveV0, typed.ListApplicationsT1OutputResultN0ResultsItemN2ActiveN5Enabled -> report.text(row.id)\n"
+  <> "        _, _ -> report.failure(\"wrong decoded enum or boolean\")\n"
+  <> "      }\n"
+  <> "      _, _ -> report.failure(\"wrong result or null presence\")\n"
+  <> "    }\n"
+  <> "    Error(_) -> report.failure(\"typed result was refused\")\n"
+  <> "  }\n}\n"
+}
+
+/// Checks that an invalid output retains its text and exact nested failure path.
+///
+/// The fixture sends an integer where the result record requires a string; the
+/// program must receive ResultSchemaMismatch rather than a successful record.
+///
+/// ## Examples
+///
+/// This regression runs when the real code-mode prerequisites are available.
+pub fn typed_mcp_schema_mismatch_retains_text_and_path_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println_error("SKIP typed_mcp_schema_mismatch: " <> reason)
+    Ok(ready) -> run_typed_mcp_mismatch(ready)
+  }
+}
+
+fn run_typed_mcp_mismatch(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = typed_mcp_layer(seen)
+  let source =
+    "import cap/mcp\nimport cap/mcp/typed\nimport cap/report\nimport gleam/list\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  case typed.list_applications(job_id: \"malformed\", filter: typed.ListApplicationsT1InputFilterN2(region: \"north\", tags: []), options: typed.list_applications_defaults) {\n"
+    <> "    Error(mcp.ResultSchemaMismatch(error, result)) -> report.value(report.object([#(\"path\", report.list(list.map(error.path, report.string))), #(\"text\", report.string(mcp.text(result)))]))\n"
+    <> "    _ -> report.failure(\"the malformed answer did not fail typed decoding\")\n"
+    <> "  }\n}\n"
+  let outcome =
+    run_notes_program(
+      typed_mcp_config(rig, layer),
+      rig,
+      source,
+      "typed-mismatch",
+    )
+  assert !outcome.is_error as rendered_text(outcome)
+  assert notes_program_value(outcome)
+    == json.Object([
+      #(
+        "path",
+        json.Array([
+          json.String("results"),
+          json.String("0"),
+          json.String("id"),
+        ]),
+      ),
+      #("text", json.String("Readable fixture result.")),
+    ])
+  let assert Ok(#("list_applications", _)) = process.receive(seen, 1000)
+    as "the malformed result must follow a real server call"
+  assert process.receive(seen, 0) == Error(Nil)
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
+/// Checks that enum, option-label, and nested-field mistakes fail compilation.
+///
+/// A recording subject proves that none of these rejected programs reaches the
+/// configured MCP server.
+///
+/// ## Examples
+///
+/// This regression runs when the real code-mode prerequisites are available.
+pub fn typed_mcp_mistakes_fail_before_server_execution_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println_error("SKIP typed_mcp_compile_refusals: " <> reason)
+    Ok(ready) -> run_typed_mcp_compile_refusals(ready)
+  }
+}
+
+fn run_typed_mcp_compile_refusals(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = typed_mcp_layer(seen)
+  let config = typed_mcp_config(rig, layer)
+  let valid = typed_mcp_program("valid")
+  let mistakes = [
+    #(
+      "enum",
+      string.replace(
+        valid,
+        "Some(typed.ListApplicationsT1InputStatusN6ActiveV0)",
+        "Some(\"active\")",
+      ),
+      "Type mismatch",
+    ),
+    #(
+      "option",
+      string.replace(valid, "limit: Some(0)", "limti: Some(0)"),
+      "limti",
+    ),
+    #(
+      "nested",
+      string.replace(valid, "region: \"north\"", "region: 12"),
+      "Type mismatch",
+    ),
+  ]
+  list.each(mistakes, fn(mistake) {
+    let #(name, source, diagnostic) = mistake
+    let outcome =
+      run_notes_program(config, rig, source, "typed-refusal-" <> name)
+    assert outcome.is_error as rendered_text(outcome)
+    assert string.contains(rendered_text(outcome), diagnostic)
+      as rendered_text(outcome)
+    assert process.receive(seen, 0) == Error(Nil)
+      as "compile refusals must never call the MCP server"
+  })
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
+/// Compiles every facade from the existing GitHub-shaped listing in the jail.
+///
+/// Referencing one function admits the module without calling the server, while
+/// Gleam checks all its declarations and bodies with warnings treated as errors.
+///
+/// ## Examples
+///
+/// This regression runs when the real code-mode prerequisites are available.
+pub fn github_mcp_fixture_compiles_in_the_real_jail_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP github_mcp_compile: " <> reason)
+    Ok(ready) -> run_github_mcp_compile(ready)
+  }
+}
+
+fn run_github_mcp_compile(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = fixture_mcp_layer("github", "github.json", seen)
+  let source =
+    "import cap/mcp/github\nimport cap/report\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  let _ = github.list_issues\n"
+    <> "  report.text(\"GitHub facade compiled.\")\n}\n"
+  let outcome =
+    run_notes_program(
+      typed_mcp_config(rig, layer),
+      rig,
+      source,
+      "github-mcp-compile",
+    )
+  assert !outcome.is_error as rendered_text(outcome)
+  assert notes_program_value(outcome) == json.String("GitHub facade compiled.")
+  assert process.receive(seen, 0) == Error(Nil)
+    as "compilation must not issue an MCP tool call"
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
+/// Executes the documented structured fixture example without rewriting it.
+///
+/// The block is extracted from the architecture guide so a schema-name change
+/// cannot leave a plausible-looking program that the actual compiler rejects.
+///
+/// ## Examples
+///
+/// This regression runs the guide's entry point through the satellite.
+pub fn documented_typed_mcp_example_runs_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP documented_typed_mcp: " <> reason)
+    Ok(ready) -> run_documented_typed_mcp(ready)
+  }
+}
+
+fn run_documented_typed_mcp(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let seen = process.new_subject()
+  let layer = fixture_mcp_layer("structured", "structured.json", seen)
+  let assert Ok(document) = simplifile.read("../../docs/architecture/mcp.md")
+    as "the architecture guide must be available"
+  let assert Ok(block) =
+    list.find(string.split(document, "```gleam\n"), fn(block) {
+      string.starts_with(block, "import cap/mcp\nimport cap/mcp/structured")
+    })
+    as "the guide must contain its complete structured example"
+  let assert [source, ..] = string.split(block, "```")
+    as "the guide's Gleam fence must close"
+  let outcome =
+    run_notes_program(
+      typed_mcp_config(rig, layer),
+      rig,
+      source,
+      "documented-typed-mcp",
+    )
+  assert !outcome.is_error as rendered_text(outcome)
+  assert notes_program_value(outcome) == json.Int(1)
+  let assert Ok(#("list_applications", _)) = process.receive(seen, 1000)
+    as "the documented query must reach the server"
+  assert process.receive(seen, 0) == Error(Nil)
+  mcp_wiring.stop(layer)
+  stop_rig(rig)
+}
+
+// The typed fixture owns no process transport. The production MCP client,
+// generated module, hermetic compiler, satellite, and capability router all
+// run; a subject records each request before the fixture answers it.
+fn typed_mcp_layer(
+  seen: process.Subject(#(String, mcp_json.JsonValue)),
+) -> mcp_wiring.Layer {
+  fixture_mcp_layer("typed", "structured.json", seen)
+}
+
+fn fixture_mcp_layer(
+  server: String,
+  filename: String,
+  seen: process.Subject(#(String, mcp_json.JsonValue)),
+) -> mcp_wiring.Layer {
+  let assert Ok(source) =
+    simplifile.read("../mcp/test/mcp/fixtures/" <> filename)
+    as "the structured tools/list fixture must exist"
+  let assert Ok(mcp_json.Object(fields)) = mcp_json.parse(source)
+    as "the fixture must be a JSON object"
+  let assert Ok(mcp_json.Array(tools)) = list.key_find(fields, "tools")
+    as "the fixture must list tools"
+  let assert Ok(client) =
+    mcp_client.start(
+      fake_mcp.seam(tools:, call: fn(name, arguments) {
+        process.send(seen, #(name, arguments))
+        fake_mcp.Answers(typed_mcp_result(arguments))
+      }),
+      mcp_client.options("typed-fixture"),
+    )
+    as "the fixture must complete the MCP handshake"
+  let assert Ok(listed) = mcp_client.list_tools(client, 5000)
+    as "the fixture must list its typed tools"
+  let assert Ok(generated) =
+    codegen.generate(server, listed, mcp_wiring.sha256_hex)
+    as "hostile names and structured schemas must generate safely"
+  mcp_wiring.Layer(
+    servers: [
+      mcp_wiring.Server(
+        name: server,
+        client:,
+        generated:,
+        tools: list.length(listed),
+      ),
+    ],
+    call_timeout_ms: 30_000,
+    custody: [client],
+  )
+}
+
+fn typed_mcp_result(arguments: mcp_json.JsonValue) -> mcp_json.JsonValue {
+  let id = case arguments {
+    mcp_json.Object(fields) -> {
+      case list.key_find(fields, "job_id") {
+        Ok(mcp_json.String("malformed")) -> mcp_json.Int(12)
+        _ -> mcp_json.String("application-1")
+      }
+    }
+    _ -> mcp_json.String("application-1")
+  }
+  mcp_json.Object([
+    #(
+      "content",
+      mcp_json.Array([
+        mcp_json.Object([
+          #("type", mcp_json.String("text")),
+          #("text", mcp_json.String("Readable fixture result.")),
+        ]),
+      ]),
+    ),
+    #(
+      "structuredContent",
+      mcp_json.Object([
+        #(
+          "results",
+          mcp_json.Array([
+            mcp_json.Object([
+              #("id", id),
+              #("status", mcp_json.String("active")),
+              #("active", mcp_json.Bool(True)),
+            ]),
+          ]),
+        ),
+        #("next_cursor", mcp_json.Null),
+      ]),
+    ),
+  ])
+}
+
+fn typed_mcp_config(rig: Rig, layer: mcp_wiring.Layer) -> codemode.Config {
+  codemode.default_config(
+    broker: rig.broker,
+    clock: wall_clock(),
+    workspace: rig.workspace,
+    toolchain: rig.toolchain,
+  )
+  |> codemode.over_mcp(layer)
+}
+
 // --- a real MCP server process, end to end (#106) ----------------------------
 
 // What the program sends and what the fixture server must hand back
@@ -435,9 +800,9 @@ pub fn mcp_process_program_source() -> String {
   <> "    message: \""
   <> wire_message
   <> "\",\n"
-  <> "    options: [#(\"tag\", report.string(\""
+  <> "    options: fixture.EchoArgsT1Options(..fixture.echo_args_defaults, tag: option.Some(\""
   <> wire_tag
-  <> "\"))],\n"
+  <> "\")),\n"
   <> "  ) {\n"
   <> "    Error(_error) -> report.failure(\"the mcp call did not settle\")\n"
   <> "    Ok(found) ->\n"
@@ -452,7 +817,9 @@ pub fn mcp_process_program_source() -> String {
   <> fixture_server
   <> "."
   <> digested("create_issue", "Create-Issue!")
-  <> "(title: \"anything\", options: []) {\n"
+  <> "(title: \"anything\", options: fixture."
+  <> digested("create_issue", "Create-Issue!")
+  <> "_defaults) {\n"
   <> "    Ok(_result) -> \""
   <> no_failure
   <> "\"\n"
@@ -614,15 +981,13 @@ fn assert_generated_names(source: String, surface: String) -> Nil {
   // name that did not.
   assert string.contains(source, "\"Create-Issue!\",")
   assert !string.contains(source, "\"" <> renamed <> "\",")
-  // The tier-2 parameter: a nested object schema is one structured
-  // value, and its hostile name mangles into the label while the wire
-  // name stays in the marshalling line.
+  // Nested fields now become a record; the hostile outer wire name remains
+  // a literal and the generated field names describe the admitted value.
   let label = digested("target_repo", "Target-Repo")
-  assert string.contains(
-    source,
-    "  " <> label <> " " <> label <> ": report.Value,",
-  )
-  assert string.contains(source, "#(\"Target-Repo\", " <> label <> "),")
+  assert string.contains(source, "  " <> label <> " " <> label <> ": Nested")
+  assert string.contains(source, "\"Target-Repo\"")
+  assert string.contains(source, "owner: String")
+  assert string.contains(source, "repo: String")
   Nil
 }
 
