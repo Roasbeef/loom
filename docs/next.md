@@ -405,6 +405,12 @@ remain separate from this local verification.
 
 ## Language-server support (issue #25)
 
+The LSP stack merged through [#680](https://github.com/Roasbeef/loom/pull/680),
+including #514, #516 and #521, on 2026-10-01. The
+[user setup guide](language-servers.md) now covers the three v0.1.0 profiles,
+server installation, offline dependencies, host checks and session activation.
+This documentation pass was based on `f875811be` and adds no runtime behavior.
+
 Loom's own agent can ask a language server about the code it is editing. The
 ruling is [ADR-015](adr/015-language-servers-as-jailed-leases.md) and the
 account is [the LSP architecture doc](architecture/lsp.md). Read both before

@@ -1,5 +1,8 @@
 # Language servers
 
+For installation, prerequisites and host checks, start with the
+[language-server setup guide](../language-servers.md).
+
 A language server is a long-lived process that knows a codebase the way
 its compiler does. Asked over JSON-RPC on its stdin and stdout, it
 answers where a name is defined, who refers to it, what type it has, and
