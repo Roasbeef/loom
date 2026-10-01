@@ -19,9 +19,9 @@ The data is not on the page, and not in the store either:
 
 - The result's `details` carry the value, or the message and details of a
   controlled failure, plus `status`, `manifest_hash` and `sandbox`
-  (`packages/tools/src/tools/codemode.gleam:1668` `ran_outcome`, and
-  `:1336` `execution_value` for the background path). The `run_failed`
-  variant carries `kind`, `detail` and `sandbox` (`:1619`).
+  (`packages/tools/src/tools/codemode.gleam:1668` `ran_outcome`; `:1336`
+  `execution_value` serves the background path). The `run_failed` variant
+  carries `kind`, `detail` and `sandbox` (`:1619`).
 - Capability calls are serviced inside the satellite host actor, which
   forwards each to the broker or answers it in the harness
   (`packages/codemode/src/codemode/satellite.gleam:980` `handle_cap_call`,
@@ -70,6 +70,18 @@ returns.
 A call that fails the token check is not recorded
 (`satellite.gleam:1006`). It is not a call of this execution.
 
+The frame `id` is chosen by the satellite, so it is untrusted.
+`dispatch_cap_call` inserts it into `state.inflight` without checking for a
+live entry (`satellite.gleam:1097`), and a program that reused an `id` would
+overwrite the first call's entry and have the second settlement finalise the
+wrong record. The host therefore refuses a `cap_call` whose `id` is already
+in flight, after the token check, as a channel fault
+(`FrameDone(state, Error(ChannelFaulted("duplicate cap_call id")))`, the
+form used at `:956` and `:1016`). The execution ends as a failed run. An
+honest cap runtime allocates each `id` once, so this costs nothing in
+practice, and it makes the record's finalisation unambiguous without a second
+key. An `id` whose call has settled may be reused.
+
 ### The record
 
 `State` gains a `calls: CallLog`. For each authenticated `cap_call` the host
@@ -79,7 +91,6 @@ settlement.
 ```gleam
 pub type CallRecord {
   CallRecord(
-    n: Int,                // 1-based admission order, assigned by the host
     cap: String,           // capability name, bounded and sanitised
     args: Option(String),  // redacted summary, or None
     status: CallStatus,
@@ -96,8 +107,7 @@ pub type CallLog {
     started_unix_ms: Int,   // the execution's own zero
     elapsed_ms: Int,        // execution start to settlement
     total: Int, failed: Int, cancelled: Int, unsettled: Int,
-    omitted: Int,           // calls beyond the retained cap
-    items: List(CallRecord) // at most max_call_records, in `n` order
+    items: List(CallRecord) // the first max_call_records, in admission order
   )
 }
 ```
@@ -122,10 +132,11 @@ Statuses:
 
 `error` is the `CapErr.code`: `policy`, `budget`, `aborted`,
 `unsupported_cap`, `invalid_argument`, `exec_failed`, `unsettled`,
-`cap_failed`, and the per-capability ceiling codes
-(`satellite.gleam:1157`, `:1305`, `:1312`, `:1548`, `:1559`, `:1665`,
-`:1828`-`:1851`). The code is a short token chosen by the host. The message
-is not recorded: it can carry paths and output text from the effect.
+`cap_failed`, the broker refusal codes `invalid_policy`, `mint`, `no_helper`
+and `broker`, and the per-capability ceiling codes (`satellite.gleam:1157`,
+`:1305`, `:1312`, `:1548`, `:1559`, `:1665`, `:1828`-`:1851`). All are in
+`[a-z0-9_.]`. The code is a short token chosen by the host. The message is
+not recorded: it can carry paths and output text from the effect.
 
 `cap` is the name from the frame. It is limited to 64 bytes and to
 `[a-z0-9_.]`; any other character is replaced with `_`. A name that is
@@ -139,13 +150,14 @@ call a call belongs to, and a claim like that would be program output
 (Rule Zero). Concurrency is visible from the overlap of
 `[start_ms, start_ms + duration_ms)`, which is also what the Trace tab
 draws. The "tree" in the display is the program as the root and the calls
-as its children, ordered by `n`. If the owner wants nesting later, it can
+as its children, in admission order. If the owner wants nesting later, it can
 be added as an explicitly program-asserted display hint and labelled as
 such. It is not added here.
 
 ### How it reaches the transcript and the client
 
-**Settled record, in the tool result's `details`.** When the host settles,
+**Settled record, in the tool result's `details`, foreground only.** When
+the host settles,
 `Run` carries the `CallLog`:
 
 ```gleam
@@ -159,16 +171,27 @@ log for vet and compile failures. `client/codemode.translate`
 `tools/codemode.Execution` (`:406`). The record belongs on `Execution`,
 beside `enforcement`, and not on `Ran`, because a deadline or a dead
 satellite is exactly when the calls made so far matter, and those
-settle as `RunFailed` (`tools/codemode.gleam:1619`). It is written as a
-`calls` key by `ran_outcome`, `run_failed_outcome` and `execution_value`,
-which covers the foreground and background paths. The vet and compile
-results have no `calls` key.
+settle as `RunFailed` (`tools/codemode.gleam:1619`). It is attached as a
+`calls` key through `tool.with_details` (`tools/tool.gleam:706`) in
+`ran_outcome` and `run_failed_outcome`, which covers the foreground path.
+The vet and compile results have no `calls` key.
 
-`details` is a client-only field. The provider adapters discard it when
-they encode a tool result for the model
-(`packages/provider/src/provider/adapter/anthropic.gleam:202`,
-`gemini.gleam:318`, `openai.gleam:194`,
-`internal/responses_request.gleam:112`). The record therefore costs no
+The record is deliberately not added to `execution_value`. On the background
+path that value is stored as `Finished(result)`
+(`packages/client/src/client/async_codemode.gleam:113`), and the model reads
+it: `completion_text` quotes `json.to_string(result)`, clipped at 2,048 bytes,
+into a `[loom]` message (`packages/client/src/client/async_runs.gleam:1014`
+to `:1030`), and `check` and `join` return the whole result. A `calls` key
+there would spend the notice's clip and add tens of KiB of context to every
+`check`. Background executions therefore carry no call record in v1. Carrying
+one for them, in a field the model does not read, is future work and not part
+of this change.
+
+Foreground `details` are never projected to a provider. The adapters ignore
+the field when they encode a tool result for the model
+(`packages/provider/src/provider/adapter/anthropic.gleam:201` to `:209`,
+`gemini.gleam:318`, `openai.gleam:278`,
+`internal/responses_request.gleam:112`), so on this path the record adds no
 context tokens. Because `details` is stored in the entry, the record is
 durable and is part of what a client receives when it reads the transcript:
 a reconnecting terminal or a fresh web page sees it with no live feed.
@@ -178,20 +201,21 @@ a reconnecting terminal or a fresh web page sees it with no live feed.
 
 ```text
 "calls": {
-  "v": 1,
   "started_unix_ms": 1790000000000,
   "elapsed_ms": 1840,
-  "total": 7, "failed": 1, "cancelled": 0, "unsettled": 0, "omitted": 0,
+  "total": 7, "failed": 1, "cancelled": 0, "unsettled": 0,
   "items": [
-    {"n": 1, "cap": "fs.read", "args": "src/app.gleam", "status": "ok",
+    {"cap": "fs.read", "args": "src/app.gleam", "status": "ok",
      "start_ms": 12, "duration_ms": 3},
-    {"n": 2, "cap": "proc.run", "args": "gleam +2 args", "status": "failed",
+    {"cap": "proc.run", "args": "gleam +2 args", "status": "failed",
      "error": "exec_failed", "start_ms": 20, "duration_ms": 1511}
   ]
 }
 ```
 
-`args` and `error` are omitted when absent.
+`args` and `error` are omitted when absent. A call's position in `items` is
+its admission order, and `total - length(items)` is the number of calls not
+itemised, so neither is a field.
 
 **Rejected: a durable entry per call.** Each call would be a store write
 from the satellite host actor, which has no storage dependency, and the
@@ -224,15 +248,20 @@ separate decision for the owner.
 
 | Bound | Value | Marker |
 |---|---|---|
-| Retained records | 128, the first 128 admitted | `omitted` counts the rest |
+| Retained records | 128, the first 128 admitted | `total` exceeds the item count |
 | Counters | exact for every call, retained or not | none |
-| `args` summary | 96 bytes, cut on a UTF-8 boundary | ends with `…` (U+2026) |
+| `args` summary | 96 bytes including the marker, cut on a UTF-8 boundary | ends with `…` (U+2026, 3 bytes) |
 | `cap` | 64 bytes, `[a-z0-9_.]` | other characters become `_` |
 | `error` | 48 bytes, same character set | cut without a marker |
 
-Worst case is about 128 x 220 bytes, 28 KiB, per program result. A
-program that makes 5,000 calls has `total: 5000`, 128 items, `omitted:
-4872`, and exact `failed`. Failures past the 128th are counted and not
+The truncation marker counts toward the 96 bytes, so a cut summary holds at
+most 93 bytes of content. Worst case is about 300 to 400 bytes per item (a
+64-byte `cap`, a 96-byte `args` that JSON escaping can double, a 48-byte
+`error`, and keys and integers), so about 40 to 50 KiB for 128 items per
+program result. Nothing gates the size of `details` today (the tool bounds
+only the text, and the presentation limit is 4 MiB), so this is a cost, not
+a failure mode. A program that makes 5,000 calls has `total: 5000`, 128
+items, and exact `failed`. Failures past the 128th are counted and not
 itemised. Keeping failures preferentially would need a second retention
 rule, and the count already says they exist.
 
@@ -249,10 +278,10 @@ by default, because their argument shapes are not known to the host.
 | Capability | Summary |
 |---|---|
 | `fs.read`, `fs.write`, `fs.edit`, `fs.list` | the `path` argument only |
-| `proc.run` | basename of `argv[0]`, then ` +N args` |
-| `job.start` | as `proc.run` |
-| `job.poll`, `job.kill`, `job.send` | the job id only |
-| `kv.get`, `kv.set`, `kv.delete` | the key only |
+| `proc.run` | basename of `argv[0]`, then ` +N args`; `cwd`, `env` and `stdin` are not read |
+| `job.start` | the first whitespace-separated token of `command`, then nothing |
+| `job.poll`, `job.kill`, `job.send` | the `job_id` argument only |
+| `kv.get`, `kv.set`, `kv.delete` | the `key` argument only |
 | everything else | none |
 
 Never summarised: file bodies and edit text, `stdin`, `env`, the rest of
@@ -267,7 +296,13 @@ derive from program-controlled strings.
 
 Reducing `proc.run` to the executable and an argument count is deliberate:
 secrets travel as command-line arguments (`curl -H ...`, `--token=...`)
-far more often than as the program name.
+far more often than as the program name. `job.start` has no `argv`. Its
+argument is a `command` shell string (`packages/cap/src/cap/job.gleam:485`
+to `:492`), which can hold the same secrets inline, so only its first token is
+kept. The keys above are the ones the `cap` encoders write: `job_id`, `path`
+and `key` for the single-value rows, and `argv`, `cwd`, `env` and `stdin`
+for `proc.run`. The summariser reads them from the decoded `args` map, and a
+call whose `args` lack the expected key has no summary.
 
 ### Timing
 
@@ -302,8 +337,8 @@ by `session_view`'s fold with a total decoder that returns `Result`:
   renderer treats it as no record. It is not an error to the user, because
   a transcript must never fail to render over a display field.
 - Unknown extra keys in `calls` or in an item are ignored, so a later
-  version can add fields. `v` is read and a value other than 1 is treated
-  as no record.
+  version can add fields. A later change that cannot be read by this
+  decoder takes a new key rather than a version number.
 
 No frame version, database schema or capability signature changes. The
 cap-channel protocol, `broker/framing`, and the generated prelude are
@@ -322,23 +357,26 @@ owns the decoder and the fold:
 ```gleam
 pub fn read(details: JsonValue) -> Option(CallLog)          // total
 pub fn summary(log: CallLog) -> String                      // "7 calls · 1 failed"
-pub fn rows(log: CallLog, expanded: ExpandState) -> List(CallRow)
-pub fn bars(log: CallLog) -> List(Bar)                      // offsets scaled to elapsed_ms
 ```
 
-Both hosts call it, so the numbers and wording cannot differ.
+Both hosts call it, so the numbers and wording cannot differ. Rows and bars
+are host display shapes, so each host computes its own from the `CallLog`
+until both exist and the shared part is known.
 
 - **Terminal.** `code_mode_result_lines` (`transcript_lines.gleam:2808`)
   prints the summary line beside the status, and the expanded form prints
   one row per call under the program block. It is reached today only when
-  `is_error` is false (`:2560`). A program that fails, or hits its
+  `is_error` is false (`:2560`); an error result takes the generic
+  `_, True, _` failure arm (`:2573`). A program that fails, or hits its
   deadline, is where the record matters most, so the match is widened to
-  `code_mode` results of either kind. Rows reuse the existing bounded
-  expansion rule (`view/expansion.capped`): at most the retained 128, cut
-  with a fixed line.
+  an `is_error: True` `code_mode` result that carries a readable `calls`
+  record. An error result with no record renders exactly as it does now.
+  Rows reuse the existing bounded expansion rule
+  (`view/expansion.capped`): at most the retained 128, cut with a fixed
+  line.
 - **Web Trace tab (#656).** The tab reads `call_tree.read` on the latest
-  program's result and draws `bars`. There is no untimed first step. The
-  design note's §6.3 premise (the page "already receives" the calls,
+  program's result and draws timing bars computed from the offsets. There is
+  no untimed first step. The design note's §6.3 premise (the page "already receives" the calls,
   `docs/design-notes/web-design.md:700-730`, and the tab row at `:600`)
   is corrected by this proposal. Rows are text nodes, and the status class
   comes from the closed `CallStatus`, never from a string built from the
@@ -364,16 +402,18 @@ second leaves a reconnecting client with nothing.
 **Keeping every failure first.** A second retention rule for little gain,
 since `failed` is exact.
 
-**Per-call messages.** More useful to a human than a code, and the most
-likely place for a path or output text to leak. The code is the class the
-display needs.
+**Per-call messages.** More useful to a human than a code, but a message
+carries paths, output text and arguments that the allowlist deliberately does
+not summarise, and the allowlist is the only place the host decides what is
+safe to show. The code is the class the display needs.
 
 ## Cost and limits
 
 - A host-actor field and a record per call. Memory is bounded at 128
   records, CPU is one clock read pair and one summary per call.
-- Up to about 28 KiB added to a stored tool result, for programs with 128
-  or more calls. No model tokens.
+- Up to about 40 to 50 KiB added to a stored foreground tool result, for
+  programs with 128 or more calls. No model tokens.
+- Background executions carry no record in v1.
 - A source-level migration for `satellite.Run` and `codemode.Execution`
   constructors, and the test fixtures that build them.
 - Settled-only: the record of a program that the harness loses mid-run is
@@ -390,26 +430,34 @@ display needs.
 ## Tests and gates
 
 - **Host unit tests** (`packages/codemode`), with a fake router and
-  `clock.stepping`: order and `n`; ok, failed, refused-before-dispatch,
+  `clock.stepping`: admission order; ok, failed, refused-before-dispatch,
   cancelled and unsettled statuses; overlapping calls; calls refused by a
   ceiling or the pooled cap; a bad token records nothing; the retention cap
-  (`total` above 128, `omitted` exact, counters exact); deadline and
-  satellite-death settlement keep the calls so far.
-- **Redaction tests**: for each allowlist row the summary is exactly the
-  stated field; `env`, `stdin`, bodies, extra `argv` and the token never
+  (`total` above 128, item count 128, counters exact); a `cap_call` that
+  reuses a live `id` faults the channel, while reuse after settlement is
+  accepted; deadline and satellite-death settlement keep the calls so far.
+- **Redaction tests**: the `args` for each case are built with the `cap`
+  package's own encoders (`cap/fs`, `cap/proc`, `cap/job`, `cap/kv`, through
+  `wire.args`), never as hand-built maps, so a key mismatch such as `job`
+  against `job_id`, or `argv` against `command`, fails here and not as a
+  silent `args: None` in production. For each allowlist row the summary is
+  exactly the stated field, and `job.start` keeps only the first token of
+  `command`; `env`, `stdin`, bodies, extra `argv` and the token never
   appear anywhere in the encoded record; control characters are removed;
-  the cut falls on a UTF-8 boundary and ends with `…`; an unlisted
+  the cut falls on a UTF-8 boundary, ends with `…`, and totals at most 96
+  bytes; an unlisted
   capability has no `args`.
 - **Codec tests**: a golden JSON fixture shared by the `tools` encoder and
   the `session_view` decoder, so the two cannot drift. Old results with no
-  `calls` decode and render byte-for-byte as before; malformed variants
+  `calls` decode and render byte-for-byte as before, including old
+  `is_error: True` results; malformed variants
   decode to no record; a property test that `read` is total over arbitrary
   JSON.
 - **Render tests**: the terminal summary and expanded rows, with the
   `is_error: True` and `run_failed` cases.
 - **Jailed end to end**: `make e2e-codemode` runs a real program and asserts
   the stored result's `calls` match the program's known calls, including a
-  failed one.
+  failed one and at least one `args` summary.
 - Gates: `make check` (R6 on `session_view`, R10 for comments), `make
   doc-check` (the code-mode, events and package docs gain the new type), and
   a signoff run.
@@ -418,11 +466,11 @@ display needs.
 
 1. `tools/call_record`: the types, the bounds, the summary allowlist and
    the encoder, with the golden fixture. Pure.
-2. `session_view/call_tree`: the total decoder and the fold, tested
+2. `session_view/call_tree`: the total decoder and `summary`, tested
    against the same fixture, including old and malformed results.
 3. The host: `CallLog` in `satellite.State`, `Run.calls`, threaded through
    `codemode.Execution`, `client/codemode.translate`, `tools/codemode.Execution`
-   and the three result writers. The host and redaction tests, and the
+   and the two foreground result writers, plus the duplicate-`id` refusal. The host and redaction tests, and the
    jailed end-to-end.
 4. The terminal block, then the web Trace tab with timing bars. Terminal
    first, since the owner chose that display.
@@ -443,3 +491,5 @@ Docs updated with slice 3: `docs/architecture/code-mode.md`,
    redaction?
 4. Should the capability allowlist grow to MCP calls (tool name only), or
    stay default-deny?
+5. Should background executions get a call record later, in a field the model
+   does not read, or stay without one?
