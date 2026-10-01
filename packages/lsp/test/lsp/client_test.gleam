@@ -123,6 +123,148 @@ pub fn project_failure_is_not_an_empty_hover_or_clean_diagnostics_test() {
   client.stop(started, 1000)
 }
 
+// Neither the empty object forms nor a malformed reply establish recovery.
+// A later typed hover does, after which ordinary misses remain ordinary.
+pub fn empty_object_answers_do_not_clear_project_failure_test() {
+  list.each(
+    [
+      json.Object([#("contents", json.Array([]))]),
+      json.Object([#("contents", json.String(""))]),
+      json.Object([
+        #(
+          "contents",
+          json.Object([
+            #("kind", json.String("markdown")),
+            #("value", json.String(" ")),
+          ]),
+        ),
+      ]),
+      json.Object([]),
+    ],
+    fn(empty_hover) {
+      let #(started, _fake) =
+        started(gleam_like_capabilities(), Nil, fn(state, inbound) {
+          case inbound {
+            jsonrpc.ServerRequest(id:, method: "textDocument/hover", ..) -> #(
+              state,
+              [
+                project_failure(),
+                Reply(fake_server.response(id, empty_hover)),
+              ],
+            )
+            jsonrpc.ServerRequest(id:, method: "textDocument/rename", ..) -> #(
+              state,
+              [
+                Reply(fake_server.response(
+                  id,
+                  json.Object([#("changes", json.Object([]))]),
+                )),
+              ],
+            )
+            jsonrpc.ServerRequest(id:, ..) -> #(state, [
+              Reply(fake_server.response(id, json.Null)),
+            ])
+            jsonrpc.Notification(..) | jsonrpc.Response(..) -> #(state, [])
+          }
+        })
+      let at = range.Position(0, 7)
+      let assert Error(client.Unavailable(reason)) =
+        client.hover(started, a, at, 1000)
+        as "empty or malformed hover content cannot erase a retained load error"
+      assert string.contains(reason, "cannot read ../core")
+      assert client.rename(started, a, at, "renamed", 1000)
+        == Error(client.Unavailable(reason))
+      assert client.diagnostics(started, None)
+        == Error(client.Unavailable(reason))
+      client.stop(started, 1000)
+    },
+  )
+}
+
+// The shared hierarchy capability cannot decide which of three result
+// shapes is valid. Its caller still decodes useful data, without erasing
+// an earlier error on the strength of data valid only for another method.
+pub fn hierarchy_replies_keep_failure_until_a_typed_query_recovers_test() {
+  let assert Ok(raw) =
+    json.parse(
+      "{\"name\":\"Greet\",\"kind\":12,\"uri\":\"file:///work/src/a.gleam\","
+      <> "\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":5}},"
+      <> "\"selectionRange\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":5}}}",
+    )
+    as "the hierarchy fixture is valid JSON"
+  let #(started, _fake) =
+    started(gopls_capabilities(), Nil, fn(state, inbound) {
+      case inbound {
+        jsonrpc.ServerRequest(id:, method: "textDocument/hover", ..) -> #(
+          state,
+          [
+            project_failure(),
+            Reply(fake_server.response(id, json.Null)),
+          ],
+        )
+        jsonrpc.ServerRequest(id:, ..) -> #(state, [
+          Reply(fake_server.response(id, json.Array([raw]))),
+        ])
+        jsonrpc.Notification(..) | jsonrpc.Response(..) -> #(state, [])
+      }
+    })
+  let at = range.Position(0, 0)
+  let assert Error(client.Unavailable(reason)) =
+    client.hover(started, a, at, 1000)
+    as "a project error is retained first"
+  let assert Ok([item]) = client.prepare_call_hierarchy(started, a, at, 1000)
+    as "a useful hierarchy answer still reaches its typed decoder"
+  let assert Error(client.Malformed(_)) =
+    client.incoming_calls(started, item, 1000)
+    as "a prepare item is not a valid incoming call"
+  assert client.diagnostics(started, None) == Error(client.Unavailable(reason))
+  client.stop(started, 1000)
+}
+
+fn project_failure() -> Action {
+  Reply(jsonrpc.notification(
+    "window/showMessage",
+    Some(
+      json.Object([
+        #("type", json.Int(1)),
+        #("message", json.String("cannot read ../core")),
+      ]),
+    ),
+  ))
+}
+
+pub fn a_failed_versioned_load_keeps_its_error_at_the_settlement_deadline_test() {
+  let #(started, _fake) =
+    started(gopls_capabilities(), Nil, fn(state, inbound) {
+      case inbound {
+        jsonrpc.Notification(method: "textDocument/didOpen", ..) -> #(state, [
+          Reply(fake_server.publish(a_uri, Some(1), [])),
+        ])
+        jsonrpc.Notification(method: "textDocument/didChange", ..) -> #(state, [
+          project_failure(),
+        ])
+        jsonrpc.ServerRequest(id:, method: "textDocument/documentSymbol", ..) -> #(
+          state,
+          [
+            Reply(fake_server.response(id, json.Array([]))),
+          ],
+        )
+        jsonrpc.ServerRequest(..)
+        | jsonrpc.Notification(..)
+        | jsonrpc.Response(..) -> #(state, [])
+      }
+    })
+  assert client.sync(started, [client.Open(a, "go", "package a")]) == Ok(Nil)
+  assert client.sync(started, [client.Change(a, "package b")]) == Ok(Nil)
+
+  // The barrier answers, but the new publication never arrives. Deadline
+  // expiry must preserve the reported error instead of answering Unsettled.
+  let assert Error(client.Unavailable(reason)) = client.settle(started, [a], 60)
+    as "a settlement deadline cannot erase a project failure"
+  assert string.contains(reason, "cannot read ../core")
+  client.stop(started, 1000)
+}
+
 fn field(value: JsonValue, key: String) -> JsonValue {
   case value {
     json.Object(fields) -> result.unwrap(list.key_find(fields, key), json.Null)

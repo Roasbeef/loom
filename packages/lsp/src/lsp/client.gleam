@@ -486,7 +486,11 @@ type Resolved {
 // answer does: reach a caller, pass a settlement barrier, complete the
 // handshake, or acknowledge shutdown.
 type Pending {
-  CallerWaits(reply: Subject(Result(JsonValue, RequestError)), deadline_ms: Int)
+  CallerWaits(
+    reply: Subject(Result(JsonValue, RequestError)),
+    deadline_ms: Int,
+    feature: Feature,
+  )
   BarrierFor(token: Int)
   HandshakeWaits(reply: Subject(Result(Nil, StartError)))
   ShutdownWaits
@@ -1777,7 +1781,7 @@ fn ask_server(
       Flow(Serving, data)
     }
     protocol.Provided -> {
-      let #(data, id) = mint(data, CallerWaits(reply:, deadline_ms:))
+      let #(data, id) = mint(data, CallerWaits(reply:, deadline_ms:, feature:))
 
       // The id is tracked before the write, so a failed write's `fail`
       // answers this caller with every other one.
@@ -1798,7 +1802,7 @@ fn ask_server(
 // is dropped, and tells the server to stop computing it.
 fn expire(flow: Flow, id: Int) -> Flow {
   case dict.get(flow.data.pending, id) {
-    Ok(CallerWaits(reply:, deadline_ms:)) -> {
+    Ok(CallerWaits(reply:, deadline_ms:, ..)) -> {
       process.send(reply, Error(TimedOut(after_ms: deadline_ms)))
       let data = Data(..flow.data, pending: dict.delete(flow.data.pending, id))
       cancel(Flow(..flow, data:), id)
@@ -1921,9 +1925,9 @@ fn answered(
   outcome: Result(JsonValue, jsonrpc.RpcError),
 ) -> Flow {
   case pending {
-    CallerWaits(reply:, ..) -> {
+    CallerWaits(reply:, feature:, ..) -> {
       let answered = result.map_error(outcome, server_error)
-      let #(data, answered) = semantic_answer(flow.data, answered)
+      let #(data, answered) = semantic_answer(flow.data, feature, answered)
       process.send(reply, answered)
       Flow(..flow, data:)
     }
@@ -1942,18 +1946,63 @@ fn answered(
 // retained error so later legitimate misses remain ordinary empty answers.
 fn semantic_answer(
   data: Data,
+  feature: Feature,
   outcome: Result(JsonValue, RequestError),
 ) -> #(Data, Result(JsonValue, RequestError)) {
   case outcome, data.server_failure {
-    Ok(json.Null), Some(reason) | Ok(json.Array([])), Some(reason) -> #(
-      data,
-      Error(Unavailable(reason:)),
-    )
-    Ok(json.Null), None | Ok(json.Array([])), None | Error(_), _ -> #(
-      data,
-      outcome,
-    )
-    Ok(_), _ -> #(Data(..data, server_failure: None), outcome)
+    Error(_), _ | Ok(_), None -> #(data, outcome)
+    Ok(json.Array([_, ..])), Some(_)
+      if feature == protocol.CallHierarchyFeature
+    -> #(data, outcome)
+    Ok(value), Some(reason) ->
+      case substantive(feature, value) {
+        True -> #(Data(..data, server_failure: None), outcome)
+        False -> #(data, Error(Unavailable(reason:)))
+      }
+  }
+}
+
+// Recovery needs a decoded semantic result, not merely a non-null JSON
+// object. Hover and rename both encode legitimate empty answers as objects.
+// Call hierarchy shares one capability across three different decoders.
+// Its nonempty replies reach the method-specific decoder without clearing
+// the failure; another semantic query must establish recovery.
+fn substantive(feature: Feature, value: JsonValue) -> Bool {
+  case feature {
+    protocol.DefinitionFeature | protocol.ReferencesFeature ->
+      decoded_nonempty(protocol.decode_locations(value))
+    protocol.HoverFeature ->
+      case protocol.decode_hover(value) {
+        Ok(Some(hover)) -> string.trim(hover.contents) != ""
+        Ok(None) | Error(_) -> False
+      }
+    protocol.DocumentSymbolFeature ->
+      case protocol.decode_document_symbols(value) {
+        Ok(protocol.Hierarchical(symbols)) -> !list.is_empty(symbols)
+        Ok(protocol.Flat(symbols)) -> !list.is_empty(symbols)
+        Error(_) -> False
+      }
+    protocol.RenameFeature ->
+      case protocol.decode_workspace_edit(value) {
+        Ok(edit) ->
+          list.any(edit.documents, fn(document) {
+            !list.is_empty(document.edits)
+          })
+        Error(_) -> False
+      }
+    protocol.PrepareRenameFeature ->
+      case protocol.decode_prepare_rename(value) {
+        Ok(protocol.CanRename(..)) | Ok(protocol.CanRenameDefault) -> True
+        Ok(protocol.CannotRename) | Error(_) -> False
+      }
+    protocol.CallHierarchyFeature -> False
+  }
+}
+
+fn decoded_nonempty(outcome: Result(List(a), protocol.ProtocolFault)) -> Bool {
+  case outcome {
+    Ok(items) -> !list.is_empty(items)
+    Error(_) -> False
   }
 }
 
@@ -2309,8 +2358,11 @@ fn settle_expired(flow: Flow, token: Int) -> Flow {
   case dict.get(flow.data.waiters, token) {
     Error(Nil) -> flow
     Ok(waiter) -> {
-      let settlement = Settlement(DeadlineExpired, collect(flow.data, waiter))
-      process.send(waiter.reply, Ok(settlement))
+      let settlement = case flow.data.server_failure {
+        Some(reason) -> Error(Unavailable(reason:))
+        None -> Ok(Settlement(DeadlineExpired, collect(flow.data, waiter)))
+      }
+      process.send(waiter.reply, settlement)
       let data =
         Data(..flow.data, waiters: dict.delete(flow.data.waiters, token))
       case waiter.barrier {
