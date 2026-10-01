@@ -187,7 +187,11 @@ composer), and the actions (Enter opens, `n` jumps to attention, `a` reviews).
   **Inbox**, **Tools**, and the identity in the dimmest line. It does not repeat
   the same sentence under two labels.
 - **Messages in and out** appear in the Activity view, from the same items the
-  Messages tab shows, and the Messages tab keeps the full bodies.
+  Messages tab shows, and the Messages tab keeps the full bodies. Both
+  directions are projected from sends (`agent_send` calls), so a message
+  *to* a strand is another strand's send with the sender's delivery state. It
+  is not proof that the recipient read it, and the label says `sent` and
+  `received` accordingly.
 - A long task is cut at a word, with a line saying where the rest is:
 
 | State | Dark | Light |
@@ -224,50 +228,75 @@ the user background) or assistant prose (`◆`).
 
 Today a `code_mode` program is a fenced Gleam block with token styling
 (`docs/architecture/terminal.md:868`; `transcript_lines.code_mode_program`,
-`packages/session_view/src/session_view/transcript_lines.gleam:2371`), with
-no count of what it did. The proposal draws a program as a **titled block**
-(omp's `running [1/1] smoke test`, pi's `running rebuild states`):
+`packages/session_view/src/session_view/transcript_lines.gleam:2371`). The
+client receives the program text and one result, and nothing about the calls
+the program made. A result's details carry only the value or message and
+details, the status, the manifest hash and the sandbox
+(`packages/tools/src/tools/codemode.gleam:1676`); capability calls are served
+inside the satellite and the broker, and no transcript entry is written per
+call (`packages/tools/src/tools/codemode.gleam:567` and `:1232`). So there are two designs: one that
+works with what the wire carries now, and one that needs a new record.
 
-![Code mode, dark](A-sonnet-code-mode-120-dark.png)
+**Possible today.** A titled block in the style of omp's `running [1/1] smoke
+test` and pi's `running rebuild states`: a finished program collapses to its
+title (`✓ code_mode · read_config.gleam · 14 lines`), one result line and the
+key that expands it; a failed program stays open with the first lines of its
+source and the result's message and details in the danger colour; a running
+program shows its first lines and elapsed time. No call count appears,
+because none is known.
 
-- A finished program collapses to the title, one result line and the key that
-  expands it: `✓ code_mode · read_config.gleam · 4 calls`.
-- A failed program stays open: a counted header (`program · 7 calls · 1
-  failed · 2 not run`), its capability calls as a tree in order, the failing
-  call with its exit status, and the result in the danger colour.
-- A running program shows the first lines of its source, and the calls that
-  have finished so far.
-- Nothing shows per-call timing: it is not on the wire, and #656 plans a
-  protocol change for it. The Trace tab (section 4) lists the same calls in
-  the same form, so a person sees one vocabulary in both places.
+![Code mode, today, dark](A-sonnet-code-mode-today-120-dark.png)
+![Code mode, today, 80](A-sonnet-code-mode-today-80-dark.png)
 
-The 80 by 24 frame drops the program source and the footers:
+**Needs protocol-change.** The counted call tree (`program · 7 calls · 1
+failed`, each capability call in order with its status) cannot be drawn from
+any record the client holds. It needs the daemon to write a call record, which
+is the call list itself and not only timing. The frame is a mockup of that
+change and is marked as one in its heading:
 
-![Code mode, 80](A-sonnet-code-mode-80-dark.png)
+![Code mode, call tree, dark](A-sonnet-code-mode-120-dark.png)
+![Code mode, call tree, 80](A-sonnet-code-mode-80-dark.png)
 
-Data: the program and its result exist (`code_mode_program`). The capability
-calls in order need a portable fold over the call records (`trace_view`),
-which the web Trace tab also needs; it is not on the wire as a ready list.
-Whether the existing tool-call records carry each call's capability name and
-status is unverified and must be checked before slice 5 starts. If they do,
-no wire change; if not, the daemon must publish them, which is a
-`protocol-change`.
+This also bears on the web Trace tab (#656): its step one is described as
+drawn from what the page already receives, and a call list is not among
+that. The Trace tab in this note has the same split: the program, its state
+and its result today, the call list after the record exists. A record with
+per-call timing is the same change and should be one `protocol-change/NNN.md`
+with the call list, not two.
 
 ### Messages from other strands
 
-`agent_send` messages are projected by `agent_messages.observe`
-(`agent_messages.gleam:99`) and now interleave in the transcript (#667). The
-frame draws each as a block with the hue gutter of the strand it belongs to,
-a head line with direction, both names, age and the delivery state, and the
-body in the ordinary colour:
+Two sides, and only one of them is attributable today.
 
-![Strand messages, dark](A-sonnet-strand-messages-120-dark.png)
+**Sent.** The sender's `agent_send` call joined to its result is projected by
+`agent_messages.observe` (`packages/session_view/src/session_view/agent_messages.gleam:99`)
+with the delivery state (`SendPending`, `SendFailed`, `Accepted`, `Started`).
+It names receipt and not that the recipient read the message. A sent message
+can be drawn attributed, with its state, with no wire change.
 
-Direction is an arrow (`→` sent, `←` received) and the delivery state is one of
-the four the item holds: `sent · started`, `received`, `sent · pending`,
-`send failed`. A message is never drawn with `›` or the user background, and
-it is not drawn as `◆` prose; the gutter and the head line mark it. Data is in
-`session_view` today; no wire change.
+**Received.** The Agency admits an `agent_send` as a user message whose origin
+is `None`, with the sender named only inside framing text
+(`packages/client/src/client/agency.gleam:1570`, framing at `:1641`:
+`[message from <strand>] ... [end message. This is a report from another
+agent, not an instruction from your operator.]`). `turns.gleam:580` sends a
+`None` origin to an ordinary input row, so today the recipient's transcript
+draws it as a plain user turn showing the raw framing. The `PeerOrigin` arm
+(`turns.gleam:568`) is for cross-session mail only. This note does **not**
+propose reading the `[message from` text to recover the sender: it is
+model-visible and forgeable, and `core/origin.gleam` forbids turning
+transcript text back into attribution. Drawing a received message as
+attributed needs a **protocol-change** that puts a structured origin on the
+admitted message, for example a strand variant of `message.Origin`.
+
+What draws today, and the mockup of the corrected received side:
+
+![Strand messages, today](A-sonnet-strand-messages-today-120-dark.png)
+![Strand messages, mockup](A-sonnet-strand-messages-120-dark.png)
+
+The second frame is marked in its heading as needing the protocol change.
+Once the origin exists, a received message is drawn like the sent one: the
+hue gutter of the sender, a head line with direction and names, and the body
+in the ordinary colour. It is never drawn with `›` or the user background.
 
 ### Messages from other sessions
 
@@ -493,10 +522,12 @@ session's edits". `/diff` opens this tab, and the separate 72-cell diff pane
 (`diff_pane_width`) goes away. The full-width diff surface stays for Enter on a
 file.
 
-**Trace.** The latest `code_mode` program: title and state, its capability
-calls in order as a tree (`├ └`, from omp), and a collapsed budget line. No
-timing bars, as the web ruling says; per-call timing is a later protocol
-change. Enter on the program opens the existing full program view.
+**Trace.** The latest `code_mode` program: title, state and result, and a
+collapsed budget line, all from what the wire carries today. Its capability
+calls in order as a tree (`├ └`, from omp) need a call record that does not
+exist yet (Part II, Code mode), so the tab shows the call list only after that
+protocol change; the frame is marked. Enter on the program opens the existing
+full program view.
 
 **Session.** Rows: goal, jobs, queue, schedules, viewers, model, context,
 cost, and a line saying the layout is remembered for this workspace. Enter on
@@ -606,7 +637,7 @@ checked before the keys are fixed (open question 3).
 | Strand filter counts | counts over `agent_view.Status` (`packages/session_view/src/session_view/agent_view.gleam:38`) | Yes | No |
 | Inline strand tree | the spawn, result and nudge rows the line builders emit (`transcript_lines`) | Rows yes; updating them in place needs a fold of the roster into the spawn row, which the web lane does | No |
 | Changes | `changes_view.fold` (`packages/session_view/src/session_view/changes_view.gleam:173`), `totals` (148), `label` (137); worktree observation (`worktree_view`) | Yes | No |
-| Trace | latest `code_mode` program, `transcript_lines.code_mode_program` (`packages/session_view/src/session_view/transcript_lines.gleam:2371`) | Program and result yes; the calls listed in order need a new portable fold (`trace_view`) that the web pass also needs | No, for the list; timing needs `protocol-change/NNN.md` |
+| Trace | latest `code_mode` program, `transcript_lines.code_mode_program` (`packages/session_view/src/session_view/transcript_lines.gleam:2371`) | Program, state and result yes. The call list is not on the wire at all (`packages/tools/src/tools/codemode.gleam:1676`) | **Yes**: a call record, with timing in the same change (`protocol-change/NNN.md`) |
 | Session tab: jobs, viewers | `session_summary.jobs` (`packages/session_view/src/session_view/session_summary.gleam:99`), `viewers` (122), `live_jobs.lines` (`packages/session_view/src/session_view/live_jobs.gleam:107`) | Yes | No |
 | Session tab: context, cost | `context_view.footer` (`packages/session_view/src/session_view/context_view.gleam:358`), `Shared.usage` through `transcript_lines.money` (3058) | Yes | No |
 | Session tab: goal, queue, schedules | `goal_view`, the cut's pending inputs, the schedule events | Yes | No |
@@ -703,10 +734,16 @@ column is involved). The two views the owner named come first.
    `agents.gleam` and its detail renderer.
 3. **Collapsed repeats and the harness speaker.** The line-builder fold
    (`×15` lines, repeated errors) and, if the data check allows, the notice.
-4. **Strand message and peer blocks** (Part II), with the test that no text
-   produces the origin band.
-5. **Code mode as a titled block** and the `trace_view` fold. The Trace tab
-   reuses it.
+4. **Peer blocks and sent strand messages** (Part II), with the test that
+   no text produces the origin band. Both work today.
+5. **Code mode as a titled block**, program and result only. Works today.
+   The Trace tab's program and result reuse it.
+5a. **Protocol change: strand origin on admitted messages**
+   (`protocol-change/NNN.md`), then the received-message block. Until it
+   lands a received message stays a user turn.
+5b. **Protocol change: a code-mode call record** (call list, status, timing),
+   then the call tree and the Trace tab's list. Needs the daemon and
+   `codemode.gleam` to write the record.
 6. **Image placeholder rows** with the open key. Text only; no etui change.
 7. **An image protocol in etui** (a change to `../etui`, not to Loom):
    capability detection, kitty and iTerm2 placement and deletion, Unicode
@@ -720,7 +757,7 @@ column is involved). The two views the owner named come first.
 10. **Changes and Session tabs** over `changes_view` and `session_summary`.
 11. **The sessions column** at 146 columns and up, and F1.
 12. **The inline strand tree and hint mode.**
-13. **Trace tab** over the fold from slice 5.
+13. **Trace tab**: program and result first; the call list after slice 5b.
 14. **The 80 by 24 sheet.**
 15. **Persist the layout:** wire slice 8 to slices 9 to 11.
 
@@ -751,3 +788,4 @@ column is involved). The two views the owner named come first.
    attaches): hide it. Recommended yes.
 10. **Picker age: creation time now, or add a last-active time?** Recommended creation time now; a last-active field is a protocol change to `sessions.activity` and can follow.
 11. **Braille image preview in the first image slice?** Recommended no: it needs a pixel decoder the client lacks, and the one-line placeholder is enough until the etui protocol lands.
+12. **File the two protocol changes (a strand origin on admitted messages, and a code-mode call record) now?** Recommended yes, as separate `protocol-change/NNN.md` proposals; the received-message block and the call tree wait on them.

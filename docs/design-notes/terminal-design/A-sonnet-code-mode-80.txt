@@ -1,5 +1,5 @@
  ◆ loom   ws · pi-gui (main)                           kimi-k3 · Ctrl+g details 
- transcript / main                                                              
+ MOCKUP, needs protocol-change: call tree                                       
  ╭─ ✓ code_mode · read_config.gleam · 4 calls ─────────────────────────────────╮
  │ result: ok · 3 files read, config parsed                                    │
  ╰─ Ctrl+g expands the program and its calls ──────────────────────────────────╯
