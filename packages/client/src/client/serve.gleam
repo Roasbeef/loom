@@ -4106,6 +4106,23 @@ fn assemble_in(
   // who configured one deserves to be told which reason stopped it.
   seed_advisor(runtime, advisor_wiring, tool_registry, logger)
 
+  // Context observations need the immutable tool descriptions, while the hub's
+  // execution surface owns the registry. Build the reader before retaining the
+  // service start callback so observations carry neither executors nor Settings.
+  let context_window = settings.context_window
+  let context_reader =
+    context_view.reader(
+      opened,
+      assembled.text,
+      tool_registry,
+      fn(identity) {
+        facts(identity)
+        |> result.map(fn(pair) { pair.0.context_window })
+        |> result.unwrap(context_window)
+      },
+      settings.compaction,
+    )
+
   // The restartable half of the per-child policy. These children hold
   // no state a restart cannot rebuild and — crucially — none of them is
   // addressed by pid: each registers under a name and every caller
@@ -4247,20 +4264,7 @@ fn assemble_in(
               |> result.map(worktree_diff.to_json)
               |> result.map_error(worktree_diff.error_message)
             })
-            |> hub.with_context(fn(strand) {
-              context_view.read(
-                opened,
-                strand,
-                assembled.text,
-                tool_registry,
-                fn(identity) {
-                  facts(identity)
-                  |> result.map(fn(pair) { pair.0.context_window })
-                  |> result.unwrap(settings.context_window)
-                },
-                settings.compaction,
-              )
-            })
+            |> hub.with_context(context_reader)
             |> hub.with_live_jobs(fn(strand) {
               jobs.live_jobs(jobs_name, strand, waiting: 1000)
               |> result.map_error(string.inspect)
