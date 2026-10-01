@@ -58,6 +58,24 @@
 ////
 //// ## Flow
 ////
+//// `start` → `receive` → `apply_reply` → `credit` → `send_queued` → `tick`
+////
+//// 1. `start` (or `start_resumed`) queues the subscribe through `emit`, so
+////    the lane begins in `AwaitingBegin` with request 1 outstanding.
+//// 2. `receive` notes the message, then dispatches by phase. A pushed frame
+////    goes to `apply_pushed` and never touches the phase or the credit.
+//// 3. `apply_reply` reduces the one correlated reply the lane is owed: a
+////    begin goes to `credit`, which asks for the next chunk, and an end
+////    returns the lane to `Ready`.
+//// 4. `send_queued` runs on every return to `Ready`. It spends the waiting
+////    command through `flush_queued` first and a deferred notice second.
+//// 5. `submit` reaches the same command path from the operator: `admit`
+////    checks the role and the slot, and `send` puts the frame on the wire.
+//// 6. `tick` fails an expired request, or issues the idle catch-up through
+////    `capture_again`; `next_due` names when a tick can next act.
+//// 7. `fail` ends the lane on any violation or loss and calls `close`, which
+////    is the only way into `Closed`.
+////
 //// `receive` records one transport message before decoding it.
 //// `apply_pushed` handles uncorrelated notices; `apply_reply` handles the
 //// outstanding request. A completed reply enters `send_queued`.
@@ -67,6 +85,22 @@
 //// `take_outputs` hands those effects to the host in their decision order.
 //// `submit` admits operator intent through `admit`; `tick` owns timeouts and
 //// idle transcript catch-up. Goal invalidation creates no periodic goal timer.
+////
+//// ## Transitions
+////
+//// What each entry point does to a lane in each phase. A bad frame, a
+//// transport loss and an expired deadline all go through `fail`, so each
+//// ends in `Closed`; `retire` is `fail` without the `Failed` update.
+////
+//// <!-- transitions: session_channel.Phase -->
+////
+//// | state | receive | `GoalChanged` push | tick | submit | close | retire |
+//// | --- | --- | --- | --- | --- | --- | --- |
+//// | `AwaitingBegin` | `Receiving` on a valid begin; `Ready` on a resumed marker; a push is applied in place; anything else `Closed` | stays; the goal read is due, issued on the next return to `Ready` | `Closed` once the deadline passes | queued (`Waiting`); a mutation also needs a held cut and a mutating role, else refused | `Closed` | `Closed` |
+//// | `Receiving` | `Receiving` on a chunk; `Ready` on a valid end; a push is applied in place; anything else `Closed` | stays; the goal read is due, issued on the next return to `Ready` | `Closed` once the deadline passes | queued (`Waiting`); a mutation also needs a held cut and a mutating role, else refused | `Closed` | `Closed` |
+//// | `AwaitingReply` | `Ready` on the matching reply or a server refusal; `Receiving` on a lookup or history begin; a push is applied in place; anything else `Closed` | stays; the goal read is due, and the read in flight does not spend it | `Closed` once the deadline passes | queued (`Waiting`) if the slot is free; a mutation is refused while another is in flight or the role forbids | `Closed`, with no outcome reported | `Closed` |
+//// | `Ready` | stays on other pushes; `AwaitingBegin` on a notice at or past the cut or a metadata push; any reply is `Closed` | `AwaitingReply` once `send_queued` issues `goal_get`, after any waiting command | `AwaitingBegin` once the refresh instant passes | `AwaitingReply` (`Sent`), or refused if the role or slot forbids | `Closed` | `Closed` |
+//// | `Closed` | ignored | ignored | nothing | refused | unchanged | unchanged |
 
 import core/json
 import gleam/bool
@@ -291,18 +325,11 @@ type Projection {
 
 // The outstanding request, not a transport connection's lifecycle. A pushed
 // notice preserves its phase until that notice can use a free request slot.
-//
-// | Phase | Correlated receive | GoalChanged push | Tick | Submit | Close |
-// | --- | --- | --- | --- | --- | --- |
-// | AwaitingBegin | Begin -> Receiving; cursor Resumed -> Ready | Keep phase; Due | Expired -> Closed | One slot; mutation needs synchronized cut | Closed |
-// | Receiving | Chunk -> Receiving; valid End -> Ready, then send_queued | Keep phase; Due | Expired -> Closed | One slot; mutation needs synchronized cut | Closed |
-// | AwaitingReply | Valid board/refusal or Mutation(status) for Mutation -> Ready, then send_queued; Lookup/History Begin -> Receiving | Keep phase; Due | Expired -> Closed | Mutation refused behind Mutation; otherwise one slot | Closed |
-// | Ready | Unsolicited correlated reply -> Closed | Due; send_queued | Due cut -> AwaitingBegin | No queued frame -> AwaitingReply; mutation needs role | Closed |
-// | Closed | Ignored | Ignored by receive | Unchanged | DefinitelyNotSent | Unchanged |
-//
-// A malformed or mismatched reply closes every open phase. Every mutation
-// also needs can_mutate; a second queued command is refused. Ready in this
-// table is the intermediate state before send_queued may issue another request.
+// The module doc's transition table gives every phase against every entry
+// point, checked against these constructors by lint R14. A malformed or
+// mismatched reply closes every open phase, every mutation also needs
+// can_mutate, and a second queued command is refused. Ready is the
+// intermediate state before send_queued may issue another request.
 type Phase {
   /// Initial subscribe or catch-up awaits its begin marker.
   AwaitingBegin
