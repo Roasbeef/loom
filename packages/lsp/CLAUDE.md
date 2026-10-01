@@ -22,13 +22,18 @@ The modules, in dependency order:
 - `lsp/range` — the server's coordinates (zero-based, UTF-16 units).
 - `lsp/query` — the harness's vocabulary and the `Door` contract every
   surface calls through. Types only.
+- `lsp/jsonrpc` — the JSON-RPC 2.0 envelope over `core/json`: request,
+  notification, response and error_response encoders and a total `decode`.
+  Ported from the codec `packages/mcp` carried before #669.
+- `lsp/transport` — the transport seam: `Transport` (one variant,
+  `ChannelTransport`), `Connection` and `TransportEvent`.
 - `lsp/framing` — the pure `Content-Length` framer, over bytes.
 - `lsp/protocol` — total codecs for every structure consumed, capability
   gating, answers to server requests, and `file://` URI conversion.
 - `lsp/text` (added by a sibling slice) — UTF-16 ↔ codepoint conversion
   and pure text-edit application.
 - `lsp/client` — the client actor, a `weft/state_machine` over
-  `gleam_mcp/transport.Transport`: one process owning one language server,
+  `lsp/transport.Transport`: one process owning one language server,
   its handshake, gated requests, document sync, the diagnostics store and
   settlement, and the stop sequence. Its module doc carries the phase
   transition table and a `## Flow` sketch; read those before the handlers.
@@ -105,14 +110,14 @@ the shared decoding helpers close the file.
 
 ## Relationships
 
-- **Depends on**: `gleam_stdlib`; `core`; `gleam_mcp`, pinned to the same
-  ref as every other package, for the JSON value type and its total
-  parser and serializer (`gleam_mcp/json`), the JSON-RPC envelope with its
-  `response` and `error_response` encoders (`gleam_mcp/jsonrpc`), the
-  corruption report (`gleam_mcp/corruption`) and the transport seam
-  (`gleam_mcp/transport`). It does not depend on `mcp`. The monitored
-  try-call is `lsp/call`, which this package keeps itself because
-  `gleam_mcp` carries it only privately inside its own client.
+- **Depends on**: `gleam_stdlib`; `core`, for the JSON value type with its
+  total parser and serializer (`core/json`) and the corruption report
+  (`core/corruption`). It depends on neither `mcp` nor `gleam_mcp`: the
+  JSON-RPC envelope and the transport seam are `lsp/jsonrpc` and
+  `lsp/transport`, so the MCP SDK's HTTP stack stays out of the manifest of
+  every package that imports `lsp` (#678, ADR-015's third addendum). The
+  monitored try-call is `lsp/call`, which this package keeps itself
+  because `gleam_mcp` carries it only privately inside its own client.
   `gleam_erlang`, `gleam_otp` and `weft` are declared for the client actor; `range`, `query`, `framing`,
   `protocol` and `text` import none of them and are pure functions of
   their arguments. The package as a whole is impure and not in the
@@ -122,7 +127,7 @@ the shared decoding helpers close the file.
   `tools` (the `lsp_*` tools, over `Door`), `codemode` (`lsp.*` served
   here, over `Door`) — as those slices land.
 - **FFI**: none, and ADR-015 needs none. The production transport is a
-  `gleam_mcp/transport.ChannelTransport` over the broker's jailed exec.
+  `lsp/transport.ChannelTransport` over the broker's jailed exec.
 
 ## Traffic
 
@@ -199,8 +204,9 @@ the shared decoding helpers close the file.
   the jailed exec path has no backpressure. Every wait is a pending entry
   plus a timer in actor state; the only I/O in a handler is
   `Connection.send`. Document texts arrive in `sync`, read by the caller.
-- **Only a channel transport is accepted.** `start` refuses
-  `PortTransport`, which would run the server unjailed (Rule Zero).
+- **Only a channel transport exists.** `lsp/transport.Transport` has no
+  port variant, so no wiring can run the server unjailed (Rule Zero) and
+  `start` has nothing to refuse.
 - **No caller is ever crashed by the client.** Every exchange is
   `lsp/call.try_call`; a dead or wedged client answers `Unavailable`.
 - **Death settles everyone, then is reported.** A transport close, a
@@ -246,9 +252,9 @@ the shared decoding helpers close the file.
   — the design ruling: the jail, the package split, settled diagnostics,
   rename through hashline, symbol addressing, and the measured behaviour
   of `gleam lsp` and `gopls` this package's tests replay.
-- [packages/mcp/CLAUDE.md](../mcp/CLAUDE.md) — where the MCP runtime went
-  and why `gleam_mcp` is the shared home of the JSON-RPC envelope and the
-  transport seam this package reuses.
+- [packages/mcp/CLAUDE.md](../mcp/CLAUDE.md) — where the MCP runtime went;
+  `lsp/jsonrpc` and `lsp/transport` are the cut-down copies of its
+  envelope and channel seam that this package keeps for itself.
 - [docs/weft.md](../../docs/weft.md) — the monitored try-call gap
   `lsp/call` stands in for.
 - [docs/gleam-style.md](../../docs/gleam-style.md) — Part IV §2 (total
