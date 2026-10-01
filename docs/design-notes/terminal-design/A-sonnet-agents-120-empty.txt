@@ -1,40 +1,40 @@
- ◆ loom   ws · pi-gui (main)                                                                   kimi-k3 · Ctrl+g details
- ╭ AGENT WORKSPACE · 6 agents · 2 working · 2 need you ───────────────────────────────────────────────────────────────╮
- │                                                                                                                    │
- │   No agents yet.                                                                                                   │
- │   Strands appear here when main spawns one, or when you fork.                                                      │
- │   /fork starts one from the active strand.                                                                         │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │ Esc close                                                                                                          │
- ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
+ ◆ loom   ws · pi-gui (main)                                                                   kimi-k3 · Ctrl+g details 
+ ╭ AGENT WORKSPACE · 6 agents · 2 working · 2 need you ───────────────────────────────────────────────────────────────╮ 
+ │                                                                                                                    │ 
+ │   No agents yet.                                                                                                   │ 
+ │   Strands appear here when main spawns one, or when you fork.                                                      │ 
+ │   /fork starts one from the active strand.                                                                         │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │                                                                                                                    │ 
+ │ Esc close                                                                                                          │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                                                        

@@ -1,24 +1,24 @@
- ◆ loom    ws · pi-gui (main)                          kimi-k3 · Ctrl+g details
- transcript / main
-▎├ ● sub:tests  run gleam test · needs approval · 9k ctx · 34s
-▎└ ✓ sub:docs   draft README example · finished · 1m 12s
-
-▎◇ advisor · nudge for main · 12s ago
-▎  Consider running the unit tests before committing.
-
- ∴ Reasoning 9s
- ● code_mode check_subtract.gleam · running 1.2s
-
- ◆ main
-   I added subtract next to add. Both tests should pass once
-   sub:tests reports back, then I will update the README example.
- ▸ Todo · 3 of 5 done · Ctrl+g
+ ◆ loom    ws · pi-gui (main)                          kimi-k3 · Ctrl+g details 
+ transcript / main                                                              
+▎├ ● sub:tests  run gleam test · needs approval · 9k ctx · 34s                  
+▎└ ✓ sub:docs   draft README example · finished · 1m 12s                        
+                                                                                
+▎◇ advisor · nudge for main · 12s ago                                           
+▎  Consider running the unit tests before committing.                           
+                                                                                
+ ∴ Reasoning 9s                                                                 
+ ● code_mode check_subtract.gleam · running 1.2s                                
+                                                                                
+ ◆ main                                                                         
+   I added subtract next to add. Both tests should pass once                    
+   sub:tests reports back, then I will update the README example.               
+ ▸ Todo · 3 of 5 done · Ctrl+g                                                  
 ─ To main · enter queues · tab steers ──────────────────────────────────────────
- ›
- ◒ streaming (3s) · esc to interrupt
-
+ ›                                                                              
+ ◒ streaming (3s) · esc to interrupt                                            
+                                                                                
 ────────────────────────────────────────────────────────────────────────────────
-› ● main              streaming
-  ● sub:tests         needs approval
- kimi-k3 · ctx ~41% · est $1.86
- F2 strands · F3 changes                     3 agents · 2 working · 1 needs you
+› ● main              streaming                                                 
+  ● sub:tests         needs approval                                            
+ kimi-k3 · ctx ~41% · est $1.86                                                 
+ F2 strands · F3 changes                     3 agents · 2 working · 1 needs you 
