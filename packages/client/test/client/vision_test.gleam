@@ -749,6 +749,20 @@ pub fn a_turn_ends_at_the_answer_not_at_the_tool_call_test() {
   ])
 }
 
+// A message from a strand of the same session opens a turn as a peer's
+// does: an image sent before it belongs to an earlier turn. The origin
+// bounds the turn and decides nothing about authority.
+pub fn a_strand_origin_message_bounds_the_turn_test() {
+  let sibling =
+    message.UserMessage(
+      content: [message.UserText("[message from main]", None)],
+      timestamp: 0,
+      origin: Some(message.StrandOrigin("main")),
+    )
+  assert !client_vision.image_bearing([image_user(), sibling])
+  assert client_vision.image_bearing([sibling, image_user()])
+}
+
 pub fn text_only_projection_classifies_imageless_test() {
   assert !client_vision.image_bearing([text_user("hello")])
   assert !client_vision.image_bearing([])

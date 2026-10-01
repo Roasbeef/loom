@@ -120,6 +120,10 @@ pub fn image_bearing(messages: List(AgentMessage)) -> Bool {
 // Walk newest-first until the current human prompt or a settled answer.
 // The attributed prompt belongs to the result; the preceding answer does not.
 // Digests and tool steps stay with the prompt that caused them.
+//
+// Any attributed message bounds the turn, whether its origin is a human, a
+// peer session or a strand of this session (protocol-change 059). That is a
+// boundary and never an authority decision.
 fn current_turn(messages: List(AgentMessage)) -> List(AgentMessage) {
   collect_turn(list.reverse(messages), [])
 }
