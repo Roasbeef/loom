@@ -77,6 +77,12 @@ pub type CheckOutcome {
 ///
 pub fn run(door: Door, check: Check) -> CheckOutcome {
   let asked = query.SymbolQuery(check.symbol, check.path, check.line)
+
+  // The two verbs answer in different shapes: `definition` serves sites,
+  // `references` serves references that each carry a site. Both are
+  // reduced to a list of sites here, so the comparison below sees one
+  // kind of value whichever verb was asked, and a `QueryError` passes
+  // through to the second `case` untouched.
   let answered = case check.query {
     manifest.Definition ->
       door.definition(asked) |> result.map(fn(served) { served.value })
@@ -86,6 +92,10 @@ pub fn run(door: Door, check: Check) -> CheckOutcome {
         list.map(served.value, fn(reference) { reference.site })
       })
   }
+
+  // A query error and a wrong answer are different outcomes: the first
+  // means the door could not answer at all, the second means it answered
+  // and the profile's expectation is the thing to look at.
   case answered {
     Error(error) -> Errored(reason: describe_error(error))
     Ok(sites) ->
@@ -176,10 +186,13 @@ fn judged(
   }
 }
 
+// Sorted so a mismatch prints the same line on every run.
 fn sorted(sites: set.Set(String)) -> List(String) {
   set.to_list(sites) |> list.sort(string.compare)
 }
 
+// The one spelling of a site, `path:line`, used for both sides of the
+// comparison and for the lines an operator reads.
 fn site_text(path: String, line: Int) -> String {
   path <> ":" <> int.to_string(line)
 }
@@ -188,6 +201,8 @@ fn set_text(sites: List(String)) -> String {
   "{" <> string.join(sites, ", ") <> "}"
 }
 
+// The question as the operator wrote it in `[[check]]`: the verb and the
+// symbol, then where it was asked from when the check says so.
 fn query_text(check: Check) -> String {
   let verb = case check.query {
     manifest.Definition -> "definition"

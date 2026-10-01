@@ -111,7 +111,10 @@ pub fn effective_lsp_servers(
 
   // Replacement first, and it is not a refusal: the operator wrote a
   // table for this name, so the installed one never enters the set that
-  // conflicts are judged over.
+  // conflicts are judged over. An installed profile is a tuple of its
+  // extension and its server, so `entry.1` is the server, and the braces in
+  // `{ entry.1 }.name` make the tuple access happen before the field
+  // access. The sort by identity fixes the order refusals are reported in.
   let candidates =
     installed
     |> list.filter(fn(entry) {
@@ -128,6 +131,10 @@ pub fn effective_lsp_servers(
     list.flat_map(candidates, fn(candidate) {
       conflicts(candidate, configured, candidates)
     })
+
+  // A profile is refused whole once any refusal names it, however many
+  // claimants it collided with, so the survivors are those whose identity
+  // appears in no refusal.
   let refused =
     list.map(refusals, fn(refusal) { named(refusal.extension, refusal.server) })
   let kept =
@@ -196,6 +203,10 @@ fn conflicts(
   let with_installed =
     list.filter_map(candidates, fn(peer) {
       let other = Installed(extension: peer.0, server: { peer.1 }.name)
+
+      // Three outcomes per peer: the candidate itself is no conflict, a
+      // shared name is reported as the name even when an extension is
+      // shared too, and otherwise only a shared extension conflicts.
       case
         identity(peer) == identity(candidate),
         { peer.1 }.name == server.name
@@ -229,6 +240,8 @@ fn identity(entry: #(String, LspServer)) -> String {
   named(entry.0, { entry.1 }.name)
 }
 
+// The one place the identity's spelling lives, shared by `identity` and by
+// a refusal, which carries its two halves separately.
 fn named(extension: String, server: String) -> String {
   extension <> "/" <> server
 }

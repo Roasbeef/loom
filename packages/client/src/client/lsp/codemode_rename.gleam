@@ -105,6 +105,10 @@ pub fn rename(
     |> result.map_error(refusal_text)
   }
 
+  // The returned closure is what `codemode/lsp` calls for `mode: apply`.
+  // `result.map` here, not `result.try`: a `QueryError` from `prepare`
+  // is returned as the closure's `Error`, and a success is always turned
+  // into a report, since `land` has no failure of its own to return.
   fn(symbol_query, new_name) {
     use served <- result.map(prepare(symbol_query, new_name))
     let report =
