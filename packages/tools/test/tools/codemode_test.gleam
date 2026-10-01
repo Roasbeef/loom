@@ -1692,3 +1692,21 @@ pub fn the_background_value_never_carries_the_call_record_test() {
   let assert json.Object(fields) = value
   assert !has_key(fields, "calls")
 }
+
+pub fn a_program_cannot_forge_the_call_record_test() {
+  // The program's value is its own, and a `calls` key inside it is data.
+  // The record the result carries at the top level is the host's, and the
+  // forged one is visible only nested under `value`.
+  let forged =
+    msgpack.MapValue([
+      #(msgpack.StringValue("calls"), msgpack.StringValue("forged")),
+    ])
+  let outcome =
+    call(scripted(with_calls(ran(codemode.Completed(forged)))), [
+      #("program", json.String("...")),
+    ])
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "calls") == Ok(call_record.to_json(some_calls()))
+  assert list.key_find(fields, "value")
+    == Ok(json.Object([#("calls", json.String("forged"))]))
+}
