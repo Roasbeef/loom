@@ -439,6 +439,21 @@ path under `PlatformEnforcement` (the probe refuses on that host, correctly),
 and macOS. The Linux signoff on a host with a delegated cgroup v2 base is where
 those run.
 
+Language support ships as profile extensions in separate repositories
+([ADR-016](adr/016-language-profiles.md) and its 2026-09-30 addendum). Loom
+keeps the mechanism: the protocol client, the profile schema and decoder, the
+profile extension tier, `loomd ext check`, readiness, `cache_env` and the jail.
+The three first-party profiles are
+[loom-lsp-gleam](https://github.com/Roasbeef/loom-lsp-gleam),
+[loom-lsp-go](https://github.com/Roasbeef/loom-lsp-go) and
+[loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust), each tagged v0.1.0
+with its own CI that builds Loom and runs `loomd ext check`. Install one with
+`loomd ext install https://github.com/Roasbeef/loom-lsp-go --rev v0.1.0`. A new
+language is a profile, a fixture, `[[check]]`s and a passing `loomd ext check`,
+with no change to Loom. Loom's own tests that still run real servers do so to
+test the mechanism: the `gleam lsp` and `gopls` sessions in
+`conformance/lsp_e2e_test` and the manager's rust-analyzer fixture.
+
 Rulings the next change must preserve:
 
 - **Positions never leave `packages/lsp`.** The model and every surface speak

@@ -4783,6 +4783,15 @@ retains its collection margin so a verdict at the proof cutoff can be observed.
 ADR-015 is the ruling, and ADR-016 §§1–2 makes a server's table a
 language profile; these are the pieces that carry both in this package.
 
+No language is built into this package. The first-party profiles for Gleam,
+Go and Rust are extensions in their own repositories
+([loom-lsp-gleam](https://github.com/Roasbeef/loom-lsp-gleam),
+[loom-lsp-go](https://github.com/Roasbeef/loom-lsp-go),
+[loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust); ADR-016,
+addendum), installed with `loomd ext install <url> --rev v0.1.0` and proved
+with `loomd ext check`. The tests here use synthetic profiles, and a name
+such as `lsp_go` in them is a fixture's, not a dependency on that repository.
+
 - `client/lsp/profile.{LspServer, ProjectAccess, LspPath, ModuleCase,
   Places, decode_servers, decode_server, claim_extensions, expand_path,
   cache_place, cache_env_paths, private_cache_fault, mangling_fault,

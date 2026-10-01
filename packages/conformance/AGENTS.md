@@ -516,7 +516,7 @@ storage suite over the backends.
 
 ## The language-server suites
 
-Two test modules drive real language servers through the jail, each
+One test module drives a real language server through the jail,
 feature-detected and printing `SKIP <suite>: <what is missing>` where a
 prerequisite is absent (CI's skip census decides which skips a lane may
 have; `.github/declared-skips*`):
@@ -524,25 +524,19 @@ have; `.github/declared-skips*`):
 - `lsp_e2e_test` — issue #25's acceptance: whole sessions booted by
   `serve.open_instance` from a `loom.toml` with an `[lsp]` table, a
   scripted model renaming across a Gleam fixture (and a stale apply), and
-  `gopls` through the tool path.
-- `lsp_profiles_test` — ADR-016 §6: each first-party profile under the
-  repository's `extensions/` (`lsp_gleam`, `lsp_go`, `lsp_rust`) installed
-  by `install.run` with a build seam that panics if called, into an
-  extensions root under `build/lsp-profiles/` (never `/tmp`, which the
-  jail replaces), then checked by `client/extension/check.run`, the
-  function `loom ext check` calls, so a pass here is a pass of the verb.
-  Skips read `SKIP lsp profile <name>: <what is missing>`: the helper,
-  `rg`, the server (`rust-analyzer` must *run*, since rustup's link exists
-  without the component), `go`, or a GOROOT outside the jail's system
-  view. `the_examples_are_the_profiles_test` holds
-  `docs/examples/loom.toml`'s `[lsp.gleam]` and `[lsp.go]` equal to the
-  two profiles' approved servers.
+  `gopls` through the tool path. It looks executables up with
+  `jail.find_executable` and reads the Go toolchain's directories from the
+  environment `go` reads, so it needs no shell command.
 
-Both demand `exec.BestEffort`: the ordinary runner's helper cannot apply
-every layer platform enforcement demands, and the probe would refuse the
-server before any question. The jailed Linux lane installs `gopls`,
-`rust-analyzer`, `rust-src` and std's registry dependencies, and runs
-every profile with no waiver.
+The language profiles are not tested here. They live in their own
+repositories (ADR-016, addendum), whose CI builds Loom and runs
+`loomd ext check`. The mechanism they depend on is tested in `client`
+(`client/extension/profile_test`, `client/lsp/profile_check_test`).
+
+The suite demands `exec.BestEffort`: the ordinary runner's helper cannot
+apply every layer platform enforcement demands, and the probe would
+refuse the server before any question. The jailed Linux lane installs
+`gopls` and runs the Go session with no waiver.
 
 ## Deep Docs
 

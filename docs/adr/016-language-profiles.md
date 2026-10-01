@@ -378,3 +378,44 @@ streaming child-process capability #515 names, which DAP (#26) would
 use as well. The third is a schema key, not a mechanism. The fourth would mean
 `cache_env`'s one kind of value was too narrow, and the answer is a
 second, equally closed kind, never a free-form value.
+
+## Addendum, 2026-09-30: the first-party profiles live in their own repositories
+
+Section 6 says Loom's repository ships `extensions/lsp_gleam`,
+`extensions/lsp_go` and `extensions/lsp_rust`. That no longer holds. The
+owner ruled that language-specific profiles do not belong in Loom at all,
+neither as copies nor as submodules. They are now three repositories:
+
+- [loom-lsp-gleam](https://github.com/Roasbeef/loom-lsp-gleam)
+- [loom-lsp-go](https://github.com/Roasbeef/loom-lsp-go)
+- [loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust)
+
+Each is tagged v0.1.0 and has its own CI, which builds Loom and runs
+`loomd ext check` against the profile's fixture. An operator installs one
+with `loomd ext install https://github.com/Roasbeef/loom-lsp-go --rev v0.1.0`.
+
+The decision in this ADR stands: a language server is a profile, a profile
+is data, and profiles ship as extensions of the profile tier. What changed
+is where the three that Loom maintains are kept, and why. A profile holds
+facts about one server: its command, the roots it needs, how it spells a
+qualified name, and what it takes to be ready. Those facts change with
+that server's releases, not with Loom's, and a profile in this repository
+tied its fixes to Loom's release train and its CI to a toolchain for each
+language. Keeping the profiles beside the tools that decide their contents
+removes both. Loom keeps the mechanism: the protocol client, the schema
+and decoder, the profile tier, `loom ext check`, readiness, `cache_env`
+and the jail.
+
+What this removes from Loom is the conformance suite that installed the
+three profiles and checked them against real servers, the check that the
+example tables in `docs/examples/loom.toml` equal them, and the CI step
+that installed rust-analyzer for that suite. The example tables stay as
+templates for an operator who prefers to write the table into `loom.toml`.
+Section 6's account of the Go and Rust grants describes what those
+repositories carry, and the "Per-language CI" cost under "What it costs"
+now falls on them.
+
+Writing a new profile is unchanged: an extension with `tier = "profile"`,
+one or more `[lsp.<name>]` tables, a fixture project, `[[check]]` entries
+naming symbols and the sites the server must report for them, and a run
+of `loomd ext check` against it.

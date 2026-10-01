@@ -60,7 +60,7 @@ repository,
 | 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **Built**: the satellite host, the frame pair (`protocol-change/012-hook-call.md`, ACCEPTED), the typed hook vocabulary, the bus, the runtime slots, and the manifest and record halves, with the bus's invoker wired onto the session's hosts |
 | 4 | Tier H: the harness-resident loader, the artifact import check, rollback | Freeze proven (#204); loader deferred (#32). #33's two mechanisms are gated tests over the package graph, both prelude source trees and both vetting seams, recorded in `docs/review/extension-zone.md`. The loader is deferred because no surveyed extension needs in-VM residency |
 | 5 | LSP and DAP as extensions | Named, not commissioned (#26) |
-| P | The profile tier: language-server profiles shipped as data (ADR-016 §§3–4) | **Built**: `tier = "profile"`, an install that neither vets nor compiles, record format 3, the load's profile comparison, the session's precedence over `loom.toml`, the `[[check]]` runner and `loom ext check` (ADR-016 §5), and the first-party profiles `extensions/lsp_gleam`, `lsp_go` and `lsp_rust` (§6) |
+| P | The profile tier: language-server profiles shipped as data (ADR-016 §§3–4) | **Built**: `tier = "profile"`, an install that neither vets nor compiles, record format 3, the load's profile comparison, the session's precedence over `loom.toml`, the `[[check]]` runner and `loom ext check` (ADR-016 §5), and, in separate repositories, the first-party profiles `loom-lsp-gleam`, `loom-lsp-go` and `loom-lsp-rust` (ADR-016, addendum) |
 
 A section that describes phase 3 or later says so in its first sentence,
 so a reader who wants only the tree as it stands can skip it on sight.
@@ -273,9 +273,16 @@ cache_env = { XDG_CACHE_HOME = "xdg", GOCACHE = "go-build", GOPLSCACHE = "gopls"
 env = ["GOFLAGS"]
 ```
 
-That is `extensions/lsp_go/extension.toml` without its comments and
-checks; the repository ships it, `lsp_gleam` and `lsp_rust` as the
-first-party profiles (ADR-016 §6), each with a fixture and checks.
+That is the `extension.toml` of
+[loom-lsp-go](https://github.com/Roasbeef/loom-lsp-go) without its
+comments and checks. The first-party profiles are published from their own
+repositories, [loom-lsp-gleam](https://github.com/Roasbeef/loom-lsp-gleam),
+[loom-lsp-go](https://github.com/Roasbeef/loom-lsp-go) and
+[loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust), each with a
+fixture and checks (ADR-016, addendum), and installed with
+`loomd ext install https://github.com/Roasbeef/loom-lsp-go --rev v0.1.0`.
+To write a new one: a `tier = "profile"` extension, a fixture project,
+`[[check]]`s, and `loomd ext check` until they pass.
 
 The two tiers declare disjoint tables, and each refuses the other's **by
 name** rather than ignoring them. A profile manifest refuses `[[tool]]`,
@@ -673,8 +680,8 @@ checked lsp_rust 0.1.0: 2 of 2 checks passed
     ok    references greet at src/util.rs:1
 ```
 
-`conformance/lsp_profiles_test` installs each first-party profile from
-`extensions/` and runs it through the same `check.run`.
+Each first-party profile repository runs this verb in its own CI, against
+a Loom it builds, so a pass there is a pass of `check.run`.
 
 The terminal client forwards `loom ext …` rather than reimplementing it.
 Typed at `loom`, it locates `loomd` by the same ladder an implicit local
@@ -1557,7 +1564,6 @@ whose door serves the `lsp_*` tools and `cap/lsp` alike (ADR-015,
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
 | `client/test/client/extension/profile_test.gleam` | The profile tier: both tiers' manifest refusals, `[[check]]` decoding, an install that never fetches or builds, record format 3, the load's profile comparison, and `loom ext check`'s refusals and report. |
 | `client/test/client/lsp/profile_check_test.gleam` | The check runner over a fake door: a pass, the set comparison, both directions of a mismatch, and an error. |
-| `conformance/test/conformance/lsp_profiles_test.gleam` | The first-party profiles installed and checked against their real servers in the jail, and the examples held equal to them. |
 | `codemode/test/codemode/host_test.gleam` | The host's contract over a faked satellite: two invocations on one node, `busy`, the revoked token, and the two endings that destroy it. |
 | `client/test/client/extension_e2e_test.gleam` | The dispatch acceptance: a real build, a real satellite, a real TLS origin, and the two absence claims about the credential. |
 | `broker/test/broker/egress_test.gleam` | The credential canary, the header-injection refusals, and the live TLS origin. |

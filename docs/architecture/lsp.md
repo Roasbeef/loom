@@ -669,14 +669,17 @@ hint = "Qualify a name with its package name as imported: util.Greet"
 ```
 
 Both tables are examples. Neither is built in, and a workspace that
-wants neither configures neither. **The maintained versions are the
-first-party profiles** (ADR-016 §6): `extensions/lsp_gleam` and
-`extensions/lsp_go` carry exactly these tables, and `extensions/lsp_rust`
-the Rust one, each with a fixture and the checks that prove it.
-`loom ext install ./extensions/lsp_go` approves the table without
-editing `loom.toml`; a `loom.toml` table of the same name replaces an
-installed profile whole. `conformance/lsp_profiles_test` holds the
-examples here and in `docs/examples/loom.toml` equal to the profiles.
+wants neither configures neither. **Language support ships as profile
+extensions in separate repositories** (ADR-016 and its addendum). Loom
+carries the mechanism and no language: the three first-party profiles are
+[loom-lsp-gleam](https://github.com/Roasbeef/loom-lsp-gleam),
+[loom-lsp-go](https://github.com/Roasbeef/loom-lsp-go) and
+[loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust), each with a
+fixture and the checks that prove it, and each tagged v0.1.0. They are the
+maintained versions of these tables. For example,
+`loomd ext install https://github.com/Roasbeef/loom-lsp-go --rev v0.1.0`
+approves the Go table without editing `loom.toml`; a `loom.toml` table of
+the same name replaces an installed profile whole.
 
 `command` is an argv, never a shell string. Its head is resolved once:
 an absolute path is taken as written; the bare name `gleam` is the
@@ -787,9 +790,10 @@ steps, and the third is the one that makes it trustworthy.
    means the server could not load the project: a root it needs is not
    granted, or a cache it writes is not writable.
 
-`extensions/lsp_rust` is the worked example: its `README.md` records what
-`cargo` and `rust-analyzer` needed in the jail and why each grant is
-there.
+[loom-lsp-rust](https://github.com/Roasbeef/loom-lsp-rust) is the worked
+example: its `README.md` records what `cargo` and `rust-analyzer` needed
+in the jail and why each grant is there. Each profile repository runs
+this same `loomd ext check` in its own CI, against a Loom it builds.
 
 ## What is not built, and the known hazards
 
