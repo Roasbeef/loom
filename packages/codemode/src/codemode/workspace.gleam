@@ -86,6 +86,31 @@
 //// the program reads as `cap/fs.InvalidArgument` (or `cap/kv.KvDenied`)
 //// and can repair, never a crash and never a call made with a guessed
 //// value.
+////
+//// ## Flow
+////
+//// `routing` → `read_plan` / `write_plan` / `kv_get_plan` / `job_start_plan` →
+//// `fs_refused` / `kv_refused` / `job_refused` → `fs_denial`
+////
+//// 1. `routing` is the module's one entry: it returns a `CapRouter` that
+////    matches the request's capability name against the names this seam
+////    serves and hands every other name to the router it fronts.
+//// 2. Each `*_plan` function decodes the request's arguments totally
+////    (`read_plan`, `list_plan`, `write_plan`, `edit_plan`,
+////    `kv_get_plan`, `schedule_create_plan`, `job_start_plan`, and their
+////    siblings), so a wrong-shaped argument is a denial before anything runs.
+//// 3. A plan that decoded returns `ServedHere` wrapping a closure over the
+////    injected `Workspace` seam; the closure is what calls the harness-side
+////    function, and no `SandboxPolicy` is ever composed here.
+//// 4. The closure's answer is shaped by `answered`, or its refusal by
+////    `fs_refused`, `kv_refused`, `schedule_refused` or `job_refused`, which
+////    turn a typed refusal into an in-band outcome.
+//// 5. `fs_denial`, `kv_denial`, `schedule_denial` and `job_denial` are the
+////    public forms of those mappings, and `edit_denial` names the edit-specific
+////    refusals; `apply_replacements` is the pure whole-file find and replace
+////    the `fs.edit` closure uses.
+//// 6. `ceilings` reports the quota the seam asks the host to enforce on
+////    the report emitter.
 
 import broker/exec.{type ExecResult}
 import broker/framing.{type CapOutcome}
