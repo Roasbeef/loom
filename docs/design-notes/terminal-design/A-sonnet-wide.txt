@@ -45,6 +45,6 @@
                               │ ›                                                                                                              │
                               │                                                                                                                │
                               │                                                                                                                │
- F1 focus · Enter open        │ ◒ streaming (3s) · esc to interrupt                                                                            │ ↑↓ select · Enter focus · x stop
+ Enter open · Esc back        │ ◒ streaming (3s) · esc to interrupt                                                                            │ ↑↓ select · Enter focus · x stop
  F1 hide · /sessions          │                                                                                                                │ 1-4 tab · Esc to composer
- baseten-kimi-k3 · ctx ~41% · est $1.86 · ← strands · F1 sessions · ⇧Tab panel                                                                                       3 agents · 2 working · 1 needs you
+ baseten-kimi-k3 · ctx ~41% · est $1.86 · ↓ strip · ← sessions · ⇧Tab panel                                                                                          3 agents · 2 working · 1 needs you

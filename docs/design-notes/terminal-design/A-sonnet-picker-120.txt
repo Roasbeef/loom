@@ -1,0 +1,40 @@
+ ◆ loom   ws · pi-gui (main)                                                                   kimi-k3 · Ctrl+g details
+
+
+
+
+
+
+  ╭ SESSIONS · active ───────────────────────────────────────────────────────────────────────────────────────────────╮
+  │                                                                                                                  │
+  │  All 8   Needs you 2   Working 1   Idle 1   Inactive 4                                                Tab filter │
+  │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+  │  LOOM  ~/code/loom                                             4  │ loom · main                                  │
+  │   ● herdr-update                 working    4 of 5 strands   12m  │ ! needs you · 1 approval pending             │
+  │ ▸ ! main                         needs you  1 approval        2d  │                                              │
+  │   × reconnect                    blocked    recovery blocked  3d  │ LAST MESSAGE                                 │
+  │   · a-very-long-session-name-th… saved                        5d  │ Waiting on your approval for a network fetch │
+  │                                                                   │ to proxy.golang.org.                         │
+  │  WEFT  ~/code/weft                                             1  │                                              │
+  │   ! managed-tasks                needs you  last run failed   1d  │ STRANDS · 3, 1 working                       │
+  │                                                                   │ ● adversarial-code-review                    │
+  │  LND  ~/code/lnd                                               2  │     tracing publish_herdr                    │
+  │   ○ static-panic-analysis        idle       3 strands         4h  │ ? docs-accuracy-review                       │
+  │   · htlc interceptor             saved                        1w  │     needs approval                           │
+  │                                                                   │ ✓ bootstrap                                  │
+  │  PI-GUI  ~/code/pi-gui                                         1  │     finished                                 │
+  │   · fix readme badge             saved                        2w  │                                              │
+  │                                                                   │ MODEL      moonshotai/Kimi-K3                │
+  │                                                                   │ WORKSPACE  ~/code/loom                       │
+  │                                                                   │ ID         01a0efca-c7e7                     │
+  │                                                                                                                  │
+  │ ↑↓ move · Enter open · Tab filter · n new                                                                        │
+  │ l link · r rename · d archive · a archived · Esc close                                                           │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
