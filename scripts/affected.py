@@ -534,7 +534,7 @@ def lanes(selection):
 # the order the full check does. Packages missing from it (a new one not
 # yet added there) run last, in name order.
 CHECK_ORDER = ("host core storage session machine prompt session_view web_view "
-               "web_client telemetry runtime provider broker mcp tools cap ext "
+               "web_client telemetry runtime provider broker mcp lsp tools cap ext "
                "codemode events client tui conformance lint sandbox").split()
 
 
