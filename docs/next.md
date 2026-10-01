@@ -579,9 +579,6 @@ listing is never permission to activate a saved target.
   and has no owner ruling.
 - **`conformance` declares `prompt` as a dependency and imports nothing
   from it.** Remove it, with the manifest updates that follow.
-- The module comment of `session_view/model.gleam` still says the web view
-  "will bind" the handles to its relay and `Nil`. It does, so the sentence
-  is stale; fix it with the next change to that file.
 - The test fixture `pushed.attached()` is a replaying peer with a lane, a
   state the shipped client never reaches.
 
@@ -608,9 +605,29 @@ Protocol 054 still needs its previously requested live quiet-web drive to
 confirm attachment reaches `Pushing` and rendering follows the pushed rate.
 This edition did not re-test the reachability of these items or close them.
 
-## Validation boundary
+## Held-input and goal reading guide follow-up
 
-This edition changed documents only. `make doc-check` is the proof:
+The #583 follow-up is baselined to merged `8b3455493`. The
+[delivery guide](architecture/delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
+now traces durable goal publication, held queue projection, read debt and
+request ownership through the shared lane and both hosts. Its web goal row
+corrects the older delivery claim that the page renders no goal panel.
+The carried-forward `session_view/model` "will bind" item was already fixed
+in that merged baseline; the module says the web view binds the handles now.
+
+The follow-up changes comments, declaration order and documentation only.
+An independent review and a comparison of all 996 production declarations
+across the 14 changed modules found no executable or public-interface change.
+Focused session-view, events and terminal suites passed, as did the client
+build, format, lint, prelude and documentation checks. The follow-up PR records
+the final affected gate and Linux signoff against its published head. Existing
+behavior tests remain the evidence for the underlying #583 invariants; a
+reading guide creates no new runtime guarantee. All unrelated next-work
+priorities and open boundaries above remain as recorded in this edition.
+
+## Earlier edition's validation boundary
+
+The earlier edition changed documents only. `make doc-check` was its proof:
 coverage, the `AGENTS.md` mirrors and every file:line citation in the
 documents it checks. No code was built or run for it. The description of the
 page was checked by reading the source at `998be7a64` (the `web_client`

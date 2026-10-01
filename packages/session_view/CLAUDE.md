@@ -527,6 +527,22 @@ refusal settle that report only on its own correlated command reply.
 excluding a prompt already submitting or a running strand. The terminal
 wrapper calls this shared decision.
 
+## Goal and held-input source navigation
+
+The scoped modules' `## Flow` comments name the local entrypoints and helper
+order. `surfaces` declares `NudgeAction` and `GoalAction` before the reads and
+reducers that return them. `session_channel` places `flush_queued` before
+`read_changed_goal`, matching their priority in `send_queued`, and documents
+the actual private `Phase` constructors and guards beside that type.
+
+Keep the field owners explicit: `Channel.goal_refresh` is `Idle | Due`
+invalidation debt; `Shared.goal_refresh` is `worktree_view.Requested | Settled`
+surface scheduling. `Shared.goal_request` names an issued command, while
+`ConfirmGoal.request` names the mutation that may settle the pending report.
+The [delivery reading guide](../../docs/architecture/delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
+explains the relevant Gleam idioms and traces an older reply, a later notice,
+a queued mutation and a correlated automatic read refusal in both hosts.
+
 ## Deep Docs
 
 - `docs/adr/013-tui-effects-as-values.md`: why the lane's effects are

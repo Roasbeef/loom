@@ -767,6 +767,22 @@ or uncertain draft, and a changed session, epoch or incarnation cannot save an
 old draft. [Protocol 024](../../protocol-change/024-edit-queued-input.md) owns
 the wire contract.
 
+### Held queues and goal read ownership
+
+An idle cut with pending input stays held after the local interrupt retires.
+`session_view/model.active_queue_halted` projects that cut while excluding a
+prompt already submitting; both `render.input_behavior` and the inline queue
+card use it. A second attachment therefore draws the hold without having sent
+Escape. Enter submits an ordinary prompt, which releases the gateway's halt.
+
+Goal write notifications use the shared lane's separate read debt. A refused
+automatic read clears `Shared.goal` while an open inspector can retain its old
+board labelled as a failed refresh. The host applies the old reply before the
+new read's `Sent` update, so the old reply cannot clear the new owner. The
+[Gleam reading guide](delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
+traces both orders of a notice and an older read, and a mutation queued behind
+that read.
+
 ## Panels and surfaces
 
 Each panel reads an observation the daemon returned and owns only its own

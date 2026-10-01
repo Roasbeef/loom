@@ -361,6 +361,21 @@ retries. Replay applies the same transition to a recorded connection closure.
 [ADR-010](../adr/010-retain-one-unsent-terminal-command.md) records the
 decision and the live failure that motivated it.
 
+### Reading queue holds and goal invalidation
+
+The gateway's held input and the shared client's goal observation have separate
+owners. `hold_prompt` and `release_halt` govern whether queued human input may
+start a successor. `advisor.goal_written` publishes goal invalidation only
+after a successful reserved write or deletion; the gateway routes the
+notification through its subscribed-peer delivery and checks authority again
+before emission. Neither operation phase events nor a transcript capture
+prove that an asynchronous goal evaluation has written its cell.
+
+The [delivery reading guide](delivery.md#reading-the-held-input-and-goal-paths-in-gleam)
+connects these server paths to `session_channel`, `outbound` and `surfaces`.
+It explains the Gleam patterns and the distinct request IDs that let an older
+goal read finish before a queued mutation receives its confirmation owner.
+
 ### Steering, queues, and observation views
 
 Human steering means prompt preemption: the gateway queues the steer ahead of
