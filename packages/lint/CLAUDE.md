@@ -443,6 +443,30 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   not count. It over-reports by construction (a short helper is often
   right), so it warns forever; the census is 884, more than half of it at
   exactly six lines, which is where the formatter lands a short `case`.
+- **R15 `state-first`** (`lint/state_first`, issue #593) — a state-space
+  type defined after the module's first function. A module is a state
+  machine when it defines a step function named in `step_names`
+  (`update`, `step`, `transition`, `handle_message`, `handle`); the
+  state-space types are the module's own custom types and aliases that
+  its signature names, searched through type arguments, tuples and
+  function types, and each must begin before the first function. A late
+  one is a finding at the type, naming the step function and the function
+  it must precede. Decidable on the AST alone: no types, only offsets.
+  The name table was fixed by census: `handle` is the actor spelling and
+  every one of its twenty-two findings was a real state space, while
+  `apply` and `next` added only a fold and an iterator cursor, and `loop`
+  and `reduce` added nothing. `findings_named` takes the table so a census
+  can try a candidate before it is admitted.
+- **R16 `qualified-domain-call`** (`lint/qualified`, issue #593) — an
+  unqualified *value* import (`import a/b.{name}`, `name` lowercase) from
+  one of Loom's own modules, where the qualifier is the closest thing
+  Gleam has to a method receiver. Types and constructors never flag.
+  "Loom's own" is `loom_roots`, the first path segment of every module in
+  `packages/*/src`; a test reads the tree and fails if the list drifts.
+  The MCP SDK does not collide with the `mcp` root, because its modules
+  live under `gleam_mcp/`. `allowed` is the `#(module, name)` escape for a
+  name that reads better bare, such as a `use` continuation combinator; it
+  is empty because the census (two constants) found none worth keeping.
 - **R0 `unparseable`** — not a house rule. A file `glance` could not
   parse is reported, so a parse failure is never silence.
 
