@@ -189,12 +189,17 @@ there would spend the notice's clip and add tens of KiB of context to every
 one for them, in a field the model does not read, is future work and not part
 of this change.
 
-Foreground `details` are never projected to a provider. The adapters ignore
-the field when they encode a tool result for the model
+Provider adapters never project `details`. They ignore the field when they
+encode a tool result for the model
 (`packages/provider/src/provider/adapter/anthropic.gleam:201` to `:209`,
 `gemini.gleam:318`, `openai.gleam:278`,
-`internal/responses_request.gleam:112`), so on this path the record adds no
-context tokens. Because `details` is stored in the entry, the record is
+`internal/responses_request.gleam:112`), so by default the record adds no
+context tokens. Two other readers do receive the stored entry whole,
+`details` included: `history read` (`packages/tools/src/tools/history.gleam`)
+and the `context` and `tool_result` hook programs of installed extensions
+(`packages/client/src/client/extension/hooks.gleam`). The record is built to
+be safe in both places: it holds codes, redacted summaries and counts only.
+Because `details` is stored in the entry, the record is
 durable and is part of what a client receives when it reads the transcript:
 a reconnecting terminal or a fresh web page sees it with no live feed.
 
