@@ -1830,7 +1830,7 @@ fn settled_text(
     Ok(value) -> json.to_string(value)
     Error(Nil) -> content |> list.map(tool_result_text) |> string.join("\n")
   }
-  "code_mode · " <> status <> " · result " <> compact(value, 90) <> " · Ctrl+g"
+  "code_mode · " <> status <> " · result " <> compact(value, 90)
 }
 
 // A running block: the title, the foot naming the budget the call asked
@@ -1848,12 +1848,15 @@ fn running_text(
     |> list.filter(fn(pair) { string.trim(pair.1) != "" })
     |> list.take(fragment_lines)
   let budget = case int_field(fields, "within_ms") {
-    Some(ms) -> "budget " <> duration_text(ms) <> " · "
+    Some(ms) -> "budget " <> duration_text(ms)
     None -> ""
   }
+
+  // The key that expands a response is on its heading, once; a block's
+  // foot keeps only its facts.
   [
     "◐ code_mode · awaiting its result",
-    budget <> "Ctrl+g program",
+    budget,
     "PROGRAM · "
       <> count_text(list.length(lines), "line", "lines")
       <> ", "
@@ -1898,8 +1901,7 @@ fn failure_text(
   let all = string.split(string.trim(text_hygiene.multiline(error)), "\n")
   let body = diagnostic(all)
   let more = case list.length(all) > list.length(body) {
-    True ->
-      " · Ctrl+g shows all " <> count_text(list.length(all), "line", "lines")
+    True -> " · " <> count_text(list.length(all), "line", "lines")
     False -> ""
   }
   ["× code_mode · " <> title, foot <> more, ..body]

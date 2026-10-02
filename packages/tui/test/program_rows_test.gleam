@@ -98,7 +98,7 @@ pub fn a_completed_program_is_one_row_with_its_value_test() {
   |> list.each(fn(size) {
     let #(_, lines) = painted(size.0, size.1)
     let assert Ok(_) =
-      find(lines, "✓ code_mode · completed · result {\"ok\":true} · Ctrl+g")
+      find(lines, "✓ code_mode · completed · result {\"ok\":true}")
       as "the settled row carries the value"
 
     // The result is drawn by its call, so no result row of its own follows.
@@ -123,7 +123,7 @@ pub fn a_compile_error_is_a_danger_block_naming_its_line_test() {
       as "the quoted source"
     assert quoted == top + 2
     let assert Ok(#(foot, _)) =
-      find(lines, "the program did not run · Ctrl+g shows all 7 lines")
+      find(lines, "the program did not run · 7 lines")
       as "the foot says how much more there is"
     assert foot == top + 4
 
@@ -156,7 +156,7 @@ pub fn a_program_awaiting_its_result_shows_its_opening_lines_test() {
         "RESULT · none yet · the result arrives when the program ends",
       )
       as "the result row"
-    let assert Ok(#(foot, _)) = find(lines, "budget 30s · Ctrl+g program")
+    let assert Ok(#(foot, _)) = find(lines, "budget 30s")
       as "the foot names the budget the call asked for"
     assert foot == result + 1
   })
