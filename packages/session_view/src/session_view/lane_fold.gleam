@@ -978,7 +978,14 @@ fn changed_by(author: Option(message.Origin)) {
   }
 }
 
-fn thinking_name(level: machine_strand.ThinkingLevel) {
+/// The word a reasoning effort is shown as: `low`, `high`, `max`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert lane_fold.thinking_name(machine_strand.ThinkingLow) == "low"
+/// ```
+pub fn thinking_name(level: machine_strand.ThinkingLevel) -> String {
   case level {
     machine_strand.ThinkingOff -> "off"
     machine_strand.ThinkingMinimal -> "minimal"
