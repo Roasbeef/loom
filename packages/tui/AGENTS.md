@@ -2675,16 +2675,15 @@ bare, so there is one blank row between any two blocks. A call keeps the
 gutter with its glyph (`× ` for a failure) and only its result hangs under it,
 `  └ `; a tool group's heading is its own speaker, `ToolGroup`, drawn `▸`.
 
-A send's heading and a program's rows need their result. A response holding
-prose draws its calls inside itself, so `transcript_lines.joined` joins each
-`agent_send` and `code_mode` result to its call across the compact window:
-the call's row is drawn from the result, the result entry draws no rows, and
-the response is projected afresh rather than from the entry cache.
+A call's settled row needs its result. A response holding prose draws its
+calls inside itself, so `transcript_lines.joined` joins every result to its
+call across the compact window: the call is drawn as a tool group draws it,
+the result entry draws no rows, and the response is projected afresh rather
+than from the entry cache.
 `record_anchors_for` mirrors both halves, an empty block for the absorbed
 result and `joined_block_lines` for the response's blocks, since a program's
 block and its settled row differ in height. The separation fold passes over
-an empty block to the last block that drew a row. A refused send keeps the
-generic failure rows.
+an empty block to the last block that drew a row.
 
 A code-mode program that settled is one `✓ code_mode · completed · result …`
 row. One the client has no result for yet, and one that failed,
@@ -2718,7 +2717,9 @@ tail with nothing typed, `o` opens the strand's newest image outside the
 terminal: `image_drain.open_newest` starts `job.OpenImage`, whose worker
 (`image_open.open`) writes the bytes to a file in a `0700` directory under
 `TMPDIR` and hands the path to the platform opener with its output dropped
-(`view_link.quiet_opener`, over `ffi_terminal.run_quiet`), and
+(`view_link.quiet_opener`: `/bin/sh -c 'exec "$0" "$1" >/dev/null 2>&1'` with
+the opener and the path as positional arguments, over the same
+`run_forwarding` launch `loom ui --open` uses), and
 `image_drain.drain` turns the reply into the notice. The newest image is
 chosen rather than the one on screen, since a row does not name its image
 without the anchors.
