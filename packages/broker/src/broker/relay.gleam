@@ -63,6 +63,25 @@
 //// that cast to the helper directly would have a second sender, and its
 //// cancel could land on whatever the helper was running by then.
 ////
+//// ## The cancel is asked, not cast
+////
+//// A relay cancels for its own reasons too (the caller died, the wall
+//// deadline passed), and the grace that bounds the cancel starts when the
+//// relay enters `Draining`. The service can be blocked inside a `start`
+//// that waits on a checkout, so a cast would leave the relay's five
+//// seconds running while the cancel sat unread in the service's mailbox:
+//// the relay could report `CancelEscalated` for a helper that had never
+//// heard the cancel. The relay therefore asks (`Link.cancel` is a bounded
+//// synchronous call, `cancel_wait_ms`) and enters `Draining` only after
+//// the service has answered, which it does after it has sent the helper
+//// the cancel. The grace then measures the helper's answer to a cancel
+//// that was sent, as it does in the direct lane. A service that does not
+//// answer is wedged or dead; the relay drains anyway, because the grace is
+//// the only thing left that bounds the relay, and a service that wakes
+//// later still forwards the cancel it finds in its mailbox. Waiting inside
+//// a handler is within weft's rules here: the relay's only peers are the
+//// service, which never waits on a relay, and the broker.
+////
 //// ## Settlement asks first
 ////
 //// The core decides a verdict; the relay may not report it until the
@@ -110,7 +129,10 @@ pub type Permission {
 /// this module never imports the service that starts it.
 pub type Link {
   Link(
-    /// Asks the service to cancel the helper. A cast; idempotent.
+    /// Asks the service to cancel the helper and waits, at most
+    /// `cancel_wait_ms`, for it to say the cancel was sent. Idempotent.
+    /// Returns when the service answered or the wait ran out; the relay
+    /// drains either way.
     cancel: fn() -> Nil,
     /// Asks the service for leave to report the verdict, and waits for the
     /// answer a bounded time.
@@ -188,6 +210,12 @@ const wall_slack_ms = 20
 /// verdict waits for it. It is public so the service builds the
 /// `may_settle` closure it hands the relay with the same bound.
 pub const settle_wait_ms = 5000
+
+/// How long a relay waits for the service to confirm it sent a cancel.
+/// The service may be inside a checkout, so this is the same bound as
+/// `settle_wait_ms`; it is public so the service builds the `cancel`
+/// closure with it.
+pub const cancel_wait_ms = 5000
 
 /// How long a relay has to initialise, which bounds how long `start` can
 /// block its caller. The service sums it into its own start budget.
@@ -355,6 +383,8 @@ fn perform(data: Data, effects: List(Effect)) -> Course {
 
       // The cancel goes to the service, never to the helper: see the
       // module doc on why the service must be the helper's only sender.
+      // The call returns once the cancel was sent, and only then does the
+      // `EnterDraining` that follows start the grace.
       execution.SendCancel -> {
         data.link.cancel()
         course

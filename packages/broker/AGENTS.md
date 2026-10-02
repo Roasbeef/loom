@@ -73,7 +73,8 @@ protocol (spec Part 1.4). WP-G.
   `start` returns the subject only once the relay listens), the caller's
   monitor, the helper actor's monitor and the service's control subject all
   select into it. Effects: `Deliver` calls the dispatch's closure,
-  `SendCancel` calls `Link.cancel`, `EnterDraining` transitions, and
+  `SendCancel` calls `Link.cancel` (a bounded ask, `relay.cancel_wait_ms`, that
+  returns once the service has sent the cancel), `EnterDraining` transitions, and
   `Settle` asks `Link.may_settle` first. The relay never imports the service
   and never casts to a helper: both ways back are closures the service builds.
   Unlinked from its starter.
@@ -81,7 +82,7 @@ protocol (spec Part 1.4). WP-G.
   Inventory}` — the service lane's one process per session, a
   `weft/state_machine` with phases `Serving | Closing(closer) |
   Closed(outcome)` (the pool's shape, with a state timeout in `Closing` for
-  the half-budget drain). `ExecutorConfig` is closures over the pool
+  the drain budget). `ExecutorConfig` is closures over the pool
   (`checkout`, `checkin`, `census`, `close_helpers`) plus an `incarnation`.
   `dispatcher(service)` is the `Dispatcher` `broker.start_dispatching`
   takes. State is a `Dict(seq, Row)` with a row only while the service holds
@@ -234,9 +235,10 @@ protocol (spec Part 1.4). WP-G.
     broker handles it by calling the execution's `release`.
   - `executor.Msg` — `Start(request, reply)` (a synchronous call from the
     dispatcher's `start`, budget 20 000 ms = checkout's 15 000 plus run's
-    5 000), `Cancel(id)`, `Stdin(id, data, eof)`, `MaySettle(id, reply)`,
-    `Release(id)`, `Abandon(id)`, `RelayDown(down)`, `Report(reply)`,
-    `Close(waiting, reply)`, `DrainDeadline`. The `Execution` closures the
+    5 000), `Cancel(id)`, `CancelAsk(id, reply)` (the relay's own cancel,
+    answered after `exec.cancel` was sent), `Stdin(id, data, eof)`,
+    `MaySettle(id, reply)`, `Release(id)`, `Abandon(id)`, `RelayDown(down)`,
+    `Report(reply)`, `Close(draining, helpers, reply)`, `DrainDeadline`. The `Execution` closures the
     broker holds are casts of `Cancel`, `Stdin`, `Release` and `Abandon`
     naming the execution by `ExecutionId`. `MaySettle` is the relay's
     bounded call (`relay.settle_wait_ms`). Every phase and message pair is
@@ -426,7 +428,8 @@ protocol (spec Part 1.4). WP-G.
   has anything to check back in.
 - **Service lane: the service is the helper's only sender.** Every `Run`,
   `Stdin` and `CancelExec` an execution causes is sent by `broker/executor`.
-  The relay asks for a cancel (`Link.cancel` is a cast of `Cancel(id)`); it
+  The relay asks for a cancel (`Link.cancel` is a bounded call of
+  `CancelAsk(id)`, answered after the service sent the helper its cancel); it
   never casts to the helper. Erlang orders one sender's messages to one
   receiver, so a cancel sent for an execution reaches the helper before any
   `Run` the service sends for the next execution on it, and `exec.run` is
@@ -460,16 +463,85 @@ protocol (spec Part 1.4). WP-G.
   including when the relay dies, which the direct lane never delivered.
   The helper is checked in exactly where the direct lane checked it in: by
   `Release`, which the broker casts while processing the relay's `Settle`.
-- **Service lane: closing is a transition.** `executor.close(waiting)`
-  refuses new starts with `NoHelper(PoolUnavailable)` (deliberately not
-  `AllBusy`, so callers stop polling), cancels every live row, waits half
-  the budget for live rows to be granted, settles the rest
-  `ExecutionLost(ExecutorClosing)` (relay killed, helper checked in busy so
-  the pool retires it), then returns `close_helpers(remaining)`. `Ok` ends
+- **Service lane: the relay's cancel starts its grace when the cancel was
+  sent (issue #696, F4).** A relay cancels for its own reasons (caller gone,
+  wall deadline) and its `Draining` grace is `dispatch.relay_grace_ms`. A
+  cast would start that clock while the cancel sat unread behind a service
+  blocked in a `start` (a checkout waiting on the pool), so the relay could
+  report `CancelEscalated` for a helper never told. `Link.cancel` is
+  therefore `call.try_call(CancelAsk, relay.cancel_wait_ms)`: the service
+  replies after `exec.cancel`, and the relay enters `Draining` only after
+  the reply. On no reply (service wedged or dead) it drains anyway, because
+  the grace is then the only bound on the relay, and a service that wakes
+  later still forwards the cancel in its mailbox. No call cycle: the service
+  never waits on a relay. Pinned by `executor_test`'s
+  `a_relays_own_cancel_starts_its_grace_when_the_cancel_is_sent`; reverting
+  the closure to a cast makes it settle `CancelEscalated`.
+- **Service lane: closing is a transition.** `executor.close(draining:,
+  helpers:)` refuses new starts with `NoHelper(PoolUnavailable)`
+  (deliberately not `AllBusy`, so callers stop polling), cancels every live
+  row, waits `draining` (`executor.drain_ms`, 2 000) for live rows to be
+  granted, settles the rest `ExecutionLost(ExecutorClosing)` (relay killed,
+  helper checked in busy so the pool retires it), then returns
+  `close_helpers(helpers)`. The pool keeps its whole budget
+  (`executor.helpers_ms`, 5 000, what the direct lane gave `close_pool`)
+  however long the drain took (F5); an earlier single `waiting` split in
+  half left the pool 2.5-5 s and made `RetirementPending` likelier at
+  shutdown than in the direct lane. The call blocks at most
+  `draining + helpers + 1 000` (8 s with the constants), the figure a
+  teardown step that funds it should assume. `instance_owner`'s cleanup
+  steps have no overall deadline (its `close(within_ms)` bounds only the
+  waiting caller and answers `StillClosing`), so 8 s fits; serve's custody
+  hook and `close_instance` both pass the constants. `Ok` ends
   the service; an `Error` keeps it alive in `Closed(outcome)` answering the
   same verdict, because custody that could not be shown retired is not
   dropped by exiting. A helper's `Release` never comes once the broker has
   stopped, which custody does first, so `Granted` rows do not delay a close.
+  Close is not a double-close hazard in the session wiring (F6): the owned
+  path closes only through the custody `Helpers` step, the ownerless path
+  only through `close_instance`, never both. A second `close` answers the
+  stored verdict while the service is alive (`Closed(Error)`, or postponed
+  during `Closing`); after a clean close the service is gone and it answers
+  `RetirementOwnerGone`, as `close_pool` does after a clean `close_pool`.
+  Worst-case blocking of `close_instance`: service lane 8 s (`close` above);
+  direct lane none (`stop_pool` is a cast). Both pinned in `executor_test`.
+- **Service lane: the failure matrix is pinned, case by case.**
+  `test/broker/failure_matrix_test.gleam` runs each fault through a real
+  broker over fake helpers and asserts one settlement (or one refusal), the
+  right outcome, a balanced pool census and an empty inventory; lanes that
+  agree run both. Where they differ the difference is the test: a helper
+  actor killed mid-run settles `ExecutionLost(HelperActorDown)` at once in
+  the service lane (pool slot left `unconfirmed`, since a killed actor cannot
+  attest to its jail) and never in the direct lane without a deadline, and
+  with one only after the relay's grace as `CancelEscalated`. A dead caller
+  hears nothing, so those cases assert the books balance and the next call
+  runs. `close` during output delivers the real exit when the helper honours
+  cancel and `ExecutionLost(ExecutorClosing)` when it does not, never both,
+  and a row already `Granted` is never turned into a loss by a later close.
+  **A service killed mid-run** (unlinked first, as custody does): a broker
+  cancel is a cast to a dead process and is lost; the wall deadline's
+  relay cancel cannot reach the helper, so the relay reports
+  `CancelEscalated` after its grace and nobody reports `Completed`; the
+  helper stays borrowed in the pool and is never lent again; new calls are
+  `BrokerUnavailable`; `executor.close` answers `RetirementOwnerGone` and
+  `exec.close_pool` answers for itself. `test/broker/leak_census_test.gleam`
+  runs a hundred mixed endings (success, cancel, caller death, helper crash,
+  escalation) and checks pool census, inventory, relay liveness, the VM
+  process count and one settlement per hearing caller.
+- **Service lane: a slow consumer is bounded by the helper, not the BEAM.**
+  The relay's delivery is a send; nothing waits on the caller's mailbox and
+  there is no BEAM-side buffer or backpressure (a ruled cut). What bounds
+  the backlog is the helper's per-stream `output_bytes` cap. The real-helper
+  test `a_caller_that_stops_reading_cannot_slow_a_cancel` runs `yes` at a
+  1 MiB cap with a caller that reads nothing for 2 s: the mailbox received
+  exactly 1 MiB in 34 events and the cancel settled in 3 ms. Production
+  caps: `policy.workspace_default` sets 4 MiB (`policy.gleam`), hooks and
+  goal checks 1 MiB, the LSP manager 4 MiB; **a session lease whose output
+  is a wire (`policy.session_lease(.., OutputIsWire)`, used by the language
+  server jail) sets `output_bytes: 0`, which the helper reads as no cap**, so
+  for those long-lived streams the mailbox is bounded only by the consumer.
+  `twenty_sequential_runs_on_one_real_helper_see_no_busy_window` pins that
+  back-to-back runs on a pool of one never meet `HelperBusy` in this lane.
 - **Service lane: an orphaned `start` costs a slot and cannot wedge.** The
   broker spends a call id on every start attempt, answered `Ok` or refused
   (`Dispatch.seq` promises a number is never offered twice), so a service

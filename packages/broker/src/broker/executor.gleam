@@ -82,11 +82,13 @@
 //// `close` is the session's `Helpers` custody step. It stops admissions
 //// (`start` answers `PoolUnavailable`, which callers read as "stop
 //// polling", unlike a full pool), asks every live execution to cancel, and
-//// waits for the live ones to settle through their relays for half of the
-//// budget it was given. Executions still live at that point are settled
+//// waits for the live ones to settle through their relays for the drain
+//// budget (`drain_ms`). Executions still live at that point are settled
 //// `ExecutionLost(ExecutorClosing)`, their relays killed and their helpers
-//// returned busy. Then it closes the pool with what is left of the budget
-//// and replies with the pool's verdict.
+//// returned busy. Then it closes the pool with the pool's own budget
+//// (`helpers_ms`, the 5000 the direct lane gave `close_pool`) and replies
+//// with the pool's verdict. The two are separate arguments so that the
+//// pool is never given only what a slow drain left over.
 ////
 //// An `Ok` verdict ends the service. An `Error` does not: custody of
 //// helpers that could not be shown retired must not be dropped quietly, so
@@ -138,7 +140,6 @@ import gleam/int
 import gleam/list
 import gleam/otp/actor
 import gleam/result
-import weft/poll
 import weft/state_machine
 
 /// What the service is built over: the pool's seams, as closures so that
@@ -206,13 +207,18 @@ pub opaque type Msg {
     reply: Subject(Result(dispatch.Execution, dispatch.StartRefusal)),
   )
   Cancel(id: dispatch.ExecutionId)
+  CancelAsk(id: dispatch.ExecutionId, reply: Subject(Nil))
   Stdin(id: dispatch.ExecutionId, data: BitArray, eof: dispatch.Eof)
   MaySettle(id: dispatch.ExecutionId, reply: Subject(relay.Permission))
   Release(id: dispatch.ExecutionId)
   Abandon(id: dispatch.ExecutionId)
   RelayDown(down: process.Down)
   Report(reply: Subject(Inventory))
-  Close(waiting: Int, reply: Subject(Result(Nil, exec.RetirementFailure)))
+  Close(
+    draining: Int,
+    helpers: Int,
+    reply: Subject(Result(Nil, exec.RetirementFailure)),
+  )
   DrainDeadline
 }
 
@@ -223,7 +229,7 @@ type Phase {
   // Taking executions.
   Serving
 
-  // Closing: new executions refused, live ones given half the budget to end.
+  // Closing: new executions refused, live ones given the drain budget to end.
   Closing(closer: Closer)
 
   // The close finished. Only reached when the pool could not show every
@@ -231,9 +237,11 @@ type Phase {
   Closed(outcome: Result(Nil, exec.RetirementFailure))
 }
 
-// Who asked for the close and when their budget ends.
+// Who asked for the close and how long the pool may take once the drain is
+// over. The pool's budget is a span, not a deadline: it starts when the pool
+// is asked, so a slow drain cannot eat into it.
 type Closer {
-  Closer(reply: Subject(Result(Nil, exec.RetirementFailure)), deadline_ms: Int)
+  Closer(reply: Subject(Result(Nil, exec.RetirementFailure)), helpers_ms: Int)
 }
 
 type State {
@@ -283,8 +291,20 @@ fn start_budget_ms() -> Int {
   checkout_wait_ms + relay.init_wait_ms + run_wait_ms + start_slack_ms
 }
 
-// The caller of `close` waits this much past its own budget, because the
-// service's last step, closing the pool, is bounded by that budget and the
+/// How long `close` lets live executions finish by themselves, after a
+/// cancel, before it settles the rest as lost. Two seconds is the helper's
+/// own TERM-to-KILL ladder, so a helper that honours cancel has answered.
+pub const drain_ms = 2000
+
+/// How long the pool is given to show every helper retired. The direct
+/// lane gave `close_pool` exactly this, and the service lane keeps it
+/// whole: draining is the service's own work and is paid for separately,
+/// so a shutdown with executions in flight does not make the pool report
+/// `RetirementPending` where the direct lane would have succeeded.
+pub const helpers_ms = 5000
+
+// The caller of `close` waits this much past the two budgets, because the
+// service's last step, closing the pool, is bounded by `helpers` and the
 // reply follows it.
 const close_slack_ms = 1000
 
@@ -391,8 +411,14 @@ pub fn inventory(
 }
 
 /// Closes the service: refuses new executions, cancels the live ones,
-/// settles any that outlast half of `waiting`, and closes the pool with the
-/// rest. The answer is the pool's retirement verdict.
+/// settles any that outlast `draining` milliseconds as lost, then closes
+/// the pool with `helpers` milliseconds of its own. The answer is the
+/// pool's retirement verdict.
+///
+/// The two budgets are separate so that the pool's is never what the drain
+/// left over. The most this call blocks is `draining + helpers` plus one
+/// second of slack, `drain_ms + helpers_ms + 1000` with the named
+/// constants, and a caller that funds a teardown step should fund that.
 ///
 /// `Ok(Nil)` ends the service, so a second `close` finds no process and
 /// answers `RetirementOwnerGone`. An `Error` leaves the service alive in
@@ -401,18 +427,24 @@ pub fn inventory(
 /// ## Examples
 ///
 /// ```gleam
-/// assert executor.close(service, waiting: 5000) == Ok(Nil)
+/// assert executor.close(
+///     service,
+///     draining: executor.drain_ms,
+///     helpers: executor.helpers_ms,
+///   )
+///   == Ok(Nil)
 /// ```
 ///
 pub fn close(
   executor: Executor,
-  waiting timeout: Int,
+  draining draining: Int,
+  helpers helpers: Int,
 ) -> Result(Nil, exec.RetirementFailure) {
   let asked =
     call.try_call(
       executor.subject,
-      waiting: timeout + close_slack_ms,
-      sending: fn(reply) { Close(waiting: timeout, reply:) },
+      waiting: draining + helpers + close_slack_ms,
+      sending: fn(reply) { Close(draining:, helpers:, reply:) },
     )
   case asked {
     Ok(verdict) -> verdict
@@ -447,7 +479,8 @@ fn handle(
       state_machine.keep(state)
     }
 
-    Serving, Close(waiting:, reply:) -> begin_close(state, waiting, reply)
+    Serving, Close(draining:, helpers:, reply:) ->
+      begin_close(state, draining, helpers, reply)
 
     // A second closer waits for the verdict of the first: postponed, it is
     // replayed when the service reaches `Closed`, and lost if the service
@@ -459,7 +492,7 @@ fn handle(
       state_machine.keep(state)
     }
 
-    // The half-budget has run out with executions still live: settle them
+    // The drain budget has run out with executions still live: settle them
     // as lost and close the pool. The timer is the state timeout of
     // `Closing`, so it cannot fire in another phase; the arms say what a
     // stale fire would be.
@@ -470,6 +503,11 @@ fn handle(
 
     _phase, Cancel(id:) -> {
       cancel_row(state, id)
+      state_machine.keep(state)
+    }
+    _phase, CancelAsk(id:, reply:) -> {
+      cancel_row(state, id)
+      process.send(reply, Nil)
       state_machine.keep(state)
     }
     _phase, Stdin(id:, data:, eof:) -> {
@@ -586,7 +624,7 @@ fn start_relay(
   let subject = state.subject
   let link =
     relay.Link(
-      cancel: fn() { process.send(subject, Cancel(id:)) },
+      cancel: fn() { ask_to_cancel(subject, id, waiting: relay.cancel_wait_ms) },
       may_settle: fn() {
         ask_to_settle(subject, id, waiting: relay.settle_wait_ms)
       },
@@ -612,6 +650,23 @@ fn start_relay(
       Error(dispatch.NotStarted)
     }
   }
+}
+
+// The relay's own cancel, asked from the relay's process. The service
+// answers after it has sent the helper the cancel, so the relay's grace
+// starts from a cancel that was sent. A service that is gone or silent
+// leaves the relay to drain regardless; the answer is not needed, only the
+// wait.
+fn ask_to_cancel(
+  subject: Subject(Msg),
+  id: dispatch.ExecutionId,
+  waiting timeout: Int,
+) -> Nil {
+  let _ =
+    call.try_call(subject, waiting: timeout, sending: fn(reply) {
+      CancelAsk(id:, reply:)
+    })
+  Nil
 }
 
 // The relay's question, asked from the relay's own process. A service that
@@ -809,14 +864,15 @@ fn remove_row(state: State, row: Row) -> State {
 
 // --- closing ------------------------------------------------------------
 
-// Stops admissions and gives live executions half the budget to end by
+// Stops admissions and gives live executions the drain budget to end by
 // themselves, after a cancel. With none live there is nothing to wait for.
 fn begin_close(
   state: State,
-  waiting: Int,
+  draining: Int,
+  helpers: Int,
   reply: Subject(Result(Nil, exec.RetirementFailure)),
 ) -> state_machine.Next(Phase, State, Msg) {
-  let closer = Closer(reply:, deadline_ms: monotonic_ms() + waiting)
+  let closer = Closer(reply:, helpers_ms: helpers)
   list.each(dict.keys(state.rows), fn(seq) {
     cancel_row(
       state,
@@ -828,7 +884,7 @@ fn begin_close(
     True ->
       state_machine.transition(to: Closing(closer), data: state)
       |> state_machine.with_state_timeout(
-        after: waiting / 2,
+        after: draining,
         sending: DrainDeadline,
       )
   }
@@ -852,7 +908,7 @@ fn expire_live_rows(state: State) -> State {
   })
 }
 
-// Closes the pool with what is left of the budget and answers the closer.
+// Closes the pool with its own full budget and answers the closer.
 // Rows still held are granted ones whose release will never come, because
 // the broker stops before the service, and the pool closes helpers
 // including borrowed ones, so they are dropped here with their monitors.
@@ -863,8 +919,7 @@ fn finish_closing(
   list.each(dict.values(state.rows), fn(row) {
     process.demonitor_process(row.relay_monitor)
   })
-  let remaining = int.max(closer.deadline_ms - monotonic_ms(), 0)
-  let outcome = state.config.close_helpers(remaining)
+  let outcome = state.config.close_helpers(closer.helpers_ms)
   process.send(closer.reply, outcome)
   case outcome {
     Ok(Nil) -> state_machine.stop()
@@ -885,11 +940,6 @@ fn has_live_row(state: State) -> Bool {
       Granted -> False
     }
   })
-}
-
-fn monotonic_ms() -> Int {
-  let clock = poll.monotonic()
-  clock.now()
 }
 
 // --- observation --------------------------------------------------------

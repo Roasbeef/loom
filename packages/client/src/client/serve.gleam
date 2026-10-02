@@ -782,8 +782,10 @@ fn start_direct_lane(
 
 // The service lane: the executor service is started over the pool's seams
 // before anything can borrow, its `close` becomes the `Helpers` custody
-// step (it drains executions and then closes the pool, whose verdict it
-// returns unchanged), and the broker is given its dispatcher. Custody
+// step (it drains executions for `executor.drain_ms` and then closes the
+// pool with its own `executor.helpers_ms`, whose verdict it returns unchanged;
+// custody's cleanup steps have no overall deadline, so the 8 s this can take
+// fits), and the broker is given its dispatcher. Custody
 // unlinks the service with the pool, since both are fatal children the
 // instance monitors instead.
 fn start_service_lane(
@@ -808,7 +810,11 @@ fn start_service_lane(
       owner,
       custody.Helpers,
       fn() {
-        executor.close(service, waiting: 5000)
+        executor.close(
+          service,
+          draining: executor.drain_ms,
+          helpers: executor.helpers_ms,
+        )
         |> result.map_error(string.inspect)
       },
       fn() {
@@ -4790,7 +4796,12 @@ fn stop_helpers(instance: Instance) -> Nil {
   case instance.executor {
     None -> exec.stop_pool(instance.pool)
     Some(service) -> {
-      let _verdict = executor.close(service, waiting: 5000)
+      let _verdict =
+        executor.close(
+          service,
+          draining: executor.drain_ms,
+          helpers: executor.helpers_ms,
+        )
       Nil
     }
   }

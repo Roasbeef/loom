@@ -253,6 +253,60 @@ pub fn the_drain_grace_escalates_when_the_helper_never_answers_test() {
   lanes.stop(plane)
 }
 
+/// The relay's own cancel is asked of the service, and its grace starts
+/// only once the service has sent it. Here the service is held inside a
+/// second execution's `start` for three seconds, which spans the first
+/// execution's wall deadline. The helper then takes three more seconds to
+/// answer the cancel it finally hears. Measured from the moment the relay
+/// decided to cancel, the helper answers after about 5.7 seconds, past the
+/// five-second grace; measured from the cancel being sent, after three, well
+/// inside it. A relay that started its grace on a cast would report
+/// `CancelEscalated` for a helper that had never been told.
+pub fn a_relays_own_cancel_starts_its_grace_when_the_cancel_is_sent_test() {
+  let gate = lanes.gate()
+  let plane =
+    lanes.start_intercepted(
+      lanes.Service,
+      size: 2,
+      spawn: fn() {
+        Ok(fake_helper.start_helper_configured(
+          fake_helper.SlowCancel(delay_ms: 3000),
+          cancel_grace_ms: 60_000,
+          heartbeat_interval_ms: 0,
+        ))
+      },
+      clock: clock.fixed(at: 1000),
+      intercept: lanes.through(gate),
+    )
+
+  // The first execution's wall deadline is 300 ms away on the fixed clock.
+  let events = process.new_subject()
+  let spec =
+    lanes.spec(lanes.op(), argv: ["/bin/echo", "hi"], deadline_ms: 1300)
+  let assert Ok(_handle) =
+    broker.clear_call(plane.broker, spec, events:, waiting: 2000)
+
+  // A second start holds the service inside its checkout across it.
+  lanes.hold_next(gate, ms: 3000)
+  process.spawn_unlinked(fn() {
+    let spec = lanes.spec(lanes.op(), argv: ["/bin/echo", "hi"], deadline_ms: 0)
+    let _ =
+      broker.clear_call(
+        plane.broker,
+        spec,
+        events: process.new_subject(),
+        waiting: 10_000,
+      )
+    Nil
+  })
+
+  let assert [broker.CallSettled(broker.CallExited(result))] =
+    lanes.collect(events, within: 9000)
+  assert result.signal == 15
+  assert result.cancelled
+  lanes.stop(plane)
+}
+
 // --- the ways a relay or a helper can die -----------------------------------
 
 /// A relay killed outright settles its caller as lost, which the direct
@@ -452,7 +506,8 @@ pub fn close_with_a_live_execution_settles_it_and_answers_the_pool_test() {
   let plane = plane(fake_helper.SleepUntilCancel, size: 1)
   let #(_handle, events) = call(plane, 100_000)
 
-  assert executor.close(service_of(plane), waiting: 3000) == Ok(Nil)
+  assert executor.close(service_of(plane), draining: 2000, helpers: 1000)
+    == Ok(Nil)
   let assert [broker.CallSettled(broker.CallExited(result))] =
     lanes.collect(events, within: 1000)
   assert result.signal == 15
@@ -478,7 +533,7 @@ pub fn close_settles_an_execution_that_will_not_end_as_lost_test() {
   let plane = stubborn_plane()
   let #(_handle, events) = call(plane, 0)
 
-  let verdict = executor.close(service_of(plane), waiting: 1200)
+  let verdict = executor.close(service_of(plane), draining: 600, helpers: 1500)
   assert lanes.collect(events, within: 1000) == [lost(exec.ExecutorClosing)]
   assert process.receive(events, 300) == Error(Nil)
   assert verdict == Ok(Nil)
@@ -492,7 +547,10 @@ pub fn start_during_closing_is_refused_as_pool_unavailable_test() {
   let #(_handle, events) = call(plane, 0)
   let verdicts = process.new_subject()
   process.spawn_unlinked(fn() {
-    process.send(verdicts, executor.close(service_of(plane), waiting: 1600))
+    process.send(
+      verdicts,
+      executor.close(service_of(plane), draining: 800, helpers: 1500),
+    )
   })
 
   // The closer cancelled the execution and now waits half its budget for
@@ -510,4 +568,126 @@ pub fn start_during_closing_is_refused_as_pool_unavailable_test() {
   assert process.receive(verdicts, 4000) == Ok(Ok(Nil))
   assert lanes.collect(events, within: 1000) == [lost(exec.ExecutorClosing)]
   broker.stop(plane.broker)
+}
+
+// --- the close budget ----------------------------------------------------------
+
+// A service over a stub pool whose `close_helpers` reports the budget it was
+// handed. Lending always gives the same fake helper, which is enough for a
+// test that needs one row and no pool.
+fn budget_probe(
+  helper: exec.Helper,
+  seen: process.Subject(Int),
+) -> executor.Executor {
+  verdict_probe(helper, seen, Ok(Nil))
+}
+
+// As `budget_probe`, with the pool's verdict chosen.
+fn verdict_probe(
+  helper: exec.Helper,
+  seen: process.Subject(Int),
+  verdict: Result(Nil, exec.RetirementFailure),
+) -> executor.Executor {
+  let assert Ok(service) =
+    executor.start(executor.ExecutorConfig(
+      checkout: fn() { Ok(helper) },
+      checkin: fn(_helper) { Nil },
+      census: fn() { Error(exec.PoolUnavailable) },
+      close_helpers: fn(ms) {
+        process.send(seen, ms)
+        verdict
+      },
+      incarnation: 1,
+    ))
+    as "the probe service starts"
+  service
+}
+
+/// The pool is given the whole `helpers` budget however long the drain took.
+/// A live execution that ignores cancel holds the drain for its full 600 ms,
+/// and the pool is still handed exactly the 1 234 asked for; before the
+/// budgets were separate it was handed what the drain had left of a single
+/// total.
+pub fn the_pool_gets_its_whole_budget_after_a_full_drain_test() {
+  let helper =
+    fake_helper.start_helper_configured(
+      fake_helper.IgnoreCancel,
+      cancel_grace_ms: 60_000,
+      heartbeat_interval_ms: 0,
+    )
+  let seen = process.new_subject()
+  let service = budget_probe(helper, seen)
+  let deliveries = process.new_subject()
+  let settlements = process.new_subject()
+  let assert Ok(_execution) =
+    executor.dispatcher(service).start(hand_dispatch(1, deliveries, settlements))
+
+  assert executor.close(service, draining: 600, helpers: 1234) == Ok(Nil)
+  assert process.receive(seen, 100) == Ok(1234)
+
+  // The drain really was spent: the execution was settled as lost to it.
+  assert process.receive(settlements, 100)
+    == Ok(dispatch.Failed(exec.ExecutionLost(cause: exec.ExecutorClosing)))
+}
+
+/// With nothing live there is no drain, and the pool gets the same budget.
+pub fn the_pool_gets_its_whole_budget_with_nothing_to_drain_test() {
+  let helper = fake_helper.start_helper(fake_helper.SleepUntilCancel)
+  let seen = process.new_subject()
+  let service = budget_probe(helper, seen)
+
+  assert executor.close(service, draining: 600, helpers: 1234) == Ok(Nil)
+  assert process.receive(seen, 100) == Ok(1234)
+}
+
+/// A second `close` answers the verdict the first one stored, whether it
+/// arrives while the first is still draining or after it finished. The pool
+/// here cannot show its helpers retired, so the service stays alive in
+/// `Closed` holding that custody, and the pool is asked once.
+pub fn a_second_close_answers_the_stored_verdict_test() {
+  let helper =
+    fake_helper.start_helper_configured(
+      fake_helper.IgnoreCancel,
+      cancel_grace_ms: 60_000,
+      heartbeat_interval_ms: 0,
+    )
+  let seen = process.new_subject()
+  let service = verdict_probe(helper, seen, Error(exec.RetirementPending))
+  let deliveries = process.new_subject()
+  let settlements = process.new_subject()
+  let assert Ok(_execution) =
+    executor.dispatcher(service).start(hand_dispatch(1, deliveries, settlements))
+
+  // The second closer arrives while the first is draining, and is postponed
+  // until the verdict exists.
+  let verdicts = process.new_subject()
+  process.spawn_unlinked(fn() {
+    process.send(verdicts, executor.close(service, draining: 800, helpers: 500))
+  })
+  process.sleep(200)
+  let during = executor.close(service, draining: 800, helpers: 500)
+  let assert Ok(first) = process.receive(verdicts, 3000)
+  assert first == Error(exec.RetirementPending)
+  assert during == first
+
+  // And one more, long after.
+  assert executor.close(service, draining: 800, helpers: 500) == first
+  assert process.receive(seen, 100) == Ok(500)
+  assert process.receive(seen, 200) == Error(Nil)
+}
+
+/// The other half of the contract, pinned so nobody mistakes it for the
+/// first: a clean close ends the service, so a second `close` finds no
+/// process and answers `RetirementOwnerGone`, as `close_pool` does after a
+/// clean `close_pool`. The session wiring never closes twice (the owned
+/// path closes through custody and the ownerless path through
+/// `close_instance`), so the two answers are never both given to one
+/// session.
+pub fn a_second_close_after_a_clean_close_finds_no_service_test() {
+  let helper = fake_helper.start_helper(fake_helper.SleepUntilCancel)
+  let service = budget_probe(helper, process.new_subject())
+
+  assert executor.close(service, draining: 100, helpers: 100) == Ok(Nil)
+  assert executor.close(service, draining: 100, helpers: 100)
+    == Error(exec.RetirementOwnerGone)
 }

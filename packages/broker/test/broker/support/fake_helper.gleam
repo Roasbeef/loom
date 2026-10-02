@@ -29,6 +29,17 @@ pub type Script {
   /// its own frame, then a clean exit. Lets a test see output order.
   ManyChunks(count: Int)
 
+  /// Answers exec_start with `count` stdout chunks and then runs until
+  /// cancelled, like `SleepUntilCancel`. Lets a test act while output is
+  /// flowing and the execution is still live.
+  ChunksThenSleep(count: Int)
+
+  /// Behaves as the first word of the argv says, per execution: `ok`
+  /// exits cleanly at once, `sleep` runs until cancelled, and `stubborn`
+  /// runs and ignores cancel. Lets one pool of one script serve a mixed
+  /// workload.
+  ByArgv
+
   /// Reports cancellation after a controlled delay, exercising relay drain grace.
   SlowCancel(delay_ms: Int)
   /// Runs forever and ignores cancel — forcing the broker-side
@@ -220,6 +231,8 @@ type FakeState {
     deframer: framing.Deframer,
     // The running execution's frame id and buffered stdin.
     running: Option(#(Int, BitArray)),
+    // The execution, if any, that ignores cancel (the `ByArgv` script).
+    ignoring: Option(Int),
   )
 }
 
@@ -233,6 +246,7 @@ fn wait_attach(script: Script, inbox: Subject(FakeMsg)) -> Nil {
           wire:,
           deframer: framing.deframer(),
           running: None,
+          ignoring: None,
         )
       let state = case script {
         NoHello -> state
@@ -364,6 +378,29 @@ fn exec_start(
         }
         SleepUntilCancel | SlowCancel(..) | IgnoreCancel | StdinEcho ->
           FakeState(..state, running: Some(#(id, <<>>)))
+        ByArgv ->
+          case argv {
+            ["ok", ..] ->
+              reply(
+                state,
+                framing.Frame(
+                  id:,
+                  body: exit_body(
+                    state.script,
+                    stdout_bytes: 0,
+                    stdout_truncated: False,
+                    signal: 0,
+                  ),
+                ),
+              )
+            ["stubborn", ..] ->
+              FakeState(..state, running: Some(#(id, <<>>)), ignoring: Some(id))
+            _sleeping -> FakeState(..state, running: Some(#(id, <<>>)))
+          }
+        ChunksThenSleep(count:) -> {
+          let state = emit_chunks(state, id, from: 0, to: count)
+          FakeState(..state, running: Some(#(id, <<>>)))
+        }
         ManyChunks(count:) -> {
           let state = emit_chunks(state, id, from: 0, to: count)
           reply(
@@ -567,6 +604,7 @@ fn cancelled(state: FakeState) -> FakeState {
 
   case state.running, state.script {
     _, IgnoreCancel -> state
+    Some(#(id, _)), _ if state.ignoring == Some(id) -> state
     Some(#(id, _)), _ -> {
       let state =
         reply(
