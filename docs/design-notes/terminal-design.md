@@ -67,7 +67,7 @@ the grids are exact. Running the generator also writes a viewer page,
 
 Reached with `←` from an empty composer (`packages/tui/src/tui/interaction.gleam:1376`).
 A draft or a pending attachment keeps `←` as a cursor key, as today. The view
-is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:716`)
+is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:734`)
 (`render`), and this note redraws it without changing its keys.
 
 ![Picker, 120x40](terminal-design/terminal-design-picker-120-dark.png)
@@ -96,11 +96,11 @@ What changes from today (A's list; the "before" captures are in
 - Two hint rows, in two tiers: movement and opening first, rarer keys second.
 
 Data: everything is on the page the picker already holds, so there is no wire
-change. A row is a `Session` (`packages/tui/src/tui/daemon/protocol.gleam:396`)
+change. A row is a `Session` (`packages/tui/src/tui/daemon/protocol.gleam:416`)
 (`Session`). The state, strand counts, approvals, last message and up to four
-glance lines come from `Activity` (`packages/tui/src/tui/daemon/protocol.gleam:300`)
-(`Activity`) and `GlanceLine` (`packages/tui/src/tui/daemon/protocol.gleam:353`)
-(`GlanceLine`). The tabs are `Filter` (`packages/tui/src/tui/session_selector.gleam:55`)
+glance lines come from `Activity` (`packages/tui/src/tui/daemon/protocol.gleam:320`)
+(`Activity`) and `GlanceLine` (`packages/tui/src/tui/daemon/protocol.gleam:340`)
+(`GlanceLine`). The tabs are `Filter` (`packages/tui/src/tui/session_selector.gleam:75`)
 (`Filter`). Age is the creation age, because the page has no last-activity
 time; a "last active" field would be a change to `sessions.activity`.
 
@@ -195,11 +195,11 @@ and `Esc` closes it. Grid: [txt](terminal-design/terminal-design-layout-80.txt) 
 [light](terminal-design/terminal-design-layout-80-light.png). The sheet looks
 like [A's narrow sheet](terminal-design/A-sonnet-narrow-strands-dark.png).
 
-Today's code: `layout.layout` (`packages/tui/src/tui/layout.gleam:76`)
+Today's code: `layout.layout` (`packages/tui/src/tui/layout.gleam:97`)
 (`layout`) stacks header, body, composer and footer. `body_layout`
 (`packages/tui/src/tui/layout.gleam:94`) (`body_layout`) gives the body one
 side pane, the 34-cell agent rail or the 72-cell changes pane. The footer is
-built in `footer_rows` (`packages/tui/src/tui/layout.gleam:312`)
+built in `footer_rows` (`packages/tui/src/tui/layout.gleam:327`)
 (`footer_rows`). The new layout replaces the header and footer with the
 identity line and the input frame, and replaces the two side panes with one
 rail.
@@ -235,7 +235,7 @@ tight; the same facts fit on the frame.
 
 Data: context is `context_view.footer`
 (`packages/session_view/src/session_view/context_view.gleam:358`) (`footer`),
-cost is the session's `usage` (`packages/session_view/src/session_view/model.gleam:335`)
+cost is the session's `usage` (`packages/session_view/src/session_view/model.gleam:353`)
 (`usage`), the needs-you count is `strand_card.needing`
 (`packages/session_view/src/session_view/strand_card.gleam:69`) (`needing`),
 and the activity label is `layout.active_status_label`
@@ -339,6 +339,12 @@ call with its exit status, and a running call. The settled row gains a call
 count. The fragment above the calls is the same as today's. The call list needs
 a record on the wire, which is what 060 adds.
 
+060 writes the record on a program's result and nowhere else, so until a live
+feed of calls lands the list appears on settled and stopped programs only: a
+block still awaiting its result has none, which the frames above, drawn as the
+target, do not show. `not run` is not a status the record carries either; it
+has `ok`, `failed`, `cancelled` and `unsettled`, and the summary counts those.
+
 ![Code mode with calls, 120x40](terminal-design/terminal-design-codemode-calls-120-dark.png)
 
 ![Code mode with calls, 80x24](terminal-design/terminal-design-codemode-calls-80-dark.png)
@@ -428,7 +434,7 @@ Grid: [txt](terminal-design/terminal-design-fixes-120.txt) ·
 |---|---|
 | About fifteen identical `✓ agent_wait · 2 subagents` rows | One counted row, `×15`, updated in place. A new rule in `tool_activity.project` (`packages/session_view/src/session_view/tool_activity.gleam:55`) (`project`). No wire change. |
 | Twenty identical `http 429` errors | One counted row: `! provider returned http 429 ×20`. A fold over the local lines in `session_view`. |
-| A `[loom] background job ... was lost` notice drawn as a `› User` turn | A dim `◇ loom` line with a second line saying it is a notice from Loom, not a message from you. **Data check first:** the line builders already route some harness-authored user messages (`harness_message_lines`, `packages/session_view/src/session_view/transcript_lines.gleam:1621`) (`harness_message_lines`), and `composer.harness_injection_summary` (`packages/session_view/src/session_view/composer.gleam:425`) (`harness_injection_summary`) recognises the `[loom] ` prefix to bound a turn. If the daemon sends this notice as a user entry with no marker, recognising the prefix is the same text-to-attribution step that 059 exists to avoid, and the notice needs a marker through its own protocol-change. |
+| A `[loom] background job ... was lost` notice drawn as a `› User` turn | A dim `◇ loom` line with a second line saying it is a notice from Loom, not a message from you. **Data check first:** the line builders already route some harness-authored user messages (`harness_message_lines`, `packages/session_view/src/session_view/transcript_lines.gleam:1651`) (`harness_message_lines`), and `composer.harness_injection_summary` (`packages/session_view/src/session_view/composer.gleam:425`) (`harness_injection_summary`) recognises the `[loom] ` prefix to bound a turn. If the daemon sends this notice as a user entry with no marker, recognising the prefix is the same text-to-attribution step that 059 exists to avoid, and the notice needs a marker through its own protocol-change. |
 | Approvals as a small dialog | A full-width block with numbered choices (below). |
 
 The fixes frame draws more on the folded rows than a fold has: `· 7m 30s ·
@@ -482,7 +488,7 @@ main ▸ sub:tests`) and the identity line names it. Focus from the timeline wit
 |---|---|---|
 | `←`, empty composer, no attachment | Open the session picker | Unchanged (`packages/tui/src/tui/interaction.gleam:1376`) (`open_session_selector`) |
 | `↓`, idle composer | Enter the agent strip. While the rail shows Strands, focus the rail's list | Unchanged (`packages/tui/src/tui/interaction.gleam:1236`) (`down_from_composer`) |
-| `Shift+Tab` | Dock or hide the rail; a sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1339`) (`toggle_agent_rail`) |
+| `Shift+Tab` | Dock or hide the rail; a sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1362`) (`toggle_agent_rail`) |
 | Escape | Interrupt; closes the surface on top first | Unchanged (`packages/tui/src/tui/interaction.gleam:1337`) (`interrupt_active`) |
 | `Ctrl+O`, `F2`, `/agents` | Open the agent workspace | Unchanged |
 | `/diff`, `/trace`, `/summary` | Open the rail on Changes, Trace, Session | `/diff` exists; the others are new |
@@ -509,13 +515,13 @@ New `F` keys wait on a check of what Herdr and common terminals pass through
 | Workspace and strip rows | `Row`, `Line` (section 2) | None |
 | Strand cards, status line | `strand_card.status_line` (`packages/session_view/src/session_view/strand_card.gleam:38`) (`status_line`) | None |
 | Gutter hue | `turns.hue` (`packages/session_view/src/session_view/turns.gleam:211`) (`hue`) | None |
-| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1159`) (`divider`), plus a count from the steps' results | None |
+| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1140`) (`divider`), plus a count from the steps' results | None |
 | Sent messages | `agent_messages.observe` | None |
 | Received strand messages | A strand origin on the admitted message | **protocol-change 059** |
 | Peer messages | `PeerOrigin` | None |
 | Code-mode program and result | `code_mode_program`, `code_mode_result_lines` | None |
 | Code-mode call list | A call record in the result | **protocol-change 060** |
-| Images | The tool result block at `packages/tools/src/tools/fs.gleam:963` (`ToolResultImage`), read through `of_entry` | None; etui work |
+| Images | The tool result block at `packages/tools/src/tools/fs.gleam:986` (`ToolResultImage`), read through `of_entry` | None; etui work |
 | Repeats, repeated errors | New folds in `session_view` | None |
 | Harness notices | See section 9 | Possibly a marker |
 | Layout memory | A file in the state root | None |
