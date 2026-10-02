@@ -25,6 +25,27 @@
 //// the transcript holds them. They carry no age: a captured send
 //// (`agent_messages.Item`) holds its sequence, not a time, and an age
 //// computed from anything else would be a guess.
+////
+//// ## Flow
+////
+//// `inspect` → `listed` → `render_inspection` → `render_full_inspection`
+//// → `list_lines` → `render_detail` → `footer_lines`
+////
+//// 1. `inspect` starts an `Inspector` on the active strand, and `listed` is
+////    the one place that orders and filters the rows for both drawing and
+////    navigation.
+//// 2. `navigate`, `next_attention` and `cycle_filter` move the selection or
+////    the filter over that same list; none of them touches the transcript.
+//// 3. `render_inspection` is the entry the shell calls. A screen under ten
+////    rows gets `render_compact_inspection`; anything taller gets
+////    `render_full_inspection`.
+//// 4. `render_full_inspection` sizes the frame once with `geometry_for`, so
+////    the list, divider, detail and footer agree on their rectangles.
+//// 5. `list_lines` draws one shared-renderer row per agent, and `render_detail`
+////    draws the selected agent's sections with `detail_rows`.
+//// 6. `footer_lines` ends the frame with the keys the focus allows.
+//// 7. `render_rail` is separate: it draws the compact task roster and keeps
+////    the active recipient in view.
 
 import etui/buffer
 import etui/geometry.{type Rect, Fill, Length}

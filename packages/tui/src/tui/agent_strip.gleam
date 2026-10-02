@@ -215,10 +215,12 @@ pub fn height_for_count(count: Int, screen_height: Int) -> Int {
   }
 }
 
-// A quarter of the screen, between two rows and `max_rows`, so a burst of
-// agents cannot push the transcript off a small terminal.
+// A fifth of the screen and one row more, between two rows and `max_rows`:
+// five rows at 24 (four agents and the `+N more` row) and eight at 40, as
+// the design draws them, so a burst of agents cannot push the transcript
+// off a small terminal.
 fn capacity(screen_height: Int) -> Int {
-  int.clamp(screen_height / 4, min: 2, max: max_rows)
+  int.clamp(screen_height / 5 + 1, min: 2, max: max_rows)
 }
 
 /// Moves the keyboard into the strip, with the cursor on the row after the

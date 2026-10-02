@@ -131,8 +131,8 @@ running several strands can see what each is doing without opening `/agents`.
 working, waiting, needs input or is halted. Settled strands leave the strip,
 and the advisor, which has its own band, is listed only while it is active.
 The strip appears once a second agent is listed and the terminal is at least
-`min_screen_height` rows. It grows a row per agent, up to a quarter of the
-screen and never more than `max_rows`; any further rows fold into a
+`min_screen_height` rows. It grows a row per agent, up to a fifth of the
+screen plus one (five rows at 24, eight at 40) and never more than `max_rows`; any further rows fold into a
 `+N more · Down enters the strip · F2 opens the list` row. Its rows are
 `agent_row.StripRow` rows, the shape the workspace list draws: the cursor's
 row is the raised bar marked `❯`, the viewed strand is marked `›`, and the
