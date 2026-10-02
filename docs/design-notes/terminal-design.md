@@ -319,7 +319,10 @@ nothing per capability call, so there are two frames.
 in the danger colour with the error and the line it names. A running program is
 a titled block with a numbered fragment of the program, the first lines, and a
 `RESULT · none yet` row that fills when the program ends. The foot gives the
-budget. At 80 columns the fragment shrinks. The program text is
+budget. The block names no file and claims no vetting, since a program has no
+name and vetting is known only once a result says so; the program's elapsed
+time is on the input frame's top rule (`◐ code_mode · 1.2s`), which the
+activity already drives, rather than on the block, whose rows are cached. At 80 columns the fragment shrinks. The program text is
 `transcript_lines.code_mode_program`
 (`packages/session_view/src/session_view/transcript_lines.gleam:2371`)
 (`code_mode_program`) and the result is drawn by `code_mode_result_lines`

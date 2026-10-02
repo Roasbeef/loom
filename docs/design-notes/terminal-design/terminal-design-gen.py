@@ -437,14 +437,14 @@ def codemode_body(calls):
         R += assistant(W, ["I will check it with a small program."])
         R.append(blank(W))
         if calls:
-            R.append(G(W, [("✓ ", "add b"), ("code_mode", "p"), (" probe_calc.gleam · ", "q"), ("4 calls", "p"), (" · result {\"ok\": true} · Ctrl+g", "q")]))
+            R.append(G(W, [("✓ ", "add b"), ("code_mode", "p"), (" · ", "q"), ("4 calls", "p"), (" · result {\"ok\": true} · Ctrl+g", "q")]))
         else:
-            R.append(G(W, [("✓ ", "add b"), ("code_mode", "p"), (" probe_calc.gleam · completed · result {\"ok\": true} · Ctrl+g", "q")]))
+            R.append(G(W, [("✓ ", "add b"), ("code_mode", "p"), (" · completed · result {\"ok\": true} · Ctrl+g", "q")]))
         R.append(blank(W))
         err = [row(iw, [("error: unknown module value list.rang · line 7", "dan")], ""),
                row(iw, [("  7 │ ", "q"), ("  list.rang(1, 10)", "p")], "cb"),
                row(iw, [("    │ ", "q"), ("       ^^^^^^^^^ did you mean list.range?", "dan")], "cb")]
-        R += titled(W, "× code_mode · compile error · probe_range.gleam", "dan b", "dan", err,
+        R += titled(W, "× code_mode · compile error", "dan b", "dan", err,
                     "the program did not run · Ctrl+g shows all 12 lines", indent=3)
         R.append(blank(W))
         inner = prog_rows(iw - 2 if False else iw - 2)
@@ -456,12 +456,12 @@ def codemode_body(calls):
                                            ("✓", "add", "cap/proc.run", "gleam build", ""),
                                            ("◐", "cur", "cap/proc.run", "gleam test", "running")]:
                 inner.append(row(iw, [(g + " ", gc), (name.ljust(16), "p"), (arg, "q"), ("  " + note if note else "", "dan" if note == "exit 1" else "cur")]))
-            title = "◐ running · check_subtract.gleam · call 7 · 1 failed"
+            title = "◐ code_mode · awaiting its result · call 7 · 1 failed"
             foot = "needs protocol-change 060: call record · budget 30s"
         else:
             inner.append(row(iw, [("RESULT · none yet · the result arrives when the program ends", "q")]))
-            title = "◐ running · check_subtract.gleam · 1.2s"
-            foot = "budget 30s · vetted · Ctrl+g program"
+            title = "◐ code_mode · awaiting its result"
+            foot = "budget 30s · Ctrl+g program"
         R += titled(W, title, "cur b", "cur", inner, foot, indent=3)
         return R
     return f
