@@ -43,7 +43,7 @@ gets a "before" capture from the real client, a list of what is sloppy, an
 The "before" captures were made in a private tmux session from this worktree
 at `f9927f7d9`. The agent workspace is `gleam dev agents dark`, the shipped
 six-agent fixture through the shipped loop. The picker was drawn by the
-shipped `render` (`tui/session_selector.gleam:734`) over a seven-session
+shipped `render` (`tui/session_selector.gleam:783`) over a seven-session
 fixture page, because `--demo` has no daemon to list sessions from and
 `open_session_selector` (`tui/submit.gleam:149`) refuses without a control
 host. The frames are the real renderer's output either way.
@@ -63,7 +63,7 @@ host. The frames are the real renderer's output either way.
   picker adds a bracketed lifecycle tag, so the row reads
   `▸ ● ws · main · 01a0a1e2-af88                 current`. The identity is the
   same twelve characters on every row, so it tells the operator nothing, and
-  `row_lines` (`tui/session_selector.gleam:912`) puts it there to keep two
+  `row_lines` (`tui/session_selector.gleam:966`) puts it there to keep two
   same-named sessions apart, which the detail pane already does.
 - Nothing lines up. The name, the tag and the identity are one string, so
   the second column starts wherever the name ends.
@@ -388,7 +388,7 @@ when a strand needs a decision (`needing`,
 `session_view/strand_card.gleam:69`). The panel has keyboard focus or the
 composer does; the panel's border is drawn in the signal colour while it has
 focus, and the composer's top rule says what the keys do, as it does for the
-strip today (`input_title`, `tui/render.gleam:1816`).
+strip today (`input_title`, `tui/render.gleam:1833`).
 
 | Key, panel focused | Does |
 |---|---|
@@ -727,7 +727,7 @@ No single key sends a decision.
 
 | Region | Data | Exists | Where |
 |---|---|---|---|
-| Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:503` |
+| Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:520` |
 | Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:298`), `hue` (`session_view/turns.gleam:248`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:1651`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
