@@ -346,3 +346,25 @@ production source also passed. The initial control attempt caught an unused
 state-read helper; retaining its existing call kept the final comparison
 warning-free. Full current-head signoff and hosted CI will be checked before
 merge.
+
+A later local parallel gate passed the ordered job test but reproduced the page
+timeout and exposed a schedule-scanner fixture ordering gap. Two consecutive
+fake advances assumed the first queued scan had already rearmed; the second
+could see no timer or consume the driver's distant checkpoint timer. The fixture
+now waits on its existing arming barrier before each relevant observation and
+asserts that logical time reaches the intended one-shot instant. The helper's
+previous ignored arming failure is now an assertion. The retry bound therefore
+observes the scanner's rearm rather than an unrelated driver deadline.
+
+A delayed-scan control showed why absence of a failure was insufficient: the
+original fixture could pass after advancing the wrong timer. Restoring the old
+ordering while retaining the stronger logical-time assertion failed; the ordered
+fixture passed under the same delay. Restored production source passed all 25
+scanner tests. No production scanner, deadline, or retry behavior changed.
+
+Independent tracing found no page-registry conflict or lost-registration path:
+Lustre mounts current DOM at registration and snapshot Begin validates its own
+attachment. A full parallel client diagnostic run passed all 2,639 tests; its
+temporary patch/relay logging was restored. The page timeout's cause remains
+unproven. Final readiness requires the restored-source gate and exact hosted
+head to pass; prior failures remain in the ignored evidence logs.

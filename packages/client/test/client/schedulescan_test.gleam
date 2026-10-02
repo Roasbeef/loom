@@ -354,16 +354,16 @@ fn harness_with(
 // Waits until the wheel holds a deadline that is not the strand driver's
 // checkpoint poll, which is to say until the scanner has armed.
 fn await_armed(fc: FakeClock, remaining_ms: Int) -> Nil {
-  let _armed =
-    await_true(
-      fn() {
-        case fake_earliest_delay_ms(fc) {
-          None -> False
-          Some(delay) -> delay < driver_poll_ms
-        }
-      },
-      remaining_ms,
-    )
+  assert await_true(
+    fn() {
+      case fake_earliest_delay_ms(fc) {
+        None -> False
+        Some(delay) -> delay < driver_poll_ms
+      }
+    },
+    remaining_ms,
+  )
+    as "the scanner must arm before logical time advances"
   Nil
 }
 
@@ -639,11 +639,21 @@ pub fn a_held_one_shot_retries_no_faster_than_the_interval_floor_test() {
   assert idle(rig, "main") as "the strand must start idle"
   // First tick (t=0): not yet due, re-arms at the real remaining wait.
   assert fake_advance(rig.fc) as "the first tick must be pending"
+
+  // Firing only enqueues the scan. Its new arming must land before another
+  // wheel pop can select the scanner rather than the driver's distant poll.
+  await_armed(rig.fc, 2000)
+
   // The re-armed tick lands at or after `at`; the strand is still idle and
   // wake=false may not start a run, so this occurrence holds.
   assert fake_advance(rig.fc) as "the re-armed tick must be pending"
+  assert fake_now(rig.fc) == 100_000
+    as "the re-armed scan must land at the one-shot instant"
   let key = schedule.fired_key(strand: "main", name: "stuck", occurrence: 100)
-  process.sleep(100)
+
+  // A pending scanner deadline makes the lower-bound assertion below about
+  // the held occurrence's retry, rather than an unrelated driver deadline.
+  await_armed(rig.fc, 2000)
   assert !fired(rig.runtime, key) as "a held one-shot must leave no mark"
   assert await_true(
     fn() {
