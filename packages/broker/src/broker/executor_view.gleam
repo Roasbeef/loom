@@ -22,7 +22,8 @@
 //// ## Never exposed
 ////
 //// No type in this module can hold a secret, because none has a field that
-//// could. There is no argv, environment, working directory, policy,
+//// could. Where the service reads a type that can (the pool's refusal),
+//// it maps to a variant-only type here before the snapshot is built. There is no argv, environment, working directory, policy,
 //// capability token or output byte anywhere in a `Snapshot`: a live row is
 //// described by counters and enums, and a failure by the *name* of its
 //// constructor, never its payload (`RefusedByHelper` carries a helper's
@@ -200,6 +201,22 @@ pub type Metrics {
   )
 }
 
+/// Why the pool gave no custody view, by name only. The pool's own refusal,
+/// `exec.CheckoutError`, can carry a helper's message (`RefusedByHelper`) or
+/// an unencodable policy, so the snapshot never holds it: the service maps
+/// it to one of these at the boundary and the payload stops there.
+pub type CustodyUnavailable {
+  /// Every helper was lent out.
+  PoolBusy
+
+  /// The pool did not answer, or was not alive to be asked.
+  PoolNotAnswering
+
+  /// The pool tried to spawn a helper and could not. Why is in the pool's
+  /// own log, not here.
+  PoolSpawnFailed
+}
+
 /// Everything an observer is given about the service at one instant.
 pub type Snapshot {
   Snapshot(
@@ -211,7 +228,7 @@ pub type Snapshot {
     /// size.
     live: List(LiveView),
     /// The pool's census and a view of each helper, or why it gave none.
-    pool: Result(exec.PoolCustody, exec.CheckoutError),
+    pool: Result(exec.PoolCustody, CustodyUnavailable),
     /// The counters and latency summaries.
     metrics: Metrics,
     /// The last `ring_size` settled executions, newest first.

@@ -247,7 +247,7 @@ pub type Inventory {
     /// whose settlement has been granted and not yet released.
     live: List(LiveRow),
     /// The pool's answer, or why it gave none.
-    pool: Result(exec.PoolCensus, exec.CheckoutError),
+    pool: Result(exec.PoolCensus, executor_view.CustodyUnavailable),
   )
 }
 
@@ -603,8 +603,10 @@ fn handle(
     // `AllBusy`: a full pool clears as executions end and callers wait it
     // out, while a closing service never will.
     Closing(..), Start(reply:, ..) | Closed(..), Start(reply:, ..) -> {
-      process.send(reply, Error(dispatch.NoHelper(exec.PoolUnavailable)))
-      state_machine.keep(state)
+      let refusal = dispatch.NoHelper(exec.PoolUnavailable)
+      let books = executor_view.record_refusal(state.books, refusal)
+      process.send(reply, Error(refusal))
+      state_machine.keep(State(..state, books:))
     }
 
     Serving, Close(draining:, helpers:, reply:) ->
@@ -1185,7 +1187,7 @@ fn books(state: State) -> Inventory {
   Inventory(
     incarnation: state.config.incarnation,
     live:,
-    pool: state.config.custody() |> result.map(fn(custody) { custody.census }),
+    pool: custody_of(state) |> result.map(fn(custody) { custody.census }),
   )
 }
 
@@ -1207,11 +1209,26 @@ fn observe_progress(
   }
 }
 
+// The pool's custody with its refusal reduced to a name. The refusal can
+// carry a helper's message, so nothing past this function sees it.
+fn custody_of(
+  state: State,
+) -> Result(exec.PoolCustody, executor_view.CustodyUnavailable) {
+  state.config.custody()
+  |> result.map_error(fn(refusal) {
+    case refusal {
+      exec.AllBusy(..) -> executor_view.PoolBusy
+      exec.PoolUnavailable -> executor_view.PoolNotAnswering
+      exec.SpawnFailed(..) -> executor_view.PoolSpawnFailed
+    }
+  })
+}
+
 // The books, the live rows and the pool's custody, rendered at one instant.
 // Every field is a counter, an enum or an identity, so what an observer is
 // given cannot contain a request.
 fn snapshot_of(phase: Phase, state: State) -> executor_view.Snapshot {
-  let pool = state.config.custody()
+  let pool = custody_of(state)
   let now = now_ms()
   let live =
     dict.to_list(state.rows)
@@ -1238,7 +1255,7 @@ fn phase_view(phase: Phase) -> executor_view.ServicePhase {
 
 fn live_view(
   row: Row,
-  pool: Result(exec.PoolCustody, exec.CheckoutError),
+  pool: Result(exec.PoolCustody, executor_view.CustodyUnavailable),
   now: Int,
 ) -> executor_view.LiveView {
   let helper = exec.pid(row.helper)

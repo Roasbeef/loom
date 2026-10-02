@@ -108,6 +108,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import weft/poll
 import weft/state_machine
 
 /// What the relay learns when it asks the service for leave to report its
@@ -166,11 +167,12 @@ pub type Link {
     may_settle: fn(Verdict) -> Permission,
     /// Tells the service how the execution stands, without waiting. Sent on
     /// a change of mode, on a change of cancel state, on the first chunk and
-    /// on every `progress_chunks`-th chunk after, so an execution costs the
-    /// service a handful of small messages and a flood of output costs one
-    /// per `progress_chunks` chunks. The service's mailbox holds at most one
-    /// of these per relay per interval it is slow to read, and it reads them
-    /// as it reads anything else.
+    /// on every `progress_chunks`-th chunk after, but never for a chunk less
+    /// than `progress_interval_ms` after the previous report. A flood of
+    /// output therefore costs one message per interval, and a service that
+    /// is slow to read for t seconds holds at most four t of these per
+    /// relay (sixty for a fifteen-second stall), however fast the helper
+    /// writes. A change of mode or cancel state is always sent.
     progress: fn(Progress) -> Nil,
   )
 }
@@ -223,6 +225,10 @@ type Data {
     // The wall deadline's remaining span in milliseconds, computed once
     // when the relay started; `None` means the execution has no deadline.
     wall_after_ms: Option(Int),
+    // When this relay last sent a progress report, on weft's monotonic
+    // clock. `None` before the first, which is why the first chunk is
+    // always reported.
+    last_progress_ms: Option(Int),
   )
 }
 
@@ -252,6 +258,12 @@ pub const settle_wait_ms = 5000
 /// may be and how many messages a chatty execution sends the one process
 /// that serves every execution of a session.
 pub const progress_chunks = 16
+
+/// The least time between two output-driven progress reports from one relay,
+/// on weft's monotonic clock. It turns the bound on the service's mailbox
+/// from a function of output rate into a constant: at most four reports a
+/// second per relay.
+pub const progress_interval_ms = 250
 
 /// How long a relay waits for the service to confirm it sent a cancel.
 /// The service may be inside a checkout, so this is the same bound as
@@ -329,6 +341,7 @@ fn init(
       settle: config.settle,
       link: config.link,
       wall_after_ms: wall_after(config.clock, config.deadline_ms),
+      last_progress_ms: None,
     )
   state_machine.initialised(Streaming, data)
   |> state_machine.selecting(selector)
@@ -409,9 +422,9 @@ fn handle(
 
   // A relay that has settled is about to stop and its verdict carried its
   // final progress, so only a relay that goes on tells the service anything.
-  case course {
+  let data = case course {
     Stay | Drain -> announce(data, before)
-    End -> Nil
+    End -> data
   }
   case course {
     Stay -> state_machine.keep(data)
@@ -422,23 +435,31 @@ fn handle(
 
 // Sends the service a progress report when the step moved something an
 // observer reads. Mode and cancel state change at most once or twice in an
-// execution; output is thinned to the first chunk and every
-// `progress_chunks`-th, which is what keeps this from being a message per
-// chunk.
-fn announce(data: Data, before: Core) -> Nil {
+// execution, so they always go. Output is thinned twice: to the first chunk
+// and every `progress_chunks`-th, and then to one report per
+// `progress_interval_ms`, because a count-only bound grows with the output
+// rate times however long the service is busy. The skipped report is not
+// lost: the next one, or the verdict, carries the totals.
+fn announce(data: Data, before: Core) -> Data {
   let after = data.core
-  let moved =
-    after.mode != before.mode
-    || after.cancel != before.cancel
-    || {
-      after.output.chunks != before.output.chunks
-      && {
-        after.output.chunks == 1 || after.output.chunks % progress_chunks == 0
-      }
+  let changed = after.mode != before.mode || after.cancel != before.cancel
+  let chunk_due =
+    after.output.chunks != before.output.chunks
+    && {
+      after.output.chunks == 1 || after.output.chunks % progress_chunks == 0
     }
-  case moved {
-    True -> data.link.progress(progress_of(after))
-    False -> Nil
+  let monotonic = poll.monotonic()
+  let now = monotonic.now()
+  let quiet = case data.last_progress_ms {
+    Some(last) -> now - last >= progress_interval_ms
+    None -> True
+  }
+  case changed || { chunk_due && quiet } {
+    True -> {
+      data.link.progress(progress_of(after))
+      Data(..data, last_progress_ms: Some(now))
+    }
+    False -> data
   }
 }
 

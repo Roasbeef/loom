@@ -10,6 +10,7 @@ import broker/exec
 import broker/execution
 import broker/executor
 import broker/executor_view
+import broker/framing
 import broker/relay
 import broker/support/fake_helper
 import broker/support/lanes
@@ -125,21 +126,22 @@ pub fn a_cancel_is_measured_to_its_settlement_test() {
   lanes.stop(plane)
 }
 
-/// Output is reported to the service on the first chunk and every
-/// `progress_chunks`-th, not on each: forty chunks leave the live row at
-/// thirty-two, and the counters are exact at settlement.
+/// Output is reported to the service on the first chunk and then at most
+/// once per `progress_interval_ms`, so forty chunks emitted at once leave
+/// the live row somewhere between the first chunk and the last, while the
+/// counters are exact at settlement.
 pub fn progress_is_thinned_and_exact_at_settlement_test() {
   let plane = plane(fake_helper.ChunksThenSleep(40), size: 1)
   let #(handle, events) = call(plane, 100_000)
   let snapshot =
     snapshot_where(plane, fn(snapshot) {
       case snapshot.live {
-        [row] -> row.output.chunks >= 2 * relay.progress_chunks
+        [row] -> row.output.chunks >= 1
         _ -> False
       }
     })
   let assert [row] = snapshot.live
-  assert row.output.chunks == 2 * relay.progress_chunks
+  assert row.output.chunks <= 40
   assert row.output.stdout_bytes > 0
 
   broker.cancel(plane.broker, handle)
@@ -150,6 +152,55 @@ pub fn progress_is_thinned_and_exact_at_settlement_test() {
   assert settled.stdout_bytes == 40
   assert snapshot.metrics.output_bytes == 40
   lanes.stop(plane)
+}
+
+/// A flood of chunks inside one `progress_interval_ms` costs the service the
+/// first report and, at the very most, one more if the window rolls over;
+/// without the time bound it would be one report per sixteen chunks.
+pub fn a_chunk_flood_casts_at_most_two_progress_reports_test() {
+  let reports = process.new_subject()
+  let link =
+    relay.Link(
+      cancel: fn() { Nil },
+      may_settle: fn(_verdict) { relay.Granted },
+      progress: fn(progress) { process.send(reports, progress) },
+    )
+  let assert Ok(started) =
+    relay.start(relay.Config(
+      caller: None,
+      helper: process.self(),
+      clock: clock.fixed(at: 1000),
+      deadline_ms: 0,
+      deliver: fn(_chunk) { Nil },
+      settle: fn(_terminal) { Nil },
+      link:,
+    ))
+  list.repeat(Nil, 320)
+  |> list.each(fn(_) {
+    process.send(
+      started.events,
+      exec.Output(
+        stream: framing.Stdout,
+        data: <<"x">>,
+        total_bytes: 1,
+        truncated: False,
+      ),
+    )
+  })
+
+  // Wait for the relay to have read them all before counting.
+  process.sleep(150)
+  let casts = drain_count(reports, 0)
+  assert casts >= 1
+  assert casts <= 2
+  process.kill(started.pid)
+}
+
+fn drain_count(subject: process.Subject(relay.Progress), seen: Int) -> Int {
+  case process.receive(subject, 0) {
+    Ok(_) -> drain_count(subject, seen + 1)
+    Error(Nil) -> seen
+  }
 }
 
 // --- history is bounded -------------------------------------------------------
@@ -371,5 +422,71 @@ pub fn a_closed_service_is_unreachable_test() {
   let service = service_of(plane)
   assert executor.close(service, draining: 500, helpers: 1000) == Ok(Nil)
   assert executor.snapshot(service, waiting: 300) == Error(executor.Unreachable)
+  broker.stop(plane.broker)
+}
+
+/// A pool whose custody answer is a spawn failure carrying helper-authored
+/// text leaves the snapshot free of it: the service reduces the refusal to a
+/// name before the snapshot is built.
+pub fn a_spawn_failure_in_custody_leaves_no_payload_test() {
+  let plane = plane(fake_helper.EchoArgv, size: 1)
+  let assert Ok(service) =
+    executor.start(executor.ExecutorConfig(
+      checkout: fn() { exec.checkout(plane.pool, waiting: 1000) },
+      checkin: fn(helper) { exec.checkin(plane.pool, helper) },
+      custody: fn() {
+        Error(
+          exec.SpawnFailed(
+            exec.HandshakeFailed(exec.RefusedByHelper(
+              code: "refused",
+              message: marker,
+            )),
+          ),
+        )
+      },
+      close_helpers: fn(ms) { exec.close_pool(plane.pool, waiting: ms) },
+      incarnation: 2,
+      log: log.discard(),
+    ))
+  let assert Ok(snapshot) = executor.snapshot(service, waiting: 2000)
+  assert snapshot.pool == Error(executor_view.PoolSpawnFailed)
+  assert_no_marker(string.inspect(snapshot))
+  lanes.stop(plane)
+}
+
+/// A start refused because the service is closing is counted as a pool
+/// refusal, so an operator asking why starts fail after close began sees it.
+pub fn a_start_refused_while_closing_is_counted_test() {
+  let plane = plane(fake_helper.IgnoreCancel, size: 1)
+  let #(_handle, events) = call(plane, 0)
+  let _ = snapshot_where(plane, fn(snapshot) { snapshot.live != [] })
+  let verdicts = process.new_subject()
+  process.spawn_unlinked(fn() {
+    process.send(
+      verdicts,
+      executor.close(service_of(plane), draining: 800, helpers: 1500),
+    )
+  })
+  process.sleep(200)
+
+  let spec = lanes.spec(lanes.op(), argv: ["/bin/true"], deadline_ms: 0)
+  assert broker.clear_call(
+      plane.broker,
+      spec,
+      events: process.new_subject(),
+      waiting: 500,
+    )
+    == Error(broker.NoHelper(error: exec.PoolUnavailable))
+  let snapshot =
+    snapshot_where(plane, fn(snapshot) {
+      snapshot.metrics.pool_unavailable >= 1
+    })
+  assert snapshot.phase == executor_view.Closing
+  assert snapshot.metrics.pool_unavailable == 1
+
+  // A helper that ignores cancel is not retired, so the verdict is an
+  // error; only that the close ended matters here.
+  let assert Ok(_) = process.receive(verdicts, 4000)
+  let _ = lanes.collect(events, within: 1000)
   broker.stop(plane.broker)
 }
