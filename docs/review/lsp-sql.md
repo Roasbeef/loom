@@ -122,3 +122,42 @@ withheld source context and check that provider requests contain no
 the pending shipping dependency graph. The publication, pin, cold-seed,
 aggregate-gate and platform-signoff requirements remain open, so the PR
 remains draft with no new review blocker for this delta.
+
+## Saved source, wrapper removal and updated style gates
+
+On October 2, the branch was rebased onto `a3dc25359`, preserving the newly
+merged helper check-in and stdin fixes. Source head `ea4b2359b` adds protocol
+063's file input and removes the obsolete top-level LSP implementation.
+Source selection precedes authority and I/O; canonical read authorization
+precedes source loading. The ordinary request retains loaded bytes through an
+approval retry, while later invocations reread the file. No saved authority or
+compiled-artifact entry point is introduced.
+
+Sixteen obsolete surface tests were removed with their constructors. Three
+behavior tests were retargeted to shared code; nine shared regressions retain
+stale-file refusal, ordered and partial writes, observer settlement, anchored
+previews and diagnostic bounds. The saved-program regressions cover mutually
+exclusive inputs, canonical outside/symlink authority, authorization before I/O,
+UTF-8 and byte bounds, unchanged retry source, fresh loads and async parity.
+
+The root independently ran 604 tools, 103 prompt and 191 LSP tests with exit zero.
+All six real jailed LSP fixtures also exited zero without prerequisite test
+skips after rebuilding the native helper. Gleam SQL loads saved source through
+`program_path`; Go uses inline source. These fixtures still use the ignored
+experimental seed, not the pending published native graph. The existing macOS
+kernel-enforcement degradation was reported in their results.
+
+Full format, lint, prelude and doc checks exited zero. The rebased tree passes
+R13/R14/R15/R16's orientation gates; R17/R18 remain non-gating censuses. Flow
+names, state placement and retained public documentation follow the new guide.
+The default prompt is version 15 and the usage guide explains saving tested
+programs with purpose/input notes and collecting fresh observations on rerun.
+
+Astra high completed the complete pinned source review with no actionable
+findings. It independently passed 170 code-mode, shared LSP and filesystem tests
+from existing compiled artifacts, with bounded command exit zero. Canonical
+source authorization, immutable retry bytes, collection/cancellation custody and
+retained rename/diagnostic behavior held under that review. The merged native
+and companion forks still need owner-approved Hex publication, exact dependency
+pins and a cold normal seed before aggregate and hosted verification can close.
+No merge or shipping-graph signoff is claimed by these source checks.

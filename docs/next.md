@@ -39,65 +39,64 @@ diagnosis; a single pass is corroboration, not proof.
 
 ## SQL LSP observation branch
 
-On October 1, `codex/lsp-sql` is based on `7d37ec86f` and implements the
-accepted [protocol 062](../protocol-change/062-lsp-sql-observations.md).
+On October 2, `codex/lsp-sql` is rebased onto `a3dc25359` for
+[PR #693](https://github.com/Roasbeef/loom/pull/693). The implementation follows
+[protocol 062](../protocol-change/062-lsp-sql-observations.md) and the new
+[saved-source contract](../protocol-change/063-saved-code-mode-programs.md).
 The [usage guide](lsp-sql.md), [design examples](design-notes/lsp-sql.md) and
-[architecture](architecture/lsp-sql.md) describe its explicit collection and
-satellite-local SQL contract. This section describes a branch in progress,
-not an installed daemon or a merged release.
+[architecture](architecture/lsp-sql.md) explain explicit collection and
+satellite-local SQL. This is a branch in progress, not an installed release.
 
-On October 2, [PR #693](https://github.com/Roasbeef/loom/pull/693) opened as
-a draft. A fresh Astra review at high reasoning effort found no new confirmed
-defect in the pinned implementation and independently reran fifteen collector
-and twelve native query, retirement and loader tests with zero exit status.
-The release-integration and full-verification blockers below remain open.
+Semantic access goes through `cap/lsp` and `cap/lsp_sql` in code mode.
+All seven legacy top-level constructors, schemas, argument decoders and
+execution wrappers are removed, along with sixteen obsolete surface tests.
+Shared rename landing, anchored previews and automatic write diagnostics remain;
+nine shared regressions retain stale-file, partial-write and settlement checks.
+Installed profile hints follow the admitted capability into the description
+and `cap://lsp`. Saved session pins are not rewritten.
 
-The owner also authorized removing all seven default `lsp_*` tool
-registrations. Semantic access now goes through `cap/lsp` and `cap/lsp_sql`
-in code mode. Automatic diagnostics on `fs_write` and `fs_edit` remain.
-Installed profile hints follow the admitted native capability into the
-code-mode description and `cap://lsp`; saved session pins are not rewritten.
-`loom-default-14` directs agents to semantic queries when offered and to SQL
-for joins and aggregates over explicit observations.
+A run or background launch accepts exactly one of inline `program` and
+`program_path`. File source uses canonical native read authorization before the
+ordinary vet, compile and jail pipeline. Approval retries retain loaded source;
+a later invocation reloads it. Handle interactions perform no source reads.
+`loom-default-15` directs agents to save tested programs with purpose/input notes,
+reuse them by path and collect fresh observations. Reuse saves neither authority
+nor semantic facts.
 
-The complete tools suite passed 610 tests, the prompt suite passed 102,
-and focused client discovery and prompt checks passed. All six real-server
-LSP fixtures passed without prerequisite skips after migrating the legacy
-calls to compiled capability programs. These retain anchored references,
-rename preview/apply, stale-content refusal, Go queries and both SQL cases.
-They also check that provider requests contain no top-level `lsp_*` tools.
-Astra high reviewed this delta through `2b5941df1`, found no new confirmed
-defect and independently reran 54 tools, 12 client and 24 prompt tests with
-exit zero. This evidence still uses the experimental seed described below.
+Independent root checks passed 604 tools tests, 103 prompt tests and 191 LSP
+tests. All six real jailed LSP fixtures passed without prerequisite test skips
+after rebuilding the native helper. The Gleam SQL fixture loads a saved file;
+the Go fixture retains inline source. Both prove joins, counts, anti-joins,
+typed-decoder errors, SQL refusal and unchanged provenance. These runs still
+use the experimental native seed built with stock Gleam 1.18.1. They do not
+prove the published shipping graph. Ordinary format checks use the repository's
+1.19.0-rc2 formatter; mixing those compilers invalidates seed-byte comparisons.
 
-The independent pass found two collection defects. Both are corrected and
-covered by the passing fifteen-test collection suite: admission is checked
-again after server startup before source preflight, and path-only resolver
-positions must fit retained source text before a references request. The
-[review record](review/lsp-sql.md) distinguishes protected host-memory reads
-from unproven model exfiltration and records the finite interval guarantee.
+Current full format, lint, prelude and documentation gates exit zero. R13 flow
+spines, R14 checked transition tables, R15 state types before functions and R16
+qualified domain calls are enforced on this rebased tree. R17/R18 remain
+censuses; no prose was padded to suppress them. The usage guide links these
+rules. The final Astra high source review of
+`a3dc25359..ea4b2359b` found no actionable defect and independently passed
+170 focused tests. It grants source signoff, with release integration still open.
 
-The native fork and companion release drafts are reviewable in
-[esqlite PR #1](https://github.com/Roasbeef/esqlite/pull/1) and
-[sqlight PR #1](https://github.com/Roasbeef/sqlight/pull/1). Immutable Hex
-publication requires owner approval. Keep all existing companion consumers
-on one exact native family; `cap` itself needs only the native package.
+The supporting [esqlite PR #1](https://github.com/Roasbeef/esqlite/pull/1) and
+[sqlight PR #1](https://github.com/Roasbeef/sqlight/pull/1) are merged. The prepared
+native 0.9.1 payload passed forty-seven cold tests; the companion 1.2.1 draft
+passed twenty-one with a temporary native wrapper. Hex still lists only 0.9.0
+and 1.2.0. Publication approval is pending. The wrapper is experimental evidence,
+not a release dependency, and the native library must remain inside the addressed
+satellite artifact.
 
-The initial real SQL E2E run identified a release boundary missing from the
-design-only checks: flattened code-mode artifacts omitted the native library.
-The correction carries exactly the trusted library inside the same artifact
-read root, hashes its bytes and uses module-relative loading. Both jailed
-Gleam and Go SQL cases now pass, along with all 340 code-mode tests using the
-matching stock compiler and experimental seed. The final native Hex payload
-rebuilds cold and passes forty-seven tests.
-
-Remaining: publish the approved dependency versions, resolve that graph with
-stock Gleam, refresh the committed offline seed lock and run the aggregate
-gate. The local native wrapper is experimental evidence, not the shipping
-dependency path. No test or gate is intentionally skipped.
-
-The older handoff sections below retain their original evidence and scope;
-this feature does not repeat their installed-memory measurements.
+Next: publish the reviewed versions after approval, add `esqlite_loom` 0.9.1 to
+`cap`, move all four companion consumers to `sqlight_loom` 1.2.1, resolve genuine
+manifests, regenerate the capability prelude and refresh the committed offline
+seed lock. Build a cold seed through the normal graph, run the aggregate gate
+and real fixtures, then have the same Astra reviewer verify the integration
+delta. The owner authorized removing draft status; merge only after current-head
+hosted checks pass.
+No test or gate is intentionally skipped. Existing macOS enforcement degradation
+is reported rather than weakened.
 
 ## October 2 daemon memory pass
 
