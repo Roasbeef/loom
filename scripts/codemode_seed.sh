@@ -73,6 +73,11 @@ if [ "$settled" -ne 1 ]; then
   exit 1
 fi
 
+# Rebar's production pc plugin points back to the build machine by absolute
+# path. Materialize that known in-seed link before proving the relocated clone;
+# neither runtime builds nor release archives may depend on the original root.
+python3 scripts/codemode_seed_plugin.py "$seed"
+
 # Prove it offline, here, rather than discovering it in a jail later. A
 # clone of the seed is what every build root actually is, so a clone that
 # needs the network is a broken seed. When the kernel will not give us a

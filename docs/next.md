@@ -101,6 +101,15 @@ The architectural freeze test now pins exactly `cap_ffi.erl` and
 still fails. Its fourteen focused regressions passed, and Astra approved the
 exact-list update.
 
+Hosted stock-compiler packaging exposed Rebar's absolute `pc` plugin link in
+the native seed. Seed preparation now copies only that known in-seed plugin
+before the relocated offline probe; archive link restrictions remain unchanged.
+The relocation regression removes the original root and preserves plugin modes
+and native-library bytes. External targets and nested links are refused. All
+51 script tests and four archive regressions passed, and Astra approved this
+packaging delta. The fresh seed rebuilt normally; real fixture and distribution
+gates must still pass on the corrected head.
+
 The offline architecture site in `docs/site/architecture` explains the whole
 system with interactive teaching models and source links. Its LSP examples
 retain captured evidence after edits and recollect when the saved method reruns.
