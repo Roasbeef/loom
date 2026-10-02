@@ -45,7 +45,7 @@ On October 2, `codex/lsp-sql` is rebased onto `a3dc25359` for
 [saved-source contract](../protocol-change/063-saved-code-mode-programs.md).
 The [usage guide](lsp-sql.md), [design examples](design-notes/lsp-sql.md) and
 [architecture](architecture/lsp-sql.md) explain explicit collection and
-satellite-local SQL. This is a branch in progress, not an installed release.
+satellite-local SQL. Source integration does not update a running daemon.
 
 Semantic access goes through `cap/lsp` and `cap/lsp_sql` in code mode.
 All seven legacy top-level constructors, schemas, argument decoders and
@@ -63,14 +63,14 @@ a later invocation reloads it. Handle interactions perform no source reads.
 reuse them by path and collect fresh observations. Reuse saves neither authority
 nor semantic facts.
 
-Independent root checks passed 604 tools tests, 103 prompt tests and 191 LSP
-tests. All six real jailed LSP fixtures passed without prerequisite test skips
-after rebuilding the native helper. The Gleam SQL fixture loads a saved file;
-the Go fixture retains inline source. Both prove joins, counts, anti-joins,
-typed-decoder errors, SQL refusal and unchanged provenance. These runs still
-use the experimental native seed built with stock Gleam 1.18.1. They do not
-prove the published shipping graph. Ordinary format checks use the repository's
-1.19.0-rc2 formatter; mixing those compilers invalidates seed-byte comparisons.
+The independent full `make check` exited zero against the published graph and
+normal seed, using stock Gleam 1.19.0-rc2. It passed 2,666 client tests, 1,052
+TUI tests, 93 conformance tests, 172 capability tests and 340 code-mode tests,
+along with the other package gates. All six real jailed LSP fixtures ran
+without prerequisite skips. The Gleam SQL fixture loads a saved file; Go uses
+inline source. Both prove joins, counts, anti-joins, typed-decoder errors,
+SQL refusal and unchanged provenance. This replaces the earlier experimental
+seed evidence. Mixing compiler versions invalidates seed-byte comparisons.
 
 Current full format, lint, prelude and documentation gates exit zero. R13 flow
 spines, R14 checked transition tables, R15 state types before functions and R16
@@ -78,25 +78,43 @@ qualified domain calls are enforced on this rebased tree. R17/R18 remain
 censuses; no prose was padded to suppress them. The usage guide links these
 rules. The final Astra high source review of
 `a3dc25359..ea4b2359b` found no actionable defect and independently passed
-170 focused tests. It grants source signoff, with release integration still open.
+170 focused tests. It grants source signoff; the same reviewer also approved
+the published dependency integration and the architecture website's claims.
 
 The supporting [esqlite PR #1](https://github.com/Roasbeef/esqlite/pull/1) and
-[sqlight PR #1](https://github.com/Roasbeef/sqlight/pull/1) are merged. The prepared
-native 0.9.1 payload passed forty-seven cold tests; the companion 1.2.1 draft
-passed twenty-one with a temporary native wrapper. Hex still lists only 0.9.0
-and 1.2.0. Publication approval is pending. The wrapper is experimental evidence,
-not a release dependency, and the native library must remain inside the addressed
-satellite artifact.
+[sqlight PR #1](https://github.com/Roasbeef/sqlight/pull/1) are merged. Hex now
+carries `esqlite_loom` 0.9.1 and `sqlight_loom` 1.2.1, with source tags on their
+merged trees. The native 0.9.1 payload passed forty-seven cold tests before
+publication. The native library remains inside the addressed satellite artifact.
 
-Next: publish the reviewed versions after approval, add `esqlite_loom` 0.9.1 to
-`cap`, move all four companion consumers to `sqlight_loom` 1.2.1, resolve genuine
-manifests, regenerate the capability prelude and refresh the committed offline
-seed lock. Build a cold seed through the normal graph, run the aggregate gate
-and real fixtures, then have the same Astra reviewer verify the integration
-delta. The owner authorized removing draft status; merge only after current-head
-hosted checks pass.
-No test or gate is intentionally skipped. Existing macOS enforcement degradation
-is reported rather than weakened.
+The direct `cap` pin, all four companion updates and eight compiler-generated
+package manifests select the genuine releases. The generated offline seed lock
+adds only the native package and `cap`'s dependency edge; its checksum matches
+Hex. A fresh normal seed builds with stock Gleam 1.19.0-rc2 and Rebar, without
+the temporary wrapper. Prelude regeneration was byte-identical. The earlier
+hosted jail lane failed both SQL fixtures with `SqlUnavailable` while the old
+seed lacked this dependency; ninety-one other tests passed. No assertion was
+weakened and that failure is not treated as a flake.
+
+The architectural freeze test now pins exactly `cap_ffi.erl` and
+`loom_cap_lsp_sql.erl`, the reviewed satellite bridges. A third foreign source
+still fails. Its fourteen focused regressions passed, and Astra approved the
+exact-list update.
+
+The offline architecture site in `docs/site/architecture` explains the whole
+system with interactive teaching models and source links. Its LSP examples
+retain captured evidence after edits and recollect when the saved method reruns.
+Controls, keyboard input, playback and widths from 358 to 1600 pixels passed
+browser checks with no console errors or document overflow. Global pause and
+the reduced-motion implementation were checked; this browser cannot emulate
+the operating-system preference. Its simulations do not run an LSP or SQL engine.
+
+Merge criteria: current-head hosted checks and the repository's full Linux
+signoff. The owner authorized removing draft status and merging green. The local
+aggregate run skipped shipped-server fixtures without their opt-in server and
+the Rust manager probe without a working analyzer. The Linux signoff provisions
+its own dependencies, runs the shipped fixtures and enforces its skip census.
+Existing macOS kernel degradation is reported rather than weakened.
 
 ## October 2 daemon memory pass
 
