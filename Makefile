@@ -4,7 +4,7 @@
 # what CI runs and what you run locally are the same commands.
 
 PACKAGES := host core storage session machine prompt session_view web_view telemetry runtime provider \
-	broker mcp lsp tools cap ext codemode events client conformance tui lint
+	broker executor mcp lsp tools cap ext codemode events client conformance tui lint
 # Packages that target JavaScript. They are formatted, built and documented
 # with the rest but have no test run (scripts/check.sh says why).
 JS_PACKAGES := web_client
@@ -380,6 +380,20 @@ selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED pe
 	@./$(HELPER) --self-test
 
 # ---------------------------------------------------------------- end to end
+
+# The standalone executor boots with no harness: packages/executor depends on
+# broker and core and not on client, and its entrypoint prints the version
+# census as one JSON line, runs `true` jailed through the service, drains and
+# exits 0. The target asserts the exit status and the one census line.
+.PHONY: executor-smoke
+executor-smoke: sandbox ## Boot the standalone executor against the real helper: one census line, a jailed run, a clean drain
+	@out=$$(mktemp) && \
+		( cd packages/executor && LOOM_EXEC_HELPER="$(abspath $(HELPER))" gleam run ) > $$out; \
+		status=$$?; cat $$out; \
+		lines=$$(grep -c '^{"service":' $$out); rm -f $$out; \
+		if [ $$status -ne 0 ]; then echo "executor-smoke: exit $$status" >&2; exit 1; fi; \
+		if [ $$lines -ne 1 ]; then echo "executor-smoke: expected one census line, saw $$lines" >&2; exit 1; fi; \
+		echo "executor-smoke: ok"
 
 .PHONY: e2e
 e2e: sandbox ## Run the jailed end-to-end acceptance against the real helper

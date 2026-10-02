@@ -396,7 +396,7 @@ jobs:
           # and both are cheap.
           - bucket: fast
             packages: >-
-              host core machine prompt session_view web_view web_client telemetry provider broker
+              host core machine prompt session_view web_view web_client telemetry provider broker executor
               mcp lsp tools cap ext codemode tui lint sandbox
     steps:
       # actions/checkout v7.0.1

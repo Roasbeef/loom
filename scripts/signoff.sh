@@ -191,7 +191,7 @@ lane_conformance() {
 }
 lane_fast() {
 	$retry bash scripts/check.sh host core machine prompt session_view web_view web_client \
-		telemetry provider broker mcp lsp tools cap ext codemode lint sandbox
+		telemetry provider broker executor mcp lsp tools cap ext codemode lint sandbox
 }
 lane_static() {
 	python3 scripts/with_timeout.py 20 -- \
