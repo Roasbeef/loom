@@ -1,5 +1,4 @@
  ◆ demo · strand main                                                           baseten-kimi-k3
- transcript / main
 
 
 
@@ -8,5 +7,6 @@
 
 
 ╭─ To main · Enter sends ────────────────────────────────────────────────────── ○ main · idle ─╮
+│1k tokens                                                                                     │
 │ ›  / commands                                                                                │
-╰─ 1k tokens › baseten-kimi-k3 › ctx — › $0.01 ─────────────────────────────────── 0 need you ─╯
+╰─ baseten-kimi-k3 › ctx — › $0.01 ────────────────────────────────────────────────────────────╯

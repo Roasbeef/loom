@@ -1,5 +1,4 @@
  ◆ demo · strand main                                       baseten-kimi-k3
- transcript / main
 
 
 
@@ -14,5 +13,6 @@
   │  /deny  reject an exact displayed request                            │
   ╰──────────────────────────────────────────────────────────────────────╯
 ╭─ To main · Enter sends ────────────────────────────────── ○ main · idle ─╮
+│ready                                                                     │
 │ › /de                                                                    │
-╰─ ready › baseten-kimi-k3 › ctx — › $0.00 ─────────────────── 0 need you ─╯
+╰─ baseten-kimi-k3 › ctx — › $0.00 ────────────────────────────────────────╯
