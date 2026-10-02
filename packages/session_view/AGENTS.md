@@ -241,7 +241,8 @@ for a host with no surfaces.
   `running_ms`, `context`). A strand that is idle and has no operation has
   never run (a fresh fork waiting for its first prompt), and it is listed
   among the live cards rather than settled; one that ran and is idle again
-  has an operation and is settled.
+  has an operation and is settled. `describe` gives any row the same line
+  whether or not a strip would list it; the terminal's workspace list uses it.
   Its internal `listed_count` uses the same membership predicate without
   constructing display lines, for hosts measuring geometry. The roster test
   compares that count with `lines` across every status and active-strand choice.
