@@ -8,6 +8,7 @@
 //// `Execution` reach a row.
 
 import broker/broker
+import broker/census
 import broker/dispatch
 import broker/exec
 import broker/executor
@@ -692,4 +693,29 @@ pub fn a_second_close_after_a_clean_close_finds_no_service_test() {
   assert executor.close(service, draining: 100, helpers: 100) == Ok(Nil)
   assert executor.close(service, draining: 100, helpers: 100)
     == Error(exec.RetirementOwnerGone)
+}
+
+/// An idle service reports this build's versions and the hello features
+/// of the helper it borrowed to read them, and the borrow is returned.
+pub fn the_census_carries_the_features_of_a_live_helper_test() {
+  let plane = plane(fake_helper.EchoArgv, size: 1)
+  let assert Ok(here) = executor.census(service_of(plane), waiting: 3000)
+  assert here
+    == census.local(["rlimits", "pgroup", "bwrap", "landlock", "seccomp"])
+  let _ = wait_for_census(plane, fn(counts) { counts.borrowed == 0 })
+  lanes.stop(plane)
+}
+
+/// A pool whose only slot is lent out cannot be sampled without waiting,
+/// so the census answers at once with no features instead of queueing
+/// behind the execution.
+pub fn a_full_pool_reports_the_census_without_features_test() {
+  let plane = plane(fake_helper.SleepUntilCancel, size: 1)
+  let #(handle, events) = call(plane, 100_000)
+  let assert Ok(here) = executor.census(service_of(plane), waiting: 1000)
+  assert here == census.local([])
+
+  broker.cancel(plane.broker, handle)
+  let assert [broker.CallSettled(_)] = lanes.collect(events, within: 2000)
+  lanes.stop(plane)
 }

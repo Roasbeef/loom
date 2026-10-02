@@ -170,6 +170,7 @@
 //// | `Closing` | refused, `PoolUnavailable` | postponed until the verdict | settles the rows still live as lost, then finishes | handled; finishes as the last live row is granted |
 //// | `Closed` | refused, `PoolUnavailable` | answers the stored verdict | stale, ignored | answered as unknown: nothing is live |
 
+import broker/census.{type Census}
 import broker/dispatch.{type Dispatcher}
 import broker/exec.{type Helper}
 import broker/execution
@@ -277,6 +278,7 @@ pub opaque type Msg {
   RelayDown(down: process.Down)
   Report(reply: Subject(Inventory))
   Observe(reply: Subject(executor_view.Snapshot))
+  QueryCensus(reply: Subject(Census))
   Close(
     draining: Int,
     helpers: Int,
@@ -505,6 +507,35 @@ pub fn inventory(
   }
 }
 
+/// The service's version census: the three version numbers the service
+/// speaks, and the hello features of a live helper (`broker/census` says
+/// why features are reported and never refused).
+///
+/// A helper's features exist only once one has said hello, so the service
+/// asks one: it borrows a helper, reads its status, and returns it. When
+/// it cannot do that without waiting, because every slot is lent out or
+/// the service is closing, it answers with no features rather than
+/// waiting on an execution. Features are therefore
+/// "the features of a helper the service could look at just now", and an
+/// empty list means "unknown", never "none".
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(here) = executor.census(service, waiting: 10_000)
+/// assert here.exec_proto == framing.exec_protocol_version
+/// ```
+///
+pub fn census(
+  executor: Executor,
+  waiting timeout: Int,
+) -> Result(Census, Unreachable) {
+  case call.try_call(executor.subject, waiting: timeout, sending: QueryCensus) {
+    Ok(here) -> Ok(here)
+    Error(call.NoReply) | Error(call.CalleeGone) -> Error(Unreachable)
+  }
+}
+
 /// A bounded picture of the service for an operator: the executions it
 /// holds with their mode, cancel state, output counters and age, the pool's
 /// custody of each helper, counters and latency summaries, the last 64
@@ -664,6 +695,39 @@ fn handle(
       process.send(reply, snapshot_of(phase, state))
       state_machine.keep(state)
     }
+
+    // A census is a question about the helpers, so only a serving service
+    // can answer it in full: a closing one is retiring them.
+    phase, QueryCensus(reply:) -> {
+      process.send(reply, census_of(phase, state))
+      state_machine.keep(state)
+    }
+  }
+}
+
+// The census, with features read from a helper only when the pool will
+// lend one. A lazily spawned helper costs at most the handshake timeout.
+fn census_of(phase: Phase, state: State) -> Census {
+  case phase {
+    Serving -> census.local(sampled_features(state))
+    Closing(..) | Closed(..) -> census.local([])
+  }
+}
+
+fn sampled_features(state: State) -> List(String) {
+  case state.config.checkout() {
+    Ok(helper) -> {
+      let features = case exec.status(helper, waiting: 1000) {
+        exec.StatusReady(features:) | exec.StatusBusy(features:) -> features
+        exec.StatusStarting | exec.StatusDead(..) | exec.StatusUnresponsive -> []
+      }
+      state.config.checkin(helper)
+      features
+    }
+
+    // A full pool refuses at once rather than queueing, so an occupied
+    // service answers without features instead of waiting on a borrower.
+    Error(_) -> []
   }
 }
 

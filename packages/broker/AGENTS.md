@@ -86,7 +86,13 @@ protocol (spec Part 1.4). WP-G.
   first chunk and on every `relay.progress_chunks` (16) chunks after, never per
   chunk. The relay never imports the service and never casts to a helper: all
   three ways back are closures the service builds. Unlinked from its starter.
-- `broker/executor.{start, dispatcher, pid, inventory, snapshot, close,
+- `broker/census.{Census, Skew, service_version, local, skew}` — the pure
+  version census: `service` (the `Dispatcher` contract's own version, a
+  constant here), `exec_proto` (`framing.exec_protocol_version`), `policy_v`
+  (`policy.version`) and the hello `features`. `skew(ours, theirs)` names
+  every mismatched version and ignores features, which are capability and
+  are reported, never refused. No process, no FFI.
+- `broker/executor.{start, dispatcher, pid, inventory, snapshot, census, close,
   ExecutorConfig, Inventory}` — the service lane's one process per session, a
   `weft/state_machine` with phases `Serving | Closing(closer) |
   Closed(outcome)` (the pool's shape, with a state timeout in `Closing` for
@@ -119,6 +125,10 @@ protocol (spec Part 1.4). WP-G.
   marker in a request and searches the rendered snapshot and the log lines.
   "Queue age" has no referent: nothing queues, so `all_busy` counts the
   congested refusals instead.
+  `census(service, waiting:)` answers a `broker/census.Census`: when the
+  pool has a slot it can lend without waiting, the service borrows a helper,
+  reads its hello features and returns it; otherwise (pool full, service
+  closing) it answers with empty features, meaning unknown.
 - `broker/dispatch.relay_grace_ms` — the drain grace both dispatchers use,
   moved here from `direct` so the lanes cannot disagree on it.
 - `broker/policy.SandboxPolicy` — `SandboxPolicyV1` as a typed value:
@@ -279,7 +289,7 @@ protocol (spec Part 1.4). WP-G.
     answered after `exec.cancel` was sent), `Stdin(id, data, eof)`,
     `MaySettle(id, verdict, reply)`, `Progress(id, progress)` (a relay's cast;
     never answered), `Release(id)`, `Abandon(id)`, `RelayDown(down)`,
-    `Report(reply)`, `Observe(reply)`, `Close(draining, helpers, reply)`,
+    `Report(reply)`, `Observe(reply)`, `QueryCensus(reply)`, `Close(draining, helpers, reply)`,
     `DrainDeadline`. The `Execution` closures the
     broker holds are casts of `Cancel`, `Stdin`, `Release` and `Abandon`
     naming the execution by `ExecutionId`. `MaySettle` is the relay's
