@@ -379,7 +379,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(lines, compact_call_cache, compact_entry_cache) =
         record_projection(model)
       let #(record_rows, record_line_cache, record_gutters) =
-        model.shared.transcript
+        transcript_lines.separated_lines(model.shared.transcript)
         |> list.append(lines)
         |> cached_record_lines(width, previous, model.shared.active_strand)
       Model(
@@ -670,7 +670,7 @@ fn record_anchors_for(
       |> transcript_lines.separated_tool_blocks(BetweenEntries)
     }
   }
-  [#("", model.shared.transcript), ..blocks]
+  [#("", transcript_lines.separated_lines(model.shared.transcript)), ..blocks]
   |> list.flat_map(fn(block) {
     block.1
     |> list.index_map(fn(line, part) { #(line, part) })

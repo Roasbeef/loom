@@ -141,3 +141,15 @@ pub fn the_live_and_settled_answer_both_carry_the_heading_test() {
 fn row_text(row: span.Line) -> String {
   row.spans |> list.map(fn(value) { value.content }) |> string.concat
 }
+
+// The transcript's own lines, which no fold over entries sees, are
+// separated as entries are: a result row that closes bare has one blank
+// row between it and the answer heading under it.
+pub fn a_result_row_and_the_answer_under_it_are_a_row_apart_test() {
+  let lines =
+    frame_scene.screen(frame_scene.model(), 120, 40) |> frame.buffer_to_lines
+  let assert Ok(result) = row_of(lines, "└ read · packages/client/CLAUDE.md")
+    as "the demo's result row"
+  let assert Ok(heading) = row_of(lines, "◆ main") as "the answer under it"
+  assert heading == result + 2
+}
