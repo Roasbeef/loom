@@ -501,8 +501,10 @@ protocol (spec Part 1.4). WP-G.
   path closes only through the custody `Helpers` step, the ownerless path
   only through `close_instance`, never both. A second `close` answers the
   stored verdict while the service is alive (`Closed(Error)`, or postponed
-  during `Closing`); after a clean close the service is gone and it answers
-  `RetirementOwnerGone`, as `close_pool` does after a clean `close_pool`.
+  during `Closing`). The stored verdict is frozen: `close` never re-asks the
+  pool, so a retirement that finished after an `Error` cannot improve it, and
+  a caller retrying custody goes to `exec.close_pool` directly. After a clean close the service is gone
+  and it answers `RetirementOwnerGone`, as `close_pool` does after a clean `close_pool`.
   Worst-case blocking of `close_instance`: service lane 8 s (`close` above);
   direct lane none (`stop_pool` is a cast). Both pinned in `executor_test`.
 - **Service lane: the failure matrix is pinned, case by case.**

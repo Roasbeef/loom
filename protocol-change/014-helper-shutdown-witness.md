@@ -102,7 +102,9 @@ a. The helper was in `AwaitingHello` or `Idle` (no jail dispatched yet, or the
    which the helper writes only after `Settle` returned, and `Settle` has
    already SIGKILLed the execution's process group (and, on Darwin, its tracked
    descendants). The status retires the helper on every platform, at the grade
-   of the status-0 witness.
+   of the status-0 witness. It is slightly weaker: an orderly status 0 also
+   waits for the helper's cgroup release (`populated 0`, up to 2 s), and a kill
+   skips that and leaves the per-execution cgroup directory.
 b. The helper was in `Running` or `Cancelling` and its accepted hello
    advertised `bwrap`. `--die-with-parent` and the PID namespace
    (`--unshare-pid`) make the helper's death the jail's: SIGKILL is pending on

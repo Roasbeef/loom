@@ -714,6 +714,26 @@ pub fn killed_helper_that_never_reports_exit_answers_pending_test() {
   assert process.is_alive(exec.pid(helper))
 }
 
+// A kill whose SIGKILL does not land produces no exit status, and the port
+// is still retained, so nothing else would ever end the wait. The witness
+// timeout does: the caller that was parked on the retirement is answered
+// that the proof is lost, which is the only thing the broker can honestly
+// say, and the verdict stays lost afterwards.
+pub fn killed_helper_whose_exit_never_comes_loses_its_proof_test() {
+  let #(helper, _, closed) =
+    controlled_with(Bwrap, fn(config) {
+      exec.HelperConfig(..config, kill_witness_ms: 50)
+    })
+  process.send(exec.wire(helper), exec.WireBytes(<<0, 0, 0, 1, 0xc1>>))
+  assert process.receive(closed, 1000) == Ok(Nil)
+  assert exec.close(helper, waiting: 2000) == Error(exec.RetirementProofLost)
+
+  // A status that turns up after the give-up repairs nothing.
+  process.send(exec.wire(helper), exec.WireClosed(137))
+  assert exec.close(helper, waiting: 1000) == Error(exec.RetirementProofLost)
+  assert process.is_alive(exec.pid(helper))
+}
+
 // Hands out 0, 1, 2... to whoever asks. The pool's spawner runs inside the
 // pool actor, which cannot receive on a subject the test owns, so the count
 // lives in a process of its own.
@@ -815,4 +835,37 @@ pub fn pool_keeps_the_slot_of_a_killed_unjailed_helper_test() {
   process.send(exec.wire(helper), exec.WireClosed(137))
   assert_hopeless(pool)
   assert exec.close_pool(pool, waiting: 1000) == Error(exec.RetirementExit(137))
+}
+
+// The pool-level face of the same give-up. Without the timeout the entry
+// stays `Draining` for ever, which `lendable_again` counts as a slot that
+// will return, so callers would wait on capacity that never comes. With it
+// the slot ends `Unconfirmed`, which the pool reads as permanent.
+pub fn pool_slot_of_a_kill_with_no_exit_ends_unconfirmed_test() {
+  let sent = process.new_subject()
+  let closed = process.new_subject()
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      Ok(
+        open_controlled(sent, closed, Bwrap, fn(config) {
+          exec.HelperConfig(..config, cancel_grace_ms: 30, kill_witness_ms: 50)
+        }),
+      )
+    })
+    as "pool starts"
+  let assert Ok(helper) = exec.checkout(pool, waiting: 1000)
+    as "the helper to be killed"
+  let events = process.new_subject()
+  assert exec.run(helper, request(), events:, waiting: 1000) == Ok(Nil)
+  exec.cancel(helper)
+  assert process.receive(events, 1000) == Ok(exec.Failed(exec.CancelEscalated))
+  assert process.receive(closed, 1000) == Ok(Nil)
+
+  // No `WireClosed` is ever sent: the kill produced no status.
+  exec.checkin(pool, helper)
+  assert_hopeless(pool)
+  let assert Ok(census) = exec.pool_census(pool, waiting: 1000)
+  assert census.unconfirmed == 1
+  assert census.draining == 0
+  assert exec.close_pool(pool, waiting: 1000) == Error(exec.RetirementProofLost)
 }

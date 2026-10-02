@@ -139,6 +139,7 @@ pub fn start_helper_configured(
       transport:,
       handshake_timeout_ms: 2000,
       cancel_grace_ms:,
+      kill_witness_ms: 5000,
       heartbeat_interval_ms:,
     )
   let assert Ok(helper) = exec.start(config)
@@ -189,6 +190,7 @@ pub fn start_wedgeable_helper(
       ),
       handshake_timeout_ms: 2000,
       cancel_grace_ms: 400,
+      kill_witness_ms: 5000,
       heartbeat_interval_ms: 10,
     )
   let assert Ok(helper) = exec.start(config)

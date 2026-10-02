@@ -380,6 +380,7 @@ pub fn handshake_timeout_reported_test() {
       transport:,
       handshake_timeout_ms: 150,
       cancel_grace_ms: 400,
+      kill_witness_ms: 5000,
       heartbeat_interval_ms: 0,
     )
   let assert Ok(helper) = exec.start(config)
@@ -395,6 +396,7 @@ pub fn wrong_proto_kills_handshake_test() {
       transport:,
       handshake_timeout_ms: 1000,
       cancel_grace_ms: 400,
+      kill_witness_ms: 5000,
       heartbeat_interval_ms: 0,
     )
   let assert Ok(helper) = exec.start(config)

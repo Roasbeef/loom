@@ -422,7 +422,11 @@ pub fn inventory(
 ///
 /// `Ok(Nil)` ends the service, so a second `close` finds no process and
 /// answers `RetirementOwnerGone`. An `Error` leaves the service alive in
-/// `Closed`, where a second `close` answers the same verdict.
+/// `Closed`, where a second `close` answers the same verdict. That verdict
+/// is frozen, not re-derived: the pool may since have retired the helper
+/// (a killed helper's status arriving late), but `close` never asks it
+/// again. A caller retrying custody after an `Error` goes to
+/// `exec.close_pool` directly, which does re-ask.
 ///
 /// ## Examples
 ///
@@ -487,6 +491,10 @@ fn handle(
     // ends, which its caller sees as a dead service.
     Closing(..), Close(..) ->
       state_machine.keep(state) |> state_machine.postpone
+
+    // The first close's verdict is replayed as it was. The pool is not
+    // consulted again, so a retirement that completed after an `Error`
+    // cannot improve it here; a caller retrying custody asks `close_pool`.
     Closed(outcome), Close(reply:, ..) -> {
       process.send(reply, outcome)
       state_machine.keep(state)

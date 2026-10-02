@@ -136,7 +136,7 @@
 //// | `Idle` | ignored | `Dead`, protocol violation | `Running`; refused if the helper is degraded or the caller's events owner is gone | ignored | ignored | stale, ignored | `Dead` | `Dead`; a missed heartbeat also gives `Dead` |
 //// | `Running` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | `Cancelling` after the TERM write, `Dead` if the write fails | the execution's own id gives `Idle`; other ids dropped | stale, ignored | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
 //// | `Cancelling` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | ignored, the first deadline keeps running | the execution's own id gives `Idle` and disarms the deadline | `CancelDeadline` kills the helper and keeps its port, `Dead` | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
-//// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored | ignored | the exit status of a retained port is the retirement proof; after a closed port it is ignored |
+//// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored; `KillWitnessDeadline` on a killed helper whose status never came closes the port and gives `LostExit` | ignored | the exit status of a retained port is the retirement proof; after a closed port it is ignored |
 
 import broker/framing.{type Fault, type Frame, type OutputStream}
 import broker/internal/call
@@ -440,6 +440,11 @@ pub type HelperConfig {
     /// payload with `SIG_IGN` on TERM outlives it and is ended by the
     /// KILL rung. See `cancel` for who each rung is addressed to.
     cancel_grace_ms: Int,
+    /// How long a deliberately killed helper may take to report the exit
+    /// status its kill produced before the broker stops waiting and
+    /// records the proof as lost. See `kill_witness_ms` for why the
+    /// default is generous and why expiry can only lose a proof.
+    kill_witness_ms: Int,
     /// Idle liveness probe interval; `0` disables.
     heartbeat_interval_ms: Int,
   )
@@ -491,6 +496,12 @@ pub opaque type Msg {
   /// The handshake window expired. A state timeout on `AwaitingHello`,
   /// so reaching `Idle` or `Dead` cancels it.
   HandshakeDeadline
+
+  /// The killed helper's exit status did not arrive within
+  /// `kill_witness_ms`. A state timeout on `Dead(PendingExit(AfterKill(..)))`,
+  /// so the status arriving, which moves the machine to `NativeExit`,
+  /// cancels it.
+  KillWitnessDeadline
 
   /// The idle liveness probe came round. Carries no execution id and no
   /// generation stamp: it is a periodic timeout armed under one name, so
@@ -709,9 +720,19 @@ pub fn default_config(transport: Transport) -> HelperConfig {
     transport:,
     handshake_timeout_ms: 5000,
     cancel_grace_ms: 3000,
+    kill_witness_ms:,
     heartbeat_interval_ms: 30_000,
   )
 }
+
+// How long the broker waits, after SIGKILL, for the exit status the kill
+// produces. SIGKILL cannot be caught, blocked or ignored, and the kernel
+// delivers it to a live process at once, so a status that has not arrived
+// five seconds later is one the kill did not produce: the pid was already
+// reaped, `kill` could not run, or the helper sits in uninterruptible sleep.
+// Waiting longer would only hold a pool slot `Draining` for ever, and the
+// timeout cannot grant a proof, only give up one that was never coming.
+const kill_witness_ms = 5000
 
 // --- helper lifecycle ---------------------------------------------------
 
@@ -1099,6 +1120,7 @@ fn handle(
     | Prepared, CancelExec
     | Prepared, CancelDeadline
     | Prepared, HandshakeDeadline
+    | Prepared, KillWitnessDeadline
     | Prepared, HeartbeatTick
     | Prepared, ForgetRetired
     -> state_machine.keep(data)
@@ -1283,6 +1305,32 @@ fn handle(
     | Dead(..), CancelDeadline
     -> state_machine.keep(data)
 
+    // The killed helper never reported the status its SIGKILL should have
+    // produced. Closing the port abandons the wait, and the move to
+    // `LostExit` is an unequal state, so weft replays every postponed
+    // `AwaitRetirement` against it and the pool reads the proof as lost.
+    // This can only lose a proof: no arm here grants one.
+    Dead(failure:, retirement: PendingExit(AfterKill(..))), KillWitnessDeadline
+    ->
+      state_machine.transition(
+        Dead(failure, close_transport(data.wire_out)),
+        data,
+      )
+
+    // Unreachable: the status arriving or the port closing leaves
+    // `PendingExit`, which cancels the witness timeout, and no other state
+    // arms it. The arms exist because the matrix is exhaustive.
+    AwaitingHello, KillWitnessDeadline
+    | Idle(..), KillWitnessDeadline
+    | Running(..), KillWitnessDeadline
+    | Cancelling(..), KillWitnessDeadline
+    | Dead(retirement: NoNativeResource, ..), KillWitnessDeadline
+    | Dead(retirement: PendingExit(AfterShutdown), ..), KillWitnessDeadline
+    | Dead(retirement: PendingExit(Unprompted(..)), ..), KillWitnessDeadline
+    | Dead(retirement: NativeExit(..), ..), KillWitnessDeadline
+    | Dead(retirement: LostExit, ..), KillWitnessDeadline
+    -> state_machine.keep(data)
+
     AwaitingHello, HandshakeDeadline ->
       die(Machine(phase: AwaitingHello, data:), HandshakeTimeout)
 
@@ -1379,6 +1427,14 @@ fn entered(
     // arm in `handle` unreachable: a tick already in flight when the
     // machine dies carries a stale generation stamp and dies in weft's
     // timer book instead of reaching the handler.
+    Dead(retirement: PendingExit(AfterKill(..)), ..) ->
+      state_machine.keep(data)
+      |> state_machine.cancel_timeout(name: heartbeat_timer)
+      |> state_machine.with_state_timeout(
+        after: data.config.kill_witness_ms,
+        sending: KillWitnessDeadline,
+      )
+
     Dead(..) ->
       state_machine.keep(data)
       |> state_machine.cancel_timeout(name: heartbeat_timer)
@@ -2634,6 +2690,7 @@ pub fn prepare_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
     transport:,
     handshake_timeout_ms: config.handshake_timeout_ms,
     cancel_grace_ms: config.cancel_grace_ms,
+    kill_witness_ms:,
     heartbeat_interval_ms: config.heartbeat_interval_ms,
   ))
   |> result.map_error(ActorFailed)
