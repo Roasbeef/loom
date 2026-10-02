@@ -16,6 +16,7 @@ import cap/strand
 import core/clock
 import core/ids
 import core/msgpack
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit
@@ -237,6 +238,140 @@ pub fn a_join_decodes_every_shape_of_answer_test() {
     )
   // A program that only wants to know whether to come back again.
   assert strand.pending_count([first, second]) == 1
+}
+
+pub fn wait_slices_longer_windows_until_settled_test() {
+  let seen = process.new_subject()
+  let call_count = process.new_subject()
+
+  install_fake(with: fn(cap, args, deadline) {
+    assert cap == "strand.wait"
+    let assert Ok(within_ms) = wire.int_field(args, "within_ms")
+    process.send(seen, #(within_ms, deadline))
+
+    case process.receive(call_count, 0) {
+      Error(Nil) -> {
+        process.send(call_count, "called")
+        Ok(
+          map([
+            #(
+              "waited",
+              msgpack.ArrayValue([
+                map([
+                  #("kind", msgpack.StringValue("pending")),
+                  #("strand", msgpack.StringValue("sub:main/a")),
+                  #(
+                    "operation",
+                    msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+                  ),
+                  #("waited_ms", msgpack.IntValue(30_000)),
+                ]),
+              ]),
+            ),
+          ]),
+        )
+      }
+
+      Ok(_) -> {
+        Ok(
+          map([
+            #(
+              "waited",
+              msgpack.ArrayValue([
+                map([
+                  #("kind", msgpack.StringValue("ready")),
+                  #("strand", msgpack.StringValue("sub:main/a")),
+                  #(
+                    "operation",
+                    msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+                  ),
+                  #(
+                    "outcome",
+                    map([#("kind", msgpack.StringValue("completed"))]),
+                  ),
+                  #("report", msgpack.StringValue("done")),
+                  #(
+                    "result",
+                    map([
+                      #("kind", msgpack.StringValue("given")),
+                      #(
+                        "value",
+                        map([#("verdict", msgpack.StringValue("approve"))]),
+                      ),
+                    ]),
+                  ),
+                  #("notes", msgpack.ArrayValue([])),
+                ]),
+              ]),
+            ),
+          ]),
+        )
+      }
+    }
+  })
+
+  let handle =
+    strand.Handle(
+      strand: "sub:main/a",
+      operation: op("00000000-0000-7000-8000-000000000001"),
+    )
+
+  let assert Ok([result]) = strand.wait([handle], within_ms: 60_000)
+  let assert strand.Ready(outcome: strand.Completed, ..) = result
+
+  let assert Ok(first_call) = process.receive(seen, 100)
+  assert first_call == #(30_000, 30_000 + strand.wait_margin_ms)
+
+  let assert Ok(second_call) = process.receive(seen, 100)
+  assert second_call == #(30_000, 30_000 + strand.wait_margin_ms)
+}
+
+pub fn wait_slices_accumulates_waited_ms_until_deadline_test() {
+  let seen = process.new_subject()
+
+  install_fake(with: fn(cap, args, deadline) {
+    assert cap == "strand.wait"
+    let assert Ok(within_ms) = wire.int_field(args, "within_ms")
+    process.send(seen, #(within_ms, deadline))
+
+    Ok(
+      map([
+        #(
+          "waited",
+          msgpack.ArrayValue([
+            map([
+              #("kind", msgpack.StringValue("pending")),
+              #("strand", msgpack.StringValue("sub:main/a")),
+              #(
+                "operation",
+                msgpack.StringValue("00000000-0000-7000-8000-000000000001"),
+              ),
+              #("waited_ms", msgpack.IntValue(within_ms)),
+            ]),
+          ]),
+        ),
+      ]),
+    )
+  })
+
+  let handle =
+    strand.Handle(
+      strand: "sub:main/a",
+      operation: op("00000000-0000-7000-8000-000000000001"),
+    )
+
+  let assert Ok([result]) = strand.wait([handle], within_ms: 75_000)
+  let assert strand.Pending(waited_ms: total, ..) = result
+  assert total == 75_000
+
+  let assert Ok(first_call) = process.receive(seen, 100)
+  assert first_call == #(30_000, 30_000 + strand.wait_margin_ms)
+
+  let assert Ok(second_call) = process.receive(seen, 100)
+  assert second_call == #(30_000, 30_000 + strand.wait_margin_ms)
+
+  let assert Ok(third_call) = process.receive(seen, 100)
+  assert third_call == #(15_000, 15_000 + strand.wait_margin_ms)
 }
 
 pub fn the_three_unhappy_result_verdicts_decode_test() {

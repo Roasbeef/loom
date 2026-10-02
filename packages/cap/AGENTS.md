@@ -79,7 +79,7 @@ cannot hide the capability error. This does not grant the program a new effect.
 - `cap/strand.{Assignment, Handle, Waited, TerminalResult, StrandError}` —
   child operations in either default program mode. `assignment`/`within`/`detached`/
   `from_my_conversation`/`with_model`/`with_tools`/`expecting` build a spawn; `spawn`,
-  `wait` (a list of handles against **one** deadline), `send`, `note`,
+  `wait` (a list of handles against **one** deadline, sliced across rounds up to `max_wait_slice_ms`), `send`, `note`,
   `notes` and `roster` are the six calls, serviced by the same
   `client/agency` closures the `agent_*` tools call. Every `StrandError`
   variant but the last two is one of the harness's own refusal names
@@ -464,6 +464,7 @@ through core/json_wire. `strand.map` runs bounded batches with one output per
 assignment; pending/failed joins and refused admissions stop further spawning
 while retaining known handles and unstarted assignments. It introduces no
 process machinery or new capability.
+`strand.wait` slices long join windows into bounded requests of at most 30 s (`max_wait_slice_ms`) until handles settle or the deadline expires.
 
 
 `cap/peer` also exposes caller-owned `inbox`, `inbox_get`, and `history` for

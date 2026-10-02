@@ -15,8 +15,9 @@
 ////    leaves the satellite until `spawn` runs.
 //// 2. `spawn` sends `assignment_value` through `dispatch.call` and decodes
 ////    the admitted child with `decode_handle`.
-//// 3. `wait` joins a list of handles against one shared deadline and decodes
-////    one `Waited` each with `decode_waited`.
+//// 3. `wait` joins a list of handles against one shared deadline, slicing
+////    windows through `wait_slice`, and decodes one `Waited` each with
+////    `decode_waited`.
 //// 4. `map` bounds the fan-out: `map_batches` admits a batch with
 ////    `admit_batch`, joins it with `join_batch`, and stops admitting as soon
 ////    as `batch_settled` says a child is unresolved.
@@ -103,6 +104,7 @@ import cap/internal/dispatch
 import cap/internal/wire
 import cap/report.{type Value}
 import core/ids
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -167,6 +169,12 @@ pub fn entry_id_to_string(id: EntryId) -> String {
 /// rather than hanging, so this margin covers the round trip and the
 /// clamp, never the wait itself.
 pub const wait_margin_ms = 10_000
+
+/// The maximum duration in milliseconds of a single join request sent to
+/// the harness. The harness clamps each `strand.wait` capability call to
+/// its own `max_wait_ms` ceiling (30 s), so `wait` slices longer requested
+/// windows into requests of at most this duration.
+pub const max_wait_slice_ms = 30_000
 
 // --- what a call answers with --------------------------------------------
 
@@ -560,22 +568,174 @@ pub fn spawn(assignment: Assignment) -> Result(Handle, StrandError) {
 /// program may join again, or go on and let the parent strand collect the
 /// result on a later turn.
 ///
+/// The harness clamps any single join request to its own `max_wait_ms`
+/// ceiling (30 s). Rather than silently returning `Pending` for a longer
+/// requested window, `wait` re-issues the join on the still-pending handles
+/// until they settle or the requested window is spent, so a program that
+/// asks for `within_ms: 880_000` actually waits up to that window.
+///
 /// Capability: `strand.wait`.
 pub fn wait(
   handles: List(Handle),
   within_ms within_ms: Int,
+) -> Result(List(Waited), StrandError) {
+  case handles {
+    [] -> Ok([])
+    _ -> do_wait(handles, handles, within_ms, dict.new(), 0)
+  }
+}
+
+// Slices a long join across multiple capability calls of at most 30 s each
+// until all handles settle or the caller's requested deadline has expired.
+fn do_wait(
+  original_handles: List(Handle),
+  pending_handles: List(Handle),
+  remaining_ms: Int,
+  settled: Dict(String, Waited),
+  total_waited_ms: Int,
+) -> Result(List(Waited), StrandError) {
+  case pending_handles {
+    [] -> Ok(assemble_waited(original_handles, settled))
+
+    _ -> {
+      let slice_ms = case remaining_ms > max_wait_slice_ms {
+        True -> max_wait_slice_ms
+        False -> int.max(0, remaining_ms)
+      }
+
+      use waited <- result.try(wait_slice(pending_handles, slice_ms))
+
+      step_wait(
+        original_handles,
+        pending_handles,
+        waited,
+        remaining_ms,
+        settled,
+        total_waited_ms,
+        slice_ms,
+      )
+    }
+  }
+}
+
+// Processes the result of a single wait slice, advancing the accumulated
+// waited time and deciding whether to poll again or conclude the join.
+fn step_wait(
+  original_handles: List(Handle),
+  pending_handles: List(Handle),
+  waited: List(Waited),
+  remaining_ms: Int,
+  settled: Dict(String, Waited),
+  total_waited_ms: Int,
+  slice_ms: Int,
+) -> Result(List(Waited), StrandError) {
+  let returned_handles = list.map(waited, fn(item) { item.handle })
+
+  case returned_handles == pending_handles {
+    False -> Error(StrandsUnavailable("wait returned mismatched handles"))
+
+    True -> {
+      let new_settled =
+        update_settled(waited, settled, total_waited_ms, slice_ms)
+      let still_pending = filter_pending(pending_handles, new_settled)
+
+      case still_pending {
+        [] -> Ok(assemble_waited(original_handles, new_settled))
+
+        _ -> {
+          let slice_waited = slice_elapsed(waited, slice_ms)
+
+          case slice_waited <= 0 || remaining_ms <= slice_waited {
+            True -> Ok(assemble_waited(original_handles, new_settled))
+
+            False ->
+              do_wait(
+                original_handles,
+                still_pending,
+                remaining_ms - slice_waited,
+                new_settled,
+                total_waited_ms + slice_waited,
+              )
+          }
+        }
+      }
+    }
+  }
+}
+
+// Performs one bounded capability call to the harness.
+fn wait_slice(
+  handles: List(Handle),
+  within_ms: Int,
 ) -> Result(List(Waited), StrandError) {
   let args =
     wire.args([
       #("handles", encode_handles(handles)),
       #("within_ms", wire.int(within_ms)),
     ])
+
   use value <- result.try(
     dispatch.call_within("strand.wait", args, within_ms + wait_margin_ms)
     |> result.map_error(map_error),
   )
   wire.array_of(value, "waited", of: decode_waited)
   |> result.map_error(malformed("strand.wait"))
+}
+
+// Merges newly observed slice results into the settled map, accumulating
+// elapsed wait time for any handles that remain pending.
+fn update_settled(
+  waited: List(Waited),
+  settled: Dict(String, Waited),
+  total_waited_ms: Int,
+  slice_ms: Int,
+) -> Dict(String, Waited) {
+  list.fold(waited, settled, fn(acc, item) {
+    case item {
+      Ready(..) -> dict.insert(acc, handle_text(item.handle), item)
+
+      Pending(handle:, waited_ms:) ->
+        dict.insert(
+          acc,
+          handle_text(handle),
+          Pending(
+            handle:,
+            waited_ms: total_waited_ms + int.max(waited_ms, slice_ms),
+          ),
+        )
+    }
+  })
+}
+
+// Identifies which handles from the slice still need further waiting.
+fn filter_pending(
+  pending_handles: List(Handle),
+  settled: Dict(String, Waited),
+) -> List(Handle) {
+  list.filter(pending_handles, fn(h) {
+    case dict.get(settled, handle_text(h)) {
+      Ok(Ready(..)) -> False
+      _ -> True
+    }
+  })
+}
+
+// Computes how much wall time was spent in this slice across pending handles.
+fn slice_elapsed(waited: List(Waited), slice_ms: Int) -> Int {
+  list.fold(waited, slice_ms, fn(acc, item) {
+    case item {
+      Pending(waited_ms:, ..) -> int.max(acc, waited_ms)
+      Ready(..) -> acc
+    }
+  })
+}
+
+// Reassembles the final waited list in the caller's original handle order.
+fn assemble_waited(
+  original_handles: List(Handle),
+  settled: Dict(String, Waited),
+) -> List(Waited) {
+  list.filter_map(original_handles, fn(h) { dict.get(settled, handle_text(h)) })
 }
 
 // --- addressing ------------------------------------------------------------

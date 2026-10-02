@@ -183,6 +183,76 @@ pub fn failed_or_malformed_joins_preserve_all_handles_test() {
   })
 }
 
+pub fn map_slices_long_join_windows_until_settled_test() {
+  let log = process.new_subject()
+  let call_count = process.new_subject()
+
+  dispatch.install(
+    channel.Channel(call: fn(cap, args, _) {
+      case cap {
+        "strand.spawn" -> {
+          let assert Ok(name) = wire.string_field(args, "purpose")
+            as "spawn has a purpose"
+          process.send(log, "spawn:" <> name)
+          Ok(handle_value(name))
+        }
+
+        "strand.wait" -> {
+          let assert Ok(handles) = wire.array_field(args, "handles")
+            as "join has handles"
+          process.send(log, "wait:" <> int.to_string(list.length(handles)))
+
+          case process.receive(call_count, 0) {
+            Error(Nil) -> {
+              process.send(call_count, "called")
+              Ok(
+                report.object([
+                  #(
+                    "waited",
+                    report.list(
+                      list.map(handles, fn(value) {
+                        let assert msgpack.MapValue(fields) = value
+                          as "handle is an object"
+                        msgpack.MapValue(
+                          list.append(fields, [
+                            #(
+                              msgpack.StringValue("kind"),
+                              report.string("pending"),
+                            ),
+                            #(
+                              msgpack.StringValue("waited_ms"),
+                              report.int(30_000),
+                            ),
+                          ]),
+                        )
+                      }),
+                    ),
+                  ),
+                ]),
+              )
+            }
+
+            Ok(_) -> {
+              Ok(
+                report.object([
+                  #("waited", report.list(list.map(handles, ready))),
+                ]),
+              )
+            }
+          }
+        }
+
+        _ -> panic as "map only spawns and joins"
+      }
+    }),
+  )
+
+  let assert Ok([strand.Joined(strand.Ready(handle: actual, ..))]) =
+    strand.map(assignments(1), max_concurrency: 1, within_ms: 60_000)
+  assert actual == handle("0")
+  assert events(log, 3) == ["spawn:0", "wait:1", "wait:1"]
+}
+
 pub fn invalid_map_options_and_empty_work_do_not_call_the_host_test() {
   dispatch.install(
     channel.Channel(call: fn(_, _, _) { panic as "no host calls expected" }),
