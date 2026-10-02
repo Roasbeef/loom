@@ -117,6 +117,49 @@
 //// dispatcher cannot overwrite a live row, which would let the orphan's
 //// relay be granted against the new row.
 ////
+//// ## What an operator sees
+////
+//// `snapshot` answers a bounded `executor_view.Snapshot` from the service's
+//// own books. A live row's mode, cancel state and output counters are the
+//// relay's last report: the relay casts a small `Progress` to the service on
+//// a change of mode or cancel state, on its first chunk and on every
+//// `relay.progress_chunks`-th, and carries its exact final counters in the
+//// verdict it asks leave to report. The alternative was to query each relay
+//// when a snapshot is taken. That would have the serial service wait on
+//// processes that may be waiting on the service (a relay blocks in
+//// `ask_to_settle`), so a stuck execution could stall the very tool used to
+//// debug it. Casts keep the service's mailbox bounded by one small message
+//// per relay per interval, and the snapshot never waits on anything but the
+//// pool's census.
+////
+//// A settlement is recorded in the books once, where a row's life ends: at
+//// the broker's release for a granted row, at a loss, or at close for a
+//// granted row that will never be released. Each recording writes one
+//// `executor.settled` line, Info for a completion and Warning otherwise.
+//// Starts the service refuses are counted by reason. The figures and their
+//// bounds are in `broker/executor_view`.
+////
+//// ## Flow
+////
+//// `start` → `dispatcher` → `handle` → `begin_execution` →
+//// `dispatch_execution` → `grant_settlement` → `release_row` → `lose_row` →
+//// `begin_close` → `finish_closing`
+////
+//// 1. `start` builds the state machine and `dispatcher` hands the broker the
+////    one function that reaches it.
+//// 2. `handle` is the machine's step function: it matches the `Phase` against
+////    the `Msg`, so every pairing is written out.
+//// 3. `begin_execution` times a start and counts a refusal; its
+////    `dispatch_execution` borrows a helper, starts the relay and sends the
+////    helper its `Run`.
+//// 4. `grant_settlement` is the relay's leave to report, and `release_row`
+////    is the broker's return of the helper once it has processed the verdict.
+//// 5. `lose_row` is the service's own settlement when the relay is gone, and
+////    `record_settlement` is where either ending reaches the books and the
+////    log; `snapshot` renders them.
+//// 6. `begin_close` stops admissions and cancels the live rows, and
+////    `finish_closing` closes the pool and answers the closer.
+////
 //// ## Transitions
 ////
 //// <!-- transitions: executor.Phase -->
@@ -130,6 +173,7 @@
 import broker/dispatch.{type Dispatcher}
 import broker/exec.{type Helper}
 import broker/execution
+import broker/executor_view
 import broker/internal/call
 import broker/relay
 import core/clock
@@ -138,8 +182,13 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import gleam/string
+import telemetry/field
+import telemetry/log.{type Logger}
+import weft/poll
 import weft/state_machine
 
 /// What the service is built over: the pool's seams, as closures so that
@@ -151,8 +200,10 @@ pub type ExecutorConfig {
     checkout: fn() -> Result(Helper, exec.CheckoutError),
     /// Returns a helper. The pool retires one that is returned busy.
     checkin: fn(Helper) -> Nil,
-    /// Counts the pool's inventory by custody.
-    census: fn() -> Result(exec.PoolCensus, exec.CheckoutError),
+    /// The pool's census and a view of each helper, taken by the pool in
+    /// one step. A closure so that tests can pass a fake and so that this
+    /// module bounds how long it waits.
+    custody: fn() -> Result(exec.PoolCustody, exec.CheckoutError),
     /// Closes every helper the pool owns, within this many milliseconds,
     /// answering the retirement verdict.
     close_helpers: fn(Int) -> Result(Nil, exec.RetirementFailure),
@@ -160,6 +211,12 @@ pub type ExecutorConfig {
     /// an execution identity from a previous service can never equal one
     /// from this one.
     incarnation: Int,
+    /// Where the service writes one line per settlement and one when it
+    /// closes. `log.discard()` for a service nobody observes. The lines
+    /// carry identities, counts and outcome names; the service has no way to
+    /// put a request, an environment or a token in one, because it never
+    /// holds them after dispatch.
+    log: Logger,
   )
 }
 
@@ -209,11 +266,17 @@ pub opaque type Msg {
   Cancel(id: dispatch.ExecutionId)
   CancelAsk(id: dispatch.ExecutionId, reply: Subject(Nil))
   Stdin(id: dispatch.ExecutionId, data: BitArray, eof: dispatch.Eof)
-  MaySettle(id: dispatch.ExecutionId, reply: Subject(relay.Permission))
+  MaySettle(
+    id: dispatch.ExecutionId,
+    verdict: relay.Verdict,
+    reply: Subject(relay.Permission),
+  )
+  Progress(id: dispatch.ExecutionId, progress: relay.Progress)
   Release(id: dispatch.ExecutionId)
   Abandon(id: dispatch.ExecutionId)
   RelayDown(down: process.Down)
   Report(reply: Subject(Inventory))
+  Observe(reply: Subject(executor_view.Snapshot))
   Close(
     draining: Int,
     helpers: Int,
@@ -245,7 +308,13 @@ type Closer {
 }
 
 type State {
-  State(config: ExecutorConfig, subject: Subject(Msg), rows: Dict(Int, Row))
+  State(
+    config: ExecutorConfig,
+    subject: Subject(Msg),
+    rows: Dict(Int, Row),
+    // Counters and rings for the snapshot. Bounded; see `executor_view`.
+    books: executor_view.Books,
+  )
 }
 
 // One execution. `settle` is the broker's closure from the `Dispatch`,
@@ -259,6 +328,19 @@ type Row {
     settle: fn(dispatch.Terminal) -> Nil,
     started_at_ms: Int,
     status: Status,
+    // What an observer reads of the row. None of it is a request: the
+    // service keeps the demand and the deadline and drops argv, environment,
+    // working directory, policy and token as soon as the helper has them.
+    session_clock: clock.Clock,
+    deadline_ms: Int,
+    demand: exec.EnforcementDemand,
+    started_mono: Int,
+    // The relay's last report. It lags a running execution by up to
+    // `relay.progress_chunks` chunks.
+    progress: relay.Progress,
+    // When this service first sent the helper a cancel, on the monotonic
+    // clock. The relay cannot say: only the service sees the cancel arrive.
+    cancelled_mono: Option(Int),
   )
 }
 
@@ -269,7 +351,19 @@ type Status {
 
   // The relay was given leave. The service's own monitor never settles it;
   // only the broker's `Abandon`, which proves the relay sent nothing, does.
-  Granted
+  // The closure is what the relay asked to report, kept so the settlement is
+  // recorded when the broker releases the row and not before: a granted
+  // relay that then dies unreported is abandoned and settles lost instead.
+  Granted(closure: Closure)
+}
+
+// How an execution ended, as far as the service can say, and when.
+type Closure {
+  Closure(
+    outcome: executor_view.Outcome,
+    progress: relay.Progress,
+    at_mono: Int,
+  )
 }
 
 // How long the checkout seam is expected to take at most. The pool's
@@ -319,9 +413,10 @@ const close_slack_ms = 1000
 ///   executor.start(executor.ExecutorConfig(
 ///     checkout: fn() { exec.checkout(pool, waiting: 15_000) },
 ///     checkin: fn(helper) { exec.checkin(pool, helper) },
-///     census: fn() { exec.pool_census(pool, waiting: 1000) },
+///     custody: fn() { exec.pool_custody(pool, waiting: 1000) },
 ///     close_helpers: fn(ms) { exec.close_pool(pool, waiting: ms) },
 ///     incarnation: 0,
+///     log: log.discard(),
 ///   ))
 /// ```
 ///
@@ -335,7 +430,7 @@ pub fn start(config: ExecutorConfig) -> Result(Executor, actor.StartError) {
       |> process.select_monitors(RelayDown)
     state_machine.initialised(
       Serving,
-      State(config:, subject:, rows: dict.new()),
+      State(config:, subject:, rows: dict.new(), books: executor_view.new()),
     )
     |> state_machine.selecting(selector)
     |> state_machine.returning(subject)
@@ -406,6 +501,35 @@ pub fn inventory(
 ) -> Result(Inventory, Unreachable) {
   case call.try_call(executor.subject, waiting: timeout, sending: Report) {
     Ok(books) -> Ok(books)
+    Error(call.NoReply) | Error(call.CalleeGone) -> Error(Unreachable)
+  }
+}
+
+/// A bounded picture of the service for an operator: the executions it
+/// holds with their mode, cancel state, output counters and age, the pool's
+/// custody of each helper, counters and latency summaries, the last 64
+/// settlements and the last failure. The service answers it in every phase,
+/// and it holds nothing once answered.
+///
+/// The figures are the service's own books and the relays' last progress
+/// reports, so no relay and no helper is asked anything: a wedged execution
+/// cannot delay the answer. `waiting` is the observer's window in
+/// milliseconds; the service itself may spend up to a second of it asking
+/// the pool for its custody.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(snapshot) = executor.snapshot(service, waiting: 2000)
+/// assert snapshot.live == []
+/// ```
+///
+pub fn snapshot(
+  executor: Executor,
+  waiting timeout: Int,
+) -> Result(executor_view.Snapshot, Unreachable) {
+  case call.try_call(executor.subject, waiting: timeout, sending: Observe) {
+    Ok(snapshot) -> Ok(snapshot)
     Error(call.NoReply) | Error(call.CalleeGone) -> Error(Unreachable)
   }
 }
@@ -509,12 +633,9 @@ fn handle(
     Serving, DrainDeadline | Closed(..), DrainDeadline ->
       state_machine.keep(state)
 
-    _phase, Cancel(id:) -> {
-      cancel_row(state, id)
-      state_machine.keep(state)
-    }
+    _phase, Cancel(id:) -> state_machine.keep(cancel_row(state, id))
     _phase, CancelAsk(id:, reply:) -> {
-      cancel_row(state, id)
+      let state = cancel_row(state, id)
       process.send(reply, Nil)
       state_machine.keep(state)
     }
@@ -522,13 +643,23 @@ fn handle(
       feed_row(state, id, data, eof)
       state_machine.keep(state)
     }
-    phase, MaySettle(id:, reply:) ->
-      conclude(phase, grant_settlement(state, id, reply))
+    phase, MaySettle(id:, verdict:, reply:) ->
+      conclude(phase, grant_settlement(state, id, verdict, reply))
+
+    // Progress is a cast the relay sends and never waits on, so it is
+    // answered by nothing and changes only the row's observed fields.
+    _phase, Progress(id:, progress:) -> {
+      state_machine.keep(observe_progress(state, id, progress))
+    }
     phase, Release(id:) -> conclude(phase, release_row(state, id))
     phase, Abandon(id:) -> conclude(phase, abandon_row(state, id))
     phase, RelayDown(down:) -> conclude(phase, relay_gone(state, down))
     _phase, Report(reply:) -> {
       process.send(reply, books(state))
+      state_machine.keep(state)
+    }
+    phase, Observe(reply:) -> {
+      process.send(reply, snapshot_of(phase, state))
       state_machine.keep(state)
     }
   }
@@ -560,10 +691,26 @@ fn begin_execution(
   state: State,
   request: dispatch.Dispatch,
 ) -> #(State, Result(dispatch.Execution, dispatch.StartRefusal)) {
+  let entered = now_ms()
   case dispatch_execution(state, request) {
-    Ok(#(state, execution)) -> #(state, Ok(execution))
-    Error(refusal) -> #(state, Error(refusal))
+    Ok(#(state, execution)) -> {
+      let books =
+        executor_view.record_start(state.books, launch_ms: now_ms() - entered)
+      #(State(..state, books:), Ok(execution))
+    }
+    Error(refusal) -> {
+      let books = executor_view.record_refusal(state.books, refusal)
+      #(State(..state, books:), Error(refusal))
+    }
   }
+}
+
+// The monotonic clock the service measures its own latencies on. The
+// session clock is injected and a test's is fixed, so it cannot time
+// anything; this one is weft's, the same the helper's deadlines use.
+fn now_ms() -> Int {
+  let monotonic = poll.monotonic()
+  monotonic.now()
 }
 
 fn dispatch_execution(
@@ -599,6 +746,16 @@ fn dispatch_execution(
       settle: request.settle,
       started_at_ms:,
       status: Live,
+      session_clock: request.clock,
+      deadline_ms: request.deadline_ms,
+      demand: request.request.demand,
+      started_mono: now_ms(),
+      progress: relay.Progress(
+        mode: execution.Streaming,
+        output: execution.new().output,
+        cancel: execution.NotAsked,
+      ),
+      cancelled_mono: None,
     )
 
   // A refusal here still reaches the caller through the relay, as the
@@ -633,9 +790,10 @@ fn start_relay(
   let link =
     relay.Link(
       cancel: fn() { ask_to_cancel(subject, id, waiting: relay.cancel_wait_ms) },
-      may_settle: fn() {
-        ask_to_settle(subject, id, waiting: relay.settle_wait_ms)
+      may_settle: fn(verdict) {
+        ask_to_settle(subject, id, verdict, waiting: relay.settle_wait_ms)
       },
+      progress: fn(progress) { process.send(subject, Progress(id:, progress:)) },
     )
   let config =
     relay.Config(
@@ -682,11 +840,12 @@ fn ask_to_cancel(
 fn ask_to_settle(
   subject: Subject(Msg),
   id: dispatch.ExecutionId,
+  verdict: relay.Verdict,
   waiting timeout: Int,
 ) -> relay.Permission {
   let asked =
     call.try_call(subject, waiting: timeout, sending: fn(reply) {
-      MaySettle(id:, reply:)
+      MaySettle(id:, verdict:, reply:)
     })
   case asked {
     Ok(permission) -> permission
@@ -704,7 +863,16 @@ pub fn may_settle(
   id: dispatch.ExecutionId,
   waiting timeout: Int,
 ) -> relay.Permission {
-  ask_to_settle(executor.subject, id, waiting: timeout)
+  let verdict =
+    relay.Verdict(
+      terminal: dispatch.Failed(failure: exec.NotReady),
+      progress: relay.Progress(
+        mode: execution.Streaming,
+        output: execution.new().output,
+        cancel: execution.NotAsked,
+      ),
+    )
+  ask_to_settle(executor.subject, id, verdict, waiting: timeout)
 }
 
 // What the broker holds for an execution: closures that send to this
@@ -742,13 +910,27 @@ fn find_row(state: State, id: dispatch.ExecutionId) -> Result(Row, Nil) {
 // is harmless: the core keeps the first cause and a settled core ignores
 // everything. A cancel for a granted or unknown row is dropped: the
 // execution has ended, and the helper may already hold the next one.
-fn cancel_row(state: State, id: dispatch.ExecutionId) -> Nil {
+fn cancel_row(state: State, id: dispatch.ExecutionId) -> State {
   case find_row(state, id) {
-    Ok(Row(status: Live, helper:, relay:, ..)) -> {
+    Ok(Row(status: Live, helper:, relay:, ..) as row) -> {
       exec.cancel(helper)
       process.send(relay.control, execution.CancelRequested)
+
+      // Only the first cancel starts the cancel-to-settle clock: a second is
+      // idempotent at the helper and must not make the wait look shorter.
+      let cancelled_mono = case row.cancelled_mono {
+        None -> Some(now_ms())
+        Some(_) -> row.cancelled_mono
+      }
+      let rows =
+        dict.insert(
+          state.rows,
+          dispatch.seq(row.id),
+          Row(..row, cancelled_mono:),
+        )
+      State(..state, rows:)
     }
-    Ok(Row(status: Granted, ..)) | Error(Nil) -> Nil
+    Ok(Row(status: Granted(..), ..)) | Error(Nil) -> state
   }
 }
 
@@ -769,7 +951,7 @@ fn feed_row(
       }
       exec.stdin(helper, data:, eof: closes_stdin)
     }
-    Ok(Row(status: Granted, ..)) | Error(Nil) -> Nil
+    Ok(Row(status: Granted(..), ..)) | Error(Nil) -> Nil
   }
 }
 
@@ -779,16 +961,27 @@ fn feed_row(
 fn grant_settlement(
   state: State,
   id: dispatch.ExecutionId,
+  verdict: relay.Verdict,
   reply: Subject(relay.Permission),
 ) -> State {
   case find_row(state, id) {
     Ok(Row(status: Live, ..) as row) -> {
       process.send(reply, relay.Granted)
+      let closure =
+        Closure(
+          outcome: executor_view.outcome_of(verdict.terminal),
+          progress: verdict.progress,
+          at_mono: now_ms(),
+        )
       let rows =
-        dict.insert(state.rows, dispatch.seq(id), Row(..row, status: Granted))
+        dict.insert(
+          state.rows,
+          dispatch.seq(id),
+          Row(..row, status: Granted(closure:), progress: verdict.progress),
+        )
       State(..state, rows:)
     }
-    Ok(Row(status: Granted, ..)) | Error(Nil) -> {
+    Ok(Row(status: Granted(..), ..)) | Error(Nil) -> {
       process.send(reply, relay.AlreadySettled)
       state
     }
@@ -804,10 +997,18 @@ fn grant_settlement(
 // not have been read yet. The execution has been reported, so it is
 // treated exactly as a granted one; the relay's late ask finds no row and
 // is answered `AlreadySettled` to a process that is already gone.
+//
+// Only a granted row's settlement is recorded here. A `Live` row released
+// is the silent-service case above: the relay reported without an answer, so
+// the service never learned the verdict and has nothing true to count.
 fn release_row(state: State, id: dispatch.ExecutionId) -> State {
   case find_row(state, id) {
     Ok(row) -> {
       state.config.checkin(row.helper)
+      let state = case row.status {
+        Granted(closure:) -> record_settlement(state, row, closure)
+        Live -> state
+      }
       remove_row(state, row)
     }
     Error(Nil) -> state
@@ -848,7 +1049,7 @@ fn relay_gone(state: State, down: process.Down) -> State {
         // or it died between the grant and the report. Either way the
         // broker decides: it sends `Release` for a settlement it saw and
         // `Abandon` for one it did not.
-        Ok(Row(status: Granted, ..)) | Error(Nil) -> state
+        Ok(Row(status: Granted(..), ..)) | Error(Nil) -> state
       }
   }
 }
@@ -860,7 +1061,17 @@ fn relay_gone(state: State, down: process.Down) -> State {
 fn lose_row(state: State, row: Row, cause: exec.LossCause) -> State {
   exec.cancel(row.helper)
   state.config.checkin(row.helper)
-  let state = remove_row(state, row)
+
+  // The loss is recorded against the row's last known progress. A granted
+  // row that is abandoned is recorded here as lost too, and not as the
+  // verdict it was granted, because the caller is told lost.
+  let closure =
+    Closure(
+      outcome: executor_view.Lost(cause:),
+      progress: row.progress,
+      at_mono: now_ms(),
+    )
+  let state = record_settlement(state, row, closure) |> remove_row(row)
   row.settle(dispatch.Failed(failure: exec.ExecutionLost(cause:)))
   state
 }
@@ -881,12 +1092,13 @@ fn begin_close(
   reply: Subject(Result(Nil, exec.RetirementFailure)),
 ) -> state_machine.Next(Phase, State, Msg) {
   let closer = Closer(reply:, helpers_ms: helpers)
-  list.each(dict.keys(state.rows), fn(seq) {
-    cancel_row(
-      state,
-      dispatch.execution_id(incarnation: state.config.incarnation, seq:),
-    )
-  })
+  let state =
+    list.fold(dict.keys(state.rows), state, fn(state, seq) {
+      cancel_row(
+        state,
+        dispatch.execution_id(incarnation: state.config.incarnation, seq:),
+      )
+    })
   case has_live_row(state) {
     False -> finish_closing(state, closer)
     True ->
@@ -911,7 +1123,7 @@ fn expire_live_rows(state: State) -> State {
         process.kill(row.relay.pid)
         lose_row(state, row, exec.ExecutorClosing)
       }
-      Granted -> state
+      Granted(..) -> state
     }
   })
 }
@@ -927,7 +1139,18 @@ fn finish_closing(
   list.each(dict.values(state.rows), fn(row) {
     process.demonitor_process(row.relay_monitor)
   })
+
+  // A granted row still held now will never be released, so its granted
+  // verdict is the settlement the books keep.
+  let state =
+    list.fold(dict.values(state.rows), state, fn(state, row) {
+      case row.status {
+        Granted(closure:) -> record_settlement(state, row, closure)
+        Live -> state
+      }
+    })
   let outcome = state.config.close_helpers(closer.helpers_ms)
+  log_closed(state, outcome)
   process.send(closer.reply, outcome)
   case outcome {
     Ok(Nil) -> state_machine.stop()
@@ -945,7 +1168,7 @@ fn has_live_row(state: State) -> Bool {
   list.any(dict.values(state.rows), fn(row) {
     case row.status {
       Live -> True
-      Granted -> False
+      Granted(..) -> False
     }
   })
 }
@@ -962,6 +1185,163 @@ fn books(state: State) -> Inventory {
   Inventory(
     incarnation: state.config.incarnation,
     live:,
-    pool: state.config.census(),
+    pool: state.config.custody() |> result.map(fn(custody) { custody.census }),
   )
+}
+
+// The relay's report, kept on the row it names. A report for a granted row
+// is dropped: the verdict carried the final counters. One for a row that is
+// gone is a late cast and finds nothing.
+fn observe_progress(
+  state: State,
+  id: dispatch.ExecutionId,
+  progress: relay.Progress,
+) -> State {
+  case find_row(state, id) {
+    Ok(Row(status: Live, ..) as row) -> {
+      let rows =
+        dict.insert(state.rows, dispatch.seq(id), Row(..row, progress:))
+      State(..state, rows:)
+    }
+    Ok(Row(status: Granted(..), ..)) | Error(Nil) -> state
+  }
+}
+
+// The books, the live rows and the pool's custody, rendered at one instant.
+// Every field is a counter, an enum or an identity, so what an observer is
+// given cannot contain a request.
+fn snapshot_of(phase: Phase, state: State) -> executor_view.Snapshot {
+  let pool = state.config.custody()
+  let now = now_ms()
+  let live =
+    dict.to_list(state.rows)
+    |> list.sort(fn(left, right) { int.compare(left.0, right.0) })
+    |> list.map(fn(entry) { live_view(entry.1, pool, now) })
+  executor_view.Snapshot(
+    incarnation: state.config.incarnation,
+    phase: phase_view(phase),
+    live:,
+    pool:,
+    metrics: executor_view.metrics(state.books),
+    recent: executor_view.recent(state.books),
+    last_failure: executor_view.last_failure(state.books),
+  )
+}
+
+fn phase_view(phase: Phase) -> executor_view.ServicePhase {
+  case phase {
+    Serving -> executor_view.Serving
+    Closing(..) -> executor_view.Closing
+    Closed(..) -> executor_view.Closed
+  }
+}
+
+fn live_view(
+  row: Row,
+  pool: Result(exec.PoolCustody, exec.CheckoutError),
+  now: Int,
+) -> executor_view.LiveView {
+  let helper = exec.pid(row.helper)
+  let ordinal = case pool {
+    Ok(custody) ->
+      list.find(custody.helpers, fn(view) { view.pid == helper })
+      |> result.map(fn(view) { view.ordinal })
+      |> option.from_result
+    Error(_) -> None
+  }
+  executor_view.LiveView(
+    id: row.id,
+    status: case row.status {
+      Live -> executor_view.Running
+      Granted(closure:) -> executor_view.Granted(outcome: closure.outcome)
+    },
+    mode: row.progress.mode,
+    cancel: row.progress.cancel,
+    output: row.progress.output,
+    started_at: row.started_at_ms,
+    deadline_ms: row.deadline_ms,
+    demand: row.demand,
+    helper:,
+    helper_ordinal: ordinal,
+    age_ms: now - row.started_mono,
+  )
+}
+
+// --- the books and the log ----------------------------------------------
+
+// Records one settlement in the books and writes its line. Called at the one
+// place each path ends a row's life, so every started execution is counted
+// once: at release, at loss, or when the service closes holding it.
+fn record_settlement(state: State, row: Row, closure: Closure) -> State {
+  let output = closure.progress.output
+  let settled =
+    executor_view.Settled(
+      id: row.id,
+      outcome: closure.outcome,
+      duration_ms: closure.at_mono - row.started_mono,
+      stdout_bytes: output.stdout_bytes,
+      stderr_bytes: output.stderr_bytes,
+      truncated: output.truncated,
+      cancel: closure.progress.cancel,
+    )
+  let cancel_ms =
+    option.map(row.cancelled_mono, fn(started) { closure.at_mono - started })
+  let at_ms = clock.read(row.session_clock).0
+  log_settlement(state.config, settled, output.chunks)
+  State(
+    ..state,
+    books: executor_view.record_settlement(
+      state.books,
+      settled,
+      cancel_ms:,
+      at_ms:,
+    ),
+  )
+}
+
+// One line per settlement: Info for a completion, Warning for anything else.
+// The fields are the identity, the counts and the names of the outcome; the
+// service holds nothing else to write.
+fn log_settlement(
+  config: ExecutorConfig,
+  settled: executor_view.Settled,
+  chunks: Int,
+) -> Nil {
+  let fields = [
+    field.ident("execution", executor_view.id_label(settled.id)),
+    field.ident("incarnation", int.to_string(config.incarnation)),
+    field.text("outcome", executor_view.outcome_class(settled.outcome)),
+    field.text("detail", executor_view.outcome_detail(settled.outcome)),
+    field.text("cancel", executor_view.cancel_name(settled.cancel)),
+    field.count("duration_ms", settled.duration_ms),
+    field.count("stdout_bytes", settled.stdout_bytes),
+    field.count("stderr_bytes", settled.stderr_bytes),
+    field.count("chunks", chunks),
+  ]
+  case settled.outcome {
+    executor_view.Completed(..) ->
+      log.info(config.log, "executor.settled", fields)
+    executor_view.Failed(..) | executor_view.Lost(..) ->
+      log.warn(config.log, "executor.settled", fields)
+  }
+}
+
+// The close's verdict: Info when the pool showed every helper retired,
+// Warning when custody is being kept.
+fn log_closed(
+  state: State,
+  outcome: Result(Nil, exec.RetirementFailure),
+) -> Nil {
+  let fields = [
+    field.ident("incarnation", int.to_string(state.config.incarnation)),
+    field.count("unreleased", dict.size(state.rows)),
+  ]
+  case outcome {
+    Ok(Nil) -> log.info(state.config.log, "executor.closed", fields)
+    Error(failure) ->
+      log.warn(state.config.log, "executor.closed", [
+        field.text("verdict", string.inspect(failure)),
+        ..fields
+      ])
+  }
 }

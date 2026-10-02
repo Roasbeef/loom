@@ -680,6 +680,7 @@ pub fn start_effect_plane(
     size,
     clock,
     DirectLane,
+    log.discard(),
     None,
   ))
   #(plane.pool, plane.broker)
@@ -706,6 +707,7 @@ fn start_effect_plane_in(
   size: Int,
   clock: Clock,
   lane: ExecutorLane,
+  logger: Logger,
   owner: Option(custody.Owner),
 ) -> Result(EffectPlane, String) {
   let spawn_config =
@@ -730,7 +732,7 @@ fn start_effect_plane_in(
   )
   use #(service, broker_actor) <- result.try(case lane {
     DirectLane -> start_direct_lane(pool, clock, owner)
-    ServiceLane -> start_service_lane(pool, clock, owner)
+    ServiceLane -> start_service_lane(pool, clock, logger, owner)
   })
   use broker_pid <- result.try(
     broker.pid(broker_actor)
@@ -791,15 +793,17 @@ fn start_direct_lane(
 fn start_service_lane(
   pool: Pool,
   session_clock: Clock,
+  logger: Logger,
   owner: Option(custody.Owner),
 ) -> Result(#(Option(executor.Executor), Broker), String) {
   use service <- result.try(
     executor.start(executor.ExecutorConfig(
       checkout: fn() { exec.checkout(pool, waiting: 15_000) },
       checkin: fn(helper) { exec.checkin(pool, helper) },
-      census: fn() { exec.pool_census(pool, waiting: 1000) },
+      custody: fn() { exec.pool_custody(pool, waiting: 1000) },
       close_helpers: fn(waiting) { exec.close_pool(pool, waiting:) },
       incarnation: clock.read(session_clock).0,
+      log: logger,
     ))
     |> result.map_error(fn(error) {
       "the executor service did not start: " <> string.inspect(error)
@@ -3551,6 +3555,7 @@ fn assemble_in(
     settings.helper_pool_size,
     clock,
     settings.executor_lane,
+    logger,
     owner,
   ))
   let pool = plane.pool

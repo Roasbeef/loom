@@ -98,7 +98,8 @@
 import broker/dispatch
 import broker/exec
 import broker/execution.{
-  type Core, type Effect, type Event, type Mode, Draining, Streaming,
+  type CancelState, type Core, type Effect, type Event, type Mode, type Output,
+  Draining, Streaming,
 }
 import core/clock.{type Clock}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -125,7 +126,33 @@ pub type Permission {
   ServiceSilent
 }
 
-/// The relay's two ways back to the executor service, as closures so that
+/// What the relay knows about an execution that an observer cannot read from
+/// outside: its mode, what it has forwarded, and whether a cancel was asked.
+/// Counters and enums only; no output byte is ever in it.
+pub type Progress {
+  Progress(
+    /// `Streaming` or `Draining`.
+    mode: Mode,
+    /// What has been delivered to the caller so far.
+    output: Output,
+    /// Whether and why a cancel was asked.
+    cancel: CancelState,
+  )
+}
+
+/// The verdict a relay asks leave to report, with the progress it ends on.
+/// The service records the settlement from this, so the exact totals reach
+/// it without a message per chunk.
+pub type Verdict {
+  Verdict(
+    /// The settlement the core decided.
+    terminal: dispatch.Terminal,
+    /// The execution's counters at the moment it was decided.
+    progress: Progress,
+  )
+}
+
+/// The relay's three ways back to the executor service, as closures so that
 /// this module never imports the service that starts it.
 pub type Link {
   Link(
@@ -136,7 +163,15 @@ pub type Link {
     cancel: fn() -> Nil,
     /// Asks the service for leave to report the verdict, and waits for the
     /// answer a bounded time.
-    may_settle: fn() -> Permission,
+    may_settle: fn(Verdict) -> Permission,
+    /// Tells the service how the execution stands, without waiting. Sent on
+    /// a change of mode, on a change of cancel state, on the first chunk and
+    /// on every `progress_chunks`-th chunk after, so an execution costs the
+    /// service a handful of small messages and a flood of output costs one
+    /// per `progress_chunks` chunks. The service's mailbox holds at most one
+    /// of these per relay per interval it is slow to read, and it reads them
+    /// as it reads anything else.
+    progress: fn(Progress) -> Nil,
   )
 }
 
@@ -210,6 +245,13 @@ const wall_slack_ms = 20
 /// verdict waits for it. It is public so the service builds the
 /// `may_settle` closure it hands the relay with the same bound.
 pub const settle_wait_ms = 5000
+
+/// Every this many chunks a relay reports its progress to the service. The
+/// first chunk is reported too, so an execution that has produced anything
+/// shows it. The number is a trade between how stale a live row's counters
+/// may be and how many messages a chatty execution sends the one process
+/// that serves every execution of a session.
+pub const progress_chunks = 16
 
 /// How long a relay waits for the service to confirm it sent a cancel.
 /// The service may be inside a checkout, so this is the same bound as
@@ -360,13 +402,48 @@ fn handle(
   data: Data,
   event: Event,
 ) -> state_machine.Next(Mode, Data, Event) {
-  let #(core, effects) = execution.step(data.core, event)
+  let before = data.core
+  let #(core, effects) = execution.step(before, event)
   let data = Data(..data, core:)
-  case perform(data, effects) {
+  let course = perform(data, effects)
+
+  // A relay that has settled is about to stop and its verdict carried its
+  // final progress, so only a relay that goes on tells the service anything.
+  case course {
+    Stay | Drain -> announce(data, before)
+    End -> Nil
+  }
+  case course {
     Stay -> state_machine.keep(data)
     Drain -> state_machine.transition(to: Draining, data:)
     End -> state_machine.stop()
   }
+}
+
+// Sends the service a progress report when the step moved something an
+// observer reads. Mode and cancel state change at most once or twice in an
+// execution; output is thinned to the first chunk and every
+// `progress_chunks`-th, which is what keeps this from being a message per
+// chunk.
+fn announce(data: Data, before: Core) -> Nil {
+  let after = data.core
+  let moved =
+    after.mode != before.mode
+    || after.cancel != before.cancel
+    || {
+      after.output.chunks != before.output.chunks
+      && {
+        after.output.chunks == 1 || after.output.chunks % progress_chunks == 0
+      }
+    }
+  case moved {
+    True -> data.link.progress(progress_of(after))
+    False -> Nil
+  }
+}
+
+fn progress_of(core: Core) -> Progress {
+  Progress(mode: core.mode, output: core.output, cancel: core.cancel)
 }
 
 // Carries out a step's effects in the order the core listed them, and says
@@ -397,7 +474,7 @@ fn perform(data: Data, effects: List(Effect)) -> Course {
         }
 
       execution.Settle(terminal:) -> {
-        report(data, terminal)
+        report(data, Verdict(terminal:, progress: progress_of(data.core)))
         End
       }
     }
@@ -408,9 +485,9 @@ fn perform(data: Data, effects: List(Effect)) -> Course {
 // service has settled this execution (the relay was thought dead) or has
 // seen it released, so the relay says nothing. A silent service cannot
 // forbid a report, so it is made.
-fn report(data: Data, terminal: dispatch.Terminal) -> Nil {
-  case data.link.may_settle() {
-    Granted | ServiceSilent -> data.settle(terminal)
+fn report(data: Data, verdict: Verdict) -> Nil {
+  case data.link.may_settle(verdict) {
+    Granted | ServiceSilent -> data.settle(verdict.terminal)
     AlreadySettled -> Nil
   }
 }

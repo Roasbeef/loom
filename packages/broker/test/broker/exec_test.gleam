@@ -469,19 +469,71 @@ pub fn pool_census_counts_the_inventory_by_custody_test() {
       draining: 0,
       retiring: 0,
       unconfirmed: 0,
+      spawned: 0,
+      retired: 0,
     )
   assert exec.pool_census(pool, waiting: 1000) == Ok(empty)
 
   let assert Ok(first) = exec.checkout(pool, waiting: 2000)
   let assert Ok(second) = exec.checkout(pool, waiting: 2000)
   assert exec.pool_census(pool, waiting: 1000)
-    == Ok(exec.PoolCensus(..empty, borrowed: 2))
+    == Ok(exec.PoolCensus(..empty, borrowed: 2, spawned: 2))
 
   exec.checkin(pool, first)
   assert exec.pool_census(pool, waiting: 1000)
-    == Ok(exec.PoolCensus(..empty, available: 1, borrowed: 1))
+    == Ok(exec.PoolCensus(..empty, available: 1, borrowed: 1, spawned: 2))
   exec.checkin(pool, second)
   exec.stop_pool(pool)
+}
+
+/// The custody view is the census taken entry by entry: one view per
+/// helper, oldest spawn first, each carrying the spawn ordinal and the
+/// lending and custody the pool's books give it. A helper that has been lent
+/// and returned keeps its ordinal, and a second spawn gets the next one.
+pub fn pool_custody_names_each_helper_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 3, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  let assert Ok(empty) = exec.pool_custody(pool, waiting: 1000)
+  assert empty.helpers == []
+  assert empty.census.spawned == 0
+
+  let assert Ok(first) = exec.checkout(pool, waiting: 2000)
+  let assert Ok(second) = exec.checkout(pool, waiting: 2000)
+  exec.checkin(pool, first)
+
+  let assert Ok(custody) = exec.pool_custody(pool, waiting: 1000)
+  assert custody.helpers
+    == [
+      exec.HelperView(
+        pid: exec.pid(first),
+        ordinal: 1,
+        lending: exec.Lendable,
+        custody: exec.Held,
+      ),
+      exec.HelperView(
+        pid: exec.pid(second),
+        ordinal: 2,
+        lending: exec.Lent,
+        custody: exec.Held,
+      ),
+    ]
+  assert custody.census.spawned == 2
+  assert custody.census.retired == 0
+  exec.checkin(pool, second)
+  exec.stop_pool(pool)
+}
+
+/// A stopped pool answers the custody query as it answers the census.
+pub fn pool_custody_of_a_stopped_pool_is_unavailable_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  exec.stop_pool(pool)
+  process.sleep(100)
+  assert exec.pool_custody(pool, waiting: 1000) == Error(exec.PoolUnavailable)
 }
 
 /// A pool that has gone answers the census as it answers a checkout, with

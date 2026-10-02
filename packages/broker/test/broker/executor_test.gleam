@@ -18,6 +18,7 @@ import core/clock
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import telemetry/log
 import weft/poll
 
 // --- fixtures -------------------------------------------------------------
@@ -592,12 +593,13 @@ fn verdict_probe(
     executor.start(executor.ExecutorConfig(
       checkout: fn() { Ok(helper) },
       checkin: fn(_helper) { Nil },
-      census: fn() { Error(exec.PoolUnavailable) },
+      custody: fn() { Error(exec.PoolUnavailable) },
       close_helpers: fn(ms) {
         process.send(seen, ms)
         verdict
       },
       incarnation: 1,
+      log: log.discard(),
     ))
     as "the probe service starts"
   service

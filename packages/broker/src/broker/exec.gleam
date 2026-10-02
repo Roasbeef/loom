@@ -2771,6 +2771,7 @@ pub opaque type PoolMsg {
   PoolLinkedExit(pid: Pid)
   ForgetPool
   QueryCensus(reply: Subject(PoolCensus))
+  QueryCustody(reply: Subject(PoolCustody))
 }
 
 /// A count of the pool's inventory by custody, taken at one instant by the
@@ -2782,6 +2783,13 @@ pub opaque type PoolMsg {
 /// number of entries the pool holds, and it is never more than `size`: an
 /// entry occupies its slot until it leaves the inventory, and only the
 /// proof of retirement removes it.
+///
+/// `spawned` and `retired` are the pool's lifetime churn, two monotone
+/// counters beside the six gauges: every helper the pool has ever put in
+/// its inventory, and every one that has left it through both retirement
+/// boundaries. `spawned - retired` is the entries held now, so the pair
+/// shows a pool that is replacing helpers faster than it should without
+/// any history being kept.
 pub type PoolCensus {
   PoolCensus(
     /// The pool's configured ceiling on entries.
@@ -2798,6 +2806,87 @@ pub type PoolCensus {
     /// Retirement could not be established, so the slot is held for the
     /// life of the pool.
     unconfirmed: Int,
+    /// Helpers ever added to the inventory, including one whose handshake
+    /// then failed. A spawn the transport refused adds nothing.
+    spawned: Int,
+    /// Helpers that left the inventory with both retirement boundaries
+    /// proved. An unconfirmed helper never counts here.
+    retired: Int,
+  )
+}
+
+/// How the pool stands to lend one helper. The pool's private
+/// `Availability` says the same thing with the retirement detail folded in;
+/// this is the lending half alone, so an observer can read lending and
+/// custody as two separate questions.
+pub type Lending {
+  /// Idle and lendable, subject to the readiness probe at checkout.
+  Lendable
+
+  /// Lent to a borrower, who will check it in.
+  Lent
+
+  /// Being retired, or held unconfirmed. It will not be lent again.
+  Withdrawn
+}
+
+/// What the pool can show of one helper's native resource, in the
+/// vocabulary protocol-014 gives the retirement evidence. It is derived from
+/// the pool's own books and never asks the helper, so a wedged helper cannot
+/// block the answer.
+///
+/// The helper machine has a fourth state, no native resource ever acquired,
+/// and it is not here on purpose: the pool begins a helper the moment it
+/// inventories it, so an entry always holds, or held, an OS process. The
+/// native exit status behind `Retired` is not kept either: the pool records
+/// the verdict (`Ok`) and not the status that produced it.
+pub type Custody {
+  /// The helper's OS process is live and the pool is responsible for it.
+  Held
+
+  /// Shutdown was requested and the native exit has not been reported.
+  Retiring
+
+  /// Native exit was witnessed as clean; only the BEAM owner's normal exit
+  /// is still awaited before the slot is freed.
+  Retired
+
+  /// Retirement could not be established, so the helper's jail may still be
+  /// running and the slot is held for the life of the pool. `reason` is the
+  /// failure the pool recorded.
+  CleanupUnconfirmed(reason: RetirementFailure)
+
+  /// The channel was discarded before the native exit could be observed,
+  /// permanently. A subset of unconfirmed cleanup, named separately because
+  /// no later event can repair it.
+  ProofLost
+}
+
+/// One inventoried helper as an observer sees it.
+pub type HelperView {
+  HelperView(
+    /// The helper actor's pid.
+    pid: Pid,
+    /// Which spawn this helper was, counting from one. With the pid it is
+    /// the helper's generation for a reader; it is introspection and not a
+    /// fence, because nothing compares it to anything.
+    ordinal: Int,
+    /// Whether the helper can be lent.
+    lending: Lending,
+    /// What is known of its native resource.
+    custody: Custody,
+  )
+}
+
+/// The pool's census and a view of each entry it counts, taken by the pool
+/// actor in one step so the two describe one instant. `helpers` is in spawn
+/// order, newest last, and is never longer than `census.size`.
+pub type PoolCustody {
+  PoolCustody(
+    /// The six gauges and two counters over the same inventory.
+    census: PoolCensus,
+    /// One view per inventoried helper.
+    helpers: List(HelperView),
   )
 }
 
@@ -2835,6 +2924,10 @@ type PoolState {
     entries: List(PoolEntry),
     commands: Subject(PoolMsg),
     parent: Pid,
+    // Lifetime counters. `spawned` doubles as the ordinal of the next
+    // helper; both only grow, so they need no cap.
+    spawned: Int,
+    retired: Int,
   )
 }
 
@@ -2845,6 +2938,8 @@ type PoolEntry {
     helper: Helper,
     monitor: process.Monitor,
     availability: Availability,
+    // Which spawn this was, from one. Introspection only.
+    ordinal: Int,
   )
 }
 
@@ -2956,7 +3051,16 @@ pub fn start_pool(
 ) -> Result(Pool, actor.StartError) {
   let parent = process.self()
   state_machine.new_with_initialiser(5000, fn(commands) {
-    let state = PoolState(size:, spawn:, entries: [], commands:, parent:)
+    let state =
+      PoolState(
+        size:,
+        spawn:,
+        entries: [],
+        commands:,
+        parent:,
+        spawned: 0,
+        retired: 0,
+      )
     state_machine.initialised(PoolLive, state)
     |> state_machine.selecting(pool_selector(state))
     |> state_machine.returning(commands)
@@ -3019,6 +3123,30 @@ pub fn pool_census(
 ) -> Result(PoolCensus, CheckoutError) {
   case call.try_call(pool.subject, waiting: timeout, sending: QueryCensus) {
     Ok(census) -> Ok(census)
+    Error(call.NoReply) | Error(call.CalleeGone) -> Error(PoolUnavailable)
+  }
+}
+
+/// The pool's census and one view per inventoried helper, answered by the
+/// pool actor in whatever phase it is in. The views are derived from the
+/// pool's own books and no helper is asked anything, so a wedged helper
+/// cannot delay the answer and nothing is held once it is sent.
+///
+/// `waiting` and the refusal are those of `pool_census`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(custody) = exec.pool_custody(pool, waiting: 1000)
+/// assert list.length(custody.helpers) <= custody.census.size
+/// ```
+///
+pub fn pool_custody(
+  pool: Pool,
+  waiting timeout: Int,
+) -> Result(PoolCustody, CheckoutError) {
+  case call.try_call(pool.subject, waiting: timeout, sending: QueryCustody) {
+    Ok(custody) -> Ok(custody)
     Error(call.NoReply) | Error(call.CalleeGone) -> Error(PoolUnavailable)
   }
 }
@@ -3126,6 +3254,16 @@ fn handle_pool(
       process.send(reply, census_of(state))
       state_machine.keep(state)
     }
+
+    // Custody is a read in the same way, answered in every phase for the same
+    // reason: an observer asking during a close is the one who needs it.
+    PoolLive, QueryCustody(reply)
+    | PoolClosing, QueryCustody(reply)
+    | PoolFinished(..), QueryCustody(reply)
+    -> {
+      process.send(reply, custody_of(state))
+      state_machine.keep(state)
+    }
     phase, HelperRetired(pid, outcome) ->
       pool_step(phase, record_retirement(state, pid, outcome))
     phase, HelperOwnerGone(pid, reason) ->
@@ -3157,7 +3295,39 @@ fn census_of(state: PoolState) -> PoolCensus {
         Available | Borrowed | Draining | RetiringActor -> False
       }
     }),
+    spawned: state.spawned,
+    retired: state.retired,
   )
+}
+
+// One view per entry, oldest spawn first, beside the census over the same
+// entries. The entries list is newest first, so it is reversed once.
+fn custody_of(state: PoolState) -> PoolCustody {
+  let helpers =
+    list.reverse(state.entries)
+    |> list.map(fn(entry) {
+      let #(lending, custody) = custody_view(entry.availability)
+      HelperView(
+        pid: entry.helper.pid,
+        ordinal: entry.ordinal,
+        lending:,
+        custody:,
+      )
+    })
+  PoolCustody(census: census_of(state), helpers:)
+}
+
+// The pool's five availabilities, split into the two questions an observer
+// asks. `Unconfirmed` is the only one that reads the failure it holds.
+fn custody_view(availability: Availability) -> #(Lending, Custody) {
+  case availability {
+    Available -> #(Lendable, Held)
+    Borrowed -> #(Lent, Held)
+    Draining -> #(Withdrawn, Retiring)
+    RetiringActor -> #(Withdrawn, Retired)
+    Unconfirmed(RetirementProofLost) -> #(Withdrawn, ProofLost)
+    Unconfirmed(failure) -> #(Withdrawn, CleanupUnconfirmed(reason: failure))
+  }
 }
 
 fn pool_selector(state: PoolState) -> process.Selector(PoolMsg) {
@@ -3256,7 +3426,11 @@ fn record_owner_exit(
           Ok(PoolEntry(..entry, availability: Unconfirmed(RetirementOwnerGone)))
       }
     })
-  PoolState(..state, entries:)
+
+  // An entry left only through the clean arm, so the difference in length is
+  // the number of entries that completed both retirement boundaries.
+  let left = list.length(state.entries) - list.length(entries)
+  PoolState(..state, entries:, retired: state.retired + left)
 }
 
 // Returns a borrowed helper. Only one `helper_ready` accepts rejoins the
@@ -3347,8 +3521,14 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
           helper:,
           monitor: process.monitor(helper.pid),
           availability: Borrowed,
+          ordinal: state.spawned + 1,
         )
-      let state = PoolState(..state, entries: [entry, ..state.entries])
+      let state =
+        PoolState(
+          ..state,
+          entries: [entry, ..state.entries],
+          spawned: state.spawned + 1,
+        )
 
       // Inventory and the original monitor precede Begin. A checkout
       // caller's deadline can expire during the handshake without losing

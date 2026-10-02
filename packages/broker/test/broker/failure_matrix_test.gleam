@@ -36,6 +36,7 @@ import core/clock
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import telemetry/log
 import weft/poll
 
 // --- fixtures -------------------------------------------------------------
@@ -509,9 +510,10 @@ pub fn close_after_the_result_was_granted_does_not_settle_it_lost_test() {
     executor.start(executor.ExecutorConfig(
       checkout: fn() { Ok(process.call(lender, 1000, Lend)) },
       checkin: fn(_helper) { Nil },
-      census: fn() { Error(exec.PoolUnavailable) },
+      custody: fn() { Error(exec.PoolUnavailable) },
       close_helpers: fn(_ms) { Ok(Nil) },
       incarnation: 1,
+      log: log.discard(),
     ))
   let first_settlements = process.new_subject()
   let second_settlements = process.new_subject()

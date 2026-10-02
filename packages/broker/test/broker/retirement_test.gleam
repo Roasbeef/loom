@@ -228,6 +228,12 @@ pub fn pool_native_failure_retains_capacity_test() {
   process.send(exec.wire(helper), exec.WireClosed(137))
   exec.checkin(pool, helper)
   assert_hopeless(pool)
+
+  // A status that proves the process gone and the jail nothing is the
+  // other kind of unconfirmed cleanup, and keeps its reason.
+  let assert Ok(custody) = exec.pool_custody(pool, waiting: 1000)
+  let assert [view] = custody.helpers
+  assert view.custody == exec.CleanupUnconfirmed(exec.RetirementExit(137))
   assert exec.close_pool(pool, waiting: 1000) == Error(exec.RetirementExit(137))
 }
 
@@ -867,5 +873,12 @@ pub fn pool_slot_of_a_kill_with_no_exit_ends_unconfirmed_test() {
   let assert Ok(census) = exec.pool_census(pool, waiting: 1000)
   assert census.unconfirmed == 1
   assert census.draining == 0
+
+  // The custody view names the same fact in the evidence vocabulary: the
+  // proof is lost, and the view says so rather than "unconfirmed" alone.
+  let assert Ok(custody) = exec.pool_custody(pool, waiting: 1000)
+  let assert [view] = custody.helpers
+  assert view.custody == exec.ProofLost
+  assert view.lending == exec.Withdrawn
   assert exec.close_pool(pool, waiting: 1000) == Error(exec.RetirementProofLost)
 }

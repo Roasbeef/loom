@@ -19,6 +19,7 @@ import core/ids
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import telemetry/log.{type Logger}
 
 /// Which dispatcher carries cleared calls out.
 pub type Lane {
@@ -96,6 +97,32 @@ pub fn start_intercepted(
   intercept intercept: fn(fn() -> Result(Helper, exec.CheckoutError)) ->
     Result(Helper, exec.CheckoutError),
 ) -> Plane {
+  start_with(lane, size:, spawn:, clock:, intercept:, logger: log.discard())
+}
+
+/// As `start`, with the service writing its lines through `logger`. The
+/// direct lane has no service and ignores it.
+pub fn start_logged(
+  lane: Lane,
+  size size: Int,
+  spawn spawn: fn() -> Result(Helper, exec.SpawnError),
+  clock clock: Clock,
+  logger logger: Logger,
+) -> Plane {
+  start_with(lane, size:, spawn:, clock:, logger:, intercept: fn(checkout) {
+    checkout()
+  })
+}
+
+fn start_with(
+  lane: Lane,
+  size size: Int,
+  spawn spawn: fn() -> Result(Helper, exec.SpawnError),
+  clock clock: Clock,
+  intercept intercept: fn(fn() -> Result(Helper, exec.CheckoutError)) ->
+    Result(Helper, exec.CheckoutError),
+  logger logger: Logger,
+) -> Plane {
   let assert Ok(pool) = exec.start_pool(size:, spawn:)
     as "the pool of fake helpers starts"
   let borrowed = process.new_subject()
@@ -128,9 +155,10 @@ pub fn start_intercepted(
         executor.start(executor.ExecutorConfig(
           checkout:,
           checkin:,
-          census: fn() { exec.pool_census(pool, waiting: 1000) },
+          custody: fn() { exec.pool_custody(pool, waiting: 1000) },
           close_helpers: fn(ms) { exec.close_pool(pool, waiting: ms) },
           incarnation: 1,
+          log: logger,
         ))
         as "the executor service starts"
       let assert Ok(started) =

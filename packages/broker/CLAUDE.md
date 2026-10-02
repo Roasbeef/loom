@@ -75,21 +75,45 @@ protocol (spec Part 1.4). WP-G.
   select into it. Effects: `Deliver` calls the dispatch's closure,
   `SendCancel` calls `Link.cancel` (a bounded ask, `relay.cancel_wait_ms`, that
   returns once the service has sent the cancel), `EnterDraining` transitions, and
-  `Settle` asks `Link.may_settle` first. The relay never imports the service
-  and never casts to a helper: both ways back are closures the service builds.
-  Unlinked from its starter.
-- `broker/executor.{start, dispatcher, pid, inventory, close, ExecutorConfig,
-  Inventory}` — the service lane's one process per session, a
+  `Settle` asks `Link.may_settle(Verdict)` first, the verdict carrying the final
+  `Progress` (mode, output counters, cancel state). A third closure,
+  `Link.progress`, is a cast sent on a change of mode or cancel state, on the
+  first chunk and on every `relay.progress_chunks` (16) chunks after, never per
+  chunk. The relay never imports the service and never casts to a helper: all
+  three ways back are closures the service builds. Unlinked from its starter.
+- `broker/executor.{start, dispatcher, pid, inventory, snapshot, close,
+  ExecutorConfig, Inventory}` — the service lane's one process per session, a
   `weft/state_machine` with phases `Serving | Closing(closer) |
   Closed(outcome)` (the pool's shape, with a state timeout in `Closing` for
   the drain budget). `ExecutorConfig` is closures over the pool
-  (`checkout`, `checkin`, `census`, `close_helpers`) plus an `incarnation`.
+  (`checkout`, `checkin`, `custody`, `close_helpers`) plus an `incarnation`
+  and a `log` (`telemetry/log.Logger`; `log.discard()` for a service nobody
+  observes).
   `dispatcher(service)` is the `Dispatcher` `broker.start_dispatching`
   takes. State is a `Dict(seq, Row)` with a row only while the service holds
   a helper for it, so it is bounded by the pool. A `Row` is `Live` or
-  `Granted` and keeps the helper, the relay (pid, events, control subject),
-  the service's monitor on the relay, and the broker's `settle` closure.
+  `Granted(closure)` and keeps the helper, the relay (pid, events, control
+  subject), the service's monitor on the relay, the broker's `settle` closure,
+  and only what an observer reads of the request (enforcement demand, deadline,
+  session clock, start times, the relay's last `Progress`). Argv, environment,
+  working directory, policy and token are never kept after dispatch.
   `inventory` answers the rows and the pool census from one instant.
+  `snapshot` answers an `executor_view.Snapshot` (below).
+- `broker/executor_view.{Snapshot, LiveView, Settled, Failure, Metrics,
+  LatencySummary, Outcome, Books, ring_size}` — the operator surface, pure.
+  `Snapshot` is the incarnation and phase, the live rows (at most the pool
+  size), the pool's `PoolCustody`, `Metrics`, `recent` (the last
+  `ring_size` = 64 settlements, newest first) and `last_failure`. `Outcome`
+  is `Completed(code)`, `Failed(kind)` (the constructor name only) or
+  `Lost(cause)`. `Metrics` is counters (starts, settlements by class,
+  refusals split `all_busy | pool_unavailable | spawn_failed | not_started`,
+  output bytes, truncated) and p50/p95/max over the last 64 samples of launch
+  latency (time inside `start`), execution latency (start to settlement) and
+  cancel-to-settle. No type here can hold argv, environment, working
+  directory, policy, token or output bytes; `executor_snapshot_test` plants a
+  marker in a request and searches the rendered snapshot and the log lines.
+  "Queue age" has no referent: nothing queues, so `all_busy` counts the
+  congested refusals instead.
 - `broker/dispatch.relay_grace_ms` — the drain grace both dispatchers use,
   moved here from `direct` so the lanes cannot disagree on it.
 - `broker/policy.SandboxPolicy` — `SandboxPolicyV1` as a typed value:
@@ -147,8 +171,17 @@ protocol (spec Part 1.4). WP-G.
   says plainly that the command may have run.
 - `broker/exec.{pool_census, PoolCensus}` — the pool actor's own count of
   its inventory by custody (`available`, `borrowed`, `draining`, `retiring`,
-  `unconfirmed`, beside the configured `size`), answered in every
-  `PoolPhase` and never postponed. A gone pool is `PoolUnavailable`.
+  `unconfirmed`, beside the configured `size`, and the lifetime churn
+  counters `spawned` and `retired`), answered in every `PoolPhase` and never
+  postponed. A gone pool is `PoolUnavailable`.
+- `broker/exec.{pool_custody, PoolCustody, HelperView, Lending, Custody}` —
+  the census and one view per inventoried helper from the same instant: pid,
+  spawn `ordinal` (introspection, not a fence), `Lendable | Lent |
+  Withdrawn`, and custody `Held | Retiring | Retired | CleanupUnconfirmed(
+  reason) | ProofLost`, derived from the pool's books without asking a
+  helper. `NoNativeResource` is not a pool-level state (the pool begins a
+  helper as it inventories it) and the native exit status behind `Retired`
+  is not kept; both are named in the type's doc.
 - `broker/exec.{close, close_pool, RetirementFailure}` separates shutdown
   requests from retirement proof. `Ok(Nil)` requires a selected native exit
   status followed by the original normal BEAM monitor event: status 0 after
@@ -202,7 +235,9 @@ protocol (spec Part 1.4). WP-G.
 - **Depends on**: `core` (msgpack for the wire, ids for `OpId`,
   corruption), `gleam_erlang` + `gleam_otp` (the broker and pool are
   actors; ports carry the helper channel), `weft` (the helper is a
-  `weft/state_machine`, for the two state timeouts below).
+  `weft/state_machine`, for the two state timeouts below), `telemetry` (a
+  leaf over `core`: the executor service writes its settlement and close
+  lines through an injected `Logger`, and nothing else in the package logs).
 - **Depended on by**: `tools` (every jailed tool clears through
   `clear_call`), `conformance` (wiring and the jailed e2e).
 - **FFI**: `broker/internal/ffi_crypto` — `crypto:strong_rand_bytes` and
@@ -237,8 +272,10 @@ protocol (spec Part 1.4). WP-G.
     dispatcher's `start`, budget 20 000 ms = checkout's 15 000 plus run's
     5 000), `Cancel(id)`, `CancelAsk(id, reply)` (the relay's own cancel,
     answered after `exec.cancel` was sent), `Stdin(id, data, eof)`,
-    `MaySettle(id, reply)`, `Release(id)`, `Abandon(id)`, `RelayDown(down)`,
-    `Report(reply)`, `Close(draining, helpers, reply)`, `DrainDeadline`. The `Execution` closures the
+    `MaySettle(id, verdict, reply)`, `Progress(id, progress)` (a relay's cast;
+    never answered), `Release(id)`, `Abandon(id)`, `RelayDown(down)`,
+    `Report(reply)`, `Observe(reply)`, `Close(draining, helpers, reply)`,
+    `DrainDeadline`. The `Execution` closures the
     broker holds are casts of `Cancel`, `Stdin`, `Release` and `Abandon`
     naming the execution by `ExecutionId`. `MaySettle` is the relay's
     bounded call (`relay.settle_wait_ms`). Every phase and message pair is
@@ -530,6 +567,35 @@ protocol (spec Part 1.4). WP-G.
   runs a hundred mixed endings (success, cancel, caller death, helper crash,
   escalation) and checks pool census, inventory, relay liveness, the VM
   process count and one settlement per hearing caller.
+- **Service lane: the snapshot is bounded, true and carries no request.**
+  (Issue #696, S3.) Live rows are at most the pool size; the `recent` ring
+  and each latency series are trimmed to `executor_view.ring_size` (64) on
+  every push, so nothing grows with the session. A row's mode, cancel state
+  and output counters are the relay's last cast `Progress`, thinned to the
+  first chunk and every 16th, with exact totals arriving in the verdict the
+  relay asks to report; the service never waits on a relay to answer a
+  snapshot (a relay can be blocked asking the service). A settlement is
+  recorded once, where a row's life ends: at `Release` for a granted row, at
+  `lose_row` for a loss (including an abandoned granted row, which the caller
+  hears as lost), and at close for a granted row that will never be released.
+  A `Live` row released (the silent-service case) is not recorded: the
+  service never learned its verdict. Each recording writes one
+  `executor.settled` line (Info for a completion, Warning otherwise, fields:
+  `execution` and `incarnation` as `Ident`, outcome class and detail, cancel
+  cause, counts of duration, bytes and chunks) and the close writes
+  `executor.closed`. Latencies are measured on weft's monotonic clock, never
+  the session clock, which tests fix. **Not built:** cancellation to
+  *native exit* of a helper. The pool records only the retirement verdict,
+  and carrying a duration through `AwaitRetirement`, `HelperRetired` and the
+  pool entry is more than a small change; cancel-to-settle covers the
+  execution's cancel and `PoolCensus.retired` and `unconfirmed` cover helper
+  churn. There is no operator verb: every daemon command rides the
+  authenticated control protocol, so `executor.snapshot` plus the log lines
+  are the surface, and `docs/architecture/executor.md` says what
+  protocol-change/062 would have to carry. Pinned in `executor_snapshot_test`
+  (rows, thinning, the 64 bound, last failure, refusal counts, and a marker
+  planted in argv, environment, working directory and token that must not
+  appear in any snapshot or line).
 - **Service lane: a slow consumer is bounded by the helper, not the BEAM.**
   The relay's delivery is a send; nothing waits on the caller's mailbox and
   there is no BEAM-side buffer or backpressure (a ruled cut). What bounds
