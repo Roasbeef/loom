@@ -108,7 +108,11 @@ the stdin queue that keeps a non-reading payload from stalling cancel, changes
 behaviour and not the wire, and is recorded in `packages/sandbox/CLAUDE.md`. The eight Go-only tags, and the fact that the
 broker treats a helper advertising `platform-unsupported` as degraded only
 because the helper also advertises `degraded`, are recorded here as
-properties of absence rather than defects.
+properties of absence rather than defects. The pin proves a tag is spelled
+somewhere in the jail sources, not at each emit site. A rename at a single
+site can survive if another literal of the same spelling remains (for example
+`exec.LookPath("bwrap")`), and the fixtures and the real-helper tests are what
+catch emission.
 
 ## Alternatives considered
 

@@ -1,5 +1,85 @@
 # Current handoff
 
+## Executor service (issue #696)
+
+Issue #696 is built as a stack of six phase branches, each a PR on the one
+below it:
+
+| Phase | Branch | PR |
+|---|---|---|
+| fixes | `broker/busy-checkin` (busy helper re-lent) | [#698](https://github.com/Roasbeef/loom/pull/698) |
+| fixes | `sandbox/stdin-off-frame-loop` (Go stdin stall; off `main`, independent) | [#699](https://github.com/Roasbeef/loom/pull/699) |
+| S0 | `executor/s0-design`, on #698 | [#700](https://github.com/Roasbeef/loom/pull/700) |
+| S1 | `executor/s1-service` | [#701](https://github.com/Roasbeef/loom/pull/701) |
+| S2 | `executor/s2-hardening` | [#704](https://github.com/Roasbeef/loom/pull/704) |
+| S3 | `executor/s3-ops` | [#705](https://github.com/Roasbeef/loom/pull/705) |
+| S4 | `executor/s4-standalone` | [#706](https://github.com/Roasbeef/loom/pull/706) |
+| S5 | `executor/s5-go-decision` | the PR on #706 |
+
+Merge them bottom up. The design is `docs/architecture/executor.md`, and the
+decisions are ADR-017 (the seam, plus addenda for the S1 build and the
+default flip) and ADR-018 (the Go helper keeps its code). The witnessed-kill
+evidence rule is an addendum inside protocol-change/014. Correction comments
+are on #696.
+
+- **What runs now.** Every session's effect plane runs the executor service,
+  `broker/executor`: a weft state machine per session over that session's
+  pool. It is the only process that sends a helper `Run`, `Stdin` or
+  `CancelExec`, and it settles each execution exactly once through
+  Live/Granted rows. The per-execution relay (`broker/relay` over the pure
+  `broker/execution` core) watches the helper actor too, so a dead helper
+  settles at once as `ExecutionLost`. The one-shot build and check planes run
+  on it as well. `broker/direct` survives only behind `broker.start`, which
+  59 call sites in 43 test and demo files use.
+- **Lifecycle rules a change must keep.**
+  - A deliberate kill retains the port and is judged by exposure: no jail,
+    a settled jail, or a live jail. A live jail retires only under bwrap,
+    and a kill whose exit never comes loses the proof after five seconds.
+  - A `Run` whose caller is gone is refused.
+  - Stdin frames take fresh ids, so a helper's stdin error cannot settle the
+    execution.
+  - The relay's own cancel is an ask to the service.
+  - `executor.close(draining:, helpers:)` always gives the pool its full
+    native-exit budget.
+- **Observability.** `executor.snapshot` is bounded and secret-free
+  (`executor_view`). It also writes one telemetry line per settlement. There
+  is no operator command: every daemon route is the client protocol, and
+  what protocol-change/062 would need is written on the executor page.
+- **Standalone.** `packages/executor` boots the service without the harness,
+  prints a version census, runs one jailed `true` and drains
+  (`make executor-smoke`). It has no socket and no wire. `dispatch.Dispatcher`
+  is the adapter #697 implements, and `census.skew` has no production caller
+  until #697 pairs two sides; only a test calls it.
+- **The Go decision (S5).** No Go moved. A generated tag contract was
+  prototyped, measured at about 750 lines against zero observed drift, and
+  reverted (ADR-018). `enforcement_tags_test` pins the broker's tags to the
+  Go jail sources, and `exec.skip_prefix` is the one Gleam constant for
+  `skip:`. The pin proves a tag is spelled somewhere in the jail sources,
+  not at each emit site, so the fixtures and real-helper tests are what catch
+  emission. ADR-018 lists the four events that reopen the question.
+- **Measure with** `make bench-exec`, the opt-in real-helper benchmark. The S0
+  baselines are on the executor page.
+
+**Left open, in order of value.**
+1. [#703](https://github.com/Roasbeef/loom/issues/703): `OutputIsWire` leases
+   (the LSP jail) stream uncapped, so their mailbox is bounded only by the
+   consumer.
+2. The snapshot asks the pool for custody inside the serial service, which
+   can delay settlements by up to a second per poll during a slow spawn
+   (S3 review F4). Move that query to the observer's process.
+3. Migrate the 59 `broker.start` call sites onto the service, then delete
+   `broker/direct`.
+4. [#702](https://github.com/Roasbeef/loom/issues/702): a kill leaves the
+   per-execution cgroup directory behind.
+5. Other spellings of `skip:` could use `exec.skip_prefix`: codemode's own
+   `skip_prefix` constant, the two literals in `client/lsp` (`manager` and
+   `jail`), and the pattern in `packages/executor`.
+6. The single-sender ordering that fences a stale cancel is argued but not
+   tested: no test fails if the relay cancels the helper directly. Write the
+   real-helper race test.
+7. Idle retirement (#283) is still unbuilt; the service only must not block
+   it.
+
 ## Local orientation in large modules (issue #593)
 
 Branch `lint/local-orientation` ([PR #679](https://github.com/Roasbeef/loom/pull/679))
