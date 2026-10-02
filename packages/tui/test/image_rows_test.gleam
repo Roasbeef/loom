@@ -95,6 +95,30 @@ pub fn inside_herdr_the_row_says_why_test() {
   ))
 }
 
+// A response with prose draws its call inside itself and the result arrives
+// as an entry of its own. The result is joined to the call: the call's row
+// settles, the image's row follows it, and no row of the result's own says
+// `[image image/png]`.
+pub fn a_call_beside_prose_settles_with_its_image_test() {
+  let model =
+    frame_scene.attach(frame_scene.model(), "fix readme badge", [
+      frame_scene.user(1, "Look at plots/latency.png."),
+      frame_scene.assistant(2, "I will open the chart.", [
+        frame_scene.call("r1", "fs_read", [
+          #("path", json.String("plots/latency.png")),
+        ]),
+      ]),
+      frame_scene.result_images(3, "r1", "fs_read", [
+        #("image/png", png(1200, 700)),
+      ]),
+    ])
+  let lines = frame_scene.screen(model, 120, 40) |> frame.buffer_to_lines
+  assert list.any(lines, string.contains(_, "✓ fs_read · plots/latency.png"))
+  assert list.any(lines, string.contains(_, "▣ image 1 · image/png · 1200×700"))
+  assert !list.any(lines, string.contains(_, "[image image/png]"))
+  assert !list.any(lines, string.contains(_, "● fs_read"))
+}
+
 // While reading above the tail, `o` starts the job that opens the newest
 // image; at the tail, with nothing typed, it is a letter in the prompt.
 pub fn o_opens_the_newest_image_while_reading_test() {

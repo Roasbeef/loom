@@ -317,7 +317,12 @@ pub fn a_narrated_call_shows_progress_not_the_checklist_test() {
     )
   let #(compact, frame) =
     base() |> received(narrated) |> received(checklist) |> text
-  assert string.contains(frame, "todo · 2/4 done")
+  // The call's row settles with the board's progress, as a tool group's
+  // does, and the result draws no row of its own.
+  assert string.contains(
+    frame,
+    "✓ todo · done \"Pilot the questions\" · 2/4 done",
+  )
   assert !string.contains(frame, "## Extract")
   let #(_, expanded) =
     compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> text

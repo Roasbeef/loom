@@ -1504,23 +1504,33 @@ pub fn clocked_call_lines(
   call: tool_activity.Call,
   clock: Option(Int),
 ) -> List(Line) {
+  call_rows(call.invocation, call.outcome, clock)
+}
+
+// The compact rows of one call and the result joined to it, if any: what a
+// tool group draws for each of its calls, and what a narrative response
+// draws for a call whose result `joined` found in the window.
+fn call_rows(
+  invocation: message.ToolCall,
+  outcome: Option(message.AgentMessage),
+  clock: Option(Int),
+) -> List(Line) {
   // A send is its message row and a program its own rows, each drawn from
   // the call and the result the group joined to it.
   use <- result.lazy_unwrap(sent_lines(
-    call.invocation,
-    call.outcome,
+    invocation,
+    outcome,
     notes_view.Excerpt,
     clock,
   ))
-  use <- result.lazy_unwrap(program_lines(call.invocation, call.outcome))
+  use <- result.lazy_unwrap(program_lines(invocation, outcome))
 
   // The invocation owns its source preview, so settling a result changes the
   // status without adding or removing code rows. Reuse the expanded entry's
   // Gleam renderer instead of displaying the transport JSON as a summary.
-  let program =
-    code_mode_program(call.invocation.name, call.invocation.arguments, False)
-  let summary = program_summary(call, program)
-  let rows = case call.outcome {
+  let program = code_mode_program(invocation.name, invocation.arguments, False)
+  let summary = program_summary(invocation, program)
+  let rows = case outcome {
     None -> [Line(ToolCall, summary <> " · awaiting result")]
     Some(message.ToolResultMessage(is_error: True, content:, ..)) -> [
       Line(ToolFailure, summary),
@@ -1537,7 +1547,7 @@ pub fn clocked_call_lines(
       details: Some(json.Object(fields)),
       ..,
     ))
-      if call.invocation.name == "fs_edit"
+      if invocation.name == "fs_edit"
     -> [Line(ToolCall, "✓ " <> summary), ..edit_patch_lines(fields, False)]
     Some(message.ToolResultMessage(
       is_error: False,
@@ -1545,7 +1555,7 @@ pub fn clocked_call_lines(
       details: details,
       ..,
     ))
-      if call.invocation.name == "context_remaining"
+      if invocation.name == "context_remaining"
     -> [
       Line(ToolCall, "✓ " <> summary),
       ..tool_result_lines(
@@ -1561,7 +1571,7 @@ pub fn clocked_call_lines(
     // call stays one row, which also keeps the compact height rule: the
     // pending row it replaces was one row too.
     Some(message.ToolResultMessage(is_error: False, details: Some(details), ..))
-      if call.invocation.name == todo_board.tool_name
+      if invocation.name == todo_board.tool_name
     -> [
       Line(
         ToolCall,
@@ -1580,7 +1590,7 @@ pub fn clocked_call_lines(
     | Some(message.AssistantMessage(..))
     | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
   }
-  let program = case call.outcome {
+  let program = case outcome {
     Some(message.ToolResultMessage(is_error: False, ..)) -> None
     _ -> program
   }
@@ -1592,17 +1602,13 @@ pub fn clocked_call_lines(
     ]
     [], Some(_) | _, None -> rows
   }
-  let images = case call.outcome {
+  let images = case outcome {
     Some(message.ToolResultMessage(content:, ..)) -> result_image_lines(content)
     Some(_) | None -> []
   }
   list.flatten([
     rows,
-    note_call_lines(
-      call.invocation.name,
-      call.invocation.arguments,
-      notes_view.Excerpt,
-    ),
+    note_call_lines(invocation.name, invocation.arguments, notes_view.Excerpt),
     images,
   ])
 }
@@ -1685,19 +1691,18 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
 /// ```
 pub fn call_summary(call: tool_activity.Call) -> String {
   program_summary(
-    call,
+    call.invocation,
     code_mode_program(call.invocation.name, call.invocation.arguments, False),
   )
 }
 
 fn program_summary(
-  call: tool_activity.Call,
+  invocation: message.ToolCall,
   program: Option(String),
 ) -> String {
   case program {
     Some(_) -> "code_mode"
-    None ->
-      tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+    None -> tool_call_summary(invocation.name, invocation.arguments, False)
   }
 }
 
@@ -2173,15 +2178,14 @@ fn duration_text(ms: Int) -> String {
 }
 
 /// The results of a compact window joined to the calls they answer, for
-/// responses whose calls are drawn as narrative, for the two tools whose
-/// row is drawn from its result: `agent_send` and `code_mode`.
+/// responses whose calls are drawn as narrative.
 ///
 /// A response that carries prose is narrative (`tool_activity`), so its
 /// calls are drawn inside it and their results arrive as entries of their
-/// own. A send's row says what became of the message and a program's row
-/// what the program returned, which only the result knows, so the row is
-/// drawn from both and the result entry draws nothing. A refused send's
-/// result is not joined: its failure rows stay where they are.
+/// own. Each call is drawn as a tool group draws it, settled, failed with
+/// its reason, a send with its admission, a program with its value, an
+/// image result with its image's row, which only the result knows; so the
+/// call's rows are drawn from both and the result entry draws nothing.
 pub opaque type Joined {
   Joined(
     // Keyed by the calling entry's identity and the provider call id.
@@ -2218,11 +2222,8 @@ pub fn joined(entries: List(entry.Entry)) -> Joined {
             let open =
               list.fold(content, open, fn(open, block) {
                 case block {
-                  message.AssistantToolCall(message.ToolCall(name:, id:, ..)) ->
-                    case joins(name) {
-                      True -> dict.insert(open, id, caller)
-                      False -> open
-                    }
+                  message.AssistantToolCall(message.ToolCall(id:, ..)) ->
+                    dict.insert(open, id, caller)
                   message.AssistantText(..) | message.AssistantThinking(..) ->
                     open
                 }
@@ -2230,23 +2231,15 @@ pub fn joined(entries: List(entry.Entry)) -> Joined {
             #(found, open)
           }
 
-          // A refused send keeps its own failure rows, so its result is
-          // not joined; every other joined result is drawn by its call.
+          // A result joined to its call is drawn by the call's row, a
+          // failure's included: the call's rows carry the failure and its
+          // reason, as a tool group's do.
           entry.MessageEntry(
-            message: message.ToolResultMessage(
-              tool_name:,
-              tool_call_id:,
-              is_error:,
-              ..,
-            ) as outcome,
+            message: message.ToolResultMessage(tool_call_id:, ..) as outcome,
             ..,
           ) ->
-            case dict.get(open, tool_call_id), tool_name, is_error {
-              Ok(_), "agent_send", True -> #(
-                found,
-                dict.delete(open, tool_call_id),
-              )
-              Ok(caller), _, _ -> #(
+            case dict.get(open, tool_call_id) {
+              Ok(caller) -> #(
                 Joined(
                   outcomes: dict.insert(
                     found.outcomes,
@@ -2260,7 +2253,7 @@ pub fn joined(entries: List(entry.Entry)) -> Joined {
                 ),
                 dict.delete(open, tool_call_id),
               )
-              Error(Nil), _, _ -> #(found, open)
+              Error(Nil) -> #(found, open)
             }
 
           entry.MessageEntry(..)
@@ -2271,11 +2264,6 @@ pub fn joined(entries: List(entry.Entry)) -> Joined {
       },
     )
   found
-}
-
-// The tools whose call's row is drawn from its result.
-fn joins(name: String) -> Bool {
-  name == "agent_send" || name == "code_mode"
 }
 
 /// Whether `value` is a result that its call's row already draws
@@ -2306,7 +2294,7 @@ pub fn reads_joined(value: entry.Entry) -> Bool {
     entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
       list.any(content, fn(block) {
         case block {
-          message.AssistantToolCall(message.ToolCall(name:, ..)) -> joins(name)
+          message.AssistantToolCall(..) -> True
           message.AssistantText(..) | message.AssistantThinking(..) -> False
         }
       })
@@ -3363,7 +3351,15 @@ fn block_lines(
           ),
         ]
       }
+
+    // A call whose result the window joined to it draws the rows a tool
+    // group draws for it, so a response holding prose settles its calls
+    // as a group of calls does.
     message.AssistantToolCall(call:) -> {
+      use <- result.lazy_unwrap(case details_expanded, receipt(call) {
+        False, Some(outcome) -> Ok(call_rows(call, Some(outcome), clock))
+        False, None | True, _ -> Error(Nil)
+      })
       use <- result.lazy_unwrap(sent_lines(
         call,
         receipt(call),
