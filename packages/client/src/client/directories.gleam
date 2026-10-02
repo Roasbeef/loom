@@ -48,8 +48,16 @@ pub type Admin {
 pub fn read(
   opened: session.Session,
 ) -> Result(directory_access.Access, String) {
+  read_store(opened.store)
+}
+
+// Directory readback needs the durable store, not the lease-renewal callback
+// or the rest of Session. Both readers still validate live canonical targets.
+fn read_store(
+  store: storage.Storage(Nil),
+) -> Result(directory_access.Access, String) {
   use cell <- result.try(
-    storage.get_register(opened.store, register.FactCustom, key)
+    storage.get_register(store, register.FactCustom, key)
     |> result.map_error(fn(_) { "session directory access could not be read" }),
   )
   case cell {
@@ -190,8 +198,41 @@ pub fn admin(
   workspace: String,
   base: policy.SandboxPolicy,
 ) -> Admin {
+  // Compatibility callers retain their acquisition timing: filesystem
+  // validation happens before this supplier is invoked, including failure.
+  admin_with_facts(
+    opened,
+    fn() { runtime() |> result.map(api.fact_handle) },
+    workspace,
+    base,
+  )
+}
+
+/// Builds the operator door with a lazy, projected writer capability.
+///
+/// Production projects the handle before retaining its supplier. Filesystem
+/// validation, authenticated origin and conditional commitment remain owned
+/// here; the handle changes retention without widening directory authority.
+/// Readback owns only Storage and writable resolution owns only protections.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let facts = api.fact_handle(runtime)
+/// // directories.admin_with_facts(opened, fn() { Ok(facts) }, workspace, base)
+/// ```
+@internal
+pub fn admin_with_facts(
+  opened: session.Session,
+  facts: fn() -> Result(api.FactHandle, Nil),
+  workspace: String,
+  base: policy.SandboxPolicy,
+) -> Admin {
+  let store = opened.store
+  let protected = base.protected
+
   Admin(
-    read: fn() { read(opened) |> result.map(encode) },
+    read: fn() { read_store(store) |> result.map(encode) },
     add: fn(value, author) {
       use requested <- result.try(tool.required_string(value, "path"))
       use mode <- result.try(tool.required_string(value, "access"))
@@ -204,13 +245,7 @@ pub fn admin(
         case mode {
           "read" -> fs.resolve_real(filesystem, "/", absolute)
           _ ->
-            fs.resolve_writable_roots(
-              filesystem,
-              "/",
-              [],
-              base.protected,
-              absolute,
-            )
+            fs.resolve_writable_roots(filesystem, "/", [], protected, absolute)
         }
         |> result.map_error(fn(_) {
           "directory could not be resolved or is protected"
@@ -225,10 +260,10 @@ pub fn admin(
         Error("add-dir requires an existing directory"),
       )
       use live <- result.try(
-        runtime() |> result.map_error(fn(_) { "session is unavailable" }),
+        facts() |> result.map_error(fn(_) { "session is unavailable" }),
       )
       use cell <- result.try(
-        api.fact_cell(live, key)
+        api.fact_cell_with(live, key)
         |> result.map_error(fn(_) { "directory state could not be read" }),
       )
       use existing <- result.try(case cell {
@@ -245,7 +280,7 @@ pub fn admin(
         ])
       let expected = option.map(cell, fn(cell) { cell.seq })
       use _ <- result.try(
-        api.put_reserved_fact_expecting(live, key, payload, expected:)
+        api.put_reserved_fact_expecting_with(live, key, payload, expected:)
         |> result.map_error(fn(_) {
           "directory access commit was refused; retry the command"
         }),

@@ -4131,6 +4131,11 @@ fn assemble_in(
   let hub_session_id = settings.session_id
   let hub_workspace = settings.workspace
   let hub_catalog = settings.catalog
+
+  // Directory mutation owns only the restartable writer capability. The hub
+  // still receives Runtime for execution, but its admin supplier does not add
+  // another executable-effects graph to the initialized gateway State.
+  let directory_facts = api.fact_handle(runtime)
   let code_mode_issue = case toolchain {
     Error(reason) -> Some(reason)
     Ok(_) ->
@@ -4268,9 +4273,9 @@ fn assemble_in(
       supervision.worker(fn() {
         hub.start(
           hub.default_options(hub_session_id, runtime)
-            |> hub.with_directories(directories.admin(
+            |> hub.with_directories(directories.admin_with_facts(
               opened,
-              fn() { Ok(runtime) },
+              fn() { Ok(directory_facts) },
               hub_workspace,
               base_policy,
             ))

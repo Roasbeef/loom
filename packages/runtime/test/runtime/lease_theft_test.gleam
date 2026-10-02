@@ -12,7 +12,8 @@
 //// and check what each admission path says about it.
 
 import core/clock
-import gleam/option.{Some}
+import core/json
+import gleam/option.{None, Some}
 import machine/operation.{ReplayNever}
 import runtime/api
 import runtime/effects
@@ -89,6 +90,30 @@ fn steal_lease(path: String) -> session.Session {
     )
     as "the second opener must steal the expired lease"
   thief
+}
+
+/// A projected fact capability preserves the durable writer's lease fence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Run with scripts/test.sh runtime --match projected_fact_handle.
+/// ```
+pub fn projected_fact_handle_reports_lease_theft_test() {
+  let #(path, runtime) = open_quiet("lease_theft_fact_handle")
+  let facts = api.fact_handle(runtime)
+  let thief = steal_lease(path)
+  let result =
+    api.put_reserved_fact_expecting_with(
+      facts,
+      "client/directory_access",
+      json.Null,
+      expected: None,
+    )
+  assert result == Error(api.SessionStolen(Some("writer-2")))
+  assert api.fact_cell_with(facts, "client/directory_access") == Ok(None)
+  assert api.close(runtime) == Ok(Nil)
+  assert session.close(thief) == Ok(Nil)
 }
 
 /// A steer onto an open run whose session has been stolen must name the

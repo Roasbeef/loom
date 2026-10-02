@@ -126,6 +126,29 @@ pub type Runtime {
   )
 }
 
+/// A host fact capability that owns the restartable writer address alone.
+///
+/// Keeping this handle across writer replacement preserves the same lookup
+/// and uncertain-in-flight failure behavior as Runtime. It neither pins a
+/// writer process nor carries executable effects into a fact-only callback.
+@internal
+pub opaque type FactHandle {
+  /// The reclaimable address resolves each operation's current writer.
+  FactHandle(writer: address.Address(writer.Message))
+}
+
+/// Projects the fact capability before a host retains its callback.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let facts = api.fact_handle(runtime)
+/// ```
+@internal
+pub fn fact_handle(runtime: Runtime) -> FactHandle {
+  FactHandle(writer_subject(runtime))
+}
+
 /// Options for `open`.
 ///
 /// Constructor invariants: `configuration` seeds the primary strand on
@@ -2046,7 +2069,24 @@ pub fn fact_cell(
   runtime: Runtime,
   key: String,
 ) -> Result(Option(FactCell), ApiError) {
-  case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
+  fact_cell_with(fact_handle(runtime), key)
+}
+
+/// Reads the same fact cell through a projected host capability.
+///
+/// Missing bindings and failed reads have exactly Runtime's classifications.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.fact_cell_with(api.fact_handle(runtime), "client/directory_access")
+/// ```
+@internal
+pub fn fact_cell_with(
+  handle: FactHandle,
+  key: String,
+) -> Result(Option(FactCell), ApiError) {
+  case writer.get_register(handle.writer, register.FactCustom, key) {
     Error(error) -> Error(read_failure(error))
     Ok(None) -> Ok(None)
     Ok(Some(storage.Register(value:, seq:))) ->
@@ -2163,7 +2203,7 @@ pub fn put_fact_expecting(
     when: reserved_fact_key(key),
     return: Error(ReservedFactKey(key:)),
   )
-  commit_fact_expecting(runtime, key, value, expected)
+  commit_fact_expecting(writer_subject(runtime), key, value, expected)
 }
 
 // The compare-and-set fact commit both expecting doors share. As with
@@ -2171,18 +2211,21 @@ pub fn put_fact_expecting(
 // only thing that differs between `put_fact_expecting` and
 // `put_reserved_fact_expecting`.
 fn commit_fact_expecting(
-  runtime: Runtime,
+  address: address.Address(writer.Message),
   key: String,
   value: JsonValue,
   expected: Option(Seq),
 ) -> Result(Seq, ApiError) {
-  commit_fact_guarded(runtime, key, value, [
+  commit_fact_guarded(address, key, value, [
     tx.Expect(register.FactCustom, key, expected),
   ])
 }
 
+// Both capability shapes use this transaction and the same error mapping.
+// Address resolution remains inside writer.commit, so a retained fact handle
+// never becomes a cached liveness observation or a pinned writer PID.
 fn commit_fact_guarded(
-  runtime: Runtime,
+  address: address.Address(writer.Message),
   key: String,
   value: JsonValue,
   expected: List(tx.SeqExpectation),
@@ -2198,7 +2241,7 @@ fn commit_fact_guarded(
       ],
       expected:,
     )
-  case writer.commit(writer_subject(runtime), plan_tx) {
+  case writer.commit(address, plan_tx) {
     Ok(tx.CommitResult(first_seq:, ..)) -> Ok(first_seq)
     Error(writer.Underlying(tx.StaleExpectation(..))) ->
       Error(FactConflict(key:))
@@ -2566,11 +2609,32 @@ pub fn put_reserved_fact_expecting(
   value: JsonValue,
   expected expected: Option(Seq),
 ) -> Result(Seq, ApiError) {
+  put_reserved_fact_expecting_with(fact_handle(runtime), key, value, expected:)
+}
+
+/// Conditionally writes a reserved fact through a projected host capability.
+///
+/// The reserved namespace check, absence expectation, lease fence and stale
+/// sequence refusal are shared with the Runtime door. No failed or uncertain
+/// commit is retried here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.put_reserved_fact_expecting_with(facts, key, value, expected: None)
+/// ```
+@internal
+pub fn put_reserved_fact_expecting_with(
+  handle: FactHandle,
+  key: String,
+  value: JsonValue,
+  expected expected: Option(Seq),
+) -> Result(Seq, ApiError) {
   use <- bool.guard(
     when: !reserved_fact_key(key),
     return: Error(UnreservedFactKey(key:)),
   )
-  commit_fact_expecting(runtime, key, value, expected)
+  commit_fact_expecting(handle.writer, key, value, expected)
 }
 
 /// Deletes one reserved `fact.custom` cell. Deleting a cell that is
@@ -3731,7 +3795,7 @@ pub fn claim_reserved_fact(
       False -> Error(UnreservedFactKey(key))
     },
   )
-  commit_fact_guarded(runtime, key, value, [
+  commit_fact_guarded(writer_subject(runtime), key, value, [
     tx.Expect(register.FactCustom, key, None),
     tx.Expect(register.FactCustom, fence, None),
   ])
