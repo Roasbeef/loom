@@ -6,12 +6,12 @@ import client/internal/ffi_os
 import client/lsp/manager
 import client/lsp/profile
 import client/lsp/resolve
+import core/json
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import gleam_mcp/json
 import host/bootstrap
 import lsp/observation
 import lsp/query

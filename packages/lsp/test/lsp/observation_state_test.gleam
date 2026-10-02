@@ -1,10 +1,10 @@
 //// Observation metadata preserves document mutation history even when a later
 //// sync restores the same text. The actor's incarnation remains private.
 
+import core/json
 import gleam/option.{None}
-import gleam_mcp/json
-import gleam_mcp/jsonrpc
 import lsp/client
+import lsp/jsonrpc
 import support/fake_server
 
 pub fn document_versions_detect_changes_even_when_text_is_restored_test() {
