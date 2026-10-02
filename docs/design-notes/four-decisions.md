@@ -343,10 +343,10 @@ exotic favor" into "consume the standard delegation contract".
 
 **The new finding, which raises the stakes:** the gap is *silent at the
 strict tier*. `FullEnforcement`'s contract
-(`EnforcementDemand`, `packages/broker/src/broker/exec.gleam:126`) is that
+(`EnforcementDemand`, `packages/broker/src/broker/exec.gleam:153`) is that
 any layer the policy called for and the helper did not apply refuses the
 result — the settle path keys on `skip:` entries
-(`packages/broker/src/broker/exec.gleam:797`). But when no cgroup
+(`packages/broker/src/broker/exec.gleam:875`). But when no cgroup
 attaches, `enforcementEntries`
 (`packages/sandbox/internal/jail/run.go:376`) merely omits `cgroup-v2`
 from the list; it emits no `skip:` entry, and the `degraded` bool tracks

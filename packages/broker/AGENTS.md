@@ -149,11 +149,15 @@ protocol (spec Part 1.4). WP-G.
   `unconfirmed`, beside the configured `size`), answered in every
   `PoolPhase` and never postponed. A gone pool is `PoolUnavailable`.
 - `broker/exec.{close, close_pool, RetirementFailure}` separates shutdown
-  requests from retirement proof. `Ok(Nil)` requires selected native exit
-  status 0 followed by the original normal BEAM monitor event. A timeout,
-  lost port, nonzero native status, or dead owner remains unconfirmed. A
-  parked owner can also confirm that it never acquired a native transport;
-  that result still requires normal BEAM retirement.
+  requests from retirement proof. `Ok(Nil)` requires a selected native exit
+  status followed by the original normal BEAM monitor event: status 0 after
+  a shutdown, or any status after a kill or an unasked death that left no
+  live jail (`Exposure`), or one that did on a helper whose hello advertised
+  `bwrap` (see "A kill keeps its witness" below). A timeout, lost port,
+  nonzero status after a shutdown, live-jail death without bwrap, or dead
+  owner remains unconfirmed. A parked owner can also confirm that
+  it never acquired a native transport; that result still requires normal
+  BEAM retirement.
 - `broker/exec.{prepare, prepare_helper, begin}` stages acquisition. The
   prepared helper owns no transport or policy file. A pool records its
   handle and original monitor before `begin`, then waits the configured
@@ -493,8 +497,48 @@ protocol (spec Part 1.4). WP-G.
 - **An unresponsive helper retains capacity until retirement is proved.**
   The readiness probe returns `StatusUnresponsive` without faulting the
   pool. The pool stops lending that helper and requests shutdown once.
-  It releases the slot only after native status 0 and normal BEAM exit;
-  an unconfirmed helper stays in the inventory and is never probed again.
+  It releases the slot only after a native exit that counts (status 0
+  after a shutdown, or the exit of a killed or dead helper that left no
+  live jail, or whose live jail was bwrap's) and normal BEAM exit; an unconfirmed helper stays in the inventory and is never probed
+  again.
+- **A kill keeps its witness.** Every failure that finds a helper's port
+  open (cancel escalation, handshake deadline, heartbeat miss, framing
+  fault, protocol violation or version mismatch, an unencodable frame)
+  sends SIGKILL to the port's OS pid and **retains the port**, leaving the
+  machine `Dead(failure, PendingExit(AfterKill(exposure)))`. Erlang delivers
+  `{exit_status, 137}` to the owner of a port whose child was signalled,
+  and only while the port is open, so closing the port first (which this
+  once did) threw the proof away and cost the pool a slot for good. The
+  port's pid is the helper itself because the fd-3 shell `exec`s it. The
+  exit then becomes `NativeExit(status, awaited)`, and `native_verdict`
+  alone decides what it proves. After a shutdown only status 0 does. After
+  a kill, or an exit nobody asked for (`Unprompted`), it depends on the
+  `Exposure` of the phase the helper died in: `NoJail` (`AwaitingHello`:
+  the helper writes hello before reading, and no `exec_start` precedes
+  `Idle`) and `SettledJail` (`Idle`: `Settle` killed the last jail before
+  the `exec_exit` that made the helper idle) retire on **every platform**;
+  `LiveJail` (`Running`, `Cancelling`) retires only when the accepted
+  hello advertised `bwrap`, because `--die-with-parent` and `--unshare-pid`
+  make the helper's death the jail's. A live jail without bwrap (degraded
+  Linux, where a payload can `setsid` away; Darwin, whose descendant
+  tracker lives inside the killed helper) stays
+  `Unconfirmed(RetirementExit(status))`. That last rule is weaker than the
+  status-0 witness (the payload may run a couple of wakeups past the
+  verdict; the per-exec cgroup directory is not removed); see the addendum
+  to protocol-change/014. A write that fails is the one case where the port
+  is already closed, so `mark_gone` records `LostExit`; a fake
+  `ChannelTransport` cannot fail a write, so
+  `real_helper_failed_write_loses_the_proof_test` closes a real helper's
+  port from outside. The pool's existing path frees the slot with no
+  change: `retire_entry` parks the dead helper's `AwaitRetirement`, the
+  status replays it, `record_retirement` marks `RetiringActor`, and
+  `ForgetRetired` stops the actor on the same `Ok` verdict. Nothing waits
+  for ever: callers' own deadlines bound `close` and `close_pool`, which
+  answer `RetirementPending` with custody intact. The settlement of the
+  execution itself is unchanged (`CancelEscalated` and so on) and the dead
+  helper keeps the failure it died with after its exit arrives.
+  `hello_features` lives in `Data` for the verdict's sake; the phases that
+  carry features are gone by then.
 - **Pool close includes borrowed helpers.** `close_pool` stops admissions
   before requesting each helper's shutdown. Native proof is recorded
   before `ForgetRetired` asks the helper actor to stop. The original

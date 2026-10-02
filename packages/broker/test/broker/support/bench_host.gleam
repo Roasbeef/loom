@@ -30,6 +30,29 @@ pub fn getenv(name: String) -> Result(String, Nil)
 @external(erlang, "bench_exec_ffi", "now_us")
 pub fn now_us() -> Int
 
+/// Nanoseconds on the wall clock, the clock `date +%s%N` reads, so a
+/// payload's timestamps and the test's can be compared.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let witnessed = bench_host.system_time_ns()
+/// ```
+@external(erlang, "bench_exec_ffi", "system_time_ns")
+pub fn system_time_ns() -> Int
+
+/// Closes the port this node holds to the process with this OS pid, from
+/// outside the port's owner: the owner's next write fails and no exit status
+/// ever arrives. `Error(Nil)` when no such port is held.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = bench_host.close_port_of(helper_pid)
+/// ```
+@external(erlang, "bench_exec_ffi", "close_port_of")
+pub fn close_port_of(os_pid: Int) -> Result(Nil, Nil)
+
 /// A positive integer no earlier call returned, for naming steps.
 ///
 /// ## Examples

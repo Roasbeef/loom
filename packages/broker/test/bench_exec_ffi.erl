@@ -8,7 +8,7 @@
 %% packages, and none belongs in `src`.
 -module(bench_exec_ffi).
 
--export([getenv/1, now_us/0, unique/0, vm_counts/0, vm_settled_memory/0,
+-export([getenv/1, now_us/0, system_time_ns/0, close_port_of/1, unique/0, vm_counts/0, vm_settled_memory/0,
          helper_os_pids/0, busy_helper_os_pid/1, proc_tree/1, signal/2,
          census/1]).
 
@@ -28,6 +28,25 @@ now_us() ->
     erlang:convert_time_unit(
       erlang:monotonic_time() - erlang:system_info(start_time),
       native, microsecond).
+
+%% Nanoseconds on the wall clock, which is the clock `date +%s%N` reads in a
+%% child. A test that compares a timestamp written by a payload with one taken
+%% here has to use the same clock on both sides, and this is it.
+system_time_ns() ->
+    os:system_time(nanosecond).
+
+%% Closes the port this node holds to the process with this OS pid, from a
+%% process that is not the port's owner. The owner finds out the way it would
+%% if the port had failed under it: its next write is refused, and no exit
+%% status is ever delivered. `{error, nil}` when no such port is held.
+close_port_of(OsPid) ->
+    Ports = [Port || Port <- erlang:ports(),
+                     {os_pid, Pid} <- [erlang:port_info(Port, os_pid)],
+                     Pid =:= OsPid],
+    case Ports of
+        [Port] -> erlang:port_close(Port), {ok, nil};
+        _ -> {error, nil}
+    end.
 
 %% A positive integer no other call in this node has returned.
 unique() ->
