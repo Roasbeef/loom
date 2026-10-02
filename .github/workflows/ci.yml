@@ -50,7 +50,8 @@
 #   static (linux)     the parts of `make check` that need the toolchain
 #                      but never the native helpers or a live server:
 #                      `make lint` (house rules), `make prelude-check`
-#                      (the capability-prelude digest), `make doc-check`
+#                      (the capability-prelude digest), `make tags-check`
+#                      (the enforcement tag vocabulary), `make doc-check`
 #                      (the doc graph), `make fmt-check`, and the scripts/
 #                      package's own `unittest` suite. None of these touch
 #                      bin/ or a shipment, so this job never needs the
@@ -534,6 +535,9 @@ jobs:
 
       - name: make prelude-check
         run: .github/scripts/hex_retry.sh make prelude-check
+
+      - name: make tags-check
+        run: make tags-check
 
       - name: make lint
         run: .github/scripts/hex_retry.sh make lint

@@ -535,6 +535,15 @@ prelude-check: ## Check tools/prelude against packages/cap (no toolchain needed)
 	@scripts/gen-prelude.sh --check
 	@scripts/gen-prelude.sh --self-test
 
+.PHONY: gen-tags
+gen-tags: ## Regenerate the Go and Gleam enforcement tag constants from protocol/enforcement-tags.toml (needs python3)
+	@scripts/gen-tags.py
+
+.PHONY: tags-check
+tags-check: ## Check the generated enforcement tag constants against their source (needs only python3)
+	@scripts/gen-tags.py --check
+	@scripts/gen-tags.py --self-test
+
 .PHONY: gen-client
 gen-client: ## Build web_client's bundle and the page's stylesheet into web_view's priv (needs the network once)
 	@scripts/web_assets.sh
