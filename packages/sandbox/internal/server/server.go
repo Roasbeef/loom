@@ -246,6 +246,13 @@ func (s *Server) handleExecStart(f framing.Frame) {
 	}()
 }
 
+// handleExecStdin queues a chunk; it does not write the child's pipe. It
+// runs on the frame loop, which must keep reading cancel, heartbeat and
+// shutdown whatever the payload does with its stdin, so Exec.WriteStdin only
+// hands the bytes to the execution's writer goroutine (jail/stdin.go).
+// Waiting here is possible only when jail.StdinPendingMax bytes are already
+// queued for a payload that is not reading, and the wall deadline and the
+// execution's end both still bound it.
 func (s *Server) handleExecStdin(f framing.Frame) {
 	if s.running == nil {
 		_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, "no execution running")
