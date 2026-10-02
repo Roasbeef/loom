@@ -396,6 +396,37 @@ pub fn result_with(
   )
 }
 
+/// The result answering call `id` with `images`, each a media type and its
+/// base64 bytes, as `fs_read` returns an image file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let read = frame_scene.result_images(3, "r1", "fs_read", [#("image/png", data)])
+/// ```
+pub fn result_images(
+  n: Int,
+  id: String,
+  name: String,
+  images: List(#(String, String)),
+) -> entry.Entry {
+  record(
+    n,
+    message.ToolResultMessage(
+      id,
+      name,
+      list.map(images, fn(image) {
+        message.ToolResultImage(data: image.1, mime_type: image.0)
+      }),
+      None,
+      None,
+      None,
+      False,
+      n * 1000,
+    ),
+  )
+}
+
 /// The result answering `agent_send` call `id`, as the tool writes it:
 /// `delivery` is `"steered"` when the message joined the recipient's open
 /// run and `"started"` when it started one.

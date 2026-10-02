@@ -49,10 +49,11 @@ import session_view/model.{Shared} as session_model
 import session_view/notes_view
 import session_view/tool_activity
 import session_view/transcript_line.{
-  type Line, type Speaker, type Stream, Assistant, Failure, Line, PeerMessage,
-  ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest, SentMessage,
-  Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning, System, ToolCall,
-  ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
+  type Line, type Speaker, type Stream, Assistant, Failure, ImageRow, Line,
+  PeerMessage, ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest,
+  SentMessage, Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning,
+  System, ToolCall, ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult,
+  User,
 }
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
@@ -381,6 +382,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(record_rows, record_line_cache, record_gutters) =
         transcript_lines.separated_lines(model.shared.transcript)
         |> list.append(lines)
+        |> noted_images(model)
         |> cached_record_lines(width, previous, model.shared.active_strand)
       Model(
         shared: Shared(
@@ -417,6 +419,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(newest_rows, appended, newest_gutters) =
         lines
         |> separated_from_screen(model)
+        |> noted_images(model)
         |> cached_record_lines(
           width,
           model.view.caches.record_line_cache,
@@ -478,6 +481,31 @@ fn separated_from_screen(lines: List(Line), model: Model) -> List(Line) {
   case wanted {
     True -> [Line(Spacer, ""), ..lines]
     False -> lines
+  }
+}
+
+// An image's row says why the picture is not drawn when this terminal
+// knows: inside Herdr, which passes no pane graphics through. The note is
+// added here, to the line, so the rows and the anchors built from the same
+// lines agree on the row it adds.
+fn noted_images(lines: List(Line), model: Model) -> List(Line) {
+  case image_note(model) {
+    None -> lines
+    Some(note) ->
+      list.map(lines, fn(line) {
+        case line.speaker {
+          ImageRow -> Line(ImageRow, line.text <> "\n" <> note)
+          _ -> line
+        }
+      })
+  }
+}
+
+// The reason a picture is not drawn, when the terminal can name it.
+fn image_note(model: Model) -> Option(String) {
+  case model.view.herdr_reporter {
+    Some(_) -> Some("inside Herdr: pane graphics are not passed through")
+    None -> None
   }
 }
 
@@ -675,6 +703,7 @@ fn record_anchors_for(
   [#("", transcript_lines.separated_lines(model.shared.transcript)), ..blocks]
   |> list.flat_map(fn(block) {
     block.1
+    |> noted_images(model)
     |> list.index_map(fn(line, part) { #(line, part) })
     |> list.flat_map(fn(pair) {
       let rendered =
@@ -923,7 +952,8 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | StrandMessage
     | PeerMessage
     | ProgramRunning
-    | ProgramFailure -> 0
+    | ProgramFailure
+    | ImageRow -> 0
   }
 }
 

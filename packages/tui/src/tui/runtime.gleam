@@ -302,7 +302,8 @@ fn checked(
     | job.ControlArrived(..)
     | job.ReconnectArrived(..)
     | job.ActivityArrived(..)
-    | job.ConfigurationArrived(..) -> arrival
+    | job.ConfigurationArrived(..)
+    | job.ImageArrived(..) -> arrival
   }
 }
 

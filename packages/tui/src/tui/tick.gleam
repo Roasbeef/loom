@@ -30,6 +30,7 @@ import tui/attachment
 import tui/buffered
 import tui/effect
 import tui/herdr
+import tui/image_drain
 import tui/inbound
 import tui/interaction
 import tui/job_runner
@@ -143,6 +144,7 @@ pub fn update_tick(model: Model) -> Model {
   let switched = session_control.drain_reconnect(switched)
   let switched = session_control.drain_activity(switched)
   let switched = session_control.drain_configuration(switched)
+  let switched = image_drain.drain(switched)
   let drained = inbound.drain_connection(switched, tui_model.connection_batch)
   settle_tick(model, drained)
 }
