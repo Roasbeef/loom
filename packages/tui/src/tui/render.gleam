@@ -249,7 +249,8 @@ pub fn render_frame(
         state,
         goal_availability(model),
       )
-    DaemonSelector(selector) -> session_selector.render(base, screen, selector)
+    DaemonSelector(selector) ->
+      session_selector.render(base, screen, selector, model.view.wall_ms)
     PeerLinkManager(state) -> peer_links.render(base, screen, state)
     AccessManager(state) -> access_overlay.render(base, screen, state)
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
