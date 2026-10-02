@@ -180,9 +180,9 @@ pub fn footer_rows_depend_on_the_width_alone_test() {
   assert layout.footer_rows(112) == 2
   assert layout.footer_rows(111) == 3
   assert layout.footer_rows(40) == 3
-  assert layout.transcript_height(40, 3, 2) == 32
-  assert layout.transcript_height(40, 3, 3) == 31
-  assert layout.transcript_height(40, 3, 1) == 33
+  assert layout.transcript_height(40, 3, 2) == 33
+  assert layout.transcript_height(40, 3, 3) == 32
+  assert layout.transcript_height(40, 3, 1) == 34
   assert projection.viewport_height_changed(
     layout.transcript_height(40, 3, 2),
     layout.transcript_height(40, 3, 1),
@@ -1848,7 +1848,7 @@ pub fn a_malformed_recording_line_is_a_worded_error_test() {
 
 // The transcript's inner area on a 60x12 screen: one header row, then the
 // panel border, so text starts at row 2, column 1.
-const transcript_origin = Position(1, 2)
+const transcript_origin = Position(1, 1)
 
 pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
   let inbox = connection.new_inbox()

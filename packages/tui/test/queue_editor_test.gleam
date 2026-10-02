@@ -860,7 +860,7 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
     as "the settled operation retired its marker"
 
   list.each([retired, second], fn(model) {
-    assert string.contains(painted(model), "stopped · Enter sends held input")
+    assert string.contains(painted(model), "Enter sends held input")
       as "the composer derives the halt from the connected cut"
     let shown = painted(submit.open_queue(model))
     assert string.contains(shown, "held until your next message")
@@ -886,7 +886,7 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
     as "Enter releases held input with an ordinary prompt, not a steer"
 
   let #(empty, _) = ready([])
-  assert !string.contains(painted(empty), "stopped · Enter sends held input")
+  assert !string.contains(painted(empty), "Enter sends held input")
     as "an idle strand without held rows is an ordinary prompt"
   let pending_stop = submit.toggle_submission_mode(interrupted)
   assert pending_stop.shared.notice

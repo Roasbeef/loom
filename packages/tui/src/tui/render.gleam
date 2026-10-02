@@ -77,7 +77,6 @@ import session_view/composer
 import session_view/context_view
 import session_view/lane_fold
 import session_view/live_jobs
-import session_view/model.{Disconnected} as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/queued_input
@@ -108,7 +107,7 @@ import tui/markdown
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
-  PromptNext, ReconnectAttempting, ReconnectIdle, ReconnectSpent, SteerNow, View,
+  View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -180,7 +179,7 @@ pub fn render_frame(
     layout.queue_body_layout(body_area, model)
   let #(transcript_panel, agent_panel, changes_panel) =
     layout.body_layout(conversation_area, model)
-  let transcript_area = layout.panel_inner(transcript_panel)
+  let transcript_area = layout.transcript_inner(transcript_panel)
   let #(pending_area, composer_area) =
     layout.pending_layout(layout.panel_inner(input_area), model)
   let #(paste_area, editor_area) =
@@ -208,7 +207,7 @@ pub fn render_frame(
   let base =
     repaint_canvas(screen, model.view.repaint_phase)
     |> input_frame.render_identity(header_area, identity(model, strip))
-    |> render_conversation_heading(transcript_panel, model)
+    |> render_reading_row(transcript_panel, model)
     |> render_transcript(transcript_area, model)
     |> render_agent_rail(agent_panel, model)
     |> render_changes_panel(changes_panel, model)
@@ -612,17 +611,12 @@ fn frame_status(
         },
       )
   }
-  let notice =
-    [model.view.cache_outlook, text_hygiene.single_line(model.shared.notice)]
-    |> list.filter(fn(piece) { piece != "" })
-    |> string.join(" · ")
   input_frame.Status(
     target: recipient_label(model),
     keys: string.trim(input_title_keys(model)),
     activity:,
     queued: list.length(layout.queue_rows(model)),
     strand: model.shared.active_strand,
-    notice:,
     model: short_model(model.shared.current_model),
     effort: effort(model),
     context: context_view.footer(model.shared.context),
@@ -660,34 +654,32 @@ fn placeholder(model: Model, strip: List(agent_strip.Line)) -> Option(String) {
   }
 }
 
-// A reading surface needs a heading and gutter, not four persistent edges.
-// Keeping its interior geometry preserves selection and semantic anchors.
-// The heading row names the transcript; the bottom row is the reading row.
-fn render_conversation_heading(
+// A reading surface needs a gutter, not four persistent edges or a heading:
+// the identity line names the strand. While the reader is above the tail,
+// the panel's bottom row names the way back and how far it is, just above
+// the input frame where the eye returns to type. The row is the panel's own
+// spare edge, so the transcript keeps every row it had.
+fn render_reading_row(
   buf: buffer.Buffer,
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  let headed =
-    buffer.set_string(
-      buf,
-      area.position,
-      text.truncate(transcript_title(model), area.size.width, "…"),
-      theme.quiet_text(),
-    )
-
-  // While the reader is above the tail, the panel's bottom row names the
-  // way back and how far it is, just above the input frame where the eye
-  // returns to type. The row is the panel's own spare edge, so the
-  // transcript keeps every row it had.
-  case tui_model.reading_history(model) {
-    False -> headed
-    True -> {
-      let below = model.view.scroll_offset + tui_model.viewport_backlog(model)
-      let row = geometry.bottom(area) - 1
+  case tui_model.reading_history(model), surface_title(model) {
+    // Help, the notes and a diff borrow the transcript's area, so the
+    // bottom row says which of them is showing and for which strand.
+    False, Some(title) ->
       buffer.set_string(
-        headed,
-        geometry.Position(area.position.x, row),
+        buf,
+        geometry.Position(area.position.x, geometry.bottom(area) - 1),
+        text.truncate(title, area.size.width, "…"),
+        theme.quiet_text(),
+      )
+    False, None -> buf
+    True, _ -> {
+      let below = model.view.scroll_offset + tui_model.viewport_backlog(model)
+      buffer.set_string(
+        buf,
+        geometry.Position(area.position.x, geometry.bottom(area) - 1),
         text.truncate(
           " ↑ reading · "
             <> int.to_string(below)
@@ -781,22 +773,26 @@ fn render_transcript_row(
   }
 }
 
-fn transcript_title(model: Model) -> String {
+// What borrows the transcript's area, named with its strand, or `None` for
+// the transcript itself.
+fn surface_title(model: Model) -> Option(String) {
   let surface = case
     model.view.help_open,
     model.view.notes_open,
     layout.main_shows_diff(model)
   {
-    True, _, _ -> "help"
-    False, True, _ -> "agent notes"
-    False, False, True -> diff_title(model)
-    False, False, False -> "transcript"
+    True, _, _ -> Some("help")
+    False, True, _ -> Some("agent notes")
+    False, False, True -> Some(diff_title(model))
+    False, False, False -> None
   }
-  " "
-  <> surface
-  <> " / "
-  <> text_hygiene.single_line(model.shared.active_strand)
-  <> " "
+  option.map(surface, fn(surface) {
+    " "
+    <> surface
+    <> " / "
+    <> text_hygiene.single_line(model.shared.active_strand)
+    <> " "
+  })
 }
 
 fn transcript_content(lines: List(Line), width: Int) -> span.Text {
@@ -1925,7 +1921,7 @@ fn input_title_keys(model: Model) -> String {
       " w writes · Enter opens agent "
     _, agent_strip.Browsing(_) ->
       " ↑↓ select agent · Enter opens · x stops · Esc back "
-    _, agent_strip.Composing -> input_behavior(model)
+    _, agent_strip.Composing -> layout.input_keys(model).0
   }
 }
 
@@ -1937,42 +1933,6 @@ fn recipient_label(model: Model) -> String {
   |> string.reverse
   |> text.truncate(int.max(8, int.min(32, model.view.width / 3)), "…")
   |> string.reverse
-}
-
-// Composer guidance answers what the next Enter does. The agent rail can
-// still display the last operation's outcome, so its terminal status alone
-// cannot establish whether this idle strand retains queued input.
-fn input_behavior(model: Model) -> String {
-  use <- bool.guard(
-    model.shared.captured != None
-      && !session_model.is_known_strand(
-      model.shared.strands,
-      model.shared.active_strand,
-    ),
-    " recipient unavailable · draft retained · ^O agents ",
-  )
-  use <- bool.guard(
-    model.shared.peer == Disconnected,
-    case model.view.reconnect {
-      ReconnectAttempting(..) -> " Reconnecting to the daemon · draft retained "
-      ReconnectIdle | ReconnectSpent ->
-        " Disconnected · /sessions to reconnect · draft retained "
-    },
-  )
-  use <- bool.guard(
-    tui_model.active_queue_halted(model),
-    " stopped · Enter sends held input with your message ",
-  )
-  case
-    session_model.active_interrupt(model.shared),
-    layout.active_status_label(model),
-    model.view.submission_mode
-  {
-    Some(_), _, _ -> " stopped · Enter sends held input with your message "
-    None, None, _ -> " Enter sends "
-    None, Some(_), SteerNow -> " steer this turn · Enter steers · Tab queues "
-    None, Some(_), PromptNext -> " Enter queues · Tab steers "
-  }
 }
 
 fn render_paste_chip(

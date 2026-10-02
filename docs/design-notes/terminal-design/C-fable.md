@@ -300,7 +300,7 @@ already has and now carries on its title row; the approval as a full-width
 block under a rule with numbered choices, a key hint and a one-line reason,
 which replaces the bottom-anchored dialog's three vertical choices, keeping
 the rule that nothing is selected on opening and Enter confirms
-(`render`, `tui/approval_panel.gleam:263`, keeps its capture of the exact
+(`render`, `tui/approval_panel.gleam:285`, keeps its capture of the exact
 sequence, action and grants); the single footer line with an activity label
 on the left, which the compact footer already is; and the pinned todo as one
 line that expands.
@@ -388,7 +388,7 @@ when a strand needs a decision (`needing`,
 `session_view/strand_card.gleam:69`). The panel has keyboard focus or the
 composer does; the panel's border is drawn in the signal colour while it has
 focus, and the composer's top rule says what the keys do, as it does for the
-strip today (`input_title`, `tui/render.gleam:1833`).
+strip today (`input_title_keys`, `tui/render.gleam:1918`).
 
 | Key, panel focused | Does |
 |---|---|
