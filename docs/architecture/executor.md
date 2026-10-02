@@ -647,20 +647,31 @@ harness is `make bench-exec`, gated by `LOOM_BENCH_EXEC=1`, and writes one
 line of JSON per probe. A change in S1 through S3 that does not move the
 number it was meant to move did not fix the cost it claimed to.
 
-The numbers are filled in from the first run and are `TBD` until then.
+The first run is recorded below, taken on 2026-10-02 against `main` at
+`7dacc61` in a four-scheduler Linux container, under `BestEffort` demand
+(platform enforcement refuses every result here because the cgroup layer is
+absent). A second run on the same tree reproduced every figure within the
+noise of a shared machine: the warm round trip moved from 11.3 ms to 10.6 ms at
+p50, so compare runs taken on a quiet box.
 
 | # | Probe | What it measures | What it is the "before" for | p50 | p95 |
 |---|---|---|---|---|---|
-| 1 | Spawn to ready | `prepare_helper`, `begin` and `await_ready`, 50 runs | The service's dispatch latency; idle retirement (#283) | TBD | TBD |
-| 2 | Round trip | `clear_call` of `true` on a warm helper, 200 runs | The extra service hop, which must not move it beyond noise | TBD | TBD |
-| 3 | First wide batch | Pool of 4, eight concurrent calls from cold; time to the last settlement | The serial spawn cost (`start_pool`, `broker/exec.gleam:2540`, "never measured") | TBD | n/a |
-| 4 | Cancel to settle | `sleep 300` cancelled, and a command that ignores `SIGTERM` | The cancel ladder (about two seconds in the second case); the witnessed kill must not regress it | TBD | TBD |
-| 5 | Flood | `yes` with a one-mebibyte cap and with none, ten seconds of wall; time to settle and cancel latency during the flood | The evidence that replaces "backpressure" | TBD | TBD |
-| 6 | Leak census | 200 executions mixing success, cancel and escalation; then ports, processes, pool entries by `Availability`, and `loom-exec` and `bwrap` processes | The unconfirmed count today (one per escalation), which S2 must drive to zero | TBD | n/a |
-| 7 | Memory | Resident memory per helper idle and running, and BEAM memory for a pool of four | Whether a daemon-wide ceiling stays on the cut list | TBD | n/a |
-| 8 | Enforcement fixture | `ExecResult.enforcement` for `true` under platform enforcement, captured byte-exact | The S1 lane-equivalence comparison | n/a | n/a |
-| 9 | Tag drift | A diff of the Go and Gleam tag vocabularies | S5's input; zero drift is itself a finding | n/a | n/a |
-| 10 | Stdin hazard | A non-reading payload, one mebibyte of stdin, then a cancel; time to `exec_exit` | The Go fix, in its own Go test; about thirty seconds is expected before the fix | n/a | n/a |
+| 1 | Spawn to ready | `prepare_helper`, `begin` and `await_ready`, 30 runs; orderly close afterwards | The service's dispatch latency; idle retirement (#283) | 4.9 ms | 5.8 ms |
+| 2 | Round trip | `clear_call` of `true` on a warm pool of four, 100 sequential runs | The extra service hop, which must not move it beyond noise | 11.3 ms | 13.2 ms |
+| 3 | First wide batch | Pool of four, eight concurrent calls, three fresh pools; per-call latency, and time to the last settlement (cold 74–87 ms, warm 49–71 ms) | The serial spawn cost inside the pool actor, which had never been measured | 47.2 ms | 82.1 ms |
+| 4 | Cancel to settle | `sleep` cancelled (10 runs, code 143), and a payload ignoring `SIGTERM` (5 runs, code 137) | The cancel ladder; the witnessed kill must not regress it | 5.0 ms and 2006 ms | 7.7 ms and 2007 ms |
+| 5 | Flood | `yes` for three seconds with a one-mebibyte cap (1 MiB received, 33 chunks) and with none (837 MB, 25,706 chunks); BEAM memory stayed near 35 MiB with 0.37 MiB retained | The evidence that replaces "backpressure": cancel settles in 4.5 ms and 4.0 ms | 4.5 ms | n/a |
+| 6 | Leak census | 100 executions: 80 successes, 17 cancels, 3 escalations of a `SIGSTOP`ped helper | Each escalation settled `CancelEscalated` after the pool's 3,000 ms grace; `close_pool` answered `RetirementProofLost`; ports returned to baseline, 7 BEAM processes remained (the pool holding unconfirmed custody), and **no** `loom-exec` or `bwrap` process survived. S2 drives the unconfirmed count to zero | n/a | n/a |
+| 7 | Memory | Resident memory of an idle helper; of a running jail tree; BEAM memory of a warm pool of four | 6.4–6.5 MiB per idle helper, 11.8 MiB for helper, two bwrap processes and `sleep`; 415 KiB of BEAM memory for four helpers. At sixteen helpers a session costs about 100 MiB of helper memory, which keeps a daemon-wide ceiling on the cut list until a session count says otherwise | n/a | n/a |
+| 8 | Enforcement fixture | `ExecResult.enforcement` for `true`, byte-exact | The S1 lane-equivalence comparison: `bwrap`, a `mounts:` plan, `rlimit-fsize`, `rlimit-cpu`, `landlock:abi=7`, `no-new-privs`, `seccomp-net`, and `skip:cgroup-v2` | n/a | n/a |
+| 9 | Tag drift | A diff of the Go and Gleam tag vocabularies | S5's input | S5 | S5 |
+| 10 | Stdin hazard | A non-reading payload, one mebibyte of stdin, then a cancel; time to `exec_exit` | Fixed on its own branch: no exit within three seconds before, 8–67 ms after | n/a | n/a |
+
+The leak census is the measurement that most changes the plan. Every escalated
+helper's jail died with it, as `--die-with-parent` and the PID namespace
+promise, and the pool still had to treat each slot as unconfirmed because the
+port was closed before an exit status could be read. The defect is the lost
+proof, not a lost process, which is what the S2 witnessed kill recovers.
 
 Two things are not measurable here and are not mocked: the cgroup pids and
 memory ceiling, and anything on Darwin.
