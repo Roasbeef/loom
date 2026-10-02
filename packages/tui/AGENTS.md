@@ -1672,10 +1672,16 @@ untouched.
   click on it jumps; while help, notes or a diff borrow the area it names
   them. Neither changes the viewport height.
 - **Approval block** (`approval_panel.render`): a full-width block under a
-  rule directly above the input frame, with the request, its action, the
+  rule directly above the input frame, headed `? <strand> · <question>`
+  from the escalation's scope (`approval.Review.strand`) with `1 of N` at
+  the right while N questions wait, then the request, its action, the
   grant and whether session approval exists, then `1`, `2`, `3` choices
-  that select and never confirm, Enter to decide, `d` for the raw request
-  and Escape to defer; the input frame says it is locked meanwhile.
+  that select and never confirm, Enter to confirm, `d` for the raw request
+  and Escape to defer; the input frame says it is locked meanwhile. An open
+  question counts in the bottom rule's `N need you`, beside the agents
+  whose rows need input (`render.needs_you`). The status band's rows sit
+  one cell in from the frame's side, and the interrupt's own notice is not
+  drawn while the held key's reason says the same.
   The compact footer is gone; its facts are on the input frame. Ctrl+G exposes
   the complete input/output/cache/rate accounting in the existing adaptive footer.
   Both footers fit whole pieces (`render.fit_pieces`): a piece that does not
