@@ -49,9 +49,10 @@ import session_view/model.{Shared} as session_model
 import session_view/notes_view
 import session_view/tool_activity
 import session_view/transcript_line.{
-  type Line, type Speaker, type Stream, Assistant, Failure, Line, Reasoning,
-  ReasoningDigest, Spacer, SummarizedAdvice, SummarizedReasoning, System,
-  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  type Line, type Speaker, type Stream, Assistant, Failure, Line, PeerMessage,
+  Reasoning, ReasoningDigest, SentMessage, Spacer, StrandMessage,
+  SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
@@ -581,7 +582,8 @@ fn record_anchors_for(
     // compact history. Inside a group or a response every spacer is already
     // placed, and a spacer's own row is blank, so this pass adds only the
     // gaps between items.
-    False ->
+    False -> {
+      let found = transcript_lines.deliveries(entries)
       entries
       |> tool_activity.project_split(
         transcript_lines.advisor_splits(visible_advisor_history(model)),
@@ -594,10 +596,16 @@ fn record_anchors_for(
       |> list.map(fn(spliced) {
         case spliced {
           Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
-          Projected(tool_activity.Narrative(value)) -> #(
-            value.seq,
-            anchored_entry_blocks(value, model),
-          )
+
+          // A send's result that its call's row draws is no rows, as
+          // `record_lines` draws it. The call's own row is one heading row
+          // whether or not the result has joined it, so the response's
+          // blocks need no such mirror.
+          Projected(tool_activity.Narrative(value)) ->
+            case transcript_lines.absorbed(found, value) {
+              True -> #(value.seq, [#(ids.entry_id_to_string(value.id), [])])
+              False -> #(value.seq, anchored_entry_blocks(value, model))
+            }
           Projected(tool_activity.Tools(calls)) -> {
             let heading = [transcript_lines.activity_heading(calls)]
             let called =
@@ -653,6 +661,7 @@ fn record_anchors_for(
       )
       |> list.flat_map(fn(group) { group.1 })
       |> transcript_lines.separated_tool_blocks(BetweenEntries)
+    }
   }
   [#("", model.shared.transcript), ..blocks]
   |> list.flat_map(fn(block) {
@@ -858,6 +867,12 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     SummarizedReasoning | SummarizedAdvice if index > 0 -> 2
     User if index == 1 -> 1
     User if index > 1 && index < row_count - 1 -> 3
+
+    // A message's bar is painted in the margin, outside these cells, so
+    // the gutter counts only the indent before the heading and the body.
+    SentMessage | StrandMessage if index == 1 -> 1
+    SentMessage | StrandMessage if index > 1 && index < row_count - 1 -> 3
+    PeerMessage if index > 1 && index < row_count - 1 -> 4
     ToolDetail -> 2
     System
     | User
@@ -871,7 +886,10 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | ToolPatch
     | ToolFailure
     | Failure
-    | Spacer -> 0
+    | Spacer
+    | SentMessage
+    | StrandMessage
+    | PeerMessage -> 0
   }
 }
 

@@ -84,9 +84,10 @@ import session_view/snapshot_view
 import session_view/strand_card
 import session_view/text_hygiene
 import session_view/transcript_line.{
-  type Line, type Speaker, Assistant, Failure, Line, Reasoning, ReasoningDigest,
-  Spacer, SummarizedAdvice, SummarizedReasoning, System, ToolCall, ToolDetail,
-  ToolFailure, ToolPatch, ToolResult, User,
+  type Line, type Speaker, Assistant, Failure, Line, PeerMessage, Reasoning,
+  ReasoningDigest, SentMessage, Spacer, StrandMessage, SummarizedAdvice,
+  SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolPatch,
+  ToolResult, User,
 }
 import session_view/transcript_lines
 import session_view/worktree_view
@@ -104,6 +105,7 @@ import tui/input_frame
 import tui/layout
 import tui/live_tail
 import tui/markdown
+import tui/message_rows
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
   FrameCache, GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
@@ -749,9 +751,23 @@ fn render_transcript_row(
 ) -> buffer.Buffer {
   let position = geometry.Position(area.position.x, area.position.y + row)
   case line.spans {
+    // A message's bar belongs to the margin column the transcript keeps to
+    // its left, so it is painted there and the rest of the row is painted
+    // where any row is. The transcript area always has that column
+    // (`layout.transcript_inner`).
+    [first, ..rest] if first.content == message_rows.margin_bar ->
+      buffer.set_string(
+        buf,
+        geometry.Position(position.x - 1, position.y),
+        first.content,
+        first.style,
+      )
+      |> render_transcript_row(area, span.Line(..line, spans: rest), row)
+
     [first, ..]
       if first.style.bg == theme.user_background
       || first.style.bg == theme.assistant_background
+      || first.style.bg == theme.raised
     -> {
       let width = span.line_width(line)
 
@@ -820,6 +836,11 @@ pub fn render_line(line: Line, width: Int) -> List(span.Line) {
     // header and at most `summary_rows` wrapped secondary rows. A second
     // wrap could only add rows the bound was there to prevent.
     SummarizedReasoning | SummarizedAdvice -> speaker_rows(line, width)
+
+    // A message wraps its body to the room its bar leaves, and its first
+    // span is a bar painted in the margin, outside the row's width; a second
+    // wrap would count that bar against the pane.
+    SentMessage | StrandMessage | PeerMessage -> speaker_rows(line, width)
 
     // Every other body is laid out against the full pane and has never been
     // measured, so it is wrapped on the way out.
@@ -921,7 +942,10 @@ pub fn finish_markdown_rows(
     | ToolPatch
     | ToolFailure
     | Failure
-    | Spacer -> marked
+    | Spacer
+    | SentMessage
+    | StrandMessage
+    | PeerMessage -> marked
   }
 }
 
@@ -946,7 +970,10 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
     Failure -> #("! error ", theme.danger_text())
-    Spacer -> #("", theme.quiet_text())
+    Spacer | SentMessage | StrandMessage | PeerMessage -> #(
+      "",
+      theme.quiet_text(),
+    )
   }
 }
 
@@ -1014,6 +1041,11 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     // beneath it, with no blank of its own, like the digest it replaces: the
     // live and settled forms show the same summary and so the same rows.
     SummarizedReasoning -> summarized_rows(line.text, mark, mark_style, width)
+
+    // A message between agents draws its heading from the speaker and its
+    // body as body (`message_rows`).
+    SentMessage | StrandMessage | PeerMessage ->
+      message_rows.rows(line.speaker, line.text, width)
 
     // Advice closes with a blank like every other system row.
     SummarizedAdvice ->
