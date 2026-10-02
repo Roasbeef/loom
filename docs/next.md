@@ -3,7 +3,8 @@
 ## Local orientation in large modules (issue #593)
 
 Branch `lint/local-orientation` ([PR #679](https://github.com/Roasbeef/loom/pull/679))
-carries all six of issue #593's suggestions: the style guide section, the content, and the gates.
+carries all six of issue #593's suggestions: the style guide section, the
+content, and the gates.
 `docs/gleam-style.md` Part II, "Orientation in large modules", is the rule
 of record; `packages/lint/CLAUDE.md` says how each check decides.
 
@@ -21,13 +22,31 @@ of record; `packages/lint/CLAUDE.md` says how each check decides.
 - **Censuses (warn forever).** R17 `flow-order` (zero at the default 50%)
   and R18 `unnamed-helper` (859: short one-caller helpers the module doc
   never names). Never pad a module doc with helper names to quiet R18.
-- **Content.** 98 modules gained spines, 47 late state types moved up, two
-  imports were qualified, and nine machines carry checked tables:
-  `session_channel.Phase`, `broker/exec.Phase`, `broker/escalation.Phase`,
-  `codemode/satellite.Phase`, `client/jobs.Phase`, `client/provider_relay.Phase`,
-  and `client/daemon/root`, `ui_socket` and `session_socket`'s `Phase`.
+- **Content.** 99 modules gained spines, 47 late state types moved up, two
+  imports were qualified, and fifteen transition tables are checked against
+  their types: `session_channel.Phase`, `broker/exec.Phase`,
+  `broker/escalation.Phase`, `codemode/satellite.Phase`, `client/jobs.Phase`,
+  `client/provider_relay.Phase`, the `Phase` of `client/daemon/root`,
+  `ui_socket` and `session_socket`, and the language-server stack's six
+  (`client/lsp/manager.Phase` and `KeeperPhase`, both `lsp/client.Phase`
+  tables, `client/lsp/jail.Phase`, `lsp/framing.Buffer`).
   `client/daemon/manager.Phase` and `runtime/strand_runtime` were judged
   too thin for one (two states; no single phase type).
+- **The style was applied to what landed during review.** Main's
+  language-server stack, revamp groundwork, memory and resource retention,
+  code-mode cues, MCP concise types and JSON-RPC codec were brought into
+  line: spines for new modules past a thousand lines, stale spine names
+  fixed, the six language-server tables marked for R14, and the 61 short
+  one-caller helpers those changes introduced reviewed under rule 4 (five
+  pure forwarders inlined, 56 kept as domain operations, function values or
+  multi-call helpers). A spine's wire fields are quoted literals, and a
+  module with no functions carries a description, not a Flow section.
+- **When new code lands without the style.** The gates catch a missing
+  spine past a thousand lines, a stale spine name, a table out of step with
+  its type, a late state type and an unqualified Loom import. They do not
+  catch an unmarked table or a helper that names no domain operation; a
+  table written by hand needs its `<!-- transitions: module.Type -->`
+  marker, and R18's census is the reading list for the second.
 - **What a change now costs.** Renaming a function a spine names, adding a
   constructor to a tabled type, or defining a state type below the code
   that handles it fails `make lint`. Writing a wire field in a spine needs a
