@@ -569,10 +569,12 @@ pub fn spawn(assignment: Assignment) -> Result(Handle, StrandError) {
 /// result on a later turn.
 ///
 /// The harness clamps any single join request to its own `max_wait_ms`
-/// ceiling (30 s). Rather than silently returning `Pending` for a longer
-/// requested window, `wait` re-issues the join on the still-pending handles
-/// until they settle or the requested window is spent, so a program that
-/// asks for `within_ms: 880_000` actually waits up to that window.
+/// ceiling (30 s). Rather than ending the join at its ceiling, `wait`
+/// re-issues the join on the still-pending handles until they settle or
+/// the requested window is spent, so a program that asks for
+/// `within_ms: 880_000` actually waits up to that window. A `Pending`
+/// answer's `waited_ms` accumulates across those slices, so it still
+/// reports time against the program's whole window.
 ///
 /// Capability: `strand.wait`.
 pub fn wait(
