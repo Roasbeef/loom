@@ -79,7 +79,7 @@ censuses; no prose was padded to suppress them. The usage guide links these
 rules. The final Astra high source review of
 `a3dc25359..ea4b2359b` found no actionable defect and independently passed
 170 focused tests. It grants source signoff; the same reviewer also approved
-the published dependency integration and the architecture website's claims.
+the published dependency integration.
 
 The supporting [esqlite PR #1](https://github.com/Roasbeef/esqlite/pull/1) and
 [sqlight PR #1](https://github.com/Roasbeef/sqlight/pull/1) are merged. Hex now
@@ -109,14 +109,6 @@ and native-library bytes. External targets and nested links are refused. All
 51 script tests and four archive regressions passed, and Astra approved this
 packaging delta. The fresh seed rebuilt normally; real fixture and distribution
 gates must still pass on the corrected head.
-
-The offline architecture site in `docs/site/architecture` explains the whole
-system with interactive teaching models and source links. Its LSP examples
-retain captured evidence after edits and recollect when the saved method reruns.
-Controls, keyboard input, playback and widths from 358 to 1600 pixels passed
-browser checks with no console errors or document overflow. Global pause and
-the reduced-motion implementation were checked; this browser cannot emulate
-the operating-system preference. Its simulations do not run an LSP or SQL engine.
 
 Merge criteria: current-head hosted checks and the repository's full Linux
 signoff. The owner authorized removing draft status and merging green. The local
