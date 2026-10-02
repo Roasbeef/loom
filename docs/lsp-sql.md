@@ -71,6 +71,50 @@ those lists small also leaves room for results within the fact and time bounds.
 An ambiguous or unsupported seed is a collection error, not an empty reference
 list.
 
+### Compare the tool calls
+
+The three queries below use two known targets (`greet` and `unused`) and one
+outline file. The following counts assume complete answers, known paths, and
+one probe per model-visible tool call. They exclude setup, API discovery,
+retries and reads needed to locate an unknown symbol. These are worked call
+counts, not measured inference or latency savings.
+
+| Query below | Separate LSP/read calls with no saved answers | Further calls when the earlier answers are retained | Text-search workflow with no saved answers |
+| --- | --- | --- | --- |
+| [Count external references](#count-references-in-other-files). | Two reference queries, one per target; then filter by path, count and sort. | Zero if both reference answers are already available. | One batched `grep`/`rg` search for both names, plus `C` context reads with `fs_read` or `sed`. |
+| [Find targets with no external reference](#query-the-same-observation-again). | Two reference queries, then keep the targets with no external locations. | Zero after the preceding count query if its complete reference answers were retained. | One batched search plus `C` context reads, or zero new searches after retaining the preceding search results and context. |
+| [Join outline symbols to document evidence](#query-the-same-observation-again). | One outline query plus one full-file read/digest command for the example file. Point queries do not expose the observation's LSP document version. | Zero for names, kinds, positions and the disk digest if the outline and matching file evidence are retained. The LSP version is still unavailable. | One full-file read plus one digest command; declaration search and parsing still need to recover names, nesting and kinds. |
+
+`C` is the number of separate context reads needed to inspect ambiguous hits.
+It can be zero when search output supplies enough context. A shell script can
+combine the searches, reads and digest command into one Bash call. Text search
+still finds spellings rather than resolved symbols: comments, strings, aliases
+and unrelated same-named declarations require inspection. `sed` supplies
+context but does not turn those hits into semantic references or a typed outline.
+
+The former `lsp_references` and `lsp_symbols` tools exposed individual queries.
+On this branch, the corresponding operations are `cap/lsp.references` and
+`cap/lsp.outline` inside code mode. A program can batch those ordinary point
+queries, retain their answers, and perform the same counts and filters in one
+model-visible `code_mode` call. SQL provides reusable tables and joins, with
+checked observation scope and provenance; a lower tool-call count is not
+exclusive to SQL. Check `Found.total` against the returned item count before
+using a point-query answer to count references or report absence.
+
+For the plan above, one successful collection currently spends five semantic
+LSP requests: one requested outline, two further outlines to resolve the two
+line-less targets, and two reference requests. Giving both targets an explicit
+`Some(line)` reduces that count to three. Initialization and document
+synchronization are outside this count. `metadata(observation).requests`
+records the actual semantic request count.
+
+After collection, each of the three SQL queries makes zero further LSP
+requests. Run collection and all three queries in one code-mode program and
+the model makes one tool call, returning only the selected reports. Each SQL
+query still creates a fresh in-memory database and consumes local execution
+resources. Reuse the plan to collect fresh facts after edits; reuse the
+observation for more queries over the already captured facts.
+
 ## Count references in other files
 
 The following complete program is copied from the checked design-note example.
