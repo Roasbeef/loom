@@ -1550,7 +1550,9 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let #(transcript, _, _) = layout.body_layout(conversation, model)
   use <- bool.lazy_guard(
     tui_model.reading_history(model)
-      && at.y == transcript.position.y
+      && {
+      at.y == transcript.position.y || at.y == geometry.bottom(transcript) - 1
+    }
       && at.x < geometry.right(transcript),
     fn() {
       scroll_transcript(

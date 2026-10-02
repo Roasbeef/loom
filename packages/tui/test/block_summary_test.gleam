@@ -312,8 +312,16 @@ pub fn a_summary_off_screen_leaves_the_reader_in_place_test() {
     let records = history_with_thought(at)
     let before = reading(records)
     let after = summarize(before, thought_of(records))
-    assert paint(after) == paint(before)
+    assert on_screen(after) == on_screen(before)
   })
+}
+
+// The frame without its reading row, whose count of rows below the window
+// rightly changes when a block below it grows.
+fn on_screen(model: tui_model.Model) -> List(String) {
+  paint(model)
+  |> string.split("\n")
+  |> list.filter(fn(row) { !string.contains(row, "↑ reading") })
 }
 
 // --- advisor messages ------------------------------------------------------------
